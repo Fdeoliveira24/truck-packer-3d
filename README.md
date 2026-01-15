@@ -1,1 +1,164 @@
-# truck-packer-3d
+# Truck Packer 3D
+
+A professional 3D truck packing visualization tool for planning equipment loads, tours, and logistics. Built with Three.js for real-time 3D rendering and interactive packing simulations.
+
+![Truck Packer 3D](https://img.shields.io/badge/Three.js-0.160.0-049EF4?logo=three.js&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+
+## Features
+
+- **3D Interactive Editor**: Real-time visualization with orbit controls, zoom, and pan
+- **Pack Management**: Create, organize, and manage multiple truck packing projects
+- **Case Library**: Build a reusable library of equipment cases with custom dimensions and colors
+- **Auto-Pack Engine**: Intelligent automatic packing algorithm to optimize space utilization
+- **Export/Import**: Save and share packs as JSON, export to PDF and Excel
+- **Dark/Light Theme**: Modern UI with theme switching
+- **Grid & Shadows**: Toggle visual aids for better spatial awareness
+- **Keyboard Shortcuts**: Efficient workflow with comprehensive keyboard controls
+
+## Quick Start
+
+1. **Open the app**: Simply open `index.html` in a modern web browser (Chrome, Firefox, Safari, Edge)
+2. **Create a pack**: Click "New Pack" on the Packs screen
+3. **Add cases**: Go to Cases library and create equipment cases with dimensions
+4. **Start packing**: Open your pack in the Editor and drag cases from the sidebar to the 3D truck
+5. **Export**: Save your work as JSON or export to PDF/Excel for sharing
+
+## Keyboard Shortcuts
+
+### Global
+- `Ctrl/Cmd + O` - Open pack dialog
+- `Ctrl/Cmd + P` - Auto-pack cases
+
+### Editor
+- `Delete` / `Backspace` - Delete selected cases
+- `Ctrl/Cmd + C` - Copy selected cases
+- `Ctrl/Cmd + V` - Paste copied cases
+- `Ctrl/Cmd + A` - Select all cases
+- `G` - Toggle grid visibility
+- `S` - Toggle shadows
+- `F` - Focus on selected case
+- `Esc` - Deselect all / Clear search
+
+### Navigation
+- **Left Mouse Drag** - Rotate camera (orbit)
+- **Right Mouse Drag** - Pan camera
+- **Mouse Wheel** - Zoom in/out
+- **Click Case** - Select/deselect
+- **Shift + Click** - Multi-select
+
+## Usage
+
+### Creating a Pack
+
+1. Navigate to the **Packs** screen
+2. Click **New Pack** button
+3. Fill in pack details:
+   - Title (required)
+   - Client name (optional)
+   - Project name (optional)
+   - Drawn by (optional)
+4. Choose truck dimensions or select from presets
+5. Click **Create Pack**
+
+### Managing Cases
+
+1. Go to **Cases** from the sidebar
+2. Click **New Case** to add equipment
+3. Define case properties:
+   - Name
+   - Dimensions (Length × Width × Height in inches)
+   - Color (for visual identification)
+   - Weight (optional)
+4. Cases appear in the Editor sidebar when packing
+
+### Packing in 3D Editor
+
+1. Open a pack from the **Packs** screen
+2. In the Editor:
+   - Drag cases from the left sidebar onto the truck bed
+   - Click and drag cases to reposition them
+   - Use mouse controls to orbit/zoom the camera
+   - Select cases to see dimensions and properties
+3. Use **Auto Pack** for automatic space optimization
+
+### Exporting
+
+**Export Full App**:
+- Click **Export** in the topbar to download complete app state as JSON
+- Includes all packs, cases, and preferences
+
+**Export Single Pack**:
+- Open pack's menu (three vertical dots)
+- Select **Export JSON**
+- Share the file with others
+
+**Export to PDF/Excel**:
+- In Editor, click **Export PDF** or **Export Excel**
+- Generates professional reports with pack details and case lists
+
+### Importing
+
+**Import App Backup**:
+- Click **Import** in topbar
+- Select a previously exported app JSON file
+- App state will be restored
+
+**Import Pack**:
+- On Packs screen, click **Import Pack**
+- Select a pack JSON file (from someone else or backup)
+- Pack will be added to your library
+
+## Technical Details
+
+- **Framework**: Vanilla JavaScript (ES6+)
+- **3D Engine**: Three.js v0.160.0
+- **File Format**: Single HTML file (~6100 lines)
+- **Storage**: Browser localStorage with JSON export/import
+- **Browser Requirements**: Modern browser with WebGL support
+
+## File Structure
+
+```
+truck-packer-3d/
+├── index.html          # Complete application (HTML/CSS/JS)
+└── README.md           # This file
+```
+
+## Tips & Best Practices
+
+1. **Save Often**: Use Export to create backups before major changes
+2. **Case Library**: Build your case library first before creating packs
+3. **Colors**: Use distinct colors for different case types for easy visual identification
+4. **Auto-Pack**: Try auto-pack first, then manually adjust as needed
+5. **Search**: Use search on Packs screen to quickly find projects (press Esc to clear)
+6. **Theme**: Toggle theme from sidebar bottom for comfortable viewing
+
+## Browser Compatibility
+
+- ✅ Chrome 90+
+- ✅ Firefox 88+
+- ✅ Safari 14+
+- ✅ Edge 90+
+
+## Help
+
+Click the **Help** button in the topbar for quick reference on Export/Import features.
+
+## License
+
+MIT License - Feel free to customize and use for your projects.
+
+## Credits
+
+Built with:
+- [Three.js](https://threejs.org/) - 3D graphics library
+- [Font Awesome](https://fontawesome.com/) - Icons
+- [jsPDF](https://github.com/parallax/jsPDF) - PDF generation
+- [SheetJS](https://sheetjs.com/) - Excel export
+
+---
+
+**Version**: 1.0.0  
+**Author**: 360 Virtual Tour Solutions  
+**Last Updated**: January 2026

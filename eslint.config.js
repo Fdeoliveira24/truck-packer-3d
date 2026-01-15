@@ -1,0 +1,105 @@
+import js from '@eslint/js';
+import html from 'eslint-plugin-html';
+import globals from 'globals';
+
+export default [
+  {
+    ignores: [
+      'node_modules/**',
+      'cleanup/reports/**',
+      '.git/**',
+      'dist/**',
+      'build/**'
+    ]
+  },
+  js.configs.recommended,
+  {
+    files: ['**/*.html'],
+    plugins: {
+      html
+    },
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        ...globals.browser,
+        THREE: 'readonly',
+        TWEEN: 'readonly'
+      }
+    },
+    rules: {
+      // Possible Problems (Errors - these catch real bugs)
+      'no-async-promise-executor': 'error',
+      'no-await-in-loop': 'warn',
+      'no-constant-binary-expression': 'error',
+      'no-duplicate-imports': 'error',
+      'no-self-compare': 'error',
+      'no-template-curly-in-string': 'warn',
+      'no-unmodified-loop-condition': 'warn',
+      'no-unreachable-loop': 'warn',
+      'no-use-before-define': ['warn', { functions: false, classes: true, variables: true }],
+      
+      // Best Practices (Warnings - improve code quality)
+      'array-callback-return': 'warn',
+      'consistent-return': 'warn',
+      'curly': ['warn', 'multi-line', 'consistent'],
+      'default-case-last': 'warn',
+      'dot-notation': 'warn',
+      'eqeqeq': ['warn', 'always', { null: 'ignore' }],
+      'no-alert': 'warn',
+      'no-caller': 'error',
+      'no-console': 'off', // Allow console for debugging
+      'no-else-return': 'warn',
+      'no-eval': 'error',
+      'no-extend-native': 'error',
+      'no-extra-bind': 'warn',
+      'no-floating-decimal': 'warn',
+      'no-implicit-coercion': 'warn',
+      'no-implied-eval': 'error',
+      'no-iterator': 'error',
+      'no-labels': 'error',
+      'no-lone-blocks': 'warn',
+      'no-loop-func': 'warn',
+      'no-multi-str': 'warn',
+      'no-new': 'warn',
+      'no-new-func': 'error',
+      'no-new-wrappers': 'error',
+      'no-octal-escape': 'error',
+      'no-proto': 'error',
+      'no-return-assign': 'warn',
+      'no-script-url': 'error',
+      'no-sequences': 'error',
+      'no-throw-literal': 'error',
+      'no-unneeded-ternary': 'warn',
+      'no-unused-expressions': ['warn', { allowShortCircuit: true, allowTernary: true }],
+      'no-useless-call': 'warn',
+      'no-useless-concat': 'warn',
+      'no-useless-return': 'warn',
+      'no-var': 'warn',
+      'no-with': 'error',
+      'prefer-const': 'warn',
+      'prefer-promise-reject-errors': 'warn',
+      'radix': 'warn',
+      'yoda': 'warn',
+
+      // Variables
+      'no-undef': 'error',
+      'no-unused-vars': ['warn', { 
+        vars: 'all', 
+        args: 'after-used', 
+        ignoreRestSiblings: true,
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_'
+      }],
+      'no-shadow': 'warn',
+
+      // Stylistic (off - handled by Prettier)
+      'semi': 'off',
+      'quotes': 'off',
+      'indent': 'off',
+      'comma-dangle': 'off',
+      'object-curly-spacing': 'off',
+      'array-bracket-spacing': 'off'
+    }
+  }
+];

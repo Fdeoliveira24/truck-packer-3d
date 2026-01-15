@@ -1,0 +1,46 @@
+{
+  "name": "truck-packer-3d",
+  "version": "1.0.0",
+  "description": "A professional 3D truck packing visualization tool",
+  "main": "index.html",
+  "scripts": {
+    "lint": "npm run lint:js && npm run lint:css && npm run lint:html",
+    "lint:js": "eslint \"**/*.html\" --report-unused-disable-directives --max-warnings 0",
+    "lint:css": "stylelint \"**/*.html\"",
+    "lint:html": "html-validate \"*.html\"",
+    "lint:fix": "npm run lint:js -- --fix && npm run lint:css -- --fix",
+    "format": "prettier --write \"**/*.{html,css,js,json,md}\"",
+    "format:check": "prettier --check \"**/*.{html,css,js,json,md}\"",
+    "validate": "npm run lint && npm run format:check",
+    "quality": "npm run lint:fix && npm run format && echo '✅ Code quality checks passed!'",
+    "quality:ci": "npm run validate > cleanup/reports/quality-report.txt 2>&1 || true"
+  },
+  "keywords": [
+    "3d",
+    "truck-packer",
+    "three.js",
+    "visualization",
+    "logistics"
+  ],
+  "author": "360 Virtual Tour Solutions",
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "eslint": "^9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-html": "^8.1.2",
+    "globals": "^15.13.0",
+    "html-validate": "^8.24.1",
+    "postcss": "^8.4.49",
+    "postcss-html": "^1.7.0",
+    "prettier": "^3.4.2",
+    "prettier-plugin-organize-attributes": "^1.0.0",
+    "stylelint": "^16.11.0",
+    "stylelint-config-html": "^1.1.0",
+    "stylelint-config-standard": "^36.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}

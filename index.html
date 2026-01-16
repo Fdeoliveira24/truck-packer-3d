@@ -293,11 +293,6 @@
         border: 1px solid rgba(255, 159, 28, 0.25);
       }
 
-      .sidebar-bottom {
-        padding: var(--space-3);
-        margin-top: auto;
-      }
-
       .trial-card {
         background: linear-gradient(180deg, var(--bg-elevated), var(--bg-secondary));
         border: 1px solid var(--border-subtle);
@@ -464,16 +459,77 @@
         color: var(--text-primary);
       }
 
+      /* Icon + checkbox theming (keep consistent across the app) */
+      .btn i {
+        color: var(--text-secondary);
+      }
+
+      .btn:hover i {
+        color: var(--text-primary);
+      }
+
+      .btn-primary i,
+      .btn-primary:hover i {
+        color: currentColor;
+      }
+
+      .btn-danger i,
+      .btn-danger:hover i {
+        color: var(--error);
+      }
+
       .btn-ghost {
         border-color: transparent;
         background: transparent;
         box-shadow: none;
+        color: var(--text-secondary);
       }
 
       .btn-ghost:hover {
         background: var(--bg-hover);
         box-shadow: none;
         transform: none;
+        color: var(--text-primary);
+      }
+
+      input[type='checkbox'] {
+        -webkit-appearance: none;
+        -moz-appearance: none;
+        appearance: none;
+        width: 16px;
+        height: 16px;
+        border: 2px solid var(--border-strong);
+        border-radius: 3px;
+        cursor: pointer;
+        position: relative;
+        background: var(--bg-secondary);
+        transition: all 0.15s ease;
+      }
+
+      input[type='checkbox']:hover {
+        border-color: var(--accent-primary);
+      }
+
+      input[type='checkbox']:checked {
+        background: var(--accent-primary);
+        border-color: var(--accent-primary);
+      }
+
+      input[type='checkbox']:checked::after {
+        content: '';
+        position: absolute;
+        left: 4px;
+        top: 1px;
+        width: 4px;
+        height: 8px;
+        border: solid white;
+        border-width: 0 2px 2px 0;
+        transform: rotate(45deg);
+      }
+
+      input[type='checkbox']:focus-visible {
+        outline: 2px solid rgba(255, 159, 28, 0.35);
+        outline-offset: 2px;
       }
 
       .input,
@@ -698,6 +754,25 @@
         display: none;
       }
 
+      .pack-preview.has-thumb {
+        display: block;
+        padding: 0;
+        grid-template-columns: none;
+        gap: 0;
+        background: var(--bg-elevated);
+      }
+
+      .pack-preview.has-thumb::after {
+        opacity: 0.18;
+      }
+
+      .pack-preview.has-thumb img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+
       .badge {
         font-size: var(--text-xs);
         padding: 4px 8px;
@@ -792,6 +867,41 @@
 
       .dropdown-item:hover {
         background: var(--bg-hover);
+      }
+
+      .dropdown-item[data-variant="danger"] {
+        color: var(--error);
+      }
+
+      .dropdown-item[data-variant="danger"]:hover {
+        background: rgba(239, 68, 68, 0.08);
+      }
+
+      .dropdown-item[data-variant="danger"] i {
+        color: var(--error);
+      }
+
+      .dropdown-item i {
+        width: 18px;
+        height: 18px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--text-secondary);
+        flex-shrink: 0;
+      }
+
+      .dropdown-item:hover i {
+        color: var(--text-primary);
+      }
+
+      .dropdown-item[data-variant="danger"]:hover i {
+        color: var(--error);
+      }
+
+      .sort-icon {
+        color: var(--text-muted);
+        opacity: 0.85;
       }
 
       /* Modal */
@@ -1196,18 +1306,30 @@
             <i class="fa-solid fa-route"></i>
             Roadmap
           </button>
-          <button class="nav-btn" type="button" data-nav="settings">
-            <i class="fa-solid fa-gear"></i>
-            Settings
-          </button>
         </nav>
 
-        <div class="sidebar-bottom">
-          <button class="btn" id="btn-theme" type="button" title="Toggle theme" style="width: 100%">
-            <i class="fa-solid fa-circle-half-stroke"></i>
-            Theme
+        <div style="padding: var(--space-3)">
+          <button
+            class="btn"
+            id="btn-account-switcher"
+            type="button"
+            style="width: 100%; justify-content: space-between; padding: var(--space-2) var(--space-3)"
+          >
+            <span style="display: flex; align-items: center; gap: var(--space-3); min-width: 0">
+              <span
+                class="brand-mark"
+                aria-hidden="true"
+                style="width: 34px; height: 34px; border-radius: 12px; flex: 0 0 auto"
+              ></span>
+              <span style="display: flex; flex-direction: column; align-items: flex-start; min-width: 0">
+                <span style="font-weight: var(--font-semibold); line-height: 1.1">Personal Account</span>
+                <span class="muted" data-account-name style="font-size: var(--text-sm); line-height: 1.1">—</span>
+              </span>
+            </span>
+            <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
           </button>
         </div>
+
       </aside>
 
       <main class="main">
@@ -1259,7 +1381,7 @@
               </div>
             </div>
             <div style="height: 14px"></div>
-            <div class="row">
+            <div class="row" style="align-items: center">
               <div style="flex: 1; min-width: 220px; position: relative">
                 <i
                   class="fa-solid fa-magnifying-glass"
@@ -1280,6 +1402,16 @@
                   aria-label="Search packs"
                 />
               </div>
+              <div style="min-width: 220px">
+                <select class="select" id="packs-sort" aria-label="Sort packs">
+                  <option value="edited-desc" selected>Recently edited</option>
+                  <option value="edited-asc">Oldest edited</option>
+                  <option value="title-asc">Title A–Z</option>
+                  <option value="title-desc">Title Z–A</option>
+                  <option value="created-desc">Created newest</option>
+                  <option value="created-asc">Created oldest</option>
+                </select>
+              </div>
               <div class="search-shell" style="flex: 1; min-width: 260px; display: none">
                 <div class="search-input"></div>
                 <div class="search-empty" id="packs-filter-empty">
@@ -1292,6 +1424,31 @@
                 </div>
               </div>
             </div>
+            <div style="height: 10px"></div>
+            <div class="row" style="gap: 8px; flex-wrap: wrap">
+              <button class="chip" id="packs-filter-chip-empty" type="button" title="Packs with 0 cases">
+                <span class="chip-dot"></span>
+                Empty
+              </button>
+              <button
+                class="chip"
+                id="packs-filter-chip-partial"
+                type="button"
+                title="Packs with some volume used"
+              >
+                <span class="chip-dot" style="background: var(--warning)"></span>
+                Partial
+              </button>
+              <button
+                class="chip"
+                id="packs-filter-chip-full"
+                type="button"
+                title="Packs at 100% volume"
+              >
+                <span class="chip-dot" style="background: var(--success)"></span>
+                Full
+              </button>
+            </div>
             <div style="height: 14px"></div>
             <div class="pack-grid" id="packs-grid"></div>
             <div class="card" id="packs-empty" style="display: none; margin-top: 16px">
@@ -1300,33 +1457,44 @@
             </div>
           </section>
 
-          <!-- Cases -->
-          <section class="screen" id="screen-cases">
-            <div class="row space-between">
-              <div class="grid" style="gap: 6px">
-                <div style="font-size: var(--text-2xl); font-weight: var(--font-semibold)">Cases</div>
-                <div class="muted" style="font-size: var(--text-sm)">
-                  Manage your inventory. Import via CSV/XLSX or create manually.
-                </div>
-              </div>
-              <div class="row">
-                <button class="btn" id="btn-cases-template" type="button">
-                  <i class="fa-solid fa-download"></i>
-                  Template
-                </button>
-                <button class="btn" id="btn-cases-import" type="button">
-                  <i class="fa-solid fa-file-import"></i>
-                  Import
-                </button>
-                <button class="btn btn-primary" id="btn-new-case" type="button">
-                  <i class="fa-solid fa-plus"></i>
-                  New Case
-                </button>
-              </div>
-            </div>
-            <div style="height: 14px"></div>
-            <div class="row" style="gap: 10px; align-items: center">
-              <div style="flex: 1; min-width: 220px; position: relative">
+	          <!-- Cases -->
+	          <section class="screen" id="screen-cases">
+	            <div class="row space-between">
+	              <div class="grid" style="gap: 6px">
+	                <div style="font-size: var(--text-2xl); font-weight: var(--font-semibold)">Cases</div>
+	                <div class="muted" style="font-size: var(--text-sm)">
+	                  Manage your inventory. Import via CSV/XLSX or create manually.
+	                </div>
+	              </div>
+	              <div class="row" id="cases-actions-default">
+	                <button class="btn" id="btn-cases-template" type="button">
+	                  <i class="fa-solid fa-download"></i>
+	                  Template
+	                </button>
+	                <button class="btn" id="btn-cases-import" type="button">
+	                  <i class="fa-solid fa-file-import"></i>
+	                  Import
+	                </button>
+	                <button class="btn btn-primary" id="btn-new-case" type="button">
+	                  <i class="fa-solid fa-plus"></i>
+	                  New Case
+	                </button>
+	              </div>
+	              <div class="row" id="cases-actions-bulk" style="display: none; gap: 8px; align-items: center">
+	                <div class="muted" id="cases-selected-count" style="font-size: var(--text-sm)"></div>
+	                <button class="btn btn-danger" id="btn-cases-bulk-delete" type="button">
+	                  <i class="fa-solid fa-trash"></i>
+	                  Delete (0)
+	                </button>
+	                <button class="btn" id="btn-cases-bulk-template" type="button">
+	                  <i class="fa-solid fa-layer-group"></i>
+	                  Template
+	                </button>
+	              </div>
+	            </div>
+	            <div style="height: 14px"></div>
+	            <div class="row" style="gap: 10px; align-items: center">
+	              <div style="flex: 1; min-width: 220px; position: relative">
                 <i
                   class="fa-solid fa-magnifying-glass"
                   style="
@@ -1353,14 +1521,17 @@
             <div style="height: 10px"></div>
             <div class="row" id="cases-filters" style="gap: 8px"></div>
             <div style="height: 14px"></div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th scope="col" data-sort="name">Name</th>
-                    <th scope="col" data-sort="manufacturer">Manufacturer</th>
-                    <th scope="col">Dimensions</th>
-                    <th scope="col" data-sort="volume">Volume</th>
+	            <div class="table-wrap">
+	              <table>
+	                <thead>
+	                  <tr>
+	                    <th scope="col" style="width: 36px; text-align: center">
+	                      <input id="cases-select-all" type="checkbox" aria-label="Select all visible cases" />
+	                    </th>
+	                    <th scope="col" data-sort="name">Name</th>
+	                    <th scope="col" data-sort="manufacturer">Manufacturer</th>
+	                    <th scope="col">Dimensions</th>
+	                    <th scope="col" data-sort="volume">Volume</th>
                     <th scope="col" data-sort="weight">Weight</th>
                     <th scope="col" data-sort="category">Category</th>
                     <th scope="col">Flip</th>
@@ -1426,6 +1597,10 @@
                   <button class="toolbar-btn" id="btn-pdf" type="button" title="PDF plan sheet">
                     <i class="fa-solid fa-file-pdf"></i>
                     PDF
+                  </button>
+                  <button class="toolbar-btn" id="btn-capture-preview" type="button" title="Capture pack preview">
+                    <i class="fa-solid fa-image"></i>
+                    Preview
                   </button>
                 </div>
                 <div class="viewport-overlay" id="viewport-hint">
@@ -1801,7 +1976,7 @@
             function hasWebGL() {
               try {
                 const canvas = document.createElement('canvas');
-                return !!(canvas.getContext('webgl') || canvas.getContext('experimental-webgl'));
+                return Boolean(canvas.getContext('webgl') || canvas.getContext('experimental-webgl'));
               } catch (_) {
                 return false;
               }
@@ -1849,6 +2024,8 @@
           const UIComponents = (() => {
             const modalRoot = document.getElementById('modal-root');
             const toastContainer = document.getElementById('toast-container');
+            let dropdownKeyDownListener = null;
+            let dropdownRepositionListener = null;
 
             const toastTypes = {
               success: { title: 'Success', color: 'var(--success)', icon: '✓' },
@@ -2019,25 +2196,72 @@
               });
             }
 
-            function openDropdown(anchorEl, items) {
-              closeAllDropdowns();
-              const wrap = document.createElement('div');
-              wrap.className = 'dropdown-menu';
+	            function openDropdown(anchorEl, items, options = {}) {
+	              closeAllDropdowns();
+	              const wrap = document.createElement('div');
+	              wrap.className = 'dropdown-menu';
+	              // The stylesheet defines `.dropdown-menu` as `position:absolute` for inline dropdowns.
+	              // For floating viewport-clamped dropdowns we make it participate in layout so the
+	              // wrapper element has a measurable width/height.
+	              wrap.style.position = 'static';
+	              wrap.style.top = 'auto';
+	              wrap.style.left = 'auto';
+	              wrap.style.right = 'auto';
 
-              items.forEach(item => {
+	              items.forEach(item => {
+	                if (item && (item.type === 'divider' || item.divider === true)) {
+	                  const divider = document.createElement('div');
+                  divider.setAttribute('role', 'separator');
+                  divider.style.height = '1px';
+                  divider.style.margin = `${8}px ${6}px`;
+                  divider.style.background = 'var(--border-subtle)';
+                  wrap.appendChild(divider);
+                  return;
+                }
+
+                // Add divider before this item if requested
+                if (item && item.dividerBefore) {
+                  const divider = document.createElement('div');
+                  divider.setAttribute('role', 'separator');
+                  divider.style.height = '1px';
+                  divider.style.margin = `${8}px ${6}px`;
+                  divider.style.background = 'var(--border-subtle)';
+                  wrap.appendChild(divider);
+                }
+
                 const btn = document.createElement('button');
                 btn.type = 'button';
                 btn.className = 'dropdown-item';
-                if (item.icon) {
-                  const icon = document.createElement('i');
-                  icon.className = item.icon;
-                  btn.appendChild(icon);
+                
+                // Apply variant (e.g., danger for delete actions)
+                if (item && item.variant) {
+                  btn.dataset.variant = item.variant;
                 }
+                
+                if (item && item.disabled) {
+                  btn.disabled = true;
+                  btn.style.opacity = '0.6';
+                  btn.style.cursor = 'not-allowed';
+                }
+	                if (item.icon) {
+	                  const icon = document.createElement('i');
+	                  icon.className = item.icon;
+	                  btn.appendChild(icon);
+	                }
                 const text = document.createElement('span');
                 text.textContent = String(item.label || '');
+                text.style.flex = '1';
                 btn.appendChild(text);
+                if (item.rightIcon) {
+                  const iconRight = document.createElement('i');
+                  iconRight.className = item.rightIcon;
+                  iconRight.style.marginLeft = 'auto';
+                  iconRight.style.color = item.rightIconColor || 'var(--accent-primary)';
+                  btn.appendChild(iconRight);
+                }
                 btn.addEventListener('click', ev => {
                   ev.stopPropagation();
+                  if (btn.disabled) return;
                   closeAllDropdowns();
                   item.onClick && item.onClick();
                 });
@@ -2049,21 +2273,74 @@
               dropdown.dataset.dropdown = '1';
               dropdown.style.position = 'fixed';
               dropdown.style.zIndex = '16000';
+              dropdown.style.visibility = 'hidden';
 
-              const rect = anchorEl.getBoundingClientRect();
-              dropdown.style.left = `${Math.max(8, rect.right - 220)}px`;
-              dropdown.style.top = `${rect.bottom + 6}px`;
+              const preferredWidth = Math.max(180, Number(options.width) || 220);
+              dropdown.style.minWidth = `${preferredWidth}px`;
               dropdown.appendChild(wrap);
 
               document.body.appendChild(dropdown);
+
+	              const positionDropdown = () => {
+	                if (!dropdown.isConnected) return;
+	                const pad = 8;
+	                const gap = 6;
+	                const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+	                const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+	                const rect = anchorEl.getBoundingClientRect();
+
+	                dropdown.style.maxWidth = `${Math.max(0, vw - pad * 2)}px`;
+	                dropdown.style.maxHeight = `${Math.max(0, vh - pad * 2)}px`;
+	                dropdown.style.overflowY = 'auto';
+
+	                // Measure after maxWidth/minWidth are applied.
+	                const menuRect = dropdown.getBoundingClientRect();
+                const menuW = menuRect.width || preferredWidth;
+                const menuH = menuRect.height || 0;
+
+                // Default: open below the trigger.
+                let top = rect.bottom + gap;
+                if (top + menuH > vh - pad) top = rect.top - gap - menuH;
+                top = Math.max(pad, Math.min(top, Math.max(pad, vh - pad - menuH)));
+
+                // Backwards-compatible default: align dropdown's right edge with trigger's right edge.
+                let left = rect.right - menuW;
+                if (options.align === 'left') left = rect.left;
+                left = Math.max(pad, Math.min(left, Math.max(pad, vw - pad - menuW)));
+
+                dropdown.style.left = `${Math.round(left)}px`;
+                dropdown.style.top = `${Math.round(top)}px`;
+              };
+
+              positionDropdown();
+              dropdown.style.visibility = 'visible';
               window.setTimeout(() => {
                 const onDocClick = () => closeAllDropdowns();
                 document.addEventListener('click', onDocClick, { once: true });
               }, 0);
+
+              dropdownKeyDownListener = ev => {
+                if (ev.key === 'Escape') closeAllDropdowns();
+              };
+              document.addEventListener('keydown', dropdownKeyDownListener);
+
+              dropdownRepositionListener = () => positionDropdown();
+              window.addEventListener('resize', dropdownRepositionListener);
+              // Capture scroll events from nested scroll containers too.
+              window.addEventListener('scroll', dropdownRepositionListener, true);
             }
 
             function closeAllDropdowns() {
               document.querySelectorAll('[data-dropdown="1"]').forEach(el => el.remove());
+              if (dropdownKeyDownListener) {
+                document.removeEventListener('keydown', dropdownKeyDownListener);
+                dropdownKeyDownListener = null;
+              }
+              if (dropdownRepositionListener) {
+                window.removeEventListener('resize', dropdownRepositionListener);
+                window.removeEventListener('scroll', dropdownRepositionListener, true);
+                dropdownRepositionListener = null;
+              }
             }
 
             return { showToast, showModal, confirm, openDropdown, closeAllDropdowns };
@@ -2096,38 +2373,7 @@
             return { show, hide };
           })();
 
-          const StateStore = (() => {
-            const MAX_HISTORY = 50;
-            let state = null;
-            let history = [];
-            let historyPointer = -1;
-            const subscribers = [];
-
-            function historySlice(s) {
-              return Utils.deepClone({
-                caseLibrary: s.caseLibrary,
-                packLibrary: s.packLibrary,
-                preferences: s.preferences,
-              });
-            }
-
-            function init(initialState) {
-              state = Utils.deepClone(initialState);
-              history = [historySlice(state)];
-              historyPointer = 0;
-            }
-
-            function get(key) {
-              if (!key) return state;
-              return state[key];
-            }
-
-            function set(patch, options = {}) {
-              const next = { ...state, ...patch };
-              const significant = options.skipHistory ? false : isSignificantChange(patch);
-              state = next;
-              if (significant) pushHistory(historySlice(next));
-              if (!options.skipNotify) notify(patch, state);
+          // Normalizer helper removed (unused). Keep utilities within modules if needed.
             }
 
             function replace(nextState, options = {}) {
@@ -2262,6 +2508,97 @@
             return { load, saveSoon, saveNow, clearAll, exportAppJSON, importAppJSON };
           })();
 
+          const SessionManager = (() => {
+            const KEY = 'truckPacker3d:session:v1';
+            let session = null;
+            const subscribers = [];
+            const LEGACY = { name: 'Agro Felix', email: 'agrofelixbraganca@gmail.com' };
+            const DEMO = { name: 'Demo User', email: 'info@pxl360.com' };
+
+            function defaultDemoSession() {
+              return {
+                user: { name: 'Demo User', email: 'info@pxl360.com' },
+                currentAccount: { type: 'personal', name: 'Personal Account', role: 'Owner' },
+              };
+            }
+
+            function defaultSignedOutSession() {
+              return {
+                user: { name: 'Guest', email: '' },
+                currentAccount: { type: 'personal', name: 'Personal Account', role: '' },
+              };
+            }
+
+            function notify() {
+              subscribers.forEach(fn => {
+                try {
+                  fn(session);
+                } catch (err) {
+                  console.error('[Session] subscriber error', err);
+                }
+              });
+            }
+
+            function load() {
+              try {
+                const raw = window.localStorage.getItem(KEY);
+                if (!raw) return null;
+                const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(raw, null));
+                return parsed && typeof parsed === 'object' ? parsed : null;
+              } catch {
+                return null;
+              }
+            }
+
+            function save(next) {
+              try {
+                window.localStorage.setItem(KEY, JSON.stringify(next));
+              } catch {
+                // ignore
+              }
+            }
+
+            function migrate(next) {
+              if (!next || typeof next !== 'object') return next;
+              next.user = next.user && typeof next.user === 'object' ? next.user : {};
+              const name = String(next.user.name || '');
+              const email = String(next.user.email || '');
+              if (name === LEGACY.name || email === LEGACY.email) {
+                next.user.name = DEMO.name;
+                next.user.email = DEMO.email;
+              }
+              return next;
+            }
+
+            function get() {
+              if (session) return session;
+              const stored = load();
+              session = migrate(stored || defaultDemoSession());
+              save(session);
+              return session;
+            }
+
+            function clear() {
+              try {
+                window.localStorage.removeItem(KEY);
+              } catch {
+                // ignore
+              }
+              session = defaultSignedOutSession();
+              notify();
+            }
+
+            function subscribe(fn) {
+              subscribers.push(fn);
+              return () => {
+                const idx = subscribers.indexOf(fn);
+                if (idx > -1) subscribers.splice(idx, 1);
+              };
+            }
+
+            return { get, clear, subscribe };
+          })();
+
           const Defaults = (() => {
             const defaultPreferences = {
               units: { length: 'in', weight: 'lb' },
@@ -2380,7 +2717,7 @@
                 drawnBy: 'Truck Packer 3D',
                 notes: 'Tip: Use AutoPack (Ctrl/Cmd+P) to fill the truck.',
                 truck: { length: 636, width: 102, height: 98 },
-                cases: instances.filter(i => !!i.caseId),
+                cases: instances.filter(i => Boolean(i.caseId)),
                 groups: [],
                 stats: { totalCases: instances.length, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
                 createdAt: now,
@@ -2420,7 +2757,7 @@
               next.labelFontSize = Utils.clamp(finiteNumber(next.labelFontSize, base.labelFontSize), 8, 24);
               next.hiddenCaseOpacity = Utils.clamp(finiteNumber(next.hiddenCaseOpacity, base.hiddenCaseOpacity), 0, 1);
               next.snapping = next.snapping && typeof next.snapping === 'object' ? next.snapping : base.snapping;
-              next.snapping.enabled = !!next.snapping.enabled;
+              next.snapping.enabled = Boolean(next.snapping.enabled);
               next.snapping.gridSize = Math.max(0.25, finiteNumber(next.snapping.gridSize, base.snapping.gridSize));
               next.camera = next.camera && typeof next.camera === 'object' ? next.camera : base.camera;
               next.camera.defaultView = next.camera.defaultView === 'orthographic' ? 'orthographic' : 'perspective';
@@ -2429,7 +2766,7 @@
                 next.export.screenshotResolution,
                 base.export.screenshotResolution
               );
-              next.export.pdfIncludeStats = !!next.export.pdfIncludeStats;
+              next.export.pdfIncludeStats = Boolean(next.export.pdfIncludeStats);
               const normalizeCatKey = key =>
                 String(key || '')
                   .trim()
@@ -2467,7 +2804,7 @@
                 dimensions: { length, width, height },
                 weight: Math.max(0, finiteNumber(c && c.weight, 0)),
                 volume: Utils.volumeInCubicInches({ length, width, height }),
-                canFlip: !!(c && c.canFlip),
+                canFlip: Boolean(c && c.canFlip),
                 notes: safeString(c && c.notes, ''),
                 color,
                 createdAt,
@@ -2517,7 +2854,7 @@
                     z: finiteNumber(scale.z, 1),
                   },
                 },
-                hidden: !!(inst && inst.hidden),
+                hidden: Boolean(inst && inst.hidden),
                 groupId: inst && inst.groupId != null ? inst.groupId : null,
               };
             }
@@ -2525,7 +2862,11 @@
             function normalizePack(p, caseMap, now) {
               const truck = normalizeTruck(p && p.truck);
               const rawCases = Array.isArray(p && p.cases) ? p.cases : [];
-              const instances = rawCases.map(i => normalizeInstance(i, caseMap)).filter(i => !!i.caseId);
+              const instances = rawCases.map(i => normalizeInstance(i, caseMap)).filter(i => Boolean(i.caseId));
+              const thumbnail = typeof (p && p.thumbnail) === 'string' ? p.thumbnail : null;
+              const thumbnailUpdatedAt = Number.isFinite(p && p.thumbnailUpdatedAt) ? p.thumbnailUpdatedAt : null;
+              const thumbnailSource =
+                p && (p.thumbnailSource === 'auto' || p.thumbnailSource === 'manual') ? p.thumbnailSource : null;
               const pack = {
                 id: safeString(p && p.id, Utils.uuid()),
                 title: safeString(p && p.title, 'Untitled Pack'),
@@ -2539,6 +2880,9 @@
                 stats: { totalCases: 0, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
                 createdAt: finiteNumber(p && p.createdAt, now),
                 lastEdited: finiteNumber(p && p.lastEdited, now),
+                thumbnail,
+                thumbnailUpdatedAt,
+                thumbnailSource,
               };
               pack.stats = PackLibrary.computeStats(pack, Array.from(caseMap.values()));
               return pack;
@@ -2587,6 +2931,543 @@
             }
 
             return { get, set, applyTheme };
+          })();
+
+          const SettingsOverlay = (() => {
+            let overlay = null;
+            let modal = null;
+            let leftPane = null;
+            let rightPane = null;
+            let activeTab = 'account';
+            let unmountAccountButton = null;
+
+            function isOpen() {
+              return Boolean(overlay);
+            }
+
+            function open(tab = 'preferences') {
+              activeTab = String(tab || 'account');
+              close();
+
+              overlay = document.createElement('div');
+              overlay.className = 'modal-overlay';
+              overlay.style.zIndex = '17000';
+
+              modal = document.createElement('div');
+              modal.className = 'modal';
+              modal.style.width = 'min(1120px, 96vw)';
+              modal.style.height = 'min(780px, 92vh)';
+              modal.style.display = 'grid';
+              modal.style.gridTemplateColumns = '320px 1fr';
+              modal.style.padding = '0';
+
+              leftPane = document.createElement('div');
+              leftPane.style.padding = 'var(--space-4)';
+              leftPane.style.borderRight = '1px solid var(--border-subtle)';
+              leftPane.style.display = 'flex';
+              leftPane.style.flexDirection = 'column';
+              leftPane.style.gap = 'var(--space-4)';
+
+              rightPane = document.createElement('div');
+              rightPane.style.display = 'flex';
+              rightPane.style.flexDirection = 'column';
+              rightPane.style.minWidth = '0';
+
+              modal.appendChild(leftPane);
+              modal.appendChild(rightPane);
+              overlay.appendChild(modal);
+
+              overlay.addEventListener('click', ev => {
+                if (ev.target === overlay) close();
+              });
+
+              function onKeyDown(ev) {
+                if (ev.key === 'Escape') close();
+              }
+              document.addEventListener('keydown', onKeyDown);
+
+              const root = document.getElementById('modal-root');
+              root.appendChild(overlay);
+
+              overlay._tp3dCleanup = () => {
+                document.removeEventListener('keydown', onKeyDown);
+              };
+
+              render();
+            }
+
+            function close() {
+              if (!overlay) return;
+              try {
+                if (typeof unmountAccountButton === 'function') unmountAccountButton();
+              } catch {
+                // ignore
+              }
+              unmountAccountButton = null;
+
+              try {
+                overlay._tp3dCleanup && overlay._tp3dCleanup();
+              } catch {
+                // ignore
+              }
+
+              try {
+                if (overlay.parentElement) overlay.parentElement.removeChild(overlay);
+              } catch {
+                // ignore
+              }
+              overlay = null;
+              modal = null;
+              leftPane = null;
+              rightPane = null;
+            }
+
+            function setActive(tab) {
+              activeTab = String(tab || 'account');
+              render();
+            }
+
+            function render() {
+              if (!overlay) return;
+              const session = SessionManager.get();
+              const prefs = PreferencesManager.get();
+
+              leftPane.innerHTML = '';
+              rightPane.innerHTML = '';
+
+              // Left: account switcher button
+              const accountBtn = document.createElement('button');
+              accountBtn.type = 'button';
+              accountBtn.className = 'btn';
+              accountBtn.style.width = '100%';
+              accountBtn.style.justifyContent = 'space-between';
+              accountBtn.style.padding = 'var(--space-2) var(--space-3)';
+              accountBtn.innerHTML = `
+                <span style="display:flex;align-items:center;gap:var(--space-3);min-width:0">
+                  <span class="brand-mark" aria-hidden="true" style="width:34px;height:34px;border-radius:12px;flex:0 0 auto"></span>
+                  <span style="display:flex;flex-direction:column;align-items:flex-start;min-width:0">
+                    <span style="font-weight:var(--font-semibold);line-height:1.1">${session.currentAccount?.name || 'Personal Account'}</span>
+                    <span class="muted" data-account-name style="font-size:var(--text-sm);line-height:1.1">${
+                      session.user?.name || '—'
+                    }</span>
+                  </span>
+                </span>
+                <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+              `;
+              leftPane.appendChild(accountBtn);
+              unmountAccountButton = AccountSwitcher.bind(accountBtn, { align: 'left' });
+
+              // Left: settings navigation
+              const navWrap = document.createElement('div');
+              navWrap.style.display = 'grid';
+              navWrap.style.gap = '6px';
+
+              const makeHeader = text => {
+                const h = document.createElement('div');
+                h.className = 'muted';
+                h.style.marginTop = '10px';
+                h.style.fontSize = 'var(--text-sm)';
+                h.textContent = text;
+                return h;
+              };
+
+              const makeItem = ({ key, label, icon, indent }) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'nav-btn';
+                btn.style.width = '100%';
+                btn.style.borderRadius = 'var(--radius-sm)';
+                btn.style.paddingLeft = '12px';
+                btn.style.paddingRight = '12px';
+                btn.style.gap = '12px';
+                btn.style.fontSize = 'var(--text-base)';
+                btn.dataset.settingsTab = key;
+
+                if (icon) {
+                  const i = document.createElement('i');
+                  i.className = icon;
+                  i.style.width = '20px';
+                  i.style.display = 'inline-flex';
+                  i.style.alignItems = 'center';
+                  i.style.justifyContent = 'center';
+                  i.style.color = activeTab === key ? 'var(--accent-primary)' : 'var(--text-secondary)';
+                  if (indent) i.style.marginLeft = '16px';
+                  btn.appendChild(i);
+                }
+
+                const text = document.createElement('span');
+                text.textContent = label;
+                text.style.flex = '1';
+                btn.appendChild(text);
+
+                btn.classList.toggle('active', activeTab === key);
+                btn.addEventListener('click', () => setActive(key));
+                return btn;
+              };
+
+              navWrap.appendChild(makeHeader('Account'));
+              navWrap.appendChild(makeItem({ key: 'account', label: 'Account', icon: 'fa-regular fa-user' }));
+              navWrap.appendChild(
+                makeItem({ key: 'preferences', label: 'Preferences', icon: 'fa-solid fa-gear' })
+              );
+              navWrap.appendChild(makeHeader('Organization'));
+              navWrap.appendChild(
+                makeItem({ key: 'org-general', label: 'General', icon: 'fa-regular fa-building', indent: true })
+              );
+              navWrap.appendChild(
+                makeItem({ key: 'org-billing', label: 'Billing', icon: 'fa-regular fa-credit-card', indent: true })
+              );
+              leftPane.appendChild(navWrap);
+
+              // Right: header
+              const header = document.createElement('div');
+              header.className = 'row space-between';
+              header.style.padding = 'var(--space-5) var(--space-6)';
+              header.style.borderBottom = '1px solid var(--border-subtle)';
+              header.style.alignItems = 'flex-start';
+              const title = document.createElement('div');
+              title.style.fontSize = 'var(--text-2xl)';
+              title.style.fontWeight = 'var(--font-semibold)';
+              title.textContent =
+                activeTab === 'account'
+                  ? 'Account'
+                  : activeTab === 'preferences'
+                    ? 'Display Units'
+                    : 'Organization';
+              const closeBtn = document.createElement('button');
+              closeBtn.type = 'button';
+              closeBtn.className = 'btn btn-ghost';
+              closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+              closeBtn.addEventListener('click', () => close());
+              header.appendChild(title);
+              header.appendChild(closeBtn);
+              rightPane.appendChild(header);
+
+              const body = document.createElement('div');
+              body.style.padding = 'var(--space-6)';
+              body.style.overflow = 'auto';
+              body.style.minWidth = '0';
+              rightPane.appendChild(body);
+
+              function row(label, valueEl) {
+                const wrap = document.createElement('div');
+                wrap.style.display = 'grid';
+                wrap.style.gridTemplateColumns = '220px 1fr';
+                wrap.style.gap = '16px';
+                wrap.style.alignItems = 'center';
+                wrap.style.padding = '16px 0';
+                wrap.style.borderBottom = '1px solid var(--border-subtle)';
+                const l = document.createElement('div');
+                l.style.fontWeight = 'var(--font-semibold)';
+                l.textContent = label;
+                wrap.appendChild(l);
+                wrap.appendChild(valueEl);
+                return wrap;
+              }
+
+              function savePrefsFromForm({ length, weight, theme, labelSize, hiddenOpacity }) {
+                const prev = PreferencesManager.get();
+                const next = Utils.deepClone(prev);
+                next.units.length = length;
+                next.units.weight = weight;
+                next.theme = theme;
+                next.labelFontSize = Utils.clamp(Number(labelSize) || 12, 8, 24);
+                next.hiddenCaseOpacity = Utils.clamp(Number(hiddenOpacity) || 0.3, 0, 1);
+                PreferencesManager.set(next);
+                PreferencesManager.applyTheme(next.theme);
+                UIComponents.showToast('Preferences saved', 'success');
+              }
+
+              if (activeTab === 'account') {
+                const nameRow = document.createElement('div');
+                nameRow.className = 'row';
+                nameRow.style.gap = '12px';
+                nameRow.innerHTML = `<span class="brand-mark" aria-hidden="true" style="width:40px;height:40px;border-radius:14px"></span><div style="font-weight:var(--font-semibold)">${
+                  session.user?.name || '—'
+                }</div>`;
+                body.appendChild(nameRow);
+
+                const emailEl = document.createElement('div');
+                emailEl.textContent = session.user?.email || '—';
+                body.appendChild(row('Email', emailEl));
+
+                const danger = document.createElement('div');
+                danger.style.marginTop = '26px';
+                danger.innerHTML = `
+                  <div style="font-size:var(--text-xl);font-weight:var(--font-semibold);margin-bottom:10px">Danger Zone</div>
+                  <div style="border-top:1px solid var(--border-subtle)"></div>
+                `;
+                const dangerRow = document.createElement('div');
+                dangerRow.style.display = 'grid';
+                dangerRow.style.gridTemplateColumns = '220px 1fr';
+                dangerRow.style.gap = '16px';
+                dangerRow.style.alignItems = 'center';
+                dangerRow.style.padding = '16px 0';
+                const dLeft = document.createElement('div');
+                dLeft.style.color = 'var(--error)';
+                dLeft.style.fontWeight = 'var(--font-semibold)';
+                dLeft.textContent = 'Delete Account';
+                const dRight = document.createElement('div');
+                dRight.className = 'muted';
+                dRight.textContent = 'Contact support to delete your account. help@backlinelogic.com';
+                dangerRow.appendChild(dLeft);
+                dangerRow.appendChild(dRight);
+                danger.appendChild(dangerRow);
+                body.appendChild(danger);
+              } else if (activeTab === 'preferences') {
+                const length = document.createElement('select');
+                length.className = 'select';
+                length.innerHTML = `
+                  <option value="in">Inches (in)</option>
+                  <option value="ft">Feet (ft)</option>
+                  <option value="mm">Millimeters (mm)</option>
+                  <option value="cm">Centimeters (cm)</option>
+                  <option value="m">Meters (m)</option>
+                `;
+                length.value = prefs.units.length;
+
+                const weight = document.createElement('select');
+                weight.className = 'select';
+                weight.innerHTML = `
+                  <option value="lb">Pounds (lb)</option>
+                  <option value="kg">Kilograms (kg)</option>
+                `;
+                weight.value = prefs.units.weight;
+
+                const hiddenOpacity = document.createElement('input');
+                hiddenOpacity.className = 'input';
+                hiddenOpacity.type = 'number';
+                hiddenOpacity.min = '0';
+                hiddenOpacity.max = '1';
+                hiddenOpacity.step = '0.05';
+                hiddenOpacity.value = String(prefs.hiddenCaseOpacity);
+
+                const labelSize = document.createElement('input');
+                labelSize.className = 'input';
+                labelSize.type = 'number';
+                labelSize.min = '8';
+                labelSize.max = '24';
+                labelSize.step = '1';
+                labelSize.value = String(prefs.labelFontSize);
+
+                const theme = document.createElement('select');
+                theme.className = 'select';
+                theme.innerHTML = `
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                `;
+                theme.value = prefs.theme;
+
+                body.appendChild(row('Length', length));
+                body.appendChild(row('Weight', weight));
+                body.appendChild(row('Hidden Case Opacity', hiddenOpacity));
+                body.appendChild(row('Label Font Size', labelSize));
+                body.appendChild(row('Theme', theme));
+
+                const actions = document.createElement('div');
+                actions.className = 'row';
+                actions.style.justifyContent = 'flex-end';
+                actions.style.marginTop = '18px';
+                const saveBtn = document.createElement('button');
+                saveBtn.type = 'button';
+                saveBtn.className = 'btn btn-primary';
+                saveBtn.textContent = 'Save changes';
+                saveBtn.addEventListener('click', () =>
+                  savePrefsFromForm({
+                    length: length.value,
+                    weight: weight.value,
+                    theme: theme.value,
+                    labelSize: labelSize.value,
+                    hiddenOpacity: hiddenOpacity.value,
+                  })
+                );
+                actions.appendChild(saveBtn);
+                body.appendChild(actions);
+              } else if (activeTab === 'org-general') {
+                const orgName = session.currentAccount?.name || 'Personal Account';
+                const orgRole = session.currentAccount?.role || 'Owner';
+                const slug = (session.user?.email || 'personal').replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+
+                const orgCard = document.createElement('div');
+                orgCard.className = 'card';
+                orgCard.style.maxWidth = '820px';
+                orgCard.innerHTML = `
+                  <div style="display:grid;gap:18px">
+                    <div style="font-size:var(--text-xl);font-weight:var(--font-semibold)">Organization</div>
+                    <div style="border-top:1px solid var(--border-subtle)"></div>
+                    <div style="display:grid;gap:0">
+                      <div style="display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:center;padding:16px 0;border-bottom:1px solid var(--border-subtle)">
+                        <div style="font-weight:var(--font-semibold)">Logo</div>
+                        <div><span class="brand-mark" aria-hidden="true" style="width:64px;height:64px;border-radius:18px;display:inline-block"></span></div>
+                      </div>
+                      <div style="display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:center;padding:16px 0;border-bottom:1px solid var(--border-subtle)">
+                        <div style="font-weight:var(--font-semibold)">Name</div>
+                        <div>${orgName}</div>
+                      </div>
+                      <div style="display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:center;padding:16px 0;border-bottom:1px solid var(--border-subtle)">
+                        <div style="font-weight:var(--font-semibold)">Role</div>
+                        <div>${orgRole}</div>
+                      </div>
+                      <div style="display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:center;padding:16px 0;border-bottom:1px solid var(--border-subtle)">
+                        <div style="font-weight:var(--font-semibold)">Slug</div>
+                        <div class="muted" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">${slug}</div>
+                      </div>
+                    </div>
+                  </div>
+                `;
+                body.appendChild(orgCard);
+              } else {
+                const billingCard = document.createElement('div');
+                billingCard.className = 'card';
+                billingCard.style.maxWidth = '820px';
+                billingCard.innerHTML = `
+                  <div style="display:grid;gap:12px">
+                    <div style="font-size:var(--text-xl);font-weight:var(--font-semibold)">Billing</div>
+                    <div class="muted" style="font-size:var(--text-sm);line-height:var(--leading-relaxed)">
+                      Coming soon. Billing and invoices will appear here when subscription management is enabled.
+                    </div>
+                  </div>
+                `;
+                body.appendChild(billingCard);
+
+                const subCard = document.createElement('div');
+                subCard.className = 'card';
+                subCard.style.maxWidth = '820px';
+                subCard.style.marginTop = '16px';
+                subCard.innerHTML = `
+                  <div style="display:grid;gap:18px">
+                    <div style="font-size:var(--text-xl);font-weight:var(--font-semibold)">Subscription</div>
+                    <div style="border-top:1px solid var(--border-subtle)"></div>
+                    <div style="border:1px solid var(--border-subtle);border-radius:var(--radius-md);padding:var(--space-4);background:linear-gradient(180deg,var(--bg-elevated),var(--bg-secondary))">
+                      <div class="row space-between" style="align-items:flex-start;gap:12px">
+                        <div>
+                          <div style="font-size:var(--text-xl);font-weight:var(--font-bold)">Free Trial <span class="muted" style="font-weight:var(--font-medium)">| Current Plan</span></div>
+                          <div class="muted" style="margin-top:8px;font-size:var(--text-sm)">Subscribe to keep using Truck Packer after your free trial ends, cancel anytime.</div>
+                        </div>
+                        <div class="muted" style="font-weight:var(--font-semibold)">7 days left</div>
+                      </div>
+                      <div style="height:14px"></div>
+                      <div class="row space-between" style="gap:12px;background:rgba(59,130,246,0.08);border-radius:var(--radius-md);padding:var(--space-4)">
+                        <div>
+                          <div style="font-weight:var(--font-semibold)"><i class="fa-solid fa-bolt" style="color:var(--accent-primary)"></i> Truck Packer Pro</div>
+                          <div class="muted" style="font-size:var(--text-sm);margin-top:4px">Unlock Pro features (coming soon).</div>
+                        </div>
+                        <button class="btn btn-primary" type="button" data-subscribe-btn>Subscribe</button>
+                      </div>
+                    </div>
+                  </div>
+                `;
+                body.appendChild(subCard);
+                const subscribeBtn = subCard.querySelector('[data-subscribe-btn]');
+                if (subscribeBtn) {
+                  subscribeBtn.addEventListener('click', () => UIComponents.showToast('Coming soon', 'info'));
+                }
+              }
+            }
+
+            return { open, close, isOpen, setActive };
+          })();
+
+          const AccountSwitcher = (() => {
+            const mounts = new Map();
+
+            function getDisplay() {
+              const s = SessionManager.get();
+              const account = s.currentAccount || {};
+              const user = s.user || {};
+              return {
+                accountName: account.name || 'Personal Account',
+                role: account.role || 'Owner',
+                userName: user.name || '—',
+              };
+            }
+
+            function renderButton(buttonEl) {
+              if (!buttonEl) return;
+              const display = getDisplay();
+              const nameEl = buttonEl.querySelector('[data-account-name]');
+              if (nameEl) nameEl.textContent = display.userName;
+            }
+
+            function showComingSoon() {
+              UIComponents.showToast('Coming soon', 'info');
+            }
+
+            function logout() {
+              try {
+                UIComponents.closeAllDropdowns();
+                SettingsOverlay.close();
+              } catch {
+                // ignore
+              }
+
+              SessionManager.clear();
+              StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
+              UIComponents.showToast('Logged out', 'info');
+            }
+
+            function openMenu(anchorEl, { align } = {}) {
+              const display = getDisplay();
+              const items = [
+                {
+                  label: `${display.accountName} (${display.role})`,
+                  icon: 'fa-regular fa-user',
+                  rightIcon: 'fa-solid fa-check',
+                  disabled: true,
+                },
+                {
+                  label: 'Create Organization',
+                  icon: 'fa-solid fa-plus',
+                  onClick: () => showComingSoon(),
+                },
+                { type: 'divider' },
+                {
+                  label: 'Settings',
+                  icon: 'fa-solid fa-gear',
+                  onClick: () => SettingsOverlay.open('preferences'),
+                },
+                {
+                  label: 'Log out',
+                  icon: 'fa-solid fa-right-from-bracket',
+                  onClick: () => logout(),
+                },
+              ];
+
+              const rect = anchorEl.getBoundingClientRect();
+              UIComponents.openDropdown(anchorEl, items, { align: align || 'left', width: rect.width });
+            }
+
+            function bind(buttonEl, { align } = {}) {
+              if (!buttonEl) return () => {};
+              if (mounts.has(buttonEl)) return mounts.get(buttonEl);
+
+              renderButton(buttonEl);
+              const onClick = ev => {
+                ev.stopPropagation();
+                openMenu(buttonEl, { align });
+              };
+              buttonEl.addEventListener('click', onClick);
+              const unsub = SessionManager.subscribe(() => renderButton(buttonEl));
+
+              const unmount = () => {
+                try {
+                  unsub && unsub();
+                } catch {
+                  // ignore
+                }
+                buttonEl.removeEventListener('click', onClick);
+                mounts.delete(buttonEl);
+              };
+              mounts.set(buttonEl, unmount);
+              return unmount;
+            }
+
+            function init() {
+              const sidebarBtn = document.getElementById('btn-account-switcher');
+              bind(sidebarBtn, { align: 'left' });
+            }
+
+            return { init, bind };
           })();
 
           const CategoryService = (() => {
@@ -2806,6 +3687,9 @@
                 stats: { totalCases: 0, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
                 createdAt: now,
                 lastEdited: now,
+                thumbnail: null,
+                thumbnailUpdatedAt: null,
+                thumbnailSource: null,
               };
               StateStore.set({ packLibrary: [...getPacks(), pack] });
               return pack;
@@ -2815,7 +3699,14 @@
               const packs = getPacks();
               const idx = packs.findIndex(p => p.id === packId);
               if (idx === -1) return null;
-              const next = { ...packs[idx], ...Utils.deepClone(patch), lastEdited: Date.now() };
+              const now = Date.now();
+              const cloned = Utils.deepClone(patch);
+              const prev = packs[idx];
+              const next = { ...prev, ...cloned };
+
+              const lastEditedKeys = ['title', 'client', 'projectName', 'drawnBy', 'notes', 'truck', 'cases', 'groups'];
+              const hasLastEditedKey = Object.keys(cloned || {}).some(k => lastEditedKeys.includes(k));
+              next.lastEdited = hasLastEditedKey ? now : prev.lastEdited || now;
               next.stats = computeStats(next);
               const nextPacks = packs.map((p, i) => (i === idx ? next : p));
               StateStore.set({ packLibrary: nextPacks });
@@ -2840,6 +3731,9 @@
               copy.title = pack.title + ' (Copy)';
               copy.createdAt = now;
               copy.lastEdited = now;
+              copy.thumbnail = null;
+              copy.thumbnailUpdatedAt = null;
+              copy.thumbnailSource = null;
               // New instance ids
               copy.cases = (copy.cases || []).map(i => ({ ...i, id: Utils.uuid() }));
               StateStore.set({ packLibrary: [...getPacks(), copy] });
@@ -2870,7 +3764,7 @@
                 groupId: null,
               };
               const nextCases = [...(pack.cases || []), instance];
-              const nextPack = update(packId, { cases: nextCases });
+              update(packId, { cases: nextCases });
               return instance;
             }
 
@@ -3104,12 +3998,18 @@
           // ==== UI: Packs Screen ====
           const PacksUI = (() => {
             const searchEl = document.getElementById('packs-search');
+            const sortEl = document.getElementById('packs-sort');
             const gridEl = document.getElementById('packs-grid');
             const emptyEl = document.getElementById('packs-empty');
             const filterEmptyEl = document.getElementById('packs-filter-empty');
             const filterEmptyMsg = document.getElementById('packs-filter-empty-msg');
             const btnNew = document.getElementById('btn-new-pack');
             const btnImport = document.getElementById('btn-import-pack');
+            const chipEmpty = document.getElementById('packs-filter-chip-empty');
+            const chipPartial = document.getElementById('packs-filter-chip-partial');
+            const chipFull = document.getElementById('packs-filter-chip-full');
+
+            const filters = { empty: false, partial: false, full: false };
 
             function init() {
               searchEl.addEventListener('input', Utils.debounce(render, 200));
@@ -3120,21 +4020,62 @@
                   searchEl.blur();
                 }
               });
+              sortEl.addEventListener('change', () => render());
+              wireChip(chipEmpty, 'empty');
+              wireChip(chipPartial, 'partial');
+              wireChip(chipFull, 'full');
               btnNew.addEventListener('click', () => openNewPackModal());
               btnImport.addEventListener('click', () => openImportPackDialog());
+            }
+
+            function wireChip(el, key) {
+              if (!el) return;
+              const toggle = () => {
+                filters[key] = !filters[key];
+                el.classList.toggle('active', filters[key]);
+                render();
+              };
+              el.addEventListener('click', toggle);
+              el.addEventListener('keydown', ev => {
+                if (ev.key === 'Enter' || ev.key === ' ') toggle();
+              });
             }
 
             function render() {
               const q = String(searchEl.value || '')
                 .trim()
                 .toLowerCase();
-              const allPacks = PackLibrary.getPacks()
-                .slice()
-                .sort((a, b) => (b.lastEdited || 0) - (a.lastEdited || 0));
+              const allPacks = PackLibrary.getPacks().slice();
 
-              const packs = allPacks.filter(
-                p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q)
-              );
+              const sortKey = String(sortEl.value || 'edited-desc');
+              const compareTitle = (a, b) => (a.title || '').localeCompare(b.title || '');
+              const compareLastEdited = (a, b) => (a.lastEdited || 0) - (b.lastEdited || 0);
+              const compareCreated = (a, b) => (a.createdAt || 0) - (b.createdAt || 0);
+              const sorters = {
+                'edited-desc': (a, b) => compareLastEdited(b, a),
+                'edited-asc': (a, b) => compareLastEdited(a, b),
+                'title-asc': (a, b) => compareTitle(a, b),
+                'title-desc': (a, b) => compareTitle(b, a),
+                'created-desc': (a, b) => compareCreated(b, a),
+                'created-asc': (a, b) => compareCreated(a, b),
+              };
+              allPacks.sort(sorters[sortKey] || sorters['edited-desc']);
+
+              const packs = allPacks
+                .filter(p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q))
+                .filter(p => {
+                  if (!filters.empty && !filters.partial && !filters.full) return true;
+                  const total = (p.cases || []).length;
+                  const percent = p.stats && Number.isFinite(p.stats.volumePercent) ? p.stats.volumePercent : 0;
+                  const isEmpty = total === 0;
+                  const isFull = percent >= 99.999;
+                  const isPartial = !isEmpty && percent > 0 && !isFull;
+
+                  if (filters.empty && isEmpty) return true;
+                  if (filters.partial && isPartial) return true;
+                  if (filters.full && isFull) return true;
+                  return false;
+                });
 
               gridEl.innerHTML = '';
 
@@ -3215,8 +4156,19 @@
                         UIComponents.showToast('Pack duplicated', 'success');
                       },
                     },
+                    {
+                      label: 'Capture Preview',
+                      icon: 'fa-solid fa-image',
+                      onClick: () => ExportService.capturePackPreview(pack.id, { source: 'manual' }),
+                    },
+                    {
+                      label: 'Clear Preview',
+                      icon: 'fa-solid fa-ban',
+                      disabled: !pack.thumbnail,
+                      onClick: () => ExportService.clearPackPreview(pack.id),
+                    },
                     { label: 'Export JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
-                    { label: 'Delete', icon: 'fa-solid fa-trash', onClick: () => deletePack(pack.id) },
+                    { label: 'Delete', icon: 'fa-solid fa-trash', variant: 'danger', dividerBefore: true, onClick: () => deletePack(pack.id) },
                   ]);
                 });
                 kebabWrap.appendChild(kebabBtn);
@@ -3233,10 +4185,16 @@
             }
 
             function buildPreview(pack) {
-              // TODO: Replace with actual canvas snapshot rendering
-              // Should use SceneManager to render pack contents off-screen
-              // and capture via canvas.toDataURL() for realistic preview
               const preview = document.createElement('div');
+              if (pack && typeof pack.thumbnail === 'string' && pack.thumbnail) {
+                preview.className = 'pack-preview has-thumb';
+                const img = document.createElement('img');
+                img.loading = 'lazy';
+                img.alt = `${pack.title || 'Pack'} preview`;
+                img.src = pack.thumbnail;
+                preview.appendChild(img);
+                return preview;
+              }
               const items = (pack.cases || []).slice(0, 12);
 
               if (!items.length) {
@@ -3443,7 +4401,7 @@
               const now = Date.now();
               const incomingPack = payload.pack;
               if (!incomingPack || !incomingPack.truck || !Array.isArray(incomingPack.cases))
-                throw new Error('Invalid pack format');
+                {throw new Error('Invalid pack format');}
 
               const bundled = Array.isArray(payload.bundledCases) ? payload.bundledCases : [];
               const currentCases = CaseLibrary.getCases();
@@ -3497,11 +4455,11 @@
                 next.id = Utils.uuid();
                 next.caseId = caseIdMap.get(next.caseId) || next.caseId;
                 if (!next.transform)
-                  next.transform = {
-                    position: { x: -80, y: 10, z: 0 },
-                    rotation: { x: 0, y: 0, z: 0 },
-                    scale: { x: 1, y: 1, z: 1 },
-                  };
+                  {next.transform = {
+              position: { x: -80, y: 10, z: 0 },
+              rotation: { x: 0, y: 0, z: 0 },
+              scale: { x: 1, y: 1, z: 1 },
+            };}
                 if (!next.transform.position) next.transform.position = { x: -80, y: 10, z: 0 };
                 return next;
               });
@@ -3539,33 +4497,115 @@
           })();
 
           // Placeholder modules for remaining screens; implemented in later steps.
-          const CasesUI = (() => {
-            const searchEl = document.getElementById('cases-search');
-            const filtersEl = document.getElementById('cases-filters');
-            const tbodyEl = document.getElementById('cases-tbody');
-            const emptyEl = document.getElementById('cases-empty');
-            const btnNew = document.getElementById('btn-new-case');
-            const btnTemplate = document.getElementById('btn-cases-template');
-            const btnImport = document.getElementById('btn-cases-import');
-            const btnManageCats = document.getElementById('btn-manage-categories');
+	          const CasesUI = (() => {
+	            const searchEl = document.getElementById('cases-search');
+	            const filtersEl = document.getElementById('cases-filters');
+	            const tbodyEl = document.getElementById('cases-tbody');
+	            const emptyEl = document.getElementById('cases-empty');
+	            const selectAllEl = document.getElementById('cases-select-all');
+	            const btnNew = document.getElementById('btn-new-case');
+	            const btnTemplate = document.getElementById('btn-cases-template');
+	            const btnImport = document.getElementById('btn-cases-import');
+	            const btnManageCats = document.getElementById('btn-manage-categories');
+	            const actionsDefaultEl = document.getElementById('cases-actions-default');
+	            const actionsBulkEl = document.getElementById('cases-actions-bulk');
+	            const selectedCountEl = document.getElementById('cases-selected-count');
+	            const btnBulkDelete = document.getElementById('btn-cases-bulk-delete');
+	            const btnBulkTemplate = document.getElementById('btn-cases-bulk-template');
 
-            const activeCategories = new Set(); // empty = all
-            let sortBy = 'name'; // name, manufacturer, dimensions, volume, weight, category
-            let sortDir = 'asc'; // asc or desc
+	            const activeCategories = new Set(); // empty = all
+	            let sortBy = 'name'; // name, manufacturer, dimensions, volume, weight, category
+	            let sortDir = 'asc'; // asc or desc
+	            const selectedIds = new Set();
+	            let lastDatasetKey = '';
+	            let lastVisibleIds = [];
 
-            function init() {
-              searchEl.addEventListener('input', Utils.debounce(render, 300));
-              btnNew.addEventListener('click', () => openCaseModal(null));
-              btnTemplate.addEventListener('click', () => downloadTemplate());
-              btnImport.addEventListener('click', () => openImportModal());
-              btnManageCats.addEventListener('click', () => openCategoryManager());
-              initTableHeaders();
-            }
+	            function init() {
+	              searchEl.addEventListener('input', Utils.debounce(render, 300));
+	              btnNew.addEventListener('click', () => openCaseModal(null));
+	              btnTemplate.addEventListener('click', () => downloadTemplate());
+	              btnImport.addEventListener('click', () => openImportModal());
+	              btnManageCats.addEventListener('click', () => openCategoryManager());
+	              btnBulkTemplate.addEventListener('click', () => {
+	                UIComponents.showToast('Template feature coming soon', 'info');
+	              });
+	              btnBulkDelete.addEventListener('click', () => bulkDeleteSelected());
+	              selectAllEl.addEventListener('change', () => toggleAllVisible(selectAllEl.checked));
+	              initTableHeaders();
+	            }
 
-            function initTableHeaders() {
-              const headers = document.querySelectorAll('#screen-cases table thead th[data-sort]');
-              headers.forEach(th => {
-                th.style.cursor = 'pointer';
+	            function clearSelection() {
+	              selectedIds.clear();
+	            }
+
+	            function toggleAllVisible(checked) {
+	              const ids = lastVisibleIds || [];
+	              if (!ids.length) return;
+	              if (checked) ids.forEach(id => selectedIds.add(id));
+	              else ids.forEach(id => selectedIds.delete(id));
+	              render();
+	            }
+
+	            function updateSelectionUI(visibleIds) {
+	              lastVisibleIds = visibleIds || [];
+	              const visibleCount = lastVisibleIds.length;
+
+	              // Selected count is based on the current visible dataset after search/sort/category.
+	              const selectedCount = selectedIds.size;
+
+	              actionsDefaultEl.style.display = selectedCount ? 'none' : 'flex';
+	              actionsBulkEl.style.display = selectedCount ? 'flex' : 'none';
+	              selectedCountEl.textContent = `${selectedCount} of ${visibleCount} row(s) selected.`;
+	              btnBulkDelete.innerHTML = `<i class="fa-solid fa-trash"></i> Delete (${selectedCount})`;
+
+	              if (!visibleCount) {
+	                selectAllEl.checked = false;
+	                selectAllEl.indeterminate = false;
+	                selectAllEl.disabled = true;
+	                return;
+	              }
+
+	              selectAllEl.disabled = false;
+	              const allSelected = lastVisibleIds.every(id => selectedIds.has(id));
+	              const someSelected = lastVisibleIds.some(id => selectedIds.has(id));
+	              selectAllEl.checked = allSelected;
+	              selectAllEl.indeterminate = !allSelected && someSelected;
+	            }
+
+	            async function bulkDeleteSelected() {
+	              const ids = Array.from(selectedIds);
+	              const count = ids.length;
+	              if (!count) return;
+
+	              const ok = await UIComponents.confirm({
+	                title: 'Delete cases?',
+	                message: `This will permanently delete ${count} case(s). This cannot be undone.`,
+	                danger: true,
+	                okLabel: 'Delete',
+	              });
+	              if (!ok) return;
+
+	              const idSet = new Set(ids);
+	              const nextCaseLibrary = CaseLibrary.getCases().filter(c => !idSet.has(c.id));
+	              const nextPackLibrary = PackLibrary.getPacks().map(p => {
+	                const prevCases = Array.isArray(p.cases) ? p.cases : [];
+	                const nextCases = prevCases.filter(i => !idSet.has(i.caseId));
+	                if (nextCases.length === prevCases.length) return p;
+	                const next = { ...p, cases: nextCases, lastEdited: Date.now() };
+	                next.stats = PackLibrary.computeStats(next);
+	                return next;
+	              });
+
+	              StateStore.set({ caseLibrary: nextCaseLibrary, packLibrary: nextPackLibrary });
+	              clearSelection();
+	              render();
+	              UIComponents.showToast(`Deleted ${count} case(s).`, 'info');
+	            }
+
+	            function initTableHeaders() {
+	              const headers = document.querySelectorAll('#screen-cases table thead th[data-sort]');
+	              headers.forEach(th => {
+	                th.style.cursor = 'pointer';
                 th.style.userSelect = 'none';
                 th.addEventListener('click', () => {
                   const field = th.getAttribute('data-sort');
@@ -3588,13 +4628,12 @@
                 const field = th.getAttribute('data-sort');
                 const existingIcon = th.querySelector('.sort-icon');
                 if (existingIcon) existingIcon.remove();
-
+                
                 if (sortBy === field) {
                   const icon = document.createElement('i');
                   icon.className = `fa-solid fa-${sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} sort-icon`;
                   icon.style.marginLeft = '6px';
                   icon.style.fontSize = '12px';
-                  icon.style.opacity = '0.7';
                   th.appendChild(icon);
                 }
               });
@@ -3641,13 +4680,22 @@
               });
             }
 
-            function renderTable() {
-              const prefs = PreferencesManager.get();
-              const q = String(searchEl.value || '').trim();
-              let cases = CaseLibrary.search(q, Array.from(activeCategories));
+	            function renderTable() {
+	              const prefs = PreferencesManager.get();
+	              const q = String(searchEl.value || '').trim();
+	              const cats = Array.from(activeCategories).sort();
 
-              // Sort cases
-              cases.sort((a, b) => {
+	              // Simplest stable behavior: clear selection when the visible dataset changes (search/sort/filter).
+	              const datasetKey = `${q}::${sortBy}::${sortDir}::${cats.join(',')}`;
+	              if (datasetKey !== lastDatasetKey) {
+	                clearSelection();
+	                lastDatasetKey = datasetKey;
+	              }
+
+	              const cases = CaseLibrary.search(q, Array.from(activeCategories));
+
+	              // Sort cases
+	              cases.sort((a, b) => {
                 let valA, valB;
                 switch (sortBy) {
                   case 'name':
@@ -3674,30 +4722,54 @@
                     valA = (a.name || '').toLowerCase();
                     valB = (b.name || '').toLowerCase();
                 }
-
+                
                 if (typeof valA === 'number' && typeof valB === 'number') {
                   return sortDir === 'asc' ? valA - valB : valB - valA;
                 }
-
+                
                 if (valA < valB) return sortDir === 'asc' ? -1 : 1;
                 if (valA > valB) return sortDir === 'asc' ? 1 : -1;
                 return 0;
               });
 
-              tbodyEl.innerHTML = '';
+	              tbodyEl.innerHTML = '';
+	              const visibleIds = cases.map(c => c.id);
 
-              if (!cases.length) {
-                emptyEl.style.display = 'block';
-                return;
-              }
-              emptyEl.style.display = 'none';
+	              // Prune any stale selections (e.g. after deletes).
+	              const visibleIdSet = new Set(visibleIds);
+	              Array.from(selectedIds).forEach(id => {
+	                if (!visibleIdSet.has(id)) selectedIds.delete(id);
+	              });
 
-              cases.forEach(c => {
-                const tr = document.createElement('tr');
+	              updateSelectionUI(visibleIds);
 
-                const tdName = document.createElement('td');
-                tdName.textContent = c.name || '—';
-                tr.appendChild(tdName);
+	              if (!cases.length) {
+	                emptyEl.style.display = 'block';
+	                return;
+	              }
+	              emptyEl.style.display = 'none';
+
+	              cases.forEach(c => {
+	                const tr = document.createElement('tr');
+
+	                const tdSelect = document.createElement('td');
+	                tdSelect.style.width = '36px';
+	                tdSelect.style.textAlign = 'center';
+	                const cb = document.createElement('input');
+	                cb.type = 'checkbox';
+	                cb.checked = selectedIds.has(c.id);
+	                cb.addEventListener('click', ev => ev.stopPropagation());
+	                cb.addEventListener('change', ev => {
+	                  if (ev.target.checked) selectedIds.add(c.id);
+	                  else selectedIds.delete(c.id);
+	                  render();
+	                });
+	                tdSelect.appendChild(cb);
+	                tr.appendChild(tdSelect);
+
+	                const tdName = document.createElement('td');
+	                tdName.textContent = c.name || '—';
+	                tr.appendChild(tdName);
 
                 const tdMfg = document.createElement('td');
                 tdMfg.textContent = c.manufacturer || '—';
@@ -3713,8 +4785,9 @@
 
                 const tdW = document.createElement('td');
                 const weight = Number(c.weight) || 0;
-                const formattedWeight =
-                  prefs.units.weight === 'kg' ? `${(weight * 0.453592).toFixed(2)} kg` : `${weight.toFixed(2)} lb`;
+                const formattedWeight = prefs.units.weight === 'kg' 
+                  ? `${(weight * 0.453592).toFixed(2)} kg`
+                  : `${weight.toFixed(2)} lb`;
                 tdW.textContent = formattedWeight;
                 tr.appendChild(tdW);
 
@@ -3746,7 +4819,7 @@
                         UIComponents.showToast('Case duplicated', 'success');
                       },
                     },
-                    { label: 'Delete', icon: 'fa-solid fa-trash', onClick: () => deleteCase(c.id) },
+                    { label: 'Delete', icon: 'fa-solid fa-trash', variant: 'danger', dividerBefore: true, onClick: () => deleteCase(c.id) },
                   ]);
                 });
                 tdActions.appendChild(btn);
@@ -3796,7 +4869,7 @@
               const weightUnit = prefs.units.weight;
 
               const now = Date.now();
-              const isEdit = !!existing;
+              const isEdit = Boolean(existing);
               const initial = existing
                 ? Utils.deepClone(existing)
                 : {
@@ -3889,7 +4962,7 @@
               flipRow.style.gridColumn = '1 / -1';
               const flip = document.createElement('input');
               flip.type = 'checkbox';
-              flip.checked = !!initial.canFlip;
+              flip.checked = Boolean(initial.canFlip);
               const flipText = document.createElement('span');
               flipText.textContent = 'Can be flipped';
               flipRow.appendChild(flip);
@@ -3950,7 +5023,7 @@
                         category: updatedCat.key,
                         dimensions: { length, width, height },
                         weight: weightLb,
-                        canFlip: !!flip.checked,
+                        canFlip: Boolean(flip.checked),
                         notes: String(notes.value || '').trim(),
                         color: catColor.value || '#ff9f1c',
                       };
@@ -4335,7 +5408,7 @@
                     width: Number(r.width),
                     height: Number(r.height),
                   }),
-                  canFlip: !!r.canFlip,
+                  canFlip: Boolean(r.canFlip),
                   notes: String(r.notes || '').trim(),
                   color: normalizeHex(r.color) || normalizeHex(meta.color) || '#ff9f1c',
                   createdAt: now,
@@ -4405,11 +5478,11 @@
                 const rowErrors = [];
                 if (!record.name) rowErrors.push(`Row ${rowNum}: Missing required field 'name'`);
                 if (!Number.isFinite(record.length) || record.length <= 0)
-                  rowErrors.push(`Row ${rowNum}: Invalid number for 'length'`);
+                  {rowErrors.push(`Row ${rowNum}: Invalid number for 'length'`);}
                 if (!Number.isFinite(record.width) || record.width <= 0)
-                  rowErrors.push(`Row ${rowNum}: Invalid number for 'width'`);
+                  {rowErrors.push(`Row ${rowNum}: Invalid number for 'width'`);}
                 if (!Number.isFinite(record.height) || record.height <= 0)
-                  rowErrors.push(`Row ${rowNum}: Invalid number for 'height'`);
+                  {rowErrors.push(`Row ${rowNum}: Invalid number for 'height'`);}
 
                 const nameKey = record.name.toLowerCase();
                 if (record.name && existingNames.has(nameKey)) {
@@ -4487,15 +5560,14 @@
             let axisScene = null;
             let axisCamera = null;
             let axisHelper = null;
-            let rafId = null;
-            let perf = { lastTime: 0, lowMs: 0, perfMode: false, fps: 60 };
+            const perf = { lastTime: 0, lowMs: 0, perfMode: false, fps: 60 };
             let viewSize = { width: 1, height: 1 };
 
             // Dev-only performance overlay
             const DevOverlay = (() => {
               let overlayEl = null;
               let visible = false;
-              let stats = { fps: 0, frameTime: 0, memory: 0, drawCalls: 0, triangles: 0, geometries: 0, textures: 0 };
+              const stats = { fps: 0, frameTime: 0, memory: 0, drawCalls: 0, triangles: 0, geometries: 0, textures: 0 };
               let lastLogTime = 0;
 
               function create() {
@@ -4639,7 +5711,7 @@
               // Default truck size (53ft trailer)
               setTruck({ length: 636, width: 102, height: 98 });
 
-              rafId = requestAnimationFrame(tick);
+              requestAnimationFrame(tick);
             }
 
             function getContainerSize() {
@@ -4690,7 +5762,7 @@
             }
 
             function tick(time) {
-              rafId = requestAnimationFrame(tick);
+              requestAnimationFrame(tick);
               if (StateStore.get('currentScreen') !== 'editor') return;
               if (controls) controls.update();
               if (window.TWEEN) window.TWEEN.update(time);
@@ -5084,10 +6156,10 @@
               const group = instances.get(instanceId);
               if (!group || !group.userData.mesh) return;
               const mesh = group.userData.mesh;
-              if (isCollision) mesh.material.emissive.setHex(0xff0000);
+              if (isCollision) {mesh.material.emissive.setHex(0xff0000);}
               else if (selectedIds.has(instanceId))
-                mesh.material.emissive.setHex(Utils.cssHexToInt(Utils.getCssVar('--accent-primary')));
-              else mesh.material.emissive.setHex(0x000000);
+                {mesh.material.emissive.setHex(Utils.cssHexToInt(Utils.getCssVar('--accent-primary')));}
+              else {mesh.material.emissive.setHex(0x000000);}
             }
 
             function setHover(instanceId) {
@@ -5248,7 +6320,7 @@
                   pointWorld: hit.pointWorld.clone(),
                   clientX: ev.clientX,
                   clientY: ev.clientY,
-                  shift: !!ev.shiftKey,
+                  shift: Boolean(ev.shiftKey),
                 };
                 domEl.setPointerCapture(ev.pointerId);
                 domEl.style.cursor = 'grabbing';
@@ -5257,12 +6329,12 @@
                   instanceId: null,
                   clientX: ev.clientX,
                   clientY: ev.clientY,
-                  shift: !!ev.shiftKey,
+                  shift: Boolean(ev.shiftKey),
                 };
               }
             }
 
-            function onUp(ev) {
+            function onUp() {
               if (!isEditorActive()) return;
               if (!pressed && !draggingId) return;
 
@@ -5555,9 +6627,14 @@
                 { title: 'AutoPack' }
               );
               if (unpacked.length)
-                UIComponents.showToast(`${unpacked.length} case(s) could not fit`, 'warning', { title: 'AutoPack' });
+                {UIComponents.showToast(`${unpacked.length} case(s) could not fit`, 'warning', { title: 'AutoPack' });}
 
               isRunning = false;
+
+              // Auto-capture a pack preview thumbnail after AutoPack completes.
+              window.setTimeout(() => {
+                ExportService.capturePackPreview(packId, { source: 'auto' });
+              }, 60);
             }
 
             function buildStagingMap(packItems, truck) {
@@ -5616,7 +6693,7 @@
                   box.min.z < other.max.z - EPS &&
                   box.max.z > other.min.z + EPS
                 )
-                  return true;
+                  {return true;}
               }
               return false;
             }
@@ -5628,38 +6705,38 @@
               // Right (X+)
               const rightLen = space.length - dims.length;
               if (rightLen > 0)
-                out.push({
-                  x: space.x + dims.length,
-                  y: space.y,
-                  z: space.z,
-                  length: rightLen,
-                  width: space.width,
-                  height: space.height,
-                });
+                {out.push({
+            x: space.x + dims.length,
+            y: space.y,
+            z: space.z,
+            length: rightLen,
+            width: space.width,
+            height: space.height,
+          });}
 
               // Top (Y+)
               const topH = space.height - dims.height;
               if (topH > 0)
-                out.push({
-                  x: space.x,
-                  y: space.y + dims.height,
-                  z: space.z,
-                  length: dims.length,
-                  width: dims.width,
-                  height: topH,
-                });
+                {out.push({
+            x: space.x,
+            y: space.y + dims.height,
+            z: space.z,
+            length: dims.length,
+            width: dims.width,
+            height: topH,
+          });}
 
               // Back (Z+)
               const backW = space.width - dims.width;
               if (backW > 0)
-                out.push({
-                  x: space.x,
-                  y: space.y,
-                  z: space.z + dims.width,
-                  length: dims.length,
-                  width: backW,
-                  height: dims.height,
-                });
+                {out.push({
+            x: space.x,
+            y: space.y,
+            z: space.z + dims.width,
+            length: dims.length,
+            width: backW,
+            height: dims.height,
+          });}
 
               return out.filter(s => s.length * s.width * s.height > minVol);
             }
@@ -5697,6 +6774,61 @@
           })();
 
           const ExportService = (() => {
+            function estimateDataUrlBytes(dataUrl) {
+              const str = String(dataUrl || '');
+              const comma = str.indexOf(',');
+              if (comma === -1) return 0;
+              const b64 = str.slice(comma + 1);
+              const padding = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0;
+              return Math.max(0, Math.floor((b64.length * 3) / 4) - padding);
+            }
+
+            async function capturePackPreview(packId, { source = 'auto', quiet = false } = {}) {
+              try {
+                const pack = PackLibrary.getById(packId);
+                if (!pack) throw new Error('Pack not found');
+
+                // Ensure the latest transforms are rendered before capture.
+                await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+                const width = 320;
+                const height = 180;
+                const dataUrl = renderCameraToDataUrl(SceneManager.getCamera(), width, height, {
+                  mimeType: 'image/jpeg',
+                  quality: 0.72,
+                  hideGrid: true,
+                });
+
+                const bytes = estimateDataUrlBytes(dataUrl);
+                const maxBytes = 150 * 1024;
+                if (bytes > maxBytes) {
+                  throw new Error(`Preview too large (${Math.round(bytes / 1024)}KB)`);
+                }
+
+                PackLibrary.update(packId, {
+                  thumbnail: dataUrl,
+                  thumbnailUpdatedAt: Date.now(),
+                  thumbnailSource: source === 'manual' ? 'manual' : 'auto',
+                });
+
+                if (!quiet) UIComponents.showToast('Preview captured', 'success', { title: 'Preview' });
+                return true;
+              } catch (err) {
+                if (!quiet)
+                  {UIComponents.showToast(`Preview failed: ${err.message || err}`, 'warning', { title: 'Preview' });}
+                return false;
+              }
+            }
+
+            function clearPackPreview(packId) {
+              const pack = PackLibrary.getById(packId);
+              if (!pack) return false;
+              if (!pack.thumbnail) return false;
+              PackLibrary.update(packId, { thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null });
+              UIComponents.showToast('Preview cleared', 'info', { title: 'Preview' });
+              return true;
+            }
+
             function captureScreenshot() {
               try {
                 const pack = getCurrentPack();
@@ -5877,7 +7009,7 @@
                 });
 
                 // Summary
-                const includeStats = !!(prefs.export && prefs.export.pdfIncludeStats);
+                const includeStats = Boolean(prefs.export && prefs.export.pdfIncludeStats);
                 if (includeStats) {
                   const stats = PackLibrary.computeStats(pack);
                   if (y + 90 > pageHeight - margin) {
@@ -6076,7 +7208,7 @@
               return canvas.toDataURL(mimeType, quality);
             }
 
-            return { captureScreenshot, generatePDF };
+            return { captureScreenshot, generatePDF, capturePackPreview, clearPackPreview };
           })();
 
           const EditorUI = (() => {
@@ -6095,6 +7227,7 @@
             const btnAutopack = document.getElementById('btn-autopack');
             const btnPng = document.getElementById('btn-screenshot');
             const btnPdf = document.getElementById('btn-pdf');
+            const btnPreview = document.getElementById('btn-capture-preview');
 
             let initialized = false;
             const browserCats = new Set();
@@ -6113,6 +7246,13 @@
               });
               btnPng.addEventListener('click', () => ExportService.captureScreenshot());
               btnPdf.addEventListener('click', () => ExportService.generatePDF());
+              btnPreview.addEventListener('click', async () => {
+                const packId = StateStore.get('currentPackId');
+                if (!packId) return;
+                btnPreview.disabled = true;
+                await ExportService.capturePackPreview(packId, { source: 'manual' });
+                btnPreview.disabled = false;
+              });
 
               window.addEventListener(
                 'resize',
@@ -6140,6 +7280,7 @@
               btnAutopack.disabled = !pack || AutoPackEngine.running;
               btnPng.disabled = !pack;
               btnPdf.disabled = !pack;
+              btnPreview.disabled = !pack;
 
               if (!pack) {
                 SceneManager.setTruck({ length: 636, width: 102, height: 98 });
@@ -6546,14 +7687,14 @@
             function togglePanel(side) {
               const isMobile = window.matchMedia('(max-width: 899px)').matches;
               if (side === 'left') {
-                if (isMobile) setPanelVisible('left', !leftEl.classList.contains('open'));
+                if (isMobile) {setPanelVisible('left', !leftEl.classList.contains('open'));}
                 else {
                   const current = getComputedStyle(shellEl).getPropertyValue('--left-col').trim() || '290px';
                   setPanelVisible('left', current === '0px');
                 }
               }
               if (side === 'right') {
-                if (isMobile) setPanelVisible('right', !rightEl.classList.contains('open'));
+                if (isMobile) {setPanelVisible('right', !rightEl.classList.contains('open'));}
                 else {
                   const current = getComputedStyle(shellEl).getPropertyValue('--right-col').trim() || '340px';
                   setPanelVisible('right', current === '0px');
@@ -6722,10 +7863,10 @@
               elTheme.value = p.theme;
               elLabel.value = String(p.labelFontSize);
               elHidden.value = String(p.hiddenCaseOpacity);
-              elSnap.value = String(!!p.snapping.enabled);
+              elSnap.value = String(Boolean(p.snapping.enabled));
               elGrid.value = String(p.snapping.gridSize);
               elShot.value = p.export.screenshotResolution;
-              elPdfStats.value = String(!!p.export.pdfIncludeStats);
+              elPdfStats.value = String(Boolean(p.export.pdfIncludeStats));
             }
 
             function save() {
@@ -7004,7 +8145,6 @@
           function wireGlobalButtons() {
             const btnExport = document.getElementById('btn-export-app');
             const btnImport = document.getElementById('btn-import-app');
-            const btnTheme = document.getElementById('btn-theme');
             const btnHelp = document.getElementById('btn-help');
 
             btnExport.addEventListener('click', () => {
@@ -7042,15 +8182,6 @@
                 }
               });
               input.click();
-            });
-
-            btnTheme.addEventListener('click', () => {
-              const prefs = PreferencesManager.get();
-              const next = Utils.deepClone(prefs);
-              next.theme = prefs.theme === 'dark' ? 'light' : 'dark';
-              PreferencesManager.set(next);
-              PreferencesManager.applyTheme(next.theme);
-              UIComponents.showToast(`Theme: ${next.theme}`, 'info');
             });
 
             if (btnHelp) {
@@ -7164,8 +8295,11 @@
             UpdatesUI.init();
             RoadmapUI.init();
             SettingsUI.init();
+            AccountSwitcher.init();
             wireGlobalButtons();
             KeyboardManager.init();
+
+            let prevScreen = StateStore.get('currentScreen');
 
             StateStore.subscribe(changes => {
               if (
@@ -7187,6 +8321,19 @@
               }
 
               if (changes.currentScreen) {
+                const nextScreen = StateStore.get('currentScreen');
+                if (prevScreen === 'editor' && nextScreen !== 'editor') {
+                  const packId = StateStore.get('currentPackId');
+                  const pack = packId ? PackLibrary.getById(packId) : null;
+                  const lastEdited = pack && Number.isFinite(pack.lastEdited) ? pack.lastEdited : 0;
+                  const thumbAt = pack && Number.isFinite(pack.thumbnailUpdatedAt) ? pack.thumbnailUpdatedAt : 0;
+                  const totalCases = pack && Array.isArray(pack.cases) ? pack.cases.length : 0;
+                  if (pack && totalCases > 0 && lastEdited > thumbAt) {
+                    ExportService.capturePackPreview(packId, { source: 'auto', quiet: true });
+                  }
+                }
+                prevScreen = nextScreen;
+
                 AppShell.renderShell();
                 if (StateStore.get('currentScreen') === 'editor') EditorUI.render();
               }
@@ -7212,6 +8359,11 @@
 
           return {
             init,
+            ui: {
+              showToast: UIComponents.showToast,
+              showModal: UIComponents.showModal,
+              confirm: UIComponents.confirm,
+            },
             _debug: { Utils, StateStore, Storage, CaseLibrary, PackLibrary, Defaults },
           };
         })();

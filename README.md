@@ -191,3 +191,16 @@ Built with:
 **Version**: 1.0.0  
 **Author**: 360 Virtual Tour Solutions  
 **Last Updated**: January 2026
+
+## Recent Changes (Jan 2026)
+
+- Cases UI: made search icon styling consistent between Packs and Cases screens.
+- Case editor: moved to a more compact 2-column grid layout for faster editing.
+- Categories: added inline rename + color editing in the Case modal and a redesigned
+   "Manage Categories" modal (card layout, delete confirmation, New Category action).
+- Table: added column sorting (Name, Manufacturer, Volume, Weight, Category) with
+   visual sort indicators; improved weight formatting to 2 decimal places.
+- UX: reduced modal width for a tighter, more professional look; removed redundant
+   per-case color field (cases inherit category color by default).
+
+These changes improve inventory workflows and streamline case/category management.

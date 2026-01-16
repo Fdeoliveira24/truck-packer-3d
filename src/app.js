@@ -561,7 +561,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         });
       }
 
-      function init(initialState) {
+      function initStateStore(initialState) {
         state = Utils.deepClone(initialState);
         history = [historySlice(state)];
         historyPointer = 0;
@@ -587,7 +587,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         notify({ _replace: true }, state);
       }
 
-      function snapshot() {
+      function snapshotState() {
         return Utils.deepClone(state);
       }
 
@@ -638,7 +638,16 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         return keys.some(k => significant.includes(k));
       }
 
-      return { init, get, set, replace, snapshot, undo, redo, subscribe };
+      return {
+        init: initStateStore,
+        get,
+        set,
+        replace,
+        snapshot: snapshotState,
+        undo,
+        redo,
+        subscribe,
+      };
     })();
 
     const Storage = (() => {
@@ -1586,7 +1595,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         }
       }
 
-      function init() {
+      function initShell() {
         btnSidebar.addEventListener('click', toggleSidebar);
         navButtons.forEach(btn => {
           btn.addEventListener('click', () => {
@@ -1629,7 +1638,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         topbarSubtitle.textContent = meta.subtitle;
       }
 
-      return { init, navigate, renderShell };
+      return { init: initShell, navigate, renderShell };
     })();
 
     // ==== UI: Packs Screen ====
@@ -1642,7 +1651,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
       const btnNew = document.getElementById('btn-new-pack');
       const btnImport = document.getElementById('btn-import-pack');
 
-      function init() {
+      function initPacksUI() {
         searchEl.addEventListener('input', Utils.debounce(render, 200));
         searchEl.addEventListener('keydown', ev => {
           if (ev.key === 'Escape') {
@@ -2066,7 +2075,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         return { wrap, input };
       }
 
-      return { init, render };
+      return { init: initPacksUI, render };
     })();
 
     // Placeholder modules for remaining screens; implemented in later steps.
@@ -2084,7 +2093,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
       let sortBy = 'name'; // name, manufacturer, dimensions, volume, weight, category
       let sortDir = 'asc'; // asc or desc
 
-      function init() {
+      function initCasesUI() {
         searchEl.addEventListener('input', Utils.debounce(render, 300));
         btnNew.addEventListener('click', () => openCaseModal(null));
         btnTemplate.addEventListener('click', () => downloadTemplate());
@@ -2099,11 +2108,11 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
           th.style.cursor = 'pointer';
           th.style.userSelect = 'none';
           th.addEventListener('click', () => {
-            const field = th.getAttribute('data-sort');
-            if (sortBy === field) {
+            const sortField = th.getAttribute('data-sort');
+            if (sortBy === sortField) {
               sortDir = sortDir === 'asc' ? 'desc' : 'asc';
             } else {
-              sortBy = field;
+              sortBy = sortField;
               sortDir = 'asc';
             }
             render();
@@ -2116,11 +2125,11 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
       function updateHeaderIcons() {
         const headers = document.querySelectorAll('#screen-cases table thead th[data-sort]');
         headers.forEach(th => {
-          const field = th.getAttribute('data-sort');
+          const sortField = th.getAttribute('data-sort');
           const existingIcon = th.querySelector('.sort-icon');
           if (existingIcon) existingIcon.remove();
 
-          if (sortBy === field) {
+          if (sortBy === sortField) {
             const icon = document.createElement('i');
             icon.className = `fa-solid fa-${sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} sort-icon`;
             icon.style.marginLeft = '6px';
@@ -2996,7 +3005,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         return ['true', '1', 'yes', 'y', 'on'].includes(s);
       }
 
-      return { init, render };
+      return { init: initCasesUI, render };
     })();
 
     const SceneManager = (() => {
@@ -3127,7 +3136,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         return { x: toInches(vec.x), y: toInches(vec.y), z: toInches(vec.z) };
       }
 
-      function init(viewportEl) {
+      function initScene(viewportEl) {
         if (renderer) return;
         containerEl = viewportEl;
         containerEl.innerHTML = '';
@@ -3401,7 +3410,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
       }
 
       return {
-        init,
+        init: initScene,
         resize,
         refreshTheme,
         setTruck,
@@ -3722,7 +3731,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
       let lastRaycastTime = 0;
       const RAYCAST_THROTTLE = 50; // ms - throttle hover raycasts
 
-      function init(canvasEl) {
+      function initInteraction(canvasEl) {
         domEl = canvasEl;
         domEl.style.touchAction = 'none';
         domEl.addEventListener('pointermove', onMove);
@@ -3975,7 +3984,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         UIComponents.showToast(`Deleted ${ids.length} case(s)`, 'info');
       }
 
-      return { init, setSelection, selectAllInPack, deleteSelection };
+      return { init: initInteraction, setSelection, selectAllInPack, deleteSelection };
     })();
 
     const AutoPackEngine = (() => {
@@ -4636,7 +4645,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         });
       }
 
-      function init() {
+      function initEditorUI() {
         function showUpgradeRequired(featureLabel) {
           const plan = BillingService.getCurrentPlan();
           const daysLeft = BillingService.getDaysLeftInTrial();
@@ -5173,12 +5182,12 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         return ok ? out : null;
       }
 
-      return { init, render };
+      return { init: initEditorUI, render };
     })();
 
     const UpdatesUI = (() => {
       const listEl = document.getElementById('updates-list');
-      function init() {}
+      function initUpdatesUI() {}
       function render() {
         listEl.innerHTML = '';
         Data.updates.forEach(u => {
@@ -5217,12 +5226,12 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
           listEl.appendChild(card);
         });
       }
-      return { init, render };
+      return { init: initUpdatesUI, render };
     })();
 
     const RoadmapUI = (() => {
       const listEl = document.getElementById('roadmap-list');
-      function init() {}
+      function initRoadmapUI() {}
       function render() {
         listEl.innerHTML = '';
         Data.roadmap.forEach(group => {
@@ -5261,7 +5270,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
           listEl.appendChild(wrap);
         });
       }
-      return { init, render };
+      return { init: initRoadmapUI, render };
     })();
 
     const SettingsUI = (() => {
@@ -5277,7 +5286,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
       const btnSave = document.getElementById('btn-save-prefs');
       const btnReset = document.getElementById('btn-reset-demo');
 
-      function init() {
+      function initSettingsUI() {
         btnSave.addEventListener('click', () => save());
         btnReset.addEventListener('click', async () => {
           const ok = await UIComponents.confirm({
@@ -5323,13 +5332,13 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         UIComponents.showToast('Preferences saved', 'success');
       }
 
-      return { init, loadForm };
+      return { init: initSettingsUI, loadForm };
     })();
 
     const KeyboardManager = (() => {
       let clipboard = null;
 
-      function init() {
+      function initKeyboardManager() {
         document.addEventListener('keydown', handleKeyDown);
       }
 
@@ -5584,7 +5593,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         },
       };
 
-      return { init };
+      return { init: initKeyboardManager };
     })();
 
     function wireGlobalButtons() {

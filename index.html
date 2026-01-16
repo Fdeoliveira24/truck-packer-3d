@@ -2374,6 +2374,40 @@
           })();
 
           // Normalizer helper removed (unused). Keep utilities within modules if needed.
+
+          const StateStore = (() => {
+            const MAX_HISTORY = 50;
+            let state = null;
+            let history = [];
+            let historyPointer = -1;
+            const subscribers = [];
+
+            function historySlice(s) {
+              return Utils.deepClone({
+                caseLibrary: s.caseLibrary,
+                packLibrary: s.packLibrary,
+                preferences: s.preferences,
+              });
+            }
+
+            function initStateStore(initialState) {
+              state = Utils.deepClone(initialState);
+              history = [historySlice(state)];
+              historyPointer = 0;
+            }
+
+            function get(key) {
+              if (!state) return key ? undefined : null;
+              if (!key) return state;
+              return state[key];
+            }
+
+            function set(patch, options = {}) {
+              const next = { ...state, ...patch };
+              const significant = options.skipHistory ? false : isSignificantChange(patch);
+              state = next;
+              if (significant) pushHistory(historySlice(next));
+              if (!options.skipNotify) notify(patch, state);
             }
 
             function replace(nextState, options = {}) {
@@ -2382,7 +2416,7 @@
               notify({ _replace: true }, state);
             }
 
-            function snapshot() {
+            function snapshotState() {
               return Utils.deepClone(state);
             }
 
@@ -2433,7 +2467,16 @@
               return keys.some(k => significant.includes(k));
             }
 
-            return { init, get, set, replace, snapshot, undo, redo, subscribe };
+            return {
+              init: initStateStore,
+              get,
+              set,
+              replace,
+              snapshot: snapshotState,
+              undo,
+              redo,
+              subscribe,
+            };
           })();
 
           const Storage = (() => {
@@ -3462,12 +3505,12 @@
               return unmount;
             }
 
-            function init() {
+            function initAccountSwitcher() {
               const sidebarBtn = document.getElementById('btn-account-switcher');
               bind(sidebarBtn, { align: 'left' });
             }
 
-            return { init, bind };
+            return { init: initAccountSwitcher, bind };
           })();
 
           const CategoryService = (() => {
@@ -3947,7 +3990,7 @@
               }
             }
 
-            function init() {
+            function initShell() {
               btnSidebar.addEventListener('click', toggleSidebar);
               navButtons.forEach(btn => {
                 btn.addEventListener('click', () => {
@@ -3992,7 +4035,7 @@
               topbarSubtitle.textContent = meta.subtitle;
             }
 
-            return { init, navigate, renderShell };
+            return { init: initShell, navigate, renderShell };
           })();
 
           // ==== UI: Packs Screen ====
@@ -4011,7 +4054,7 @@
 
             const filters = { empty: false, partial: false, full: false };
 
-            function init() {
+            function initPacksUI() {
               searchEl.addEventListener('input', Utils.debounce(render, 200));
               searchEl.addEventListener('keydown', ev => {
                 if (ev.key === 'Escape') {
@@ -4299,7 +4342,7 @@
                       if (!t) {
                         UIComponents.showToast('Title is required', 'warning');
                         title.input.focus();
-                        return false;
+                        return;
                       }
                       const pack = PackLibrary.create({
                         title: t,
@@ -4338,7 +4381,7 @@
                     variant: 'primary',
                     onClick: () => {
                       const nextTitle = String(f.input.value || '').trim();
-                      if (!nextTitle) return false;
+                      if (!nextTitle) return;
                       PackLibrary.update(packId, { title: nextTitle });
                       UIComponents.showToast('Renamed', 'success');
                     },
@@ -4493,7 +4536,7 @@
               return { wrap, input };
             }
 
-            return { init, render };
+            return { init: initPacksUI, render };
           })();
 
           // Placeholder modules for remaining screens; implemented in later steps.
@@ -4520,7 +4563,7 @@
 	            let lastDatasetKey = '';
 	            let lastVisibleIds = [];
 
-	            function init() {
+              function initCasesUI() {
 	              searchEl.addEventListener('input', Utils.debounce(render, 300));
 	              btnNew.addEventListener('click', () => openCaseModal(null));
 	              btnTemplate.addEventListener('click', () => downloadTemplate());
@@ -4608,11 +4651,11 @@
 	                th.style.cursor = 'pointer';
                 th.style.userSelect = 'none';
                 th.addEventListener('click', () => {
-                  const field = th.getAttribute('data-sort');
-                  if (sortBy === field) {
+                  const sortField = th.getAttribute('data-sort');
+                  if (sortBy === sortField) {
                     sortDir = sortDir === 'asc' ? 'desc' : 'asc';
                   } else {
-                    sortBy = field;
+                    sortBy = sortField;
                     sortDir = 'asc';
                   }
                   render();
@@ -4625,11 +4668,11 @@
             function updateHeaderIcons() {
               const headers = document.querySelectorAll('#screen-cases table thead th[data-sort]');
               headers.forEach(th => {
-                const field = th.getAttribute('data-sort');
+                const sortField = th.getAttribute('data-sort');
                 const existingIcon = th.querySelector('.sort-icon');
                 if (existingIcon) existingIcon.remove();
                 
-                if (sortBy === field) {
+                if (sortBy === sortField) {
                   const icon = document.createElement('i');
                   icon.className = `fa-solid fa-${sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} sort-icon`;
                   icon.style.marginLeft = '6px';
@@ -5004,14 +5047,14 @@
                       if (!name) {
                         UIComponents.showToast('Name is required', 'warning');
                         fName.input.focus();
-                        return false;
+                        return;
                       }
                       const length = Utils.unitToInches(Number(fL.input.value) || 0, lengthUnit);
                       const width = Utils.unitToInches(Number(fW.input.value) || 0, lengthUnit);
                       const height = Utils.unitToInches(Number(fH.input.value) || 0, lengthUnit);
                       if (length <= 0 || width <= 0 || height <= 0) {
                         UIComponents.showToast('Dimensions must be > 0', 'warning');
-                        return false;
+                        return;
                       }
                       const weightLb = Utils.unitToPounds(Number(fWeight.input.value) || 0, weightUnit);
                       const categoryName = String(catName.value || '').trim();
@@ -5541,7 +5584,7 @@
               return ['true', '1', 'yes', 'y', 'on'].includes(s);
             }
 
-            return { init, render };
+              return { init: initCasesUI, render };
           })();
 
           const SceneManager = (() => {
@@ -5672,7 +5715,7 @@
               return { x: toInches(vec.x), y: toInches(vec.y), z: toInches(vec.z) };
             }
 
-            function init(viewportEl) {
+            function initScene(viewportEl) {
               if (renderer) return;
               containerEl = viewportEl;
               containerEl.innerHTML = '';
@@ -5946,7 +5989,7 @@
             }
 
             return {
-              init,
+              init: initScene,
               resize,
               refreshTheme,
               setTruck,
@@ -6269,7 +6312,7 @@
             let lastRaycastTime = 0;
             const RAYCAST_THROTTLE = 50; // ms - throttle hover raycasts
 
-            function init(canvasEl) {
+            function initInteraction(canvasEl) {
               domEl = canvasEl;
               domEl.style.touchAction = 'none';
               domEl.addEventListener('pointermove', onMove);
@@ -6522,7 +6565,7 @@
               UIComponents.showToast(`Deleted ${ids.length} case(s)`, 'info');
             }
 
-            return { init, setSelection, selectAllInPack, deleteSelection };
+            return { init: initInteraction, setSelection, selectAllInPack, deleteSelection };
           })();
 
           const AutoPackEngine = (() => {
@@ -7232,7 +7275,7 @@
             let initialized = false;
             const browserCats = new Set();
 
-            function init() {
+            function initEditorUI() {
               caseSearchEl.addEventListener('input', Utils.debounce(renderCaseBrowser, 250));
               btnLeft.addEventListener('click', () => togglePanel('left'));
               btnRight.addEventListener('click', () => togglePanel('right'));
@@ -7737,12 +7780,12 @@
               return ok ? out : null;
             }
 
-            return { init, render };
+            return { init: initEditorUI, render };
           })();
 
           const UpdatesUI = (() => {
             const listEl = document.getElementById('updates-list');
-            function init() {}
+            function initUpdatesUI() {}
             function render() {
               listEl.innerHTML = '';
               Data.updates.forEach(u => {
@@ -7781,12 +7824,12 @@
                 listEl.appendChild(card);
               });
             }
-            return { init, render };
+            return { init: initUpdatesUI, render };
           })();
 
           const RoadmapUI = (() => {
             const listEl = document.getElementById('roadmap-list');
-            function init() {}
+            function initRoadmapUI() {}
             function render() {
               listEl.innerHTML = '';
               Data.roadmap.forEach(group => {
@@ -7825,7 +7868,7 @@
                 listEl.appendChild(wrap);
               });
             }
-            return { init, render };
+            return { init: initRoadmapUI, render };
           })();
 
           const SettingsUI = (() => {
@@ -7841,7 +7884,7 @@
             const btnSave = document.getElementById('btn-save-prefs');
             const btnReset = document.getElementById('btn-reset-demo');
 
-            function init() {
+            function initSettingsUI() {
               btnSave.addEventListener('click', () => save());
               btnReset.addEventListener('click', async () => {
                 const ok = await UIComponents.confirm({
@@ -7886,13 +7929,13 @@
               UIComponents.showToast('Preferences saved', 'success');
             }
 
-            return { init, loadForm };
+            return { init: initSettingsUI, loadForm };
           })();
 
           const KeyboardManager = (() => {
             let clipboard = null;
 
-            function init() {
+            function initKeyboardManager() {
               document.addEventListener('keydown', handleKeyDown);
             }
 
@@ -7948,17 +7991,17 @@
             }
 
             function selectAll() {
-              if (!inEditor()) return false;
+              if (!inEditor()) return;
               InteractionManager.selectAllInPack();
             }
 
             function deleteSelected() {
-              if (!inEditor()) return false;
+              if (!inEditor()) return;
               InteractionManager.deleteSelection();
             }
 
             function duplicateSelected() {
-              if (!inEditor()) return false;
+              if (!inEditor()) return;
               const packId = StateStore.get('currentPackId');
               const pack = PackLibrary.getById(packId);
               const selected = StateStore.get('selectedInstanceIds') || [];
@@ -7989,7 +8032,7 @@
             }
 
             function copySelected() {
-              if (!inEditor()) return false;
+              if (!inEditor()) return;
               const packId = StateStore.get('currentPackId');
               const pack = PackLibrary.getById(packId);
               const selected = StateStore.get('selectedInstanceIds') || [];
@@ -8002,7 +8045,7 @@
             }
 
             function pasteClipboard() {
-              if (!inEditor()) return false;
+              if (!inEditor()) return;
               const packId = StateStore.get('currentPackId');
               const pack = PackLibrary.getById(packId);
               if (!pack || !clipboard || !clipboard.length) return;
@@ -8032,7 +8075,7 @@
             }
 
             function focusSelected() {
-              if (!inEditor()) return false;
+              if (!inEditor()) return;
               const selected = StateStore.get('selectedInstanceIds') || [];
               if (!selected.length) return;
               const obj = CaseScene.getObject(selected[0]);
@@ -8041,13 +8084,13 @@
             }
 
             function toggleGrid() {
-              if (!inEditor()) return false;
+              if (!inEditor()) return;
               const visible = SceneManager.toggleGrid();
               UIComponents.showToast(visible ? 'Grid shown' : 'Grid hidden', 'info', { title: 'View', duration: 1200 });
             }
 
             function toggleShadows() {
-              if (!inEditor()) return false;
+              if (!inEditor()) return;
               const enabled = SceneManager.toggleShadows();
               UIComponents.showToast(enabled ? 'Shadows enabled' : 'Shadows disabled', 'info', {
                 title: 'View',
@@ -8121,11 +8164,11 @@
               'meta+v': pasteClipboard,
               'ctrl+v': pasteClipboard,
               'meta+p': () => {
-                if (!inEditor()) return false;
+                if (!inEditor()) return;
                 AutoPackEngine.pack();
               },
               'ctrl+p': () => {
-                if (!inEditor()) return false;
+                if (!inEditor()) return;
                 AutoPackEngine.pack();
               },
               'meta+o': openPackDialog,
@@ -8134,12 +8177,12 @@
               s: toggleShadows,
               f: focusSelected,
               p: () => {
-                if (!inEditor()) return false;
+                if (!inEditor()) return;
                 SceneManager.toggleDevOverlay();
               },
             };
 
-            return { init };
+            return { init: initKeyboardManager };
           })();
 
           function wireGlobalButtons() {

@@ -20,7 +20,5 @@
     "attribute-allowed-values": "off",
     "no-deprecated-attr": "warn"
   },
-  "elements": [
-    "html5"
-  ]
+  "elements": ["html5"]
 }

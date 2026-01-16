@@ -4,19 +4,13 @@ import globals from 'globals';
 
 export default [
   {
-    ignores: [
-      'node_modules/**',
-      'cleanup/reports/**',
-      '.git/**',
-      'dist/**',
-      'build/**'
-    ]
+    ignores: ['node_modules/**', 'cleanup/reports/**', '.git/**', 'dist/**', 'build/**'],
   },
   js.configs.recommended,
   {
     files: ['**/*.html'],
     plugins: {
-      html
+      html,
     },
     languageOptions: {
       ecmaVersion: 2022,
@@ -24,8 +18,8 @@ export default [
       globals: {
         ...globals.browser,
         THREE: 'readonly',
-        TWEEN: 'readonly'
-      }
+        TWEEN: 'readonly',
+      },
     },
     rules: {
       // Possible Problems (Errors - these catch real bugs)
@@ -38,14 +32,14 @@ export default [
       'no-unmodified-loop-condition': 'warn',
       'no-unreachable-loop': 'warn',
       'no-use-before-define': ['warn', { functions: false, classes: true, variables: true }],
-      
+
       // Best Practices (Warnings - improve code quality)
       'array-callback-return': 'warn',
       'consistent-return': 'warn',
-      'curly': ['warn', 'multi-line', 'consistent'],
+      curly: ['warn', 'multi-line', 'consistent'],
       'default-case-last': 'warn',
       'dot-notation': 'warn',
-      'eqeqeq': ['warn', 'always', { null: 'ignore' }],
+      eqeqeq: ['warn', 'always', { null: 'ignore' }],
       'no-alert': 'warn',
       'no-caller': 'error',
       'no-console': 'off', // Allow console for debugging
@@ -79,27 +73,30 @@ export default [
       'no-with': 'error',
       'prefer-const': 'warn',
       'prefer-promise-reject-errors': 'warn',
-      'radix': 'warn',
-      'yoda': 'warn',
+      radix: 'warn',
+      yoda: 'warn',
 
       // Variables
       'no-undef': 'error',
-      'no-unused-vars': ['warn', { 
-        vars: 'all', 
-        args: 'after-used', 
-        ignoreRestSiblings: true,
-        argsIgnorePattern: '^_',
-        varsIgnorePattern: '^_'
-      }],
+      'no-unused-vars': [
+        'warn',
+        {
+          vars: 'all',
+          args: 'after-used',
+          ignoreRestSiblings: true,
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+        },
+      ],
       'no-shadow': 'warn',
 
       // Stylistic (off - handled by Prettier)
-      'semi': 'off',
-      'quotes': 'off',
-      'indent': 'off',
+      semi: 'off',
+      quotes: 'off',
+      indent: 'off',
       'comma-dangle': 'off',
       'object-curly-spacing': 'off',
-      'array-bracket-spacing': 'off'
-    }
-  }
+      'array-bracket-spacing': 'off',
+    },
+  },
 ];

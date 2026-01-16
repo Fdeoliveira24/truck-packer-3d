@@ -79,29 +79,34 @@ npm run quality:ci
 ## 🛠️ Tools Used
 
 ### ESLint (JavaScript)
+
 - **Config**: `eslint.config.js`
 - **Plugin**: `eslint-plugin-html` for inline `<script>` tags
 - **Rules**: Focused on catching bugs, not style (Prettier handles that)
 - Globals: `THREE`, `TWEEN` pre-configured
 
 ### Prettier (Formatting)
+
 - **Config**: `.prettierrc`
 - **Ignore**: `.prettierignore`
 - Formats HTML, CSS, JS, JSON, Markdown
 - Enforces consistent code style
 
 ### Stylelint (CSS)
+
 - **Config**: `.stylelintrc.cjs`
 - **Ignore**: `.stylelintignore`
 - Lints inline `<style>` tags via `stylelint-config-html`
 - Catches CSS errors and bad patterns
 
 ### HTML Validate (Markup)
+
 - **Config**: `.htmlvalidate.json`
 - Validates HTML5 structure
 - Catches duplicate IDs, broken tags, missing attributes
 
 ### EditorConfig
+
 - **Config**: `.editorconfig`
 - Ensures consistent editor settings across IDEs
 
@@ -112,6 +117,13 @@ Reports are saved to `cleanup/reports/` when running:
 ```bash
 npm run quality:ci
 ```
+
+## 🔒 Security & 🛠️ Performance Notes
+
+- Three.js + OrbitControls now load as ESM via `esm.sh`; app boot waits for Three to be ready.
+- JSON imports/localStorage loads are sanitized (drops `__proto__`/`constructor`/`prototype`).
+- UI text that comes from user/imported data uses `textContent` instead of `innerHTML`.
+- Dev overlay in the editor (press `P`) shows FPS, frame time, memory (if available), and Three.js renderer stats.
 
 View the report:
 
@@ -137,13 +149,16 @@ cat cleanup/reports/quality-report.txt
 ## 🎨 Editor Integration
 
 ### VS Code
+
 Install extensions:
+
 - **ESLint** (`dbaeumer.vscode-eslint`)
 - **Prettier** (`esbenp.prettier-vscode`)
 - **Stylelint** (`stylelint.vscode-stylelint`)
 - **EditorConfig** (`EditorConfig.EditorConfig`)
 
 Add to `.vscode/settings.json`:
+
 ```json
 {
   "editor.formatOnSave": true,
@@ -156,6 +171,7 @@ Add to `.vscode/settings.json`:
 ```
 
 ### WebStorm / IntelliJ IDEA
+
 - Settings → Languages & Frameworks → JavaScript → Code Quality Tools → ESLint
 - Settings → Languages & Frameworks → Stylesheets → Stylelint
 - Settings → Editor → Code Style → Enable EditorConfig support
@@ -163,19 +179,23 @@ Add to `.vscode/settings.json`:
 ## 🚨 Troubleshooting
 
 ### "Cannot find module" errors
+
 ```bash
 rm -rf node_modules package-lock.json
 npm install
 ```
 
 ### Prettier conflicts with ESLint
+
 - `eslint-config-prettier` is already included to disable conflicting rules
 
 ### Stylelint not finding CSS in HTML
+
 - Ensure `stylelint-config-html` is installed
 - Check `.stylelintrc.cjs` extends includes `'stylelint-config-html'`
 
 ### HTML validation false positives
+
 - Adjust rules in `.htmlvalidate.json`
 - Use `"off"` or `"warn"` for overly strict rules
 
@@ -199,10 +219,11 @@ Add to your CI pipeline (GitHub Actions, GitLab CI, etc.):
 ```
 
 For detailed reports:
+
 ```yaml
 - name: Quality report
   run: npm run quality:ci
-  
+
 - name: Upload report
   uses: actions/upload-artifact@v3
   with:

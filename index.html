@@ -807,7 +807,7 @@
       }
 
       .modal {
-        width: min(720px, 100%);
+        width: min(580px, 100%);
         background: var(--bg-secondary);
         border: 1px solid var(--border-subtle);
         border-radius: var(--radius-lg);
@@ -1260,17 +1260,28 @@
             </div>
             <div style="height: 14px"></div>
             <div class="row">
-              <div class="search-shell" style="flex: 1; min-width: 260px">
-                <div class="search-input">
-                  <i class="fa-solid fa-magnifying-glass search-icon"></i>
-                  <input
-                    class="input"
-                    id="packs-search"
-                    type="text"
-                    placeholder="Search packs..."
-                    aria-label="Search packs"
-                  />
-                </div>
+              <div style="flex: 1; min-width: 220px; position: relative">
+                <i
+                  class="fa-solid fa-magnifying-glass"
+                  style="
+                    position: absolute;
+                    left: 10px;
+                    top: 50%;
+                    transform: translateY(-50%);
+                    color: var(--text-muted);
+                  "
+                ></i>
+                <input
+                  class="input"
+                  id="packs-search"
+                  type="text"
+                  placeholder="Search packs..."
+                  style="padding-left: 30px"
+                  aria-label="Search packs"
+                />
+              </div>
+              <div class="search-shell" style="flex: 1; min-width: 260px; display: none">
+                <div class="search-input"></div>
                 <div class="search-empty" id="packs-filter-empty">
                   <div id="packs-filter-empty-msg" style="font-weight: var(--font-semibold); margin-bottom: 4px">
                     No matching packs
@@ -1314,10 +1325,30 @@
               </div>
             </div>
             <div style="height: 14px"></div>
-            <div class="row">
-              <div style="flex: 1; min-width: 220px">
-                <input class="input" id="cases-search" type="text" placeholder="Search cases..." />
+            <div class="row" style="gap: 10px; align-items: center">
+              <div style="flex: 1; min-width: 220px; position: relative">
+                <i
+                  class="fa-solid fa-magnifying-glass"
+                  style="
+                    position: absolute;
+                    left: 10px;
+                    top: 50%;
+                    transform: translateY(-50%);
+                    color: var(--text-muted);
+                  "
+                ></i>
+                <input
+                  class="input"
+                  id="cases-search"
+                  type="text"
+                  placeholder="Search cases..."
+                  style="padding-left: 30px"
+                />
               </div>
+              <button class="btn" id="btn-manage-categories" type="button">
+                <i class="fa-solid fa-tags"></i>
+                Categories
+              </button>
             </div>
             <div style="height: 10px"></div>
             <div class="row" id="cases-filters" style="gap: 8px"></div>
@@ -2240,6 +2271,7 @@
               snapping: { enabled: true, gridSize: 1 },
               camera: { defaultView: 'perspective' },
               export: { screenshotResolution: '1920x1080', pdfIncludeStats: true },
+              categories: [],
             };
 
             const categories = [
@@ -2398,6 +2430,23 @@
                 base.export.screenshotResolution
               );
               next.export.pdfIncludeStats = !!next.export.pdfIncludeStats;
+              const normalizeCatKey = key =>
+                String(key || '')
+                  .trim()
+                  .toLowerCase();
+              const prefCats = Array.isArray(next.categories) ? next.categories : base.categories;
+              next.categories = (prefCats || [])
+                .map(c => ({
+                  key: normalizeCatKey(c.key || c.name),
+                  name: safeString(c.name, c.key || ''),
+                  color: safeString(c.color, ''),
+                }))
+                .filter(c => c.key);
+              if (!next.categories.length) {
+                next.categories = (Defaults.categories || [])
+                  .filter(c => c.key !== 'all')
+                  .map(c => ({ key: c.key, name: c.name, color: c.color }));
+              }
               return next;
             }
 
@@ -2541,13 +2590,10 @@
           })();
 
           const CategoryService = (() => {
-            const known = new Map((Defaults.categories || []).map(c => [c.key, c]));
-
-            function normalize(key) {
-              return String(key || '')
+            const normalize = key =>
+              String(key || '')
                 .trim()
                 .toLowerCase();
-            }
 
             function hashHue(str) {
               let h = 0;
@@ -2556,24 +2602,43 @@
               return h;
             }
 
-            function colorFor(key) {
-              const meta = known.get(key);
-              if (meta && meta.color) return meta.color;
+            function colorFor(key, fallback) {
+              if (fallback) return fallback;
               const hue = hashHue(key);
               return `hsl(${hue}, 72%, 56%)`;
             }
 
-            function labelFor(key) {
-              const meta = known.get(key);
-              if (meta && meta.name) return meta.name;
-              const s = normalize(key);
-              if (!s) return 'Uncategorized';
-              return s.charAt(0).toUpperCase() + s.slice(1);
+            function all() {
+              const prefs = PreferencesManager.get();
+              const prefCats = Array.isArray(prefs && prefs.categories) ? prefs.categories : [];
+              const seeded = prefCats.length
+                ? prefCats
+                : (Defaults.categories || [])
+                    .filter(c => c.key !== 'all')
+                    .map(c => ({ key: c.key, name: c.name, color: c.color }));
+              const dedup = new Map();
+              seeded.forEach(c => {
+                const k = normalize(c.key || c.name);
+                if (!k) return;
+                dedup.set(k, {
+                  key: k,
+                  name: c.name || k.charAt(0).toUpperCase() + k.slice(1),
+                  color: c.color || colorFor(k),
+                });
+              });
+              return Array.from(dedup.values());
+            }
+
+            function save(list) {
+              const prefs = PreferencesManager.get() || {};
+              PreferencesManager.set({ ...prefs, categories: list });
             }
 
             function meta(key) {
               const k = normalize(key);
-              return { key: k, name: labelFor(k), color: colorFor(k) };
+              const found = all().find(c => c.key === k);
+              if (found) return found;
+              return { key: k, name: k ? k.charAt(0).toUpperCase() + k.slice(1) : 'Uncategorized', color: colorFor(k) };
             }
 
             function listWithCounts(cases) {
@@ -2582,22 +2647,49 @@
                 const k = normalize(c.category || 'default');
                 counts[k] = (counts[k] || 0) + 1;
               });
-              const keys = Object.keys(counts);
-              const ordered = [];
-              // Preserve known category order first (except "all")
-              (Defaults.categories || [])
+              const known = all();
+              const ordered = known
                 .map(c => c.key)
-                .filter(k => k !== 'all')
-                .forEach(k => {
-                  if (counts[k]) ordered.push(k);
-                });
-              keys.forEach(k => {
-                if (!ordered.includes(k)) ordered.push(k);
-              });
-              return ordered.map(k => ({ ...meta(k), count: counts[k] || 0 }));
+                .filter(k => k)
+                .concat(Object.keys(counts).filter(k => !known.find(c => c.key === k)));
+              return ordered
+                .filter((k, idx, arr) => arr.indexOf(k) === idx)
+                .map(k => ({ ...meta(k), count: counts[k] || 0 }));
             }
 
-            return { meta, listWithCounts };
+            function upsert({ key, name, color }) {
+              const k = normalize(key || name);
+              if (!k) return meta('default');
+              const list = all();
+              const next = { key: k, name: name || meta(k).name, color: color || meta(k).color };
+              const idx = list.findIndex(c => c.key === k);
+              if (idx > -1) list[idx] = next;
+              else list.push(next);
+              save(list);
+              return next;
+            }
+
+            function remove(key) {
+              const k = normalize(key);
+              if (!k || k === 'default') return; // never remove default
+              const list = all().filter(c => c.key !== k);
+              save(list);
+              CaseLibrary.reassignCategory(k, 'default');
+            }
+
+            function rename(oldKey, name, color) {
+              const from = normalize(oldKey);
+              const to = normalize(name || oldKey);
+              if (!from) return meta('default');
+              const list = all().filter(c => c.key !== from);
+              const next = { key: to, name: name || meta(to).name, color: color || meta(to).color };
+              list.push(next);
+              save(list);
+              if (from !== to) CaseLibrary.reassignCategory(from, to);
+              return next;
+            }
+
+            return { meta, listWithCounts, upsert, remove, rename, all };
           })();
 
           const CaseLibrary = (() => {
@@ -2627,6 +2719,14 @@
               const nextCases = idx > -1 ? cases.map((c, i) => (i === idx ? next : c)) : [...cases, next];
 
               StateStore.set({ caseLibrary: nextCases });
+            }
+
+            function reassignCategory(oldKey, newKey) {
+              const from = oldKey ? oldKey.trim().toLowerCase() : '';
+              const to = newKey ? newKey.trim().toLowerCase() : 'default';
+              if (!from || from === to) return;
+              const next = getCases().map(c => (c.category === from ? { ...c, category: to } : c));
+              StateStore.set({ caseLibrary: next });
             }
 
             function remove(caseId) {
@@ -2670,7 +2770,16 @@
               return counts;
             }
 
-            return { getCases, getById, upsert, remove, duplicate, search, countsByCategory };
+            return {
+              getCases,
+              getById,
+              upsert,
+              remove,
+              duplicate,
+              search,
+              countsByCategory,
+              reassignCategory,
+            };
           })();
 
           const PackLibrary = (() => {
@@ -3161,6 +3270,8 @@
               const content = document.createElement('div');
               content.style.display = 'grid';
               content.style.gap = '14px';
+              content.style.gridTemplateColumns = 'repeat(auto-fit, minmax(260px, 1fr))';
+              content.style.alignItems = 'flex-start';
 
               const title = field('Title (required)', 'text', 'Summer Festival Tour', true);
               const client = field('Client (optional)', 'text', 'Live Nation', false);
@@ -3436,6 +3547,7 @@
             const btnNew = document.getElementById('btn-new-case');
             const btnTemplate = document.getElementById('btn-cases-template');
             const btnImport = document.getElementById('btn-cases-import');
+            const btnManageCats = document.getElementById('btn-manage-categories');
 
             const activeCategories = new Set(); // empty = all
 
@@ -3444,6 +3556,7 @@
               btnNew.addEventListener('click', () => openCaseModal(null));
               btnTemplate.addEventListener('click', () => downloadTemplate());
               btnImport.addEventListener('click', () => openImportModal());
+              btnManageCats.addEventListener('click', () => openCategoryManager());
             }
 
             function render() {
@@ -3622,6 +3735,7 @@
 
               const content = document.createElement('div');
               content.style.display = 'grid';
+              content.style.gridTemplateColumns = '1fr 1fr';
               content.style.gap = '14px';
 
               const fName = field('Name', 'text', 'Line Array Case', true);
@@ -3632,18 +3746,35 @@
 
               const catWrap = document.createElement('div');
               catWrap.className = 'field';
+              catWrap.style.gridColumn = '1 / -1';
               const catLabel = document.createElement('div');
               catLabel.className = 'label';
               catLabel.textContent = 'Category';
+              const catRow = document.createElement('div');
+              catRow.style.display = 'flex';
+              catRow.style.gap = '8px';
+              catRow.style.alignItems = 'center';
+              const catColor = document.createElement('input');
+              catColor.type = 'color';
+              catColor.className = 'input';
+              catColor.style.width = '48px';
+              catColor.style.padding = '0';
+              catColor.value = CategoryService.meta(initial.category).color || '#9ca3af';
+              const catName = document.createElement('input');
+              catName.type = 'text';
+              catName.className = 'input';
+              catName.style.flex = '1';
+              catName.value = CategoryService.meta(initial.category).name;
+              catName.placeholder = 'Rename or create new';
               const catSelect = document.createElement('select');
               catSelect.className = 'select';
-              const cats = CategoryService.listWithCounts(CaseLibrary.getCases());
-              // Ensure current category appears
-              const extra =
-                initial.category && !cats.find(c => c.key === initial.category)
-                  ? [{ ...CategoryService.meta(initial.category), count: 0 }]
+              catSelect.style.display = 'none';
+              const catOptions = CategoryService.all();
+              const extraCat =
+                initial.category && !catOptions.find(c => c.key === initial.category)
+                  ? [{ ...CategoryService.meta(initial.category) }]
                   : [];
-              [{ key: 'default', name: 'Default' }, ...cats, ...extra]
+              [...catOptions, ...extraCat]
                 .filter((v, idx, arr) => arr.findIndex(x => x.key === v.key) === idx)
                 .forEach(c => {
                   const opt = document.createElement('option');
@@ -3652,24 +3783,18 @@
                   catSelect.appendChild(opt);
                 });
               catSelect.value = initial.category || 'default';
+              catRow.appendChild(catColor);
+              catRow.appendChild(catName);
+              catRow.appendChild(catSelect);
               catWrap.appendChild(catLabel);
-              catWrap.appendChild(catSelect);
+              catWrap.appendChild(catRow);
 
-              const dimsRow = document.createElement('div');
-              dimsRow.className = 'row';
-              dimsRow.style.gap = '12px';
               const fL = field(`Length (${lengthUnit})`, 'number', '', true);
               const fW = field(`Width (${lengthUnit})`, 'number', '', true);
               const fH = field(`Height (${lengthUnit})`, 'number', '', true);
-              fL.wrap.style.flex = '1';
-              fW.wrap.style.flex = '1';
-              fH.wrap.style.flex = '1';
               fL.input.value = String(Utils.inchesToUnit(initial.dimensions.length, lengthUnit));
               fW.input.value = String(Utils.inchesToUnit(initial.dimensions.width, lengthUnit));
               fH.input.value = String(Utils.inchesToUnit(initial.dimensions.height, lengthUnit));
-              dimsRow.appendChild(fL.wrap);
-              dimsRow.appendChild(fW.wrap);
-              dimsRow.appendChild(fH.wrap);
 
               const fWeight = field(`Weight (${weightUnit})`, 'number', '', false);
               fWeight.input.value = String(Utils.poundsToUnit(Number(initial.weight) || 0, weightUnit));
@@ -3679,6 +3804,7 @@
               flipRow.style.alignItems = 'center';
               flipRow.style.gap = '10px';
               flipRow.style.fontSize = 'var(--text-sm)';
+              flipRow.style.gridColumn = '1 / -1';
               const flip = document.createElement('input');
               flip.type = 'checkbox';
               flip.checked = !!initial.canFlip;
@@ -3689,6 +3815,7 @@
 
               const colorWrap = document.createElement('div');
               colorWrap.className = 'field';
+              colorWrap.style.gridColumn = '1 / -1';
               const colorLabel = document.createElement('div');
               colorLabel.className = 'label';
               colorLabel.textContent = 'Color';
@@ -3701,25 +3828,23 @@
 
               const notesWrap = document.createElement('div');
               notesWrap.className = 'field';
+              notesWrap.style.gridColumn = '1 / -1';
               const notesLabel = document.createElement('div');
               notesLabel.className = 'label';
               notesLabel.textContent = 'Notes';
               const notes = document.createElement('textarea');
+              notes.className = 'input';
+              notes.style.minHeight = '60px';
               notes.value = initial.notes || '';
               notesWrap.appendChild(notesLabel);
               notesWrap.appendChild(notes);
 
-              catSelect.addEventListener('change', () => {
-                if (existing && normalizeHex(existing.color) !== normalizeHex(color.value)) return;
-                const meta = CategoryService.meta(catSelect.value);
-                const hex = normalizeHex(meta.color);
-                if (hex) color.value = hex;
-              });
-
               content.appendChild(fName.wrap);
               content.appendChild(fMfg.wrap);
               content.appendChild(catWrap);
-              content.appendChild(dimsRow);
+              content.appendChild(fL.wrap);
+              content.appendChild(fW.wrap);
+              content.appendChild(fH.wrap);
               content.appendChild(fWeight.wrap);
               content.appendChild(flipRow);
               content.appendChild(colorWrap);
@@ -3748,11 +3873,13 @@
                         return false;
                       }
                       const weightLb = Utils.unitToPounds(Number(fWeight.input.value) || 0, weightUnit);
+                      const categoryName = String(catName.value || '').trim();
+                      const updatedCat = CategoryService.rename(catSelect.value, categoryName, catColor.value);
                       const caseData = {
                         ...initial,
                         name,
                         manufacturer: String(fMfg.input.value || '').trim(),
-                        category: String(catSelect.value || 'default'),
+                        category: updatedCat.key,
                         dimensions: { length, width, height },
                         weight: weightLb,
                         canFlip: !!flip.checked,
@@ -3761,9 +3888,133 @@
                       };
                       CaseLibrary.upsert(caseData);
                       UIComponents.showToast('Case saved', 'success');
+                      render();
                     },
                   },
                 ],
+              });
+            }
+
+            function openCategoryManager() {
+              const content = document.createElement('div');
+              content.style.display = 'grid';
+              content.style.gap = '14px';
+              content.style.minWidth = '480px';
+
+              const listEl = document.createElement('div');
+              listEl.style.display = 'grid';
+              listEl.style.gap = '8px';
+
+              const renderList = () => {
+                listEl.innerHTML = '';
+                CategoryService.all().forEach(cat => {
+                  const row = document.createElement('div');
+                  row.className = 'card';
+                  row.style.display = 'grid';
+                  row.style.gridTemplateColumns = '40px 1fr auto';
+                  row.style.gap = '12px';
+                  row.style.alignItems = 'center';
+                  row.style.padding = 'var(--space-3)';
+                  row.style.background = 'var(--bg-elevated)';
+                  row.style.boxShadow = 'none';
+
+                  const colorWrap = document.createElement('div');
+                  colorWrap.style.position = 'relative';
+                  const color = document.createElement('input');
+                  color.type = 'color';
+                  color.value = cat.color || '#9ca3af';
+                  color.className = 'input';
+                  color.style.width = '40px';
+                  color.style.height = '40px';
+                  color.style.padding = '0';
+                  color.style.cursor = 'pointer';
+                  color.style.border = '2px solid var(--border-subtle)';
+                  color.style.borderRadius = 'var(--radius-sm)';
+                  colorWrap.appendChild(color);
+
+                  const name = document.createElement('input');
+                  name.type = 'text';
+                  name.className = 'input';
+                  name.value = cat.name;
+                  name.placeholder = 'Category name';
+
+                  const actions = document.createElement('div');
+                  actions.style.display = 'flex';
+                  actions.style.gap = '6px';
+
+                  const saveBtn = document.createElement('button');
+                  saveBtn.type = 'button';
+                  saveBtn.className = 'btn btn-ghost';
+                  saveBtn.style.padding = '6px 10px';
+                  saveBtn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i>';
+                  saveBtn.title = 'Save changes';
+                  saveBtn.addEventListener('click', () => {
+                    const renamed = CategoryService.rename(cat.key, name.value, color.value);
+                    renderList();
+                    render();
+                    UIComponents.showToast(`Saved "${renamed.name}"`, 'success');
+                  });
+
+                  if (cat.key !== 'default') {
+                    const delBtn = document.createElement('button');
+                    delBtn.type = 'button';
+                    delBtn.className = 'btn btn-ghost';
+                    delBtn.style.padding = '6px 10px';
+                    delBtn.style.color = 'var(--error)';
+                    delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
+                    delBtn.title = 'Delete category';
+                    delBtn.addEventListener('click', async () => {
+                      const ok = await UIComponents.confirm({
+                        title: `Delete "${cat.name}"?`,
+                        message: 'All cases in this category will be moved to Default.',
+                        okLabel: 'Delete',
+                        danger: true,
+                      });
+                      if (!ok) return;
+                      CategoryService.remove(cat.key);
+                      renderList();
+                      render();
+                      UIComponents.showToast(`Deleted "${cat.name}"`, 'info');
+                    });
+                    actions.appendChild(delBtn);
+                  }
+
+                  actions.appendChild(saveBtn);
+                  row.appendChild(colorWrap);
+                  row.appendChild(name);
+                  row.appendChild(actions);
+                  listEl.appendChild(row);
+                });
+              };
+
+              const addBtn = document.createElement('button');
+              addBtn.type = 'button';
+              addBtn.className = 'btn btn-primary';
+              addBtn.style.width = '100%';
+              addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> New Category';
+              addBtn.addEventListener('click', () => {
+                const baseName = 'New Category';
+                let idx = 1;
+                let name = baseName;
+                const existing = new Set(CategoryService.all().map(c => c.name.toLowerCase()));
+                while (existing.has(name.toLowerCase())) {
+                  idx += 1;
+                  name = `${baseName} ${idx}`;
+                }
+                CategoryService.upsert({ name });
+                renderList();
+                render();
+              });
+
+              renderList();
+
+              content.appendChild(listEl);
+              content.appendChild(addBtn);
+
+              UIComponents.showModal({
+                title: 'Manage Categories',
+                content,
+                actions: [{ label: 'Close', variant: 'primary' }],
               });
             }
 

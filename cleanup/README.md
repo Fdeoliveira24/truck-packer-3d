@@ -123,7 +123,8 @@ npm run quality:ci
 - Three.js + OrbitControls now load as ESM via `esm.sh`; app boot waits for Three to be ready.
 - JSON imports/localStorage loads are sanitized (drops `__proto__`/`constructor`/`prototype`).
 - UI text that comes from user/imported data uses `textContent` instead of `innerHTML`.
-- Dev overlay in the editor (press `P`) shows FPS, frame time, memory (if available), and Three.js renderer stats.
+- Dev overlay in the editor (press `P`) shows FPS, frame time, memory (if available), and Three.js
+  renderer stats.
 
 View the report:
 

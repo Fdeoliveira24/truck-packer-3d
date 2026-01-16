@@ -164,7 +164,8 @@ Settings:
 - ✅ Validates HTML structure
 - ✅ Finds CSS errors (invalid properties, etc.)
 - ✅ Provides CI-ready quality checks
-- ✅ Documents security hardening (sanitized JSON imports, ESM Three.js bootstrap) and a dev performance overlay (press `P` in the editor for FPS/memory/renderer stats)
+- ✅ Documents security hardening (sanitized JSON imports, ESM Three.js bootstrap) and a dev
+  performance overlay (press `P` in the editor for FPS/memory/renderer stats)
 
 ### Safe Adoption Strategy
 

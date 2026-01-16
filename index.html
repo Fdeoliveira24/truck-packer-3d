@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <!--
   TRUCK PACKER 3D
   Version: 1.0.0 (MVP)
@@ -1357,12 +1357,12 @@
               <table>
                 <thead>
                   <tr>
-                    <th scope="col">Name</th>
-                    <th scope="col">Manufacturer</th>
+                    <th scope="col" data-sort="name">Name</th>
+                    <th scope="col" data-sort="manufacturer">Manufacturer</th>
                     <th scope="col">Dimensions</th>
-                    <th scope="col">Volume</th>
-                    <th scope="col">Weight</th>
-                    <th scope="col">Category</th>
+                    <th scope="col" data-sort="volume">Volume</th>
+                    <th scope="col" data-sort="weight">Weight</th>
+                    <th scope="col" data-sort="category">Category</th>
                     <th scope="col">Flip</th>
                     <th class="col-actions" scope="col"></th>
                   </tr>
@@ -3550,6 +3550,8 @@
             const btnManageCats = document.getElementById('btn-manage-categories');
 
             const activeCategories = new Set(); // empty = all
+            let sortBy = 'name'; // name, manufacturer, dimensions, volume, weight, category
+            let sortDir = 'asc'; // asc or desc
 
             function init() {
               searchEl.addEventListener('input', Utils.debounce(render, 300));
@@ -3557,6 +3559,45 @@
               btnTemplate.addEventListener('click', () => downloadTemplate());
               btnImport.addEventListener('click', () => openImportModal());
               btnManageCats.addEventListener('click', () => openCategoryManager());
+              initTableHeaders();
+            }
+
+            function initTableHeaders() {
+              const headers = document.querySelectorAll('#screen-cases table thead th[data-sort]');
+              headers.forEach(th => {
+                th.style.cursor = 'pointer';
+                th.style.userSelect = 'none';
+                th.addEventListener('click', () => {
+                  const field = th.getAttribute('data-sort');
+                  if (sortBy === field) {
+                    sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+                  } else {
+                    sortBy = field;
+                    sortDir = 'asc';
+                  }
+                  render();
+                  updateHeaderIcons();
+                });
+              });
+              updateHeaderIcons();
+            }
+
+            function updateHeaderIcons() {
+              const headers = document.querySelectorAll('#screen-cases table thead th[data-sort]');
+              headers.forEach(th => {
+                const field = th.getAttribute('data-sort');
+                const existingIcon = th.querySelector('.sort-icon');
+                if (existingIcon) existingIcon.remove();
+
+                if (sortBy === field) {
+                  const icon = document.createElement('i');
+                  icon.className = `fa-solid fa-${sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} sort-icon`;
+                  icon.style.marginLeft = '6px';
+                  icon.style.fontSize = '12px';
+                  icon.style.opacity = '0.7';
+                  th.appendChild(icon);
+                }
+              });
             }
 
             function render() {
@@ -3603,9 +3644,45 @@
             function renderTable() {
               const prefs = PreferencesManager.get();
               const q = String(searchEl.value || '').trim();
-              const cases = CaseLibrary.search(q, Array.from(activeCategories)).sort((a, b) =>
-                (a.name || '').localeCompare(b.name || '')
-              );
+              let cases = CaseLibrary.search(q, Array.from(activeCategories));
+
+              // Sort cases
+              cases.sort((a, b) => {
+                let valA, valB;
+                switch (sortBy) {
+                  case 'name':
+                    valA = (a.name || '').toLowerCase();
+                    valB = (b.name || '').toLowerCase();
+                    break;
+                  case 'manufacturer':
+                    valA = (a.manufacturer || '').toLowerCase();
+                    valB = (b.manufacturer || '').toLowerCase();
+                    break;
+                  case 'volume':
+                    valA = a.volume || 0;
+                    valB = b.volume || 0;
+                    break;
+                  case 'weight':
+                    valA = a.weight || 0;
+                    valB = b.weight || 0;
+                    break;
+                  case 'category':
+                    valA = CategoryService.meta(a.category).name.toLowerCase();
+                    valB = CategoryService.meta(b.category).name.toLowerCase();
+                    break;
+                  default:
+                    valA = (a.name || '').toLowerCase();
+                    valB = (b.name || '').toLowerCase();
+                }
+
+                if (typeof valA === 'number' && typeof valB === 'number') {
+                  return sortDir === 'asc' ? valA - valB : valB - valA;
+                }
+
+                if (valA < valB) return sortDir === 'asc' ? -1 : 1;
+                if (valA > valB) return sortDir === 'asc' ? 1 : -1;
+                return 0;
+              });
 
               tbodyEl.innerHTML = '';
 
@@ -3635,7 +3712,10 @@
                 tr.appendChild(tdVol);
 
                 const tdW = document.createElement('td');
-                tdW.textContent = Utils.formatWeight(Number(c.weight) || 0, prefs.units.weight);
+                const weight = Number(c.weight) || 0;
+                const formattedWeight =
+                  prefs.units.weight === 'kg' ? `${(weight * 0.453592).toFixed(2)} kg` : `${weight.toFixed(2)} lb`;
+                tdW.textContent = formattedWeight;
                 tr.appendChild(tdW);
 
                 const tdCat = document.createElement('td');
@@ -3797,7 +3877,9 @@
               fH.input.value = String(Utils.inchesToUnit(initial.dimensions.height, lengthUnit));
 
               const fWeight = field(`Weight (${weightUnit})`, 'number', '', false);
-              fWeight.input.value = String(Utils.poundsToUnit(Number(initial.weight) || 0, weightUnit));
+              fWeight.input.step = '0.1';
+              const weightValue = Utils.poundsToUnit(Number(initial.weight) || 0, weightUnit);
+              fWeight.input.value = String(Math.round(weightValue * 100) / 100);
 
               const flipRow = document.createElement('label');
               flipRow.style.display = 'flex';
@@ -3812,19 +3894,6 @@
               flipText.textContent = 'Can be flipped';
               flipRow.appendChild(flip);
               flipRow.appendChild(flipText);
-
-              const colorWrap = document.createElement('div');
-              colorWrap.className = 'field';
-              colorWrap.style.gridColumn = '1 / -1';
-              const colorLabel = document.createElement('div');
-              colorLabel.className = 'label';
-              colorLabel.textContent = 'Color';
-              const color = document.createElement('input');
-              color.className = 'input';
-              color.type = 'color';
-              color.value = normalizeHex(initial.color) || '#ff9f1c';
-              colorWrap.appendChild(colorLabel);
-              colorWrap.appendChild(color);
 
               const notesWrap = document.createElement('div');
               notesWrap.className = 'field';
@@ -3847,7 +3916,6 @@
               content.appendChild(fH.wrap);
               content.appendChild(fWeight.wrap);
               content.appendChild(flipRow);
-              content.appendChild(colorWrap);
               content.appendChild(notesWrap);
 
               UIComponents.showModal({
@@ -3884,7 +3952,7 @@
                         weight: weightLb,
                         canFlip: !!flip.checked,
                         notes: String(notes.value || '').trim(),
-                        color: String(color.value || '#ff9f1c'),
+                        color: catColor.value || '#ff9f1c',
                       };
                       CaseLibrary.upsert(caseData);
                       UIComponents.showToast('Case saved', 'success');

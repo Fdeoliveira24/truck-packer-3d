@@ -134,8 +134,8 @@ cat cleanup/reports/quality-report.txt
 
 ## Recent Updates (Jan 2026)
 
-- Cases UI: refined search UI, compact case editor layout, inline category rename/color, and
-  a redesigned Manage Categories modal with confirmation for deletes.
+- Cases UI: refined search UI, compact case editor layout, inline category rename/color, and a
+  redesigned Manage Categories modal with confirmation for deletes.
 - UX: Added sorting on Cases table and rounded weight display to two decimals for readability.
 
 ## 🔧 Configuration Files (Repo Root)

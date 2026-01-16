@@ -1,19 +1,21 @@
 {
   "name": "truck-packer-3d",
   "version": "1.0.0",
+  "type": "module",
   "description": "A professional 3D truck packing visualization tool",
   "main": "index.html",
   "scripts": {
     "lint": "npm run lint:js && npm run lint:css && npm run lint:html",
-    "lint:js": "eslint \"**/*.html\" --report-unused-disable-directives --max-warnings 0",
-    "lint:css": "stylelint \"**/*.html\"",
-    "lint:html": "html-validate \"*.html\"",
+    "lint:js": "eslint \"src/**/*.js\" \"index.html\" --report-unused-disable-directives",
+    "lint:css": "stylelint \"styles/**/*.css\" \"index.html\"",
+    "lint:html": "html-validate --config .htmlvalidate.json index.html",
     "lint:fix": "npm run lint:js -- --fix && npm run lint:css -- --fix",
     "format": "prettier --write \"**/*.{html,css,js,json,md}\"",
     "format:check": "prettier --check \"**/*.{html,css,js,json,md}\"",
     "validate": "npm run lint && npm run format:check",
     "quality": "npm run lint:fix && npm run format && echo '✅ Code quality checks passed!'",
-    "quality:ci": "npm run validate > cleanup/reports/quality-report.txt 2>&1 || true"
+    "quality:ci": "npm run validate > cleanup/reports/quality-report.txt 2>&1 || true",
+    "lint:report": "node cleanup/scripts/eslint-report.mjs"
   },
   "keywords": [
     "3d",

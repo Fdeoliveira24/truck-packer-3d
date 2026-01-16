@@ -1,6 +1,7 @@
 {
   "extends": ["html-validate:recommended"],
   "rules": {
+    "doctype-style": ["error", { "style": "lowercase" }],
     "no-inline-style": "off",
     "require-sri": "off",
     "no-trailing-whitespace": "warn",
@@ -8,7 +9,7 @@
     "class-pattern": "off",
     "id-pattern": "off",
     "element-required-attributes": "warn",
-    "void-style": "warn",
+    "void-style": ["warn", { "style": "selfclosing" }],
     "no-dup-id": "error",
     "no-dup-class": "warn",
     "attr-quotes": "warn",

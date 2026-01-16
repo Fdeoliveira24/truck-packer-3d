@@ -258,7 +258,7 @@ package.json 8ms
 
 ## Recent Updates (Jan 2026)
 
-- UX: Cases management improvements — consistent search icon, compact 2-column Case editor,
-  inline category rename/color editing, and redesigned Manage Categories modal.
-- Data/UI: Cases table now supports sorting (Name, Manufacturer, Volume, Weight, Category)
-  and weight is displayed with 2 decimal places for clarity.
+- UX: Cases management improvements — consistent search icon, compact 2-column Case editor, inline
+  category rename/color editing, and redesigned Manage Categories modal.
+- Data/UI: Cases table now supports sorting (Name, Manufacturer, Volume, Weight, Category) and
+  weight is displayed with 2 decimal places for clarity.

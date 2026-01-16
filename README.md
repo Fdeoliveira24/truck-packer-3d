@@ -21,12 +21,17 @@ logistics. Built with Three.js for real-time 3D rendering and interactive packin
 
 ## Quick Start
 
-1. **Open the app**: Simply open `index.html` in a modern web browser (Chrome, Firefox, Safari,
-   Edge)
+1. **Serve the app (recommended)**: Use VSCode Live Server (or any static HTTP server) and open
+   `index.html`. ES module imports do not reliably work from `file://`.
 2. **Create a pack**: Click "New Pack" on the Packs screen
 3. **Add cases**: Go to Cases library and create equipment cases with dimensions
 4. **Start packing**: Open your pack in the Editor and drag cases from the sidebar to the 3D truck
 5. **Export**: Save your work as JSON or export to PDF/Excel for sharing
+
+## Phase 1 (SaaS-Ready Foundation)
+
+Phase 1 introduces a session/org foundation, plan/role-aware feature flags, and hash routing. See
+`MIGRATION_PHASE1.md` for details.
 
 ## Keyboard Shortcuts
 
@@ -196,11 +201,11 @@ Built with:
 
 - Cases UI: made search icon styling consistent between Packs and Cases screens.
 - Case editor: moved to a more compact 2-column grid layout for faster editing.
-- Categories: added inline rename + color editing in the Case modal and a redesigned
-   "Manage Categories" modal (card layout, delete confirmation, New Category action).
-- Table: added column sorting (Name, Manufacturer, Volume, Weight, Category) with
-   visual sort indicators; improved weight formatting to 2 decimal places.
-- UX: reduced modal width for a tighter, more professional look; removed redundant
-   per-case color field (cases inherit category color by default).
+- Categories: added inline rename + color editing in the Case modal and a redesigned "Manage
+  Categories" modal (card layout, delete confirmation, New Category action).
+- Table: added column sorting (Name, Manufacturer, Volume, Weight, Category) with visual sort
+  indicators; improved weight formatting to 2 decimal places.
+- UX: reduced modal width for a tighter, more professional look; removed redundant per-case color
+  field (cases inherit category color by default).
 
 These changes improve inventory workflows and streamline case/category management.

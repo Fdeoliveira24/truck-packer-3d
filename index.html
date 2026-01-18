@@ -822,6 +822,65 @@
         z-index: 1;
       }
 
+      .th-sort {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        text-transform: inherit;
+        letter-spacing: inherit;
+        padding: 0;
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .th-sort:focus-visible {
+        outline: 2px solid var(--accent-primary);
+        outline-offset: 2px;
+      }
+
+      .th-chevrons {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        font-size: 0.55rem;
+        gap: 0;
+      }
+
+      .th-chevron {
+        color: var(--text-muted);
+        opacity: 0.4;
+        transition: opacity 0.12s ease, color 0.12s ease, transform 0.12s ease;
+        font-size: 8px;
+        line-height: 0.7;
+        display: block;
+      }
+
+      .th-sort:hover .th-chevron,
+      .th-sort:focus-visible .th-chevron {
+        opacity: 0.55;
+      }
+
+      /* Active direction emphasized but still soft; inactive remains visible (muted) */
+      .th-sort.is-asc .th-chevron-up,
+      .th-sort.is-desc .th-chevron-down {
+        color: var(--text-muted);
+        opacity: 0.75;
+        transform: none;
+      }
+
+      .th-sort.is-asc .th-chevron-down,
+      .th-sort.is-desc .th-chevron-up {
+        color: var(--text-muted);
+        opacity: 0.3;
+        transform: none;
+      }
+
       tr:hover td {
         background: rgba(255, 159, 28, 0.05);
       }
@@ -1369,7 +1428,7 @@
                   Create projects, duplicate, export, and open in the editor.
                 </div>
               </div>
-              <div class="row">
+              <div class="row" id="packs-actions-default">
                 <button class="btn" id="btn-import-pack" type="button">
                   <i class="fa-solid fa-file-import"></i>
                   Import Pack
@@ -1377,6 +1436,13 @@
                 <button class="btn btn-primary" id="btn-new-pack" type="button">
                   <i class="fa-solid fa-plus"></i>
                   New Pack
+                </button>
+              </div>
+              <div class="row" id="packs-actions-bulk" style="display: none; gap: 8px; align-items: center">
+                <div class="muted" id="packs-selected-count" style="font-size: var(--text-sm)"></div>
+                <button class="btn btn-danger" id="btn-packs-bulk-delete" type="button">
+                  <i class="fa-solid fa-trash"></i>
+                  Delete (0)
                 </button>
               </div>
             </div>
@@ -1402,15 +1468,13 @@
                   aria-label="Search packs"
                 />
               </div>
-              <div style="min-width: 220px">
-                <select class="select" id="packs-sort" aria-label="Sort packs">
-                  <option value="edited-desc" selected>Recently edited</option>
-                  <option value="edited-asc">Oldest edited</option>
-                  <option value="title-asc">Title A–Z</option>
-                  <option value="title-desc">Title Z–A</option>
-                  <option value="created-desc">Created newest</option>
-                  <option value="created-asc">Created oldest</option>
-                </select>
+              <div class="row" style="gap: 4px">
+                <button class="btn" id="packs-view-grid" type="button" title="Grid view" aria-label="Grid view">
+                  <i class="fa-solid fa-grip"></i>
+                </button>
+                <button class="btn" id="packs-view-list" type="button" title="List view" aria-label="List view">
+                  <i class="fa-solid fa-list"></i>
+                </button>
               </div>
               <div class="search-shell" style="flex: 1; min-width: 260px; display: none">
                 <div class="search-input"></div>
@@ -1451,6 +1515,73 @@
             </div>
             <div style="height: 14px"></div>
             <div class="pack-grid" id="packs-grid"></div>
+            <div class="table-wrap" id="packs-list" style="display: none">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col" style="width: 36px; text-align: center">
+                      <input id="packs-select-all" type="checkbox" aria-label="Select all visible packs" />
+                    </th>
+                    <th scope="col" data-sort="title">
+                      <span class="th-sort" role="button" tabindex="0">
+                        <span class="th-label">Title</span>
+                        <span class="th-chevrons" aria-hidden="true">
+                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+                        </span>
+                      </span>
+                    </th>
+                    <th scope="col" data-sort="cases">
+                      <span class="th-sort" role="button" tabindex="0">
+                        <span class="th-label">Cases</span>
+                        <span class="th-chevrons" aria-hidden="true">
+                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+                        </span>
+                      </span>
+                    </th>
+                    <th scope="col" data-sort="length">
+                      <span class="th-sort" role="button" tabindex="0">
+                        <span class="th-label">Length</span>
+                        <span class="th-chevrons" aria-hidden="true">
+                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+                        </span>
+                      </span>
+                    </th>
+                    <th scope="col" data-sort="width">
+                      <span class="th-sort" role="button" tabindex="0">
+                        <span class="th-label">Width</span>
+                        <span class="th-chevrons" aria-hidden="true">
+                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+                        </span>
+                      </span>
+                    </th>
+                    <th scope="col" data-sort="height">
+                      <span class="th-sort" role="button" tabindex="0">
+                        <span class="th-label">Height</span>
+                        <span class="th-chevrons" aria-hidden="true">
+                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+                        </span>
+                      </span>
+                    </th>
+                    <th scope="col" data-sort="edited">
+                      <span class="th-sort" role="button" tabindex="0">
+                        <span class="th-label">Edited</span>
+                        <span class="th-chevrons" aria-hidden="true">
+                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+                        </span>
+                      </span>
+                    </th>
+                    <th class="col-actions" scope="col"></th>
+                  </tr>
+                </thead>
+                <tbody id="packs-tbody"></tbody>
+              </table>
+            </div>
             <div class="card" id="packs-empty" style="display: none; margin-top: 16px">
               <div style="font-weight: var(--font-semibold); margin-bottom: 6px">No packs yet</div>
               <div class="muted" style="font-size: var(--text-sm)">Create your first pack to start planning.</div>
@@ -1485,10 +1616,6 @@
 	                <button class="btn btn-danger" id="btn-cases-bulk-delete" type="button">
 	                  <i class="fa-solid fa-trash"></i>
 	                  Delete (0)
-	                </button>
-	                <button class="btn" id="btn-cases-bulk-template" type="button">
-	                  <i class="fa-solid fa-layer-group"></i>
-	                  Template
 	                </button>
 	              </div>
 	            </div>
@@ -1528,12 +1655,78 @@
 	                    <th scope="col" style="width: 36px; text-align: center">
 	                      <input id="cases-select-all" type="checkbox" aria-label="Select all visible cases" />
 	                    </th>
-	                    <th scope="col" data-sort="name">Name</th>
-	                    <th scope="col" data-sort="manufacturer">Manufacturer</th>
-	                    <th scope="col">Dimensions</th>
-	                    <th scope="col" data-sort="volume">Volume</th>
-                    <th scope="col" data-sort="weight">Weight</th>
-                    <th scope="col" data-sort="category">Category</th>
+	                    <th scope="col" data-sort="name">
+	                      <span class="th-sort" role="button" tabindex="0">
+	                        <span class="th-label">Name</span>
+	                        <span class="th-chevrons" aria-hidden="true">
+	                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+	                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+	                        </span>
+	                      </span>
+	                    </th>
+	                    <th scope="col" data-sort="manufacturer">
+	                      <span class="th-sort" role="button" tabindex="0">
+	                        <span class="th-label">Manufacturer</span>
+	                        <span class="th-chevrons" aria-hidden="true">
+	                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+	                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+	                        </span>
+	                      </span>
+	                    </th>
+	                    <th scope="col" data-sort="length">
+	                      <span class="th-sort" role="button" tabindex="0">
+	                        <span class="th-label">Length</span>
+	                        <span class="th-chevrons" aria-hidden="true">
+	                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+	                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+	                        </span>
+	                      </span>
+	                    </th>
+	                    <th scope="col" data-sort="width">
+	                      <span class="th-sort" role="button" tabindex="0">
+	                        <span class="th-label">Width</span>
+	                        <span class="th-chevrons" aria-hidden="true">
+	                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+	                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+	                        </span>
+	                      </span>
+	                    </th>
+	                    <th scope="col" data-sort="height">
+	                      <span class="th-sort" role="button" tabindex="0">
+	                        <span class="th-label">Height</span>
+	                        <span class="th-chevrons" aria-hidden="true">
+	                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+	                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+	                        </span>
+	                      </span>
+	                    </th>
+	                    <th scope="col" data-sort="volume">
+	                      <span class="th-sort" role="button" tabindex="0">
+	                        <span class="th-label">Volume</span>
+	                        <span class="th-chevrons" aria-hidden="true">
+	                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+	                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+	                        </span>
+	                      </span>
+	                    </th>
+                    <th scope="col" data-sort="weight">
+                      <span class="th-sort" role="button" tabindex="0">
+                        <span class="th-label">Weight</span>
+                        <span class="th-chevrons" aria-hidden="true">
+                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+                        </span>
+                      </span>
+                    </th>
+                    <th scope="col" data-sort="category">
+                      <span class="th-sort" role="button" tabindex="0">
+                        <span class="th-label">Category</span>
+                        <span class="th-chevrons" aria-hidden="true">
+                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+                        </span>
+                      </span>
+                    </th>
                     <th scope="col">Flip</th>
                     <th class="col-actions" scope="col"></th>
                   </tr>
@@ -1565,8 +1758,25 @@
                 </div>
                 <div class="panel-body">
                   <div class="field">
-                    <div class="label">Search</div>
-                    <input class="input" id="editor-case-search" type="text" placeholder="Search cases..." />
+                    <div style="position: relative">
+                      <i
+                        class="fa-solid fa-magnifying-glass"
+                        style="
+                          position: absolute;
+                          left: 10px;
+                          top: 50%;
+                          transform: translateY(-50%);
+                          color: var(--text-muted);
+                        "
+                      ></i>
+                      <input
+                        class="input"
+                        id="editor-case-search"
+                        type="text"
+                        placeholder="Search cases..."
+                        style="padding-left: 30px"
+                      />
+                    </div>
                   </div>
                   <div style="height: 12px"></div>
                   <div class="row" id="editor-case-chips" style="gap: 8px"></div>
@@ -1592,7 +1802,7 @@
                   </button>
                   <button class="toolbar-btn" id="btn-screenshot" type="button" title="Screenshot PNG">
                     <i class="fa-solid fa-camera"></i>
-                    PNG
+                    Screenshot
                   </button>
                   <button class="toolbar-btn" id="btn-pdf" type="button" title="PDF plan sheet">
                     <i class="fa-solid fa-file-pdf"></i>
@@ -2642,13 +2852,14 @@
             return { get, clear, subscribe };
           })();
 
-          const Defaults = (() => {
-            const defaultPreferences = {
-              units: { length: 'in', weight: 'lb' },
-              theme: 'light',
-              labelFontSize: 12,
-              hiddenCaseOpacity: 0.3,
-              snapping: { enabled: true, gridSize: 1 },
+	          const Defaults = (() => {
+	            const defaultPreferences = {
+	              packsViewMode: 'grid',
+	              units: { length: 'in', weight: 'lb' },
+	              theme: 'light',
+	              labelFontSize: 12,
+	              hiddenCaseOpacity: 0.3,
+	              snapping: { enabled: true, gridSize: 1 },
               camera: { defaultView: 'perspective' },
               export: { screenshotResolution: '1920x1080', pdfIncludeStats: true },
               categories: [],
@@ -2790,14 +3001,15 @@
               return t || fallback;
             }
 
-            function normalizePreferences(prefs) {
-              const base = Utils.deepClone(Defaults.defaultPreferences);
-              const next = { ...base, ...(prefs && typeof prefs === 'object' ? prefs : {}) };
-              next.units = next.units && typeof next.units === 'object' ? next.units : base.units;
-              next.units.length = Utils.lengthUnits.includes(next.units.length) ? next.units.length : base.units.length;
-              next.units.weight = Utils.weightUnits.includes(next.units.weight) ? next.units.weight : base.units.weight;
-              next.theme = next.theme === 'dark' ? 'dark' : 'light';
-              next.labelFontSize = Utils.clamp(finiteNumber(next.labelFontSize, base.labelFontSize), 8, 24);
+	            function normalizePreferences(prefs) {
+	              const base = Utils.deepClone(Defaults.defaultPreferences);
+	              const next = { ...base, ...(prefs && typeof prefs === 'object' ? prefs : {}) };
+	              next.packsViewMode = next.packsViewMode === 'list' ? 'list' : 'grid';
+	              next.units = next.units && typeof next.units === 'object' ? next.units : base.units;
+	              next.units.length = Utils.lengthUnits.includes(next.units.length) ? next.units.length : base.units.length;
+	              next.units.weight = Utils.weightUnits.includes(next.units.weight) ? next.units.weight : base.units.weight;
+	              next.theme = next.theme === 'dark' ? 'dark' : 'light';
+	              next.labelFontSize = Utils.clamp(finiteNumber(next.labelFontSize, base.labelFontSize), 8, 24);
               next.hiddenCaseOpacity = Utils.clamp(finiteNumber(next.hiddenCaseOpacity, base.hiddenCaseOpacity), 0, 1);
               next.snapping = next.snapping && typeof next.snapping === 'object' ? next.snapping : base.snapping;
               next.snapping.enabled = Boolean(next.snapping.enabled);
@@ -2855,14 +3067,19 @@
               };
             }
 
-            function normalizeTruck(truck) {
-              const t = truck && typeof truck === 'object' ? truck : {};
-              return {
-                length: positiveNumber(t.length, DEFAULT_TRUCK.length),
-                width: positiveNumber(t.width, DEFAULT_TRUCK.width),
-                height: positiveNumber(t.height, DEFAULT_TRUCK.height),
-              };
-            }
+	            function normalizeTruck(truck) {
+	              const t = truck && typeof truck === 'object' ? truck : {};
+	              const mode = t.shapeMode === 'wheelWells' || t.shapeMode === 'frontBonus' || t.shapeMode === 'rect' ? t.shapeMode : 'rect';
+	              const shapeConfig =
+	                t.shapeConfig && typeof t.shapeConfig === 'object' && !Array.isArray(t.shapeConfig) ? t.shapeConfig : {};
+	              return {
+	                length: positiveNumber(t.length, DEFAULT_TRUCK.length),
+	                width: positiveNumber(t.width, DEFAULT_TRUCK.width),
+	                height: positiveNumber(t.height, DEFAULT_TRUCK.height),
+	                shapeMode: mode,
+	                shapeConfig,
+	              };
+	            }
 
             function normalizeInstance(inst, caseMap) {
               const transform = inst && inst.transform && typeof inst.transform === 'object' ? inst.transform : {};
@@ -2959,6 +3176,8 @@
 
             return { normalizeAppData };
           })();
+
+          window.Normalizer = Normalizer;
 
           const PreferencesManager = (() => {
             function applyTheme(theme) {
@@ -3616,7 +3835,7 @@
             return { meta, listWithCounts, upsert, remove, rename, all };
           })();
 
-          const CaseLibrary = (() => {
+	          const CaseLibrary = (() => {
             function getCases() {
               return StateStore.get('caseLibrary') || [];
             }
@@ -3704,31 +3923,307 @@
               countsByCategory,
               reassignCategory,
             };
-          })();
+	          })();
 
-          const PackLibrary = (() => {
-            function getPacks() {
-              return StateStore.get('packLibrary') || [];
-            }
+	          const TrailerGeometry = (() => {
+	            function getDims(truck) {
+	              const t = truck && typeof truck === 'object' ? truck : {};
+	              const length = Math.max(0, Number(t.length) || 0);
+	              const width = Math.max(0, Number(t.width) || 0);
+	              const height = Math.max(0, Number(t.height) || 0);
+	              return { length, width, height };
+	            }
+
+	            function getMode(truck) {
+	              const mode = truck && truck.shapeMode;
+	              if (mode === 'wheelWells' || mode === 'frontBonus' || mode === 'rect') return mode;
+	              return 'rect';
+	            }
+
+	            function getConfig(truck) {
+	              const cfg = truck && truck.shapeConfig;
+	              return cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
+	            }
+
+	            function zone(min, max) {
+	              return { min: { ...min }, max: { ...max } };
+	            }
+
+	            function sanitizeZones(zones) {
+	              const EPS = 1e-9;
+	              return (zones || []).filter(z => {
+	                const dx = z.max.x - z.min.x;
+	                const dy = z.max.y - z.min.y;
+	                const dz = z.max.z - z.min.z;
+	                return dx > EPS && dy > EPS && dz > EPS;
+	              });
+	            }
+
+	            function getTrailerUsableZones(truck) {
+	              const { length: L, width: W, height: H } = getDims(truck);
+	              const mode = getMode(truck);
+	              const cfg = getConfig(truck);
+
+	              if (!L || !W || !H) return [];
+
+	              if (mode === 'frontBonus') {
+	                const bonusLengthRaw = Number(cfg.bonusLength);
+	                const bonusWidthRaw = Number(cfg.bonusWidth);
+	                const bonusHeightRaw = Number(cfg.bonusHeight);
+
+	                const bonusLength = Utils.clamp(
+	                  Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0.12 * L,
+	                  0,
+	                  L
+	                );
+	                const bonusWidth = Utils.clamp(Number.isFinite(bonusWidthRaw) ? bonusWidthRaw : W, 0, W);
+	                const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : H, 0, H);
+
+	                const splitX = L - bonusLength;
+	                const zones = [
+	                  zone({ x: 0, y: 0, z: -W / 2 }, { x: splitX, y: H, z: W / 2 }),
+	                  zone(
+	                    { x: splitX, y: 0, z: -bonusWidth / 2 },
+	                    { x: L, y: bonusHeight, z: bonusWidth / 2 }
+	                  ),
+	                ];
+	                return sanitizeZones(zones);
+	              }
+
+	              if (mode === 'wheelWells') {
+	                const wellHeightRaw = Number(cfg.wellHeight);
+	                const wellWidthRaw = Number(cfg.wellWidth);
+	                const wellLengthRaw = Number(cfg.wellLength);
+	                const wellOffsetRaw = Number(cfg.wellOffsetFromRear);
+
+	                const wellHeight = Utils.clamp(
+	                  Number.isFinite(wellHeightRaw) ? wellHeightRaw : 0.35 * H,
+	                  0,
+	                  H
+	                );
+	                const wellWidth = Utils.clamp(
+	                  Number.isFinite(wellWidthRaw) ? wellWidthRaw : 0.15 * W,
+	                  0,
+	                  W / 2
+	                );
+	                const wellLength = Utils.clamp(
+	                  Number.isFinite(wellLengthRaw) ? wellLengthRaw : 0.35 * L,
+	                  0,
+	                  L
+	                );
+	                const wellOffsetFromRear = Utils.clamp(
+	                  Number.isFinite(wellOffsetRaw) ? wellOffsetRaw : 0.25 * L,
+	                  0,
+	                  L
+	                );
+
+	                const wx0 = wellOffsetFromRear;
+	                const wx1 = Utils.clamp(wx0 + wellLength, wx0, L);
+	                const betweenHalfW = Math.max(0, W / 2 - wellWidth);
+
+	                const zones = [
+	                  // 1) rear full-width
+	                  zone({ x: 0, y: 0, z: -W / 2 }, { x: wx0, y: H, z: W / 2 }),
+
+	                  // 2) center corridor between wells (full height)
+	                  zone({ x: wx0, y: 0, z: -betweenHalfW }, { x: wx1, y: H, z: betweenHalfW }),
+
+	                  // 3) left above-well
+	                  zone({ x: wx0, y: wellHeight, z: -W / 2 }, { x: wx1, y: H, z: -betweenHalfW }),
+
+	                  // 4) right above-well
+	                  zone({ x: wx0, y: wellHeight, z: betweenHalfW }, { x: wx1, y: H, z: W / 2 }),
+
+	                  // 5) front full-width
+	                  zone({ x: wx1, y: 0, z: -W / 2 }, { x: L, y: H, z: W / 2 }),
+	                ];
+	                return sanitizeZones(zones);
+	              }
+
+	              // rect (default)
+	              return [
+	                zone({ x: 0, y: 0, z: -W / 2 }, { x: L, y: H, z: W / 2 }),
+	              ];
+	            }
+
+	            function getTrailerCapacityInches3(truck) {
+	              const zones = getTrailerUsableZones(truck);
+	              return zones.reduce((sum, z) => {
+	                const dx = z.max.x - z.min.x;
+	                const dy = z.max.y - z.min.y;
+	                const dz = z.max.z - z.min.z;
+	                return sum + Math.max(0, dx) * Math.max(0, dy) * Math.max(0, dz);
+	              }, 0);
+	            }
+
+		            function isAabbContainedInAnyZone(aabb, zones) {
+		              for (const z of zones || []) {
+		                if (
+		                  aabb.min.x >= z.min.x &&
+		                  aabb.max.x <= z.max.x &&
+		                  aabb.min.y >= z.min.y &&
+		                  aabb.max.y <= z.max.y &&
+		                  aabb.min.z >= z.min.z &&
+		                  aabb.max.z <= z.max.z
+		                ) {
+		                  return true;
+		                }
+		              }
+		              return false;
+		            }
+
+	            function zonesInchesToWorld(zonesInches) {
+	              return (zonesInches || []).map(z => ({
+	                min: {
+	                  x: SceneManager.toWorld(z.min.x),
+	                  y: SceneManager.toWorld(z.min.y),
+	                  z: SceneManager.toWorld(z.min.z),
+	                },
+	                max: {
+	                  x: SceneManager.toWorld(z.max.x),
+	                  y: SceneManager.toWorld(z.max.y),
+	                  z: SceneManager.toWorld(z.max.z),
+	                },
+	              }));
+	            }
+
+		            function zonesToSpacesInches(zonesInches) {
+		              return (zonesInches || []).map(z => ({
+		                x: z.min.x,
+		                y: z.min.y,
+		                z: z.min.z,
+		                length: z.max.x - z.min.x,
+		                width: z.max.z - z.min.z,
+		                height: z.max.y - z.min.y,
+		              }));
+		            }
+
+		            function getWheelWellsBlockedZones(truck) {
+		              const { length: L, width: W, height: H } = getDims(truck);
+		              const mode = getMode(truck);
+		              const cfg = getConfig(truck);
+		              if (mode !== 'wheelWells') return [];
+		              if (!L || !W || !H) return [];
+
+		              const wellHeightRaw = Number(cfg.wellHeight);
+		              const wellWidthRaw = Number(cfg.wellWidth);
+		              const wellLengthRaw = Number(cfg.wellLength);
+		              const wellOffsetRaw = Number(cfg.wellOffsetFromRear);
+
+		              const wellHeight = Utils.clamp(
+		                Number.isFinite(wellHeightRaw) ? wellHeightRaw : 0.35 * H,
+		                0,
+		                H
+		              );
+		              const wellWidth = Utils.clamp(
+		                Number.isFinite(wellWidthRaw) ? wellWidthRaw : 0.15 * W,
+		                0,
+		                W / 2
+		              );
+		              const wellLength = Utils.clamp(
+		                Number.isFinite(wellLengthRaw) ? wellLengthRaw : 0.35 * L,
+		                0,
+		                L
+		              );
+		              const wellOffsetFromRear = Utils.clamp(
+		                Number.isFinite(wellOffsetRaw) ? wellOffsetRaw : 0.25 * L,
+		                0,
+		                L
+		              );
+
+		              const wx0 = wellOffsetFromRear;
+		              const wx1 = Utils.clamp(wx0 + wellLength, wx0, L);
+		              const betweenHalfW = Math.max(0, W / 2 - wellWidth);
+
+		              const zones = [
+		                // Left wheel well (blocked)
+		                zone({ x: wx0, y: 0, z: -W / 2 }, { x: wx1, y: wellHeight, z: -betweenHalfW }),
+
+		                // Right wheel well (blocked)
+		                zone({ x: wx0, y: 0, z: betweenHalfW }, { x: wx1, y: wellHeight, z: W / 2 }),
+		              ];
+		              return sanitizeZones(zones);
+		            }
+
+		            function getFrontBonusZone(truck) {
+		              const { length: L, width: W, height: H } = getDims(truck);
+		              const mode = getMode(truck);
+		              const cfg = getConfig(truck);
+		              if (mode !== 'frontBonus') return null;
+		              if (!L || !W || !H) return null;
+
+		              const bonusLengthRaw = Number(cfg.bonusLength);
+		              const bonusWidthRaw = Number(cfg.bonusWidth);
+		              const bonusHeightRaw = Number(cfg.bonusHeight);
+
+		              const bonusLength = Utils.clamp(
+		                Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0.12 * L,
+		                0,
+		                L
+		              );
+		              const bonusWidth = Utils.clamp(Number.isFinite(bonusWidthRaw) ? bonusWidthRaw : W, 0, W);
+		              const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : H, 0, H);
+
+		              const splitX = L - bonusLength;
+		              const zones = [
+		                zone({ x: splitX, y: 0, z: -bonusWidth / 2 }, { x: L, y: bonusHeight, z: bonusWidth / 2 }),
+		              ];
+		              return sanitizeZones(zones)[0] || null;
+		            }
+
+		            return {
+		              getTrailerUsableZones,
+		              getTrailerCapacityInches3,
+		              isAabbContainedInAnyZone,
+		              zonesInchesToWorld,
+		              zonesToSpacesInches,
+		              getWheelWellsBlockedZones,
+		              getFrontBonusZone,
+		            };
+		          })();
+
+	          const PackLibrary = (() => {
+	            function getPacks() {
+	              return StateStore.get('packLibrary') || [];
+	            }
 
             function getById(packId) {
               return getPacks().find(p => p.id === packId) || null;
             }
 
-            function create(packData) {
-              const now = Date.now();
-              const pack = {
-                id: Utils.uuid(),
-                title: packData.title || 'Untitled Pack',
-                client: packData.client || '',
-                projectName: packData.projectName || '',
-                drawnBy: packData.drawnBy || '',
-                notes: packData.notes || '',
-                truck: packData.truck || { length: 636, width: 102, height: 98 },
-                cases: [],
-                groups: [],
-                stats: { totalCases: 0, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
-                createdAt: now,
+	            function create(packData) {
+	              const now = Date.now();
+	              const rawTruck = packData.truck || { length: 636, width: 102, height: 98 };
+	              const shapeMode =
+	                rawTruck &&
+	                (rawTruck.shapeMode === 'wheelWells' ||
+	                  rawTruck.shapeMode === 'frontBonus' ||
+	                  rawTruck.shapeMode === 'rect')
+	                  ? rawTruck.shapeMode
+	                  : 'rect';
+	              const shapeConfig =
+	                rawTruck && rawTruck.shapeConfig && typeof rawTruck.shapeConfig === 'object' && !Array.isArray(rawTruck.shapeConfig)
+	                  ? Utils.deepClone(rawTruck.shapeConfig)
+	                  : {};
+	              const truck = {
+	                length: Number(rawTruck.length) || 636,
+	                width: Number(rawTruck.width) || 102,
+	                height: Number(rawTruck.height) || 98,
+	                shapeMode,
+	                shapeConfig,
+	              };
+	              const pack = {
+	                id: Utils.uuid(),
+	                title: packData.title || 'Untitled Pack',
+	                client: packData.client || '',
+	                projectName: packData.projectName || '',
+	                drawnBy: packData.drawnBy || '',
+	                notes: packData.notes || '',
+	                truck,
+	                cases: [],
+	                groups: [],
+	                stats: { totalCases: 0, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
+	                createdAt: now,
                 lastEdited: now,
                 thumbnail: null,
                 thumbnailUpdatedAt: null,
@@ -3828,38 +4323,33 @@
               return update(packId, { cases: nextInstances });
             }
 
-            function computeStats(pack, caseLibraryOverride) {
-              const truckVol = pack.truck.length * pack.truck.width * pack.truck.height;
-              let usedIn3 = 0;
-              let totalWeight = 0;
-              let packedCases = 0;
+	            function computeStats(pack, caseLibraryOverride) {
+	              const zonesInches = TrailerGeometry.getTrailerUsableZones(pack && pack.truck);
+	              const truckVol = TrailerGeometry.getTrailerCapacityInches3(pack && pack.truck);
+	              let usedIn3 = 0;
+	              let totalWeight = 0;
+	              let packedCases = 0;
               const getCase = caseId => {
                 if (Array.isArray(caseLibraryOverride)) return caseLibraryOverride.find(c => c.id === caseId) || null;
                 return CaseLibrary.getById(caseId);
               };
-              (pack.cases || []).forEach(inst => {
-                const c = getCase(inst.caseId);
-                if (!c) return;
-                if (inst.hidden) return;
-                const dims = c.dimensions || { length: 0, width: 0, height: 0 };
-                const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
-                const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
-                const aabb = {
-                  min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
-                  max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
-                };
-                const insideTruck =
-                  aabb.min.x >= 0 &&
-                  aabb.max.x <= pack.truck.length &&
-                  aabb.min.y >= 0 &&
-                  aabb.max.y <= pack.truck.height &&
-                  aabb.min.z >= -pack.truck.width / 2 &&
-                  aabb.max.z <= pack.truck.width / 2;
-                if (!insideTruck) return;
-                packedCases++;
-                usedIn3 += c.volume || Utils.volumeInCubicInches(dims);
-                totalWeight += Number(c.weight) || 0;
-              });
+	              (pack.cases || []).forEach(inst => {
+	                const c = getCase(inst.caseId);
+	                if (!c) return;
+	                if (inst.hidden) return;
+	                const dims = c.dimensions || { length: 0, width: 0, height: 0 };
+	                const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
+	                const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
+	                const aabb = {
+	                  min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
+	                  max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
+	                };
+	                const insideTruck = TrailerGeometry.isAabbContainedInAnyZone(aabb, zonesInches);
+	                if (!insideTruck) return;
+	                packedCases++;
+	                usedIn3 += c.volume || Utils.volumeInCubicInches(dims);
+	                totalWeight += Number(c.weight) || 0;
+	              });
               const volumePercent = truckVol > 0 ? (usedIn3 / truckVol) * 100 : 0;
               return {
                 totalCases: (pack.cases || []).length,
@@ -4021,7 +4511,17 @@
               if (el) el.classList.add('active');
               if (contentRoot) contentRoot.classList.toggle('editor-mode', screen === 'editor');
 
+              const isMobile = window.matchMedia('(max-width: 899px)').matches;
+
               if (screen === 'editor') {
+                // Collapse sidebar to maximize editor viewport
+                appRoot.classList.add('sidebar-collapsed');
+                sidebar.classList.remove('open');
+                // Ensure editor panels visible to avoid empty canvas gap
+                const editorLeft = document.getElementById('editor-left');
+                const editorRight = document.getElementById('editor-right');
+                editorLeft && editorLeft.classList.remove('hidden');
+                editorRight && editorRight.classList.remove('hidden');
                 const pack = PackLibrary.getById(StateStore.get('currentPackId'));
                 topbarTitle.textContent = pack ? pack.title || 'Editor' : 'Editor';
                 topbarSubtitle.textContent = pack
@@ -4029,6 +4529,9 @@
                   : '3D workspace';
                 return;
               }
+
+              // Restore sidebar when leaving editor (desktop)
+              if (!isMobile) appRoot.classList.remove('sidebar-collapsed');
 
               const meta = screenTitles[screen] || { title: 'Truck Packer 3D', subtitle: '' };
               topbarTitle.textContent = meta.title;
@@ -4041,8 +4544,9 @@
           // ==== UI: Packs Screen ====
           const PacksUI = (() => {
             const searchEl = document.getElementById('packs-search');
-            const sortEl = document.getElementById('packs-sort');
             const gridEl = document.getElementById('packs-grid');
+            const listEl = document.getElementById('packs-list');
+            const tbodyEl = document.getElementById('packs-tbody');
             const emptyEl = document.getElementById('packs-empty');
             const filterEmptyEl = document.getElementById('packs-filter-empty');
             const filterEmptyMsg = document.getElementById('packs-filter-empty-msg');
@@ -4051,8 +4555,19 @@
             const chipEmpty = document.getElementById('packs-filter-chip-empty');
             const chipPartial = document.getElementById('packs-filter-chip-partial');
             const chipFull = document.getElementById('packs-filter-chip-full');
+            const btnViewGrid = document.getElementById('packs-view-grid');
+            const btnViewList = document.getElementById('packs-view-list');
+            const selectAllEl = document.getElementById('packs-select-all');
+            const titleHeaderButton = document.querySelector('#packs-list thead th[data-sort="title"] .th-sort');
+            const defaultActionsEl = document.getElementById('packs-actions-default');
+            const bulkActionsEl = document.getElementById('packs-actions-bulk');
+            const bulkCountEl = document.getElementById('packs-selected-count');
+            const btnBulkDelete = document.getElementById('btn-packs-bulk-delete');
 
             const filters = { empty: false, partial: false, full: false };
+            let selectedIds = new Set();
+            let datasetKey = '';
+            let sortKey = 'edited-desc';
 
             function initPacksUI() {
               searchEl.addEventListener('input', Utils.debounce(render, 200));
@@ -4063,12 +4578,72 @@
                   searchEl.blur();
                 }
               });
-              sortEl.addEventListener('change', () => render());
               wireChip(chipEmpty, 'empty');
               wireChip(chipPartial, 'partial');
               wireChip(chipFull, 'full');
               btnNew.addEventListener('click', () => openNewPackModal());
               btnImport.addEventListener('click', () => openImportPackDialog());
+              btnViewGrid.addEventListener('click', () => setViewMode('grid'));
+              btnViewList.addEventListener('click', () => setViewMode('list'));
+              selectAllEl.addEventListener('change', handleSelectAll);
+              btnBulkDelete.addEventListener('click', handleBulkDelete);
+              initListHeaderSort();
+              updateViewButtons();
+            }
+
+            function initListHeaderSort() {
+              const headers = document.querySelectorAll('#packs-list thead th[data-sort]');
+              headers.forEach(th => {
+                const sortField = th.dataset.sort;
+                const button = th.querySelector('.th-sort');
+                if (!button) return;
+                const toggleSort = () => {
+                  const ascKey = `${sortField}-asc`;
+                  const descKey = `${sortField}-desc`;
+                  if (sortKey === ascKey) {
+                    sortKey = descKey;
+                  } else if (sortKey === descKey) {
+                    sortKey = ascKey;
+                  } else {
+                    sortKey = ascKey;
+                  }
+                  render();
+                  updateListHeaderIcons();
+                };
+                button.addEventListener('click', toggleSort);
+                button.addEventListener('keydown', ev => {
+                  if (ev.key === 'Enter' || ev.key === ' ') {
+                    ev.preventDefault();
+                    toggleSort();
+                  }
+                });
+              });
+              updateListHeaderIcons();
+            }
+
+            function updateListHeaderIcons() {
+              const headers = document.querySelectorAll('#packs-list thead th[data-sort]');
+              headers.forEach(th => {
+                const sortField = th.dataset.sort;
+                const button = th.querySelector('.th-sort');
+                if (!button) return;
+                button.classList.toggle('is-asc', sortKey === `${sortField}-asc`);
+                button.classList.toggle('is-desc', sortKey === `${sortField}-desc`);
+              });
+            }
+
+            function setViewMode(mode) {
+              const prefs = PreferencesManager.get();
+              prefs.packsViewMode = mode;
+              PreferencesManager.set(prefs);
+              updateViewButtons();
+              render();
+            }
+
+            function updateViewButtons() {
+              const mode = PreferencesManager.get().packsViewMode || 'grid';
+              btnViewGrid.classList.toggle('btn-primary', mode === 'grid');
+              btnViewList.classList.toggle('btn-primary', mode === 'list');
             }
 
             function wireChip(el, key) {
@@ -4084,23 +4659,124 @@
               });
             }
 
+            function handleSelectAll() {
+              const mode = PreferencesManager.get().packsViewMode || 'grid';
+              if (mode !== 'list') return;
+              const q = String(searchEl.value || '').trim().toLowerCase();
+              const allPacks = PackLibrary.getPacks();
+              const packs = allPacks
+                .filter(p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q))
+                .filter(p => {
+                  if (!filters.empty && !filters.partial && !filters.full) return true;
+                  const total = (p.cases || []).length;
+                  const percent = p.stats && Number.isFinite(p.stats.volumePercent) ? p.stats.volumePercent : 0;
+                  const isEmpty = total === 0;
+                  const isFull = percent >= 99.999;
+                  const isPartial = !isEmpty && percent > 0 && !isFull;
+                  if (filters.empty && isEmpty) return true;
+                  if (filters.partial && isPartial) return true;
+                  if (filters.full && isFull) return true;
+                  return false;
+                });
+              if (selectAllEl.checked) {
+                packs.forEach(p => selectedIds.add(p.id));
+              } else {
+                selectedIds.clear();
+              }
+              render();
+            }
+
+            function updateBulkActions() {
+              const mode = PreferencesManager.get().packsViewMode || 'grid';
+              const count = selectedIds.size;
+              if (mode === 'list' && count > 0) {
+                defaultActionsEl.style.display = 'none';
+                bulkActionsEl.style.display = 'flex';
+                bulkCountEl.textContent = `${count} pack${count === 1 ? '' : 's'} selected`;
+                btnBulkDelete.innerHTML = `<i class="fa-solid fa-trash"></i> Delete (${count})`;
+                const q = String(searchEl.value || '').trim().toLowerCase();
+                const allPacks = PackLibrary.getPacks();
+                const packs = allPacks
+                  .filter(p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q))
+                  .filter(p => {
+                    if (!filters.empty && !filters.partial && !filters.full) return true;
+                    const total = (p.cases || []).length;
+                    const percent = p.stats && Number.isFinite(p.stats.volumePercent) ? p.stats.volumePercent : 0;
+                    const isEmpty = total === 0;
+                    const isFull = percent >= 99.999;
+                    const isPartial = !isEmpty && percent > 0 && !isFull;
+                    if (filters.empty && isEmpty) return true;
+                    if (filters.partial && isPartial) return true;
+                    if (filters.full && isFull) return true;
+                    return false;
+                  });
+                const allSelected = packs.length > 0 && packs.every(p => selectedIds.has(p.id));
+                const someSelected = packs.some(p => selectedIds.has(p.id));
+                selectAllEl.checked = allSelected;
+                selectAllEl.indeterminate = someSelected && !allSelected;
+              } else {
+                defaultActionsEl.style.display = 'flex';
+                bulkActionsEl.style.display = 'none';
+                selectAllEl.checked = false;
+                selectAllEl.indeterminate = false;
+              }
+            }
+
+            function handleBulkDelete() {
+              const count = selectedIds.size;
+              if (count === 0) return;
+              const confirmed = confirm(`Delete ${count} pack${count === 1 ? '' : 's'}?\n\nThis action cannot be undone.`);
+              if (!confirmed) return;
+              const idsToDelete = Array.from(selectedIds);
+              const state = StateStore.get();
+              const currentPackId = state.currentPackId;
+              const isCurrentDeleted = idsToDelete.includes(currentPackId);
+              const updatedPacks = state.packs.filter(p => !idsToDelete.includes(p.id));
+              if (isCurrentDeleted) {
+                StateStore.set({
+                  ...state,
+                  packs: updatedPacks,
+                  currentPackId: null,
+                  instances: [],
+                  groups: [],
+                });
+                AppShell.navigate('packs');
+              } else {
+                StateStore.set({ ...state, packs: updatedPacks });
+              }
+              selectedIds.clear();
+              UIComponents.showToast(`${count} pack${count === 1 ? '' : 's'} deleted`, 'success');
+              render();
+            }
+
             function render() {
               const q = String(searchEl.value || '')
                 .trim()
                 .toLowerCase();
               const allPacks = PackLibrary.getPacks().slice();
 
-              const sortKey = String(sortEl.value || 'edited-desc');
               const compareTitle = (a, b) => (a.title || '').localeCompare(b.title || '');
+              const compareCases = (a, b) => ((a.cases || []).length) - ((b.cases || []).length);
               const compareLastEdited = (a, b) => (a.lastEdited || 0) - (b.lastEdited || 0);
               const compareCreated = (a, b) => (a.createdAt || 0) - (b.createdAt || 0);
+              const compareLength = (a, b) => (a.truck?.length || 0) - (b.truck?.length || 0);
+              const compareWidth = (a, b) => (a.truck?.width || 0) - (b.truck?.width || 0);
+              const compareHeight = (a, b) => (a.truck?.height || 0) - (b.truck?.height || 0);
               const sorters = {
                 'edited-desc': (a, b) => compareLastEdited(b, a),
                 'edited-asc': (a, b) => compareLastEdited(a, b),
                 'title-asc': (a, b) => compareTitle(a, b),
                 'title-desc': (a, b) => compareTitle(b, a),
+                'cases-asc': (a, b) => compareCases(a, b),
+                'cases-desc': (a, b) => compareCases(b, a),
                 'created-desc': (a, b) => compareCreated(b, a),
                 'created-asc': (a, b) => compareCreated(a, b),
+                'length-asc': (a, b) => compareLength(a, b),
+                'length-desc': (a, b) => compareLength(b, a),
+                'width-asc': (a, b) => compareWidth(a, b),
+                'width-desc': (a, b) => compareWidth(b, a),
+                'height-asc': (a, b) => compareHeight(a, b),
+                'height-desc': (a, b) => compareHeight(b, a),
               };
               allPacks.sort(sorters[sortKey] || sorters['edited-desc']);
 
@@ -4120,11 +4796,21 @@
                   return false;
                 });
 
+              const newDatasetKey = `${q}::${sortKey}::${filters.empty}${filters.partial}${filters.full}`;
+              if (datasetKey !== newDatasetKey) {
+                selectedIds.clear();
+                datasetKey = newDatasetKey;
+              }
+
               gridEl.innerHTML = '';
+              tbodyEl.innerHTML = '';
 
               if (!allPacks.length) {
                 emptyEl.style.display = 'block';
                 filterEmptyEl.style.display = 'none';
+                gridEl.style.display = 'none';
+                listEl.style.display = 'none';
+                updateBulkActions();
                 return;
               }
 
@@ -4132,12 +4818,123 @@
                 emptyEl.style.display = 'none';
                 filterEmptyMsg.textContent = q ? `No matching packs for "${q}"` : 'No matching packs';
                 filterEmptyEl.style.display = 'block';
+                gridEl.style.display = 'none';
+                listEl.style.display = 'none';
+                updateBulkActions();
                 return;
               }
 
               filterEmptyEl.style.display = 'none';
               emptyEl.style.display = 'none';
 
+              const mode = PreferencesManager.get().packsViewMode || 'grid';
+              if (mode === 'list') {
+                gridEl.style.display = 'none';
+                listEl.style.display = 'block';
+                renderListView(packs);
+              } else {
+                gridEl.style.display = 'grid';
+                listEl.style.display = 'none';
+                renderGridView(packs);
+              }
+              updateListHeaderIcons();
+              updateBulkActions();
+            }
+
+            function renderListView(packs) {
+              const prefs = PreferencesManager.get();
+              packs.forEach(pack => {
+                const tr = document.createElement('tr');
+                const isSelected = selectedIds.has(pack.id);
+                if (isSelected) tr.classList.add('selected');
+
+                const tdCheck = document.createElement('td');
+                tdCheck.style.textAlign = 'center';
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = isSelected;
+                checkbox.setAttribute('aria-label', `Select ${pack.title || 'Untitled Pack'}`);
+                checkbox.addEventListener('click', ev => ev.stopPropagation());
+                checkbox.addEventListener('change', () => {
+                  if (checkbox.checked) {
+                    selectedIds.add(pack.id);
+                  } else {
+                    selectedIds.delete(pack.id);
+                  }
+                  tr.classList.toggle('selected', selectedIds.has(pack.id));
+                  updateBulkActions();
+                });
+                tdCheck.appendChild(checkbox);
+
+                const tdTitle = document.createElement('td');
+                tdTitle.textContent = pack.title || 'Untitled Pack';
+
+                const tdCases = document.createElement('td');
+                tdCases.textContent = (pack.cases || []).length;
+
+                const tdLength = document.createElement('td');
+                tdLength.textContent = Utils.formatLength(pack.truck.length, prefs.units.length);
+
+                const tdWidth = document.createElement('td');
+                tdWidth.textContent = Utils.formatLength(pack.truck.width, prefs.units.length);
+
+                const tdHeight = document.createElement('td');
+                tdHeight.textContent = Utils.formatLength(pack.truck.height, prefs.units.length);
+
+                const tdEdited = document.createElement('td');
+                tdEdited.textContent = Utils.formatRelativeTime(pack.lastEdited);
+
+                const tdActions = document.createElement('td');
+                tdActions.className = 'col-actions';
+                const kebabBtn = document.createElement('button');
+                kebabBtn.className = 'btn btn-ghost';
+                kebabBtn.type = 'button';
+                kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
+                kebabBtn.addEventListener('click', ev => {
+                  ev.stopPropagation();
+                  UIComponents.openDropdown(kebabBtn, [
+                    { label: 'Open', icon: 'fa-solid fa-folder-open', onClick: () => openPack(pack.id) },
+                    { label: 'Rename', icon: 'fa-solid fa-pen', onClick: () => openRename(pack.id) },
+                    {
+                      label: 'Duplicate',
+                      icon: 'fa-solid fa-clone',
+                      onClick: () => {
+                        PackLibrary.duplicate(pack.id);
+                        UIComponents.showToast('Pack duplicated', 'success');
+                      },
+                    },
+                    {
+                      label: 'Capture Preview',
+                      icon: 'fa-solid fa-image',
+                      onClick: () => ExportService.capturePackPreview(pack.id, { source: 'manual' }),
+                    },
+                    {
+                      label: 'Clear Preview',
+                      icon: 'fa-solid fa-ban',
+                      disabled: !pack.thumbnail,
+                      onClick: () => ExportService.clearPackPreview(pack.id),
+                    },
+                    { label: 'Export JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+                    { label: 'Delete', icon: 'fa-solid fa-trash', variant: 'danger', dividerBefore: true, onClick: () => deletePack(pack.id) },
+                  ]);
+                });
+                tdActions.appendChild(kebabBtn);
+
+                tr.addEventListener('click', () => openPack(pack.id));
+
+                tr.appendChild(tdCheck);
+                tr.appendChild(tdTitle);
+                tr.appendChild(tdCases);
+                tr.appendChild(tdLength);
+                tr.appendChild(tdWidth);
+                tr.appendChild(tdHeight);
+                tr.appendChild(tdEdited);
+                tr.appendChild(tdActions);
+                tbodyEl.appendChild(tr);
+              });
+            }
+
+            function renderGridView(packs) {
               packs.forEach(pack => {
                 const card = document.createElement('div');
                 card.className = 'card pack-card';
@@ -4158,9 +4955,7 @@
                 const sub = document.createElement('div');
                 sub.className = 'muted';
                 sub.style.fontSize = 'var(--text-sm)';
-                sub.textContent = pack.client
-                  ? `${pack.client} • edited ${Utils.formatRelativeTime(pack.lastEdited)}`
-                  : `edited ${Utils.formatRelativeTime(pack.lastEdited)}`;
+                sub.textContent = `edited ${Utils.formatRelativeTime(pack.lastEdited)}`;
 
                 const meta = document.createElement('div');
                 meta.className = 'pack-meta';
@@ -4554,7 +5349,6 @@
 	            const actionsBulkEl = document.getElementById('cases-actions-bulk');
 	            const selectedCountEl = document.getElementById('cases-selected-count');
 	            const btnBulkDelete = document.getElementById('btn-cases-bulk-delete');
-	            const btnBulkTemplate = document.getElementById('btn-cases-bulk-template');
 
 	            const activeCategories = new Set(); // empty = all
 	            let sortBy = 'name'; // name, manufacturer, dimensions, volume, weight, category
@@ -4569,9 +5363,6 @@
 	              btnTemplate.addEventListener('click', () => downloadTemplate());
 	              btnImport.addEventListener('click', () => openImportModal());
 	              btnManageCats.addEventListener('click', () => openCategoryManager());
-	              btnBulkTemplate.addEventListener('click', () => {
-	                UIComponents.showToast('Template feature coming soon', 'info');
-	              });
 	              btnBulkDelete.addEventListener('click', () => bulkDeleteSelected());
 	              selectAllEl.addEventListener('change', () => toggleAllVisible(selectAllEl.checked));
 	              initTableHeaders();
@@ -4648,19 +5439,26 @@
 	            function initTableHeaders() {
 	              const headers = document.querySelectorAll('#screen-cases table thead th[data-sort]');
 	              headers.forEach(th => {
-	                th.style.cursor = 'pointer';
-                th.style.userSelect = 'none';
-                th.addEventListener('click', () => {
-                  const sortField = th.getAttribute('data-sort');
-                  if (sortBy === sortField) {
-                    sortDir = sortDir === 'asc' ? 'desc' : 'asc';
-                  } else {
-                    sortBy = sortField;
-                    sortDir = 'asc';
-                  }
-                  render();
-                  updateHeaderIcons();
-                });
+	                const sortControl = th.querySelector('.th-sort');
+	                if (!sortControl) return;
+	                const toggleSort = () => {
+	                  const sortField = th.getAttribute('data-sort');
+	                  if (sortBy === sortField) {
+	                    sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+	                  } else {
+	                    sortBy = sortField;
+	                    sortDir = 'asc';
+	                  }
+	                  render();
+	                  updateHeaderIcons();
+	                };
+	                sortControl.addEventListener('click', toggleSort);
+	                sortControl.addEventListener('keydown', ev => {
+	                  if (ev.key === 'Enter' || ev.key === ' ') {
+	                    ev.preventDefault();
+	                    toggleSort();
+	                  }
+	                });
               });
               updateHeaderIcons();
             }
@@ -4669,16 +5467,11 @@
               const headers = document.querySelectorAll('#screen-cases table thead th[data-sort]');
               headers.forEach(th => {
                 const sortField = th.getAttribute('data-sort');
-                const existingIcon = th.querySelector('.sort-icon');
-                if (existingIcon) existingIcon.remove();
-                
-                if (sortBy === sortField) {
-                  const icon = document.createElement('i');
-                  icon.className = `fa-solid fa-${sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} sort-icon`;
-                  icon.style.marginLeft = '6px';
-                  icon.style.fontSize = '12px';
-                  th.appendChild(icon);
-                }
+                const sortControl = th.querySelector('.th-sort');
+                if (!sortControl) return;
+                const isActive = sortBy === sortField;
+                sortControl.classList.toggle('is-asc', isActive && sortDir === 'asc');
+                sortControl.classList.toggle('is-desc', isActive && sortDir === 'desc');
               });
             }
 
@@ -4753,6 +5546,18 @@
                     valA = a.volume || 0;
                     valB = b.volume || 0;
                     break;
+                  case 'length':
+                    valA = (a.dimensions && a.dimensions.length) || 0;
+                    valB = (b.dimensions && b.dimensions.length) || 0;
+                    break;
+                  case 'width':
+                    valA = (a.dimensions && a.dimensions.width) || 0;
+                    valB = (b.dimensions && b.dimensions.width) || 0;
+                    break;
+                  case 'height':
+                    valA = (a.dimensions && a.dimensions.height) || 0;
+                    valB = (b.dimensions && b.dimensions.height) || 0;
+                    break;
                   case 'weight':
                     valA = a.weight || 0;
                     valB = b.weight || 0;
@@ -4818,9 +5623,17 @@
                 tdMfg.textContent = c.manufacturer || '—';
                 tr.appendChild(tdMfg);
 
-                const tdDims = document.createElement('td');
-                tdDims.textContent = Utils.formatDims(c.dimensions, prefs.units.length);
-                tr.appendChild(tdDims);
+                const tdLength = document.createElement('td');
+                tdLength.textContent = Utils.formatLength(c.dimensions.length, prefs.units.length);
+                tr.appendChild(tdLength);
+
+                const tdWidth = document.createElement('td');
+                tdWidth.textContent = Utils.formatLength(c.dimensions.width, prefs.units.length);
+                tr.appendChild(tdWidth);
+
+                const tdHeight = document.createElement('td');
+                tdHeight.textContent = Utils.formatLength(c.dimensions.height, prefs.units.length);
+                tr.appendChild(tdHeight);
 
                 const tdVol = document.createElement('td');
                 tdVol.textContent = Utils.formatVolume(c.dimensions, prefs.units.length);
@@ -4839,9 +5652,8 @@
                 tr.appendChild(tdCat);
 
                 const tdFlip = document.createElement('td');
-                tdFlip.innerHTML = c.canFlip
-                  ? '<i class="fa-solid fa-check" style="color:var(--success)"></i>'
-                  : '<i class="fa-solid fa-minus" style="color:var(--text-muted)"></i>';
+                const flipLabel = c.canFlip === true ? 'Yes' : c.canFlip === false ? 'No' : '';
+                tdFlip.textContent = flipLabel;
                 tr.appendChild(tdFlip);
 
                 const tdActions = document.createElement('td');
@@ -4950,37 +5762,30 @@
               catRow.style.display = 'flex';
               catRow.style.gap = '8px';
               catRow.style.alignItems = 'center';
-              const catColor = document.createElement('input');
-              catColor.type = 'color';
-              catColor.className = 'input';
-              catColor.style.width = '48px';
-              catColor.style.padding = '0';
-              catColor.value = CategoryService.meta(initial.category).color || '#9ca3af';
-              const catName = document.createElement('input');
-              catName.type = 'text';
-              catName.className = 'input';
-              catName.style.flex = '1';
-              catName.value = CategoryService.meta(initial.category).name;
-              catName.placeholder = 'Rename or create new';
+              const catColorSwatch = document.createElement('div');
+              catColorSwatch.style.width = '44px';
+              catColorSwatch.style.height = '32px';
+              catColorSwatch.style.borderRadius = '8px';
+              catColorSwatch.style.border = '1px solid var(--border-subtle)';
               const catSelect = document.createElement('select');
               catSelect.className = 'select';
-              catSelect.style.display = 'none';
+              catSelect.style.flex = '1';
               const catOptions = CategoryService.all();
-              const extraCat =
-                initial.category && !catOptions.find(c => c.key === initial.category)
-                  ? [{ ...CategoryService.meta(initial.category) }]
-                  : [];
-              [...catOptions, ...extraCat]
-                .filter((v, idx, arr) => arr.findIndex(x => x.key === v.key) === idx)
-                .forEach(c => {
-                  const opt = document.createElement('option');
-                  opt.value = c.key;
-                  opt.textContent = c.name || CategoryService.meta(c.key).name;
-                  catSelect.appendChild(opt);
-                });
-              catSelect.value = initial.category || 'default';
-              catRow.appendChild(catColor);
-              catRow.appendChild(catName);
+              const currentKey = catOptions.find(c => c.key === initial.category) ? initial.category : 'default';
+              catOptions.forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c.key;
+                opt.textContent = c.name || CategoryService.meta(c.key).name;
+                catSelect.appendChild(opt);
+              });
+              catSelect.value = currentKey;
+              const updateSwatch = () => {
+                const meta = CategoryService.meta(catSelect.value || 'default');
+                catColorSwatch.style.background = meta.color || '#9ca3af';
+              };
+              catSelect.addEventListener('change', updateSwatch);
+              updateSwatch();
+              catRow.appendChild(catColorSwatch);
               catRow.appendChild(catSelect);
               catWrap.appendChild(catLabel);
               catWrap.appendChild(catRow);
@@ -5057,18 +5862,18 @@
                         return;
                       }
                       const weightLb = Utils.unitToPounds(Number(fWeight.input.value) || 0, weightUnit);
-                      const categoryName = String(catName.value || '').trim();
-                      const updatedCat = CategoryService.rename(catSelect.value, categoryName, catColor.value);
+                      const categoryKey = String(catSelect.value || 'default');
+                      const catMeta = CategoryService.meta(categoryKey);
                       const caseData = {
                         ...initial,
                         name,
                         manufacturer: String(fMfg.input.value || '').trim(),
-                        category: updatedCat.key,
+                        category: categoryKey,
                         dimensions: { length, width, height },
                         weight: weightLb,
                         canFlip: Boolean(flip.checked),
                         notes: String(notes.value || '').trim(),
-                        color: catColor.value || '#ff9f1c',
+                        color: catMeta.color || '#ff9f1c',
                       };
                       CaseLibrary.upsert(caseData);
                       UIComponents.showToast('Case saved', 'success');
@@ -5587,23 +6392,25 @@
               return { init: initCasesUI, render };
           })();
 
-          const SceneManager = (() => {
-            const INCH_TO_WORLD = 0.05;
-            const WORLD_TO_INCH = 1 / INCH_TO_WORLD;
-            let containerEl = null;
-            let scene = null;
-            let camera = null;
-            let renderer = null;
-            let controls = null;
-            let truck = null;
-            let truckBoundsWorld = null;
-            let truckSignature = '';
-            let grid = null;
-            let ground = null;
-            let axisScene = null;
-            let axisCamera = null;
-            let axisHelper = null;
-            const perf = { lastTime: 0, lowMs: 0, perfMode: false, fps: 60 };
+	          const SceneManager = (() => {
+	            const INCH_TO_WORLD = 0.05;
+	            const WORLD_TO_INCH = 1 / INCH_TO_WORLD;
+	            let containerEl = null;
+	            let scene = null;
+	            let camera = null;
+	            let renderer = null;
+	            let controls = null;
+	            let truck = null;
+	            let truckBoundsWorld = null;
+	            let truckSignature = '';
+	            let trailerShapeGuides = null;
+	            let trailerShapeGuidesSig = '';
+	            let grid = null;
+	            let ground = null;
+	            let axisScene = null;
+	            let axisCamera = null;
+	            let axisHelper = null;
+	            const perf = { lastTime: 0, lowMs: 0, perfMode: false, fps: 60 };
             let viewSize = { width: 1, height: 1 };
 
             // Dev-only performance overlay
@@ -5879,10 +6686,10 @@
               renderer.setSize(width, height);
             }
 
-            function refreshTheme() {
-              if (!scene) return;
-              const bgHex = Utils.getCssVar('--bg-primary');
-              scene.background = new THREE.Color(Utils.cssHexToInt(bgHex));
+	            function refreshTheme() {
+	              if (!scene) return;
+	              const bgHex = Utils.getCssVar('--bg-primary');
+	              scene.background = new THREE.Color(Utils.cssHexToInt(bgHex));
               if (grid && grid.material) {
                 const gridMat = grid.material;
                 const mainColor = new THREE.Color(Utils.cssHexToInt(Utils.getCssVar('--accent-primary')));
@@ -5893,31 +6700,144 @@
                 } else {
                   gridMat.color = subColor;
                 }
-              }
-            }
+	              }
+	            }
 
-            function setTruck(truckInches) {
-              if (!scene) return;
-              const sig = `${truckInches.length}x${truckInches.width}x${truckInches.height}`;
-              const lengthW = toWorld(truckInches.length);
-              const widthW = toWorld(truckInches.width);
-              const heightW = toWorld(truckInches.height);
+	            function disposeObject3D(root) {
+	              if (!root) return;
+	              root.traverse(obj => {
+	                if (obj.geometry) obj.geometry.dispose();
+	                if (obj.material) {
+	                  if (Array.isArray(obj.material)) obj.material.forEach(m => m && m.dispose && m.dispose());
+	                  else obj.material.dispose();
+	                }
+	              });
+	            }
 
-              if (truck && truckSignature === sig) {
-                truckBoundsWorld = new THREE.Box3(
-                  new THREE.Vector3(0, 0, -widthW / 2),
-                  new THREE.Vector3(lengthW, heightW, widthW / 2)
-                );
-                controls.target.set(lengthW / 2, Math.min(6, heightW / 2), 0);
-                return;
-              }
-              truckSignature = sig;
+	            function clearTrailerShapeGuides() {
+	              if (!trailerShapeGuides) return;
+	              if (truck) truck.remove(trailerShapeGuides);
+	              disposeObject3D(trailerShapeGuides);
+	              trailerShapeGuides = null;
+	              if (scene && scene.userData) scene.userData.shapeGuides = null;
+	            }
 
-              if (truck) {
-                scene.remove(truck);
-                truck.traverse(obj => {
-                  if (obj.geometry) obj.geometry.dispose();
-                  if (obj.material) obj.material.dispose();
+	            function buildGuideSig(mode, zonesInches) {
+	              const parts = (zonesInches || [])
+	                .map(z => `${z.min.x},${z.min.y},${z.min.z},${z.max.x},${z.max.y},${z.max.z}`)
+	                .join('|');
+	              return `${mode || 'rect'}:${parts}`;
+	            }
+
+	            function addGuideBox(group, aabbInches, options = {}) {
+	              const min = {
+	                x: toWorld(aabbInches.min.x),
+	                y: toWorld(aabbInches.min.y),
+	                z: toWorld(aabbInches.min.z),
+	              };
+	              const max = {
+	                x: toWorld(aabbInches.max.x),
+	                y: toWorld(aabbInches.max.y),
+	                z: toWorld(aabbInches.max.z),
+	              };
+	              const sx = max.x - min.x;
+	              const sy = max.y - min.y;
+	              const sz = max.z - min.z;
+	              if (sx <= 1e-9 || sy <= 1e-9 || sz <= 1e-9) return;
+
+	              const cx = (min.x + max.x) / 2;
+	              const cy = (min.y + max.y) / 2;
+	              const cz = (min.z + max.z) / 2;
+
+	              const geo = new THREE.BoxGeometry(sx, sy, sz);
+	              const fillMat = new THREE.MeshBasicMaterial({
+	                color: new THREE.Color(options.fillColor || 0xff3b30),
+	                transparent: true,
+	                opacity: Number.isFinite(options.opacity) ? options.opacity : 0.22,
+	                depthWrite: false,
+	              });
+	              const mesh = new THREE.Mesh(geo, fillMat);
+	              mesh.position.set(cx, cy, cz);
+	              group.add(mesh);
+
+	              const edgeGeo = new THREE.EdgesGeometry(geo);
+	              const lineMat = new THREE.LineBasicMaterial({
+	                color: new THREE.Color(options.lineColor || options.fillColor || 0xff3b30),
+	                transparent: true,
+	                opacity: Number.isFinite(options.lineOpacity) ? options.lineOpacity : 0.7,
+	              });
+	              const wire = new THREE.LineSegments(edgeGeo, lineMat);
+	              wire.position.copy(mesh.position);
+	              group.add(wire);
+	            }
+
+	            function updateTrailerShapeGuides(truckInches) {
+	              if (!scene) return;
+	              const mode = truckInches && truckInches.shapeMode ? truckInches.shapeMode : 'rect';
+
+	              let guideZones = [];
+	              if (mode === 'wheelWells') {
+	                guideZones = TrailerGeometry.getWheelWellsBlockedZones(truckInches);
+	              } else if (mode === 'frontBonus') {
+	                const bonus = TrailerGeometry.getFrontBonusZone(truckInches);
+	                guideZones = bonus ? [bonus] : [];
+	              }
+
+	              const nextSig = buildGuideSig(mode, guideZones);
+	              if (!guideZones.length) {
+	                trailerShapeGuidesSig = nextSig;
+	                clearTrailerShapeGuides();
+	                return;
+	              }
+	              if (nextSig === trailerShapeGuidesSig && trailerShapeGuides) return;
+
+	              clearTrailerShapeGuides();
+	              trailerShapeGuidesSig = nextSig;
+
+	              if (!truck || !guideZones.length) return;
+	              const group = new THREE.Group();
+	              group.name = 'truckShapeGuides';
+
+	              if (mode === 'wheelWells') {
+	                guideZones.forEach(z => {
+	                  addGuideBox(group, z, { fillColor: 0xff3b30, lineColor: 0xff3b30, opacity: 0.18, lineOpacity: 0.6 });
+	                });
+	              } else if (mode === 'frontBonus') {
+	                guideZones.forEach(z => {
+	                  addGuideBox(group, z, { fillColor: 0x4a9eff, lineColor: 0x4a9eff, opacity: 0.14, lineOpacity: 0.55 });
+	                });
+	              }
+
+	              if (!group.children.length) return;
+	              truck.add(group);
+	              trailerShapeGuides = group;
+	              if (scene.userData) scene.userData.shapeGuides = group;
+	            }
+
+	            function setTruck(truckInches) {
+	              if (!scene) return;
+	              const sig = `${truckInches.length}x${truckInches.width}x${truckInches.height}`;
+	              const lengthW = toWorld(truckInches.length);
+	              const widthW = toWorld(truckInches.width);
+	              const heightW = toWorld(truckInches.height);
+
+	              if (truck && truckSignature === sig) {
+	                truckBoundsWorld = new THREE.Box3(
+	                  new THREE.Vector3(0, 0, -widthW / 2),
+	                  new THREE.Vector3(lengthW, heightW, widthW / 2)
+	                );
+	                controls.target.set(lengthW / 2, Math.min(6, heightW / 2), 0);
+	                updateTrailerShapeGuides(truckInches);
+	                return;
+	              }
+	              truckSignature = sig;
+
+	              if (truck) {
+	                clearTrailerShapeGuides();
+	                scene.remove(truck);
+	                truck.traverse(obj => {
+	                  if (obj.geometry) obj.geometry.dispose();
+	                  if (obj.material) obj.material.dispose();
                 });
                 truck = null;
               }
@@ -5947,14 +6867,15 @@
 
               scene.add(truck);
 
-              truckBoundsWorld = new THREE.Box3(
-                new THREE.Vector3(0, 0, -widthW / 2),
-                new THREE.Vector3(lengthW, heightW, widthW / 2)
-              );
+	              truckBoundsWorld = new THREE.Box3(
+	                new THREE.Vector3(0, 0, -widthW / 2),
+	                new THREE.Vector3(lengthW, heightW, widthW / 2)
+	              );
 
-              // Move camera target near the center of the truck
-              controls.target.set(lengthW / 2, Math.min(6, heightW / 2), 0);
-            }
+	              // Move camera target near the center of the truck
+	              controls.target.set(lengthW / 2, Math.min(6, heightW / 2), 0);
+	              updateTrailerShapeGuides(truckInches);
+	            }
 
             function focusOnWorldPoint(targetWorld, options = {}) {
               if (!controls || !camera) return;
@@ -5988,15 +6909,16 @@
               return renderer.shadowMap.enabled;
             }
 
-            return {
-              init: initScene,
-              resize,
-              refreshTheme,
-              setTruck,
-              focusOnWorldPoint,
-              toggleGrid,
-              toggleShadows,
-              toggleDevOverlay: () => DevOverlay.toggle(),
+	            return {
+	              init: initScene,
+	              resize,
+	              refreshTheme,
+	              setTruck,
+	              updateTrailerShapeGuides,
+	              focusOnWorldPoint,
+	              toggleGrid,
+	              toggleShadows,
+	              toggleDevOverlay: () => DevOverlay.toggle(),
               getScene: () => scene,
               getCamera: () => camera,
               getRenderer: () => renderer,
@@ -6256,18 +7178,28 @@
               );
             }
 
-            function isInsideTruck(aabb) {
-              const bounds = SceneManager.getTruckBoundsWorld();
-              if (!bounds) return false;
-              return (
-                aabb.min.x >= bounds.min.x &&
-                aabb.max.x <= bounds.max.x &&
-                aabb.min.y >= bounds.min.y &&
-                aabb.max.y <= bounds.max.y &&
-                aabb.min.z >= bounds.min.z &&
-                aabb.max.z <= bounds.max.z
-              );
-            }
+	            function isInsideTruck(aabb) {
+	              const packId = StateStore.get('currentPackId');
+	              const pack = packId ? PackLibrary.getById(packId) : null;
+	              const truck = pack && pack.truck ? pack.truck : null;
+	              if (truck) {
+	                const zonesInches = TrailerGeometry.getTrailerUsableZones(truck);
+	                const zonesWorld = TrailerGeometry.zonesInchesToWorld(zonesInches);
+	                return TrailerGeometry.isAabbContainedInAnyZone(aabb, zonesWorld);
+	              }
+
+	              // Fallback: full rectangular bounds (should only happen before a pack is loaded)
+	              const bounds = SceneManager.getTruckBoundsWorld();
+	              if (!bounds) return false;
+	              return (
+	                aabb.min.x >= bounds.min.x &&
+	                aabb.max.x <= bounds.max.x &&
+	                aabb.min.y >= bounds.min.y &&
+	                aabb.max.y <= bounds.max.y &&
+	                aabb.min.z >= bounds.min.z &&
+	                aabb.max.z <= bounds.max.z
+	              );
+	            }
 
             function checkCollision(instanceId, candidateWorldPos) {
               const aabb = getAabbWorld(instanceId, candidateWorldPos);
@@ -6609,17 +7541,10 @@
               const stagingMap = buildStagingMap(packItems, truck);
               await stage(stagingMap);
 
-              // Step 2: compute packing
-              const spaces = [
-                {
-                  x: 0,
-                  y: 0,
-                  z: -truck.width / 2,
-                  length: truck.length,
-                  width: truck.width,
-                  height: truck.height,
-                },
-              ];
+	              // Step 2: compute packing
+	              const zonesInches = TrailerGeometry.getTrailerUsableZones(truck);
+	              const spaces = TrailerGeometry.zonesToSpacesInches(zonesInches);
+	              spaces.sort((a, b) => b.length * b.width * b.height - a.length * a.width * a.height);
 
               const placements = new Map(); // instanceId -> position inches
               const packed = [];
@@ -7165,24 +8090,18 @@
               });
             }
 
-            function isInsideTruckInstance(inst, c, truck) {
-              if (!inst || !c || !truck) return false;
-              const dims = c.dimensions || { length: 0, width: 0, height: 0 };
-              const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
-              const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
-              const aabb = {
-                min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
-                max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
-              };
-              return (
-                aabb.min.x >= 0 &&
-                aabb.max.x <= truck.length &&
-                aabb.min.y >= 0 &&
-                aabb.max.y <= truck.height &&
-                aabb.min.z >= -truck.width / 2 &&
-                aabb.max.z <= truck.width / 2
-              );
-            }
+	            function isInsideTruckInstance(inst, c, truck) {
+	              if (!inst || !c || !truck) return false;
+	              const zonesInches = TrailerGeometry.getTrailerUsableZones(truck);
+	              const dims = c.dimensions || { length: 0, width: 0, height: 0 };
+	              const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
+	              const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
+	              const aabb = {
+	                min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
+	                max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
+	              };
+	              return TrailerGeometry.isAabbContainedInAnyZone(aabb, zonesInches);
+	            }
 
             function renderCameraToDataUrl(camera, width, height, options = {}) {
               const renderer = SceneManager.getRenderer();
@@ -7409,6 +8328,11 @@
                 left.appendChild(dims);
                 header.appendChild(left);
 
+                const metaRow = document.createElement('div');
+                metaRow.className = 'row space-between';
+                metaRow.style.gap = '8px';
+                metaRow.appendChild(makeMiniCategoryChip(c.category));
+
                 const addBtn = document.createElement('button');
                 addBtn.className = 'btn btn-primary';
                 addBtn.type = 'button';
@@ -7416,12 +8340,7 @@
                 addBtn.style.boxShadow = 'none';
                 addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> Add';
                 addBtn.addEventListener('click', () => addCaseToPack(c.id));
-                header.appendChild(addBtn);
-
-                const metaRow = document.createElement('div');
-                metaRow.className = 'row';
-                metaRow.style.gap = '8px';
-                metaRow.appendChild(makeMiniCategoryChip(c.category));
+                metaRow.appendChild(addBtn);
 
                 card.appendChild(header);
                 card.appendChild(metaRow);
@@ -7529,48 +8448,175 @@
               renderSingleInspector(pack, inst, c, prefs);
             }
 
-            function renderTruckInspector(pack, prefs) {
-              const card = document.createElement('div');
-              card.className = 'card';
-              card.style.display = 'grid';
-              card.style.gap = '12px';
+	            function renderTruckInspector(pack, prefs) {
+	              const card = document.createElement('div');
+	              card.className = 'card';
+	              card.style.display = 'grid';
+	              card.style.gap = '12px';
 
-              const stats = PackLibrary.computeStats(pack);
-              card.innerHTML = `
-              <div style="font-weight:var(--font-semibold)">Truck</div>
-              <div class="muted" style="font-size:var(--text-sm)">Edit dimensions in inches (internal units). Display units follow Settings.</div>
-            `;
+	              const stats = PackLibrary.computeStats(pack);
+	              card.innerHTML = `
+	              <div style="font-weight:var(--font-semibold)">Truck</div>
+	              <div class="muted" style="font-size:var(--text-sm)">Edit dimensions in inches (internal units). Display units follow Settings.</div>
+	            `;
 
-              const dimsRow = document.createElement('div');
-              dimsRow.className = 'row';
-              dimsRow.style.gap = '10px';
-              const fL = smallField('Length (in)', pack.truck.length);
+                const shapeRow = document.createElement('div');
+                shapeRow.className = 'row';
+                shapeRow.style.display = 'grid';
+                shapeRow.style.gridTemplateColumns = '1fr';
+                shapeRow.style.gap = '10px';
+                shapeRow.style.alignItems = 'flex-end';
+                const shapeWrap = document.createElement('div');
+                shapeWrap.className = 'field';
+                shapeWrap.style.minWidth = '0';
+                shapeWrap.style.width = '100%';
+	              const shapeLabel = document.createElement('div');
+	              shapeLabel.className = 'label';
+	              shapeLabel.textContent = 'Trailer Shape Mode';
+	              const shapeSelect = document.createElement('select');
+	              shapeSelect.className = 'select';
+                shapeSelect.style.width = '100%';
+	              shapeSelect.innerHTML = `
+	                <option value="rect">Rectangle (safe)</option>
+	                <option value="wheelWells">Rectangle + Wheel Wells</option>
+	                <option value="frontBonus">Rectangle + Front Bonus Zone</option>
+	              `;
+	              shapeSelect.value =
+	                pack && pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
+	                  ? pack.truck.shapeMode
+	                  : 'rect';
+	              shapeWrap.appendChild(shapeLabel);
+	              shapeWrap.appendChild(shapeSelect);
+	              shapeRow.appendChild(shapeWrap);
+
+	              const dimsRow = document.createElement('div');
+	              dimsRow.className = 'row';
+	              dimsRow.style.display = 'grid';
+	              dimsRow.style.gridTemplateColumns = 'repeat(3, minmax(0, 1fr))';
+	              dimsRow.style.gap = '10px';
+	              dimsRow.style.alignItems = 'end';
+	              const fL = smallField('Length (in)', pack.truck.length);
               const fW = smallField('Width (in)', pack.truck.width);
               const fH = smallField('Height (in)', pack.truck.height);
+              [fL.wrap, fW.wrap, fH.wrap].forEach(wrap => (wrap.style.width = '100%'));
               dimsRow.appendChild(fL.wrap);
               dimsRow.appendChild(fW.wrap);
               dimsRow.appendChild(fH.wrap);
 
-              const btnSave = document.createElement('button');
-              btnSave.className = 'btn btn-primary';
-              btnSave.type = 'button';
-              btnSave.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Update truck';
-              btnSave.addEventListener('click', () => {
-                const next = {
-                  length: Math.max(24, Number(fL.input.value) || pack.truck.length),
-                  width: Math.max(24, Number(fW.input.value) || pack.truck.width),
-                  height: Math.max(24, Number(fH.input.value) || pack.truck.height),
-                };
-                PackLibrary.update(pack.id, { truck: next });
-                UIComponents.showToast('Truck updated', 'success');
-              });
+                const btnSave = document.createElement('button');
+	              btnSave.className = 'btn btn-primary';
+	              btnSave.type = 'button';
+	              btnSave.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Update truck';
+                btnSave.style.width = '100%';
+	              btnSave.addEventListener('click', () => {
+	                const next = {
+	                  ...pack.truck,
+	                  length: Math.max(24, Number(fL.input.value) || pack.truck.length),
+	                  width: Math.max(24, Number(fW.input.value) || pack.truck.width),
+	                  height: Math.max(24, Number(fH.input.value) || pack.truck.height),
+	                  shapeMode:
+	                    pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
+	                      ? pack.truck.shapeMode
+	                      : 'rect',
+	                  shapeConfig:
+	                    pack.truck && pack.truck.shapeConfig && typeof pack.truck.shapeConfig === 'object'
+	                      ? Utils.deepClone(pack.truck.shapeConfig)
+	                      : {},
+	                };
+	                // Clamp config values to bounds (safe even if unused)
+	                if (next.shapeMode === 'wheelWells') {
+	                  const cfg = next.shapeConfig || {};
+		                  if (Number.isFinite(cfg.wellHeight)) cfg.wellHeight = Utils.clamp(Number(cfg.wellHeight), 0, next.height);
+		                  if (Number.isFinite(cfg.wellWidth)) cfg.wellWidth = Utils.clamp(Number(cfg.wellWidth), 0, next.width / 2);
+		                  if (Number.isFinite(cfg.wellLength)) cfg.wellLength = Utils.clamp(Number(cfg.wellLength), 0, next.length);
+		                  if (Number.isFinite(cfg.wellOffsetFromRear)) {
+		                    cfg.wellOffsetFromRear = Utils.clamp(Number(cfg.wellOffsetFromRear), 0, next.length);
+		                  }
+		                  next.shapeConfig = cfg;
+		                } else if (next.shapeMode === 'frontBonus') {
+		                  const cfg = next.shapeConfig || {};
+		                  if (Number.isFinite(cfg.bonusLength)) cfg.bonusLength = Utils.clamp(Number(cfg.bonusLength), 0, next.length);
+		                  if (Number.isFinite(cfg.bonusWidth)) cfg.bonusWidth = Utils.clamp(Number(cfg.bonusWidth), 0, next.width);
+	                  if (Number.isFinite(cfg.bonusHeight)) cfg.bonusHeight = Utils.clamp(Number(cfg.bonusHeight), 0, next.height);
+	                  next.shapeConfig = cfg;
+	                }
 
-              const statsEl = document.createElement('div');
-              statsEl.className = 'card';
-              statsEl.style.background = 'var(--bg-elevated)';
+	                PackLibrary.update(pack.id, { truck: next });
+	                UIComponents.showToast('Truck updated', 'success');
+	              });
+
+	              shapeSelect.addEventListener('change', () => {
+	                const mode = String(shapeSelect.value || 'rect');
+	                const nextTruck = {
+	                  ...pack.truck,
+	                  shapeMode: mode === 'wheelWells' || mode === 'frontBonus' ? mode : 'rect',
+	                  shapeConfig:
+	                    pack.truck && pack.truck.shapeConfig && typeof pack.truck.shapeConfig === 'object'
+	                      ? Utils.deepClone(pack.truck.shapeConfig)
+	                      : {},
+	                };
+
+	                // Fill sensible defaults (stored) + clamp to trailer bounds.
+	                if (nextTruck.shapeMode === 'wheelWells') {
+	                  const cfg = nextTruck.shapeConfig || {};
+	                  if (!Number.isFinite(cfg.wellHeight)) cfg.wellHeight = 0.35 * nextTruck.height;
+	                  if (!Number.isFinite(cfg.wellWidth)) cfg.wellWidth = 0.15 * nextTruck.width;
+	                  if (!Number.isFinite(cfg.wellLength)) cfg.wellLength = 0.35 * nextTruck.length;
+	                  if (!Number.isFinite(cfg.wellOffsetFromRear)) cfg.wellOffsetFromRear = 0.25 * nextTruck.length;
+	                  cfg.wellHeight = Utils.clamp(Number(cfg.wellHeight) || 0, 0, nextTruck.height);
+	                  cfg.wellWidth = Utils.clamp(Number(cfg.wellWidth) || 0, 0, nextTruck.width / 2);
+	                  cfg.wellLength = Utils.clamp(Number(cfg.wellLength) || 0, 0, nextTruck.length);
+	                  cfg.wellOffsetFromRear = Utils.clamp(Number(cfg.wellOffsetFromRear) || 0, 0, nextTruck.length);
+	                  nextTruck.shapeConfig = cfg;
+	                } else if (nextTruck.shapeMode === 'frontBonus') {
+	                  const cfg = nextTruck.shapeConfig || {};
+	                  if (!Number.isFinite(cfg.bonusLength)) cfg.bonusLength = 0.12 * nextTruck.length;
+	                  if (!Number.isFinite(cfg.bonusWidth)) cfg.bonusWidth = nextTruck.width;
+	                  if (!Number.isFinite(cfg.bonusHeight)) cfg.bonusHeight = nextTruck.height;
+	                  cfg.bonusLength = Utils.clamp(Number(cfg.bonusLength) || 0, 0, nextTruck.length);
+	                  cfg.bonusWidth = Utils.clamp(Number(cfg.bonusWidth) || 0, 0, nextTruck.width);
+	                  cfg.bonusHeight = Utils.clamp(Number(cfg.bonusHeight) || 0, 0, nextTruck.height);
+	                  nextTruck.shapeConfig = cfg;
+	                }
+
+	                const zonesInches = TrailerGeometry.getTrailerUsableZones(nextTruck);
+	                const rectZone = [
+	                  {
+	                    min: { x: 0, y: 0, z: -nextTruck.width / 2 },
+	                    max: { x: nextTruck.length, y: nextTruck.height, z: nextTruck.width / 2 },
+	                  },
+	                ];
+	                let outOfBoundsCount = 0;
+	                (pack.cases || []).forEach(inst => {
+	                  if (!inst || inst.hidden) return;
+	                  const c = CaseLibrary.getById(inst.caseId);
+	                  if (!c) return;
+	                  const dims = c.dimensions || { length: 0, width: 0, height: 0 };
+	                  const pos =
+	                    inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
+	                  const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
+	                  const aabb = {
+	                    min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
+	                    max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
+	                  };
+	                  const wasInsideRect = TrailerGeometry.isAabbContainedInAnyZone(aabb, rectZone);
+	                  const insideNew = TrailerGeometry.isAabbContainedInAnyZone(aabb, zonesInches);
+	                  if (wasInsideRect && !insideNew) outOfBoundsCount++;
+	                });
+
+	                PackLibrary.update(pack.id, { truck: nextTruck });
+	                if (outOfBoundsCount > 0) {
+	                  UIComponents.showToast('Some items may be out of bounds for this trailer shape.', 'warning');
+	                }
+	              });
+
+                const statsEl = document.createElement('div');
+	              statsEl.className = 'card';
+	              statsEl.style.background = 'var(--bg-elevated)';
               statsEl.style.boxShadow = 'none';
               statsEl.style.display = 'grid';
               statsEl.style.gap = '8px';
+                statsEl.style.marginTop = '16px';
               statsEl.innerHTML = `
               <div style="font-weight:var(--font-semibold)">Stats</div>
               <div class="muted" style="font-size:var(--text-sm)">Cases loaded: <b style="color:var(--text-primary)">${stats.totalCases}</b></div>
@@ -7579,11 +8625,12 @@
               <div class="muted" style="font-size:var(--text-sm)">Total weight: <b style="color:var(--text-primary)">${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}</b></div>
             `;
 
-              card.appendChild(dimsRow);
-              card.appendChild(btnSave);
-              inspectorEl.appendChild(card);
-              inspectorEl.appendChild(statsEl);
-            }
+	              card.appendChild(shapeRow);
+	              card.appendChild(dimsRow);
+	              card.appendChild(btnSave);
+	              inspectorEl.appendChild(card);
+	              inspectorEl.appendChild(statsEl);
+	            }
 
             function renderMultiInspector(pack, selected) {
               const card = document.createElement('div');
@@ -7724,6 +8771,12 @@
               if (side === 'right') {
                 if (isMobile) rightEl.classList.toggle('open', visible);
                 else shellEl.style.setProperty('--right-col', visible ? defaultCol('right') : '0px');
+              }
+
+              if (StateStore.get('currentScreen') === 'editor') {
+                window.requestAnimationFrame(() => {
+                  if (SceneManager && typeof SceneManager.resize === 'function') SceneManager.resize();
+                });
               }
             }
 

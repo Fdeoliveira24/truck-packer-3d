@@ -1882,7 +1882,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
                 if (!t) {
                   UIComponents.showToast('Title is required', 'warning');
                   title.input.focus();
-                  return false;
+                  return;
                 }
                 const pack = PackLibrary.create({
                   title: t,
@@ -1921,7 +1921,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
               variant: 'primary',
               onClick: () => {
                 const nextTitle = String(f.input.value || '').trim();
-                if (!nextTitle) return false;
+                if (!nextTitle) return;
                 PackLibrary.update(packId, { title: nextTitle });
                 UIComponents.showToast('Renamed', 'success');
               },
@@ -2263,9 +2263,8 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
           tr.appendChild(tdCat);
 
           const tdFlip = document.createElement('td');
-          tdFlip.innerHTML = c.canFlip
-            ? '<i class="fa-solid fa-check" style="color:var(--success)"></i>'
-            : '<i class="fa-solid fa-minus" style="color:var(--text-muted)"></i>';
+          const flipLabel = c.canFlip === true ? 'Yes' : c.canFlip === false ? 'No' : '';
+          tdFlip.textContent = flipLabel;
           tr.appendChild(tdFlip);
 
           const tdActions = document.createElement('td');
@@ -2471,14 +2470,14 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
                 if (!name) {
                   UIComponents.showToast('Name is required', 'warning');
                   fName.input.focus();
-                  return false;
+                  return;
                 }
                 const length = Utils.unitToInches(Number(fL.input.value) || 0, lengthUnit);
                 const width = Utils.unitToInches(Number(fW.input.value) || 0, lengthUnit);
                 const height = Utils.unitToInches(Number(fH.input.value) || 0, lengthUnit);
                 if (length <= 0 || width <= 0 || height <= 0) {
                   UIComponents.showToast('Dimensions must be > 0', 'warning');
-                  return false;
+                  return;
                 }
                 const weightLb = Utils.unitToPounds(Number(fWeight.input.value) || 0, weightUnit);
                 const categoryName = String(catName.value || '').trim();
@@ -4947,10 +4946,14 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
 
         const dimsRow = document.createElement('div');
         dimsRow.className = 'row';
+        dimsRow.style.display = 'grid';
+        dimsRow.style.gridTemplateColumns = 'repeat(3, minmax(0, 1fr))';
         dimsRow.style.gap = '10px';
+        dimsRow.style.alignItems = 'end';
         const fL = smallField('Length (in)', pack.truck.length);
         const fW = smallField('Width (in)', pack.truck.width);
         const fH = smallField('Height (in)', pack.truck.height);
+        [fL.wrap, fW.wrap, fH.wrap].forEach(wrap => (wrap.style.width = '100%'));
         dimsRow.appendChild(fL.wrap);
         dimsRow.appendChild(fW.wrap);
         dimsRow.appendChild(fH.wrap);
@@ -4959,6 +4962,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         btnSave.className = 'btn btn-primary';
         btnSave.type = 'button';
         btnSave.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Update truck';
+        btnSave.style.width = '100%';
         btnSave.addEventListener('click', () => {
           const next = {
             length: Math.max(24, Number(fL.input.value) || pack.truck.length),
@@ -4975,6 +4979,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         statsEl.style.boxShadow = 'none';
         statsEl.style.display = 'grid';
         statsEl.style.gap = '8px';
+        statsEl.style.marginTop = '16px';
         statsEl.innerHTML = `
               <div style="font-weight:var(--font-semibold)">Stats</div>
               <div class="muted" style="font-size:var(--text-sm)">Cases loaded: <b style="color:var(--text-primary)">${stats.totalCases}</b></div>
@@ -5394,17 +5399,17 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
       }
 
       function selectAll() {
-        if (!inEditor()) return false;
+        if (!inEditor()) return;
         InteractionManager.selectAllInPack();
       }
 
       function deleteSelected() {
-        if (!inEditor()) return false;
+        if (!inEditor()) return;
         InteractionManager.deleteSelection();
       }
 
       function duplicateSelected() {
-        if (!inEditor()) return false;
+        if (!inEditor()) return;
         const packId = StateStore.get('currentPackId');
         const pack = PackLibrary.getById(packId);
         const selected = StateStore.get('selectedInstanceIds') || [];
@@ -5434,7 +5439,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
       }
 
       function copySelected() {
-        if (!inEditor()) return false;
+        if (!inEditor()) return;
         const packId = StateStore.get('currentPackId');
         const pack = PackLibrary.getById(packId);
         const selected = StateStore.get('selectedInstanceIds') || [];
@@ -5447,7 +5452,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
       }
 
       function pasteClipboard() {
-        if (!inEditor()) return false;
+        if (!inEditor()) return;
         const packId = StateStore.get('currentPackId');
         const pack = PackLibrary.getById(packId);
         if (!pack || !clipboard || !clipboard.length) return;
@@ -5476,7 +5481,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
       }
 
       function focusSelected() {
-        if (!inEditor()) return false;
+        if (!inEditor()) return;
         const selected = StateStore.get('selectedInstanceIds') || [];
         if (!selected.length) return;
         const obj = CaseScene.getObject(selected[0]);
@@ -5485,13 +5490,13 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
       }
 
       function toggleGrid() {
-        if (!inEditor()) return false;
+        if (!inEditor()) return;
         const visible = SceneManager.toggleGrid();
         UIComponents.showToast(visible ? 'Grid shown' : 'Grid hidden', 'info', { title: 'View', duration: 1200 });
       }
 
       function toggleShadows() {
-        if (!inEditor()) return false;
+        if (!inEditor()) return;
         const enabled = SceneManager.toggleShadows();
         UIComponents.showToast(enabled ? 'Shadows enabled' : 'Shadows disabled', 'info', {
           title: 'View',
@@ -5565,20 +5570,20 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         'meta+v': pasteClipboard,
         'ctrl+v': pasteClipboard,
         'meta+p': () => {
-          if (!inEditor()) return false;
+          if (!inEditor()) return;
           const session = getSession();
           if (!canUseFeature('AUTOPACK', session)) {
             UIComponents.showToast('AutoPack requires Pro', 'warning', { title: 'Upgrade' });
-            return false;
+            return;
           }
           AutoPackEngine.pack();
         },
         'ctrl+p': () => {
-          if (!inEditor()) return false;
+          if (!inEditor()) return;
           const session = getSession();
           if (!canUseFeature('AUTOPACK', session)) {
             UIComponents.showToast('AutoPack requires Pro', 'warning', { title: 'Upgrade' });
-            return false;
+            return;
           }
           AutoPackEngine.pack();
         },
@@ -5588,7 +5593,7 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
         s: toggleShadows,
         f: focusSelected,
         p: () => {
-          if (!inEditor()) return false;
+          if (!inEditor()) return;
           SceneManager.toggleDevOverlay();
         },
       };

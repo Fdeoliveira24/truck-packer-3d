@@ -69,7 +69,10 @@ export function mountAccountSwitcher({ buttonEl, ui, onOrgChange, onSettings, on
         label: 'Settings',
         icon: 'fa-solid fa-gear',
         onClick: () => {
-          if (typeof onSettings === 'function') return onSettings('preferences');
+          if (typeof onSettings === 'function') {
+            onSettings('preferences');
+            return;
+          }
           showToast && showToast('Settings not available', 'warning');
         },
       },
@@ -78,7 +81,10 @@ export function mountAccountSwitcher({ buttonEl, ui, onOrgChange, onSettings, on
         icon: 'fa-solid fa-right-from-bracket',
         onClick: () => {
           clearSession();
-          if (typeof onLogout === 'function') return onLogout();
+          if (typeof onLogout === 'function') {
+            onLogout();
+            return;
+          }
           try {
             window.location.hash = '#/packs';
           } catch {

@@ -815,6 +815,72 @@ th {
   z-index: 1;
 }
 
+.th-sort {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  padding: 0;
+  cursor: pointer;
+  line-height: 1;
+  user-select: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+
+.th-sort:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+.th-label {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.th-chevrons {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-size: 0.65rem;
+  gap: 2px;
+}
+
+.th-chevron {
+  display: block;
+  height: 0.7em;
+  color: var(--text-muted);
+  opacity: 0.25;
+  visibility: visible;
+  transition: color 0.15s ease, opacity 0.15s ease;
+}
+
+.th-sort:hover .th-chevron,
+.th-sort:focus-visible .th-chevron {
+  opacity: 0.45;
+}
+
+.th-sort.is-asc .th-chevron-up,
+.th-sort.is-desc .th-chevron-down {
+  color: var(--text-primary);
+  opacity: 1;
+}
+
+.th-sort.is-asc .th-chevron-down,
+.th-sort.is-desc .th-chevron-up {
+  opacity: 0;
+}
+
 tr:hover td {
   background: rgba(255, 159, 28, 0.05);
 }

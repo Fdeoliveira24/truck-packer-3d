@@ -5,6 +5,7 @@
     "no-inline-style": "off",
     "require-sri": "off",
     "no-trailing-whitespace": "warn",
+    "prefer-native-element": "warn",
     "attribute-boolean-style": "warn",
     "class-pattern": "off",
     "id-pattern": "off",

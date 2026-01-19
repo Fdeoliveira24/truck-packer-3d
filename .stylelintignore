@@ -11,3 +11,6 @@ cleanup/reports/
 
 # Git
 .git/
+
+# Project: do not lint HTML as CSS
+index.html

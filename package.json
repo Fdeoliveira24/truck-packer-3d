@@ -7,7 +7,7 @@
   "scripts": {
     "lint": "npm run lint:js && npm run lint:css && npm run lint:html",
     "lint:js": "eslint \"src/**/*.js\" \"index.html\" --report-unused-disable-directives",
-    "lint:css": "stylelint \"styles/**/*.css\" \"index.html\"",
+    "lint:css": "stylelint \"styles/**/*.css\"",
     "lint:html": "html-validate --config .htmlvalidate.json index.html",
     "lint:fix": "npm run lint:js -- --fix && npm run lint:css -- --fix",
     "format": "prettier --write \"**/*.{html,css,js,json,md}\"",

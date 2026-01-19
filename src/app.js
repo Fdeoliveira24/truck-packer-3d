@@ -1,2766 +1,4222 @@
-import { clearSession, getSession, initSession, setCurrentOrgId, upsertOrg } from './auth/session.js';
-import { canUseFeature } from './config/features.js';
-import { BillingService } from './data/services/billing.service.js';
-import { Router } from './router.js';
-import { mountAccountSwitcher } from './ui/components/account-switcher.js';
 
-(async function () {
-  try {
-    if (window.__TP3D_BOOT && window.__TP3D_BOOT.threeReady) {
-      await window.__TP3D_BOOT.threeReady;
-    }
-  } catch (_) {
-    // Ignore boot errors
-  }
-
-  console.info('[TruckPackerApp] threeReady resolved, bootstrapping app');
-
-  window.TruckPackerApp = (function () {
-    'use strict';
-
-    const APP_VERSION = '1.0.0';
-
-    const Utils = (() => {
-      const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
-
-      function safeJsonParse(text, fallback = null) {
+      (async function () {
         try {
-          return JSON.parse(text);
+          if (window.__TP3D_BOOT && window.__TP3D_BOOT.threeReady) {
+            await window.__TP3D_BOOT.threeReady;
+          }
         } catch (_) {
-          return fallback;
+          // Ignore boot errors
         }
-      }
 
-      function deepClone(obj) {
-        return JSON.parse(JSON.stringify(obj));
-      }
+        // ============================================================================
+        // SECTION: APP BOOTSTRAP ENTRY
+        // ============================================================================
+        console.info('[TruckPackerApp] threeReady resolved, bootstrapping app');
 
-      function sanitizeJSON(value) {
-        // Prevent prototype pollution via imported JSON (__proto__/constructor/prototype keys).
-        if (Array.isArray(value)) return value.map(sanitizeJSON);
-        if (!value || typeof value !== 'object') return value;
-        const out = {};
-        Object.keys(value).forEach(key => {
-          if (key === '__proto__' || key === 'prototype' || key === 'constructor') return;
-          out[key] = sanitizeJSON(value[key]);
-        });
-        return out;
-      }
+        window.TruckPackerApp = (function () {
+          'use strict';
 
-      function uuid() {
-        if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
-        const buf = new Uint8Array(16);
-        (window.crypto || window.msCrypto).getRandomValues(buf);
-        buf[6] = (buf[6] & 0x0f) | 0x40;
-        buf[8] = (buf[8] & 0x3f) | 0x80;
-        const hex = Array.from(buf).map(b => b.toString(16).padStart(2, '0'));
-        return (
-          hex.slice(0, 4).join('') +
-          '-' +
-          hex.slice(4, 6).join('') +
-          '-' +
-          hex.slice(6, 8).join('') +
-          '-' +
-          hex.slice(8, 10).join('') +
-          '-' +
-          hex.slice(10, 16).join('')
-        );
-      }
+          const APP_VERSION = '1.0.0';
 
-      function debounce(fn, waitMs) {
-        let t = null;
-        return function (...args) {
-          window.clearTimeout(t);
-          t = window.setTimeout(() => fn.apply(this, args), waitMs);
-        };
-      }
+          // ============================================================================
+          // SECTION: FOUNDATION / UTILS
+          // ============================================================================
+          const Utils = (() => {
+            const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
-      function formatRelativeTime(ts) {
-        if (!ts) return '—';
-        const delta = Date.now() - ts;
-        const s = Math.floor(delta / 1000);
-        if (s < 10) return 'just now';
-        if (s < 60) return `${s}s ago`;
-        const m = Math.floor(s / 60);
-        if (m < 60) return `${m}m ago`;
-        const h = Math.floor(m / 60);
-        if (h < 24) return `${h}h ago`;
-        const d = Math.floor(h / 24);
-        if (d < 30) return `${d}d ago`;
-        return new Date(ts).toLocaleDateString();
-      }
-
-      function downloadText(filename, text, mime = 'application/json') {
-        const blob = new Blob([text], { type: mime });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }
-
-      function parseResolution(res) {
-        const m = String(res || '').match(/^(\d+)x(\d+)$/);
-        if (!m) return { width: 1920, height: 1080 };
-        return { width: Number(m[1]), height: Number(m[2]) };
-      }
-
-      const lengthUnits = ['in', 'ft', 'mm', 'cm', 'm'];
-      const weightUnits = ['lb', 'kg'];
-
-      function inchesToUnit(inches, unit) {
-        switch (unit) {
-          case 'in':
-            return inches;
-          case 'ft':
-            return inches / 12;
-          case 'mm':
-            return inches * 25.4;
-          case 'cm':
-            return inches * 2.54;
-          case 'm':
-            return inches * 0.0254;
-          default:
-            return inches;
-        }
-      }
-
-      function unitToInches(value, unit) {
-        switch (unit) {
-          case 'in':
-            return value;
-          case 'ft':
-            return value * 12;
-          case 'mm':
-            return value / 25.4;
-          case 'cm':
-            return value / 2.54;
-          case 'm':
-            return value / 0.0254;
-          default:
-            return value;
-        }
-      }
-
-      function poundsToUnit(lb, unit) {
-        switch (unit) {
-          case 'lb':
-            return lb;
-          case 'kg':
-            return lb * 0.45359237;
-          default:
-            return lb;
-        }
-      }
-
-      function unitToPounds(value, unit) {
-        switch (unit) {
-          case 'lb':
-            return value;
-          case 'kg':
-            return value / 0.45359237;
-          default:
-            return value;
-        }
-      }
-
-      function formatLength(inches, unit, digits = 1) {
-        const v = inchesToUnit(inches, unit);
-        const fixed = unit === 'in' ? 0 : digits;
-        return `${Number.isFinite(v) ? v.toFixed(fixed) : '—'} ${unit}`;
-      }
-
-      function formatWeight(lb, unit, digits = 1) {
-        const v = poundsToUnit(lb, unit);
-        const fixed = unit === 'lb' ? 0 : digits;
-        return `${Number.isFinite(v) ? v.toFixed(fixed) : '—'} ${unit}`;
-      }
-
-      function formatDims(dimInches, lengthUnit) {
-        const l = inchesToUnit(dimInches.length, lengthUnit);
-        const w = inchesToUnit(dimInches.width, lengthUnit);
-        const h = inchesToUnit(dimInches.height, lengthUnit);
-        const fixed = lengthUnit === 'in' ? 0 : 1;
-        return `${l.toFixed(fixed)}×${w.toFixed(fixed)}×${h.toFixed(fixed)} ${lengthUnit}`;
-      }
-
-      function volumeInCubicInches(dimInches) {
-        const { length, width, height } = dimInches;
-        return Math.max(0, Number(length) * Number(width) * Number(height));
-      }
-
-      function formatVolume(dimInches, lengthUnit) {
-        const in3 = volumeInCubicInches(dimInches);
-        if (!Number.isFinite(in3)) return '—';
-        const isImperial = lengthUnit === 'in' || lengthUnit === 'ft';
-        if (isImperial) {
-          const ft3 = in3 / 1728;
-          return `${ft3.toFixed(1)} ft³`;
-        }
-        const m3 = in3 * Math.pow(0.0254, 3);
-        return `${m3.toFixed(3)} m³`;
-      }
-
-      function hasWebGL() {
-        try {
-          const canvas = document.createElement('canvas');
-          return Boolean(canvas.getContext('webgl') || canvas.getContext('experimental-webgl'));
-        } catch (_) {
-          return false;
-        }
-      }
-
-      function cssHexToInt(hex) {
-        const s = String(hex || '').trim();
-        const m = s.match(/^#([0-9a-f]{6})$/i);
-        if (!m) return 0x000000;
-        return parseInt(m[1], 16);
-      }
-
-      function getCssVar(name) {
-        return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-      }
-
-      return {
-        APP_VERSION,
-        clamp,
-        safeJsonParse,
-        deepClone,
-        sanitizeJSON,
-        uuid,
-        debounce,
-        formatRelativeTime,
-        downloadText,
-        parseResolution,
-        lengthUnits,
-        weightUnits,
-        inchesToUnit,
-        unitToInches,
-        poundsToUnit,
-        unitToPounds,
-        formatLength,
-        formatWeight,
-        formatDims,
-        volumeInCubicInches,
-        formatVolume,
-        hasWebGL,
-        cssHexToInt,
-        getCssVar,
-      };
-    })();
-
-    const UIComponents = (() => {
-      const modalRoot = document.getElementById('modal-root');
-      const toastContainer = document.getElementById('toast-container');
-      let dropdownKeyDownListener = null;
-
-      const toastTypes = {
-        success: { title: 'Success', color: 'var(--success)', icon: '✓' },
-        error: { title: 'Error', color: 'var(--error)', icon: '✕' },
-        warning: { title: 'Warning', color: 'var(--warning)', icon: '⚠' },
-        info: { title: 'Info', color: 'var(--info)', icon: 'ℹ' },
-      };
-
-      function showToast(message, type = 'info', options = {}) {
-        const cfg = toastTypes[type] || toastTypes.info;
-        const toast = document.createElement('div');
-        toast.className = 'toast';
-        toast.setAttribute('role', 'status');
-
-        const icon = document.createElement('div');
-        icon.className = 'toast-icon';
-        icon.style.background = cfg.color;
-        icon.textContent = cfg.icon;
-
-        const body = document.createElement('div');
-        body.className = 'toast-body';
-
-        const title = document.createElement('div');
-        title.className = 'toast-title';
-        title.textContent = options.title || cfg.title;
-
-        const msg = document.createElement('div');
-        msg.className = 'toast-message';
-        msg.textContent = String(message || '');
-
-        body.appendChild(title);
-        body.appendChild(msg);
-
-        if (Array.isArray(options.actions) && options.actions.length) {
-          const actions = document.createElement('div');
-          actions.className = 'toast-actions';
-          options.actions.forEach(action => {
-            const btn = document.createElement('button');
-            btn.className = 'toast-btn';
-            btn.type = 'button';
-            btn.textContent = action.label || 'Action';
-            btn.addEventListener('click', ev => {
-              ev.stopPropagation();
+            function safeJsonParse(text, fallback = null) {
               try {
-                action.onClick && action.onClick();
+                return JSON.parse(text);
               } catch (_) {
-                // Ignore errors from action handlers
+                return fallback;
               }
-              removeToast(toast);
-            });
-            actions.appendChild(btn);
-          });
-          body.appendChild(actions);
-        }
-
-        toast.appendChild(icon);
-        toast.appendChild(body);
-
-        toast.addEventListener('click', () => removeToast(toast));
-        toastContainer.appendChild(toast);
-
-        while (toastContainer.children.length > 3) {
-          toastContainer.removeChild(toastContainer.firstChild);
-        }
-
-        const duration = Number.isFinite(options.duration) ? options.duration : 3200;
-        if (duration > 0) window.setTimeout(() => removeToast(toast), duration);
-      }
-
-      function removeToast(toast) {
-        if (!toast || !toast.parentElement) return;
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateX(12px)';
-        window.setTimeout(() => {
-          if (toast.parentElement) toast.parentElement.removeChild(toast);
-        }, 180);
-      }
-
-      function showModal(config) {
-        const overlay = document.createElement('div');
-        overlay.className = 'modal-overlay';
-
-        const modal = document.createElement('div');
-        modal.className = 'modal';
-
-        const header = document.createElement('div');
-        header.className = 'modal-header';
-
-        const title = document.createElement('h3');
-        title.className = 'modal-title';
-        title.textContent = config.title || 'Dialog';
-
-        const closeBtn = document.createElement('button');
-        closeBtn.className = 'btn btn-ghost';
-        closeBtn.type = 'button';
-        closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
-        closeBtn.addEventListener('click', () => close());
-
-        header.appendChild(title);
-        header.appendChild(closeBtn);
-
-        const body = document.createElement('div');
-        body.className = 'modal-body';
-        if (typeof config.content === 'string') {
-          // SECURITY: Treat string content as trusted HTML only. For user-provided text, pass an HTMLElement and set textContent.
-          const div = document.createElement('div');
-          div.innerHTML = config.content;
-          body.appendChild(div);
-        } else if (config.content instanceof HTMLElement) {
-          body.appendChild(config.content);
-        }
-
-        const footer = document.createElement('div');
-        footer.className = 'modal-footer';
-        (config.actions || [{ label: 'Close' }]).forEach(action => {
-          const btn = document.createElement('button');
-          btn.className = `btn ${action.variant === 'primary' ? 'btn-primary' : ''} ${action.variant === 'danger' ? 'btn-danger' : ''}`;
-          btn.type = 'button';
-          btn.textContent = action.label || 'OK';
-          btn.addEventListener('click', () => {
-            try {
-              const res = action.onClick ? action.onClick() : undefined;
-              if (res === false) return;
-            } catch (_) {
-              // Ignore errors from modal actions
             }
-            close();
-          });
-          footer.appendChild(btn);
-        });
 
-        modal.appendChild(header);
-        modal.appendChild(body);
-        modal.appendChild(footer);
-        overlay.appendChild(modal);
-
-        overlay.addEventListener('click', ev => {
-          if (ev.target === overlay && config.dismissible !== false) close();
-        });
-
-        function close() {
-          if (overlay.parentElement) overlay.parentElement.removeChild(overlay);
-          try {
-            config.onClose && config.onClose();
-          } catch (_) {
-            // Ignore errors from onClose callback
-          }
-        }
-
-        modalRoot.appendChild(overlay);
-        return { close, overlay, modal, body };
-      }
-
-      function confirm(options) {
-        return new Promise(resolve => {
-          showModal({
-            title: options.title || 'Confirm',
-            content: options.message || 'Are you sure?',
-            actions: [
-              { label: options.cancelLabel || 'Cancel', onClick: () => resolve(false) },
-              {
-                label: options.okLabel || 'Confirm',
-                variant: options.danger ? 'danger' : 'primary',
-                onClick: () => resolve(true),
-              },
-            ],
-          });
-        });
-      }
-
-      function openDropdown(anchorEl, items, options = {}) {
-        closeAllDropdowns();
-        const wrap = document.createElement('div');
-        wrap.className = 'dropdown-menu';
-
-        items.forEach(item => {
-          if (item && (item.type === 'divider' || item.divider === true)) {
-            const divider = document.createElement('div');
-            divider.setAttribute('role', 'separator');
-            divider.style.height = '1px';
-            divider.style.margin = `${8}px ${6}px`;
-            divider.style.background = 'var(--border-subtle)';
-            wrap.appendChild(divider);
-            return;
-          }
-
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'dropdown-item';
-          if (item && item.disabled) {
-            btn.disabled = true;
-            btn.style.opacity = '0.6';
-            btn.style.cursor = 'not-allowed';
-          }
-          if (item.icon) {
-            const icon = document.createElement('i');
-            icon.className = item.icon;
-            icon.style.width = '18px';
-            icon.style.display = 'inline-flex';
-            icon.style.alignItems = 'center';
-            icon.style.justifyContent = 'center';
-            icon.style.color = 'var(--text-secondary)';
-            btn.appendChild(icon);
-          }
-          const text = document.createElement('span');
-          text.textContent = String(item.label || '');
-          text.style.flex = '1';
-          btn.appendChild(text);
-          if (item.rightIcon) {
-            const iconRight = document.createElement('i');
-            iconRight.className = item.rightIcon;
-            iconRight.style.marginLeft = 'auto';
-            iconRight.style.color = item.rightIconColor || 'var(--accent-primary)';
-            btn.appendChild(iconRight);
-          }
-          btn.addEventListener('click', ev => {
-            ev.stopPropagation();
-            if (btn.disabled) return;
-            closeAllDropdowns();
-            item.onClick && item.onClick();
-          });
-          wrap.appendChild(btn);
-        });
-
-        const dropdown = document.createElement('div');
-        dropdown.className = 'dropdown';
-        dropdown.dataset.dropdown = '1';
-        dropdown.style.position = 'fixed';
-        dropdown.style.zIndex = '16000';
-
-        const rect = anchorEl.getBoundingClientRect();
-        const width = Math.max(180, Number(options.width) || 220);
-        let left = rect.right - width;
-        if (options.align === 'left') left = rect.left;
-        left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
-        dropdown.style.left = `${left}px`;
-        dropdown.style.top = `${rect.bottom + 6}px`;
-        dropdown.style.minWidth = `${width}px`;
-        dropdown.appendChild(wrap);
-
-        document.body.appendChild(dropdown);
-        window.setTimeout(() => {
-          const onDocClick = () => closeAllDropdowns();
-          document.addEventListener('click', onDocClick, { once: true });
-        }, 0);
-
-        dropdownKeyDownListener = ev => {
-          if (ev.key === 'Escape') closeAllDropdowns();
-        };
-        document.addEventListener('keydown', dropdownKeyDownListener);
-      }
-
-      function closeAllDropdowns() {
-        document.querySelectorAll('[data-dropdown="1"]').forEach(el => el.remove());
-        if (dropdownKeyDownListener) {
-          document.removeEventListener('keydown', dropdownKeyDownListener);
-          dropdownKeyDownListener = null;
-        }
-      }
-
-      return { showToast, showModal, confirm, openDropdown, closeAllDropdowns };
-    })();
-
-    const SystemOverlay = (() => {
-      const overlay = document.getElementById('system-overlay');
-      const titleEl = document.getElementById('system-title');
-      const messageEl = document.getElementById('system-message');
-      const listEl = document.getElementById('system-list');
-      const retryBtn = document.getElementById('system-retry');
-      retryBtn.addEventListener('click', () => window.location.reload());
-
-      function show({ title, message, items }) {
-        titleEl.textContent = title || 'Truck Packer 3D';
-        messageEl.textContent = message || '';
-        listEl.innerHTML = '';
-        (items || []).forEach(text => {
-          const li = document.createElement('li');
-          li.textContent = text;
-          listEl.appendChild(li);
-        });
-        overlay.classList.add('active');
-      }
-
-      function hide() {
-        overlay.classList.remove('active');
-      }
-
-      return { show, hide };
-    })();
-
-    const StateStore = (() => {
-      const MAX_HISTORY = 50;
-      let state = null;
-      let history = [];
-      let historyPointer = -1;
-      const subscribers = [];
-
-      function historySlice(s) {
-        return Utils.deepClone({
-          caseLibrary: s.caseLibrary,
-          packLibrary: s.packLibrary,
-          preferences: s.preferences,
-        });
-      }
-
-      function initStateStore(initialState) {
-        state = Utils.deepClone(initialState);
-        history = [historySlice(state)];
-        historyPointer = 0;
-      }
-
-      function get(key) {
-        if (!state) return key ? undefined : null;
-        if (!key) return state;
-        return state[key];
-      }
-
-      function set(patch, options = {}) {
-        const next = { ...state, ...patch };
-        const significant = options.skipHistory ? false : isSignificantChange(patch);
-        state = next;
-        if (significant) pushHistory(historySlice(next));
-        if (!options.skipNotify) notify(patch, state);
-      }
-
-      function replace(nextState, options = {}) {
-        state = Utils.deepClone(nextState);
-        if (!options.skipHistory) pushHistory(historySlice(state));
-        notify({ _replace: true }, state);
-      }
-
-      function snapshotState() {
-        return Utils.deepClone(state);
-      }
-
-      function pushHistory(snapshot) {
-        history = history.slice(0, historyPointer + 1);
-        history.push(Utils.deepClone(snapshot));
-        if (history.length > MAX_HISTORY) history.shift();
-        historyPointer = history.length - 1;
-      }
-
-      function undo() {
-        if (historyPointer <= 0) return false;
-        historyPointer--;
-        state = { ...state, ...Utils.deepClone(history[historyPointer]) };
-        notify({ _undo: true }, state);
-        return true;
-      }
-
-      function redo() {
-        if (historyPointer >= history.length - 1) return false;
-        historyPointer++;
-        state = { ...state, ...Utils.deepClone(history[historyPointer]) };
-        notify({ _redo: true }, state);
-        return true;
-      }
-
-      function subscribe(fn) {
-        subscribers.push(fn);
-        return () => {
-          const idx = subscribers.indexOf(fn);
-          if (idx > -1) subscribers.splice(idx, 1);
-        };
-      }
-
-      function notify(changes, nextState) {
-        subscribers.forEach(fn => {
-          try {
-            fn(changes, nextState);
-          } catch (err) {
-            console.error('Subscriber error', err);
-          }
-        });
-      }
-
-      function isSignificantChange(patch) {
-        const keys = Object.keys(patch || {});
-        const significant = ['caseLibrary', 'packLibrary', 'preferences'];
-        return keys.some(k => significant.includes(k));
-      }
-
-      return {
-        init: initStateStore,
-        get,
-        set,
-        replace,
-        snapshot: snapshotState,
-        undo,
-        redo,
-        subscribe,
-      };
-    })();
-
-    const Storage = (() => {
-      const KEY = 'truckPacker3d:v2:data';
-      const LEGACY_KEY = 'truckPacker3d:v1';
-      const saveDebounced = Utils.debounce(saveNow, 250);
-
-      function migrateLegacy() {
-        const raw = window.localStorage.getItem(LEGACY_KEY);
-        if (!raw) return null;
-        const legacy = Utils.sanitizeJSON(Utils.safeJsonParse(raw, null));
-        if (!legacy || typeof legacy !== 'object') return null;
-        const migrated = {
-          version: APP_VERSION,
-          savedAt: Date.now(),
-          preferences: legacy.preferences || Defaults.defaultPreferences,
-          orgData: {
-            personal: {
-              caseLibrary: Array.isArray(legacy.caseLibrary) ? legacy.caseLibrary : [],
-              packLibrary: Array.isArray(legacy.packLibrary) ? legacy.packLibrary : [],
-              currentPackId: legacy.currentPackId || null,
-            },
-          },
-        };
-        try {
-          window.localStorage.setItem(KEY, JSON.stringify(migrated));
-        } catch (_) {
-          // Ignore migration write failures
-        }
-        return migrated;
-      }
-
-      function load() {
-        const raw = window.localStorage.getItem(KEY);
-        if (!raw) return migrateLegacy();
-        const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(raw, null));
-        if (!parsed || typeof parsed !== 'object') return migrateLegacy();
-        if (!parsed.orgData || typeof parsed.orgData !== 'object') parsed.orgData = {};
-        if (!parsed.preferences || typeof parsed.preferences !== 'object')
-          {parsed.preferences = Defaults.defaultPreferences;}
-        return parsed;
-      }
-
-      function loadOrg(orgId) {
-        const data = load();
-        if (!data) return null;
-        const orgKey = String(orgId || '').trim() || 'personal';
-        const org = data.orgData && data.orgData[orgKey] ? data.orgData[orgKey] : null;
-        if (!org) return null;
-        return {
-          caseLibrary: Array.isArray(org.caseLibrary) ? org.caseLibrary : [],
-          packLibrary: Array.isArray(org.packLibrary) ? org.packLibrary : [],
-          currentPackId: org.currentPackId || null,
-          preferences: data.preferences || Defaults.defaultPreferences,
-        };
-      }
-
-      function saveSoon() {
-        saveDebounced();
-      }
-
-      function saveNow() {
-        try {
-          const session = getSession();
-          const orgId = session && session.user && session.user.currentOrgId ? session.user.currentOrgId : 'personal';
-          const state = StateStore.get();
-          const existing = load() || {
-            version: APP_VERSION,
-            savedAt: Date.now(),
-            preferences: state.preferences,
-            orgData: {},
-          };
-          const next = {
-            version: APP_VERSION,
-            savedAt: Date.now(),
-            preferences: state.preferences,
-            orgData: existing.orgData && typeof existing.orgData === 'object' ? existing.orgData : {},
-          };
-          next.orgData[orgId] = {
-            caseLibrary: state.caseLibrary,
-            packLibrary: state.packLibrary,
-            currentPackId: state.currentPackId,
-          };
-          window.localStorage.setItem(KEY, JSON.stringify(next));
-        } catch (err) {
-          console.error('Save failed', err);
-          UIComponents.showToast('Save failed: ' + err.message, 'error', { title: 'Storage' });
-        }
-      }
-
-      function clearAll() {
-        window.localStorage.removeItem(KEY);
-        window.localStorage.removeItem(LEGACY_KEY);
-      }
-
-      function replaceAll(nextData) {
-        const data = Utils.sanitizeJSON(nextData);
-        if (!data || typeof data !== 'object') throw new Error('Invalid data');
-        if (!data.orgData || typeof data.orgData !== 'object') data.orgData = {};
-        if (!data.preferences || typeof data.preferences !== 'object') data.preferences = Defaults.defaultPreferences;
-        data.version = APP_VERSION;
-        data.savedAt = Date.now();
-        window.localStorage.setItem(KEY, JSON.stringify(data));
-      }
-
-      function exportAppJSON() {
-        saveNow();
-        const data = load() || {
-          version: APP_VERSION,
-          savedAt: Date.now(),
-          preferences: Defaults.defaultPreferences,
-          orgData: {},
-        };
-        const payload = {
-          app: 'Truck Packer 3D',
-          version: APP_VERSION,
-          exportedAt: Date.now(),
-          session: getSession(),
-          data,
-        };
-        return JSON.stringify(payload, null, 2);
-      }
-
-      function importAppJSON(jsonText) {
-        const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
-        if (!parsed || typeof parsed !== 'object') throw new Error('Invalid JSON');
-        if (parsed.data && parsed.data.orgData) {
-          return {
-            session: parsed.session && typeof parsed.session === 'object' ? parsed.session : null,
-            data: parsed.data,
-          };
-        }
-
-        // Backward-compatible: legacy app export (single org)
-        const legacyData = parsed.data || parsed;
-        if (!legacyData.caseLibrary || !legacyData.packLibrary || !legacyData.preferences)
-          {throw new Error('Missing required keys');}
-        const session = getSession();
-        const orgId = session && session.user && session.user.currentOrgId ? session.user.currentOrgId : 'personal';
-        return {
-          session: null,
-          data: {
-            version: APP_VERSION,
-            savedAt: Date.now(),
-            preferences: legacyData.preferences,
-            orgData: {
-              [orgId]: {
-                caseLibrary: legacyData.caseLibrary,
-                packLibrary: legacyData.packLibrary,
-                currentPackId: null,
-              },
-            },
-          },
-        };
-      }
-
-      return { load, loadOrg, saveSoon, saveNow, clearAll, replaceAll, exportAppJSON, importAppJSON };
-    })();
-
-    const Defaults = (() => {
-      const defaultPreferences = {
-        units: { length: 'in', weight: 'lb' },
-        theme: 'light',
-        labelFontSize: 12,
-        hiddenCaseOpacity: 0.3,
-        snapping: { enabled: true, gridSize: 1 },
-        camera: { defaultView: 'perspective' },
-        export: { screenshotResolution: '1920x1080', pdfIncludeStats: true },
-        categories: [],
-      };
-
-      const categories = [
-        { key: 'all', name: 'All', color: '#9b9ba8' },
-        { key: 'audio', name: 'Audio', color: '#f59e0b' },
-        { key: 'lighting', name: 'Lighting', color: '#3b82f6' },
-        { key: 'stage', name: 'Stage', color: '#10b981' },
-        { key: 'backline', name: 'Backline', color: '#ec4899' },
-        { key: 'default', name: 'Default', color: '#9ca3af' },
-      ];
-
-      function seedCases() {
-        const now = Date.now();
-        return [
-          {
-            id: Utils.uuid(),
-            name: 'Line Array Case',
-            manufacturer: 'L-Acoustics',
-            category: 'audio',
-            dimensions: { length: 48, width: 24, height: 32 },
-            weight: 125,
-            canFlip: false,
-            notes: '',
-            color: '#ff9f1c',
-            createdAt: now,
-            updatedAt: now,
-          },
-          {
-            id: Utils.uuid(),
-            name: 'Subwoofer Crate',
-            manufacturer: 'JBL',
-            category: 'audio',
-            dimensions: { length: 36, width: 36, height: 24 },
-            weight: 95,
-            canFlip: true,
-            notes: '',
-            color: '#ff9f1c',
-            createdAt: now,
-            updatedAt: now,
-          },
-          {
-            id: Utils.uuid(),
-            name: 'Truss Section',
-            manufacturer: 'Global Truss',
-            category: 'lighting',
-            dimensions: { length: 120, width: 12, height: 12 },
-            weight: 45,
-            canFlip: true,
-            notes: '',
-            color: '#3b82f6',
-            createdAt: now,
-            updatedAt: now,
-          },
-          {
-            id: Utils.uuid(),
-            name: 'Stage Deck',
-            manufacturer: 'StagingCo',
-            category: 'stage',
-            dimensions: { length: 96, width: 48, height: 8 },
-            weight: 80,
-            canFlip: false,
-            notes: '',
-            color: '#10b981',
-            createdAt: now,
-            updatedAt: now,
-          },
-          {
-            id: Utils.uuid(),
-            name: 'Guitar Rack',
-            manufacturer: 'Backline Inc',
-            category: 'backline',
-            dimensions: { length: 40, width: 22, height: 46 },
-            weight: 110,
-            canFlip: false,
-            notes: '',
-            color: '#ec4899',
-            createdAt: now,
-            updatedAt: now,
-          },
-        ];
-      }
-
-      function seedPack(caseLibrary) {
-        const now = Date.now();
-        const pick = name => caseLibrary.find(c => c.name === name)?.id;
-        const packId = Utils.uuid();
-        const instances = [];
-        const add = (caseId, x, y, z) => {
-          instances.push({
-            id: Utils.uuid(),
-            caseId,
-            transform: { position: { x, y, z }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
-            hidden: false,
-            groupId: null,
-          });
-        };
-        add(pick('Line Array Case'), -80, 16, 0);
-        add(pick('Subwoofer Crate'), -90, 12, 28);
-        add(pick('Truss Section'), -70, 6, -24);
-
-        return {
-          id: packId,
-          title: 'Demo Pack',
-          client: 'Example Client',
-          projectName: 'Envato Preview',
-          drawnBy: 'Truck Packer 3D',
-          notes: 'Tip: Use AutoPack (Ctrl/Cmd+P) to fill the truck.',
-          truck: { length: 636, width: 102, height: 98 },
-          cases: instances.filter(i => Boolean(i.caseId)),
-          groups: [],
-          stats: { totalCases: instances.length, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
-          createdAt: now,
-          lastEdited: now,
-        };
-      }
-
-      return { defaultPreferences, categories, seedCases, seedPack };
-    })();
-
-    const Normalizer = (() => {
-      const DEFAULT_TRUCK = { length: 636, width: 102, height: 98 };
-
-      function finiteNumber(value, fallback) {
-        const n = Number(value);
-        return Number.isFinite(n) ? n : fallback;
-      }
-
-      function positiveNumber(value, fallback) {
-        const n = finiteNumber(value, fallback);
-        return n > 0 ? n : fallback;
-      }
-
-      function safeString(value, fallback = '') {
-        const s = value == null ? '' : String(value);
-        const t = s.trim();
-        return t || fallback;
-      }
-
-      function normalizePreferences(prefs) {
-        const base = Utils.deepClone(Defaults.defaultPreferences);
-        const next = { ...base, ...(prefs && typeof prefs === 'object' ? prefs : {}) };
-        next.units = next.units && typeof next.units === 'object' ? next.units : base.units;
-        next.units.length = Utils.lengthUnits.includes(next.units.length) ? next.units.length : base.units.length;
-        next.units.weight = Utils.weightUnits.includes(next.units.weight) ? next.units.weight : base.units.weight;
-        next.theme = next.theme === 'dark' ? 'dark' : 'light';
-        next.labelFontSize = Utils.clamp(finiteNumber(next.labelFontSize, base.labelFontSize), 8, 24);
-        next.hiddenCaseOpacity = Utils.clamp(finiteNumber(next.hiddenCaseOpacity, base.hiddenCaseOpacity), 0, 1);
-        next.snapping = next.snapping && typeof next.snapping === 'object' ? next.snapping : base.snapping;
-        next.snapping.enabled = Boolean(next.snapping.enabled);
-        next.snapping.gridSize = Math.max(0.25, finiteNumber(next.snapping.gridSize, base.snapping.gridSize));
-        next.camera = next.camera && typeof next.camera === 'object' ? next.camera : base.camera;
-        next.camera.defaultView = next.camera.defaultView === 'orthographic' ? 'orthographic' : 'perspective';
-        next.export = next.export && typeof next.export === 'object' ? next.export : base.export;
-        next.export.screenshotResolution = safeString(
-          next.export.screenshotResolution,
-          base.export.screenshotResolution
-        );
-        next.export.pdfIncludeStats = Boolean(next.export.pdfIncludeStats);
-        const normalizeCatKey = key =>
-          String(key || '')
-            .trim()
-            .toLowerCase();
-        const prefCats = Array.isArray(next.categories) ? next.categories : base.categories;
-        next.categories = (prefCats || [])
-          .map(c => ({
-            key: normalizeCatKey(c.key || c.name),
-            name: safeString(c.name, c.key || ''),
-            color: safeString(c.color, ''),
-          }))
-          .filter(c => c.key);
-        if (!next.categories.length) {
-          next.categories = (Defaults.categories || [])
-            .filter(c => c.key !== 'all')
-            .map(c => ({ key: c.key, name: c.name, color: c.color }));
-        }
-        return next;
-      }
-
-      function normalizeCase(c, now) {
-        const createdAt = finiteNumber(c && c.createdAt, now);
-        const updatedAt = finiteNumber(c && c.updatedAt, now);
-        const dims = c && c.dimensions && typeof c.dimensions === 'object' ? c.dimensions : {};
-        const length = positiveNumber(dims.length, 48);
-        const width = positiveNumber(dims.width, 24);
-        const height = positiveNumber(dims.height, 24);
-        const category = safeString(c && c.category, 'default').toLowerCase();
-        const color = safeString(c && c.color, CategoryService.meta(category).color);
-        return {
-          id: safeString(c && c.id, Utils.uuid()),
-          name: safeString(c && c.name, 'Unnamed Case'),
-          manufacturer: safeString(c && c.manufacturer, ''),
-          category,
-          dimensions: { length, width, height },
-          weight: Math.max(0, finiteNumber(c && c.weight, 0)),
-          volume: Utils.volumeInCubicInches({ length, width, height }),
-          canFlip: Boolean(c && c.canFlip),
-          notes: safeString(c && c.notes, ''),
-          color,
-          createdAt,
-          updatedAt,
-        };
-      }
-
-      function normalizeTruck(truck) {
-        const t = truck && typeof truck === 'object' ? truck : {};
-        return {
-          length: positiveNumber(t.length, DEFAULT_TRUCK.length),
-          width: positiveNumber(t.width, DEFAULT_TRUCK.width),
-          height: positiveNumber(t.height, DEFAULT_TRUCK.height),
-        };
-      }
-
-      function normalizeInstance(inst, caseMap) {
-        const transform = inst && inst.transform && typeof inst.transform === 'object' ? inst.transform : {};
-        const pos = transform.position && typeof transform.position === 'object' ? transform.position : {};
-        const rot =
-          transform.rotation && typeof transform.rotation === 'object' ? transform.rotation : { x: 0, y: 0, z: 0 };
-        const scale = transform.scale && typeof transform.scale === 'object' ? transform.scale : { x: 1, y: 1, z: 1 };
-        const caseId = safeString(inst && inst.caseId, '');
-        const caseData = caseMap.get(caseId) || null;
-        const halfY = caseData ? Math.max(1, (caseData.dimensions.height || 1) / 2) : 10;
-
-        return {
-          id: safeString(inst && inst.id, Utils.uuid()),
-          caseId,
-          transform: {
-            position: {
-              x: finiteNumber(pos.x, -80),
-              y: finiteNumber(pos.y, halfY),
-              z: finiteNumber(pos.z, 0),
-            },
-            rotation: {
-              x: finiteNumber(rot.x, 0),
-              y: finiteNumber(rot.y, 0),
-              z: finiteNumber(rot.z, 0),
-            },
-            scale: {
-              x: finiteNumber(scale.x, 1),
-              y: finiteNumber(scale.y, 1),
-              z: finiteNumber(scale.z, 1),
-            },
-          },
-          hidden: Boolean(inst && inst.hidden),
-          groupId: inst && inst.groupId != null ? inst.groupId : null,
-        };
-      }
-
-      function normalizePack(p, caseMap, now) {
-        const truck = normalizeTruck(p && p.truck);
-        const rawCases = Array.isArray(p && p.cases) ? p.cases : [];
-        const instances = rawCases.map(i => normalizeInstance(i, caseMap)).filter(i => Boolean(i.caseId));
-        const pack = {
-          id: safeString(p && p.id, Utils.uuid()),
-          title: safeString(p && p.title, 'Untitled Pack'),
-          client: safeString(p && p.client, ''),
-          projectName: safeString(p && p.projectName, ''),
-          drawnBy: safeString(p && p.drawnBy, ''),
-          notes: safeString(p && p.notes, ''),
-          truck,
-          cases: instances,
-          groups: Array.isArray(p && p.groups) ? p.groups : [],
-          stats: { totalCases: 0, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
-          createdAt: finiteNumber(p && p.createdAt, now),
-          lastEdited: finiteNumber(p && p.lastEdited, now),
-        };
-        pack.stats = PackLibrary.computeStats(pack, Array.from(caseMap.values()));
-        return pack;
-      }
-
-      function normalizeAppData(data) {
-        const now = Date.now();
-        const rawCases = Array.isArray(data && data.caseLibrary) ? data.caseLibrary : [];
-        const cases = rawCases.map(c => normalizeCase(c, now));
-
-        // Deduplicate case ids if needed
-        const seenCaseIds = new Set();
-        cases.forEach(c => {
-          if (!seenCaseIds.has(c.id)) {
-            seenCaseIds.add(c.id);
-            return;
-          }
-          c.id = Utils.uuid();
-        });
-        const caseMap = new Map(cases.map(c => [c.id, c]));
-
-        const rawPacks = Array.isArray(data && data.packLibrary) ? data.packLibrary : [];
-        const packs = rawPacks.map(p => normalizePack(p, caseMap, now));
-
-        const prefs = normalizePreferences(data && data.preferences);
-        const currentPackId = safeString(data && data.currentPackId, '');
-        const current = packs.some(p => p.id === currentPackId) ? currentPackId : packs[0] ? packs[0].id : null;
-
-        return { caseLibrary: cases, packLibrary: packs, preferences: prefs, currentPackId: current };
-      }
-
-      return { normalizeAppData };
-    })();
-
-    const PreferencesManager = (() => {
-      function applyTheme(theme) {
-        document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'light');
-      }
-
-      function get() {
-        return StateStore.get('preferences');
-      }
-
-      function set(nextPrefs) {
-        StateStore.set({ preferences: nextPrefs });
-      }
-
-      return { get, set, applyTheme };
-    })();
-
-    const CategoryService = (() => {
-      const normalize = key =>
-        String(key || '')
-          .trim()
-          .toLowerCase();
-
-      function hashHue(str) {
-        let h = 0;
-        const s = String(str || '');
-        for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
-        return h;
-      }
-
-      function colorFor(key, fallback) {
-        if (fallback) return fallback;
-        const hue = hashHue(key);
-        return `hsl(${hue}, 72%, 56%)`;
-      }
-
-      function all() {
-        const prefs = PreferencesManager.get();
-        const prefCats = Array.isArray(prefs && prefs.categories) ? prefs.categories : [];
-        const seeded = prefCats.length
-          ? prefCats
-          : (Defaults.categories || [])
-              .filter(c => c.key !== 'all')
-              .map(c => ({ key: c.key, name: c.name, color: c.color }));
-        const dedup = new Map();
-        seeded.forEach(c => {
-          const k = normalize(c.key || c.name);
-          if (!k) return;
-          dedup.set(k, {
-            key: k,
-            name: c.name || k.charAt(0).toUpperCase() + k.slice(1),
-            color: c.color || colorFor(k),
-          });
-        });
-        return Array.from(dedup.values());
-      }
-
-      function save(list) {
-        const prefs = PreferencesManager.get() || {};
-        PreferencesManager.set({ ...prefs, categories: list });
-      }
-
-      function meta(key) {
-        const k = normalize(key);
-        const found = all().find(c => c.key === k);
-        if (found) return found;
-        return { key: k, name: k ? k.charAt(0).toUpperCase() + k.slice(1) : 'Uncategorized', color: colorFor(k) };
-      }
-
-      function listWithCounts(cases) {
-        const counts = {};
-        (cases || []).forEach(c => {
-          const k = normalize(c.category || 'default');
-          counts[k] = (counts[k] || 0) + 1;
-        });
-        const known = all();
-        const ordered = known
-          .map(c => c.key)
-          .filter(k => k)
-          .concat(Object.keys(counts).filter(k => !known.find(c => c.key === k)));
-        return ordered
-          .filter((k, idx, arr) => arr.indexOf(k) === idx)
-          .map(k => ({ ...meta(k), count: counts[k] || 0 }));
-      }
-
-      function upsert({ key, name, color }) {
-        const k = normalize(key || name);
-        if (!k) return meta('default');
-        const list = all();
-        const next = { key: k, name: name || meta(k).name, color: color || meta(k).color };
-        const idx = list.findIndex(c => c.key === k);
-        if (idx > -1) list[idx] = next;
-        else list.push(next);
-        save(list);
-        return next;
-      }
-
-      function remove(key) {
-        const k = normalize(key);
-        if (!k || k === 'default') return; // never remove default
-        const list = all().filter(c => c.key !== k);
-        save(list);
-        CaseLibrary.reassignCategory(k, 'default');
-      }
-
-      function rename(oldKey, name, color) {
-        const from = normalize(oldKey);
-        const to = normalize(name || oldKey);
-        if (!from) return meta('default');
-        const list = all().filter(c => c.key !== from);
-        const next = { key: to, name: name || meta(to).name, color: color || meta(to).color };
-        list.push(next);
-        save(list);
-        if (from !== to) CaseLibrary.reassignCategory(from, to);
-        return next;
-      }
-
-      return { meta, listWithCounts, upsert, remove, rename, all };
-    })();
-
-    const CaseLibrary = (() => {
-      function getCases() {
-        return StateStore.get('caseLibrary') || [];
-      }
-
-      function getById(caseId) {
-        return getCases().find(c => c.id === caseId) || null;
-      }
-
-      function upsert(caseData) {
-        const now = Date.now();
-        const cases = getCases();
-        const idx = cases.findIndex(c => c.id === caseData.id);
-        const next = { ...caseData };
-        next.updatedAt = now;
-        if (!next.createdAt) next.createdAt = now;
-        next.dimensions = {
-          length: Number(next.dimensions.length) || 0,
-          width: Number(next.dimensions.width) || 0,
-          height: Number(next.dimensions.height) || 0,
-        };
-        next.weight = Number(next.weight) || 0;
-        next.volume = Utils.volumeInCubicInches(next.dimensions);
-
-        const nextCases = idx > -1 ? cases.map((c, i) => (i === idx ? next : c)) : [...cases, next];
-
-        StateStore.set({ caseLibrary: nextCases });
-      }
-
-      function reassignCategory(oldKey, newKey) {
-        const from = oldKey ? oldKey.trim().toLowerCase() : '';
-        const to = newKey ? newKey.trim().toLowerCase() : 'default';
-        if (!from || from === to) return;
-        const next = getCases().map(c => (c.category === from ? { ...c, category: to } : c));
-        StateStore.set({ caseLibrary: next });
-      }
-
-      function remove(caseId) {
-        const cases = getCases().filter(c => c.id !== caseId);
-        StateStore.set({ caseLibrary: cases });
-      }
-
-      function duplicate(caseId) {
-        const original = getById(caseId);
-        if (!original) return null;
-        const now = Date.now();
-        const copy = {
-          ...Utils.deepClone(original),
-          id: Utils.uuid(),
-          name: original.name + ' (Copy)',
-          createdAt: now,
-          updatedAt: now,
-        };
-        upsert(copy);
-        return copy;
-      }
-
-      function search(query, categoryKeys) {
-        const q = String(query || '')
-          .trim()
-          .toLowerCase();
-        const cats = (categoryKeys || []).filter(k => k && k !== 'all');
-        return getCases().filter(c => {
-          const matchesQ =
-            !q || (c.name || '').toLowerCase().includes(q) || (c.manufacturer || '').toLowerCase().includes(q);
-          const matchesCat = !cats.length || cats.includes(c.category);
-          return matchesQ && matchesCat;
-        });
-      }
-
-      function countsByCategory() {
-        const counts = {};
-        getCases().forEach(c => {
-          counts[c.category] = (counts[c.category] || 0) + 1;
-        });
-        return counts;
-      }
-
-      return {
-        getCases,
-        getById,
-        upsert,
-        remove,
-        duplicate,
-        search,
-        countsByCategory,
-        reassignCategory,
-      };
-    })();
-
-    const PackLibrary = (() => {
-      function getPacks() {
-        return StateStore.get('packLibrary') || [];
-      }
-
-      function getById(packId) {
-        return getPacks().find(p => p.id === packId) || null;
-      }
-
-      function create(packData) {
-        const now = Date.now();
-        const pack = {
-          id: Utils.uuid(),
-          title: packData.title || 'Untitled Pack',
-          client: packData.client || '',
-          projectName: packData.projectName || '',
-          drawnBy: packData.drawnBy || '',
-          notes: packData.notes || '',
-          truck: packData.truck || { length: 636, width: 102, height: 98 },
-          cases: [],
-          groups: [],
-          stats: { totalCases: 0, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
-          createdAt: now,
-          lastEdited: now,
-        };
-        StateStore.set({ packLibrary: [...getPacks(), pack] });
-        return pack;
-      }
-
-      function update(packId, patch) {
-        const packs = getPacks();
-        const idx = packs.findIndex(p => p.id === packId);
-        if (idx === -1) return null;
-        const next = { ...packs[idx], ...Utils.deepClone(patch), lastEdited: Date.now() };
-        next.stats = computeStats(next);
-        const nextPacks = packs.map((p, i) => (i === idx ? next : p));
-        StateStore.set({ packLibrary: nextPacks });
-        return next;
-      }
-
-      function remove(packId) {
-        const packs = getPacks().filter(p => p.id !== packId);
-        const current = StateStore.get('currentPackId');
-        StateStore.set(
-          { packLibrary: packs, currentPackId: current === packId ? null : current, selectedInstanceIds: [] },
-          { skipHistory: true }
-        );
-      }
-
-      function duplicate(packId) {
-        const pack = getById(packId);
-        if (!pack) return null;
-        const now = Date.now();
-        const copy = Utils.deepClone(pack);
-        copy.id = Utils.uuid();
-        copy.title = pack.title + ' (Copy)';
-        copy.createdAt = now;
-        copy.lastEdited = now;
-        // New instance ids
-        copy.cases = (copy.cases || []).map(i => ({ ...i, id: Utils.uuid() }));
-        StateStore.set({ packLibrary: [...getPacks(), copy] });
-        return copy;
-      }
-
-      function open(packId) {
-        const pack = getById(packId);
-        if (!pack) return null;
-        StateStore.set({ currentPackId: packId, selectedInstanceIds: [] }, { skipHistory: true });
-        return pack;
-      }
-
-      function addInstance(packId, caseId, position) {
-        const pack = getById(packId);
-        if (!pack) return null;
-        const caseData = CaseLibrary.getById(caseId);
-        if (!caseData) return null;
-        const instance = {
-          id: Utils.uuid(),
-          caseId,
-          transform: {
-            position: position || { x: -80, y: Math.max(1, caseData.dimensions.height / 2), z: 0 },
-            rotation: { x: 0, y: 0, z: 0 },
-            scale: { x: 1, y: 1, z: 1 },
-          },
-          hidden: false,
-          groupId: null,
-        };
-        const nextCases = [...(pack.cases || []), instance];
-        update(packId, { cases: nextCases });
-        return instance;
-      }
-
-      function updateInstance(packId, instanceId, patch) {
-        const pack = getById(packId);
-        if (!pack) return null;
-        const nextInstances = (pack.cases || []).map(i =>
-          i.id === instanceId ? { ...i, ...Utils.deepClone(patch) } : i
-        );
-        return update(packId, { cases: nextInstances });
-      }
-
-      function removeInstances(packId, instanceIds) {
-        const pack = getById(packId);
-        if (!pack) return null;
-        const idSet = new Set(instanceIds || []);
-        const nextInstances = (pack.cases || []).filter(i => !idSet.has(i.id));
-        return update(packId, { cases: nextInstances });
-      }
-
-      function computeStats(pack, caseLibraryOverride) {
-        const truckVol = pack.truck.length * pack.truck.width * pack.truck.height;
-        let usedIn3 = 0;
-        let totalWeight = 0;
-        let packedCases = 0;
-        const getCase = caseId => {
-          if (Array.isArray(caseLibraryOverride)) return caseLibraryOverride.find(c => c.id === caseId) || null;
-          return CaseLibrary.getById(caseId);
-        };
-        (pack.cases || []).forEach(inst => {
-          const c = getCase(inst.caseId);
-          if (!c) return;
-          if (inst.hidden) return;
-          const dims = c.dimensions || { length: 0, width: 0, height: 0 };
-          const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
-          const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
-          const aabb = {
-            min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
-            max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
-          };
-          const insideTruck =
-            aabb.min.x >= 0 &&
-            aabb.max.x <= pack.truck.length &&
-            aabb.min.y >= 0 &&
-            aabb.max.y <= pack.truck.height &&
-            aabb.min.z >= -pack.truck.width / 2 &&
-            aabb.max.z <= pack.truck.width / 2;
-          if (!insideTruck) return;
-          packedCases++;
-          usedIn3 += c.volume || Utils.volumeInCubicInches(dims);
-          totalWeight += Number(c.weight) || 0;
-        });
-        const volumePercent = truckVol > 0 ? (usedIn3 / truckVol) * 100 : 0;
-        return {
-          totalCases: (pack.cases || []).length,
-          packedCases,
-          volumeUsed: usedIn3,
-          volumePercent,
-          totalWeight,
-        };
-      }
-
-      return {
-        getPacks,
-        getById,
-        create,
-        update,
-        remove,
-        duplicate,
-        open,
-        addInstance,
-        updateInstance,
-        removeInstances,
-        computeStats,
-      };
-    })();
-
-    const Data = (() => {
-      const updates = [
-        {
-          version: '1.0.0',
-          date: '2026-01-15',
-          features: [
-            'Multi-screen workspace (Packs, Cases, Editor, Updates, Roadmap, Settings)',
-            'Three.js 3D editor with drag placement',
-            'CSV/XLSX import, PNG + PDF export',
-          ],
-          bugFixes: [],
-          breakingChanges: [],
-        },
-        {
-          version: '1.1.0',
-          date: '2026-03-01',
-          features: ['(Example) Weight balance view', '(Example) Case rotation'],
-          bugFixes: ['(Example) Improved collision edge cases'],
-          breakingChanges: [],
-        },
-      ];
-
-      const roadmap = [
-        {
-          quarter: 'Q1 2026',
-          items: [
-            {
-              title: 'Weight balance',
-              status: 'Completed',
-              badge: '✓',
-              color: 'var(--success)',
-              details: 'Add center-of-gravity and axle load estimates.',
-            },
-            {
-              title: 'Rotation (MVP)',
-              status: 'In Progress',
-              badge: '⏱',
-              color: 'var(--warning)',
-              details: 'Allow 90° rotations and pack-time heuristics.',
-            },
-          ],
-        },
-        {
-          quarter: 'Q2 2026',
-          items: [
-            {
-              title: 'Multi-user',
-              status: 'Planned',
-              badge: '📋',
-              color: 'var(--info)',
-              details: 'Presence + change tracking (no real-time yet).',
-            },
-            {
-              title: '3D export',
-              status: 'Planned',
-              badge: '📋',
-              color: 'var(--info)',
-              details: 'GLB/GLTF export for downstream tools.',
-            },
-          ],
-        },
-        {
-          quarter: 'Future',
-          items: [
-            {
-              title: 'AR view',
-              status: 'Idea',
-              badge: '💡',
-              color: 'var(--text-muted)',
-              details: 'Preview a load-out in real space on mobile.',
-            },
-          ],
-        },
-      ];
-
-      return { updates, roadmap };
-    })();
-
-    const AppShell = (() => {
-      const appRoot = document.getElementById('app');
-      const sidebar = document.getElementById('sidebar');
-      const btnSidebar = document.getElementById('btn-sidebar');
-      const topbarTitle = document.getElementById('topbar-title');
-      const topbarSubtitle = document.getElementById('topbar-subtitle');
-      const contentRoot = document.querySelector('.content');
-      const navButtons = Array.from(document.querySelectorAll('[data-nav]'));
-
-      const screenTitles = {
-        packs: { title: 'Packs', subtitle: 'Project library' },
-        cases: { title: 'Cases', subtitle: 'Inventory management' },
-        editor: { title: 'Editor', subtitle: '3D workspace' },
-        updates: { title: 'Updates', subtitle: 'Release notes' },
-        roadmap: { title: 'Roadmap', subtitle: 'Product direction' },
-        settings: { title: 'Settings', subtitle: 'Preferences' },
-      };
-
-      function toggleSidebar() {
-        const isMobile = window.matchMedia('(max-width: 899px)').matches;
-        if (isMobile) {
-          sidebar.classList.toggle('open');
-        } else {
-          appRoot.classList.toggle('sidebar-collapsed');
-        }
-      }
-
-      function initShell() {
-        btnSidebar.addEventListener('click', toggleSidebar);
-        navButtons.forEach(btn => {
-          btn.addEventListener('click', () => {
-            const target = btn.getAttribute('data-nav');
-            navigate(target);
-            if (window.matchMedia('(max-width: 899px)').matches) {
-              sidebar.classList.remove('open');
+            function deepClone(obj) {
+              return JSON.parse(JSON.stringify(obj));
             }
-          });
-        });
 
-        window.addEventListener('resize', () => {
-          if (!window.matchMedia('(max-width: 899px)').matches) {
-            sidebar.classList.remove('open');
-          }
-        });
-      }
+            function sanitizeJSON(value) {
+              // Prevent prototype pollution via imported JSON (__proto__/constructor/prototype keys).
+              if (Array.isArray(value)) return value.map(sanitizeJSON);
+              if (!value || typeof value !== 'object') return value;
+              const out = {};
+              Object.keys(value).forEach(key => {
+                if (key === '__proto__' || key === 'prototype' || key === 'constructor') return;
+                out[key] = sanitizeJSON(value[key]);
+              });
+              return out;
+            }
 
-      function navigate(screenKey) {
-        StateStore.set({ currentScreen: screenKey }, { skipHistory: true });
-      }
+            function uuid() {
+              if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+              const buf = new Uint8Array(16);
+              (window.crypto || window.msCrypto).getRandomValues(buf);
+              buf[6] = (buf[6] & 0x0f) | 0x40;
+              buf[8] = (buf[8] & 0x3f) | 0x80;
+              const hex = Array.from(buf).map(b => b.toString(16).padStart(2, '0'));
+              return (
+                hex.slice(0, 4).join('') +
+                '-' +
+                hex.slice(4, 6).join('') +
+                '-' +
+                hex.slice(6, 8).join('') +
+                '-' +
+                hex.slice(8, 10).join('') +
+                '-' +
+                hex.slice(10, 16).join('')
+              );
+            }
 
-      function renderShell() {
-        const screen = StateStore.get('currentScreen');
-        navButtons.forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-nav') === screen));
-        document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-        const el = document.getElementById(`screen-${screen}`);
-        if (el) el.classList.add('active');
-        if (contentRoot) contentRoot.classList.toggle('editor-mode', screen === 'editor');
+            function debounce(fn, waitMs) {
+              let t = null;
+              return function (...args) {
+                window.clearTimeout(t);
+                t = window.setTimeout(() => fn.apply(this, args), waitMs);
+              };
+            }
 
-        if (screen === 'editor') {
-          const pack = PackLibrary.getById(StateStore.get('currentPackId'));
-          topbarTitle.textContent = pack ? pack.title || 'Editor' : 'Editor';
-          topbarSubtitle.textContent = pack ? `Edited ${Utils.formatRelativeTime(pack.lastEdited)}` : '3D workspace';
-          return;
-        }
+            function formatRelativeTime(ts) {
+              if (!ts) return '—';
+              const delta = Date.now() - ts;
+              const s = Math.floor(delta / 1000);
+              if (s < 10) return 'just now';
+              if (s < 60) return `${s}s ago`;
+              const m = Math.floor(s / 60);
+              if (m < 60) return `${m}m ago`;
+              const h = Math.floor(m / 60);
+              if (h < 24) return `${h}h ago`;
+              const d = Math.floor(h / 24);
+              if (d < 30) return `${d}d ago`;
+              return new Date(ts).toLocaleDateString();
+            }
 
-        const meta = screenTitles[screen] || { title: 'Truck Packer 3D', subtitle: '' };
-        topbarTitle.textContent = meta.title;
-        topbarSubtitle.textContent = meta.subtitle;
-      }
+            function downloadText(filename, text, mime = 'application/json') {
+              const blob = new Blob([text], { type: mime });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = filename;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+            }
 
-      return { init: initShell, navigate, renderShell };
-    })();
+            function parseResolution(res) {
+              const m = String(res || '').match(/^(\d+)x(\d+)$/);
+              if (!m) return { width: 1920, height: 1080 };
+              return { width: Number(m[1]), height: Number(m[2]) };
+            }
 
-    // ==== UI: Packs Screen ====
-    const PacksUI = (() => {
-      const searchEl = document.getElementById('packs-search');
-      const gridEl = document.getElementById('packs-grid');
-      const emptyEl = document.getElementById('packs-empty');
-      const filterEmptyEl = document.getElementById('packs-filter-empty');
-      const filterEmptyMsg = document.getElementById('packs-filter-empty-msg');
-      const btnNew = document.getElementById('btn-new-pack');
-      const btnImport = document.getElementById('btn-import-pack');
+            const lengthUnits = ['in', 'ft', 'mm', 'cm', 'm'];
+            const weightUnits = ['lb', 'kg'];
 
-      function initPacksUI() {
-        searchEl.addEventListener('input', Utils.debounce(render, 200));
-        searchEl.addEventListener('keydown', ev => {
-          if (ev.key === 'Escape') {
-            searchEl.value = '';
-            render();
-            searchEl.blur();
-          }
-        });
-        btnNew.addEventListener('click', () => openNewPackModal());
-        btnImport.addEventListener('click', () => openImportPackDialog());
-      }
+            function inchesToUnit(inches, unit) {
+              switch (unit) {
+                case 'in':
+                  return inches;
+                case 'ft':
+                  return inches / 12;
+                case 'mm':
+                  return inches * 25.4;
+                case 'cm':
+                  return inches * 2.54;
+                case 'm':
+                  return inches * 0.0254;
+                default:
+                  return inches;
+              }
+            }
 
-      function render() {
-        const q = String(searchEl.value || '')
-          .trim()
-          .toLowerCase();
-        const allPacks = PackLibrary.getPacks()
-          .slice()
-          .sort((a, b) => (b.lastEdited || 0) - (a.lastEdited || 0));
+            function unitToInches(value, unit) {
+              switch (unit) {
+                case 'in':
+                  return value;
+                case 'ft':
+                  return value * 12;
+                case 'mm':
+                  return value / 25.4;
+                case 'cm':
+                  return value / 2.54;
+                case 'm':
+                  return value / 0.0254;
+                default:
+                  return value;
+              }
+            }
 
-        const packs = allPacks.filter(
-          p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q)
-        );
+            function poundsToUnit(lb, unit) {
+              switch (unit) {
+                case 'lb':
+                  return lb;
+                case 'kg':
+                  return lb * 0.45359237;
+                default:
+                  return lb;
+              }
+            }
 
-        gridEl.innerHTML = '';
+            function unitToPounds(value, unit) {
+              switch (unit) {
+                case 'lb':
+                  return value;
+                case 'kg':
+                  return value / 0.45359237;
+                default:
+                  return value;
+              }
+            }
 
-        if (!allPacks.length) {
-          emptyEl.style.display = 'block';
-          filterEmptyEl.style.display = 'none';
-          return;
-        }
+            function formatLength(inches, unit, digits = 1) {
+              const v = inchesToUnit(inches, unit);
+              const fixed = unit === 'in' ? 0 : digits;
+              return `${Number.isFinite(v) ? v.toFixed(fixed) : '—'} ${unit}`;
+            }
 
-        if (!packs.length) {
-          emptyEl.style.display = 'none';
-          filterEmptyMsg.textContent = q ? `No matching packs for "${q}"` : 'No matching packs';
-          filterEmptyEl.style.display = 'block';
-          return;
-        }
+            function formatWeight(lb, unit, digits = 1) {
+              const v = poundsToUnit(lb, unit);
+              const fixed = unit === 'lb' ? 0 : digits;
+              return `${Number.isFinite(v) ? v.toFixed(fixed) : '—'} ${unit}`;
+            }
 
-        filterEmptyEl.style.display = 'none';
-        emptyEl.style.display = 'none';
+            function formatDims(dimInches, lengthUnit) {
+              const l = inchesToUnit(dimInches.length, lengthUnit);
+              const w = inchesToUnit(dimInches.width, lengthUnit);
+              const h = inchesToUnit(dimInches.height, lengthUnit);
+              const fixed = lengthUnit === 'in' ? 0 : 1;
+              return `${l.toFixed(fixed)}×${w.toFixed(fixed)}×${h.toFixed(fixed)} ${lengthUnit}`;
+            }
 
-        packs.forEach(pack => {
-          const card = document.createElement('div');
-          card.className = 'card pack-card';
-          card.tabIndex = 0;
-          card.addEventListener('click', ev => {
-            if (ev.target && ev.target.closest && ev.target.closest('[data-pack-menu]')) return;
-            openPack(pack.id);
-          });
-          card.addEventListener('keydown', ev => {
-            if (ev.key === 'Enter') openPack(pack.id);
-          });
+            function volumeInCubicInches(dimInches) {
+              const { length, width, height } = dimInches;
+              return Math.max(0, Number(length) * Number(width) * Number(height));
+            }
 
-          const preview = buildPreview(pack);
+            function formatVolume(dimInches, lengthUnit) {
+              const in3 = volumeInCubicInches(dimInches);
+              if (!Number.isFinite(in3)) return '—';
+              const isImperial = lengthUnit === 'in' || lengthUnit === 'ft';
+              if (isImperial) {
+                const ft3 = in3 / 1728;
+                return `${ft3.toFixed(1)} ft³`;
+              }
+              const m3 = in3 * Math.pow(0.0254, 3);
+              return `${m3.toFixed(3)} m³`;
+            }
 
-          const title = document.createElement('h3');
-          title.textContent = pack.title || 'Untitled Pack';
+            function hasWebGL() {
+              try {
+                const canvas = document.createElement('canvas');
+                return Boolean(canvas.getContext('webgl') || canvas.getContext('experimental-webgl'));
+              } catch (_) {
+                return false;
+              }
+            }
 
-          const sub = document.createElement('div');
-          sub.className = 'muted';
-          sub.style.fontSize = 'var(--text-sm)';
-          sub.textContent = pack.client
-            ? `${pack.client} • edited ${Utils.formatRelativeTime(pack.lastEdited)}`
-            : `edited ${Utils.formatRelativeTime(pack.lastEdited)}`;
+            function cssHexToInt(hex) {
+              const s = String(hex || '').trim();
+              const m = s.match(/^#([0-9a-f]{6})$/i);
+              if (!m) return 0x000000;
+              return parseInt(m[1], 16);
+            }
 
-          const meta = document.createElement('div');
-          meta.className = 'pack-meta';
+            function getCssVar(name) {
+              return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+            }
 
-          const badgesWrap = document.createElement('div');
-          badgesWrap.className = 'pack-meta-badges';
+            return {
+              APP_VERSION,
+              clamp,
+              safeJsonParse,
+              deepClone,
+              sanitizeJSON,
+              uuid,
+              debounce,
+              formatRelativeTime,
+              downloadText,
+              parseResolution,
+              lengthUnits,
+              weightUnits,
+              inchesToUnit,
+              unitToInches,
+              poundsToUnit,
+              unitToPounds,
+              formatLength,
+              formatWeight,
+              formatDims,
+              volumeInCubicInches,
+              formatVolume,
+              hasWebGL,
+              cssHexToInt,
+              getCssVar,
+            };
+          })();
 
-          const count = document.createElement('div');
-          count.className = 'badge';
-          count.textContent = `${(pack.cases || []).length} case(s)`;
+          // ============================================================================
+          // SECTION: UI PRIMITIVES (MODAL / TOAST)
+          // ============================================================================
+          const UIComponents = (() => {
+            const modalRoot = document.getElementById('modal-root');
+            const toastContainer = document.getElementById('toast-container');
+            let dropdownKeyDownListener = null;
+            let dropdownRepositionListener = null;
 
-          const truck = document.createElement('div');
-          truck.className = 'badge';
-          const t = pack.truck || { length: 636, width: 102, height: 98 };
-          truck.textContent = `Truck ${t.length}"×${t.width}"×${t.height}"`;
+            const toastTypes = {
+              success: { title: 'Success', color: 'var(--success)', icon: '✓' },
+              error: { title: 'Error', color: 'var(--error)', icon: '✕' },
+              warning: { title: 'Warning', color: 'var(--warning)', icon: '⚠' },
+              info: { title: 'Info', color: 'var(--info)', icon: 'ℹ' },
+            };
 
-          badgesWrap.appendChild(count);
-          badgesWrap.appendChild(truck);
+            function showToast(message, type = 'info', options = {}) {
+              const cfg = toastTypes[type] || toastTypes.info;
+              const toast = document.createElement('div');
+              toast.className = 'toast';
+              toast.setAttribute('role', 'status');
 
-          const kebabWrap = document.createElement('div');
-          kebabWrap.className = 'kebab';
-          kebabWrap.setAttribute('data-pack-menu', '1');
-          const kebabBtn = document.createElement('button');
-          kebabBtn.className = 'btn btn-ghost';
-          kebabBtn.type = 'button';
-          kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
-          kebabBtn.addEventListener('click', ev => {
-            ev.stopPropagation();
-            UIComponents.openDropdown(kebabBtn, [
-              { label: 'Open', icon: 'fa-solid fa-folder-open', onClick: () => openPack(pack.id) },
-              { label: 'Rename', icon: 'fa-solid fa-pen', onClick: () => openRename(pack.id) },
-              {
-                label: 'Duplicate',
-                icon: 'fa-solid fa-clone',
-                onClick: () => {
-                  PackLibrary.duplicate(pack.id);
-                  UIComponents.showToast('Pack duplicated', 'success');
-                },
-              },
-              { label: 'Export JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
-              { label: 'Delete', icon: 'fa-solid fa-trash', onClick: () => deletePack(pack.id) },
-            ]);
-          });
-          kebabWrap.appendChild(kebabBtn);
+              const icon = document.createElement('div');
+              icon.className = 'toast-icon';
+              icon.style.background = cfg.color;
+              icon.textContent = cfg.icon;
 
-          meta.appendChild(badgesWrap);
-          meta.appendChild(kebabWrap);
+              const body = document.createElement('div');
+              body.className = 'toast-body';
 
-          card.appendChild(preview);
-          card.appendChild(title);
-          card.appendChild(sub);
-          card.appendChild(meta);
-          gridEl.appendChild(card);
-        });
-      }
+              const title = document.createElement('div');
+              title.className = 'toast-title';
+              title.textContent = options.title || cfg.title;
 
-      function buildPreview(pack) {
-        // TODO: Replace with actual canvas snapshot rendering
-        // Should use SceneManager to render pack contents off-screen
-        // and capture via canvas.toDataURL() for realistic preview
-        const preview = document.createElement('div');
-        const items = (pack.cases || []).slice(0, 12);
+              const msg = document.createElement('div');
+              msg.className = 'toast-message';
+              msg.textContent = String(message || '');
 
-        if (!items.length) {
-          preview.className = 'pack-preview empty';
-          preview.textContent = 'No items yet';
-          return preview;
-        }
+              body.appendChild(title);
+              body.appendChild(msg);
 
-        preview.className = 'pack-preview';
-        items.forEach(inst => {
-          const cell = document.createElement('div');
-          cell.className = 'pack-preview-cell';
-          const meta = CaseLibrary.getById(inst.caseId);
-          if (meta && meta.color) cell.style.background = meta.color;
-          cell.title = meta ? meta.name : 'Case';
-          preview.appendChild(cell);
-        });
-        return preview;
-      }
+              if (Array.isArray(options.actions) && options.actions.length) {
+                const actions = document.createElement('div');
+                actions.className = 'toast-actions';
+                options.actions.forEach(action => {
+                  const btn = document.createElement('button');
+                  btn.className = 'toast-btn';
+                  btn.type = 'button';
+                  btn.textContent = action.label || 'Action';
+                  btn.addEventListener('click', ev => {
+                    ev.stopPropagation();
+                    try {
+                      action.onClick && action.onClick();
+                    } catch (_) {
+                      // Ignore errors from action handlers
+                    }
+                    removeToast(toast);
+                  });
+                  actions.appendChild(btn);
+                });
+                body.appendChild(actions);
+              }
 
-      function openPack(packId) {
-        const pack = PackLibrary.open(packId);
-        if (!pack) {
-          UIComponents.showToast('Pack not found', 'error');
-          return;
-        }
-        AppShell.navigate('editor');
-      }
+              toast.appendChild(icon);
+              toast.appendChild(body);
 
-      function openNewPackModal() {
-        const content = document.createElement('div');
-        content.style.display = 'grid';
-        content.style.gap = '14px';
-        content.style.gridTemplateColumns = 'repeat(auto-fit, minmax(260px, 1fr))';
-        content.style.alignItems = 'flex-start';
+              toast.addEventListener('click', () => removeToast(toast));
+              toastContainer.appendChild(toast);
 
-        const title = field('Title (required)', 'text', 'Summer Festival Tour', true);
-        const client = field('Client (optional)', 'text', 'Live Nation', false);
-        const projectName = field('Project name (optional)', 'text', 'Coachella 2024', false);
-        const drawnBy = field('Drawn by (optional)', 'text', 'John Smith', false);
+              while (toastContainer.children.length > 3) {
+                toastContainer.removeChild(toastContainer.firstChild);
+              }
 
-        const truckPresets = [
-          { label: '53ft Trailer (default)', truck: { length: 636, width: 102, height: 98 } },
-          { label: '26ft Box Truck', truck: { length: 312, width: 96, height: 96 } },
-          { label: 'Sprinter Van', truck: { length: 168, width: 70, height: 72 } },
-        ];
+              const duration = Number.isFinite(options.duration) ? options.duration : 3200;
+              if (duration > 0) window.setTimeout(() => removeToast(toast), duration);
+            }
 
-        const presetWrap = document.createElement('div');
-        presetWrap.className = 'field';
-        const presetLabel = document.createElement('div');
-        presetLabel.className = 'label';
-        presetLabel.textContent = 'Truck preset';
-        const presetSelect = document.createElement('select');
-        presetSelect.className = 'select';
-        truckPresets.forEach((p, idx) => {
-          const opt = document.createElement('option');
-          opt.value = String(idx);
-          opt.textContent = p.label;
-          presetSelect.appendChild(opt);
-        });
-        presetWrap.appendChild(presetLabel);
-        presetWrap.appendChild(presetSelect);
+            function removeToast(toast) {
+              if (!toast || !toast.parentElement) return;
+              toast.style.opacity = '0';
+              toast.style.transform = 'translateX(12px)';
+              window.setTimeout(() => {
+                if (toast.parentElement) toast.parentElement.removeChild(toast);
+              }, 180);
+            }
 
-        const truckGrid = document.createElement('div');
-        truckGrid.className = 'row';
-        truckGrid.style.gap = '12px';
-        const tL = field('Truck length (in)', 'number', '636', true);
-        const tW = field('Truck width (in)', 'number', '102', true);
-        const tH = field('Truck height (in)', 'number', '98', true);
-        tL.wrap.style.flex = '1';
-        tW.wrap.style.flex = '1';
-        tH.wrap.style.flex = '1';
-        truckGrid.appendChild(tL.wrap);
-        truckGrid.appendChild(tW.wrap);
-        truckGrid.appendChild(tH.wrap);
+            function showModal(config) {
+              const overlay = document.createElement('div');
+              overlay.className = 'modal-overlay';
 
-        presetSelect.addEventListener('change', () => {
-          const idx = Number(presetSelect.value);
-          const preset = truckPresets[idx] || truckPresets[0];
-          tL.input.value = String(preset.truck.length);
-          tW.input.value = String(preset.truck.width);
-          tH.input.value = String(preset.truck.height);
-        });
+              const modal = document.createElement('div');
+              modal.className = 'modal';
 
-        content.appendChild(title.wrap);
-        content.appendChild(client.wrap);
-        content.appendChild(projectName.wrap);
-        content.appendChild(drawnBy.wrap);
-        content.appendChild(presetWrap);
-        content.appendChild(truckGrid);
+              const header = document.createElement('div');
+              header.className = 'modal-header';
 
-        UIComponents.showModal({
-          title: 'New Pack',
-          content,
-          actions: [
-            { label: 'Cancel' },
-            {
-              label: 'Create',
-              variant: 'primary',
-              onClick: () => {
-                const t = String(title.input.value || '').trim();
-                if (!t) {
-                  UIComponents.showToast('Title is required', 'warning');
-                  title.input.focus();
+              const title = document.createElement('h3');
+              title.className = 'modal-title';
+              title.textContent = config.title || 'Dialog';
+
+              const closeBtn = document.createElement('button');
+              closeBtn.className = 'btn btn-ghost';
+              closeBtn.type = 'button';
+              closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+              closeBtn.addEventListener('click', () => close());
+
+              header.appendChild(title);
+              header.appendChild(closeBtn);
+
+              const body = document.createElement('div');
+              body.className = 'modal-body';
+              if (typeof config.content === 'string') {
+                // SECURITY: Treat string content as trusted HTML only. For user-provided text, pass an HTMLElement and set textContent.
+                const div = document.createElement('div');
+                div.innerHTML = config.content;
+                body.appendChild(div);
+              } else if (config.content instanceof HTMLElement) {
+                body.appendChild(config.content);
+              }
+
+              const footer = document.createElement('div');
+              footer.className = 'modal-footer';
+              (config.actions || [{ label: 'Close' }]).forEach(action => {
+                const btn = document.createElement('button');
+                btn.className = `btn ${action.variant === 'primary' ? 'btn-primary' : ''} ${action.variant === 'danger' ? 'btn-danger' : ''}`;
+                btn.type = 'button';
+                btn.textContent = action.label || 'OK';
+                btn.addEventListener('click', () => {
+                  try {
+                    const res = action.onClick ? action.onClick() : undefined;
+                    if (res === false) return;
+                  } catch (_) {
+                    // Ignore errors from modal actions
+                  }
+                  close();
+                });
+                footer.appendChild(btn);
+              });
+
+              modal.appendChild(header);
+              modal.appendChild(body);
+              modal.appendChild(footer);
+              overlay.appendChild(modal);
+
+              overlay.addEventListener('click', ev => {
+                if (ev.target === overlay && config.dismissible !== false) close();
+              });
+
+              function close() {
+                if (overlay.parentElement) overlay.parentElement.removeChild(overlay);
+                try {
+                  config.onClose && config.onClose();
+                } catch (_) {
+                  // Ignore errors from onClose callback
+                }
+              }
+
+              modalRoot.appendChild(overlay);
+              return { close, overlay, modal, body };
+            }
+
+            function confirm(options) {
+              return new Promise(resolve => {
+                showModal({
+                  title: options.title || 'Confirm',
+                  content: options.message || 'Are you sure?',
+                  actions: [
+                    { label: options.cancelLabel || 'Cancel', onClick: () => resolve(false) },
+                    {
+                      label: options.okLabel || 'Confirm',
+                      variant: options.danger ? 'danger' : 'primary',
+                      onClick: () => resolve(true),
+                    },
+                  ],
+                });
+              });
+            }
+
+	            function openDropdown(anchorEl, items, options = {}) {
+	              closeAllDropdowns();
+	              const wrap = document.createElement('div');
+	              wrap.className = 'dropdown-menu';
+	              // The stylesheet defines `.dropdown-menu` as `position:absolute` for inline dropdowns.
+	              // For floating viewport-clamped dropdowns we make it participate in layout so the
+	              // wrapper element has a measurable width/height.
+	              wrap.style.position = 'static';
+	              wrap.style.top = 'auto';
+	              wrap.style.left = 'auto';
+	              wrap.style.right = 'auto';
+
+	              items.forEach(item => {
+	                if (item && (item.type === 'divider' || item.divider === true)) {
+	                  const divider = document.createElement('div');
+                  divider.setAttribute('role', 'separator');
+                  divider.style.height = '1px';
+                  divider.style.margin = `${8}px ${6}px`;
+                  divider.style.background = 'var(--border-subtle)';
+                  wrap.appendChild(divider);
                   return;
                 }
-                const pack = PackLibrary.create({
-                  title: t,
-                  client: String(client.input.value || '').trim(),
-                  projectName: String(projectName.input.value || '').trim(),
-                  drawnBy: String(drawnBy.input.value || '').trim(),
-                  truck: {
-                    length: Number(tL.input.value) || 636,
-                    width: Number(tW.input.value) || 102,
-                    height: Number(tH.input.value) || 98,
-                  },
+
+                // Add divider before this item if requested
+                if (item && item.dividerBefore) {
+                  const divider = document.createElement('div');
+                  divider.setAttribute('role', 'separator');
+                  divider.style.height = '1px';
+                  divider.style.margin = `${8}px ${6}px`;
+                  divider.style.background = 'var(--border-subtle)';
+                  wrap.appendChild(divider);
+                }
+
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'dropdown-item';
+                
+                // Apply variant (e.g., danger for delete actions)
+                if (item && item.variant) {
+                  btn.dataset.variant = item.variant;
+                }
+                
+                if (item && item.disabled) {
+                  btn.disabled = true;
+                  btn.style.opacity = '0.6';
+                  btn.style.cursor = 'not-allowed';
+                }
+	                if (item.icon) {
+	                  const icon = document.createElement('i');
+	                  icon.className = item.icon;
+	                  btn.appendChild(icon);
+	                }
+                const text = document.createElement('span');
+                text.textContent = String(item.label || '');
+                text.style.flex = '1';
+                btn.appendChild(text);
+                if (item.rightIcon) {
+                  const iconRight = document.createElement('i');
+                  iconRight.className = item.rightIcon;
+                  iconRight.style.marginLeft = 'auto';
+                  iconRight.style.color = item.rightIconColor || 'var(--accent-primary)';
+                  btn.appendChild(iconRight);
+                }
+                btn.addEventListener('click', ev => {
+                  ev.stopPropagation();
+                  if (btn.disabled) return;
+                  closeAllDropdowns();
+                  item.onClick && item.onClick();
                 });
-                UIComponents.showToast('Pack created', 'success');
-                PackLibrary.open(pack.id);
-                AppShell.navigate('editor');
+                wrap.appendChild(btn);
+              });
+
+              const dropdown = document.createElement('div');
+              dropdown.className = 'dropdown';
+              dropdown.dataset.dropdown = '1';
+              dropdown.style.position = 'fixed';
+              dropdown.style.zIndex = '16000';
+              dropdown.style.visibility = 'hidden';
+
+              const preferredWidth = Math.max(180, Number(options.width) || 220);
+              dropdown.style.minWidth = `${preferredWidth}px`;
+              dropdown.appendChild(wrap);
+
+              document.body.appendChild(dropdown);
+
+	              const positionDropdown = () => {
+	                if (!dropdown.isConnected) return;
+	                const pad = 8;
+	                const gap = 6;
+	                const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+	                const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+	                const rect = anchorEl.getBoundingClientRect();
+
+	                dropdown.style.maxWidth = `${Math.max(0, vw - pad * 2)}px`;
+	                dropdown.style.maxHeight = `${Math.max(0, vh - pad * 2)}px`;
+	                dropdown.style.overflowY = 'auto';
+
+	                // Measure after maxWidth/minWidth are applied.
+	                const menuRect = dropdown.getBoundingClientRect();
+                const menuW = menuRect.width || preferredWidth;
+                const menuH = menuRect.height || 0;
+
+                // Default: open below the trigger.
+                let top = rect.bottom + gap;
+                if (top + menuH > vh - pad) top = rect.top - gap - menuH;
+                top = Math.max(pad, Math.min(top, Math.max(pad, vh - pad - menuH)));
+
+                // Backwards-compatible default: align dropdown's right edge with trigger's right edge.
+                let left = rect.right - menuW;
+                if (options.align === 'left') left = rect.left;
+                left = Math.max(pad, Math.min(left, Math.max(pad, vw - pad - menuW)));
+
+                dropdown.style.left = `${Math.round(left)}px`;
+                dropdown.style.top = `${Math.round(top)}px`;
+              };
+
+              positionDropdown();
+              dropdown.style.visibility = 'visible';
+              window.setTimeout(() => {
+                const onDocClick = () => closeAllDropdowns();
+                document.addEventListener('click', onDocClick, { once: true });
+              }, 0);
+
+              dropdownKeyDownListener = ev => {
+                if (ev.key === 'Escape') closeAllDropdowns();
+              };
+              document.addEventListener('keydown', dropdownKeyDownListener);
+
+              dropdownRepositionListener = () => positionDropdown();
+              window.addEventListener('resize', dropdownRepositionListener);
+              // Capture scroll events from nested scroll containers too.
+              window.addEventListener('scroll', dropdownRepositionListener, true);
+            }
+
+            function closeAllDropdowns() {
+              document.querySelectorAll('[data-dropdown="1"]').forEach(el => el.remove());
+              if (dropdownKeyDownListener) {
+                document.removeEventListener('keydown', dropdownKeyDownListener);
+                dropdownKeyDownListener = null;
+              }
+              if (dropdownRepositionListener) {
+                window.removeEventListener('resize', dropdownRepositionListener);
+                window.removeEventListener('scroll', dropdownRepositionListener, true);
+                dropdownRepositionListener = null;
+              }
+            }
+
+            return { showToast, showModal, confirm, openDropdown, closeAllDropdowns };
+          })();
+
+          // ============================================================================
+          // SECTION: SYSTEM OVERLAY (MISSING DEPS / FATALS)
+          // ============================================================================
+          const SystemOverlay = (() => {
+            const overlay = document.getElementById('system-overlay');
+            const titleEl = document.getElementById('system-title');
+            const messageEl = document.getElementById('system-message');
+            const listEl = document.getElementById('system-list');
+            const retryBtn = document.getElementById('system-retry');
+            retryBtn.addEventListener('click', () => window.location.reload());
+
+            function show({ title, message, items }) {
+              titleEl.textContent = title || 'Truck Packer 3D';
+              messageEl.textContent = message || '';
+              listEl.innerHTML = '';
+              (items || []).forEach(text => {
+                const li = document.createElement('li');
+                li.textContent = text;
+                listEl.appendChild(li);
+              });
+              overlay.classList.add('active');
+            }
+
+            function hide() {
+              overlay.classList.remove('active');
+            }
+
+            return { show, hide };
+          })();
+
+          // Normalizer helper removed (unused). Keep utilities within modules if needed.
+
+          // ============================================================================
+          // SECTION: STATE STORE (UNDO/REDO)
+          // ============================================================================
+          const StateStore = (() => {
+            const MAX_HISTORY = 50;
+            let state = null;
+            let history = [];
+            let historyPointer = -1;
+            const subscribers = [];
+
+            function historySlice(s) {
+              return Utils.deepClone({
+                caseLibrary: s.caseLibrary,
+                packLibrary: s.packLibrary,
+                preferences: s.preferences,
+              });
+            }
+
+            function initStateStore(initialState) {
+              state = Utils.deepClone(initialState);
+              history = [historySlice(state)];
+              historyPointer = 0;
+            }
+
+            function get(key) {
+              if (!state) return key ? undefined : null;
+              if (!key) return state;
+              return state[key];
+            }
+
+            function set(patch, options = {}) {
+              const next = { ...state, ...patch };
+              const significant = options.skipHistory ? false : isSignificantChange(patch);
+              state = next;
+              if (significant) pushHistory(historySlice(next));
+              if (!options.skipNotify) notify(patch, state);
+            }
+
+            function replace(nextState, options = {}) {
+              state = Utils.deepClone(nextState);
+              if (!options.skipHistory) pushHistory(historySlice(state));
+              notify({ _replace: true }, state);
+            }
+
+            function snapshotState() {
+              return Utils.deepClone(state);
+            }
+
+            function pushHistory(snapshot) {
+              history = history.slice(0, historyPointer + 1);
+              history.push(Utils.deepClone(snapshot));
+              if (history.length > MAX_HISTORY) history.shift();
+              historyPointer = history.length - 1;
+            }
+
+            function undo() {
+              if (historyPointer <= 0) return false;
+              historyPointer--;
+              state = { ...state, ...Utils.deepClone(history[historyPointer]) };
+              notify({ _undo: true }, state);
+              return true;
+            }
+
+            function redo() {
+              if (historyPointer >= history.length - 1) return false;
+              historyPointer++;
+              state = { ...state, ...Utils.deepClone(history[historyPointer]) };
+              notify({ _redo: true }, state);
+              return true;
+            }
+
+            function subscribe(fn) {
+              subscribers.push(fn);
+              return () => {
+                const idx = subscribers.indexOf(fn);
+                if (idx > -1) subscribers.splice(idx, 1);
+              };
+            }
+
+            function notify(changes, nextState) {
+              subscribers.forEach(fn => {
+                try {
+                  fn(changes, nextState);
+                } catch (err) {
+                  console.error('Subscriber error', err);
+                }
+              });
+            }
+
+            function isSignificantChange(patch) {
+              const keys = Object.keys(patch || {});
+              const significant = ['caseLibrary', 'packLibrary', 'preferences'];
+              return keys.some(k => significant.includes(k));
+            }
+
+            return {
+              init: initStateStore,
+              get,
+              set,
+              replace,
+              snapshot: snapshotState,
+              undo,
+              redo,
+              subscribe,
+            };
+          })();
+
+          // ============================================================================
+          // SECTION: PERSISTENCE (LOCALSTORAGE)
+          // ============================================================================
+          const Storage = (() => {
+            const KEY = 'truckPacker3d:v1';
+            const saveDebounced = Utils.debounce(saveNow, 250);
+
+            function load() {
+              const raw = window.localStorage.getItem(KEY);
+              if (!raw) return null;
+              const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(raw, null));
+              if (!parsed || typeof parsed !== 'object') return null;
+              if (parsed.version !== APP_VERSION) {
+                // Soft-migrate: allow older versions if shape matches.
+                return parsed;
+              }
+              return parsed;
+            }
+
+            function saveSoon() {
+              saveDebounced();
+            }
+
+            function saveNow() {
+              try {
+                const state = StateStore.get();
+                const payload = {
+                  version: APP_VERSION,
+                  savedAt: Date.now(),
+                  caseLibrary: state.caseLibrary,
+                  packLibrary: state.packLibrary,
+                  preferences: state.preferences,
+                  currentPackId: state.currentPackId,
+                };
+                window.localStorage.setItem(KEY, JSON.stringify(payload));
+              } catch (err) {
+                console.error('Save failed', err);
+                UIComponents.showToast('Save failed: ' + err.message, 'error', { title: 'Storage' });
+              }
+            }
+
+            function clearAll() {
+              window.localStorage.removeItem(KEY);
+            }
+
+            function exportAppJSON() {
+              const state = StateStore.get();
+              const payload = {
+                app: 'Truck Packer 3D',
+                version: APP_VERSION,
+                exportedAt: Date.now(),
+                data: {
+                  caseLibrary: state.caseLibrary,
+                  packLibrary: state.packLibrary,
+                  preferences: state.preferences,
+                },
+              };
+              return JSON.stringify(payload, null, 2);
+            }
+
+            function importAppJSON(jsonText) {
+              const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
+              if (!parsed || typeof parsed !== 'object') throw new Error('Invalid JSON');
+              const data = parsed.data || parsed;
+              if (!data.caseLibrary || !data.packLibrary || !data.preferences) throw new Error('Missing required keys');
+              return {
+                caseLibrary: data.caseLibrary,
+                packLibrary: data.packLibrary,
+                preferences: data.preferences,
+              };
+            }
+
+            return { load, saveSoon, saveNow, clearAll, exportAppJSON, importAppJSON };
+          })();
+
+          // ============================================================================
+          // SECTION: SESSION (LOCALSTORAGE)
+          // ============================================================================
+          const SessionManager = (() => {
+            const KEY = 'truckPacker3d:session:v1';
+            let session = null;
+            const subscribers = [];
+            const LEGACY = { name: 'Agro Felix', email: 'agrofelixbraganca@gmail.com' };
+            const DEMO = { name: 'Demo User', email: 'info@pxl360.com' };
+
+            function defaultDemoSession() {
+              return {
+                user: { name: 'Demo User', email: 'info@pxl360.com' },
+                currentAccount: { type: 'personal', name: 'Personal Account', role: 'Owner' },
+              };
+            }
+
+            function defaultSignedOutSession() {
+              return {
+                user: { name: 'Guest', email: '' },
+                currentAccount: { type: 'personal', name: 'Personal Account', role: '' },
+              };
+            }
+
+            function notify() {
+              subscribers.forEach(fn => {
+                try {
+                  fn(session);
+                } catch (err) {
+                  console.error('[Session] subscriber error', err);
+                }
+              });
+            }
+
+            function load() {
+              try {
+                const raw = window.localStorage.getItem(KEY);
+                if (!raw) return null;
+                const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(raw, null));
+                return parsed && typeof parsed === 'object' ? parsed : null;
+              } catch {
+                return null;
+              }
+            }
+
+            function save(next) {
+              try {
+                window.localStorage.setItem(KEY, JSON.stringify(next));
+              } catch {
+                // ignore
+              }
+            }
+
+            function migrate(next) {
+              if (!next || typeof next !== 'object') return next;
+              next.user = next.user && typeof next.user === 'object' ? next.user : {};
+              const name = String(next.user.name || '');
+              const email = String(next.user.email || '');
+              if (name === LEGACY.name || email === LEGACY.email) {
+                next.user.name = DEMO.name;
+                next.user.email = DEMO.email;
+              }
+              return next;
+            }
+
+            function get() {
+              if (session) return session;
+              const stored = load();
+              session = migrate(stored || defaultDemoSession());
+              save(session);
+              return session;
+            }
+
+            function clear() {
+              try {
+                window.localStorage.removeItem(KEY);
+              } catch {
+                // ignore
+              }
+              session = defaultSignedOutSession();
+              notify();
+            }
+
+            function subscribe(fn) {
+              subscribers.push(fn);
+              return () => {
+                const idx = subscribers.indexOf(fn);
+                if (idx > -1) subscribers.splice(idx, 1);
+              };
+            }
+
+            return { get, clear, subscribe };
+          })();
+
+	          // ============================================================================
+	          // SECTION: DEFAULTS (PREFERENCES)
+	          // ============================================================================
+	          const Defaults = (() => {
+	            const defaultPreferences = {
+	              packsViewMode: 'grid',
+	              units: { length: 'in', weight: 'lb' },
+	              theme: 'light',
+	              labelFontSize: 12,
+	              hiddenCaseOpacity: 0.3,
+	              snapping: { enabled: true, gridSize: 1 },
+              camera: { defaultView: 'perspective' },
+              export: { screenshotResolution: '1920x1080', pdfIncludeStats: true },
+              categories: [],
+            };
+
+            const categories = [
+              { key: 'all', name: 'All', color: '#9b9ba8' },
+              { key: 'audio', name: 'Audio', color: '#f59e0b' },
+              { key: 'lighting', name: 'Lighting', color: '#3b82f6' },
+              { key: 'stage', name: 'Stage', color: '#10b981' },
+              { key: 'backline', name: 'Backline', color: '#ec4899' },
+              { key: 'default', name: 'Default', color: '#9ca3af' },
+            ];
+
+            function seedCases() {
+              const now = Date.now();
+              return [
+                {
+                  id: Utils.uuid(),
+                  name: 'Line Array Case',
+                  manufacturer: 'L-Acoustics',
+                  category: 'audio',
+                  dimensions: { length: 48, width: 24, height: 32 },
+                  weight: 125,
+                  canFlip: false,
+                  notes: '',
+                  color: '#ff9f1c',
+                  createdAt: now,
+                  updatedAt: now,
+                },
+                {
+                  id: Utils.uuid(),
+                  name: 'Subwoofer Crate',
+                  manufacturer: 'JBL',
+                  category: 'audio',
+                  dimensions: { length: 36, width: 36, height: 24 },
+                  weight: 95,
+                  canFlip: true,
+                  notes: '',
+                  color: '#ff9f1c',
+                  createdAt: now,
+                  updatedAt: now,
+                },
+                {
+                  id: Utils.uuid(),
+                  name: 'Truss Section',
+                  manufacturer: 'Global Truss',
+                  category: 'lighting',
+                  dimensions: { length: 120, width: 12, height: 12 },
+                  weight: 45,
+                  canFlip: true,
+                  notes: '',
+                  color: '#3b82f6',
+                  createdAt: now,
+                  updatedAt: now,
+                },
+                {
+                  id: Utils.uuid(),
+                  name: 'Stage Deck',
+                  manufacturer: 'StagingCo',
+                  category: 'stage',
+                  dimensions: { length: 96, width: 48, height: 8 },
+                  weight: 80,
+                  canFlip: false,
+                  notes: '',
+                  color: '#10b981',
+                  createdAt: now,
+                  updatedAt: now,
+                },
+                {
+                  id: Utils.uuid(),
+                  name: 'Guitar Rack',
+                  manufacturer: 'Backline Inc',
+                  category: 'backline',
+                  dimensions: { length: 40, width: 22, height: 46 },
+                  weight: 110,
+                  canFlip: false,
+                  notes: '',
+                  color: '#ec4899',
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              ];
+            }
+
+            function seedPack(caseLibrary) {
+              const now = Date.now();
+              const pick = name => caseLibrary.find(c => c.name === name)?.id;
+              const packId = Utils.uuid();
+              const instances = [];
+              const add = (caseId, x, y, z) => {
+                instances.push({
+                  id: Utils.uuid(),
+                  caseId,
+                  transform: { position: { x, y, z }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+                  hidden: false,
+                  groupId: null,
+                });
+              };
+              add(pick('Line Array Case'), -80, 16, 0);
+              add(pick('Subwoofer Crate'), -90, 12, 28);
+              add(pick('Truss Section'), -70, 6, -24);
+
+              return {
+                id: packId,
+                title: 'Demo Pack',
+                client: 'Example Client',
+                projectName: 'Envato Preview',
+                drawnBy: 'Truck Packer 3D',
+                notes: 'Tip: Use AutoPack (Ctrl/Cmd+P) to fill the truck.',
+                truck: { length: 636, width: 102, height: 98 },
+                cases: instances.filter(i => Boolean(i.caseId)),
+                groups: [],
+                stats: { totalCases: instances.length, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
+                createdAt: now,
+                lastEdited: now,
+              };
+            }
+
+            return { defaultPreferences, categories, seedCases, seedPack };
+          })();
+
+          const Normalizer = (() => {
+            const DEFAULT_TRUCK = { length: 636, width: 102, height: 98 };
+
+            function finiteNumber(value, fallback) {
+              const n = Number(value);
+              return Number.isFinite(n) ? n : fallback;
+            }
+
+            function positiveNumber(value, fallback) {
+              const n = finiteNumber(value, fallback);
+              return n > 0 ? n : fallback;
+            }
+
+            function safeString(value, fallback = '') {
+              const s = value == null ? '' : String(value);
+              const t = s.trim();
+              return t || fallback;
+            }
+
+	            function normalizePreferences(prefs) {
+	              const base = Utils.deepClone(Defaults.defaultPreferences);
+	              const next = { ...base, ...(prefs && typeof prefs === 'object' ? prefs : {}) };
+	              next.packsViewMode = next.packsViewMode === 'list' ? 'list' : 'grid';
+	              next.units = next.units && typeof next.units === 'object' ? next.units : base.units;
+	              next.units.length = Utils.lengthUnits.includes(next.units.length) ? next.units.length : base.units.length;
+	              next.units.weight = Utils.weightUnits.includes(next.units.weight) ? next.units.weight : base.units.weight;
+	              next.theme = next.theme === 'dark' ? 'dark' : 'light';
+	              next.labelFontSize = Utils.clamp(finiteNumber(next.labelFontSize, base.labelFontSize), 8, 24);
+              next.hiddenCaseOpacity = Utils.clamp(finiteNumber(next.hiddenCaseOpacity, base.hiddenCaseOpacity), 0, 1);
+              next.snapping = next.snapping && typeof next.snapping === 'object' ? next.snapping : base.snapping;
+              next.snapping.enabled = Boolean(next.snapping.enabled);
+              next.snapping.gridSize = Math.max(0.25, finiteNumber(next.snapping.gridSize, base.snapping.gridSize));
+              next.camera = next.camera && typeof next.camera === 'object' ? next.camera : base.camera;
+              next.camera.defaultView = next.camera.defaultView === 'orthographic' ? 'orthographic' : 'perspective';
+              next.export = next.export && typeof next.export === 'object' ? next.export : base.export;
+              next.export.screenshotResolution = safeString(
+                next.export.screenshotResolution,
+                base.export.screenshotResolution
+              );
+              next.export.pdfIncludeStats = Boolean(next.export.pdfIncludeStats);
+              const normalizeCatKey = key =>
+                String(key || '')
+                  .trim()
+                  .toLowerCase();
+              const prefCats = Array.isArray(next.categories) ? next.categories : base.categories;
+              next.categories = (prefCats || [])
+                .map(c => ({
+                  key: normalizeCatKey(c.key || c.name),
+                  name: safeString(c.name, c.key || ''),
+                  color: safeString(c.color, ''),
+                }))
+                .filter(c => c.key);
+              if (!next.categories.length) {
+                next.categories = (Defaults.categories || [])
+                  .filter(c => c.key !== 'all')
+                  .map(c => ({ key: c.key, name: c.name, color: c.color }));
+              }
+              return next;
+            }
+
+            function normalizeCase(c, now) {
+              const createdAt = finiteNumber(c && c.createdAt, now);
+              const updatedAt = finiteNumber(c && c.updatedAt, now);
+              const dims = c && c.dimensions && typeof c.dimensions === 'object' ? c.dimensions : {};
+              const length = positiveNumber(dims.length, 48);
+              const width = positiveNumber(dims.width, 24);
+              const height = positiveNumber(dims.height, 24);
+              const category = safeString(c && c.category, 'default').toLowerCase();
+              const color = safeString(c && c.color, CategoryService.meta(category).color);
+              return {
+                id: safeString(c && c.id, Utils.uuid()),
+                name: safeString(c && c.name, 'Unnamed Case'),
+                manufacturer: safeString(c && c.manufacturer, ''),
+                category,
+                dimensions: { length, width, height },
+                weight: Math.max(0, finiteNumber(c && c.weight, 0)),
+                volume: Utils.volumeInCubicInches({ length, width, height }),
+                canFlip: Boolean(c && c.canFlip),
+                notes: safeString(c && c.notes, ''),
+                color,
+                createdAt,
+                updatedAt,
+              };
+            }
+
+	            function normalizeTruck(truck) {
+	              const t = truck && typeof truck === 'object' ? truck : {};
+	              const mode = t.shapeMode === 'wheelWells' || t.shapeMode === 'frontBonus' || t.shapeMode === 'rect' ? t.shapeMode : 'rect';
+	              const shapeConfig =
+	                t.shapeConfig && typeof t.shapeConfig === 'object' && !Array.isArray(t.shapeConfig) ? t.shapeConfig : {};
+	              return {
+	                length: positiveNumber(t.length, DEFAULT_TRUCK.length),
+	                width: positiveNumber(t.width, DEFAULT_TRUCK.width),
+	                height: positiveNumber(t.height, DEFAULT_TRUCK.height),
+	                shapeMode: mode,
+	                shapeConfig,
+	              };
+	            }
+
+            function normalizeInstance(inst, caseMap) {
+              const transform = inst && inst.transform && typeof inst.transform === 'object' ? inst.transform : {};
+              const pos = transform.position && typeof transform.position === 'object' ? transform.position : {};
+              const rot =
+                transform.rotation && typeof transform.rotation === 'object'
+                  ? transform.rotation
+                  : { x: 0, y: 0, z: 0 };
+              const scale =
+                transform.scale && typeof transform.scale === 'object' ? transform.scale : { x: 1, y: 1, z: 1 };
+              const caseId = safeString(inst && inst.caseId, '');
+              const caseData = caseMap.get(caseId) || null;
+              const halfY = caseData ? Math.max(1, (caseData.dimensions.height || 1) / 2) : 10;
+
+              return {
+                id: safeString(inst && inst.id, Utils.uuid()),
+                caseId,
+                transform: {
+                  position: {
+                    x: finiteNumber(pos.x, -80),
+                    y: finiteNumber(pos.y, halfY),
+                    z: finiteNumber(pos.z, 0),
+                  },
+                  rotation: {
+                    x: finiteNumber(rot.x, 0),
+                    y: finiteNumber(rot.y, 0),
+                    z: finiteNumber(rot.z, 0),
+                  },
+                  scale: {
+                    x: finiteNumber(scale.x, 1),
+                    y: finiteNumber(scale.y, 1),
+                    z: finiteNumber(scale.z, 1),
+                  },
+                },
+                hidden: Boolean(inst && inst.hidden),
+                groupId: inst && inst.groupId != null ? inst.groupId : null,
+              };
+            }
+
+            function normalizePack(p, caseMap, now) {
+              const truck = normalizeTruck(p && p.truck);
+              const rawCases = Array.isArray(p && p.cases) ? p.cases : [];
+              const instances = rawCases.map(i => normalizeInstance(i, caseMap)).filter(i => Boolean(i.caseId));
+              const thumbnail = typeof (p && p.thumbnail) === 'string' ? p.thumbnail : null;
+              const thumbnailUpdatedAt = Number.isFinite(p && p.thumbnailUpdatedAt) ? p.thumbnailUpdatedAt : null;
+              const thumbnailSource =
+                p && (p.thumbnailSource === 'auto' || p.thumbnailSource === 'manual') ? p.thumbnailSource : null;
+              const pack = {
+                id: safeString(p && p.id, Utils.uuid()),
+                title: safeString(p && p.title, 'Untitled Pack'),
+                client: safeString(p && p.client, ''),
+                projectName: safeString(p && p.projectName, ''),
+                drawnBy: safeString(p && p.drawnBy, ''),
+                notes: safeString(p && p.notes, ''),
+                truck,
+                cases: instances,
+                groups: Array.isArray(p && p.groups) ? p.groups : [],
+                stats: { totalCases: 0, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
+                createdAt: finiteNumber(p && p.createdAt, now),
+                lastEdited: finiteNumber(p && p.lastEdited, now),
+                thumbnail,
+                thumbnailUpdatedAt,
+                thumbnailSource,
+              };
+              pack.stats = PackLibrary.computeStats(pack, Array.from(caseMap.values()));
+              return pack;
+            }
+
+            function normalizeAppData(data) {
+              const now = Date.now();
+              const rawCases = Array.isArray(data && data.caseLibrary) ? data.caseLibrary : [];
+              const cases = rawCases.map(c => normalizeCase(c, now));
+
+              // Deduplicate case ids if needed
+              const seenCaseIds = new Set();
+              cases.forEach(c => {
+                if (!seenCaseIds.has(c.id)) {
+                  seenCaseIds.add(c.id);
+                  return;
+                }
+                c.id = Utils.uuid();
+              });
+              const caseMap = new Map(cases.map(c => [c.id, c]));
+
+              const rawPacks = Array.isArray(data && data.packLibrary) ? data.packLibrary : [];
+              const packs = rawPacks.map(p => normalizePack(p, caseMap, now));
+
+              const prefs = normalizePreferences(data && data.preferences);
+              const currentPackId = safeString(data && data.currentPackId, '');
+              const current = packs.some(p => p.id === currentPackId) ? currentPackId : packs[0] ? packs[0].id : null;
+
+              return { caseLibrary: cases, packLibrary: packs, preferences: prefs, currentPackId: current };
+            }
+
+            return { normalizeAppData };
+          })();
+
+          window.Normalizer = Normalizer;
+
+          // ============================================================================
+          // SECTION: PREFERENCES (THEME/UNITS)
+          // ============================================================================
+          const PreferencesManager = (() => {
+            function applyTheme(theme) {
+              document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'light');
+            }
+
+            function get() {
+              return StateStore.get('preferences');
+            }
+
+            function set(nextPrefs) {
+              StateStore.set({ preferences: nextPrefs });
+            }
+
+            return { get, set, applyTheme };
+          })();
+
+          // ============================================================================
+          // SECTION: OVERLAYS (SETTINGS)
+          // ============================================================================
+          const SettingsOverlay = (() => {
+            let overlay = null;
+            let modal = null;
+            let leftPane = null;
+            let rightPane = null;
+            let activeTab = 'account';
+            let unmountAccountButton = null;
+
+            function isOpen() {
+              return Boolean(overlay);
+            }
+
+            function open(tab = 'preferences') {
+              activeTab = String(tab || 'account');
+              close();
+
+              overlay = document.createElement('div');
+              overlay.className = 'modal-overlay';
+              overlay.style.zIndex = '17000';
+
+              modal = document.createElement('div');
+              modal.className = 'modal';
+              modal.style.width = 'min(1120px, 96vw)';
+              modal.style.height = 'min(780px, 92vh)';
+              modal.style.display = 'grid';
+              modal.style.gridTemplateColumns = '320px 1fr';
+              modal.style.padding = '0';
+
+              leftPane = document.createElement('div');
+              leftPane.style.padding = 'var(--space-4)';
+              leftPane.style.borderRight = '1px solid var(--border-subtle)';
+              leftPane.style.display = 'flex';
+              leftPane.style.flexDirection = 'column';
+              leftPane.style.gap = 'var(--space-4)';
+
+              rightPane = document.createElement('div');
+              rightPane.style.display = 'flex';
+              rightPane.style.flexDirection = 'column';
+              rightPane.style.minWidth = '0';
+
+              modal.appendChild(leftPane);
+              modal.appendChild(rightPane);
+              overlay.appendChild(modal);
+
+              overlay.addEventListener('click', ev => {
+                if (ev.target === overlay) close();
+              });
+
+              function onKeyDown(ev) {
+                if (ev.key === 'Escape') close();
+              }
+              document.addEventListener('keydown', onKeyDown);
+
+              const root = document.getElementById('modal-root');
+              root.appendChild(overlay);
+
+              overlay._tp3dCleanup = () => {
+                document.removeEventListener('keydown', onKeyDown);
+              };
+
+              render();
+            }
+
+            function close() {
+              if (!overlay) return;
+              try {
+                if (typeof unmountAccountButton === 'function') unmountAccountButton();
+              } catch {
+                // ignore
+              }
+              unmountAccountButton = null;
+
+              try {
+                overlay._tp3dCleanup && overlay._tp3dCleanup();
+              } catch {
+                // ignore
+              }
+
+              try {
+                if (overlay.parentElement) overlay.parentElement.removeChild(overlay);
+              } catch {
+                // ignore
+              }
+              overlay = null;
+              modal = null;
+              leftPane = null;
+              rightPane = null;
+            }
+
+            function setActive(tab) {
+              activeTab = String(tab || 'account');
+              render();
+            }
+
+            function render() {
+              if (!overlay) return;
+              const session = SessionManager.get();
+              const prefs = PreferencesManager.get();
+
+              leftPane.innerHTML = '';
+              rightPane.innerHTML = '';
+
+              // Left: account switcher button
+              const accountBtn = document.createElement('button');
+              accountBtn.type = 'button';
+              accountBtn.className = 'btn';
+              accountBtn.style.width = '100%';
+              accountBtn.style.justifyContent = 'space-between';
+              accountBtn.style.padding = 'var(--space-2) var(--space-3)';
+              accountBtn.innerHTML = `
+                <span style="display:flex;align-items:center;gap:var(--space-3);min-width:0">
+                  <span class="brand-mark" aria-hidden="true" style="width:34px;height:34px;border-radius:12px;flex:0 0 auto"></span>
+                  <span style="display:flex;flex-direction:column;align-items:flex-start;min-width:0">
+                    <span style="font-weight:var(--font-semibold);line-height:1.1">${session.currentAccount?.name || 'Personal Account'}</span>
+                    <span class="muted" data-account-name style="font-size:var(--text-sm);line-height:1.1">${
+                      session.user?.name || '—'
+                    }</span>
+                  </span>
+                </span>
+                <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+              `;
+              leftPane.appendChild(accountBtn);
+              unmountAccountButton = AccountSwitcher.bind(accountBtn, { align: 'left' });
+
+              // Left: settings navigation
+              const navWrap = document.createElement('div');
+              navWrap.style.display = 'grid';
+              navWrap.style.gap = '6px';
+
+              const makeHeader = text => {
+                const h = document.createElement('div');
+                h.className = 'muted';
+                h.style.marginTop = '10px';
+                h.style.fontSize = 'var(--text-sm)';
+                h.textContent = text;
+                return h;
+              };
+
+              const makeItem = ({ key, label, icon, indent }) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'nav-btn';
+                btn.style.width = '100%';
+                btn.style.borderRadius = 'var(--radius-sm)';
+                btn.style.paddingLeft = '12px';
+                btn.style.paddingRight = '12px';
+                btn.style.gap = '12px';
+                btn.style.fontSize = 'var(--text-base)';
+                btn.dataset.settingsTab = key;
+
+                if (icon) {
+                  const i = document.createElement('i');
+                  i.className = icon;
+                  i.style.width = '20px';
+                  i.style.display = 'inline-flex';
+                  i.style.alignItems = 'center';
+                  i.style.justifyContent = 'center';
+                  i.style.color = activeTab === key ? 'var(--accent-primary)' : 'var(--text-secondary)';
+                  if (indent) i.style.marginLeft = '16px';
+                  btn.appendChild(i);
+                }
+
+                const text = document.createElement('span');
+                text.textContent = label;
+                text.style.flex = '1';
+                btn.appendChild(text);
+
+                btn.classList.toggle('active', activeTab === key);
+                btn.addEventListener('click', () => setActive(key));
+                return btn;
+              };
+
+              navWrap.appendChild(makeHeader('Account'));
+              navWrap.appendChild(makeItem({ key: 'account', label: 'Account', icon: 'fa-regular fa-user' }));
+              navWrap.appendChild(
+                makeItem({ key: 'preferences', label: 'Preferences', icon: 'fa-solid fa-gear' })
+              );
+              navWrap.appendChild(makeHeader('Organization'));
+              navWrap.appendChild(
+                makeItem({ key: 'org-general', label: 'General', icon: 'fa-regular fa-building', indent: true })
+              );
+              navWrap.appendChild(
+                makeItem({ key: 'org-billing', label: 'Billing', icon: 'fa-regular fa-credit-card', indent: true })
+              );
+              leftPane.appendChild(navWrap);
+
+              // Right: header
+              const header = document.createElement('div');
+              header.className = 'row space-between';
+              header.style.padding = 'var(--space-5) var(--space-6)';
+              header.style.borderBottom = '1px solid var(--border-subtle)';
+              header.style.alignItems = 'flex-start';
+              const title = document.createElement('div');
+              title.style.fontSize = 'var(--text-2xl)';
+              title.style.fontWeight = 'var(--font-semibold)';
+              title.textContent =
+                activeTab === 'account'
+                  ? 'Account'
+                  : activeTab === 'preferences'
+                    ? 'Display Units'
+                    : 'Organization';
+              const closeBtn = document.createElement('button');
+              closeBtn.type = 'button';
+              closeBtn.className = 'btn btn-ghost';
+              closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+              closeBtn.addEventListener('click', () => close());
+              header.appendChild(title);
+              header.appendChild(closeBtn);
+              rightPane.appendChild(header);
+
+              const body = document.createElement('div');
+              body.style.padding = 'var(--space-6)';
+              body.style.overflow = 'auto';
+              body.style.minWidth = '0';
+              rightPane.appendChild(body);
+
+              function row(label, valueEl) {
+                const wrap = document.createElement('div');
+                wrap.style.display = 'grid';
+                wrap.style.gridTemplateColumns = '220px 1fr';
+                wrap.style.gap = '16px';
+                wrap.style.alignItems = 'center';
+                wrap.style.padding = '16px 0';
+                wrap.style.borderBottom = '1px solid var(--border-subtle)';
+                const l = document.createElement('div');
+                l.style.fontWeight = 'var(--font-semibold)';
+                l.textContent = label;
+                wrap.appendChild(l);
+                wrap.appendChild(valueEl);
+                return wrap;
+              }
+
+              function savePrefsFromForm({ length, weight, theme, labelSize, hiddenOpacity }) {
+                const prev = PreferencesManager.get();
+                const next = Utils.deepClone(prev);
+                next.units.length = length;
+                next.units.weight = weight;
+                next.theme = theme;
+                next.labelFontSize = Utils.clamp(Number(labelSize) || 12, 8, 24);
+                next.hiddenCaseOpacity = Utils.clamp(Number(hiddenOpacity) || 0.3, 0, 1);
+                PreferencesManager.set(next);
+                PreferencesManager.applyTheme(next.theme);
+                UIComponents.showToast('Preferences saved', 'success');
+              }
+
+              if (activeTab === 'account') {
+                const nameRow = document.createElement('div');
+                nameRow.className = 'row';
+                nameRow.style.gap = '12px';
+                nameRow.innerHTML = `<span class="brand-mark" aria-hidden="true" style="width:40px;height:40px;border-radius:14px"></span><div style="font-weight:var(--font-semibold)">${
+                  session.user?.name || '—'
+                }</div>`;
+                body.appendChild(nameRow);
+
+                const emailEl = document.createElement('div');
+                emailEl.textContent = session.user?.email || '—';
+                body.appendChild(row('Email', emailEl));
+
+                const danger = document.createElement('div');
+                danger.style.marginTop = '26px';
+                danger.innerHTML = `
+                  <div style="font-size:var(--text-xl);font-weight:var(--font-semibold);margin-bottom:10px">Danger Zone</div>
+                  <div style="border-top:1px solid var(--border-subtle)"></div>
+                `;
+                const dangerRow = document.createElement('div');
+                dangerRow.style.display = 'grid';
+                dangerRow.style.gridTemplateColumns = '220px 1fr';
+                dangerRow.style.gap = '16px';
+                dangerRow.style.alignItems = 'center';
+                dangerRow.style.padding = '16px 0';
+                const dLeft = document.createElement('div');
+                dLeft.style.color = 'var(--error)';
+                dLeft.style.fontWeight = 'var(--font-semibold)';
+                dLeft.textContent = 'Delete Account';
+                const dRight = document.createElement('div');
+                dRight.className = 'muted';
+                dRight.textContent = 'Contact support to delete your account. help@backlinelogic.com';
+                dangerRow.appendChild(dLeft);
+                dangerRow.appendChild(dRight);
+                danger.appendChild(dangerRow);
+                body.appendChild(danger);
+              } else if (activeTab === 'preferences') {
+                const length = document.createElement('select');
+                length.className = 'select';
+                length.innerHTML = `
+                  <option value="in">Inches (in)</option>
+                  <option value="ft">Feet (ft)</option>
+                  <option value="mm">Millimeters (mm)</option>
+                  <option value="cm">Centimeters (cm)</option>
+                  <option value="m">Meters (m)</option>
+                `;
+                length.value = prefs.units.length;
+
+                const weight = document.createElement('select');
+                weight.className = 'select';
+                weight.innerHTML = `
+                  <option value="lb">Pounds (lb)</option>
+                  <option value="kg">Kilograms (kg)</option>
+                `;
+                weight.value = prefs.units.weight;
+
+                const hiddenOpacity = document.createElement('input');
+                hiddenOpacity.className = 'input';
+                hiddenOpacity.type = 'number';
+                hiddenOpacity.min = '0';
+                hiddenOpacity.max = '1';
+                hiddenOpacity.step = '0.05';
+                hiddenOpacity.value = String(prefs.hiddenCaseOpacity);
+
+                const labelSize = document.createElement('input');
+                labelSize.className = 'input';
+                labelSize.type = 'number';
+                labelSize.min = '8';
+                labelSize.max = '24';
+                labelSize.step = '1';
+                labelSize.value = String(prefs.labelFontSize);
+
+                const theme = document.createElement('select');
+                theme.className = 'select';
+                theme.innerHTML = `
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                `;
+                theme.value = prefs.theme;
+
+                body.appendChild(row('Length', length));
+                body.appendChild(row('Weight', weight));
+                body.appendChild(row('Hidden Case Opacity', hiddenOpacity));
+                body.appendChild(row('Label Font Size', labelSize));
+                body.appendChild(row('Theme', theme));
+
+                const actions = document.createElement('div');
+                actions.className = 'row';
+                actions.style.justifyContent = 'flex-end';
+                actions.style.marginTop = '18px';
+                const saveBtn = document.createElement('button');
+                saveBtn.type = 'button';
+                saveBtn.className = 'btn btn-primary';
+                saveBtn.textContent = 'Save changes';
+                saveBtn.addEventListener('click', () =>
+                  savePrefsFromForm({
+                    length: length.value,
+                    weight: weight.value,
+                    theme: theme.value,
+                    labelSize: labelSize.value,
+                    hiddenOpacity: hiddenOpacity.value,
+                  })
+                );
+                actions.appendChild(saveBtn);
+                body.appendChild(actions);
+              } else if (activeTab === 'org-general') {
+                const orgName = session.currentAccount?.name || 'Personal Account';
+                const orgRole = session.currentAccount?.role || 'Owner';
+                const slug = (session.user?.email || 'personal').replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+
+                const orgCard = document.createElement('div');
+                orgCard.className = 'card';
+                orgCard.style.maxWidth = '820px';
+                orgCard.innerHTML = `
+                  <div style="display:grid;gap:18px">
+                    <div style="font-size:var(--text-xl);font-weight:var(--font-semibold)">Organization</div>
+                    <div style="border-top:1px solid var(--border-subtle)"></div>
+                    <div style="display:grid;gap:0">
+                      <div style="display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:center;padding:16px 0;border-bottom:1px solid var(--border-subtle)">
+                        <div style="font-weight:var(--font-semibold)">Logo</div>
+                        <div><span class="brand-mark" aria-hidden="true" style="width:64px;height:64px;border-radius:18px;display:inline-block"></span></div>
+                      </div>
+                      <div style="display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:center;padding:16px 0;border-bottom:1px solid var(--border-subtle)">
+                        <div style="font-weight:var(--font-semibold)">Name</div>
+                        <div>${orgName}</div>
+                      </div>
+                      <div style="display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:center;padding:16px 0;border-bottom:1px solid var(--border-subtle)">
+                        <div style="font-weight:var(--font-semibold)">Role</div>
+                        <div>${orgRole}</div>
+                      </div>
+                      <div style="display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:center;padding:16px 0;border-bottom:1px solid var(--border-subtle)">
+                        <div style="font-weight:var(--font-semibold)">Slug</div>
+                        <div class="muted" style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">${slug}</div>
+                      </div>
+                    </div>
+                  </div>
+                `;
+                body.appendChild(orgCard);
+              } else {
+                const billingCard = document.createElement('div');
+                billingCard.className = 'card';
+                billingCard.style.maxWidth = '820px';
+                billingCard.innerHTML = `
+                  <div style="display:grid;gap:12px">
+                    <div style="font-size:var(--text-xl);font-weight:var(--font-semibold)">Billing</div>
+                    <div class="muted" style="font-size:var(--text-sm);line-height:var(--leading-relaxed)">
+                      Coming soon. Billing and invoices will appear here when subscription management is enabled.
+                    </div>
+                  </div>
+                `;
+                body.appendChild(billingCard);
+
+                const subCard = document.createElement('div');
+                subCard.className = 'card';
+                subCard.style.maxWidth = '820px';
+                subCard.style.marginTop = '16px';
+                subCard.innerHTML = `
+                  <div style="display:grid;gap:18px">
+                    <div style="font-size:var(--text-xl);font-weight:var(--font-semibold)">Subscription</div>
+                    <div style="border-top:1px solid var(--border-subtle)"></div>
+                    <div style="border:1px solid var(--border-subtle);border-radius:var(--radius-md);padding:var(--space-4);background:linear-gradient(180deg,var(--bg-elevated),var(--bg-secondary))">
+                      <div class="row space-between" style="align-items:flex-start;gap:12px">
+                        <div>
+                          <div style="font-size:var(--text-xl);font-weight:var(--font-bold)">Free Trial <span class="muted" style="font-weight:var(--font-medium)">| Current Plan</span></div>
+                          <div class="muted" style="margin-top:8px;font-size:var(--text-sm)">Subscribe to keep using Truck Packer after your free trial ends, cancel anytime.</div>
+                        </div>
+                        <div class="muted" style="font-weight:var(--font-semibold)">7 days left</div>
+                      </div>
+                      <div style="height:14px"></div>
+                      <div class="row space-between" style="gap:12px;background:rgba(59,130,246,0.08);border-radius:var(--radius-md);padding:var(--space-4)">
+                        <div>
+                          <div style="font-weight:var(--font-semibold)"><i class="fa-solid fa-bolt" style="color:var(--accent-primary)"></i> Truck Packer Pro</div>
+                          <div class="muted" style="font-size:var(--text-sm);margin-top:4px">Unlock Pro features (coming soon).</div>
+                        </div>
+                        <button class="btn btn-primary" type="button" data-subscribe-btn>Subscribe</button>
+                      </div>
+                    </div>
+                  </div>
+                `;
+                body.appendChild(subCard);
+                const subscribeBtn = subCard.querySelector('[data-subscribe-btn]');
+                if (subscribeBtn) {
+                  subscribeBtn.addEventListener('click', () => UIComponents.showToast('Coming soon', 'info'));
+                }
+              }
+            }
+
+            return { open, close, isOpen, setActive };
+          })();
+
+          // ============================================================================
+          // SECTION: UI WIDGET (ACCOUNT SWITCHER)
+          // ============================================================================
+          const AccountSwitcher = (() => {
+            const mounts = new Map();
+
+            function getDisplay() {
+              const s = SessionManager.get();
+              const account = s.currentAccount || {};
+              const user = s.user || {};
+              return {
+                accountName: account.name || 'Personal Account',
+                role: account.role || 'Owner',
+                userName: user.name || '—',
+              };
+            }
+
+            function renderButton(buttonEl) {
+              if (!buttonEl) return;
+              const display = getDisplay();
+              const nameEl = buttonEl.querySelector('[data-account-name]');
+              if (nameEl) nameEl.textContent = display.userName;
+            }
+
+            function showComingSoon() {
+              UIComponents.showToast('Coming soon', 'info');
+            }
+
+            function logout() {
+              try {
+                UIComponents.closeAllDropdowns();
+                SettingsOverlay.close();
+              } catch {
+                // ignore
+              }
+
+              SessionManager.clear();
+              StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
+              UIComponents.showToast('Logged out', 'info');
+            }
+
+            function openMenu(anchorEl, { align } = {}) {
+              const display = getDisplay();
+              const items = [
+                {
+                  label: `${display.accountName} (${display.role})`,
+                  icon: 'fa-regular fa-user',
+                  rightIcon: 'fa-solid fa-check',
+                  disabled: true,
+                },
+                {
+                  label: 'Create Organization',
+                  icon: 'fa-solid fa-plus',
+                  onClick: () => showComingSoon(),
+                },
+                { type: 'divider' },
+                {
+                  label: 'Settings',
+                  icon: 'fa-solid fa-gear',
+                  onClick: () => SettingsOverlay.open('preferences'),
+                },
+                {
+                  label: 'Log out',
+                  icon: 'fa-solid fa-right-from-bracket',
+                  onClick: () => logout(),
+                },
+              ];
+
+              const rect = anchorEl.getBoundingClientRect();
+              UIComponents.openDropdown(anchorEl, items, { align: align || 'left', width: rect.width });
+            }
+
+            function bind(buttonEl, { align } = {}) {
+              if (!buttonEl) return () => {};
+              if (mounts.has(buttonEl)) return mounts.get(buttonEl);
+
+              renderButton(buttonEl);
+              const onClick = ev => {
+                ev.stopPropagation();
+                openMenu(buttonEl, { align });
+              };
+              buttonEl.addEventListener('click', onClick);
+              const unsub = SessionManager.subscribe(() => renderButton(buttonEl));
+
+              const unmount = () => {
+                try {
+                  unsub && unsub();
+                } catch {
+                  // ignore
+                }
+                buttonEl.removeEventListener('click', onClick);
+                mounts.delete(buttonEl);
+              };
+              mounts.set(buttonEl, unmount);
+              return unmount;
+            }
+
+            function initAccountSwitcher() {
+              const sidebarBtn = document.getElementById('btn-account-switcher');
+              bind(sidebarBtn, { align: 'left' });
+            }
+
+            return { init: initAccountSwitcher, bind };
+          })();
+
+          // ============================================================================
+          // SECTION: DOMAIN DATA (CATEGORIES)
+          // ============================================================================
+          const CategoryService = (() => {
+            const normalize = key =>
+              String(key || '')
+                .trim()
+                .toLowerCase();
+
+            function hashHue(str) {
+              let h = 0;
+              const s = String(str || '');
+              for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+              return h;
+            }
+
+            function colorFor(key, fallback) {
+              if (fallback) return fallback;
+              const hue = hashHue(key);
+              return `hsl(${hue}, 72%, 56%)`;
+            }
+
+            function all() {
+              const prefs = PreferencesManager.get();
+              const prefCats = Array.isArray(prefs && prefs.categories) ? prefs.categories : [];
+              const seeded = prefCats.length
+                ? prefCats
+                : (Defaults.categories || [])
+                    .filter(c => c.key !== 'all')
+                    .map(c => ({ key: c.key, name: c.name, color: c.color }));
+              const dedup = new Map();
+              seeded.forEach(c => {
+                const k = normalize(c.key || c.name);
+                if (!k) return;
+                dedup.set(k, {
+                  key: k,
+                  name: c.name || k.charAt(0).toUpperCase() + k.slice(1),
+                  color: c.color || colorFor(k),
+                });
+              });
+              return Array.from(dedup.values());
+            }
+
+            function save(list) {
+              const prefs = PreferencesManager.get() || {};
+              PreferencesManager.set({ ...prefs, categories: list });
+            }
+
+            function meta(key) {
+              const k = normalize(key);
+              const found = all().find(c => c.key === k);
+              if (found) return found;
+              return { key: k, name: k ? k.charAt(0).toUpperCase() + k.slice(1) : 'Uncategorized', color: colorFor(k) };
+            }
+
+            function listWithCounts(cases) {
+              const counts = {};
+              (cases || []).forEach(c => {
+                const k = normalize(c.category || 'default');
+                counts[k] = (counts[k] || 0) + 1;
+              });
+              const known = all();
+              const ordered = known
+                .map(c => c.key)
+                .filter(k => k)
+                .concat(Object.keys(counts).filter(k => !known.find(c => c.key === k)));
+              return ordered
+                .filter((k, idx, arr) => arr.indexOf(k) === idx)
+                .map(k => ({ ...meta(k), count: counts[k] || 0 }));
+            }
+
+            function upsert({ key, name, color }) {
+              const k = normalize(key || name);
+              if (!k) return meta('default');
+              const list = all();
+              const next = { key: k, name: name || meta(k).name, color: color || meta(k).color };
+              const idx = list.findIndex(c => c.key === k);
+              if (idx > -1) list[idx] = next;
+              else list.push(next);
+              save(list);
+              return next;
+            }
+
+            function remove(key) {
+              const k = normalize(key);
+              if (!k || k === 'default') return; // never remove default
+              const list = all().filter(c => c.key !== k);
+              save(list);
+              CaseLibrary.reassignCategory(k, 'default');
+            }
+
+            function rename(oldKey, name, color) {
+              const from = normalize(oldKey);
+              const to = normalize(name || oldKey);
+              if (!from) return meta('default');
+              const list = all().filter(c => c.key !== from);
+              const next = { key: to, name: name || meta(to).name, color: color || meta(to).color };
+              list.push(next);
+              save(list);
+              if (from !== to) CaseLibrary.reassignCategory(from, to);
+              return next;
+            }
+
+            return { meta, listWithCounts, upsert, remove, rename, all };
+          })();
+
+	          // ============================================================================
+	          // SECTION: DOMAIN DATA (CASES)
+	          // ============================================================================
+	          const CaseLibrary = (() => {
+            function getCases() {
+              return StateStore.get('caseLibrary') || [];
+            }
+
+            function getById(caseId) {
+              return getCases().find(c => c.id === caseId) || null;
+            }
+
+            function upsert(caseData) {
+              const now = Date.now();
+              const cases = getCases();
+              const idx = cases.findIndex(c => c.id === caseData.id);
+              const next = { ...caseData };
+              next.updatedAt = now;
+              if (!next.createdAt) next.createdAt = now;
+              next.dimensions = {
+                length: Number(next.dimensions.length) || 0,
+                width: Number(next.dimensions.width) || 0,
+                height: Number(next.dimensions.height) || 0,
+              };
+              next.weight = Number(next.weight) || 0;
+              next.volume = Utils.volumeInCubicInches(next.dimensions);
+
+              const nextCases = idx > -1 ? cases.map((c, i) => (i === idx ? next : c)) : [...cases, next];
+
+              StateStore.set({ caseLibrary: nextCases });
+            }
+
+            function reassignCategory(oldKey, newKey) {
+              const from = oldKey ? oldKey.trim().toLowerCase() : '';
+              const to = newKey ? newKey.trim().toLowerCase() : 'default';
+              if (!from || from === to) return;
+              const next = getCases().map(c => (c.category === from ? { ...c, category: to } : c));
+              StateStore.set({ caseLibrary: next });
+            }
+
+            function remove(caseId) {
+              const cases = getCases().filter(c => c.id !== caseId);
+              StateStore.set({ caseLibrary: cases });
+            }
+
+            function duplicate(caseId) {
+              const original = getById(caseId);
+              if (!original) return null;
+              const now = Date.now();
+              const copy = {
+                ...Utils.deepClone(original),
+                id: Utils.uuid(),
+                name: original.name + ' (Copy)',
+                createdAt: now,
+                updatedAt: now,
+              };
+              upsert(copy);
+              return copy;
+            }
+
+            function search(query, categoryKeys) {
+              const q = String(query || '')
+                .trim()
+                .toLowerCase();
+              const cats = (categoryKeys || []).filter(k => k && k !== 'all');
+              return getCases().filter(c => {
+                const matchesQ =
+                  !q || (c.name || '').toLowerCase().includes(q) || (c.manufacturer || '').toLowerCase().includes(q);
+                const matchesCat = !cats.length || cats.includes(c.category);
+                return matchesQ && matchesCat;
+              });
+            }
+
+            function countsByCategory() {
+              const counts = {};
+              getCases().forEach(c => {
+                counts[c.category] = (counts[c.category] || 0) + 1;
+              });
+              return counts;
+            }
+
+            return {
+              getCases,
+              getById,
+              upsert,
+              remove,
+              duplicate,
+              search,
+              countsByCategory,
+              reassignCategory,
+            };
+	          })();
+
+	          // ============================================================================
+	          // SECTION: GEOMETRY / DIMENSIONS
+	          // ============================================================================
+	          const TrailerGeometry = (() => {
+	            function getDims(truck) {
+	              const t = truck && typeof truck === 'object' ? truck : {};
+	              const length = Math.max(0, Number(t.length) || 0);
+	              const width = Math.max(0, Number(t.width) || 0);
+	              const height = Math.max(0, Number(t.height) || 0);
+	              return { length, width, height };
+	            }
+
+	            function getMode(truck) {
+	              const mode = truck && truck.shapeMode;
+	              if (mode === 'wheelWells' || mode === 'frontBonus' || mode === 'rect') return mode;
+	              return 'rect';
+	            }
+
+	            function getConfig(truck) {
+	              const cfg = truck && truck.shapeConfig;
+	              return cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
+	            }
+
+	            function zone(min, max) {
+	              return { min: { ...min }, max: { ...max } };
+	            }
+
+	            function sanitizeZones(zones) {
+	              const EPS = 1e-9;
+	              return (zones || []).filter(z => {
+	                const dx = z.max.x - z.min.x;
+	                const dy = z.max.y - z.min.y;
+	                const dz = z.max.z - z.min.z;
+	                return dx > EPS && dy > EPS && dz > EPS;
+	              });
+	            }
+
+	            function getTrailerUsableZones(truck) {
+	              const { length: L, width: W, height: H } = getDims(truck);
+	              const mode = getMode(truck);
+	              const cfg = getConfig(truck);
+
+	              if (!L || !W || !H) return [];
+
+	              if (mode === 'frontBonus') {
+	                const bonusLengthRaw = Number(cfg.bonusLength);
+	                const bonusWidthRaw = Number(cfg.bonusWidth);
+	                const bonusHeightRaw = Number(cfg.bonusHeight);
+
+	                const bonusLength = Utils.clamp(
+	                  Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0.12 * L,
+	                  0,
+	                  L
+	                );
+	                const bonusWidth = Utils.clamp(Number.isFinite(bonusWidthRaw) ? bonusWidthRaw : W, 0, W);
+	                const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : H, 0, H);
+
+	                const splitX = L - bonusLength;
+	                const zones = [
+	                  zone({ x: 0, y: 0, z: -W / 2 }, { x: splitX, y: H, z: W / 2 }),
+	                  zone(
+	                    { x: splitX, y: 0, z: -bonusWidth / 2 },
+	                    { x: L, y: bonusHeight, z: bonusWidth / 2 }
+	                  ),
+	                ];
+	                return sanitizeZones(zones);
+	              }
+
+	              if (mode === 'wheelWells') {
+	                const wellHeightRaw = Number(cfg.wellHeight);
+	                const wellWidthRaw = Number(cfg.wellWidth);
+	                const wellLengthRaw = Number(cfg.wellLength);
+	                const wellOffsetRaw = Number(cfg.wellOffsetFromRear);
+
+	                const wellHeight = Utils.clamp(
+	                  Number.isFinite(wellHeightRaw) ? wellHeightRaw : 0.35 * H,
+	                  0,
+	                  H
+	                );
+	                const wellWidth = Utils.clamp(
+	                  Number.isFinite(wellWidthRaw) ? wellWidthRaw : 0.15 * W,
+	                  0,
+	                  W / 2
+	                );
+	                const wellLength = Utils.clamp(
+	                  Number.isFinite(wellLengthRaw) ? wellLengthRaw : 0.35 * L,
+	                  0,
+	                  L
+	                );
+	                const wellOffsetFromRear = Utils.clamp(
+	                  Number.isFinite(wellOffsetRaw) ? wellOffsetRaw : 0.25 * L,
+	                  0,
+	                  L
+	                );
+
+	                const wx0 = wellOffsetFromRear;
+	                const wx1 = Utils.clamp(wx0 + wellLength, wx0, L);
+	                const betweenHalfW = Math.max(0, W / 2 - wellWidth);
+
+	                const zones = [
+	                  // 1) rear full-width
+	                  zone({ x: 0, y: 0, z: -W / 2 }, { x: wx0, y: H, z: W / 2 }),
+
+	                  // 2) center corridor between wells (full height)
+	                  zone({ x: wx0, y: 0, z: -betweenHalfW }, { x: wx1, y: H, z: betweenHalfW }),
+
+	                  // 3) left above-well
+	                  zone({ x: wx0, y: wellHeight, z: -W / 2 }, { x: wx1, y: H, z: -betweenHalfW }),
+
+	                  // 4) right above-well
+	                  zone({ x: wx0, y: wellHeight, z: betweenHalfW }, { x: wx1, y: H, z: W / 2 }),
+
+	                  // 5) front full-width
+	                  zone({ x: wx1, y: 0, z: -W / 2 }, { x: L, y: H, z: W / 2 }),
+	                ];
+	                return sanitizeZones(zones);
+	              }
+
+	              // rect (default)
+	              return [
+	                zone({ x: 0, y: 0, z: -W / 2 }, { x: L, y: H, z: W / 2 }),
+	              ];
+	            }
+
+	            function getTrailerCapacityInches3(truck) {
+	              const zones = getTrailerUsableZones(truck);
+	              return zones.reduce((sum, z) => {
+	                const dx = z.max.x - z.min.x;
+	                const dy = z.max.y - z.min.y;
+	                const dz = z.max.z - z.min.z;
+	                return sum + Math.max(0, dx) * Math.max(0, dy) * Math.max(0, dz);
+	              }, 0);
+	            }
+
+		            function isAabbContainedInAnyZone(aabb, zones) {
+		              for (const z of zones || []) {
+		                if (
+		                  aabb.min.x >= z.min.x &&
+		                  aabb.max.x <= z.max.x &&
+		                  aabb.min.y >= z.min.y &&
+		                  aabb.max.y <= z.max.y &&
+		                  aabb.min.z >= z.min.z &&
+		                  aabb.max.z <= z.max.z
+		                ) {
+		                  return true;
+		                }
+		              }
+		              return false;
+		            }
+
+	            function zonesInchesToWorld(zonesInches) {
+	              return (zonesInches || []).map(z => ({
+	                min: {
+	                  x: SceneManager.toWorld(z.min.x),
+	                  y: SceneManager.toWorld(z.min.y),
+	                  z: SceneManager.toWorld(z.min.z),
+	                },
+	                max: {
+	                  x: SceneManager.toWorld(z.max.x),
+	                  y: SceneManager.toWorld(z.max.y),
+	                  z: SceneManager.toWorld(z.max.z),
+	                },
+	              }));
+	            }
+
+		            function zonesToSpacesInches(zonesInches) {
+		              return (zonesInches || []).map(z => ({
+		                x: z.min.x,
+		                y: z.min.y,
+		                z: z.min.z,
+		                length: z.max.x - z.min.x,
+		                width: z.max.z - z.min.z,
+		                height: z.max.y - z.min.y,
+		              }));
+		            }
+
+		            function getWheelWellsBlockedZones(truck) {
+		              const { length: L, width: W, height: H } = getDims(truck);
+		              const mode = getMode(truck);
+		              const cfg = getConfig(truck);
+		              if (mode !== 'wheelWells') return [];
+		              if (!L || !W || !H) return [];
+
+		              const wellHeightRaw = Number(cfg.wellHeight);
+		              const wellWidthRaw = Number(cfg.wellWidth);
+		              const wellLengthRaw = Number(cfg.wellLength);
+		              const wellOffsetRaw = Number(cfg.wellOffsetFromRear);
+
+		              const wellHeight = Utils.clamp(
+		                Number.isFinite(wellHeightRaw) ? wellHeightRaw : 0.35 * H,
+		                0,
+		                H
+		              );
+		              const wellWidth = Utils.clamp(
+		                Number.isFinite(wellWidthRaw) ? wellWidthRaw : 0.15 * W,
+		                0,
+		                W / 2
+		              );
+		              const wellLength = Utils.clamp(
+		                Number.isFinite(wellLengthRaw) ? wellLengthRaw : 0.35 * L,
+		                0,
+		                L
+		              );
+		              const wellOffsetFromRear = Utils.clamp(
+		                Number.isFinite(wellOffsetRaw) ? wellOffsetRaw : 0.25 * L,
+		                0,
+		                L
+		              );
+
+		              const wx0 = wellOffsetFromRear;
+		              const wx1 = Utils.clamp(wx0 + wellLength, wx0, L);
+		              const betweenHalfW = Math.max(0, W / 2 - wellWidth);
+
+		              const zones = [
+		                // Left wheel well (blocked)
+		                zone({ x: wx0, y: 0, z: -W / 2 }, { x: wx1, y: wellHeight, z: -betweenHalfW }),
+
+		                // Right wheel well (blocked)
+		                zone({ x: wx0, y: 0, z: betweenHalfW }, { x: wx1, y: wellHeight, z: W / 2 }),
+		              ];
+		              return sanitizeZones(zones);
+		            }
+
+		            function getFrontBonusZone(truck) {
+		              const { length: L, width: W, height: H } = getDims(truck);
+		              const mode = getMode(truck);
+		              const cfg = getConfig(truck);
+		              if (mode !== 'frontBonus') return null;
+		              if (!L || !W || !H) return null;
+
+		              const bonusLengthRaw = Number(cfg.bonusLength);
+		              const bonusWidthRaw = Number(cfg.bonusWidth);
+		              const bonusHeightRaw = Number(cfg.bonusHeight);
+
+		              const bonusLength = Utils.clamp(
+		                Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0.12 * L,
+		                0,
+		                L
+		              );
+		              const bonusWidth = Utils.clamp(Number.isFinite(bonusWidthRaw) ? bonusWidthRaw : W, 0, W);
+		              const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : H, 0, H);
+
+		              const splitX = L - bonusLength;
+		              const zones = [
+		                zone({ x: splitX, y: 0, z: -bonusWidth / 2 }, { x: L, y: bonusHeight, z: bonusWidth / 2 }),
+		              ];
+		              return sanitizeZones(zones)[0] || null;
+		            }
+
+		            return {
+		              getTrailerUsableZones,
+		              getTrailerCapacityInches3,
+		              isAabbContainedInAnyZone,
+		              zonesInchesToWorld,
+		              zonesToSpacesInches,
+		              getWheelWellsBlockedZones,
+		              getFrontBonusZone,
+		            };
+		          })();
+
+	          // ============================================================================
+	          // SECTION: DOMAIN DATA (PACKS)
+	          // ============================================================================
+	          const PackLibrary = (() => {
+	            function getPacks() {
+	              return StateStore.get('packLibrary') || [];
+	            }
+
+            function getById(packId) {
+              return getPacks().find(p => p.id === packId) || null;
+            }
+
+	            function create(packData) {
+	              const now = Date.now();
+	              const rawTruck = packData.truck || { length: 636, width: 102, height: 98 };
+	              const shapeMode =
+	                rawTruck &&
+	                (rawTruck.shapeMode === 'wheelWells' ||
+	                  rawTruck.shapeMode === 'frontBonus' ||
+	                  rawTruck.shapeMode === 'rect')
+	                  ? rawTruck.shapeMode
+	                  : 'rect';
+	              const shapeConfig =
+	                rawTruck && rawTruck.shapeConfig && typeof rawTruck.shapeConfig === 'object' && !Array.isArray(rawTruck.shapeConfig)
+	                  ? Utils.deepClone(rawTruck.shapeConfig)
+	                  : {};
+	              const truck = {
+	                length: Number(rawTruck.length) || 636,
+	                width: Number(rawTruck.width) || 102,
+	                height: Number(rawTruck.height) || 98,
+	                shapeMode,
+	                shapeConfig,
+	              };
+	              const pack = {
+	                id: Utils.uuid(),
+	                title: packData.title || 'Untitled Pack',
+	                client: packData.client || '',
+	                projectName: packData.projectName || '',
+	                drawnBy: packData.drawnBy || '',
+	                notes: packData.notes || '',
+	                truck,
+	                cases: [],
+	                groups: [],
+	                stats: { totalCases: 0, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
+	                createdAt: now,
+                lastEdited: now,
+                thumbnail: null,
+                thumbnailUpdatedAt: null,
+                thumbnailSource: null,
+              };
+              StateStore.set({ packLibrary: [...getPacks(), pack] });
+              return pack;
+            }
+
+            function update(packId, patch) {
+              const packs = getPacks();
+              const idx = packs.findIndex(p => p.id === packId);
+              if (idx === -1) return null;
+              const now = Date.now();
+              const cloned = Utils.deepClone(patch);
+              const prev = packs[idx];
+              const next = { ...prev, ...cloned };
+
+              const lastEditedKeys = ['title', 'client', 'projectName', 'drawnBy', 'notes', 'truck', 'cases', 'groups'];
+              const hasLastEditedKey = Object.keys(cloned || {}).some(k => lastEditedKeys.includes(k));
+              next.lastEdited = hasLastEditedKey ? now : prev.lastEdited || now;
+              next.stats = computeStats(next);
+              const nextPacks = packs.map((p, i) => (i === idx ? next : p));
+              StateStore.set({ packLibrary: nextPacks });
+              return next;
+            }
+
+            function remove(packId) {
+              const packs = getPacks().filter(p => p.id !== packId);
+              const current = StateStore.get('currentPackId');
+              StateStore.set(
+                { packLibrary: packs, currentPackId: current === packId ? null : current, selectedInstanceIds: [] },
+                { skipHistory: true }
+              );
+            }
+
+            function duplicate(packId) {
+              const pack = getById(packId);
+              if (!pack) return null;
+              const now = Date.now();
+              const copy = Utils.deepClone(pack);
+              copy.id = Utils.uuid();
+              copy.title = pack.title + ' (Copy)';
+              copy.createdAt = now;
+              copy.lastEdited = now;
+              copy.thumbnail = null;
+              copy.thumbnailUpdatedAt = null;
+              copy.thumbnailSource = null;
+              // New instance ids
+              copy.cases = (copy.cases || []).map(i => ({ ...i, id: Utils.uuid() }));
+              StateStore.set({ packLibrary: [...getPacks(), copy] });
+              return copy;
+            }
+
+            function open(packId) {
+              const pack = getById(packId);
+              if (!pack) return null;
+              StateStore.set({ currentPackId: packId, selectedInstanceIds: [] }, { skipHistory: true });
+              return pack;
+            }
+
+            function addInstance(packId, caseId, position) {
+              const pack = getById(packId);
+              if (!pack) return null;
+              const caseData = CaseLibrary.getById(caseId);
+              if (!caseData) return null;
+              const instance = {
+                id: Utils.uuid(),
+                caseId,
+                transform: {
+                  position: position || { x: -80, y: Math.max(1, caseData.dimensions.height / 2), z: 0 },
+                  rotation: { x: 0, y: 0, z: 0 },
+                  scale: { x: 1, y: 1, z: 1 },
+                },
+                hidden: false,
+                groupId: null,
+              };
+              const nextCases = [...(pack.cases || []), instance];
+              update(packId, { cases: nextCases });
+              return instance;
+            }
+
+            function updateInstance(packId, instanceId, patch) {
+              const pack = getById(packId);
+              if (!pack) return null;
+              const nextInstances = (pack.cases || []).map(i =>
+                i.id === instanceId ? { ...i, ...Utils.deepClone(patch) } : i
+              );
+              return update(packId, { cases: nextInstances });
+            }
+
+            function removeInstances(packId, instanceIds) {
+              const pack = getById(packId);
+              if (!pack) return null;
+              const idSet = new Set(instanceIds || []);
+              const nextInstances = (pack.cases || []).filter(i => !idSet.has(i.id));
+              return update(packId, { cases: nextInstances });
+            }
+
+	            function computeStats(pack, caseLibraryOverride) {
+	              const zonesInches = TrailerGeometry.getTrailerUsableZones(pack && pack.truck);
+	              const truckVol = TrailerGeometry.getTrailerCapacityInches3(pack && pack.truck);
+	              let usedIn3 = 0;
+	              let totalWeight = 0;
+	              let packedCases = 0;
+              const getCase = caseId => {
+                if (Array.isArray(caseLibraryOverride)) return caseLibraryOverride.find(c => c.id === caseId) || null;
+                return CaseLibrary.getById(caseId);
+              };
+	              (pack.cases || []).forEach(inst => {
+	                const c = getCase(inst.caseId);
+	                if (!c) return;
+	                if (inst.hidden) return;
+	                const dims = c.dimensions || { length: 0, width: 0, height: 0 };
+	                const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
+	                const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
+	                const aabb = {
+	                  min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
+	                  max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
+	                };
+	                const insideTruck = TrailerGeometry.isAabbContainedInAnyZone(aabb, zonesInches);
+	                if (!insideTruck) return;
+	                packedCases++;
+	                usedIn3 += c.volume || Utils.volumeInCubicInches(dims);
+	                totalWeight += Number(c.weight) || 0;
+	              });
+              const volumePercent = truckVol > 0 ? (usedIn3 / truckVol) * 100 : 0;
+              return {
+                totalCases: (pack.cases || []).length,
+                packedCases,
+                volumeUsed: usedIn3,
+                volumePercent,
+                totalWeight,
+              };
+            }
+
+            return {
+              getPacks,
+              getById,
+              create,
+              update,
+              remove,
+              duplicate,
+              open,
+              addInstance,
+              updateInstance,
+              removeInstances,
+              computeStats,
+            };
+          })();
+
+          // ============================================================================
+          // SECTION: STATIC CONTENT (UPDATES/ROADMAP)
+          // ============================================================================
+          const Data = (() => {
+            const updates = [
+              {
+                version: '1.0.0',
+                date: '2026-01-15',
+                features: [
+                  'Multi-screen workspace (Packs, Cases, Editor, Updates, Roadmap, Settings)',
+                  'Three.js 3D editor with drag placement',
+                  'CSV/XLSX import, PNG + PDF export',
+                ],
+                bugFixes: [],
+                breakingChanges: [],
               },
-            },
-          ],
-        });
-      }
-
-      function openRename(packId) {
-        const pack = PackLibrary.getById(packId);
-        if (!pack) return;
-        const content = document.createElement('div');
-        const f = field('Pack title', 'text', pack.title || '', true);
-        f.input.value = pack.title || '';
-        content.appendChild(f.wrap);
-        UIComponents.showModal({
-          title: 'Rename Pack',
-          content,
-          actions: [
-            { label: 'Cancel' },
-            {
-              label: 'Save',
-              variant: 'primary',
-              onClick: () => {
-                const nextTitle = String(f.input.value || '').trim();
-                if (!nextTitle) return;
-                PackLibrary.update(packId, { title: nextTitle });
-                UIComponents.showToast('Renamed', 'success');
+              {
+                version: '1.1.0',
+                date: '2026-03-01',
+                features: ['(Example) Weight balance view', '(Example) Case rotation'],
+                bugFixes: ['(Example) Improved collision edge cases'],
+                breakingChanges: [],
               },
-            },
-          ],
-        });
-      }
+            ];
 
-      function exportPack(packId) {
-        const pack = PackLibrary.getById(packId);
-        if (!pack) return;
-        const payload = {
-          app: 'Truck Packer 3D',
-          version: APP_VERSION,
-          exportedAt: Date.now(),
-          pack,
-          bundledCases: (pack.cases || []).map(i => CaseLibrary.getById(i.caseId)).filter(Boolean),
-        };
-        Utils.downloadText(
-          `${(pack.title || 'pack').replace(/[^a-z0-9]+/gi, '-')}.json`,
-          JSON.stringify(payload, null, 2)
-        );
-        UIComponents.showToast('Pack JSON exported', 'success');
-      }
+            const roadmap = [
+              {
+                quarter: 'Q1 2026',
+                items: [
+                  {
+                    title: 'Weight balance',
+                    status: 'Completed',
+                    badge: '✓',
+                    color: 'var(--success)',
+                    details: 'Add center-of-gravity and axle load estimates.',
+                  },
+                  {
+                    title: 'Rotation (MVP)',
+                    status: 'In Progress',
+                    badge: '⏱',
+                    color: 'var(--warning)',
+                    details: 'Allow 90° rotations and pack-time heuristics.',
+                  },
+                ],
+              },
+              {
+                quarter: 'Q2 2026',
+                items: [
+                  {
+                    title: 'Multi-user',
+                    status: 'Planned',
+                    badge: '📋',
+                    color: 'var(--info)',
+                    details: 'Presence + change tracking (no real-time yet).',
+                  },
+                  {
+                    title: '3D export',
+                    status: 'Planned',
+                    badge: '📋',
+                    color: 'var(--info)',
+                    details: 'GLB/GLTF export for downstream tools.',
+                  },
+                ],
+              },
+              {
+                quarter: 'Future',
+                items: [
+                  {
+                    title: 'AR view',
+                    status: 'Idea',
+                    badge: '💡',
+                    color: 'var(--text-muted)',
+                    details: 'Preview a load-out in real space on mobile.',
+                  },
+                ],
+              },
+            ];
 
-      async function deletePack(packId) {
-        const ok = await UIComponents.confirm({
-          title: 'Delete pack?',
-          message: 'This cannot be undone.',
-          danger: true,
-          okLabel: 'Delete',
-        });
-        if (!ok) return;
-        PackLibrary.remove(packId);
-        UIComponents.showToast('Pack deleted', 'info');
-      }
+            return { updates, roadmap };
+          })();
 
-      function openImportPackDialog() {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.json,application/json';
-        input.addEventListener('change', async () => {
-          const file = input.files && input.files[0];
-          if (!file) return;
-          try {
-            const text = await file.text();
-            const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(text, null));
-            if (!parsed) throw new Error('Invalid JSON');
-            const payload = parsed.pack ? parsed : { pack: parsed };
-            importPackPayload(payload);
-            UIComponents.showToast('Pack imported', 'success');
-          } catch (err) {
-            UIComponents.showToast('Import failed: ' + err.message, 'error');
-          }
-        });
-        input.click();
-      }
+          // ============================================================================
+          // SECTION: APP SHELL / NAVIGATION
+          // ============================================================================
+          const AppShell = (() => {
+            const appRoot = document.getElementById('app');
+            const sidebar = document.getElementById('sidebar');
+            const btnSidebar = document.getElementById('btn-sidebar');
+            const topbarTitle = document.getElementById('topbar-title');
+            const topbarSubtitle = document.getElementById('topbar-subtitle');
+            const contentRoot = document.querySelector('.content');
+            const navButtons = Array.from(document.querySelectorAll('[data-nav]'));
 
-      function importPackPayload(payload) {
-        const now = Date.now();
-        const incomingPack = payload.pack;
-        if (!incomingPack || !incomingPack.truck || !Array.isArray(incomingPack.cases))
-          {throw new Error('Invalid pack format');}
+            const screenTitles = {
+              packs: { title: 'Packs', subtitle: 'Project library' },
+              cases: { title: 'Cases', subtitle: 'Inventory management' },
+              editor: { title: 'Editor', subtitle: '3D workspace' },
+              updates: { title: 'Updates', subtitle: 'Release notes' },
+              roadmap: { title: 'Roadmap', subtitle: 'Product direction' },
+              settings: { title: 'Settings', subtitle: 'Preferences' },
+            };
 
-        const bundled = Array.isArray(payload.bundledCases) ? payload.bundledCases : [];
-        const currentCases = CaseLibrary.getCases();
-        const currentPacks = PackLibrary.getPacks();
+            function toggleSidebar() {
+              const isMobile = window.matchMedia('(max-width: 899px)').matches;
+              if (isMobile) {
+                sidebar.classList.toggle('open');
+              } else {
+                appRoot.classList.toggle('sidebar-collapsed');
+              }
+            }
 
-        const caseById = new Map(currentCases.map(c => [c.id, c]));
-        const caseByName = new Map(
-          currentCases.map(c => [
-            String(c.name || '')
-              .trim()
-              .toLowerCase(),
-            c,
-          ])
-        );
-        const caseIdMap = new Map();
-        const nextCases = [...currentCases];
+            function initShell() {
+              btnSidebar.addEventListener('click', toggleSidebar);
+              navButtons.forEach(btn => {
+                btn.addEventListener('click', () => {
+                  const target = btn.getAttribute('data-nav');
+                  navigate(target);
+                  if (window.matchMedia('(max-width: 899px)').matches) {
+                    sidebar.classList.remove('open');
+                  }
+                });
+              });
 
-        bundled.forEach(c => {
-          if (!c || !c.id) return;
-          const nameKey = String(c.name || '')
-            .trim()
-            .toLowerCase();
-          if (caseById.has(c.id)) {
-            caseIdMap.set(c.id, c.id);
-            return;
-          }
-          if (nameKey && caseByName.has(nameKey)) {
-            caseIdMap.set(c.id, caseByName.get(nameKey).id);
-            return;
-          }
-          const copy = Utils.deepClone(c);
-          copy.createdAt = copy.createdAt || now;
-          copy.updatedAt = now;
-          copy.volume = copy.volume || Utils.volumeInCubicInches(copy.dimensions || { length: 0, width: 0, height: 0 });
-          nextCases.push(copy);
-          caseById.set(copy.id, copy);
-          if (nameKey) caseByName.set(nameKey, copy);
-          caseIdMap.set(c.id, copy.id);
-        });
+              window.addEventListener('resize', () => {
+                if (!window.matchMedia('(max-width: 899px)').matches) {
+                  sidebar.classList.remove('open');
+                }
+              });
+            }
 
-        const pack = Utils.deepClone(incomingPack);
-        pack.id = currentPacks.some(p => p.id === pack.id) ? Utils.uuid() : pack.id || Utils.uuid();
-        pack.title = pack.title ? `${pack.title} (Imported)` : 'Imported Pack';
-        pack.createdAt = pack.createdAt || now;
-        pack.lastEdited = now;
+            function navigate(screenKey) {
+              StateStore.set({ currentScreen: screenKey }, { skipHistory: true });
+            }
 
-        // New instance ids + caseId remap
-        pack.cases = (pack.cases || []).map(inst => {
-          const next = Utils.deepClone(inst);
-          next.id = Utils.uuid();
-          next.caseId = caseIdMap.get(next.caseId) || next.caseId;
-          if (!next.transform)
-            {next.transform = {
+            function renderShell() {
+              const screen = StateStore.get('currentScreen');
+              navButtons.forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-nav') === screen));
+              document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+              const el = document.getElementById(`screen-${screen}`);
+              if (el) el.classList.add('active');
+              if (contentRoot) contentRoot.classList.toggle('editor-mode', screen === 'editor');
+
+              const isMobile = window.matchMedia('(max-width: 899px)').matches;
+
+              if (screen === 'editor') {
+                // Collapse sidebar to maximize editor viewport
+                appRoot.classList.add('sidebar-collapsed');
+                sidebar.classList.remove('open');
+                // Ensure editor panels visible to avoid empty canvas gap
+                const editorLeft = document.getElementById('editor-left');
+                const editorRight = document.getElementById('editor-right');
+                editorLeft && editorLeft.classList.remove('hidden');
+                editorRight && editorRight.classList.remove('hidden');
+                const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+                topbarTitle.textContent = pack ? pack.title || 'Editor' : 'Editor';
+                topbarSubtitle.textContent = pack
+                  ? `Edited ${Utils.formatRelativeTime(pack.lastEdited)}`
+                  : '3D workspace';
+                return;
+              }
+
+              // Restore sidebar when leaving editor (desktop)
+              if (!isMobile) appRoot.classList.remove('sidebar-collapsed');
+
+              const meta = screenTitles[screen] || { title: 'Truck Packer 3D', subtitle: '' };
+              topbarTitle.textContent = meta.title;
+              topbarSubtitle.textContent = meta.subtitle;
+            }
+
+            return { init: initShell, navigate, renderShell };
+          })();
+
+          // ==== UI: Packs Screen ====
+          // ============================================================================
+          // SECTION: SCREEN UI (PACKS)
+          // ============================================================================
+          const PacksUI = (() => {
+            const searchEl = document.getElementById('packs-search');
+            const gridEl = document.getElementById('packs-grid');
+            const listEl = document.getElementById('packs-list');
+            const tbodyEl = document.getElementById('packs-tbody');
+            const emptyEl = document.getElementById('packs-empty');
+            const filterEmptyEl = document.getElementById('packs-filter-empty');
+            const filterEmptyMsg = document.getElementById('packs-filter-empty-msg');
+            const btnNew = document.getElementById('btn-new-pack');
+            const btnImport = document.getElementById('btn-import-pack');
+            const chipEmpty = document.getElementById('packs-filter-chip-empty');
+            const chipPartial = document.getElementById('packs-filter-chip-partial');
+            const chipFull = document.getElementById('packs-filter-chip-full');
+            const btnViewGrid = document.getElementById('packs-view-grid');
+            const btnViewList = document.getElementById('packs-view-list');
+            const selectAllEl = document.getElementById('packs-select-all');
+            const titleHeaderButton = document.querySelector('#packs-list thead th[data-sort="title"] .th-sort');
+            const defaultActionsEl = document.getElementById('packs-actions-default');
+            const bulkActionsEl = document.getElementById('packs-actions-bulk');
+            const bulkCountEl = document.getElementById('packs-selected-count');
+            const btnBulkDelete = document.getElementById('btn-packs-bulk-delete');
+
+            const filters = { empty: false, partial: false, full: false };
+            const selectedIds = new Set();
+            let datasetKey = '';
+            let sortKey = 'edited-desc';
+
+            function initPacksUI() {
+              searchEl.addEventListener('input', Utils.debounce(render, 200));
+              searchEl.addEventListener('keydown', ev => {
+                if (ev.key === 'Escape') {
+                  searchEl.value = '';
+                  render();
+                  searchEl.blur();
+                }
+              });
+              wireChip(chipEmpty, 'empty');
+              wireChip(chipPartial, 'partial');
+              wireChip(chipFull, 'full');
+              btnNew.addEventListener('click', () => openNewPackModal());
+              btnImport.addEventListener('click', () => openImportPackDialog());
+              btnViewGrid.addEventListener('click', () => setViewMode('grid'));
+              btnViewList.addEventListener('click', () => setViewMode('list'));
+              selectAllEl.addEventListener('change', handleSelectAll);
+              btnBulkDelete.addEventListener('click', handleBulkDelete);
+              initListHeaderSort();
+              updateViewButtons();
+            }
+
+            function initListHeaderSort() {
+              const headers = document.querySelectorAll('#packs-list thead th[data-sort]');
+              headers.forEach(th => {
+                const sortField = th.dataset.sort;
+                const button = th.querySelector('.th-sort');
+                if (!button) return;
+                const toggleSort = () => {
+                  const ascKey = `${sortField}-asc`;
+                  const descKey = `${sortField}-desc`;
+                  if (sortKey === ascKey) {
+                    sortKey = descKey;
+                  } else if (sortKey === descKey) {
+                    sortKey = ascKey;
+                  } else {
+                    sortKey = ascKey;
+                  }
+                  render();
+                  updateListHeaderIcons();
+                };
+                button.addEventListener('click', toggleSort);
+                button.addEventListener('keydown', ev => {
+                  if (ev.key === 'Enter' || ev.key === ' ') {
+                    ev.preventDefault();
+                    toggleSort();
+                  }
+                });
+              });
+              updateListHeaderIcons();
+            }
+
+            function updateListHeaderIcons() {
+              const headers = document.querySelectorAll('#packs-list thead th[data-sort]');
+              headers.forEach(th => {
+                const sortField = th.dataset.sort;
+                const button = th.querySelector('.th-sort');
+                if (!button) return;
+                button.classList.toggle('is-asc', sortKey === `${sortField}-asc`);
+                button.classList.toggle('is-desc', sortKey === `${sortField}-desc`);
+              });
+            }
+
+            function setViewMode(mode) {
+              const prefs = PreferencesManager.get();
+              prefs.packsViewMode = mode;
+              PreferencesManager.set(prefs);
+              updateViewButtons();
+              render();
+            }
+
+            function updateViewButtons() {
+              const mode = PreferencesManager.get().packsViewMode || 'grid';
+              btnViewGrid.classList.toggle('btn-primary', mode === 'grid');
+              btnViewList.classList.toggle('btn-primary', mode === 'list');
+            }
+
+            function wireChip(el, key) {
+              if (!el) return;
+              const toggle = () => {
+                filters[key] = !filters[key];
+                el.classList.toggle('active', filters[key]);
+                render();
+              };
+              el.addEventListener('click', toggle);
+              el.addEventListener('keydown', ev => {
+                if (ev.key === 'Enter' || ev.key === ' ') toggle();
+              });
+            }
+
+            function handleSelectAll() {
+              const mode = PreferencesManager.get().packsViewMode || 'grid';
+              if (mode !== 'list') return;
+              const q = String(searchEl.value || '').trim().toLowerCase();
+              const allPacks = PackLibrary.getPacks();
+              const packs = allPacks
+                .filter(p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q))
+                .filter(p => {
+                  if (!filters.empty && !filters.partial && !filters.full) return true;
+                  const total = (p.cases || []).length;
+                  const percent = p.stats && Number.isFinite(p.stats.volumePercent) ? p.stats.volumePercent : 0;
+                  const isEmpty = total === 0;
+                  const isFull = percent >= 99.999;
+                  const isPartial = !isEmpty && percent > 0 && !isFull;
+                  if (filters.empty && isEmpty) return true;
+                  if (filters.partial && isPartial) return true;
+                  if (filters.full && isFull) return true;
+                  return false;
+                });
+              if (selectAllEl.checked) {
+                packs.forEach(p => selectedIds.add(p.id));
+              } else {
+                selectedIds.clear();
+              }
+              render();
+            }
+
+            function updateBulkActions() {
+              const mode = PreferencesManager.get().packsViewMode || 'grid';
+              const count = selectedIds.size;
+              if (mode === 'list' && count > 0) {
+                defaultActionsEl.style.display = 'none';
+                bulkActionsEl.style.display = 'flex';
+                bulkCountEl.textContent = `${count} pack${count === 1 ? '' : 's'} selected`;
+                btnBulkDelete.innerHTML = `<i class="fa-solid fa-trash"></i> Delete (${count})`;
+                const q = String(searchEl.value || '').trim().toLowerCase();
+                const allPacks = PackLibrary.getPacks();
+                const packs = allPacks
+                  .filter(p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q))
+                  .filter(p => {
+                    if (!filters.empty && !filters.partial && !filters.full) return true;
+                    const total = (p.cases || []).length;
+                    const percent = p.stats && Number.isFinite(p.stats.volumePercent) ? p.stats.volumePercent : 0;
+                    const isEmpty = total === 0;
+                    const isFull = percent >= 99.999;
+                    const isPartial = !isEmpty && percent > 0 && !isFull;
+                    if (filters.empty && isEmpty) return true;
+                    if (filters.partial && isPartial) return true;
+                    if (filters.full && isFull) return true;
+                    return false;
+                  });
+                const allSelected = packs.length > 0 && packs.every(p => selectedIds.has(p.id));
+                const someSelected = packs.some(p => selectedIds.has(p.id));
+                selectAllEl.checked = allSelected;
+                selectAllEl.indeterminate = someSelected && !allSelected;
+              } else {
+                defaultActionsEl.style.display = 'flex';
+                bulkActionsEl.style.display = 'none';
+                selectAllEl.checked = false;
+                selectAllEl.indeterminate = false;
+              }
+            }
+
+            function handleBulkDelete() {
+              const count = selectedIds.size;
+              if (count === 0) return;
+              const confirmed = confirm(`Delete ${count} pack${count === 1 ? '' : 's'}?\n\nThis action cannot be undone.`);
+              if (!confirmed) return;
+              const idsToDelete = Array.from(selectedIds);
+              const state = StateStore.get();
+              const currentPackId = state.currentPackId;
+              const isCurrentDeleted = idsToDelete.includes(currentPackId);
+              const updatedPacks = state.packs.filter(p => !idsToDelete.includes(p.id));
+              if (isCurrentDeleted) {
+                StateStore.set({
+                  ...state,
+                  packs: updatedPacks,
+                  currentPackId: null,
+                  instances: [],
+                  groups: [],
+                });
+                AppShell.navigate('packs');
+              } else {
+                StateStore.set({ ...state, packs: updatedPacks });
+              }
+              selectedIds.clear();
+              UIComponents.showToast(`${count} pack${count === 1 ? '' : 's'} deleted`, 'success');
+              render();
+            }
+
+            function render() {
+              const q = String(searchEl.value || '')
+                .trim()
+                .toLowerCase();
+              const allPacks = PackLibrary.getPacks().slice();
+
+              const compareTitle = (a, b) => (a.title || '').localeCompare(b.title || '');
+              const compareCases = (a, b) => ((a.cases || []).length) - ((b.cases || []).length);
+              const compareLastEdited = (a, b) => (a.lastEdited || 0) - (b.lastEdited || 0);
+              const compareCreated = (a, b) => (a.createdAt || 0) - (b.createdAt || 0);
+              const compareLength = (a, b) => (a.truck?.length || 0) - (b.truck?.length || 0);
+              const compareWidth = (a, b) => (a.truck?.width || 0) - (b.truck?.width || 0);
+              const compareHeight = (a, b) => (a.truck?.height || 0) - (b.truck?.height || 0);
+              const sorters = {
+                'edited-desc': (a, b) => compareLastEdited(b, a),
+                'edited-asc': (a, b) => compareLastEdited(a, b),
+                'title-asc': (a, b) => compareTitle(a, b),
+                'title-desc': (a, b) => compareTitle(b, a),
+                'cases-asc': (a, b) => compareCases(a, b),
+                'cases-desc': (a, b) => compareCases(b, a),
+                'created-desc': (a, b) => compareCreated(b, a),
+                'created-asc': (a, b) => compareCreated(a, b),
+                'length-asc': (a, b) => compareLength(a, b),
+                'length-desc': (a, b) => compareLength(b, a),
+                'width-asc': (a, b) => compareWidth(a, b),
+                'width-desc': (a, b) => compareWidth(b, a),
+                'height-asc': (a, b) => compareHeight(a, b),
+                'height-desc': (a, b) => compareHeight(b, a),
+              };
+              allPacks.sort(sorters[sortKey] || sorters['edited-desc']);
+
+              const packs = allPacks
+                .filter(p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q))
+                .filter(p => {
+                  if (!filters.empty && !filters.partial && !filters.full) return true;
+                  const total = (p.cases || []).length;
+                  const percent = p.stats && Number.isFinite(p.stats.volumePercent) ? p.stats.volumePercent : 0;
+                  const isEmpty = total === 0;
+                  const isFull = percent >= 99.999;
+                  const isPartial = !isEmpty && percent > 0 && !isFull;
+
+                  if (filters.empty && isEmpty) return true;
+                  if (filters.partial && isPartial) return true;
+                  if (filters.full && isFull) return true;
+                  return false;
+                });
+
+              const newDatasetKey = `${q}::${sortKey}::${filters.empty}${filters.partial}${filters.full}`;
+              if (datasetKey !== newDatasetKey) {
+                selectedIds.clear();
+                datasetKey = newDatasetKey;
+              }
+
+              gridEl.innerHTML = '';
+              tbodyEl.innerHTML = '';
+
+              if (!allPacks.length) {
+                emptyEl.style.display = 'block';
+                filterEmptyEl.style.display = 'none';
+                gridEl.style.display = 'none';
+                listEl.style.display = 'none';
+                updateBulkActions();
+                return;
+              }
+
+              if (!packs.length) {
+                emptyEl.style.display = 'none';
+                filterEmptyMsg.textContent = q ? `No matching packs for "${q}"` : 'No matching packs';
+                filterEmptyEl.style.display = 'block';
+                gridEl.style.display = 'none';
+                listEl.style.display = 'none';
+                updateBulkActions();
+                return;
+              }
+
+              filterEmptyEl.style.display = 'none';
+              emptyEl.style.display = 'none';
+
+              const mode = PreferencesManager.get().packsViewMode || 'grid';
+              if (mode === 'list') {
+                gridEl.style.display = 'none';
+                listEl.style.display = 'block';
+                renderListView(packs);
+              } else {
+                gridEl.style.display = 'grid';
+                listEl.style.display = 'none';
+                renderGridView(packs);
+              }
+              updateListHeaderIcons();
+              updateBulkActions();
+            }
+
+            function renderListView(packs) {
+              const prefs = PreferencesManager.get();
+              packs.forEach(pack => {
+                const tr = document.createElement('tr');
+                const isSelected = selectedIds.has(pack.id);
+                if (isSelected) tr.classList.add('selected');
+
+                const tdCheck = document.createElement('td');
+                tdCheck.style.textAlign = 'center';
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = isSelected;
+                checkbox.setAttribute('aria-label', `Select ${pack.title || 'Untitled Pack'}`);
+                checkbox.addEventListener('click', ev => ev.stopPropagation());
+                checkbox.addEventListener('change', () => {
+                  if (checkbox.checked) {
+                    selectedIds.add(pack.id);
+                  } else {
+                    selectedIds.delete(pack.id);
+                  }
+                  tr.classList.toggle('selected', selectedIds.has(pack.id));
+                  updateBulkActions();
+                });
+                tdCheck.appendChild(checkbox);
+
+                const tdTitle = document.createElement('td');
+                tdTitle.textContent = pack.title || 'Untitled Pack';
+
+                const tdCases = document.createElement('td');
+                tdCases.textContent = (pack.cases || []).length;
+
+                const tdLength = document.createElement('td');
+                tdLength.textContent = Utils.formatLength(pack.truck.length, prefs.units.length);
+
+                const tdWidth = document.createElement('td');
+                tdWidth.textContent = Utils.formatLength(pack.truck.width, prefs.units.length);
+
+                const tdHeight = document.createElement('td');
+                tdHeight.textContent = Utils.formatLength(pack.truck.height, prefs.units.length);
+
+                const tdEdited = document.createElement('td');
+                tdEdited.textContent = Utils.formatRelativeTime(pack.lastEdited);
+
+                const tdActions = document.createElement('td');
+                tdActions.className = 'col-actions';
+                const kebabBtn = document.createElement('button');
+                kebabBtn.className = 'btn btn-ghost';
+                kebabBtn.type = 'button';
+                kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
+                kebabBtn.addEventListener('click', ev => {
+                  ev.stopPropagation();
+                  UIComponents.openDropdown(kebabBtn, [
+                    { label: 'Open', icon: 'fa-solid fa-folder-open', onClick: () => openPack(pack.id) },
+                    { label: 'Rename', icon: 'fa-solid fa-pen', onClick: () => openRename(pack.id) },
+                    {
+                      label: 'Duplicate',
+                      icon: 'fa-solid fa-clone',
+                      onClick: () => {
+                        PackLibrary.duplicate(pack.id);
+                        UIComponents.showToast('Pack duplicated', 'success');
+                      },
+                    },
+                    {
+                      label: 'Capture Preview',
+                      icon: 'fa-solid fa-image',
+                      onClick: () => ExportService.capturePackPreview(pack.id, { source: 'manual' }),
+                    },
+                    {
+                      label: 'Clear Preview',
+                      icon: 'fa-solid fa-ban',
+                      disabled: !pack.thumbnail,
+                      onClick: () => ExportService.clearPackPreview(pack.id),
+                    },
+                    { label: 'Export JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+                    { label: 'Delete', icon: 'fa-solid fa-trash', variant: 'danger', dividerBefore: true, onClick: () => deletePack(pack.id) },
+                  ]);
+                });
+                tdActions.appendChild(kebabBtn);
+
+                tr.addEventListener('click', () => openPack(pack.id));
+
+                tr.appendChild(tdCheck);
+                tr.appendChild(tdTitle);
+                tr.appendChild(tdCases);
+                tr.appendChild(tdLength);
+                tr.appendChild(tdWidth);
+                tr.appendChild(tdHeight);
+                tr.appendChild(tdEdited);
+                tr.appendChild(tdActions);
+                tbodyEl.appendChild(tr);
+              });
+            }
+
+            function renderGridView(packs) {
+              packs.forEach(pack => {
+                const card = document.createElement('div');
+                card.className = 'card pack-card';
+                card.tabIndex = 0;
+                card.addEventListener('click', ev => {
+                  if (ev.target && ev.target.closest && ev.target.closest('[data-pack-menu]')) return;
+                  openPack(pack.id);
+                });
+                card.addEventListener('keydown', ev => {
+                  if (ev.key === 'Enter') openPack(pack.id);
+                });
+
+                const preview = buildPreview(pack);
+
+                const title = document.createElement('h3');
+                title.textContent = pack.title || 'Untitled Pack';
+
+                const sub = document.createElement('div');
+                sub.className = 'muted';
+                sub.style.fontSize = 'var(--text-sm)';
+                sub.textContent = `edited ${Utils.formatRelativeTime(pack.lastEdited)}`;
+
+                const meta = document.createElement('div');
+                meta.className = 'pack-meta';
+
+                const badgesWrap = document.createElement('div');
+                badgesWrap.className = 'pack-meta-badges';
+
+                const count = document.createElement('div');
+                count.className = 'badge';
+                count.textContent = `${(pack.cases || []).length} case(s)`;
+
+                const truck = document.createElement('div');
+                truck.className = 'badge';
+                truck.textContent = `Truck ${pack.truck.length}"×${pack.truck.width}"×${pack.truck.height}"`;
+
+                badgesWrap.appendChild(count);
+                badgesWrap.appendChild(truck);
+
+                const kebabWrap = document.createElement('div');
+                kebabWrap.className = 'kebab';
+                kebabWrap.setAttribute('data-pack-menu', '1');
+                const kebabBtn = document.createElement('button');
+                kebabBtn.className = 'btn btn-ghost';
+                kebabBtn.type = 'button';
+                kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
+                kebabBtn.addEventListener('click', ev => {
+                  ev.stopPropagation();
+                  UIComponents.openDropdown(kebabBtn, [
+                    { label: 'Open', icon: 'fa-solid fa-folder-open', onClick: () => openPack(pack.id) },
+                    { label: 'Rename', icon: 'fa-solid fa-pen', onClick: () => openRename(pack.id) },
+                    {
+                      label: 'Duplicate',
+                      icon: 'fa-solid fa-clone',
+                      onClick: () => {
+                        PackLibrary.duplicate(pack.id);
+                        UIComponents.showToast('Pack duplicated', 'success');
+                      },
+                    },
+                    {
+                      label: 'Capture Preview',
+                      icon: 'fa-solid fa-image',
+                      onClick: () => ExportService.capturePackPreview(pack.id, { source: 'manual' }),
+                    },
+                    {
+                      label: 'Clear Preview',
+                      icon: 'fa-solid fa-ban',
+                      disabled: !pack.thumbnail,
+                      onClick: () => ExportService.clearPackPreview(pack.id),
+                    },
+                    { label: 'Export JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+                    { label: 'Delete', icon: 'fa-solid fa-trash', variant: 'danger', dividerBefore: true, onClick: () => deletePack(pack.id) },
+                  ]);
+                });
+                kebabWrap.appendChild(kebabBtn);
+
+                meta.appendChild(badgesWrap);
+                meta.appendChild(kebabWrap);
+
+                card.appendChild(preview);
+                card.appendChild(title);
+                card.appendChild(sub);
+                card.appendChild(meta);
+                gridEl.appendChild(card);
+              });
+            }
+
+            function buildPreview(pack) {
+              const preview = document.createElement('div');
+              if (pack && typeof pack.thumbnail === 'string' && pack.thumbnail) {
+                preview.className = 'pack-preview has-thumb';
+                const img = document.createElement('img');
+                img.loading = 'lazy';
+                img.alt = `${pack.title || 'Pack'} preview`;
+                img.src = pack.thumbnail;
+                preview.appendChild(img);
+                return preview;
+              }
+              const items = (pack.cases || []).slice(0, 12);
+
+              if (!items.length) {
+                preview.className = 'pack-preview empty';
+                preview.textContent = 'No items yet';
+                return preview;
+              }
+
+              preview.className = 'pack-preview';
+              items.forEach(inst => {
+                const cell = document.createElement('div');
+                cell.className = 'pack-preview-cell';
+                const meta = CaseLibrary.getById(inst.caseId);
+                if (meta && meta.color) cell.style.background = meta.color;
+                cell.title = meta ? meta.name : 'Case';
+                preview.appendChild(cell);
+              });
+              return preview;
+            }
+
+            function openPack(packId) {
+              const pack = PackLibrary.open(packId);
+              if (!pack) {
+                UIComponents.showToast('Pack not found', 'error');
+                return;
+              }
+              AppShell.navigate('editor');
+            }
+
+            function openNewPackModal() {
+              const content = document.createElement('div');
+              content.style.display = 'grid';
+              content.style.gap = '14px';
+              content.style.gridTemplateColumns = 'repeat(auto-fit, minmax(260px, 1fr))';
+              content.style.alignItems = 'flex-start';
+
+              const title = field('Title (required)', 'text', 'Summer Festival Tour', true);
+              const client = field('Client (optional)', 'text', 'Live Nation', false);
+              const projectName = field('Project name (optional)', 'text', 'Coachella 2024', false);
+              const drawnBy = field('Drawn by (optional)', 'text', 'John Smith', false);
+
+              const truckPresets = [
+                { label: '53ft Trailer (default)', truck: { length: 636, width: 102, height: 98 } },
+                { label: '26ft Box Truck', truck: { length: 312, width: 96, height: 96 } },
+                { label: 'Sprinter Van', truck: { length: 168, width: 70, height: 72 } },
+              ];
+
+              const presetWrap = document.createElement('div');
+              presetWrap.className = 'field';
+              const presetLabel = document.createElement('div');
+              presetLabel.className = 'label';
+              presetLabel.textContent = 'Truck preset';
+              const presetSelect = document.createElement('select');
+              presetSelect.className = 'select';
+              truckPresets.forEach((p, idx) => {
+                const opt = document.createElement('option');
+                opt.value = String(idx);
+                opt.textContent = p.label;
+                presetSelect.appendChild(opt);
+              });
+              presetWrap.appendChild(presetLabel);
+              presetWrap.appendChild(presetSelect);
+
+              const truckGrid = document.createElement('div');
+              truckGrid.className = 'row';
+              truckGrid.style.gap = '12px';
+              const tL = field('Truck length (in)', 'number', '636', true);
+              const tW = field('Truck width (in)', 'number', '102', true);
+              const tH = field('Truck height (in)', 'number', '98', true);
+              tL.wrap.style.flex = '1';
+              tW.wrap.style.flex = '1';
+              tH.wrap.style.flex = '1';
+              truckGrid.appendChild(tL.wrap);
+              truckGrid.appendChild(tW.wrap);
+              truckGrid.appendChild(tH.wrap);
+
+              presetSelect.addEventListener('change', () => {
+                const idx = Number(presetSelect.value);
+                const preset = truckPresets[idx] || truckPresets[0];
+                tL.input.value = String(preset.truck.length);
+                tW.input.value = String(preset.truck.width);
+                tH.input.value = String(preset.truck.height);
+              });
+
+              content.appendChild(title.wrap);
+              content.appendChild(client.wrap);
+              content.appendChild(projectName.wrap);
+              content.appendChild(drawnBy.wrap);
+              content.appendChild(presetWrap);
+              content.appendChild(truckGrid);
+
+              UIComponents.showModal({
+                title: 'New Pack',
+                content,
+                actions: [
+                  { label: 'Cancel' },
+                  {
+                    label: 'Create',
+                    variant: 'primary',
+                    onClick: () => {
+                      const t = String(title.input.value || '').trim();
+                      if (!t) {
+                        UIComponents.showToast('Title is required', 'warning');
+                        title.input.focus();
+                        return;
+                      }
+                      const pack = PackLibrary.create({
+                        title: t,
+                        client: String(client.input.value || '').trim(),
+                        projectName: String(projectName.input.value || '').trim(),
+                        drawnBy: String(drawnBy.input.value || '').trim(),
+                        truck: {
+                          length: Number(tL.input.value) || 636,
+                          width: Number(tW.input.value) || 102,
+                          height: Number(tH.input.value) || 98,
+                        },
+                      });
+                      UIComponents.showToast('Pack created', 'success');
+                      PackLibrary.open(pack.id);
+                      AppShell.navigate('editor');
+                    },
+                  },
+                ],
+              });
+            }
+
+            function openRename(packId) {
+              const pack = PackLibrary.getById(packId);
+              if (!pack) return;
+              const content = document.createElement('div');
+              const f = field('Pack title', 'text', pack.title || '', true);
+              f.input.value = pack.title || '';
+              content.appendChild(f.wrap);
+              UIComponents.showModal({
+                title: 'Rename Pack',
+                content,
+                actions: [
+                  { label: 'Cancel' },
+                  {
+                    label: 'Save',
+                    variant: 'primary',
+                    onClick: () => {
+                      const nextTitle = String(f.input.value || '').trim();
+                      if (!nextTitle) return;
+                      PackLibrary.update(packId, { title: nextTitle });
+                      UIComponents.showToast('Renamed', 'success');
+                    },
+                  },
+                ],
+              });
+            }
+
+            function exportPack(packId) {
+              const pack = PackLibrary.getById(packId);
+              if (!pack) return;
+              const payload = {
+                app: 'Truck Packer 3D',
+                version: APP_VERSION,
+                exportedAt: Date.now(),
+                pack,
+                bundledCases: (pack.cases || []).map(i => CaseLibrary.getById(i.caseId)).filter(Boolean),
+              };
+              Utils.downloadText(
+                `${(pack.title || 'pack').replace(/[^a-z0-9]+/gi, '-')}.json`,
+                JSON.stringify(payload, null, 2)
+              );
+              UIComponents.showToast('Pack JSON exported', 'success');
+            }
+
+            async function deletePack(packId) {
+              const ok = await UIComponents.confirm({
+                title: 'Delete pack?',
+                message: 'This cannot be undone.',
+                danger: true,
+                okLabel: 'Delete',
+              });
+              if (!ok) return;
+              PackLibrary.remove(packId);
+              UIComponents.showToast('Pack deleted', 'info');
+            }
+
+            function openImportPackDialog() {
+              const input = document.createElement('input');
+              input.type = 'file';
+              input.accept = '.json,application/json';
+              input.addEventListener('change', async () => {
+                const file = input.files && input.files[0];
+                if (!file) return;
+                try {
+                  const text = await file.text();
+                  const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(text, null));
+                  if (!parsed) throw new Error('Invalid JSON');
+                  const payload = parsed.pack ? parsed : { pack: parsed };
+                  importPackPayload(payload);
+                  UIComponents.showToast('Pack imported', 'success');
+                } catch (err) {
+                  UIComponents.showToast('Import failed: ' + err.message, 'error');
+                }
+              });
+              input.click();
+            }
+
+            function importPackPayload(payload) {
+              const now = Date.now();
+              const incomingPack = payload.pack;
+              if (!incomingPack || !incomingPack.truck || !Array.isArray(incomingPack.cases))
+                {throw new Error('Invalid pack format');}
+
+              const bundled = Array.isArray(payload.bundledCases) ? payload.bundledCases : [];
+              const currentCases = CaseLibrary.getCases();
+              const currentPacks = PackLibrary.getPacks();
+
+              const caseById = new Map(currentCases.map(c => [c.id, c]));
+              const caseByName = new Map(
+                currentCases.map(c => [
+                  String(c.name || '')
+                    .trim()
+                    .toLowerCase(),
+                  c,
+                ])
+              );
+              const caseIdMap = new Map();
+              const nextCases = [...currentCases];
+
+              bundled.forEach(c => {
+                if (!c || !c.id) return;
+                const nameKey = String(c.name || '')
+                  .trim()
+                  .toLowerCase();
+                if (caseById.has(c.id)) {
+                  caseIdMap.set(c.id, c.id);
+                  return;
+                }
+                if (nameKey && caseByName.has(nameKey)) {
+                  caseIdMap.set(c.id, caseByName.get(nameKey).id);
+                  return;
+                }
+                const copy = Utils.deepClone(c);
+                copy.createdAt = copy.createdAt || now;
+                copy.updatedAt = now;
+                copy.volume =
+                  copy.volume || Utils.volumeInCubicInches(copy.dimensions || { length: 0, width: 0, height: 0 });
+                nextCases.push(copy);
+                caseById.set(copy.id, copy);
+                if (nameKey) caseByName.set(nameKey, copy);
+                caseIdMap.set(c.id, copy.id);
+              });
+
+              const pack = Utils.deepClone(incomingPack);
+              pack.id = currentPacks.some(p => p.id === pack.id) ? Utils.uuid() : pack.id || Utils.uuid();
+              pack.title = pack.title ? `${pack.title} (Imported)` : 'Imported Pack';
+              pack.createdAt = pack.createdAt || now;
+              pack.lastEdited = now;
+
+              // New instance ids + caseId remap
+              pack.cases = (pack.cases || []).map(inst => {
+                const next = Utils.deepClone(inst);
+                next.id = Utils.uuid();
+                next.caseId = caseIdMap.get(next.caseId) || next.caseId;
+                if (!next.transform)
+                  {next.transform = {
               position: { x: -80, y: 10, z: 0 },
               rotation: { x: 0, y: 0, z: 0 },
               scale: { x: 1, y: 1, z: 1 },
             };}
-          if (!next.transform.position) next.transform.position = { x: -80, y: 10, z: 0 };
-          return next;
-        });
+                if (!next.transform.position) next.transform.position = { x: -80, y: 10, z: 0 };
+                return next;
+              });
 
-        pack.stats = PackLibrary.computeStats(pack, nextCases);
+              pack.stats = PackLibrary.computeStats(pack, nextCases);
 
-        StateStore.set(
-          {
-            caseLibrary: nextCases,
-            packLibrary: [...currentPacks, pack],
-            currentPackId: pack.id,
-            currentScreen: 'editor',
-            selectedInstanceIds: [],
-          },
-          { skipHistory: false }
-        );
-      }
-
-      function field(label, type, placeholder, required) {
-        const wrap = document.createElement('div');
-        wrap.className = 'field';
-        const l = document.createElement('div');
-        l.className = 'label';
-        l.textContent = required ? `${label}` : label;
-        const input = document.createElement('input');
-        input.className = 'input';
-        input.type = type;
-        input.placeholder = placeholder || '';
-        wrap.appendChild(l);
-        wrap.appendChild(input);
-        return { wrap, input };
-      }
-
-      return { init: initPacksUI, render };
-    })();
-
-    // Placeholder modules for remaining screens; implemented in later steps.
-    const CasesUI = (() => {
-      const searchEl = document.getElementById('cases-search');
-      const filtersEl = document.getElementById('cases-filters');
-      const tbodyEl = document.getElementById('cases-tbody');
-      const emptyEl = document.getElementById('cases-empty');
-      const btnNew = document.getElementById('btn-new-case');
-      const btnTemplate = document.getElementById('btn-cases-template');
-      const btnImport = document.getElementById('btn-cases-import');
-      const btnManageCats = document.getElementById('btn-manage-categories');
-
-      const activeCategories = new Set(); // empty = all
-      let sortBy = 'name'; // name, manufacturer, dimensions, volume, weight, category
-      let sortDir = 'asc'; // asc or desc
-
-      function initCasesUI() {
-        searchEl.addEventListener('input', Utils.debounce(render, 300));
-        btnNew.addEventListener('click', () => openCaseModal(null));
-        btnTemplate.addEventListener('click', () => downloadTemplate());
-        btnImport.addEventListener('click', () => openImportModal());
-        btnManageCats.addEventListener('click', () => openCategoryManager());
-        initTableHeaders();
-      }
-
-      function initTableHeaders() {
-        const headers = document.querySelectorAll('#screen-cases table thead th[data-sort]');
-        headers.forEach(th => {
-          th.style.cursor = 'pointer';
-          th.style.userSelect = 'none';
-          th.addEventListener('click', () => {
-            const sortField = th.getAttribute('data-sort');
-            if (sortBy === sortField) {
-              sortDir = sortDir === 'asc' ? 'desc' : 'asc';
-            } else {
-              sortBy = sortField;
-              sortDir = 'asc';
-            }
-            render();
-            updateHeaderIcons();
-          });
-        });
-        updateHeaderIcons();
-      }
-
-      function updateHeaderIcons() {
-        const headers = document.querySelectorAll('#screen-cases table thead th[data-sort]');
-        headers.forEach(th => {
-          const sortField = th.getAttribute('data-sort');
-          const existingIcon = th.querySelector('.sort-icon');
-          if (existingIcon) existingIcon.remove();
-
-          if (sortBy === sortField) {
-            const icon = document.createElement('i');
-            icon.className = `fa-solid fa-${sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} sort-icon`;
-            icon.style.marginLeft = '6px';
-            icon.style.fontSize = '12px';
-            icon.style.opacity = '0.7';
-            th.appendChild(icon);
-          }
-        });
-      }
-
-      function render() {
-        renderFilters();
-        renderTable();
-      }
-
-      function renderFilters() {
-        const cases = CaseLibrary.getCases();
-        const list = CategoryService.listWithCounts(cases);
-        filtersEl.innerHTML = '';
-
-        const allChip = chip(
-          'All',
-          'all',
-          activeCategories.size === 0,
-          () => {
-            activeCategories.clear();
-            render();
-          },
-          '#9b9ba8',
-          cases.length
-        );
-        filtersEl.appendChild(allChip);
-
-        list.forEach(cat => {
-          const isActive = activeCategories.has(cat.key);
-          const el = chip(
-            cat.name,
-            cat.key,
-            isActive,
-            () => {
-              if (activeCategories.has(cat.key)) activeCategories.delete(cat.key);
-              else activeCategories.add(cat.key);
-              render();
-            },
-            cat.color,
-            cat.count
-          );
-          filtersEl.appendChild(el);
-        });
-      }
-
-      function renderTable() {
-        const prefs = PreferencesManager.get();
-        const q = String(searchEl.value || '').trim();
-        const cases = CaseLibrary.search(q, Array.from(activeCategories));
-
-        // Sort cases
-        cases.sort((a, b) => {
-          let valA, valB;
-          switch (sortBy) {
-            case 'name':
-              valA = (a.name || '').toLowerCase();
-              valB = (b.name || '').toLowerCase();
-              break;
-            case 'manufacturer':
-              valA = (a.manufacturer || '').toLowerCase();
-              valB = (b.manufacturer || '').toLowerCase();
-              break;
-            case 'volume':
-              valA = a.volume || 0;
-              valB = b.volume || 0;
-              break;
-            case 'weight':
-              valA = a.weight || 0;
-              valB = b.weight || 0;
-              break;
-            case 'category':
-              valA = CategoryService.meta(a.category).name.toLowerCase();
-              valB = CategoryService.meta(b.category).name.toLowerCase();
-              break;
-            default:
-              valA = (a.name || '').toLowerCase();
-              valB = (b.name || '').toLowerCase();
-          }
-
-          if (typeof valA === 'number' && typeof valB === 'number') {
-            return sortDir === 'asc' ? valA - valB : valB - valA;
-          }
-
-          if (valA < valB) return sortDir === 'asc' ? -1 : 1;
-          if (valA > valB) return sortDir === 'asc' ? 1 : -1;
-          return 0;
-        });
-
-        tbodyEl.innerHTML = '';
-
-        if (!cases.length) {
-          emptyEl.style.display = 'block';
-          return;
-        }
-        emptyEl.style.display = 'none';
-
-        cases.forEach(c => {
-          const tr = document.createElement('tr');
-
-          const tdName = document.createElement('td');
-          tdName.textContent = c.name || '—';
-          tr.appendChild(tdName);
-
-          const tdMfg = document.createElement('td');
-          tdMfg.textContent = c.manufacturer || '—';
-          tr.appendChild(tdMfg);
-
-          const tdDims = document.createElement('td');
-          tdDims.textContent = Utils.formatDims(c.dimensions, prefs.units.length);
-          tr.appendChild(tdDims);
-
-          const tdVol = document.createElement('td');
-          tdVol.textContent = Utils.formatVolume(c.dimensions, prefs.units.length);
-          tr.appendChild(tdVol);
-
-          const tdW = document.createElement('td');
-          const weight = Number(c.weight) || 0;
-          const formattedWeight =
-            prefs.units.weight === 'kg' ? `${(weight * 0.453592).toFixed(2)} kg` : `${weight.toFixed(2)} lb`;
-          tdW.textContent = formattedWeight;
-          tr.appendChild(tdW);
-
-          const tdCat = document.createElement('td');
-          tdCat.appendChild(categoryChip(c.category));
-          tr.appendChild(tdCat);
-
-          const tdFlip = document.createElement('td');
-          const flipLabel = c.canFlip === true ? 'Yes' : c.canFlip === false ? 'No' : '';
-          tdFlip.textContent = flipLabel;
-          tr.appendChild(tdFlip);
-
-          const tdActions = document.createElement('td');
-          tdActions.className = 'col-actions';
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'btn btn-ghost';
-          btn.innerHTML = '<i class="fa-solid fa-ellipsis"></i>';
-          btn.addEventListener('click', ev => {
-            ev.stopPropagation();
-            UIComponents.openDropdown(btn, [
-              { label: 'Edit', icon: 'fa-solid fa-pen', onClick: () => openCaseModal(c) },
-              {
-                label: 'Duplicate',
-                icon: 'fa-solid fa-clone',
-                onClick: () => {
-                  CaseLibrary.duplicate(c.id);
-                  UIComponents.showToast('Case duplicated', 'success');
+              StateStore.set(
+                {
+                  caseLibrary: nextCases,
+                  packLibrary: [...currentPacks, pack],
+                  currentPackId: pack.id,
+                  currentScreen: 'editor',
+                  selectedInstanceIds: [],
                 },
-              },
-              { label: 'Delete', icon: 'fa-solid fa-trash', onClick: () => deleteCase(c.id) },
-            ]);
-          });
-          tdActions.appendChild(btn);
-          tr.appendChild(tdActions);
+                { skipHistory: false }
+              );
+            }
 
-          tbodyEl.appendChild(tr);
-        });
-      }
+            function field(label, type, placeholder, required) {
+              const wrap = document.createElement('div');
+              wrap.className = 'field';
+              const l = document.createElement('div');
+              l.className = 'label';
+              l.textContent = required ? `${label}` : label;
+              const input = document.createElement('input');
+              input.className = 'input';
+              input.type = type;
+              input.placeholder = placeholder || '';
+              wrap.appendChild(l);
+              wrap.appendChild(input);
+              return { wrap, input };
+            }
 
-      function chip(label, key, active, onClick, color, count) {
-        const el = document.createElement('div');
-        el.className = `chip ${active ? 'active' : ''}`;
-        el.setAttribute('role', 'button');
-        el.tabIndex = 0;
-        const dot = document.createElement('span');
-        dot.className = 'chip-dot';
-        dot.style.background = color || 'var(--border-strong)';
-        const text = document.createElement('span');
-        text.textContent = `${label}${Number.isFinite(count) ? `: ${count}` : ''}`;
-        el.appendChild(dot);
-        el.appendChild(text);
-        el.addEventListener('click', onClick);
-        el.addEventListener('keydown', ev => {
-          if (ev.key === 'Enter') onClick();
-        });
-        return el;
-      }
+            return { init: initPacksUI, render };
+          })();
 
-      function categoryChip(categoryKey) {
-        const meta = CategoryService.meta(categoryKey || 'default');
-        const el = document.createElement('span');
-        el.className = 'chip';
-        el.style.cursor = 'default';
-        const dot = document.createElement('span');
-        dot.className = 'chip-dot';
-        dot.style.background = meta.color;
-        const text = document.createElement('span');
-        text.textContent = meta.name;
-        el.appendChild(dot);
-        el.appendChild(text);
-        return el;
-      }
+          // Placeholder modules for remaining screens; implemented in later steps.
+	          // ============================================================================
+	          // SECTION: SCREEN UI (CASES)
+	          // ============================================================================
+	          const CasesUI = (() => {
+	            const searchEl = document.getElementById('cases-search');
+	            const filtersEl = document.getElementById('cases-filters');
+	            const tbodyEl = document.getElementById('cases-tbody');
+	            const emptyEl = document.getElementById('cases-empty');
+	            const selectAllEl = document.getElementById('cases-select-all');
+	            const btnNew = document.getElementById('btn-new-case');
+	            const btnTemplate = document.getElementById('btn-cases-template');
+	            const btnImport = document.getElementById('btn-cases-import');
+	            const btnManageCats = document.getElementById('btn-manage-categories');
+	            const actionsDefaultEl = document.getElementById('cases-actions-default');
+	            const actionsBulkEl = document.getElementById('cases-actions-bulk');
+	            const selectedCountEl = document.getElementById('cases-selected-count');
+	            const btnBulkDelete = document.getElementById('btn-cases-bulk-delete');
 
-      function openCaseModal(existing) {
-        const prefs = PreferencesManager.get();
-        const lengthUnit = prefs.units.length;
-        const weightUnit = prefs.units.weight;
+	            const activeCategories = new Set(); // empty = all
+	            let sortBy = 'name'; // name, manufacturer, dimensions, volume, weight, category
+	            let sortDir = 'asc'; // asc or desc
+	            const selectedIds = new Set();
+	            let lastDatasetKey = '';
+	            let lastVisibleIds = [];
 
-        const now = Date.now();
-        const isEdit = Boolean(existing);
-        const initial = existing
-          ? Utils.deepClone(existing)
-          : {
-              id: Utils.uuid(),
-              name: '',
-              manufacturer: '',
-              category: 'default',
-              dimensions: { length: 48, width: 24, height: 24 },
-              weight: 0,
-              canFlip: true,
-              notes: '',
-              color: CategoryService.meta('default').color,
-              createdAt: now,
-              updatedAt: now,
-            };
+              function initCasesUI() {
+	              searchEl.addEventListener('input', Utils.debounce(render, 300));
+	              btnNew.addEventListener('click', () => openCaseModal(null));
+	              btnTemplate.addEventListener('click', () => downloadTemplate());
+	              btnImport.addEventListener('click', () => openImportModal());
+	              btnManageCats.addEventListener('click', () => openCategoryManager());
+	              btnBulkDelete.addEventListener('click', () => bulkDeleteSelected());
+	              selectAllEl.addEventListener('change', () => toggleAllVisible(selectAllEl.checked));
+	              initTableHeaders();
+	            }
 
-        const content = document.createElement('div');
-        content.style.display = 'grid';
-        content.style.gridTemplateColumns = '1fr 1fr';
-        content.style.gap = '14px';
+	            function clearSelection() {
+	              selectedIds.clear();
+	            }
 
-        const fName = field('Name', 'text', 'Line Array Case', true);
-        fName.input.value = initial.name || '';
+	            function toggleAllVisible(checked) {
+	              const ids = lastVisibleIds || [];
+	              if (!ids.length) return;
+	              if (checked) ids.forEach(id => selectedIds.add(id));
+	              else ids.forEach(id => selectedIds.delete(id));
+	              render();
+	            }
 
-        const fMfg = field('Manufacturer', 'text', 'L-Acoustics', false);
-        fMfg.input.value = initial.manufacturer || '';
+	            function updateSelectionUI(visibleIds) {
+	              lastVisibleIds = visibleIds || [];
+	              const visibleCount = lastVisibleIds.length;
 
-        const catWrap = document.createElement('div');
-        catWrap.className = 'field';
-        catWrap.style.gridColumn = '1 / -1';
-        const catLabel = document.createElement('div');
-        catLabel.className = 'label';
-        catLabel.textContent = 'Category';
-        const catRow = document.createElement('div');
-        catRow.style.display = 'flex';
-        catRow.style.gap = '8px';
-        catRow.style.alignItems = 'center';
-        const catColor = document.createElement('input');
-        catColor.type = 'color';
-        catColor.className = 'input';
-        catColor.style.width = '48px';
-        catColor.style.padding = '0';
-        catColor.value = CategoryService.meta(initial.category).color || '#9ca3af';
-        const catName = document.createElement('input');
-        catName.type = 'text';
-        catName.className = 'input';
-        catName.style.flex = '1';
-        catName.value = CategoryService.meta(initial.category).name;
-        catName.placeholder = 'Rename or create new';
-        const catSelect = document.createElement('select');
-        catSelect.className = 'select';
-        catSelect.style.display = 'none';
-        const catOptions = CategoryService.all();
-        const extraCat =
-          initial.category && !catOptions.find(c => c.key === initial.category)
-            ? [{ ...CategoryService.meta(initial.category) }]
-            : [];
-        [...catOptions, ...extraCat]
-          .filter((v, idx, arr) => arr.findIndex(x => x.key === v.key) === idx)
-          .forEach(c => {
-            const opt = document.createElement('option');
-            opt.value = c.key;
-            opt.textContent = c.name || CategoryService.meta(c.key).name;
-            catSelect.appendChild(opt);
-          });
-        catSelect.value = initial.category || 'default';
-        catRow.appendChild(catColor);
-        catRow.appendChild(catName);
-        catRow.appendChild(catSelect);
-        catWrap.appendChild(catLabel);
-        catWrap.appendChild(catRow);
+	              // Selected count is based on the current visible dataset after search/sort/category.
+	              const selectedCount = selectedIds.size;
 
-        const fL = field(`Length (${lengthUnit})`, 'number', '', true);
-        const fW = field(`Width (${lengthUnit})`, 'number', '', true);
-        const fH = field(`Height (${lengthUnit})`, 'number', '', true);
-        fL.input.value = String(Utils.inchesToUnit(initial.dimensions.length, lengthUnit));
-        fW.input.value = String(Utils.inchesToUnit(initial.dimensions.width, lengthUnit));
-        fH.input.value = String(Utils.inchesToUnit(initial.dimensions.height, lengthUnit));
+	              actionsDefaultEl.style.display = selectedCount ? 'none' : 'flex';
+	              actionsBulkEl.style.display = selectedCount ? 'flex' : 'none';
+	              selectedCountEl.textContent = `${selectedCount} of ${visibleCount} row(s) selected.`;
+	              btnBulkDelete.innerHTML = `<i class="fa-solid fa-trash"></i> Delete (${selectedCount})`;
 
-        const fWeight = field(`Weight (${weightUnit})`, 'number', '', false);
-        fWeight.input.step = '0.1';
-        const weightValue = Utils.poundsToUnit(Number(initial.weight) || 0, weightUnit);
-        fWeight.input.value = String(Math.round(weightValue * 100) / 100);
+	              if (!visibleCount) {
+	                selectAllEl.checked = false;
+	                selectAllEl.indeterminate = false;
+	                selectAllEl.disabled = true;
+	                return;
+	              }
 
-        const flipRow = document.createElement('label');
-        flipRow.style.display = 'flex';
-        flipRow.style.alignItems = 'center';
-        flipRow.style.gap = '10px';
-        flipRow.style.fontSize = 'var(--text-sm)';
-        flipRow.style.gridColumn = '1 / -1';
-        const flip = document.createElement('input');
-        flip.type = 'checkbox';
-        flip.checked = Boolean(initial.canFlip);
-        const flipText = document.createElement('span');
-        flipText.textContent = 'Can be flipped';
-        flipRow.appendChild(flip);
-        flipRow.appendChild(flipText);
+	              selectAllEl.disabled = false;
+	              const allSelected = lastVisibleIds.every(id => selectedIds.has(id));
+	              const someSelected = lastVisibleIds.some(id => selectedIds.has(id));
+	              selectAllEl.checked = allSelected;
+	              selectAllEl.indeterminate = !allSelected && someSelected;
+	            }
 
-        const notesWrap = document.createElement('div');
-        notesWrap.className = 'field';
-        notesWrap.style.gridColumn = '1 / -1';
-        const notesLabel = document.createElement('div');
-        notesLabel.className = 'label';
-        notesLabel.textContent = 'Notes';
-        const notes = document.createElement('textarea');
-        notes.className = 'input';
-        notes.style.minHeight = '60px';
-        notes.value = initial.notes || '';
-        notesWrap.appendChild(notesLabel);
-        notesWrap.appendChild(notes);
+	            async function bulkDeleteSelected() {
+	              const ids = Array.from(selectedIds);
+	              const count = ids.length;
+	              if (!count) return;
 
-        content.appendChild(fName.wrap);
-        content.appendChild(fMfg.wrap);
-        content.appendChild(catWrap);
-        content.appendChild(fL.wrap);
-        content.appendChild(fW.wrap);
-        content.appendChild(fH.wrap);
-        content.appendChild(fWeight.wrap);
-        content.appendChild(flipRow);
-        content.appendChild(notesWrap);
+	              const ok = await UIComponents.confirm({
+	                title: 'Delete cases?',
+	                message: `This will permanently delete ${count} case(s). This cannot be undone.`,
+	                danger: true,
+	                okLabel: 'Delete',
+	              });
+	              if (!ok) return;
 
-        UIComponents.showModal({
-          title: isEdit ? 'Edit Case' : 'New Case',
-          content,
-          actions: [
-            { label: 'Cancel' },
-            {
-              label: 'Save',
-              variant: 'primary',
-              onClick: () => {
-                const name = String(fName.input.value || '').trim();
-                if (!name) {
-                  UIComponents.showToast('Name is required', 'warning');
-                  fName.input.focus();
-                  return;
+	              const idSet = new Set(ids);
+	              const nextCaseLibrary = CaseLibrary.getCases().filter(c => !idSet.has(c.id));
+	              const nextPackLibrary = PackLibrary.getPacks().map(p => {
+	                const prevCases = Array.isArray(p.cases) ? p.cases : [];
+	                const nextCases = prevCases.filter(i => !idSet.has(i.caseId));
+	                if (nextCases.length === prevCases.length) return p;
+	                const next = { ...p, cases: nextCases, lastEdited: Date.now() };
+	                next.stats = PackLibrary.computeStats(next);
+	                return next;
+	              });
+
+	              StateStore.set({ caseLibrary: nextCaseLibrary, packLibrary: nextPackLibrary });
+	              clearSelection();
+	              render();
+	              UIComponents.showToast(`Deleted ${count} case(s).`, 'info');
+	            }
+
+	            function initTableHeaders() {
+	              const headers = document.querySelectorAll('#screen-cases table thead th[data-sort]');
+	              headers.forEach(th => {
+	                const sortControl = th.querySelector('.th-sort');
+	                if (!sortControl) return;
+	                const toggleSort = () => {
+	                  const sortField = th.getAttribute('data-sort');
+	                  if (sortBy === sortField) {
+	                    sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+	                  } else {
+	                    sortBy = sortField;
+	                    sortDir = 'asc';
+	                  }
+	                  render();
+	                  updateHeaderIcons();
+	                };
+	                sortControl.addEventListener('click', toggleSort);
+	                sortControl.addEventListener('keydown', ev => {
+	                  if (ev.key === 'Enter' || ev.key === ' ') {
+	                    ev.preventDefault();
+	                    toggleSort();
+	                  }
+	                });
+              });
+              updateHeaderIcons();
+            }
+
+            function updateHeaderIcons() {
+              const headers = document.querySelectorAll('#screen-cases table thead th[data-sort]');
+              headers.forEach(th => {
+                const sortField = th.getAttribute('data-sort');
+                const sortControl = th.querySelector('.th-sort');
+                if (!sortControl) return;
+                const isActive = sortBy === sortField;
+                sortControl.classList.toggle('is-asc', isActive && sortDir === 'asc');
+                sortControl.classList.toggle('is-desc', isActive && sortDir === 'desc');
+              });
+            }
+
+            function render() {
+              renderFilters();
+              renderTable();
+            }
+
+            function renderFilters() {
+              const cases = CaseLibrary.getCases();
+              const list = CategoryService.listWithCounts(cases);
+              filtersEl.innerHTML = '';
+
+              const allChip = chip(
+                'All',
+                'all',
+                activeCategories.size === 0,
+                () => {
+                  activeCategories.clear();
+                  render();
+                },
+                '#9b9ba8',
+                cases.length
+              );
+              filtersEl.appendChild(allChip);
+
+              list.forEach(cat => {
+                const isActive = activeCategories.has(cat.key);
+                const el = chip(
+                  cat.name,
+                  cat.key,
+                  isActive,
+                  () => {
+                    if (activeCategories.has(cat.key)) activeCategories.delete(cat.key);
+                    else activeCategories.add(cat.key);
+                    render();
+                  },
+                  cat.color,
+                  cat.count
+                );
+                filtersEl.appendChild(el);
+              });
+            }
+
+	            function renderTable() {
+	              const prefs = PreferencesManager.get();
+	              const q = String(searchEl.value || '').trim();
+	              const cats = Array.from(activeCategories).sort();
+
+	              // Simplest stable behavior: clear selection when the visible dataset changes (search/sort/filter).
+	              const datasetKey = `${q}::${sortBy}::${sortDir}::${cats.join(',')}`;
+	              if (datasetKey !== lastDatasetKey) {
+	                clearSelection();
+	                lastDatasetKey = datasetKey;
+	              }
+
+	              const cases = CaseLibrary.search(q, Array.from(activeCategories));
+
+	              // Sort cases
+	              cases.sort((a, b) => {
+                let valA, valB;
+                switch (sortBy) {
+                  case 'name':
+                    valA = (a.name || '').toLowerCase();
+                    valB = (b.name || '').toLowerCase();
+                    break;
+                  case 'manufacturer':
+                    valA = (a.manufacturer || '').toLowerCase();
+                    valB = (b.manufacturer || '').toLowerCase();
+                    break;
+                  case 'volume':
+                    valA = a.volume || 0;
+                    valB = b.volume || 0;
+                    break;
+                  case 'length':
+                    valA = (a.dimensions && a.dimensions.length) || 0;
+                    valB = (b.dimensions && b.dimensions.length) || 0;
+                    break;
+                  case 'width':
+                    valA = (a.dimensions && a.dimensions.width) || 0;
+                    valB = (b.dimensions && b.dimensions.width) || 0;
+                    break;
+                  case 'height':
+                    valA = (a.dimensions && a.dimensions.height) || 0;
+                    valB = (b.dimensions && b.dimensions.height) || 0;
+                    break;
+                  case 'weight':
+                    valA = a.weight || 0;
+                    valB = b.weight || 0;
+                    break;
+                  case 'category':
+                    valA = CategoryService.meta(a.category).name.toLowerCase();
+                    valB = CategoryService.meta(b.category).name.toLowerCase();
+                    break;
+                  default:
+                    valA = (a.name || '').toLowerCase();
+                    valB = (b.name || '').toLowerCase();
                 }
-                const length = Utils.unitToInches(Number(fL.input.value) || 0, lengthUnit);
-                const width = Utils.unitToInches(Number(fW.input.value) || 0, lengthUnit);
-                const height = Utils.unitToInches(Number(fH.input.value) || 0, lengthUnit);
-                if (length <= 0 || width <= 0 || height <= 0) {
-                  UIComponents.showToast('Dimensions must be > 0', 'warning');
-                  return;
+                
+                if (typeof valA === 'number' && typeof valB === 'number') {
+                  return sortDir === 'asc' ? valA - valB : valB - valA;
                 }
-                const weightLb = Utils.unitToPounds(Number(fWeight.input.value) || 0, weightUnit);
-                const categoryName = String(catName.value || '').trim();
-                const updatedCat = CategoryService.rename(catSelect.value, categoryName, catColor.value);
-                const caseData = {
-                  ...initial,
-                  name,
-                  manufacturer: String(fMfg.input.value || '').trim(),
-                  category: updatedCat.key,
-                  dimensions: { length, width, height },
-                  weight: weightLb,
-                  canFlip: Boolean(flip.checked),
-                  notes: String(notes.value || '').trim(),
-                  color: catColor.value || '#ff9f1c',
-                };
-                CaseLibrary.upsert(caseData);
-                UIComponents.showToast('Case saved', 'success');
-                render();
-              },
-            },
-          ],
-        });
-      }
+                
+                if (valA < valB) return sortDir === 'asc' ? -1 : 1;
+                if (valA > valB) return sortDir === 'asc' ? 1 : -1;
+                return 0;
+              });
 
-      function openCategoryManager() {
-        const content = document.createElement('div');
-        content.style.display = 'grid';
-        content.style.gap = '14px';
-        content.style.minWidth = '480px';
+	              tbodyEl.innerHTML = '';
+	              const visibleIds = cases.map(c => c.id);
 
-        const listEl = document.createElement('div');
-        listEl.style.display = 'grid';
-        listEl.style.gap = '8px';
+	              // Prune any stale selections (e.g. after deletes).
+	              const visibleIdSet = new Set(visibleIds);
+	              Array.from(selectedIds).forEach(id => {
+	                if (!visibleIdSet.has(id)) selectedIds.delete(id);
+	              });
 
-        const renderList = () => {
-          listEl.innerHTML = '';
-          CategoryService.all().forEach(cat => {
-            const row = document.createElement('div');
-            row.className = 'card';
-            row.style.display = 'grid';
-            row.style.gridTemplateColumns = '40px 1fr auto';
-            row.style.gap = '12px';
-            row.style.alignItems = 'center';
-            row.style.padding = 'var(--space-3)';
-            row.style.background = 'var(--bg-elevated)';
-            row.style.boxShadow = 'none';
+	              updateSelectionUI(visibleIds);
 
-            const colorWrap = document.createElement('div');
-            colorWrap.style.position = 'relative';
-            const color = document.createElement('input');
-            color.type = 'color';
-            color.value = cat.color || '#9ca3af';
-            color.className = 'input';
-            color.style.width = '40px';
-            color.style.height = '40px';
-            color.style.padding = '0';
-            color.style.cursor = 'pointer';
-            color.style.border = '2px solid var(--border-subtle)';
-            color.style.borderRadius = 'var(--radius-sm)';
-            colorWrap.appendChild(color);
+	              if (!cases.length) {
+	                emptyEl.style.display = 'block';
+	                return;
+	              }
+	              emptyEl.style.display = 'none';
 
-            const name = document.createElement('input');
-            name.type = 'text';
-            name.className = 'input';
-            name.value = cat.name;
-            name.placeholder = 'Category name';
+	              cases.forEach(c => {
+	                const tr = document.createElement('tr');
 
-            const actions = document.createElement('div');
-            actions.style.display = 'flex';
-            actions.style.gap = '6px';
+	                const tdSelect = document.createElement('td');
+	                tdSelect.style.width = '36px';
+	                tdSelect.style.textAlign = 'center';
+	                const cb = document.createElement('input');
+	                cb.type = 'checkbox';
+	                cb.checked = selectedIds.has(c.id);
+	                cb.addEventListener('click', ev => ev.stopPropagation());
+	                cb.addEventListener('change', ev => {
+	                  if (ev.target.checked) selectedIds.add(c.id);
+	                  else selectedIds.delete(c.id);
+	                  render();
+	                });
+	                tdSelect.appendChild(cb);
+	                tr.appendChild(tdSelect);
 
-            const saveBtn = document.createElement('button');
-            saveBtn.type = 'button';
-            saveBtn.className = 'btn btn-ghost';
-            saveBtn.style.padding = '6px 10px';
-            saveBtn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i>';
-            saveBtn.title = 'Save changes';
-            saveBtn.addEventListener('click', () => {
-              const renamed = CategoryService.rename(cat.key, name.value, color.value);
-              renderList();
-              render();
-              UIComponents.showToast(`Saved "${renamed.name}"`, 'success');
-            });
+	                const tdName = document.createElement('td');
+	                tdName.textContent = c.name || '—';
+	                tr.appendChild(tdName);
 
-            if (cat.key !== 'default') {
-              const delBtn = document.createElement('button');
-              delBtn.type = 'button';
-              delBtn.className = 'btn btn-ghost';
-              delBtn.style.padding = '6px 10px';
-              delBtn.style.color = 'var(--error)';
-              delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
-              delBtn.title = 'Delete category';
-              delBtn.addEventListener('click', async () => {
-                const ok = await UIComponents.confirm({
-                  title: `Delete "${cat.name}"?`,
-                  message: 'All cases in this category will be moved to Default.',
-                  okLabel: 'Delete',
-                  danger: true,
+                const tdMfg = document.createElement('td');
+                tdMfg.textContent = c.manufacturer || '—';
+                tr.appendChild(tdMfg);
+
+                const tdLength = document.createElement('td');
+                tdLength.textContent = Utils.formatLength(c.dimensions.length, prefs.units.length);
+                tr.appendChild(tdLength);
+
+                const tdWidth = document.createElement('td');
+                tdWidth.textContent = Utils.formatLength(c.dimensions.width, prefs.units.length);
+                tr.appendChild(tdWidth);
+
+                const tdHeight = document.createElement('td');
+                tdHeight.textContent = Utils.formatLength(c.dimensions.height, prefs.units.length);
+                tr.appendChild(tdHeight);
+
+                const tdVol = document.createElement('td');
+                tdVol.textContent = Utils.formatVolume(c.dimensions, prefs.units.length);
+                tr.appendChild(tdVol);
+
+                const tdW = document.createElement('td');
+                const weight = Number(c.weight) || 0;
+                const formattedWeight = prefs.units.weight === 'kg' 
+                  ? `${(weight * 0.453592).toFixed(2)} kg`
+                  : `${weight.toFixed(2)} lb`;
+                tdW.textContent = formattedWeight;
+                tr.appendChild(tdW);
+
+                const tdCat = document.createElement('td');
+                tdCat.appendChild(categoryChip(c.category));
+                tr.appendChild(tdCat);
+
+                const tdFlip = document.createElement('td');
+                const flipLabel = c.canFlip === true ? 'Yes' : c.canFlip === false ? 'No' : '';
+                tdFlip.textContent = flipLabel;
+                tr.appendChild(tdFlip);
+
+                const tdActions = document.createElement('td');
+                tdActions.className = 'col-actions';
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'btn btn-ghost';
+                btn.innerHTML = '<i class="fa-solid fa-ellipsis"></i>';
+                btn.addEventListener('click', ev => {
+                  ev.stopPropagation();
+                  UIComponents.openDropdown(btn, [
+                    { label: 'Edit', icon: 'fa-solid fa-pen', onClick: () => openCaseModal(c) },
+                    {
+                      label: 'Duplicate',
+                      icon: 'fa-solid fa-clone',
+                      onClick: () => {
+                        CaseLibrary.duplicate(c.id);
+                        UIComponents.showToast('Case duplicated', 'success');
+                      },
+                    },
+                    { label: 'Delete', icon: 'fa-solid fa-trash', variant: 'danger', dividerBefore: true, onClick: () => deleteCase(c.id) },
+                  ]);
                 });
-                if (!ok) return;
-                CategoryService.remove(cat.key);
+                tdActions.appendChild(btn);
+                tr.appendChild(tdActions);
+
+                tbodyEl.appendChild(tr);
+              });
+            }
+
+            function chip(label, key, active, onClick, color, count) {
+              const el = document.createElement('div');
+              el.className = `chip ${active ? 'active' : ''}`;
+              el.setAttribute('role', 'button');
+              el.tabIndex = 0;
+              const dot = document.createElement('span');
+              dot.className = 'chip-dot';
+              dot.style.background = color || 'var(--border-strong)';
+              const text = document.createElement('span');
+              text.textContent = `${label}${Number.isFinite(count) ? `: ${count}` : ''}`;
+              el.appendChild(dot);
+              el.appendChild(text);
+              el.addEventListener('click', onClick);
+              el.addEventListener('keydown', ev => {
+                if (ev.key === 'Enter') onClick();
+              });
+              return el;
+            }
+
+            function categoryChip(categoryKey) {
+              const meta = CategoryService.meta(categoryKey || 'default');
+              const el = document.createElement('span');
+              el.className = 'chip';
+              el.style.cursor = 'default';
+              const dot = document.createElement('span');
+              dot.className = 'chip-dot';
+              dot.style.background = meta.color;
+              const text = document.createElement('span');
+              text.textContent = meta.name;
+              el.appendChild(dot);
+              el.appendChild(text);
+              return el;
+            }
+
+            function openCaseModal(existing) {
+              const prefs = PreferencesManager.get();
+              const lengthUnit = prefs.units.length;
+              const weightUnit = prefs.units.weight;
+
+              const now = Date.now();
+              const isEdit = Boolean(existing);
+              const initial = existing
+                ? Utils.deepClone(existing)
+                : {
+                    id: Utils.uuid(),
+                    name: '',
+                    manufacturer: '',
+                    category: 'default',
+                    dimensions: { length: 48, width: 24, height: 24 },
+                    weight: 0,
+                    canFlip: true,
+                    notes: '',
+                    color: CategoryService.meta('default').color,
+                    createdAt: now,
+                    updatedAt: now,
+                  };
+
+              const content = document.createElement('div');
+              content.style.display = 'grid';
+              content.style.gridTemplateColumns = '1fr 1fr';
+              content.style.gap = '14px';
+
+              const fName = field('Name', 'text', 'Line Array Case', true);
+              fName.input.value = initial.name || '';
+
+              const fMfg = field('Manufacturer', 'text', 'L-Acoustics', false);
+              fMfg.input.value = initial.manufacturer || '';
+
+              const catWrap = document.createElement('div');
+              catWrap.className = 'field';
+              catWrap.style.gridColumn = '1 / -1';
+              const catLabel = document.createElement('div');
+              catLabel.className = 'label';
+              catLabel.textContent = 'Category';
+              const catRow = document.createElement('div');
+              catRow.style.display = 'flex';
+              catRow.style.gap = '8px';
+              catRow.style.alignItems = 'center';
+              const catColorSwatch = document.createElement('div');
+              catColorSwatch.style.width = '44px';
+              catColorSwatch.style.height = '32px';
+              catColorSwatch.style.borderRadius = '8px';
+              catColorSwatch.style.border = '1px solid var(--border-subtle)';
+              const catSelect = document.createElement('select');
+              catSelect.className = 'select';
+              catSelect.style.flex = '1';
+              const catOptions = CategoryService.all();
+              const currentKey = catOptions.find(c => c.key === initial.category) ? initial.category : 'default';
+              catOptions.forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c.key;
+                opt.textContent = c.name || CategoryService.meta(c.key).name;
+                catSelect.appendChild(opt);
+              });
+              catSelect.value = currentKey;
+              const updateSwatch = () => {
+                const meta = CategoryService.meta(catSelect.value || 'default');
+                catColorSwatch.style.background = meta.color || '#9ca3af';
+              };
+              catSelect.addEventListener('change', updateSwatch);
+              updateSwatch();
+              catRow.appendChild(catColorSwatch);
+              catRow.appendChild(catSelect);
+              catWrap.appendChild(catLabel);
+              catWrap.appendChild(catRow);
+
+              const fL = field(`Length (${lengthUnit})`, 'number', '', true);
+              const fW = field(`Width (${lengthUnit})`, 'number', '', true);
+              const fH = field(`Height (${lengthUnit})`, 'number', '', true);
+              fL.input.value = String(Utils.inchesToUnit(initial.dimensions.length, lengthUnit));
+              fW.input.value = String(Utils.inchesToUnit(initial.dimensions.width, lengthUnit));
+              fH.input.value = String(Utils.inchesToUnit(initial.dimensions.height, lengthUnit));
+
+              const fWeight = field(`Weight (${weightUnit})`, 'number', '', false);
+              fWeight.input.step = '0.1';
+              const weightValue = Utils.poundsToUnit(Number(initial.weight) || 0, weightUnit);
+              fWeight.input.value = String(Math.round(weightValue * 100) / 100);
+
+              const flipRow = document.createElement('label');
+              flipRow.style.display = 'flex';
+              flipRow.style.alignItems = 'center';
+              flipRow.style.gap = '10px';
+              flipRow.style.fontSize = 'var(--text-sm)';
+              flipRow.style.gridColumn = '1 / -1';
+              const flip = document.createElement('input');
+              flip.type = 'checkbox';
+              flip.checked = Boolean(initial.canFlip);
+              const flipText = document.createElement('span');
+              flipText.textContent = 'Can be flipped';
+              flipRow.appendChild(flip);
+              flipRow.appendChild(flipText);
+
+              const notesWrap = document.createElement('div');
+              notesWrap.className = 'field';
+              notesWrap.style.gridColumn = '1 / -1';
+              const notesLabel = document.createElement('div');
+              notesLabel.className = 'label';
+              notesLabel.textContent = 'Notes';
+              const notes = document.createElement('textarea');
+              notes.className = 'input';
+              notes.style.minHeight = '60px';
+              notes.value = initial.notes || '';
+              notesWrap.appendChild(notesLabel);
+              notesWrap.appendChild(notes);
+
+              content.appendChild(fName.wrap);
+              content.appendChild(fMfg.wrap);
+              content.appendChild(catWrap);
+              content.appendChild(fL.wrap);
+              content.appendChild(fW.wrap);
+              content.appendChild(fH.wrap);
+              content.appendChild(fWeight.wrap);
+              content.appendChild(flipRow);
+              content.appendChild(notesWrap);
+
+              UIComponents.showModal({
+                title: isEdit ? 'Edit Case' : 'New Case',
+                content,
+                actions: [
+                  { label: 'Cancel' },
+                  {
+                    label: 'Save',
+                    variant: 'primary',
+                    onClick: () => {
+                      const name = String(fName.input.value || '').trim();
+                      if (!name) {
+                        UIComponents.showToast('Name is required', 'warning');
+                        fName.input.focus();
+                        return;
+                      }
+                      const length = Utils.unitToInches(Number(fL.input.value) || 0, lengthUnit);
+                      const width = Utils.unitToInches(Number(fW.input.value) || 0, lengthUnit);
+                      const height = Utils.unitToInches(Number(fH.input.value) || 0, lengthUnit);
+                      if (length <= 0 || width <= 0 || height <= 0) {
+                        UIComponents.showToast('Dimensions must be > 0', 'warning');
+                        return;
+                      }
+                      const weightLb = Utils.unitToPounds(Number(fWeight.input.value) || 0, weightUnit);
+                      const categoryKey = String(catSelect.value || 'default');
+                      const catMeta = CategoryService.meta(categoryKey);
+                      const caseData = {
+                        ...initial,
+                        name,
+                        manufacturer: String(fMfg.input.value || '').trim(),
+                        category: categoryKey,
+                        dimensions: { length, width, height },
+                        weight: weightLb,
+                        canFlip: Boolean(flip.checked),
+                        notes: String(notes.value || '').trim(),
+                        color: catMeta.color || '#ff9f1c',
+                      };
+                      CaseLibrary.upsert(caseData);
+                      UIComponents.showToast('Case saved', 'success');
+                      render();
+                    },
+                  },
+                ],
+              });
+            }
+
+            function openCategoryManager() {
+              const content = document.createElement('div');
+              content.style.display = 'grid';
+              content.style.gap = '14px';
+              content.style.minWidth = '480px';
+
+              const listEl = document.createElement('div');
+              listEl.style.display = 'grid';
+              listEl.style.gap = '8px';
+
+              const renderList = () => {
+                listEl.innerHTML = '';
+                CategoryService.all().forEach(cat => {
+                  const row = document.createElement('div');
+                  row.className = 'card';
+                  row.style.display = 'grid';
+                  row.style.gridTemplateColumns = '40px 1fr auto';
+                  row.style.gap = '12px';
+                  row.style.alignItems = 'center';
+                  row.style.padding = 'var(--space-3)';
+                  row.style.background = 'var(--bg-elevated)';
+                  row.style.boxShadow = 'none';
+
+                  const colorWrap = document.createElement('div');
+                  colorWrap.style.position = 'relative';
+                  const color = document.createElement('input');
+                  color.type = 'color';
+                  color.value = cat.color || '#9ca3af';
+                  color.className = 'input';
+                  color.style.width = '40px';
+                  color.style.height = '40px';
+                  color.style.padding = '0';
+                  color.style.cursor = 'pointer';
+                  color.style.border = '2px solid var(--border-subtle)';
+                  color.style.borderRadius = 'var(--radius-sm)';
+                  colorWrap.appendChild(color);
+
+                  const name = document.createElement('input');
+                  name.type = 'text';
+                  name.className = 'input';
+                  name.value = cat.name;
+                  name.placeholder = 'Category name';
+
+                  const actions = document.createElement('div');
+                  actions.style.display = 'flex';
+                  actions.style.gap = '6px';
+
+                  const saveBtn = document.createElement('button');
+                  saveBtn.type = 'button';
+                  saveBtn.className = 'btn btn-ghost';
+                  saveBtn.style.padding = '6px 10px';
+                  saveBtn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i>';
+                  saveBtn.title = 'Save changes';
+                  saveBtn.addEventListener('click', () => {
+                    const renamed = CategoryService.rename(cat.key, name.value, color.value);
+                    renderList();
+                    render();
+                    UIComponents.showToast(`Saved "${renamed.name}"`, 'success');
+                  });
+
+                  if (cat.key !== 'default') {
+                    const delBtn = document.createElement('button');
+                    delBtn.type = 'button';
+                    delBtn.className = 'btn btn-ghost';
+                    delBtn.style.padding = '6px 10px';
+                    delBtn.style.color = 'var(--error)';
+                    delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
+                    delBtn.title = 'Delete category';
+                    delBtn.addEventListener('click', async () => {
+                      const ok = await UIComponents.confirm({
+                        title: `Delete "${cat.name}"?`,
+                        message: 'All cases in this category will be moved to Default.',
+                        okLabel: 'Delete',
+                        danger: true,
+                      });
+                      if (!ok) return;
+                      CategoryService.remove(cat.key);
+                      renderList();
+                      render();
+                      UIComponents.showToast(`Deleted "${cat.name}"`, 'info');
+                    });
+                    actions.appendChild(delBtn);
+                  }
+
+                  actions.appendChild(saveBtn);
+                  row.appendChild(colorWrap);
+                  row.appendChild(name);
+                  row.appendChild(actions);
+                  listEl.appendChild(row);
+                });
+              };
+
+              const addBtn = document.createElement('button');
+              addBtn.type = 'button';
+              addBtn.className = 'btn btn-primary';
+              addBtn.style.width = '100%';
+              addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> New Category';
+              addBtn.addEventListener('click', () => {
+                const baseName = 'New Category';
+                let idx = 1;
+                let name = baseName;
+                const existing = new Set(CategoryService.all().map(c => c.name.toLowerCase()));
+                while (existing.has(name.toLowerCase())) {
+                  idx += 1;
+                  name = `${baseName} ${idx}`;
+                }
+                CategoryService.upsert({ name });
                 renderList();
                 render();
-                UIComponents.showToast(`Deleted "${cat.name}"`, 'info');
               });
-              actions.appendChild(delBtn);
+
+              renderList();
+
+              content.appendChild(listEl);
+              content.appendChild(addBtn);
+
+              UIComponents.showModal({
+                title: 'Manage Categories',
+                content,
+                actions: [{ label: 'Close', variant: 'primary' }],
+              });
             }
 
-            actions.appendChild(saveBtn);
-            row.appendChild(colorWrap);
-            row.appendChild(name);
-            row.appendChild(actions);
-            listEl.appendChild(row);
-          });
-        };
+            function normalizeHex(value) {
+              const s = String(value || '').trim();
+              const m = s.match(/^#([0-9a-f]{6})$/i);
+              return m ? `#${m[1].toLowerCase()}` : null;
+            }
 
-        const addBtn = document.createElement('button');
-        addBtn.type = 'button';
-        addBtn.className = 'btn btn-primary';
-        addBtn.style.width = '100%';
-        addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> New Category';
-        addBtn.addEventListener('click', () => {
-          const baseName = 'New Category';
-          let idx = 1;
-          let name = baseName;
-          const existing = new Set(CategoryService.all().map(c => c.name.toLowerCase()));
-          while (existing.has(name.toLowerCase())) {
-            idx += 1;
-            name = `${baseName} ${idx}`;
-          }
-          CategoryService.upsert({ name });
-          renderList();
-          render();
-        });
+            function field(label, type, placeholder, required) {
+              const wrap = document.createElement('div');
+              wrap.className = 'field';
+              const l = document.createElement('div');
+              l.className = 'label';
+              l.textContent = required ? `${label} (required)` : label;
+              const input = document.createElement('input');
+              input.className = 'input';
+              input.type = type;
+              input.placeholder = placeholder || '';
+              wrap.appendChild(l);
+              wrap.appendChild(input);
+              return { wrap, input };
+            }
 
-        renderList();
+            async function deleteCase(caseId) {
+              const caseData = CaseLibrary.getById(caseId);
+              if (!caseData) return;
+              const packsUsing = PackLibrary.getPacks().filter(p => (p.cases || []).some(i => i.caseId === caseId));
+              const msg = packsUsing.length
+                ? `This case is used in ${packsUsing.length} pack(s). Deleting it will remove it from those packs.`
+                : 'This cannot be undone.';
+              const ok = await UIComponents.confirm({
+                title: `Delete "${caseData.name}"?`,
+                message: msg,
+                danger: true,
+                okLabel: 'Delete',
+              });
+              if (!ok) return;
 
-        content.appendChild(listEl);
-        content.appendChild(addBtn);
+              const nextCaseLibrary = CaseLibrary.getCases().filter(c => c.id !== caseId);
+              const nextPackLibrary = PackLibrary.getPacks().map(p => {
+                const nextCases = (p.cases || []).filter(i => i.caseId !== caseId);
+                if (nextCases.length === (p.cases || []).length) return p;
+                const next = { ...p, cases: nextCases, lastEdited: Date.now() };
+                next.stats = PackLibrary.computeStats(next);
+                return next;
+              });
 
-        UIComponents.showModal({
-          title: 'Manage Categories',
-          content,
-          actions: [{ label: 'Close', variant: 'primary' }],
-        });
-      }
+              StateStore.set({ caseLibrary: nextCaseLibrary, packLibrary: nextPackLibrary });
+              UIComponents.showToast('Case deleted', 'info');
+            }
 
-      function normalizeHex(value) {
-        const s = String(value || '').trim();
-        const m = s.match(/^#([0-9a-f]{6})$/i);
-        return m ? `#${m[1].toLowerCase()}` : null;
-      }
+            function downloadTemplate() {
+              const csv = [
+                'name,manufacturer,category,length,width,height,weight,canFlip,notes',
+                'Line Array Case,L-Acoustics,audio,48,24,32,125,false,',
+                'Truss Section,Global Truss,lighting,120,12,12,45,true,',
+              ].join('\n');
+              Utils.downloadText('cases_template.csv', csv, 'text/csv');
+              UIComponents.showToast('Template downloaded', 'success');
+            }
 
-      function field(label, type, placeholder, required) {
-        const wrap = document.createElement('div');
-        wrap.className = 'field';
-        const l = document.createElement('div');
-        l.className = 'label';
-        l.textContent = required ? `${label} (required)` : label;
-        const input = document.createElement('input');
-        input.className = 'input';
-        input.type = type;
-        input.placeholder = placeholder || '';
-        wrap.appendChild(l);
-        wrap.appendChild(input);
-        return { wrap, input };
-      }
+            function openImportModal() {
+              const content = document.createElement('div');
+              content.style.display = 'grid';
+              content.style.gap = '14px';
 
-      async function deleteCase(caseId) {
-        const caseData = CaseLibrary.getById(caseId);
-        if (!caseData) return;
-        const packsUsing = PackLibrary.getPacks().filter(p => (p.cases || []).some(i => i.caseId === caseId));
-        const msg = packsUsing.length
-          ? `This case is used in ${packsUsing.length} pack(s). Deleting it will remove it from those packs.`
-          : 'This cannot be undone.';
-        const ok = await UIComponents.confirm({
-          title: `Delete "${caseData.name}"?`,
-          message: msg,
-          danger: true,
-          okLabel: 'Delete',
-        });
-        if (!ok) return;
-
-        const nextCaseLibrary = CaseLibrary.getCases().filter(c => c.id !== caseId);
-        const nextPackLibrary = PackLibrary.getPacks().map(p => {
-          const nextCases = (p.cases || []).filter(i => i.caseId !== caseId);
-          if (nextCases.length === (p.cases || []).length) return p;
-          const next = { ...p, cases: nextCases, lastEdited: Date.now() };
-          next.stats = PackLibrary.computeStats(next);
-          return next;
-        });
-
-        StateStore.set({ caseLibrary: nextCaseLibrary, packLibrary: nextPackLibrary });
-        UIComponents.showToast('Case deleted', 'info');
-      }
-
-      function downloadTemplate() {
-        const csv = [
-          'name,manufacturer,category,length,width,height,weight,canFlip,notes',
-          'Line Array Case,L-Acoustics,audio,48,24,32,125,false,',
-          'Truss Section,Global Truss,lighting,120,12,12,45,true,',
-        ].join('\n');
-        Utils.downloadText('cases_template.csv', csv, 'text/csv');
-        UIComponents.showToast('Template downloaded', 'success');
-      }
-
-      function openImportModal() {
-        const content = document.createElement('div');
-        content.style.display = 'grid';
-        content.style.gap = '14px';
-
-        const drop = document.createElement('div');
-        drop.className = 'card';
-        drop.style.borderStyle = 'dashed';
-        drop.style.background = 'var(--bg-elevated)';
-        drop.style.textAlign = 'center';
-        drop.style.padding = '22px';
-        drop.innerHTML = `
+              const drop = document.createElement('div');
+              drop.className = 'card';
+              drop.style.borderStyle = 'dashed';
+              drop.style.background = 'var(--bg-elevated)';
+              drop.style.textAlign = 'center';
+              drop.style.padding = '22px';
+              drop.innerHTML = `
               <div style="font-size:28px;margin-bottom:6px">📄</div>
               <div style="font-weight:var(--font-semibold);margin-bottom:6px">Drag & Drop File Here</div>
               <div class="muted" style="font-size:var(--text-sm)">Supported: .csv, .xlsx</div>
               <div style="height:12px"></div>
             `;
-        const browseBtn = document.createElement('button');
-        browseBtn.className = 'btn';
-        browseBtn.type = 'button';
-        browseBtn.innerHTML = '<i class="fa-solid fa-folder-open"></i> Browse files';
-        drop.appendChild(browseBtn);
+              const browseBtn = document.createElement('button');
+              browseBtn.className = 'btn';
+              browseBtn.type = 'button';
+              browseBtn.innerHTML = '<i class="fa-solid fa-folder-open"></i> Browse files';
+              drop.appendChild(browseBtn);
 
-        const hint = document.createElement('div');
-        hint.className = 'muted';
-        hint.style.fontSize = 'var(--text-sm)';
-        hint.innerHTML =
-          'Required: <b>name</b>, <b>length</b>, <b>width</b>, <b>height</b><br>Optional: manufacturer, category, weight, canFlip, notes';
+              const hint = document.createElement('div');
+              hint.className = 'muted';
+              hint.style.fontSize = 'var(--text-sm)';
+              hint.innerHTML =
+                'Required: <b>name</b>, <b>length</b>, <b>width</b>, <b>height</b><br>Optional: manufacturer, category, weight, canFlip, notes';
 
-        const results = document.createElement('div');
-        results.style.display = 'none';
+              const results = document.createElement('div');
+              results.style.display = 'none';
 
-        content.appendChild(drop);
-        content.appendChild(hint);
-        content.appendChild(results);
+              content.appendChild(drop);
+              content.appendChild(hint);
+              content.appendChild(results);
 
-        const fileInput = document.createElement('input');
-        fileInput.type = 'file';
-        fileInput.accept = '.csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv';
+              const fileInput = document.createElement('input');
+              fileInput.type = 'file';
+              fileInput.accept =
+                '.csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv';
 
-        const modal = UIComponents.showModal({
-          title: 'Import Cases',
-          content,
-          actions: [{ label: 'Close', variant: 'primary' }],
-        });
+              const modal = UIComponents.showModal({
+                title: 'Import Cases',
+                content,
+                actions: [{ label: 'Close', variant: 'primary' }],
+              });
 
-        browseBtn.addEventListener('click', () => fileInput.click());
+              browseBtn.addEventListener('click', () => fileInput.click());
 
-        drop.addEventListener('dragover', ev => {
-          ev.preventDefault();
-          drop.style.borderColor = 'rgba(255, 159, 28, 0.6)';
-        });
-        drop.addEventListener('dragleave', () => {
-          drop.style.borderColor = 'var(--border-subtle)';
-        });
-        drop.addEventListener('drop', ev => {
-          ev.preventDefault();
-          drop.style.borderColor = 'var(--border-subtle)';
-          const file = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
-          if (file) handleFile(file, results, modal);
-        });
+              drop.addEventListener('dragover', ev => {
+                ev.preventDefault();
+                drop.style.borderColor = 'rgba(255, 159, 28, 0.6)';
+              });
+              drop.addEventListener('dragleave', () => {
+                drop.style.borderColor = 'var(--border-subtle)';
+              });
+              drop.addEventListener('drop', ev => {
+                ev.preventDefault();
+                drop.style.borderColor = 'var(--border-subtle)';
+                const file = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+                if (file) handleFile(file, results, modal);
+              });
 
-        fileInput.addEventListener('change', () => {
-          const file = fileInput.files && fileInput.files[0];
-          if (file) handleFile(file, results, modal);
-        });
-      }
+              fileInput.addEventListener('change', () => {
+                const file = fileInput.files && fileInput.files[0];
+                if (file) handleFile(file, results, modal);
+              });
+            }
 
-      async function handleFile(file, resultsEl, modal) {
-        try {
-          const parsed = await parseAndValidateSpreadsheet(file);
-          resultsEl.style.display = 'block';
-          resultsEl.innerHTML = '';
+            async function handleFile(file, resultsEl, modal) {
+              try {
+                const parsed = await parseAndValidateSpreadsheet(file);
+                resultsEl.style.display = 'block';
+                resultsEl.innerHTML = '';
 
-          const summary = document.createElement('div');
-          summary.className = 'card';
-          summary.innerHTML = `
+                const summary = document.createElement('div');
+                summary.className = 'card';
+                summary.innerHTML = `
                 <div style="font-weight:var(--font-semibold);margin-bottom:6px">Import Preview</div>
                 <div class="muted" style="font-size:var(--text-sm)">File: ${escapeHtml(file.name)}</div>
                 <div style="height:8px"></div>
@@ -2771,272 +4227,279 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
                 </div>
               `;
 
-          const actionsRow = document.createElement('div');
-          actionsRow.className = 'row';
-          actionsRow.style.justifyContent = 'flex-end';
-          actionsRow.style.marginTop = '12px';
-          const btn = document.createElement('button');
-          btn.className = 'btn btn-primary';
-          btn.type = 'button';
-          btn.textContent = 'Import valid rows';
-          btn.disabled = parsed.valid.length === 0;
-          btn.addEventListener('click', () => {
-            importRows(parsed.valid);
-            modal.close();
-          });
-          actionsRow.appendChild(btn);
-          summary.appendChild(actionsRow);
+                const actionsRow = document.createElement('div');
+                actionsRow.className = 'row';
+                actionsRow.style.justifyContent = 'flex-end';
+                actionsRow.style.marginTop = '12px';
+                const btn = document.createElement('button');
+                btn.className = 'btn btn-primary';
+                btn.type = 'button';
+                btn.textContent = 'Import valid rows';
+                btn.disabled = parsed.valid.length === 0;
+                btn.addEventListener('click', () => {
+                  importRows(parsed.valid);
+                  modal.close();
+                });
+                actionsRow.appendChild(btn);
+                summary.appendChild(actionsRow);
 
-          resultsEl.appendChild(summary);
+                resultsEl.appendChild(summary);
 
-          if (parsed.errors.length) {
-            const err = document.createElement('div');
-            err.className = 'card';
-            err.innerHTML = '<div style="font-weight:var(--font-semibold);margin-bottom:6px">Errors</div>';
-            const ul = document.createElement('ul');
-            ul.style.margin = '8px 0 0 16px';
-            ul.style.color = 'var(--text-secondary)';
-            ul.style.fontSize = 'var(--text-sm)';
-            parsed.errors.slice(0, 12).forEach(e => {
-              const li = document.createElement('li');
-              li.textContent = e;
-              ul.appendChild(li);
-            });
-            if (parsed.errors.length > 12) {
-              const li = document.createElement('li');
-              li.textContent = `...and ${parsed.errors.length - 12} more`;
-              ul.appendChild(li);
+                if (parsed.errors.length) {
+                  const err = document.createElement('div');
+                  err.className = 'card';
+                  err.innerHTML = '<div style="font-weight:var(--font-semibold);margin-bottom:6px">Errors</div>';
+                  const ul = document.createElement('ul');
+                  ul.style.margin = '8px 0 0 16px';
+                  ul.style.color = 'var(--text-secondary)';
+                  ul.style.fontSize = 'var(--text-sm)';
+                  parsed.errors.slice(0, 12).forEach(e => {
+                    const li = document.createElement('li');
+                    li.textContent = e;
+                    ul.appendChild(li);
+                  });
+                  if (parsed.errors.length > 12) {
+                    const li = document.createElement('li');
+                    li.textContent = `...and ${parsed.errors.length - 12} more`;
+                    ul.appendChild(li);
+                  }
+                  err.appendChild(ul);
+                  resultsEl.appendChild(err);
+                }
+
+                const preview = document.createElement('div');
+                preview.className = 'card';
+                preview.innerHTML =
+                  '<div style="font-weight:var(--font-semibold);margin-bottom:6px">Preview (first 5 valid rows)</div>';
+                const p = document.createElement('div');
+                p.className = 'muted';
+                p.style.fontSize = 'var(--text-sm)';
+                p.style.display = 'grid';
+                p.style.gap = '6px';
+                parsed.valid.slice(0, 5).forEach(r => {
+                  p.appendChild(
+                    document.createTextNode(`${r.name} • ${r.length}×${r.width}×${r.height} • ${r.category}`)
+                  );
+                  p.appendChild(document.createElement('br'));
+                });
+                preview.appendChild(p);
+                resultsEl.appendChild(preview);
+              } catch (err) {
+                UIComponents.showToast('Import failed: ' + err.message, 'error');
+              }
             }
-            err.appendChild(ul);
-            resultsEl.appendChild(err);
-          }
 
-          const preview = document.createElement('div');
-          preview.className = 'card';
-          preview.innerHTML =
-            '<div style="font-weight:var(--font-semibold);margin-bottom:6px">Preview (first 5 valid rows)</div>';
-          const p = document.createElement('div');
-          p.className = 'muted';
-          p.style.fontSize = 'var(--text-sm)';
-          p.style.display = 'grid';
-          p.style.gap = '6px';
-          parsed.valid.slice(0, 5).forEach(r => {
-            p.appendChild(document.createTextNode(`${r.name} • ${r.length}×${r.width}×${r.height} • ${r.category}`));
-            p.appendChild(document.createElement('br'));
-          });
-          preview.appendChild(p);
-          resultsEl.appendChild(preview);
-        } catch (err) {
-          UIComponents.showToast('Import failed: ' + err.message, 'error');
-        }
-      }
+            function escapeHtml(s) {
+              return String(s || '').replace(
+                /[&<>"']/g,
+                c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]
+              );
+            }
 
-      function escapeHtml(s) {
-        return String(s || '').replace(
-          /[&<>"']/g,
-          c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]
-        );
-      }
+            function importRows(rows) {
+              const now = Date.now();
+              const existingNames = new Set(
+                CaseLibrary.getCases().map(c =>
+                  String(c.name || '')
+                    .trim()
+                    .toLowerCase()
+                )
+              );
+              const next = [...CaseLibrary.getCases()];
+              let added = 0;
+              rows.forEach(r => {
+                const nameKey = String(r.name || '')
+                  .trim()
+                  .toLowerCase();
+                if (!nameKey || existingNames.has(nameKey)) return;
+                existingNames.add(nameKey);
+                const meta = CategoryService.meta(r.category || 'default');
+                next.push({
+                  id: Utils.uuid(),
+                  name: String(r.name || '').trim(),
+                  manufacturer: String(r.manufacturer || '').trim(),
+                  category:
+                    String(r.category || 'default')
+                      .trim()
+                      .toLowerCase() || 'default',
+                  dimensions: { length: Number(r.length), width: Number(r.width), height: Number(r.height) },
+                  weight: Number(r.weight) || 0,
+                  volume: Utils.volumeInCubicInches({
+                    length: Number(r.length),
+                    width: Number(r.width),
+                    height: Number(r.height),
+                  }),
+                  canFlip: Boolean(r.canFlip),
+                  notes: String(r.notes || '').trim(),
+                  color: normalizeHex(r.color) || normalizeHex(meta.color) || '#ff9f1c',
+                  createdAt: now,
+                  updatedAt: now,
+                });
+                added++;
+              });
+              StateStore.set({ caseLibrary: next });
+              UIComponents.showToast(`Imported ${added} case(s)`, added ? 'success' : 'warning');
+            }
 
-      function importRows(rows) {
-        const now = Date.now();
-        const existingNames = new Set(
-          CaseLibrary.getCases().map(c =>
-            String(c.name || '')
-              .trim()
-              .toLowerCase()
-          )
-        );
-        const next = [...CaseLibrary.getCases()];
-        let added = 0;
-        rows.forEach(r => {
-          const nameKey = String(r.name || '')
-            .trim()
-            .toLowerCase();
-          if (!nameKey || existingNames.has(nameKey)) return;
-          existingNames.add(nameKey);
-          const meta = CategoryService.meta(r.category || 'default');
-          next.push({
-            id: Utils.uuid(),
-            name: String(r.name || '').trim(),
-            manufacturer: String(r.manufacturer || '').trim(),
-            category:
-              String(r.category || 'default')
+            async function parseAndValidateSpreadsheet(file) {
+              if (!window.XLSX) throw new Error('XLSX library not available');
+              const ext = String(file.name || '')
+                .split('.')
+                .pop()
+                .toLowerCase();
+              let workbook;
+              if (ext === 'csv') {
+                const text = await file.text();
+                workbook = window.XLSX.read(text, { type: 'string' });
+              } else {
+                const buf = await file.arrayBuffer();
+                workbook = window.XLSX.read(buf, { type: 'array' });
+              }
+              const sheetName = workbook.SheetNames[0];
+              const sheet = workbook.Sheets[sheetName];
+              const rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+              if (!rows || !rows.length) throw new Error('Empty file');
+
+              const headerRow = rows[0].map(h => String(h || '').trim());
+              const header = headerRow.map(normalizeHeader);
+              const idx = indexMap(header);
+
+              const required = ['name', 'length', 'width', 'height'];
+              const missing = required.filter(r => idx[r] == null);
+              if (missing.length) throw new Error('Missing required columns: ' + missing.join(', '));
+
+              const existingNames = new Set(
+                CaseLibrary.getCases().map(c =>
+                  String(c.name || '')
+                    .trim()
+                    .toLowerCase()
+                )
+              );
+              const errors = [];
+              const duplicates = [];
+              const valid = [];
+
+              for (let r = 1; r < rows.length; r++) {
+                const row = rows[r];
+                if (!row || row.every(v => String(v || '').trim() === '')) continue;
+                const rowNum = r + 1;
+                const record = {
+                  name: String(getField(row, idx.name)).trim(),
+                  manufacturer: String(getField(row, idx.manufacturer)).trim(),
+                  category: String(getField(row, idx.category)).trim().toLowerCase() || 'default',
+                  length: Number(getField(row, idx.length)),
+                  width: Number(getField(row, idx.width)),
+                  height: Number(getField(row, idx.height)),
+                  weight: Number(getField(row, idx.weight)),
+                  canFlip: parseBool(getField(row, idx.canFlip)),
+                  notes: String(getField(row, idx.notes)).trim(),
+                  color: String(getField(row, idx.color)).trim(),
+                };
+
+                const rowErrors = [];
+                if (!record.name) rowErrors.push(`Row ${rowNum}: Missing required field 'name'`);
+                if (!Number.isFinite(record.length) || record.length <= 0)
+                  {rowErrors.push(`Row ${rowNum}: Invalid number for 'length'`);}
+                if (!Number.isFinite(record.width) || record.width <= 0)
+                  {rowErrors.push(`Row ${rowNum}: Invalid number for 'width'`);}
+                if (!Number.isFinite(record.height) || record.height <= 0)
+                  {rowErrors.push(`Row ${rowNum}: Invalid number for 'height'`);}
+
+                const nameKey = record.name.toLowerCase();
+                if (record.name && existingNames.has(nameKey)) {
+                  duplicates.push(`Row ${rowNum}: Duplicate name "${record.name}" (skipped)`);
+                  continue;
+                }
+
+                if (rowErrors.length) {
+                  errors.push(...rowErrors);
+                  continue;
+                }
+                valid.push(record);
+              }
+
+              return { valid, errors, duplicates };
+            }
+
+            function normalizeHeader(s) {
+              return String(s || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '');
+            }
+
+            function indexMap(headers) {
+              const find = candidates => {
+                for (const c of candidates) {
+                  const idx = headers.indexOf(c);
+                  if (idx > -1) return idx;
+                }
+                return null;
+              };
+              return {
+                name: find(['name', 'casename', 'item', 'title']),
+                manufacturer: find(['manufacturer', 'mfg', 'brand']),
+                category: find(['category', 'cat', 'type']),
+                length: find(['length', 'l']),
+                width: find(['width', 'w']),
+                height: find(['height', 'h']),
+                weight: find(['weight', 'wt']),
+                canFlip: find(['canflip', 'flippable', 'canrotate', 'flip']),
+                notes: find(['notes', 'note', 'description', 'desc']),
+                color: find(['color', 'hex', 'casecolor']),
+              };
+            }
+
+            function getField(row, idx) {
+              if (idx == null) return '';
+              return row[idx];
+            }
+
+            function parseBool(v) {
+              const s = String(v || '')
                 .trim()
-                .toLowerCase() || 'default',
-            dimensions: { length: Number(r.length), width: Number(r.width), height: Number(r.height) },
-            weight: Number(r.weight) || 0,
-            volume: Utils.volumeInCubicInches({
-              length: Number(r.length),
-              width: Number(r.width),
-              height: Number(r.height),
-            }),
-            canFlip: Boolean(r.canFlip),
-            notes: String(r.notes || '').trim(),
-            color: normalizeHex(r.color) || normalizeHex(meta.color) || '#ff9f1c',
-            createdAt: now,
-            updatedAt: now,
-          });
-          added++;
-        });
-        StateStore.set({ caseLibrary: next });
-        UIComponents.showToast(`Imported ${added} case(s)`, added ? 'success' : 'warning');
-      }
+                .toLowerCase();
+              if (!s) return false;
+              return ['true', '1', 'yes', 'y', 'on'].includes(s);
+            }
 
-      async function parseAndValidateSpreadsheet(file) {
-        if (!window.XLSX) throw new Error('XLSX library not available');
-        const ext = String(file.name || '')
-          .split('.')
-          .pop()
-          .toLowerCase();
-        let workbook;
-        if (ext === 'csv') {
-          const text = await file.text();
-          workbook = window.XLSX.read(text, { type: 'string' });
-        } else {
-          const buf = await file.arrayBuffer();
-          workbook = window.XLSX.read(buf, { type: 'array' });
-        }
-        const sheetName = workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
-        const rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-        if (!rows || !rows.length) throw new Error('Empty file');
+              return { init: initCasesUI, render };
+          })();
 
-        const headerRow = rows[0].map(h => String(h || '').trim());
-        const header = headerRow.map(normalizeHeader);
-        const idx = indexMap(header);
+	          // ============================================================================
+	          // SECTION: 3D ENGINE (SCENE)
+	          // ============================================================================
+	          const SceneManager = (() => {
+	            const INCH_TO_WORLD = 0.05;
+	            const WORLD_TO_INCH = 1 / INCH_TO_WORLD;
+	            let containerEl = null;
+	            let scene = null;
+	            let camera = null;
+	            let renderer = null;
+	            let controls = null;
+	            let truck = null;
+	            let truckBoundsWorld = null;
+	            let truckSignature = '';
+	            let trailerShapeGuides = null;
+	            let trailerShapeGuidesSig = '';
+	            let grid = null;
+	            let ground = null;
+	            let axisScene = null;
+	            let axisCamera = null;
+	            let axisHelper = null;
+	            const perf = { lastTime: 0, lowMs: 0, perfMode: false, fps: 60 };
+            let viewSize = { width: 1, height: 1 };
 
-        const required = ['name', 'length', 'width', 'height'];
-        const missing = required.filter(r => idx[r] == null);
-        if (missing.length) throw new Error('Missing required columns: ' + missing.join(', '));
+            // Dev-only performance overlay
+            const DevOverlay = (() => {
+              let overlayEl = null;
+              let visible = false;
+              const stats = { fps: 0, frameTime: 0, memory: 0, drawCalls: 0, triangles: 0, geometries: 0, textures: 0 };
+              let lastLogTime = 0;
 
-        const existingNames = new Set(
-          CaseLibrary.getCases().map(c =>
-            String(c.name || '')
-              .trim()
-              .toLowerCase()
-          )
-        );
-        const errors = [];
-        const duplicates = [];
-        const valid = [];
-
-        for (let r = 1; r < rows.length; r++) {
-          const row = rows[r];
-          if (!row || row.every(v => String(v || '').trim() === '')) continue;
-          const rowNum = r + 1;
-          const record = {
-            name: String(getField(row, idx.name)).trim(),
-            manufacturer: String(getField(row, idx.manufacturer)).trim(),
-            category: String(getField(row, idx.category)).trim().toLowerCase() || 'default',
-            length: Number(getField(row, idx.length)),
-            width: Number(getField(row, idx.width)),
-            height: Number(getField(row, idx.height)),
-            weight: Number(getField(row, idx.weight)),
-            canFlip: parseBool(getField(row, idx.canFlip)),
-            notes: String(getField(row, idx.notes)).trim(),
-            color: String(getField(row, idx.color)).trim(),
-          };
-
-          const rowErrors = [];
-          if (!record.name) rowErrors.push(`Row ${rowNum}: Missing required field 'name'`);
-          if (!Number.isFinite(record.length) || record.length <= 0)
-            {rowErrors.push(`Row ${rowNum}: Invalid number for 'length'`);}
-          if (!Number.isFinite(record.width) || record.width <= 0)
-            {rowErrors.push(`Row ${rowNum}: Invalid number for 'width'`);}
-          if (!Number.isFinite(record.height) || record.height <= 0)
-            {rowErrors.push(`Row ${rowNum}: Invalid number for 'height'`);}
-
-          const nameKey = record.name.toLowerCase();
-          if (record.name && existingNames.has(nameKey)) {
-            duplicates.push(`Row ${rowNum}: Duplicate name "${record.name}" (skipped)`);
-            continue;
-          }
-
-          if (rowErrors.length) {
-            errors.push(...rowErrors);
-            continue;
-          }
-          valid.push(record);
-        }
-
-        return { valid, errors, duplicates };
-      }
-
-      function normalizeHeader(s) {
-        return String(s || '')
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '');
-      }
-
-      function indexMap(headers) {
-        const find = candidates => {
-          for (const c of candidates) {
-            const idx = headers.indexOf(c);
-            if (idx > -1) return idx;
-          }
-          return null;
-        };
-        return {
-          name: find(['name', 'casename', 'item', 'title']),
-          manufacturer: find(['manufacturer', 'mfg', 'brand']),
-          category: find(['category', 'cat', 'type']),
-          length: find(['length', 'l']),
-          width: find(['width', 'w']),
-          height: find(['height', 'h']),
-          weight: find(['weight', 'wt']),
-          canFlip: find(['canflip', 'flippable', 'canrotate', 'flip']),
-          notes: find(['notes', 'note', 'description', 'desc']),
-          color: find(['color', 'hex', 'casecolor']),
-        };
-      }
-
-      function getField(row, idx) {
-        if (idx == null) return '';
-        return row[idx];
-      }
-
-      function parseBool(v) {
-        const s = String(v || '')
-          .trim()
-          .toLowerCase();
-        if (!s) return false;
-        return ['true', '1', 'yes', 'y', 'on'].includes(s);
-      }
-
-      return { init: initCasesUI, render };
-    })();
-
-    const SceneManager = (() => {
-      const INCH_TO_WORLD = 0.05;
-      const WORLD_TO_INCH = 1 / INCH_TO_WORLD;
-      let containerEl = null;
-      let scene = null;
-      let camera = null;
-      let renderer = null;
-      let controls = null;
-      let truck = null;
-      let truckBoundsWorld = null;
-      let truckSignature = '';
-      let grid = null;
-      let ground = null;
-      let axisScene = null;
-      let axisCamera = null;
-      let axisHelper = null;
-      const perf = { lastTime: 0, lowMs: 0, perfMode: false, fps: 60 };
-      let viewSize = { width: 1, height: 1 };
-
-      // Dev-only performance overlay
-      const DevOverlay = (() => {
-        let overlayEl = null;
-        let visible = false;
-        const stats = { fps: 0, frameTime: 0, memory: 0, drawCalls: 0, triangles: 0, geometries: 0, textures: 0 };
-        let lastLogTime = 0;
-
-        function create() {
-          if (overlayEl) return;
-          overlayEl = document.createElement('div');
-          overlayEl.style.cssText = `
+              function create() {
+                if (overlayEl) return;
+                overlayEl = document.createElement('div');
+                overlayEl.style.cssText = `
                 position: fixed;
                 top: 10px;
                 right: 10px;
@@ -3053,37 +4516,37 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
                 min-width: 180px;
                 box-shadow: 0 2px 8px rgba(0,0,0,0.5);
               `;
-          document.body.appendChild(overlayEl);
-        }
+                document.body.appendChild(overlayEl);
+              }
 
-        function toggle() {
-          create();
-          visible = !visible;
-          overlayEl.style.display = visible ? 'block' : 'none';
-          if (visible) {
-            console.log('[DevOverlay] Performance monitoring enabled (press P to toggle)');
-          }
-        }
+              function toggle() {
+                create();
+                visible = !visible;
+                overlayEl.style.display = visible ? 'block' : 'none';
+                if (visible) {
+                  console.log('[DevOverlay] Performance monitoring enabled (press P to toggle)');
+                }
+              }
 
-        function update(time, rendererInfo) {
-          if (!visible || !overlayEl) return;
+              function update(time, rendererInfo) {
+                if (!visible || !overlayEl) return;
 
-          stats.fps = Math.round(perf.fps);
-          stats.frameTime = Math.round((1000 / perf.fps) * 10) / 10;
+                stats.fps = Math.round(perf.fps);
+                stats.frameTime = Math.round((1000 / perf.fps) * 10) / 10;
 
-          if (rendererInfo) {
-            stats.drawCalls = rendererInfo.render.calls;
-            stats.triangles = rendererInfo.render.triangles;
-            stats.geometries = rendererInfo.memory.geometries;
-            stats.textures = rendererInfo.memory.textures;
-          }
+                if (rendererInfo) {
+                  stats.drawCalls = rendererInfo.render.calls;
+                  stats.triangles = rendererInfo.render.triangles;
+                  stats.geometries = rendererInfo.memory.geometries;
+                  stats.textures = rendererInfo.memory.textures;
+                }
 
-          if (performance.memory) {
-            stats.memory = Math.round(performance.memory.usedJSHeapSize / 1048576);
-          }
+                if (performance.memory) {
+                  stats.memory = Math.round(performance.memory.usedJSHeapSize / 1048576);
+                }
 
-          const fpsColor = stats.fps >= 55 ? '#0f0' : stats.fps >= 30 ? '#ff0' : '#f00';
-          overlayEl.innerHTML = `
+                const fpsColor = stats.fps >= 55 ? '#0f0' : stats.fps >= 30 ? '#ff0' : '#f00';
+                overlayEl.innerHTML = `
                 <div style="color: ${fpsColor}; font-weight: bold;">FPS: ${stats.fps}</div>
                 <div>Frame: ${stats.frameTime}ms</div>
                 ${stats.memory ? `<div>Memory: ${stats.memory}MB</div>` : ''}
@@ -3095,1073 +4558,1207 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
                 </div>
               `;
 
-          // Log stats every 10 seconds
-          if (time - lastLogTime > 10000) {
-            lastLogTime = time;
-            console.log('[DevOverlay] Stats:', {
-              fps: stats.fps,
-              frameTime: stats.frameTime + 'ms',
-              memory: stats.memory ? stats.memory + 'MB' : 'N/A',
-              renderer: {
-                drawCalls: stats.drawCalls,
-                triangles: stats.triangles,
-                geometries: stats.geometries,
-                textures: stats.textures,
-              },
-            });
-          }
-        }
-
-        function isVisible() {
-          return visible;
-        }
-
-        return { toggle, update, isVisible };
-      })();
-
-      function toWorld(inches) {
-        return Number(inches) * INCH_TO_WORLD;
-      }
-
-      function toInches(worldUnits) {
-        return Number(worldUnits) * WORLD_TO_INCH;
-      }
-
-      function vecInchesToWorld(pos) {
-        return new THREE.Vector3(toWorld(pos.x), toWorld(pos.y), toWorld(pos.z));
-      }
-
-      function vecWorldToInches(vec) {
-        return { x: toInches(vec.x), y: toInches(vec.y), z: toInches(vec.z) };
-      }
-
-      function initScene(viewportEl) {
-        if (renderer) return;
-        containerEl = viewportEl;
-        containerEl.innerHTML = '';
-
-        scene = new THREE.Scene();
-        refreshTheme();
-
-        const { width, height } = getContainerSize();
-        camera = new THREE.PerspectiveCamera(50, width / height, 0.01, 5000);
-        camera.position.set(22, 16, 22);
-
-        renderer = new THREE.WebGLRenderer({
-          antialias: true,
-          alpha: false,
-          powerPreference: 'high-performance',
-        });
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-        renderer.setSize(width, height);
-        viewSize = { width, height };
-        renderer.shadowMap.enabled = true;
-        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-        containerEl.appendChild(renderer.domElement);
-
-        controls = new THREE.OrbitControls(camera, renderer.domElement);
-        controls.enableDamping = true;
-        controls.dampingFactor = 0.06;
-        controls.minDistance = 6;
-        controls.maxDistance = 220;
-        controls.maxPolarAngle = Math.PI / 2 - 0.02;
-        controls.target.set(14, 2, 0);
-
-        addLighting();
-        addEnvironment();
-        addAxisWidget();
-
-        // Default truck size (53ft trailer)
-        setTruck({ length: 636, width: 102, height: 98 });
-
-        requestAnimationFrame(tick);
-      }
-
-      function getContainerSize() {
-        const rect = containerEl.getBoundingClientRect();
-        const width = Math.max(10, Math.floor(rect.width));
-        const height = Math.max(10, Math.floor(rect.height));
-        return { width, height };
-      }
-
-      function addLighting() {
-        const ambient = new THREE.AmbientLight(0xffffff, 0.62);
-        scene.add(ambient);
-
-        const dir = new THREE.DirectionalLight(0xffffff, 0.9);
-        dir.position.set(30, 60, 25);
-        dir.castShadow = true;
-        dir.shadow.mapSize.width = 1024;
-        dir.shadow.mapSize.height = 1024;
-        dir.shadow.camera.left = -80;
-        dir.shadow.camera.right = 80;
-        dir.shadow.camera.top = 80;
-        dir.shadow.camera.bottom = -80;
-        scene.add(dir);
-
-        const hemi = new THREE.HemisphereLight(0x87ceeb, 0x2d2d2d, 0.25);
-        scene.add(hemi);
-      }
-
-      function addEnvironment() {
-        const groundGeo = new THREE.PlaneGeometry(260, 260);
-        const groundMat = new THREE.ShadowMaterial({ opacity: 0.18 });
-        ground = new THREE.Mesh(groundGeo, groundMat);
-        ground.rotation.x = -Math.PI / 2;
-        ground.receiveShadow = true;
-        scene.add(ground);
-
-        grid = new THREE.GridHelper(220, 110);
-        grid.name = 'grid';
-        scene.add(grid);
-        refreshTheme();
-      }
-
-      function addAxisWidget() {
-        axisScene = new THREE.Scene();
-        axisCamera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
-        axisHelper = new THREE.AxesHelper(3.2);
-        axisScene.add(axisHelper);
-      }
-
-      function tick(time) {
-        requestAnimationFrame(tick);
-        if (StateStore.get('currentScreen') !== 'editor') return;
-        if (controls) controls.update();
-        if (window.TWEEN) window.TWEEN.update(time);
-        updatePerf(time);
-        render();
-        if (DevOverlay.isVisible() && renderer) {
-          DevOverlay.update(time, renderer.info);
-        }
-      }
-
-      function updatePerf(time) {
-        if (!perf.lastTime) {
-          perf.lastTime = time;
-          return;
-        }
-        const dt = Math.max(1, time - perf.lastTime);
-        perf.lastTime = time;
-        const fps = 1000 / dt;
-        perf.fps = perf.fps * 0.9 + fps * 0.1;
-        if (perf.fps < 30) perf.lowMs += dt;
-        else perf.lowMs = 0;
-
-        if (!perf.perfMode && perf.lowMs > 5000) {
-          perf.perfMode = true;
-          renderer.shadowMap.enabled = false;
-          UIComponents.showToast('Performance mode enabled (shadows disabled)', 'warning', {
-            title: 'Performance',
-            actions: [
-              {
-                label: 'Restore',
-                onClick: () => {
-                  perf.perfMode = false;
-                  perf.lowMs = 0;
-                  renderer.shadowMap.enabled = true;
-                },
-              },
-            ],
-          });
-        }
-      }
-
-      function render() {
-        if (!renderer || !scene || !camera) return;
-        const width = viewSize.width;
-        const height = viewSize.height;
-        renderer.setViewport(0, 0, width, height);
-        renderer.setScissorTest(false);
-        renderer.render(scene, camera);
-
-        // Axis widget render (top-right)
-        renderer.clearDepth();
-        const size = Math.max(90, Math.floor(Math.min(width, height) * 0.2));
-        const pad = 12;
-        renderer.setScissorTest(true);
-        renderer.setViewport(width - size - pad, pad, size, size);
-        renderer.setScissor(width - size - pad, pad, size, size);
-        axisCamera.position.copy(camera.position).sub(controls.target).setLength(8);
-        axisCamera.lookAt(axisScene.position);
-        renderer.render(axisScene, axisCamera);
-        renderer.setScissorTest(false);
-      }
-
-      function resize() {
-        if (!renderer || !camera || !containerEl) return;
-        const { width, height } = getContainerSize();
-        if (width === viewSize.width && height === viewSize.height) return;
-        viewSize = { width, height };
-        camera.aspect = width / height;
-        camera.updateProjectionMatrix();
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-        renderer.setSize(width, height);
-      }
-
-      function refreshTheme() {
-        if (!scene) return;
-        const bgHex = Utils.getCssVar('--bg-primary');
-        scene.background = new THREE.Color(Utils.cssHexToInt(bgHex));
-        if (grid && grid.material) {
-          const gridMat = grid.material;
-          const mainColor = new THREE.Color(Utils.cssHexToInt(Utils.getCssVar('--accent-primary')));
-          const subColor = new THREE.Color(Utils.cssHexToInt(Utils.getCssVar('--border-strong')));
-          if (Array.isArray(gridMat)) {
-            if (gridMat[0]) gridMat[0].color = mainColor;
-            if (gridMat[1]) gridMat[1].color = subColor;
-          } else {
-            gridMat.color = subColor;
-          }
-        }
-      }
-
-      function setTruck(truckInches) {
-        if (!scene) return;
-        const sig = `${truckInches.length}x${truckInches.width}x${truckInches.height}`;
-        const lengthW = toWorld(truckInches.length);
-        const widthW = toWorld(truckInches.width);
-        const heightW = toWorld(truckInches.height);
-
-        if (truck && truckSignature === sig) {
-          truckBoundsWorld = new THREE.Box3(
-            new THREE.Vector3(0, 0, -widthW / 2),
-            new THREE.Vector3(lengthW, heightW, widthW / 2)
-          );
-          controls.target.set(lengthW / 2, Math.min(6, heightW / 2), 0);
-          return;
-        }
-        truckSignature = sig;
-
-        if (truck) {
-          scene.remove(truck);
-          truck.traverse(obj => {
-            if (obj.geometry) obj.geometry.dispose();
-            if (obj.material) obj.material.dispose();
-          });
-          truck = null;
-        }
-
-        truck = new THREE.Group();
-        truck.name = 'truck';
-
-        const geo = new THREE.BoxGeometry(lengthW, heightW, widthW);
-        const mat = new THREE.MeshStandardMaterial({
-          color: new THREE.Color(Utils.cssHexToInt(Utils.getCssVar('--accent-primary'))),
-          transparent: true,
-          opacity: 0.09,
-          side: THREE.DoubleSide,
-        });
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.position.set(lengthW / 2, heightW / 2, 0);
-        mesh.receiveShadow = false;
-        truck.add(mesh);
-
-        const edges = new THREE.EdgesGeometry(geo);
-        const lineMat = new THREE.LineBasicMaterial({
-          color: new THREE.Color(Utils.cssHexToInt(Utils.getCssVar('--accent-primary'))),
-        });
-        const wire = new THREE.LineSegments(edges, lineMat);
-        wire.position.copy(mesh.position);
-        truck.add(wire);
-
-        scene.add(truck);
-
-        truckBoundsWorld = new THREE.Box3(
-          new THREE.Vector3(0, 0, -widthW / 2),
-          new THREE.Vector3(lengthW, heightW, widthW / 2)
-        );
-
-        // Move camera target near the center of the truck
-        controls.target.set(lengthW / 2, Math.min(6, heightW / 2), 0);
-      }
-
-      function focusOnWorldPoint(targetWorld, options = {}) {
-        if (!controls || !camera) return;
-        const duration = Number(options.duration) || 700;
-        const nextTarget = targetWorld.clone();
-        const dir = camera.position.clone().sub(controls.target);
-        const nextPos = nextTarget.clone().add(dir);
-        new TWEEN.Tween(controls.target)
-          .to({ x: nextTarget.x, y: nextTarget.y, z: nextTarget.z }, duration)
-          .easing(TWEEN.Easing.Cubic.InOut)
-          .start();
-        new TWEEN.Tween(camera.position)
-          .to({ x: nextPos.x, y: nextPos.y, z: nextPos.z }, duration)
-          .easing(TWEEN.Easing.Cubic.InOut)
-          .start();
-      }
-
-      function getTruckBoundsWorld() {
-        return truckBoundsWorld;
-      }
-
-      function toggleGrid() {
-        if (!grid) return false;
-        grid.visible = !grid.visible;
-        return grid.visible;
-      }
-
-      function toggleShadows() {
-        if (!renderer) return false;
-        renderer.shadowMap.enabled = !renderer.shadowMap.enabled;
-        return renderer.shadowMap.enabled;
-      }
-
-      return {
-        init: initScene,
-        resize,
-        refreshTheme,
-        setTruck,
-        focusOnWorldPoint,
-        toggleGrid,
-        toggleShadows,
-        toggleDevOverlay: () => DevOverlay.toggle(),
-        getScene: () => scene,
-        getCamera: () => camera,
-        getRenderer: () => renderer,
-        getControls: () => controls,
-        getTruckBoundsWorld,
-        toWorld,
-        toInches,
-        vecInchesToWorld,
-        vecWorldToInches,
-        getPerf: () => ({ ...perf }),
-      };
-    })();
-
-    const CaseScene = (() => {
-      const instances = new Map(); // instanceId -> THREE.Group
-      let hoveredId = null;
-      let draggedId = null;
-      let selectedIds = new Set();
-
-      function clear() {
-        const scene = SceneManager.getScene();
-        if (!scene) return;
-        instances.forEach(group => disposeGroup(scene, group));
-        instances.clear();
-        hoveredId = null;
-        draggedId = null;
-        selectedIds = new Set();
-      }
-
-      function sync(pack) {
-        const scene = SceneManager.getScene();
-        if (!scene) return;
-        if (!pack) {
-          clear();
-          return;
-        }
-
-        const keep = new Set();
-        (pack.cases || []).forEach(inst => {
-          keep.add(inst.id);
-          const caseData = CaseLibrary.getById(inst.caseId);
-          if (!caseData) return;
-
-          const signature = buildSignature(inst, caseData);
-          const existing = instances.get(inst.id);
-          if (!existing || existing.userData.signature !== signature) {
-            if (existing) disposeGroup(scene, existing);
-            const group = createInstanceGroup(inst, caseData);
-            instances.set(inst.id, group);
-            scene.add(group);
-          }
-
-          const group = instances.get(inst.id);
-          applyTransform(group, inst);
-          applyHidden(group, inst.hidden);
-        });
-
-        // Remove old
-        Array.from(instances.keys()).forEach(id => {
-          if (keep.has(id)) return;
-          disposeGroup(scene, instances.get(id));
-          instances.delete(id);
-        });
-
-        applySelection(Array.from(selectedIds));
-        applyHover(hoveredId);
-        applyDragging(draggedId);
-      }
-
-      function buildSignature(inst, caseData) {
-        const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
-        const color = String(caseData.color || CategoryService.meta(caseData.category).color || '#ff9f1c');
-        return `${caseData.id}:${d.length}x${d.width}x${d.height}:${color}`;
-      }
-
-      function createInstanceGroup(inst, caseData) {
-        const group = new THREE.Group();
-        group.userData.instanceId = inst.id;
-        group.userData.caseId = inst.caseId;
-        group.userData.signature = buildSignature(inst, caseData);
-
-        const dims = caseData.dimensions || { length: 1, width: 1, height: 1 };
-        const lengthW = SceneManager.toWorld(dims.length);
-        const widthW = SceneManager.toWorld(dims.width);
-        const heightW = SceneManager.toWorld(dims.height);
-        group.userData.halfWorld = { x: lengthW / 2, y: heightW / 2, z: widthW / 2 };
-
-        const baseColor = String(caseData.color || CategoryService.meta(caseData.category).color || '#ff9f1c');
-        group.userData.baseColor = baseColor;
-
-        const geo = new THREE.BoxGeometry(lengthW, heightW, widthW);
-        const mat = new THREE.MeshStandardMaterial({
-          color: new THREE.Color(baseColor),
-          roughness: 0.65,
-          metalness: 0.12,
-          emissive: new THREE.Color(0x000000),
-        });
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        mesh.userData.instanceId = inst.id;
-        group.userData.mesh = mesh;
-        group.add(mesh);
-
-        const edges = new THREE.EdgesGeometry(geo);
-        const edgeColor = new THREE.Color(baseColor);
-        edgeColor.multiplyScalar(0.68);
-        const lineMat = new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: 0.95 });
-        const lines = new THREE.LineSegments(edges, lineMat);
-        group.userData.lines = lines;
-        group.add(lines);
-
-        return group;
-      }
-
-      function disposeGroup(scene, group) {
-        if (!group) return;
-        scene.remove(group);
-        group.traverse(obj => {
-          if (obj.geometry) obj.geometry.dispose();
-          if (obj.material) obj.material.dispose();
-        });
-      }
-
-      function applyTransform(group, inst) {
-        if (!group || !inst || !inst.transform) return;
-        const pos = inst.transform.position || { x: 0, y: 0, z: 0 };
-        const rot = inst.transform.rotation || { x: 0, y: 0, z: 0 };
-        group.position.copy(SceneManager.vecInchesToWorld(pos));
-        group.rotation.set(Number(rot.x) || 0, Number(rot.y) || 0, Number(rot.z) || 0);
-      }
-
-      function applyHidden(group, hidden) {
-        if (!group || !group.userData.mesh) return;
-        const prefs = PreferencesManager.get();
-        const mesh = group.userData.mesh;
-        const lines = group.userData.lines;
-        if (hidden) {
-          mesh.material.transparent = true;
-          mesh.material.opacity = Utils.clamp(Number(prefs.hiddenCaseOpacity) || 0.3, 0, 1);
-          mesh.material.depthWrite = false;
-          if (lines && lines.material) {
-            lines.material.transparent = true;
-            lines.material.opacity = Math.max(0.25, mesh.material.opacity);
-          }
-        } else {
-          mesh.material.transparent = false;
-          mesh.material.opacity = 1;
-          mesh.material.depthWrite = true;
-          if (lines && lines.material) {
-            lines.material.transparent = true;
-            lines.material.opacity = 0.95;
-          }
-        }
-      }
-
-      function applySelection(ids) {
-        selectedIds = new Set(ids || []);
-        instances.forEach(group => {
-          const mesh = group.userData.mesh;
-          if (!mesh || !mesh.material) return;
-          const isSelected = selectedIds.has(group.userData.instanceId);
-          mesh.material.emissive.setHex(isSelected ? Utils.cssHexToInt(Utils.getCssVar('--accent-primary')) : 0x000000);
-        });
-      }
-
-      function applyHover(instanceId) {
-        hoveredId = instanceId || null;
-        instances.forEach(group => {
-          const mesh = group.userData.mesh;
-          if (!mesh || !mesh.material) return;
-          if (
-            group.userData.instanceId === hoveredId &&
-            !selectedIds.has(hoveredId) &&
-            group.userData.instanceId !== draggedId
-          ) {
-            mesh.material.emissive.setHex(0x333333);
-          } else if (!selectedIds.has(group.userData.instanceId) && group.userData.instanceId !== draggedId) {
-            mesh.material.emissive.setHex(0x000000);
-          }
-        });
-      }
-
-      function applyDragging(instanceId) {
-        draggedId = instanceId || null;
-        instances.forEach(group => {
-          const mesh = group.userData.mesh;
-          if (!mesh || !mesh.material) return;
-          if (group.userData.instanceId === draggedId) {
-            mesh.material.transparent = true;
-            mesh.material.opacity = 0.72;
-            mesh.material.emissive.setHex(0x111111);
-          }
-        });
-      }
-
-      function setCollision(instanceId, isCollision) {
-        const group = instances.get(instanceId);
-        if (!group || !group.userData.mesh) return;
-        const mesh = group.userData.mesh;
-        if (isCollision) {mesh.material.emissive.setHex(0xff0000);}
-        else if (selectedIds.has(instanceId))
-          {mesh.material.emissive.setHex(Utils.cssHexToInt(Utils.getCssVar('--accent-primary')));}
-        else {mesh.material.emissive.setHex(0x000000);}
-      }
-
-      function setHover(instanceId) {
-        applyHover(instanceId);
-      }
-
-      function setSelected(instanceIds) {
-        applySelection(instanceIds);
-        applyHover(hoveredId);
-      }
-
-      function setDragging(instanceId) {
-        applyDragging(instanceId);
-        applyHover(hoveredId);
-        applySelection(Array.from(selectedIds));
-      }
-
-      function getObject(instanceId) {
-        return instances.get(instanceId) || null;
-      }
-
-      function getRaycastMeshes() {
-        const meshes = [];
-        instances.forEach(group => {
-          if (group.userData.mesh) meshes.push(group.userData.mesh);
-        });
-        return meshes;
-      }
-
-      function getAabbWorld(instanceId, positionOverrideWorld) {
-        const group = instances.get(instanceId);
-        if (!group) return null;
-        const half = group.userData.halfWorld;
-        if (!half) return null;
-        const p = positionOverrideWorld || group.position;
-        return {
-          min: { x: p.x - half.x, y: p.y - half.y, z: p.z - half.z },
-          max: { x: p.x + half.x, y: p.y + half.y, z: p.z + half.z },
-        };
-      }
-
-      function aabbIntersects(a, b) {
-        const EPS = 1e-6;
-        return (
-          a.min.x < b.max.x - EPS &&
-          a.max.x > b.min.x + EPS &&
-          a.min.y < b.max.y - EPS &&
-          a.max.y > b.min.y + EPS &&
-          a.min.z < b.max.z - EPS &&
-          a.max.z > b.min.z + EPS
-        );
-      }
-
-      function isInsideTruck(aabb) {
-        const bounds = SceneManager.getTruckBoundsWorld();
-        if (!bounds) return false;
-        return (
-          aabb.min.x >= bounds.min.x &&
-          aabb.max.x <= bounds.max.x &&
-          aabb.min.y >= bounds.min.y &&
-          aabb.max.y <= bounds.max.y &&
-          aabb.min.z >= bounds.min.z &&
-          aabb.max.z <= bounds.max.z
-        );
-      }
-
-      function checkCollision(instanceId, candidateWorldPos) {
-        const aabb = getAabbWorld(instanceId, candidateWorldPos);
-        if (!aabb) return { collides: false, insideTruck: false };
-        const insideTruck = isInsideTruck(aabb);
-        for (const [otherId] of instances.entries()) {
-          if (otherId === instanceId) continue;
-          const otherAabb = getAabbWorld(otherId);
-          if (!otherAabb) continue;
-          if (aabbIntersects(aabb, otherAabb)) return { collides: true, insideTruck };
-        }
-        return { collides: false, insideTruck };
-      }
-
-      return {
-        clear,
-        sync,
-        setHover,
-        setSelected,
-        setDragging,
-        setCollision,
-        getObject,
-        getRaycastMeshes,
-        getAabbWorld,
-        checkCollision,
-        isInsideTruck,
-      };
-    })();
-
-    const InteractionManager = (() => {
-      const raycaster = new THREE.Raycaster();
-      const pointer = new THREE.Vector2();
-      const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-      const dragOffset = new THREE.Vector3();
-      const tmpVec3 = new THREE.Vector3();
-
-      let domEl = null;
-      let hoveredId = null;
-      let pressed = null;
-      let draggingId = null;
-      let dragStartPosWorld = null;
-      let lastRaycastTime = 0;
-      const RAYCAST_THROTTLE = 50; // ms - throttle hover raycasts
-
-      function initInteraction(canvasEl) {
-        domEl = canvasEl;
-        domEl.style.touchAction = 'none';
-        domEl.addEventListener('pointermove', onMove);
-        domEl.addEventListener('pointerdown', onDown);
-        window.addEventListener('pointerup', onUp);
-        domEl.addEventListener('dblclick', onDblClick);
-      }
-
-      function onMove(ev) {
-        if (!isEditorActive()) return;
-        updatePointer(ev);
-
-        if (pressed && !draggingId) {
-          const dx = ev.clientX - pressed.clientX;
-          const dy = ev.clientY - pressed.clientY;
-          if (Math.hypot(dx, dy) > 3) startDrag();
-        }
-
-        if (draggingId) {
-          updateDrag();
-          return;
-        }
-
-        // Throttle hover raycasts to avoid performance hits
-        const now = performance.now();
-        if (now - lastRaycastTime < RAYCAST_THROTTLE) return;
-        lastRaycastTime = now;
-
-        const hit = raycastFirst();
-        const nextHover = hit ? hit.instanceId : null;
-        if (nextHover !== hoveredId) {
-          hoveredId = nextHover;
-          CaseScene.setHover(hoveredId);
-          domEl.style.cursor = hoveredId ? 'grab' : 'default';
-        }
-      }
-
-      function onDown(ev) {
-        if (!isEditorActive()) return;
-        if (ev.button !== 0) return;
-        updatePointer(ev);
-        const hit = raycastFirst();
-
-        if (hit) {
-          const instanceId = hit.instanceId;
-          pressed = {
-            instanceId,
-            pointWorld: hit.pointWorld.clone(),
-            clientX: ev.clientX,
-            clientY: ev.clientY,
-            shift: Boolean(ev.shiftKey),
-          };
-          domEl.setPointerCapture(ev.pointerId);
-          domEl.style.cursor = 'grabbing';
-        } else {
-          pressed = {
-            instanceId: null,
-            clientX: ev.clientX,
-            clientY: ev.clientY,
-            shift: Boolean(ev.shiftKey),
-          };
-        }
-      }
-
-      function onUp() {
-        if (!isEditorActive()) return;
-        if (!pressed && !draggingId) return;
-
-        if (draggingId) {
-          finishDrag();
-          return;
-        }
-
-        // Click selection
-        if (!pressed.instanceId) {
-          if (!pressed.shift) setSelection([]);
-          pressed = null;
-          return;
-        }
-        const current = getSelection();
-        const id = pressed.instanceId;
-        if (pressed.shift) {
-          if (current.includes(id)) setSelection(current.filter(x => x !== id));
-          else setSelection([...current, id]);
-        } else {
-          setSelection([id]);
-        }
-        pressed = null;
-      }
-
-      function onDblClick(ev) {
-        if (!isEditorActive()) return;
-        updatePointer(ev);
-        const hit = raycastFirst();
-        if (!hit) return;
-        SceneManager.focusOnWorldPoint(hit.pointWorld, { duration: 700 });
-      }
-
-      function startDrag() {
-        if (!pressed || !pressed.instanceId) return;
-        draggingId = pressed.instanceId;
-        dragStartPosWorld = CaseScene.getObject(draggingId).position.clone();
-
-        // Ensure selected
-        const current = getSelection();
-        if (!current.includes(draggingId)) {
-          if (pressed.shift) setSelection([...current, draggingId]);
-          else setSelection([draggingId]);
-        }
-
-        const controls = SceneManager.getControls();
-        if (controls) controls.enabled = false;
-
-        dragPlane.set(new THREE.Vector3(0, 1, 0), -dragStartPosWorld.y);
-        dragOffset.copy(CaseScene.getObject(draggingId).position).sub(pressed.pointWorld);
-
-        CaseScene.setDragging(draggingId);
-      }
-
-      function updateDrag() {
-        const camera = SceneManager.getCamera();
-        if (!camera) return;
-        raycaster.setFromCamera(pointer, camera);
-        const intersection = tmpVec3;
-        const ok = raycaster.ray.intersectPlane(dragPlane, intersection);
-        if (!ok) return;
-
-        const next = intersection.clone().add(dragOffset);
-
-        // Snap (X/Z) when enabled
-        const prefs = PreferencesManager.get();
-        if (prefs.snapping && prefs.snapping.enabled) {
-          const gridIn = Math.max(0.25, Number(prefs.snapping.gridSize) || 1);
-          const gridW = SceneManager.toWorld(gridIn);
-          next.x = Math.round(next.x / gridW) * gridW;
-          next.z = Math.round(next.z / gridW) * gridW;
-        }
-
-        const check = CaseScene.checkCollision(draggingId, next);
-        CaseScene.setCollision(draggingId, check.collides);
-
-        const obj = CaseScene.getObject(draggingId);
-        if (obj) obj.position.copy(next);
-      }
-
-      function finishDrag() {
-        const instanceId = draggingId;
-        const obj = CaseScene.getObject(instanceId);
-        if (!obj) {
-          resetDrag();
-          return;
-        }
-
-        const check = CaseScene.checkCollision(instanceId, obj.position);
-        if (check.collides) {
-          new TWEEN.Tween(obj.position)
-            .to({ x: dragStartPosWorld.x, y: dragStartPosWorld.y, z: dragStartPosWorld.z }, 240)
-            .easing(TWEEN.Easing.Cubic.Out)
-            .onComplete(() => {
-              CaseScene.setCollision(instanceId, false);
-              CaseScene.setDragging(null);
-              CaseScene.setHover(hoveredId);
-            })
-            .start();
-          UIComponents.showToast('Cannot place here: collision detected', 'error');
-          resetDrag();
-          return;
-        }
-
-        const packId = StateStore.get('currentPackId');
-        const pack = PackLibrary.getById(packId);
-        if (!pack) {
-          resetDrag();
-          return;
-        }
-        const inst = (pack.cases || []).find(i => i.id === instanceId);
-        if (!inst) {
-          resetDrag();
-          return;
-        }
-
-        const posInches = SceneManager.vecWorldToInches(obj.position);
-        PackLibrary.updateInstance(packId, instanceId, {
-          transform: { ...inst.transform, position: posInches },
-        });
-
-        UIComponents.showToast(
-          check.insideTruck ? 'Case placed' : 'Placed in staging (outside truck)',
-          check.insideTruck ? 'success' : 'info'
-        );
-        resetDrag();
-      }
-
-      function resetDrag() {
-        const controls = SceneManager.getControls();
-        if (controls) controls.enabled = true;
-        draggingId = null;
-        dragStartPosWorld = null;
-        pressed = null;
-        domEl.style.cursor = hoveredId ? 'grab' : 'default';
-        CaseScene.setDragging(null);
-      }
-
-      function updatePointer(ev) {
-        if (!domEl) return;
-        const rect = domEl.getBoundingClientRect();
-        pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
-        pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
-      }
-
-      function raycastFirst() {
-        const camera = SceneManager.getCamera();
-        if (!camera) return null;
-        raycaster.setFromCamera(pointer, camera);
-        const meshes = CaseScene.getRaycastMeshes();
-        const hits = raycaster.intersectObjects(meshes, false);
-        if (!hits.length) return null;
-        const hit = hits[0];
-        const instanceId = hit.object && hit.object.userData ? hit.object.userData.instanceId : null;
-        if (!instanceId) return null;
-        return { instanceId, pointWorld: hit.point.clone() };
-      }
-
-      function isEditorActive() {
-        return StateStore.get('currentScreen') === 'editor';
-      }
-
-      function getSelection() {
-        return StateStore.get('selectedInstanceIds') || [];
-      }
-
-      function setSelection(nextIds) {
-        StateStore.set({ selectedInstanceIds: nextIds }, { skipHistory: true });
-        CaseScene.setSelected(nextIds);
-      }
-
-      function selectAllInPack() {
-        const pack = PackLibrary.getById(StateStore.get('currentPackId'));
-        if (!pack) return;
-        setSelection((pack.cases || []).map(i => i.id));
-        UIComponents.showToast(`Selected ${(pack.cases || []).length} case(s)`, 'info');
-      }
-
-      function deleteSelection() {
-        const ids = getSelection();
-        if (!ids.length) return;
-        const packId = StateStore.get('currentPackId');
-        PackLibrary.removeInstances(packId, ids);
-        setSelection([]);
-        UIComponents.showToast(`Deleted ${ids.length} case(s)`, 'info');
-      }
-
-      return { init: initInteraction, setSelection, selectAllInPack, deleteSelection };
-    })();
-
-    const AutoPackEngine = (() => {
-      let isRunning = false;
-
-      /**
-       * MVP AutoPack: First-Fit Decreasing in 3D (no rotation).
-       * - Sort by volume (largest first)
-       * - Place into the first available space
-       * - Subdivide remaining space into candidate regions
-       */
-      async function pack() {
-        if (isRunning) return;
-        const packId = StateStore.get('currentPackId');
-        const packData = PackLibrary.getById(packId);
-        if (!packData) {
-          UIComponents.showToast('Open a pack first', 'warning');
-          return;
-        }
-        if (!(packData.cases || []).length) {
-          UIComponents.showToast('No cases to pack', 'warning');
-          return;
-        }
-
-        isRunning = true;
-        UIComponents.showToast('AutoPack starting…', 'info', { title: 'AutoPack', duration: 1800 });
-
-        const truck = packData.truck;
-        const packItems = (packData.cases || [])
-          .filter(inst => !inst.hidden)
-          .map(inst => {
-            const c = CaseLibrary.getById(inst.caseId);
-            if (!c) return null;
-            const vol = c.volume || Utils.volumeInCubicInches(c.dimensions);
-            return { inst, caseData: c, volume: vol };
-          })
-          .filter(Boolean)
-          .sort((a, b) => b.volume - a.volume);
-
-        // Step 1: move to staging (visual clarity)
-        const stagingMap = buildStagingMap(packItems, truck);
-        await stage(stagingMap);
-
-        // Step 2: compute packing
-        const spaces = [
-          {
-            x: 0,
-            y: 0,
-            z: -truck.width / 2,
-            length: truck.length,
-            width: truck.width,
-            height: truck.height,
-          },
-        ];
-
-        const placements = new Map(); // instanceId -> position inches
-        const packed = [];
-        const unpacked = [];
-
-        for (const item of packItems) {
-          const dims = item.caseData.dimensions;
-          let placed = false;
-          for (let i = 0; i < spaces.length; i++) {
-            const s = spaces[i];
-            if (dims.length <= s.length && dims.width <= s.width && dims.height <= s.height) {
-              const pos = {
-                x: s.x + dims.length / 2,
-                y: s.y + dims.height / 2,
-                z: s.z + dims.width / 2,
-              };
-              if (!hasPackingCollision(pos, dims, packed)) {
-                placements.set(item.inst.id, pos);
-                packed.push({ position: pos, dimensions: dims });
-                const nextSpaces = subdivideSpace(s, dims);
-                spaces.splice(i, 1, ...nextSpaces);
-                spaces.sort((a, b) => b.length * b.width * b.height - a.length * a.width * a.height);
-                placed = true;
-                break;
+                // Log stats every 10 seconds
+                if (time - lastLogTime > 10000) {
+                  lastLogTime = time;
+                  console.log('[DevOverlay] Stats:', {
+                    fps: stats.fps,
+                    frameTime: stats.frameTime + 'ms',
+                    memory: stats.memory ? stats.memory + 'MB' : 'N/A',
+                    renderer: {
+                      drawCalls: stats.drawCalls,
+                      triangles: stats.triangles,
+                      geometries: stats.geometries,
+                      textures: stats.textures,
+                    },
+                  });
+                }
+              }
+
+              function isVisible() {
+                return visible;
+              }
+
+              return { toggle, update, isVisible };
+            })();
+
+            function toWorld(inches) {
+              return Number(inches) * INCH_TO_WORLD;
+            }
+
+            function toInches(worldUnits) {
+              return Number(worldUnits) * WORLD_TO_INCH;
+            }
+
+            function vecInchesToWorld(pos) {
+              return new THREE.Vector3(toWorld(pos.x), toWorld(pos.y), toWorld(pos.z));
+            }
+
+            function vecWorldToInches(vec) {
+              return { x: toInches(vec.x), y: toInches(vec.y), z: toInches(vec.z) };
+            }
+
+            function initScene(viewportEl) {
+              if (renderer) return;
+              containerEl = viewportEl;
+              containerEl.innerHTML = '';
+
+              scene = new THREE.Scene();
+              refreshTheme();
+
+              const { width, height } = getContainerSize();
+              camera = new THREE.PerspectiveCamera(50, width / height, 0.01, 5000);
+              camera.position.set(22, 16, 22);
+
+              renderer = new THREE.WebGLRenderer({
+                antialias: true,
+                alpha: false,
+                powerPreference: 'high-performance',
+              });
+              renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+              renderer.setSize(width, height);
+              viewSize = { width, height };
+              renderer.shadowMap.enabled = true;
+              renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+              containerEl.appendChild(renderer.domElement);
+
+              controls = new THREE.OrbitControls(camera, renderer.domElement);
+              controls.enableDamping = true;
+              controls.dampingFactor = 0.06;
+              controls.minDistance = 6;
+              controls.maxDistance = 220;
+              controls.maxPolarAngle = Math.PI / 2 - 0.02;
+              controls.target.set(14, 2, 0);
+
+              addLighting();
+              addEnvironment();
+              addAxisWidget();
+
+              // Default truck size (53ft trailer)
+              setTruck({ length: 636, width: 102, height: 98 });
+
+              requestAnimationFrame(tick);
+            }
+
+            function getContainerSize() {
+              const rect = containerEl.getBoundingClientRect();
+              const width = Math.max(10, Math.floor(rect.width));
+              const height = Math.max(10, Math.floor(rect.height));
+              return { width, height };
+            }
+
+            function addLighting() {
+              const ambient = new THREE.AmbientLight(0xffffff, 0.62);
+              scene.add(ambient);
+
+              const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+              dir.position.set(30, 60, 25);
+              dir.castShadow = true;
+              dir.shadow.mapSize.width = 1024;
+              dir.shadow.mapSize.height = 1024;
+              dir.shadow.camera.left = -80;
+              dir.shadow.camera.right = 80;
+              dir.shadow.camera.top = 80;
+              dir.shadow.camera.bottom = -80;
+              scene.add(dir);
+
+              const hemi = new THREE.HemisphereLight(0x87ceeb, 0x2d2d2d, 0.25);
+              scene.add(hemi);
+            }
+
+            function addEnvironment() {
+              const groundGeo = new THREE.PlaneGeometry(260, 260);
+              const groundMat = new THREE.ShadowMaterial({ opacity: 0.18 });
+              ground = new THREE.Mesh(groundGeo, groundMat);
+              ground.rotation.x = -Math.PI / 2;
+              ground.receiveShadow = true;
+              scene.add(ground);
+
+              grid = new THREE.GridHelper(220, 110);
+              grid.name = 'grid';
+              scene.add(grid);
+              refreshTheme();
+            }
+
+            function addAxisWidget() {
+              axisScene = new THREE.Scene();
+              axisCamera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
+              axisHelper = new THREE.AxesHelper(3.2);
+              axisScene.add(axisHelper);
+            }
+
+            function tick(time) {
+              requestAnimationFrame(tick);
+              if (StateStore.get('currentScreen') !== 'editor') return;
+              if (controls) controls.update();
+              if (window.TWEEN) window.TWEEN.update(time);
+              updatePerf(time);
+              render();
+              if (DevOverlay.isVisible() && renderer) {
+                DevOverlay.update(time, renderer.info);
               }
             }
-          }
-          if (!placed) unpacked.push(item.inst.id);
-        }
 
-        // Step 3: animate to placements
-        await animatePlacements(placements);
+            function updatePerf(time) {
+              if (!perf.lastTime) {
+                perf.lastTime = time;
+                return;
+              }
+              const dt = Math.max(1, time - perf.lastTime);
+              perf.lastTime = time;
+              const fps = 1000 / dt;
+              perf.fps = perf.fps * 0.9 + fps * 0.1;
+              if (perf.fps < 30) perf.lowMs += dt;
+              else perf.lowMs = 0;
 
-        // Step 4: persist to state (single update)
-        const nextCases = (packData.cases || []).map(inst => {
-          if (inst.hidden) return inst;
-          const p = placements.get(inst.id) || stagingMap.get(inst.id);
-          if (!p) return inst;
-          return { ...inst, transform: { ...inst.transform, position: p }, hidden: false };
-        });
-        PackLibrary.update(packId, { cases: nextCases });
+              if (!perf.perfMode && perf.lowMs > 5000) {
+                perf.perfMode = true;
+                renderer.shadowMap.enabled = false;
+                UIComponents.showToast('Performance mode enabled (shadows disabled)', 'warning', {
+                  title: 'Performance',
+                  actions: [
+                    {
+                      label: 'Restore',
+                      onClick: () => {
+                        perf.perfMode = false;
+                        perf.lowMs = 0;
+                        renderer.shadowMap.enabled = true;
+                      },
+                    },
+                  ],
+                });
+              }
+            }
 
-        const stats = PackLibrary.computeStats(PackLibrary.getById(packId));
-        const totalPackable = (packData.cases || []).filter(i => !i.hidden).length;
-        UIComponents.showToast(
-          `Packed ${stats.packedCases} of ${totalPackable} (${stats.volumePercent.toFixed(1)}%)`,
-          stats.packedCases === totalPackable ? 'success' : 'warning',
-          { title: 'AutoPack' }
-        );
-        if (unpacked.length)
-          {UIComponents.showToast(`${unpacked.length} case(s) could not fit`, 'warning', { title: 'AutoPack' });}
+            function render() {
+              if (!renderer || !scene || !camera) return;
+              const width = viewSize.width;
+              const height = viewSize.height;
+              renderer.setViewport(0, 0, width, height);
+              renderer.setScissorTest(false);
+              renderer.render(scene, camera);
 
-        isRunning = false;
-      }
+              // Axis widget render (top-right)
+              renderer.clearDepth();
+              const size = Math.max(90, Math.floor(Math.min(width, height) * 0.2));
+              const pad = 12;
+              renderer.setScissorTest(true);
+              renderer.setViewport(width - size - pad, pad, size, size);
+              renderer.setScissor(width - size - pad, pad, size, size);
+              axisCamera.position.copy(camera.position).sub(controls.target).setLength(8);
+              axisCamera.lookAt(axisScene.position);
+              renderer.render(axisScene, axisCamera);
+              renderer.setScissorTest(false);
+            }
 
-      function buildStagingMap(packItems, truck) {
-        const baseX = -Math.max(60, truck.length * 0.12);
-        const spacing = 28;
-        const map = new Map();
-        packItems.forEach((item, idx) => {
-          const row = Math.floor(idx / 5);
-          const col = idx % 5;
-          const y = Math.max(
-            1,
-            item.caseData.dimensions && item.caseData.dimensions.height ? item.caseData.dimensions.height / 2 : 1
-          );
-          map.set(item.inst.id, { x: baseX - col * spacing, y, z: (row - 2) * spacing });
-        });
-        return map;
-      }
+            function resize() {
+              if (!renderer || !camera || !containerEl) return;
+              const { width, height } = getContainerSize();
+              if (width === viewSize.width && height === viewSize.height) return;
+              viewSize = { width, height };
+              camera.aspect = width / height;
+              camera.updateProjectionMatrix();
+              renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+              renderer.setSize(width, height);
+            }
 
-      async function stage(stagingMap) {
-        const targets = Array.from(stagingMap.entries()).map(([id, pos]) => ({ id, pos }));
-        await Promise.all(targets.map(t => tweenInstanceToPosition(t.id, t.pos, 260)));
-      }
+	            function refreshTheme() {
+	              if (!scene) return;
+	              const bgHex = Utils.getCssVar('--bg-primary');
+	              scene.background = new THREE.Color(Utils.cssHexToInt(bgHex));
+              if (grid && grid.material) {
+                const gridMat = grid.material;
+                const mainColor = new THREE.Color(Utils.cssHexToInt(Utils.getCssVar('--accent-primary')));
+                const subColor = new THREE.Color(Utils.cssHexToInt(Utils.getCssVar('--border-strong')));
+                if (Array.isArray(gridMat)) {
+                  if (gridMat[0]) gridMat[0].color = mainColor;
+                  if (gridMat[1]) gridMat[1].color = subColor;
+                } else {
+                  gridMat.color = subColor;
+                }
+	              }
+	            }
 
-      function hasPackingCollision(position, dims, packed) {
-        const EPS = 1e-6;
-        const box = {
-          min: {
-            x: position.x - dims.length / 2,
-            y: position.y - dims.height / 2,
-            z: position.z - dims.width / 2,
-          },
-          max: {
-            x: position.x + dims.length / 2,
-            y: position.y + dims.height / 2,
-            z: position.z + dims.width / 2,
-          },
-        };
-        for (const p of packed) {
-          const other = {
-            min: {
-              x: p.position.x - p.dimensions.length / 2,
-              y: p.position.y - p.dimensions.height / 2,
-              z: p.position.z - p.dimensions.width / 2,
-            },
-            max: {
-              x: p.position.x + p.dimensions.length / 2,
-              y: p.position.y + p.dimensions.height / 2,
-              z: p.position.z + p.dimensions.width / 2,
-            },
-          };
-          if (
-            box.min.x < other.max.x - EPS &&
-            box.max.x > other.min.x + EPS &&
-            box.min.y < other.max.y - EPS &&
-            box.max.y > other.min.y + EPS &&
-            box.min.z < other.max.z - EPS &&
-            box.max.z > other.min.z + EPS
-          )
-            {return true;}
-        }
-        return false;
-      }
+	            function disposeObject3D(root) {
+	              if (!root) return;
+	              root.traverse(obj => {
+	                if (obj.geometry) obj.geometry.dispose();
+	                if (obj.material) {
+	                  if (Array.isArray(obj.material)) obj.material.forEach(m => m && m.dispose && m.dispose());
+	                  else obj.material.dispose();
+	                }
+	              });
+	            }
 
-      function subdivideSpace(space, dims) {
-        const out = [];
-        const minVol = 10;
+	            function clearTrailerShapeGuides() {
+	              if (!trailerShapeGuides) return;
+	              if (truck) truck.remove(trailerShapeGuides);
+	              disposeObject3D(trailerShapeGuides);
+	              trailerShapeGuides = null;
+	              if (scene && scene.userData) scene.userData.shapeGuides = null;
+	            }
 
-        // Right (X+)
-        const rightLen = space.length - dims.length;
-        if (rightLen > 0)
-          {out.push({
+	            function buildGuideSig(mode, zonesInches) {
+	              const parts = (zonesInches || [])
+	                .map(z => `${z.min.x},${z.min.y},${z.min.z},${z.max.x},${z.max.y},${z.max.z}`)
+	                .join('|');
+	              return `${mode || 'rect'}:${parts}`;
+	            }
+
+	            function addGuideBox(group, aabbInches, options = {}) {
+	              const min = {
+	                x: toWorld(aabbInches.min.x),
+	                y: toWorld(aabbInches.min.y),
+	                z: toWorld(aabbInches.min.z),
+	              };
+	              const max = {
+	                x: toWorld(aabbInches.max.x),
+	                y: toWorld(aabbInches.max.y),
+	                z: toWorld(aabbInches.max.z),
+	              };
+	              const sx = max.x - min.x;
+	              const sy = max.y - min.y;
+	              const sz = max.z - min.z;
+	              if (sx <= 1e-9 || sy <= 1e-9 || sz <= 1e-9) return;
+
+	              const cx = (min.x + max.x) / 2;
+	              const cy = (min.y + max.y) / 2;
+	              const cz = (min.z + max.z) / 2;
+
+	              const geo = new THREE.BoxGeometry(sx, sy, sz);
+	              const fillMat = new THREE.MeshBasicMaterial({
+	                color: new THREE.Color(options.fillColor || 0xff3b30),
+	                transparent: true,
+	                opacity: Number.isFinite(options.opacity) ? options.opacity : 0.22,
+	                depthWrite: false,
+	              });
+	              const mesh = new THREE.Mesh(geo, fillMat);
+	              mesh.position.set(cx, cy, cz);
+	              group.add(mesh);
+
+	              const edgeGeo = new THREE.EdgesGeometry(geo);
+	              const lineMat = new THREE.LineBasicMaterial({
+	                color: new THREE.Color(options.lineColor || options.fillColor || 0xff3b30),
+	                transparent: true,
+	                opacity: Number.isFinite(options.lineOpacity) ? options.lineOpacity : 0.7,
+	              });
+	              const wire = new THREE.LineSegments(edgeGeo, lineMat);
+	              wire.position.copy(mesh.position);
+	              group.add(wire);
+	            }
+
+	            function updateTrailerShapeGuides(truckInches) {
+	              if (!scene) return;
+	              const mode = truckInches && truckInches.shapeMode ? truckInches.shapeMode : 'rect';
+
+	              let guideZones = [];
+	              if (mode === 'wheelWells') {
+	                guideZones = TrailerGeometry.getWheelWellsBlockedZones(truckInches);
+	              } else if (mode === 'frontBonus') {
+	                const bonus = TrailerGeometry.getFrontBonusZone(truckInches);
+	                guideZones = bonus ? [bonus] : [];
+	              }
+
+	              const nextSig = buildGuideSig(mode, guideZones);
+	              if (!guideZones.length) {
+	                trailerShapeGuidesSig = nextSig;
+	                clearTrailerShapeGuides();
+	                return;
+	              }
+	              if (nextSig === trailerShapeGuidesSig && trailerShapeGuides) return;
+
+	              clearTrailerShapeGuides();
+	              trailerShapeGuidesSig = nextSig;
+
+	              if (!truck || !guideZones.length) return;
+	              const group = new THREE.Group();
+	              group.name = 'truckShapeGuides';
+
+	              if (mode === 'wheelWells') {
+	                guideZones.forEach(z => {
+	                  addGuideBox(group, z, { fillColor: 0xff3b30, lineColor: 0xff3b30, opacity: 0.18, lineOpacity: 0.6 });
+	                });
+	              } else if (mode === 'frontBonus') {
+	                guideZones.forEach(z => {
+	                  addGuideBox(group, z, { fillColor: 0x4a9eff, lineColor: 0x4a9eff, opacity: 0.14, lineOpacity: 0.55 });
+	                });
+	              }
+
+	              if (!group.children.length) return;
+	              truck.add(group);
+	              trailerShapeGuides = group;
+	              if (scene.userData) scene.userData.shapeGuides = group;
+	            }
+
+	            function setTruck(truckInches) {
+	              if (!scene) return;
+	              const sig = `${truckInches.length}x${truckInches.width}x${truckInches.height}`;
+	              const lengthW = toWorld(truckInches.length);
+	              const widthW = toWorld(truckInches.width);
+	              const heightW = toWorld(truckInches.height);
+
+	              if (truck && truckSignature === sig) {
+	                truckBoundsWorld = new THREE.Box3(
+	                  new THREE.Vector3(0, 0, -widthW / 2),
+	                  new THREE.Vector3(lengthW, heightW, widthW / 2)
+	                );
+	                controls.target.set(lengthW / 2, Math.min(6, heightW / 2), 0);
+	                updateTrailerShapeGuides(truckInches);
+	                return;
+	              }
+	              truckSignature = sig;
+
+	              if (truck) {
+	                clearTrailerShapeGuides();
+	                scene.remove(truck);
+	                truck.traverse(obj => {
+	                  if (obj.geometry) obj.geometry.dispose();
+	                  if (obj.material) obj.material.dispose();
+                });
+                truck = null;
+              }
+
+              truck = new THREE.Group();
+              truck.name = 'truck';
+
+              const geo = new THREE.BoxGeometry(lengthW, heightW, widthW);
+              const mat = new THREE.MeshStandardMaterial({
+                color: new THREE.Color(Utils.cssHexToInt(Utils.getCssVar('--accent-primary'))),
+                transparent: true,
+                opacity: 0.09,
+                side: THREE.DoubleSide,
+              });
+              const mesh = new THREE.Mesh(geo, mat);
+              mesh.position.set(lengthW / 2, heightW / 2, 0);
+              mesh.receiveShadow = false;
+              truck.add(mesh);
+
+              const edges = new THREE.EdgesGeometry(geo);
+              const lineMat = new THREE.LineBasicMaterial({
+                color: new THREE.Color(Utils.cssHexToInt(Utils.getCssVar('--accent-primary'))),
+              });
+              const wire = new THREE.LineSegments(edges, lineMat);
+              wire.position.copy(mesh.position);
+              truck.add(wire);
+
+              scene.add(truck);
+
+	              truckBoundsWorld = new THREE.Box3(
+	                new THREE.Vector3(0, 0, -widthW / 2),
+	                new THREE.Vector3(lengthW, heightW, widthW / 2)
+	              );
+
+	              // Move camera target near the center of the truck
+	              controls.target.set(lengthW / 2, Math.min(6, heightW / 2), 0);
+	              updateTrailerShapeGuides(truckInches);
+	            }
+
+            function focusOnWorldPoint(targetWorld, options = {}) {
+              if (!controls || !camera) return;
+              const duration = Number(options.duration) || 700;
+              const nextTarget = targetWorld.clone();
+              const dir = camera.position.clone().sub(controls.target);
+              const nextPos = nextTarget.clone().add(dir);
+              new TWEEN.Tween(controls.target)
+                .to({ x: nextTarget.x, y: nextTarget.y, z: nextTarget.z }, duration)
+                .easing(TWEEN.Easing.Cubic.InOut)
+                .start();
+              new TWEEN.Tween(camera.position)
+                .to({ x: nextPos.x, y: nextPos.y, z: nextPos.z }, duration)
+                .easing(TWEEN.Easing.Cubic.InOut)
+                .start();
+            }
+
+            function getTruckBoundsWorld() {
+              return truckBoundsWorld;
+            }
+
+            function toggleGrid() {
+              if (!grid) return false;
+              grid.visible = !grid.visible;
+              return grid.visible;
+            }
+
+            function toggleShadows() {
+              if (!renderer) return false;
+              renderer.shadowMap.enabled = !renderer.shadowMap.enabled;
+              return renderer.shadowMap.enabled;
+            }
+
+	            return {
+	              init: initScene,
+	              resize,
+	              refreshTheme,
+	              setTruck,
+	              updateTrailerShapeGuides,
+	              focusOnWorldPoint,
+	              toggleGrid,
+	              toggleShadows,
+	              toggleDevOverlay: () => DevOverlay.toggle(),
+              getScene: () => scene,
+              getCamera: () => camera,
+              getRenderer: () => renderer,
+              getControls: () => controls,
+              getTruckBoundsWorld,
+              toWorld,
+              toInches,
+              vecInchesToWorld,
+              vecWorldToInches,
+              getPerf: () => ({ ...perf }),
+            };
+          })();
+
+          // ============================================================================
+          // SECTION: 3D SCENE (INSTANCES)
+          // ============================================================================
+          const CaseScene = (() => {
+            const instances = new Map(); // instanceId -> THREE.Group
+            let hoveredId = null;
+            let draggedId = null;
+            let selectedIds = new Set();
+
+            function clear() {
+              const scene = SceneManager.getScene();
+              if (!scene) return;
+              instances.forEach(group => disposeGroup(scene, group));
+              instances.clear();
+              hoveredId = null;
+              draggedId = null;
+              selectedIds = new Set();
+            }
+
+            function sync(pack) {
+              const scene = SceneManager.getScene();
+              if (!scene) return;
+              if (!pack) {
+                clear();
+                return;
+              }
+
+              const keep = new Set();
+              (pack.cases || []).forEach(inst => {
+                keep.add(inst.id);
+                const caseData = CaseLibrary.getById(inst.caseId);
+                if (!caseData) return;
+
+                const signature = buildSignature(inst, caseData);
+                const existing = instances.get(inst.id);
+                if (!existing || existing.userData.signature !== signature) {
+                  if (existing) disposeGroup(scene, existing);
+                  const group = createInstanceGroup(inst, caseData);
+                  instances.set(inst.id, group);
+                  scene.add(group);
+                }
+
+                const group = instances.get(inst.id);
+                applyTransform(group, inst);
+                applyHidden(group, inst.hidden);
+              });
+
+              // Remove old
+              Array.from(instances.keys()).forEach(id => {
+                if (keep.has(id)) return;
+                disposeGroup(scene, instances.get(id));
+                instances.delete(id);
+              });
+
+              applySelection(Array.from(selectedIds));
+              applyHover(hoveredId);
+              applyDragging(draggedId);
+            }
+
+            function buildSignature(inst, caseData) {
+              const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
+              const color = String(caseData.color || CategoryService.meta(caseData.category).color || '#ff9f1c');
+              return `${caseData.id}:${d.length}x${d.width}x${d.height}:${color}`;
+            }
+
+            function createInstanceGroup(inst, caseData) {
+              const group = new THREE.Group();
+              group.userData.instanceId = inst.id;
+              group.userData.caseId = inst.caseId;
+              group.userData.signature = buildSignature(inst, caseData);
+
+              const dims = caseData.dimensions || { length: 1, width: 1, height: 1 };
+              const lengthW = SceneManager.toWorld(dims.length);
+              const widthW = SceneManager.toWorld(dims.width);
+              const heightW = SceneManager.toWorld(dims.height);
+              group.userData.halfWorld = { x: lengthW / 2, y: heightW / 2, z: widthW / 2 };
+
+              const baseColor = String(caseData.color || CategoryService.meta(caseData.category).color || '#ff9f1c');
+              group.userData.baseColor = baseColor;
+
+              const geo = new THREE.BoxGeometry(lengthW, heightW, widthW);
+              const mat = new THREE.MeshStandardMaterial({
+                color: new THREE.Color(baseColor),
+                roughness: 0.65,
+                metalness: 0.12,
+                emissive: new THREE.Color(0x000000),
+              });
+              const mesh = new THREE.Mesh(geo, mat);
+              mesh.castShadow = true;
+              mesh.receiveShadow = true;
+              mesh.userData.instanceId = inst.id;
+              group.userData.mesh = mesh;
+              group.add(mesh);
+
+              const edges = new THREE.EdgesGeometry(geo);
+              const edgeColor = new THREE.Color(baseColor);
+              edgeColor.multiplyScalar(0.68);
+              const lineMat = new THREE.LineBasicMaterial({ color: edgeColor, transparent: true, opacity: 0.95 });
+              const lines = new THREE.LineSegments(edges, lineMat);
+              group.userData.lines = lines;
+              group.add(lines);
+
+              return group;
+            }
+
+            function disposeGroup(scene, group) {
+              if (!group) return;
+              scene.remove(group);
+              group.traverse(obj => {
+                if (obj.geometry) obj.geometry.dispose();
+                if (obj.material) obj.material.dispose();
+              });
+            }
+
+            function applyTransform(group, inst) {
+              if (!group || !inst || !inst.transform) return;
+              const pos = inst.transform.position || { x: 0, y: 0, z: 0 };
+              const rot = inst.transform.rotation || { x: 0, y: 0, z: 0 };
+              group.position.copy(SceneManager.vecInchesToWorld(pos));
+              group.rotation.set(Number(rot.x) || 0, Number(rot.y) || 0, Number(rot.z) || 0);
+            }
+
+            function applyHidden(group, hidden) {
+              if (!group || !group.userData.mesh) return;
+              const prefs = PreferencesManager.get();
+              const mesh = group.userData.mesh;
+              const lines = group.userData.lines;
+              if (hidden) {
+                mesh.material.transparent = true;
+                mesh.material.opacity = Utils.clamp(Number(prefs.hiddenCaseOpacity) || 0.3, 0, 1);
+                mesh.material.depthWrite = false;
+                if (lines && lines.material) {
+                  lines.material.transparent = true;
+                  lines.material.opacity = Math.max(0.25, mesh.material.opacity);
+                }
+              } else {
+                mesh.material.transparent = false;
+                mesh.material.opacity = 1;
+                mesh.material.depthWrite = true;
+                if (lines && lines.material) {
+                  lines.material.transparent = true;
+                  lines.material.opacity = 0.95;
+                }
+              }
+            }
+
+            function applySelection(ids) {
+              selectedIds = new Set(ids || []);
+              instances.forEach(group => {
+                const mesh = group.userData.mesh;
+                if (!mesh || !mesh.material) return;
+                const isSelected = selectedIds.has(group.userData.instanceId);
+                mesh.material.emissive.setHex(
+                  isSelected ? Utils.cssHexToInt(Utils.getCssVar('--accent-primary')) : 0x000000
+                );
+              });
+            }
+
+            function applyHover(instanceId) {
+              hoveredId = instanceId || null;
+              instances.forEach(group => {
+                const mesh = group.userData.mesh;
+                if (!mesh || !mesh.material) return;
+                if (
+                  group.userData.instanceId === hoveredId &&
+                  !selectedIds.has(hoveredId) &&
+                  group.userData.instanceId !== draggedId
+                ) {
+                  mesh.material.emissive.setHex(0x333333);
+                } else if (!selectedIds.has(group.userData.instanceId) && group.userData.instanceId !== draggedId) {
+                  mesh.material.emissive.setHex(0x000000);
+                }
+              });
+            }
+
+            function applyDragging(instanceId) {
+              draggedId = instanceId || null;
+              instances.forEach(group => {
+                const mesh = group.userData.mesh;
+                if (!mesh || !mesh.material) return;
+                if (group.userData.instanceId === draggedId) {
+                  mesh.material.transparent = true;
+                  mesh.material.opacity = 0.72;
+                  mesh.material.emissive.setHex(0x111111);
+                }
+              });
+            }
+
+            function setCollision(instanceId, isCollision) {
+              const group = instances.get(instanceId);
+              if (!group || !group.userData.mesh) return;
+              const mesh = group.userData.mesh;
+              if (isCollision) {mesh.material.emissive.setHex(0xff0000);}
+              else if (selectedIds.has(instanceId))
+                {mesh.material.emissive.setHex(Utils.cssHexToInt(Utils.getCssVar('--accent-primary')));}
+              else {mesh.material.emissive.setHex(0x000000);}
+            }
+
+            function setHover(instanceId) {
+              applyHover(instanceId);
+            }
+
+            function setSelected(instanceIds) {
+              applySelection(instanceIds);
+              applyHover(hoveredId);
+            }
+
+            function setDragging(instanceId) {
+              applyDragging(instanceId);
+              applyHover(hoveredId);
+              applySelection(Array.from(selectedIds));
+            }
+
+            function getObject(instanceId) {
+              return instances.get(instanceId) || null;
+            }
+
+            function getRaycastMeshes() {
+              const meshes = [];
+              instances.forEach(group => {
+                if (group.userData.mesh) meshes.push(group.userData.mesh);
+              });
+              return meshes;
+            }
+
+            function getAabbWorld(instanceId, positionOverrideWorld) {
+              const group = instances.get(instanceId);
+              if (!group) return null;
+              const half = group.userData.halfWorld;
+              if (!half) return null;
+              const p = positionOverrideWorld || group.position;
+              return {
+                min: { x: p.x - half.x, y: p.y - half.y, z: p.z - half.z },
+                max: { x: p.x + half.x, y: p.y + half.y, z: p.z + half.z },
+              };
+            }
+
+            function aabbIntersects(a, b) {
+              const EPS = 1e-6;
+              return (
+                a.min.x < b.max.x - EPS &&
+                a.max.x > b.min.x + EPS &&
+                a.min.y < b.max.y - EPS &&
+                a.max.y > b.min.y + EPS &&
+                a.min.z < b.max.z - EPS &&
+                a.max.z > b.min.z + EPS
+              );
+            }
+
+	            function isInsideTruck(aabb) {
+	              const packId = StateStore.get('currentPackId');
+	              const pack = packId ? PackLibrary.getById(packId) : null;
+	              const truck = pack && pack.truck ? pack.truck : null;
+	              if (truck) {
+	                const zonesInches = TrailerGeometry.getTrailerUsableZones(truck);
+	                const zonesWorld = TrailerGeometry.zonesInchesToWorld(zonesInches);
+	                return TrailerGeometry.isAabbContainedInAnyZone(aabb, zonesWorld);
+	              }
+
+	              // Fallback: full rectangular bounds (should only happen before a pack is loaded)
+	              const bounds = SceneManager.getTruckBoundsWorld();
+	              if (!bounds) return false;
+	              return (
+	                aabb.min.x >= bounds.min.x &&
+	                aabb.max.x <= bounds.max.x &&
+	                aabb.min.y >= bounds.min.y &&
+	                aabb.max.y <= bounds.max.y &&
+	                aabb.min.z >= bounds.min.z &&
+	                aabb.max.z <= bounds.max.z
+	              );
+	            }
+
+            function checkCollision(instanceId, candidateWorldPos) {
+              const aabb = getAabbWorld(instanceId, candidateWorldPos);
+              if (!aabb) return { collides: false, insideTruck: false };
+              const insideTruck = isInsideTruck(aabb);
+              for (const [otherId] of instances.entries()) {
+                if (otherId === instanceId) continue;
+                const otherAabb = getAabbWorld(otherId);
+                if (!otherAabb) continue;
+                if (aabbIntersects(aabb, otherAabb)) return { collides: true, insideTruck };
+              }
+              return { collides: false, insideTruck };
+            }
+
+            return {
+              clear,
+              sync,
+              setHover,
+              setSelected,
+              setDragging,
+              setCollision,
+              getObject,
+              getRaycastMeshes,
+              getAabbWorld,
+              checkCollision,
+              isInsideTruck,
+            };
+          })();
+
+          // ============================================================================
+          // SECTION: 3D INTERACTION (SELECT/DRAG)
+          // ============================================================================
+          const InteractionManager = (() => {
+            const raycaster = new THREE.Raycaster();
+            const pointer = new THREE.Vector2();
+            const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+            const dragOffset = new THREE.Vector3();
+            const tmpVec3 = new THREE.Vector3();
+
+            let domEl = null;
+            let hoveredId = null;
+            let pressed = null;
+            let draggingId = null;
+            let dragStartPosWorld = null;
+            let lastRaycastTime = 0;
+            const RAYCAST_THROTTLE = 50; // ms - throttle hover raycasts
+
+            function initInteraction(canvasEl) {
+              domEl = canvasEl;
+              domEl.style.touchAction = 'none';
+              domEl.addEventListener('pointermove', onMove);
+              domEl.addEventListener('pointerdown', onDown);
+              window.addEventListener('pointerup', onUp);
+              domEl.addEventListener('dblclick', onDblClick);
+            }
+
+            function onMove(ev) {
+              if (!isEditorActive()) return;
+              updatePointer(ev);
+
+              if (pressed && !draggingId) {
+                const dx = ev.clientX - pressed.clientX;
+                const dy = ev.clientY - pressed.clientY;
+                if (Math.hypot(dx, dy) > 3) startDrag();
+              }
+
+              if (draggingId) {
+                updateDrag();
+                return;
+              }
+
+              // Throttle hover raycasts to avoid performance hits
+              const now = performance.now();
+              if (now - lastRaycastTime < RAYCAST_THROTTLE) return;
+              lastRaycastTime = now;
+
+              const hit = raycastFirst();
+              const nextHover = hit ? hit.instanceId : null;
+              if (nextHover !== hoveredId) {
+                hoveredId = nextHover;
+                CaseScene.setHover(hoveredId);
+                domEl.style.cursor = hoveredId ? 'grab' : 'default';
+              }
+            }
+
+            function onDown(ev) {
+              if (!isEditorActive()) return;
+              if (ev.button !== 0) return;
+              updatePointer(ev);
+              const hit = raycastFirst();
+
+              if (hit) {
+                const instanceId = hit.instanceId;
+                pressed = {
+                  instanceId,
+                  pointWorld: hit.pointWorld.clone(),
+                  clientX: ev.clientX,
+                  clientY: ev.clientY,
+                  shift: Boolean(ev.shiftKey),
+                };
+                domEl.setPointerCapture(ev.pointerId);
+                domEl.style.cursor = 'grabbing';
+              } else {
+                pressed = {
+                  instanceId: null,
+                  clientX: ev.clientX,
+                  clientY: ev.clientY,
+                  shift: Boolean(ev.shiftKey),
+                };
+              }
+            }
+
+            function onUp() {
+              if (!isEditorActive()) return;
+              if (!pressed && !draggingId) return;
+
+              if (draggingId) {
+                finishDrag();
+                return;
+              }
+
+              // Click selection
+              if (!pressed.instanceId) {
+                if (!pressed.shift) setSelection([]);
+                pressed = null;
+                return;
+              }
+              const current = getSelection();
+              const id = pressed.instanceId;
+              if (pressed.shift) {
+                if (current.includes(id)) setSelection(current.filter(x => x !== id));
+                else setSelection([...current, id]);
+              } else {
+                setSelection([id]);
+              }
+              pressed = null;
+            }
+
+            function onDblClick(ev) {
+              if (!isEditorActive()) return;
+              updatePointer(ev);
+              const hit = raycastFirst();
+              if (!hit) return;
+              SceneManager.focusOnWorldPoint(hit.pointWorld, { duration: 700 });
+            }
+
+            function startDrag() {
+              if (!pressed || !pressed.instanceId) return;
+              draggingId = pressed.instanceId;
+              dragStartPosWorld = CaseScene.getObject(draggingId).position.clone();
+
+              // Ensure selected
+              const current = getSelection();
+              if (!current.includes(draggingId)) {
+                if (pressed.shift) setSelection([...current, draggingId]);
+                else setSelection([draggingId]);
+              }
+
+              const controls = SceneManager.getControls();
+              if (controls) controls.enabled = false;
+
+              dragPlane.set(new THREE.Vector3(0, 1, 0), -dragStartPosWorld.y);
+              dragOffset.copy(CaseScene.getObject(draggingId).position).sub(pressed.pointWorld);
+
+              CaseScene.setDragging(draggingId);
+            }
+
+            function updateDrag() {
+              const camera = SceneManager.getCamera();
+              if (!camera) return;
+              raycaster.setFromCamera(pointer, camera);
+              const intersection = tmpVec3;
+              const ok = raycaster.ray.intersectPlane(dragPlane, intersection);
+              if (!ok) return;
+
+              const next = intersection.clone().add(dragOffset);
+
+              // Snap (X/Z) when enabled
+              const prefs = PreferencesManager.get();
+              if (prefs.snapping && prefs.snapping.enabled) {
+                const gridIn = Math.max(0.25, Number(prefs.snapping.gridSize) || 1);
+                const gridW = SceneManager.toWorld(gridIn);
+                next.x = Math.round(next.x / gridW) * gridW;
+                next.z = Math.round(next.z / gridW) * gridW;
+              }
+
+              const check = CaseScene.checkCollision(draggingId, next);
+              CaseScene.setCollision(draggingId, check.collides);
+
+              const obj = CaseScene.getObject(draggingId);
+              if (obj) obj.position.copy(next);
+            }
+
+            function finishDrag() {
+              const instanceId = draggingId;
+              const obj = CaseScene.getObject(instanceId);
+              if (!obj) {
+                resetDrag();
+                return;
+              }
+
+              const check = CaseScene.checkCollision(instanceId, obj.position);
+              if (check.collides) {
+                new TWEEN.Tween(obj.position)
+                  .to({ x: dragStartPosWorld.x, y: dragStartPosWorld.y, z: dragStartPosWorld.z }, 240)
+                  .easing(TWEEN.Easing.Cubic.Out)
+                  .onComplete(() => {
+                    CaseScene.setCollision(instanceId, false);
+                    CaseScene.setDragging(null);
+                    CaseScene.setHover(hoveredId);
+                  })
+                  .start();
+                UIComponents.showToast('Cannot place here: collision detected', 'error');
+                resetDrag();
+                return;
+              }
+
+              const packId = StateStore.get('currentPackId');
+              const pack = PackLibrary.getById(packId);
+              if (!pack) {
+                resetDrag();
+                return;
+              }
+              const inst = (pack.cases || []).find(i => i.id === instanceId);
+              if (!inst) {
+                resetDrag();
+                return;
+              }
+
+              const posInches = SceneManager.vecWorldToInches(obj.position);
+              PackLibrary.updateInstance(packId, instanceId, {
+                transform: { ...inst.transform, position: posInches },
+              });
+
+              UIComponents.showToast(
+                check.insideTruck ? 'Case placed' : 'Placed in staging (outside truck)',
+                check.insideTruck ? 'success' : 'info'
+              );
+              resetDrag();
+            }
+
+            function resetDrag() {
+              const controls = SceneManager.getControls();
+              if (controls) controls.enabled = true;
+              draggingId = null;
+              dragStartPosWorld = null;
+              pressed = null;
+              domEl.style.cursor = hoveredId ? 'grab' : 'default';
+              CaseScene.setDragging(null);
+            }
+
+            function updatePointer(ev) {
+              if (!domEl) return;
+              const rect = domEl.getBoundingClientRect();
+              pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+              pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+            }
+
+            function raycastFirst() {
+              const camera = SceneManager.getCamera();
+              if (!camera) return null;
+              raycaster.setFromCamera(pointer, camera);
+              const meshes = CaseScene.getRaycastMeshes();
+              const hits = raycaster.intersectObjects(meshes, false);
+              if (!hits.length) return null;
+              const hit = hits[0];
+              const instanceId = hit.object && hit.object.userData ? hit.object.userData.instanceId : null;
+              if (!instanceId) return null;
+              return { instanceId, pointWorld: hit.point.clone() };
+            }
+
+            function isEditorActive() {
+              return StateStore.get('currentScreen') === 'editor';
+            }
+
+            function getSelection() {
+              return StateStore.get('selectedInstanceIds') || [];
+            }
+
+            function setSelection(nextIds) {
+              StateStore.set({ selectedInstanceIds: nextIds }, { skipHistory: true });
+              CaseScene.setSelected(nextIds);
+            }
+
+            function selectAllInPack() {
+              const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+              if (!pack) return;
+              setSelection((pack.cases || []).map(i => i.id));
+              UIComponents.showToast(`Selected ${(pack.cases || []).length} case(s)`, 'info');
+            }
+
+            function deleteSelection() {
+              const ids = getSelection();
+              if (!ids.length) return;
+              const packId = StateStore.get('currentPackId');
+              PackLibrary.removeInstances(packId, ids);
+              setSelection([]);
+              UIComponents.showToast(`Deleted ${ids.length} case(s)`, 'info');
+            }
+
+            return { init: initInteraction, setSelection, selectAllInPack, deleteSelection };
+          })();
+
+          // ============================================================================
+          // SECTION: ENGINE (AUTOPACK)
+          // ============================================================================
+          const AutoPackEngine = (() => {
+            let isRunning = false;
+
+            /**
+             * MVP AutoPack: First-Fit Decreasing in 3D (no rotation).
+             * - Sort by volume (largest first)
+             * - Place into the first available space
+             * - Subdivide remaining space into candidate regions
+             */
+            async function pack() {
+              if (isRunning) return;
+              const packId = StateStore.get('currentPackId');
+              const packData = PackLibrary.getById(packId);
+              if (!packData) {
+                UIComponents.showToast('Open a pack first', 'warning');
+                return;
+              }
+              if (!(packData.cases || []).length) {
+                UIComponents.showToast('No cases to pack', 'warning');
+                return;
+              }
+
+              isRunning = true;
+              UIComponents.showToast('AutoPack starting…', 'info', { title: 'AutoPack', duration: 1800 });
+
+              const truck = packData.truck;
+              const packItems = (packData.cases || [])
+                .filter(inst => !inst.hidden)
+                .map(inst => {
+                  const c = CaseLibrary.getById(inst.caseId);
+                  if (!c) return null;
+                  const vol = c.volume || Utils.volumeInCubicInches(c.dimensions);
+                  return { inst, caseData: c, volume: vol };
+                })
+                .filter(Boolean)
+                .sort((a, b) => b.volume - a.volume);
+
+              // Step 1: move to staging (visual clarity)
+              const stagingMap = buildStagingMap(packItems, truck);
+              await stage(stagingMap);
+
+	              // Step 2: compute packing
+	              const zonesInches = TrailerGeometry.getTrailerUsableZones(truck);
+	              const spaces = TrailerGeometry.zonesToSpacesInches(zonesInches);
+	              spaces.sort((a, b) => b.length * b.width * b.height - a.length * a.width * a.height);
+
+              const placements = new Map(); // instanceId -> position inches
+              const packed = [];
+              const unpacked = [];
+
+              for (const item of packItems) {
+                const dims = item.caseData.dimensions;
+                let placed = false;
+                for (let i = 0; i < spaces.length; i++) {
+                  const s = spaces[i];
+                  if (dims.length <= s.length && dims.width <= s.width && dims.height <= s.height) {
+                    const pos = {
+                      x: s.x + dims.length / 2,
+                      y: s.y + dims.height / 2,
+                      z: s.z + dims.width / 2,
+                    };
+                    if (!hasPackingCollision(pos, dims, packed)) {
+                      placements.set(item.inst.id, pos);
+                      packed.push({ position: pos, dimensions: dims });
+                      const nextSpaces = subdivideSpace(s, dims);
+                      spaces.splice(i, 1, ...nextSpaces);
+                      spaces.sort((a, b) => b.length * b.width * b.height - a.length * a.width * a.height);
+                      placed = true;
+                      break;
+                    }
+                  }
+                }
+                if (!placed) unpacked.push(item.inst.id);
+              }
+
+              // Step 3: animate to placements
+              await animatePlacements(placements);
+
+              // Step 4: persist to state (single update)
+              const nextCases = (packData.cases || []).map(inst => {
+                if (inst.hidden) return inst;
+                const p = placements.get(inst.id) || stagingMap.get(inst.id);
+                if (!p) return inst;
+                return { ...inst, transform: { ...inst.transform, position: p }, hidden: false };
+              });
+              PackLibrary.update(packId, { cases: nextCases });
+
+              const stats = PackLibrary.computeStats(PackLibrary.getById(packId));
+              const totalPackable = (packData.cases || []).filter(i => !i.hidden).length;
+              UIComponents.showToast(
+                `Packed ${stats.packedCases} of ${totalPackable} (${stats.volumePercent.toFixed(1)}%)`,
+                stats.packedCases === totalPackable ? 'success' : 'warning',
+                { title: 'AutoPack' }
+              );
+              if (unpacked.length)
+                {UIComponents.showToast(`${unpacked.length} case(s) could not fit`, 'warning', { title: 'AutoPack' });}
+
+              isRunning = false;
+
+              // Auto-capture a pack preview thumbnail after AutoPack completes.
+              window.setTimeout(() => {
+                ExportService.capturePackPreview(packId, { source: 'auto' });
+              }, 60);
+            }
+
+            function buildStagingMap(packItems, truck) {
+              const baseX = -Math.max(60, truck.length * 0.12);
+              const spacing = 28;
+              const map = new Map();
+              packItems.forEach((item, idx) => {
+                const row = Math.floor(idx / 5);
+                const col = idx % 5;
+                const y = Math.max(
+                  1,
+                  item.caseData.dimensions && item.caseData.dimensions.height ? item.caseData.dimensions.height / 2 : 1
+                );
+                map.set(item.inst.id, { x: baseX - col * spacing, y, z: (row - 2) * spacing });
+              });
+              return map;
+            }
+
+            async function stage(stagingMap) {
+              const targets = Array.from(stagingMap.entries()).map(([id, pos]) => ({ id, pos }));
+              await Promise.all(targets.map(t => tweenInstanceToPosition(t.id, t.pos, 260)));
+            }
+
+            function hasPackingCollision(position, dims, packed) {
+              const EPS = 1e-6;
+              const box = {
+                min: {
+                  x: position.x - dims.length / 2,
+                  y: position.y - dims.height / 2,
+                  z: position.z - dims.width / 2,
+                },
+                max: {
+                  x: position.x + dims.length / 2,
+                  y: position.y + dims.height / 2,
+                  z: position.z + dims.width / 2,
+                },
+              };
+              for (const p of packed) {
+                const other = {
+                  min: {
+                    x: p.position.x - p.dimensions.length / 2,
+                    y: p.position.y - p.dimensions.height / 2,
+                    z: p.position.z - p.dimensions.width / 2,
+                  },
+                  max: {
+                    x: p.position.x + p.dimensions.length / 2,
+                    y: p.position.y + p.dimensions.height / 2,
+                    z: p.position.z + p.dimensions.width / 2,
+                  },
+                };
+                if (
+                  box.min.x < other.max.x - EPS &&
+                  box.max.x > other.min.x + EPS &&
+                  box.min.y < other.max.y - EPS &&
+                  box.max.y > other.min.y + EPS &&
+                  box.min.z < other.max.z - EPS &&
+                  box.max.z > other.min.z + EPS
+                )
+                  {return true;}
+              }
+              return false;
+            }
+
+            function subdivideSpace(space, dims) {
+              const out = [];
+              const minVol = 10;
+
+              // Right (X+)
+              const rightLen = space.length - dims.length;
+              if (rightLen > 0)
+                {out.push({
             x: space.x + dims.length,
             y: space.y,
             z: space.z,
@@ -4170,10 +5767,10 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
             height: space.height,
           });}
 
-        // Top (Y+)
-        const topH = space.height - dims.height;
-        if (topH > 0)
-          {out.push({
+              // Top (Y+)
+              const topH = space.height - dims.height;
+              if (topH > 0)
+                {out.push({
             x: space.x,
             y: space.y + dims.height,
             z: space.z,
@@ -4182,10 +5779,10 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
             height: topH,
           });}
 
-        // Back (Z+)
-        const backW = space.width - dims.width;
-        if (backW > 0)
-          {out.push({
+              // Back (Z+)
+              const backW = space.width - dims.width;
+              if (backW > 0)
+                {out.push({
             x: space.x,
             y: space.y,
             z: space.z + dims.width,
@@ -4194,793 +5791,915 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
             height: dims.height,
           });}
 
-        return out.filter(s => s.length * s.width * s.height > minVol);
-      }
-
-      async function animatePlacements(placements) {
-        for (const [id, pos] of placements.entries()) {
-          await tweenInstanceToPosition(id, pos, 240);
-          await sleep(35);
-        }
-      }
-
-      function tweenInstanceToPosition(instanceId, positionInches, duration) {
-        const obj = CaseScene.getObject(instanceId);
-        if (!obj) return Promise.resolve();
-        const target = SceneManager.vecInchesToWorld(positionInches);
-        return new Promise(resolve => {
-          new TWEEN.Tween(obj.position)
-            .to({ x: target.x, y: target.y, z: target.z }, duration)
-            .easing(TWEEN.Easing.Cubic.InOut)
-            .onComplete(resolve)
-            .start();
-        });
-      }
-
-      function sleep(ms) {
-        return new Promise(r => setTimeout(r, ms));
-      }
-
-      return {
-        pack,
-        get running() {
-          return isRunning;
-        },
-      };
-    })();
-
-    const ExportService = (() => {
-      function captureScreenshot() {
-        try {
-          const pack = getCurrentPack();
-          if (!pack) {
-            UIComponents.showToast('Open a pack first', 'warning', { title: 'Export' });
-            return;
-          }
-          const prefs = PreferencesManager.get();
-          const res = Utils.parseResolution(prefs.export && prefs.export.screenshotResolution);
-          const dataUrl = renderCameraToDataUrl(SceneManager.getCamera(), res.width, res.height, {
-            mimeType: 'image/png',
-            hideGrid: true,
-          });
-          downloadDataUrl(dataUrl, `truck-pack-${safeName(pack.title)}-${Date.now()}.png`);
-          UIComponents.showToast('Screenshot saved', 'success', { title: 'Export' });
-        } catch (err) {
-          console.error(err);
-          UIComponents.showToast('Screenshot failed: ' + err.message, 'error', { title: 'Export' });
-        }
-      }
-
-      function generatePDF() {
-        try {
-          if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF not available');
-          const pack = getCurrentPack();
-          if (!pack) {
-            UIComponents.showToast('Open a pack first', 'warning', { title: 'Export' });
-            return;
-          }
-
-          const prefs = PreferencesManager.get();
-          const { jsPDF } = window.jspdf;
-          const doc = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'letter' });
-
-          const pageWidth = doc.internal.pageSize.getWidth();
-          const pageHeight = doc.internal.pageSize.getHeight();
-          const margin = 40;
-          let y = margin;
-
-          // Header
-          doc.setFontSize(22);
-          doc.setFont('helvetica', 'bold');
-          doc.text(pack.title || 'Pack', margin, y);
-          y += 22;
-
-          doc.setFontSize(10);
-          doc.setFont('helvetica', 'normal');
-          doc.text(`Generated: ${new Date().toLocaleString()}`, margin, y);
-          y += 16;
-
-          const details = [
-            pack.client ? `Client: ${pack.client}` : null,
-            pack.projectName ? `Project: ${pack.projectName}` : null,
-            pack.drawnBy ? `Drawn by: ${pack.drawnBy}` : null,
-          ].filter(Boolean);
-          details.forEach(line => {
-            doc.text(line, margin, y);
-            y += 14;
-          });
-          if (details.length) y += 8;
-
-          // Notes
-          if (pack.notes) {
-            doc.setFont('helvetica', 'bold');
-            doc.text('NOTES', margin, y);
-            y += 14;
-            doc.setFont('helvetica', 'normal');
-            const lines = doc.splitTextToSize(pack.notes, pageWidth - margin * 2);
-            doc.text(lines, margin, y);
-            y += lines.length * 12 + 10;
-          }
-
-          // Views
-          const viewWPt = pageWidth - margin * 2;
-          const viewWpx = 960;
-          const viewHpx = 540;
-          const perspective = renderCameraToDataUrl(SceneManager.getCamera(), viewWpx, viewHpx, {
-            mimeType: 'image/jpeg',
-            quality: 0.92,
-            hideGrid: true,
-          });
-
-          const { topCam, sideCam } = buildOrthoCameras(pack);
-          const topView = renderCameraToDataUrl(topCam, 960, 520, {
-            mimeType: 'image/jpeg',
-            quality: 0.9,
-            hideGrid: true,
-          });
-          const sideView = renderCameraToDataUrl(sideCam, 960, 420, {
-            mimeType: 'image/jpeg',
-            quality: 0.9,
-            hideGrid: true,
-          });
-
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(12);
-          doc.text('PERSPECTIVE VIEW', margin, y);
-          y += 10;
-          y += 6;
-          const pvH = viewWPt * (viewHpx / viewWpx);
-          doc.addImage(perspective, 'JPEG', margin, y, viewWPt, pvH);
-          y += pvH + 16;
-
-          if (y + 220 > pageHeight - margin) {
-            doc.addPage();
-            y = margin;
-          }
-
-          doc.text('TOP VIEW', margin, y);
-          y += 10;
-          y += 6;
-          const tvH = viewWPt * (520 / 960);
-          doc.addImage(topView, 'JPEG', margin, y, viewWPt, tvH);
-          y += tvH + 16;
-
-          if (y + 200 > pageHeight - margin) {
-            doc.addPage();
-            y = margin;
-          }
-
-          doc.text('SIDE VIEW', margin, y);
-          y += 10;
-          y += 6;
-          const svH = viewWPt * (420 / 960);
-          doc.addImage(sideView, 'JPEG', margin, y, viewWPt, svH);
-
-          // Checklist page
-          doc.addPage();
-          y = margin;
-
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(16);
-          doc.text('CASE CHECKLIST', margin, y);
-          y += 22;
-
-          const entries = buildChecklist(pack);
-
-          doc.setFontSize(9);
-          doc.setFont('helvetica', 'bold');
-          const x0 = margin;
-          const x1 = margin + 24;
-          const x2 = margin + 260;
-          const x3 = margin + 360;
-          const x4 = margin + 470;
-          doc.text('#', x0, y);
-          doc.text('Name', x1, y);
-          doc.text('Category', x2, y);
-          doc.text('Dims', x3, y);
-          doc.text('Weight', x4, y);
-          y += 8;
-          doc.line(margin, y, pageWidth - margin, y);
-          y += 14;
-
-          doc.setFont('helvetica', 'normal');
-          entries.forEach((e, idx) => {
-            if (y > pageHeight - margin) {
-              doc.addPage();
-              y = margin;
-              doc.setFont('helvetica', 'bold');
-              doc.text('#', x0, y);
-              doc.text('Name', x1, y);
-              doc.text('Category', x2, y);
-              doc.text('Dims', x3, y);
-              doc.text('Weight', x4, y);
-              y += 8;
-              doc.line(margin, y, pageWidth - margin, y);
-              y += 14;
-              doc.setFont('helvetica', 'normal');
+              return out.filter(s => s.length * s.width * s.height > minVol);
             }
 
-            const lineHeight = 14;
-            doc.text(String(idx + 1), x0, y);
-            doc.text(e.name, x1, y);
-            doc.text(e.category, x2, y);
-            doc.text(e.dims, x3, y);
-            doc.text(e.weight, x4, y);
-            y += lineHeight;
-          });
-
-          // Summary
-          const includeStats = Boolean(prefs.export && prefs.export.pdfIncludeStats);
-          if (includeStats) {
-            const stats = PackLibrary.computeStats(pack);
-            if (y + 90 > pageHeight - margin) {
-              doc.addPage();
-              y = margin;
-            } else {
-              y += 16;
+            async function animatePlacements(placements) {
+              for (const [id, pos] of placements.entries()) {
+                await tweenInstanceToPosition(id, pos, 240);
+                await sleep(35);
+              }
             }
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(12);
-            doc.text('SUMMARY', margin, y);
-            y += 16;
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(10);
-            doc.text(`Cases loaded: ${stats.totalCases}`, margin, y);
-            y += 14;
-            doc.text(`Packed (in truck): ${stats.packedCases}`, margin, y);
-            y += 14;
-            doc.text(`Volume used: ${stats.volumePercent.toFixed(1)}%`, margin, y);
-            y += 14;
-            doc.text(`Total weight: ${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}`, margin, y);
-            y += 14;
-            doc.text(`Truck (in): ${pack.truck.length}×${pack.truck.width}×${pack.truck.height}`, margin, y);
-          }
 
-          doc.save(`${safeName(pack.title)}-plan.pdf`);
-          UIComponents.showToast('PDF exported', 'success', { title: 'Export' });
-        } catch (err) {
-          console.error(err);
-          UIComponents.showToast('PDF export failed: ' + err.message, 'error', { title: 'Export' });
-        }
-      }
+            function tweenInstanceToPosition(instanceId, positionInches, duration) {
+              const obj = CaseScene.getObject(instanceId);
+              if (!obj) return Promise.resolve();
+              const target = SceneManager.vecInchesToWorld(positionInches);
+              return new Promise(resolve => {
+                new TWEEN.Tween(obj.position)
+                  .to({ x: target.x, y: target.y, z: target.z }, duration)
+                  .easing(TWEEN.Easing.Cubic.InOut)
+                  .onComplete(resolve)
+                  .start();
+              });
+            }
 
-      function getCurrentPack() {
-        const packId = StateStore.get('currentPackId');
-        return packId ? PackLibrary.getById(packId) : null;
-      }
+            function sleep(ms) {
+              return new Promise(r => setTimeout(r, ms));
+            }
 
-      function safeName(name) {
-        return (
-          String(name || 'pack')
-            .trim()
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-+|-+$/g, '') || 'pack'
-        );
-      }
-
-      function downloadDataUrl(dataUrl, filename) {
-        const link = document.createElement('a');
-        link.href = dataUrl;
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      }
-
-      function buildOrthoCameras(pack) {
-        const lengthW = SceneManager.toWorld(pack.truck.length);
-        const widthW = SceneManager.toWorld(pack.truck.width);
-        const heightW = SceneManager.toWorld(pack.truck.height);
-        const centerX = lengthW / 2;
-        const centerY = heightW / 2;
-        const margin = 3;
-
-        const topCam = new THREE.OrthographicCamera(
-          -(lengthW / 2 + margin),
-          lengthW / 2 + margin,
-          widthW / 2 + margin,
-          -(widthW / 2 + margin),
-          0.1,
-          2000
-        );
-        topCam.position.set(centerX, heightW + 40, 0);
-        topCam.up.set(0, 0, -1);
-        topCam.lookAt(centerX, 0, 0);
-        topCam.updateProjectionMatrix();
-
-        const sideCam = new THREE.OrthographicCamera(
-          -(lengthW / 2 + margin),
-          lengthW / 2 + margin,
-          heightW / 2 + margin,
-          -(heightW / 2 + margin),
-          0.1,
-          2000
-        );
-        sideCam.position.set(centerX, centerY, widthW / 2 + 60);
-        sideCam.lookAt(centerX, centerY, 0);
-        sideCam.updateProjectionMatrix();
-
-        return { topCam, sideCam };
-      }
-
-      function buildChecklist(pack) {
-        const prefs = PreferencesManager.get();
-        const truck = pack.truck;
-        const unitLen = prefs.units.length;
-        const unitWt = prefs.units.weight;
-        return (pack.cases || []).map(inst => {
-          const c = CaseLibrary.getById(inst.caseId);
-          if (!c) return { name: 'Missing case', category: '—', dims: '—', weight: '—' };
-          const meta = CategoryService.meta(c.category);
-          return {
-            name: c.name,
-            category: meta.name,
-            dims: Utils.formatDims(c.dimensions, unitLen),
-            weight: Utils.formatWeight(Number(c.weight) || 0, unitWt),
-            packed: isInsideTruckInstance(inst, c, truck) && !inst.hidden,
-          };
-        });
-      }
-
-      function isInsideTruckInstance(inst, c, truck) {
-        if (!inst || !c || !truck) return false;
-        const dims = c.dimensions || { length: 0, width: 0, height: 0 };
-        const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
-        const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
-        const aabb = {
-          min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
-          max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
-        };
-        return (
-          aabb.min.x >= 0 &&
-          aabb.max.x <= truck.length &&
-          aabb.min.y >= 0 &&
-          aabb.max.y <= truck.height &&
-          aabb.min.z >= -truck.width / 2 &&
-          aabb.max.z <= truck.width / 2
-        );
-      }
-
-      function renderCameraToDataUrl(camera, width, height, options = {}) {
-        const renderer = SceneManager.getRenderer();
-        const scene = SceneManager.getScene();
-        if (!renderer || !scene || !camera) throw new Error('3D viewport not ready');
-
-        const mimeType = options.mimeType || 'image/png';
-        const quality = Number.isFinite(options.quality) ? options.quality : 0.92;
-
-        const prevTarget = renderer.getRenderTarget();
-        const prevViewport = new THREE.Vector4();
-        const prevScissor = new THREE.Vector4();
-        renderer.getViewport(prevViewport);
-        renderer.getScissor(prevScissor);
-        const prevScissorTest = renderer.getScissorTest ? renderer.getScissorTest() : false;
-        const prevPixelRatio = renderer.getPixelRatio();
-        const prevBg = scene.background;
-
-        const gridObj = scene.getObjectByName('grid');
-        const prevGridVisible = gridObj ? gridObj.visible : null;
-
-        const prevAspect = camera.isPerspectiveCamera ? camera.aspect : null;
-
-        const rt = new THREE.WebGLRenderTarget(width, height, { format: THREE.RGBAFormat });
-        const pixels = new Uint8Array(width * height * 4);
-
-        try {
-          if (options.hideGrid && gridObj) gridObj.visible = false;
-          renderer.setPixelRatio(1);
-          renderer.setRenderTarget(rt);
-          renderer.setViewport(0, 0, width, height);
-          renderer.setScissorTest(false);
-          if (camera.isPerspectiveCamera) {
-            camera.aspect = width / height;
-            camera.updateProjectionMatrix();
-          }
-          renderer.render(scene, camera);
-          renderer.readRenderTargetPixels(rt, 0, 0, width, height, pixels);
-        } finally {
-          renderer.setRenderTarget(prevTarget);
-          renderer.setPixelRatio(prevPixelRatio);
-          renderer.setViewport(prevViewport.x, prevViewport.y, prevViewport.z, prevViewport.w);
-          renderer.setScissor(prevScissor.x, prevScissor.y, prevScissor.z, prevScissor.w);
-          renderer.setScissorTest(prevScissorTest);
-          scene.background = prevBg;
-          if (gridObj && prevGridVisible != null) gridObj.visible = prevGridVisible;
-          if (camera.isPerspectiveCamera && prevAspect != null) {
-            camera.aspect = prevAspect;
-            camera.updateProjectionMatrix();
-          }
-          rt.dispose();
-        }
-
-        // Flip Y and encode
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        const img = ctx.createImageData(width, height);
-        for (let y = 0; y < height; y++) {
-          const src = (height - y - 1) * width * 4;
-          const dst = y * width * 4;
-          img.data.set(pixels.subarray(src, src + width * 4), dst);
-        }
-        ctx.putImageData(img, 0, 0);
-        return canvas.toDataURL(mimeType, quality);
-      }
-
-      return { captureScreenshot, generatePDF };
-    })();
-
-    const EditorUI = (() => {
-      const shellEl = document.querySelector('.editor-shell');
-      const leftEl = document.getElementById('editor-left');
-      const rightEl = document.getElementById('editor-right');
-      const btnLeft = document.getElementById('btn-editor-left');
-      const btnRight = document.getElementById('btn-editor-right');
-      const btnLeftClose = document.getElementById('btn-left-close');
-      const btnRightClose = document.getElementById('btn-right-close');
-      const viewportEl = document.getElementById('viewport');
-      const inspectorEl = document.getElementById('inspector-body');
-      const caseSearchEl = document.getElementById('editor-case-search');
-      const caseChipsEl = document.getElementById('editor-case-chips');
-      const caseListEl = document.getElementById('editor-case-list');
-      const btnAutopack = document.getElementById('btn-autopack');
-      const btnPng = document.getElementById('btn-screenshot');
-      const btnPdf = document.getElementById('btn-pdf');
-
-      let initialized = false;
-      let resizeObserver = null;
-      let resizeQueued = false;
-      const browserCats = new Set();
-
-      function scheduleViewportResize() {
-        if (resizeQueued) return;
-        resizeQueued = true;
-        window.requestAnimationFrame(() => {
-          resizeQueued = false;
-          if (StateStore.get('currentScreen') !== 'editor') return;
-          SceneManager.resize();
-        });
-      }
-
-      function initEditorUI() {
-        function showUpgradeRequired(featureLabel) {
-          const plan = BillingService.getCurrentPlan();
-          const daysLeft = BillingService.getDaysLeftInTrial();
-          const wrap = document.createElement('div');
-          const p = document.createElement('div');
-          p.className = 'muted';
-          p.style.fontSize = 'var(--text-sm)';
-          p.style.lineHeight = 'var(--leading-relaxed)';
-          p.textContent =
-            `${featureLabel} requires Truck Packer Pro. ` +
-            `Your current plan: ${plan}.` +
-            (daysLeft > 0 ? ` Trial days left: ${daysLeft}.` : '');
-          wrap.appendChild(p);
-          UIComponents.showModal({
-            title: 'Upgrade required',
-            content: wrap,
-            actions: [{ label: 'Close', variant: 'primary' }],
-          });
-        }
-
-        caseSearchEl.addEventListener('input', Utils.debounce(renderCaseBrowser, 250));
-        btnLeft.addEventListener('click', () => togglePanel('left'));
-        btnRight.addEventListener('click', () => togglePanel('right'));
-        btnLeftClose.addEventListener('click', () => setPanelVisible('left', false));
-        btnRightClose.addEventListener('click', () => setPanelVisible('right', false));
-
-        btnAutopack.addEventListener('click', async () => {
-          const session = getSession();
-          if (!canUseFeature('AUTOPACK', session)) {
-            showUpgradeRequired('AutoPack');
-            return;
-          }
-          btnAutopack.disabled = true;
-          try {
-            await AutoPackEngine.pack();
-            render();
-          } finally {
-            btnAutopack.disabled = false;
-          }
-        });
-        btnPng.addEventListener('click', () => ExportService.captureScreenshot());
-        btnPdf.addEventListener('click', () => {
-          const session = getSession();
-          if (!canUseFeature('PDF_EXPORT', session)) {
-            showUpgradeRequired('PDF export');
-            return;
-          }
-          ExportService.generatePDF();
-        });
-
-        window.addEventListener(
-          'resize',
-          Utils.debounce(() => {
-            if (StateStore.get('currentScreen') === 'editor') SceneManager.resize();
-          }, 120)
-        );
-      }
-
-      function ensureScene() {
-        if (initialized) return;
-        SceneManager.init(viewportEl);
-        InteractionManager.init(SceneManager.getRenderer().domElement);
-        wireDropToViewport(SceneManager.getRenderer().domElement);
-
-        if (!resizeObserver && 'ResizeObserver' in window) {
-          resizeObserver = new ResizeObserver(() => scheduleViewportResize());
-          resizeObserver.observe(viewportEl);
-        }
-        scheduleViewportResize();
-        initialized = true;
-      }
-
-      function render() {
-        if (StateStore.get('currentScreen') !== 'editor') return;
-        ensureScene();
-
-        const packId = StateStore.get('currentPackId');
-        const pack = PackLibrary.getById(packId);
-
-        btnAutopack.disabled = !pack || AutoPackEngine.running;
-        btnPng.disabled = !pack;
-        btnPdf.disabled = !pack;
-
-        if (!pack) {
-          SceneManager.setTruck({ length: 636, width: 102, height: 98 });
-          CaseScene.sync(null);
-          renderCaseBrowser();
-          renderInspectorNoPack();
-          SceneManager.resize();
-          return;
-        }
-
-        SceneManager.setTruck(pack.truck);
-        CaseScene.sync(pack);
-        CaseScene.setSelected(StateStore.get('selectedInstanceIds') || []);
-
-        renderCaseBrowser();
-        renderInspector(pack);
-        SceneManager.resize();
-      }
-
-      function renderCaseBrowser() {
-        const q = String(caseSearchEl.value || '').trim();
-        const cases = CaseLibrary.search(q, Array.from(browserCats)).sort((a, b) =>
-          (a.name || '').localeCompare(b.name || '')
-        );
-        const counts = CategoryService.listWithCounts(CaseLibrary.getCases());
-
-        caseChipsEl.innerHTML = '';
-        caseChipsEl.appendChild(
-          makeBrowserChip(
-            'All',
-            'all',
-            browserCats.size === 0,
-            () => {
-              browserCats.clear();
-              renderCaseBrowser();
-            },
-            '#9b9ba8'
-          )
-        );
-        counts.forEach(c => {
-          const active = browserCats.has(c.key);
-          caseChipsEl.appendChild(
-            makeBrowserChip(
-              `${c.name}: ${c.count}`,
-              c.key,
-              active,
-              () => {
-                if (browserCats.has(c.key)) browserCats.delete(c.key);
-                else browserCats.add(c.key);
-                renderCaseBrowser();
+            return {
+              pack,
+              get running() {
+                return isRunning;
               },
-              c.color
-            )
-          );
-        });
+            };
+          })();
 
-        caseListEl.innerHTML = '';
-        cases.forEach(c => {
-          const card = document.createElement('div');
-          card.className = 'card';
-          card.style.padding = '12px';
-          card.style.display = 'grid';
-          card.style.gap = '8px';
-          card.draggable = true;
-          card.addEventListener('dragstart', ev => {
-            ev.dataTransfer.setData('text/plain', c.id);
-            ev.dataTransfer.effectAllowed = 'copy';
-          });
+          // ============================================================================
+          // SECTION: EXPORT (PNG/PDF)
+          // ============================================================================
+          const ExportService = (() => {
+            function estimateDataUrlBytes(dataUrl) {
+              const str = String(dataUrl || '');
+              const comma = str.indexOf(',');
+              if (comma === -1) return 0;
+              const b64 = str.slice(comma + 1);
+              const padding = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0;
+              return Math.max(0, Math.floor((b64.length * 3) / 4) - padding);
+            }
 
-          const header = document.createElement('div');
-          header.className = 'row space-between';
-          const left = document.createElement('div');
-          left.style.display = 'grid';
-          left.style.gap = '2px';
-          const name = document.createElement('div');
-          name.style.fontWeight = 'var(--font-semibold)';
-          name.textContent = c.name;
-          const dims = document.createElement('div');
-          dims.className = 'muted';
-          dims.style.fontSize = 'var(--text-xs)';
-          dims.textContent = `${c.dimensions.length}×${c.dimensions.width}×${c.dimensions.height} in`;
-          left.appendChild(name);
-          left.appendChild(dims);
-          header.appendChild(left);
+            async function capturePackPreview(packId, { source = 'auto', quiet = false } = {}) {
+              try {
+                const pack = PackLibrary.getById(packId);
+                if (!pack) throw new Error('Pack not found');
 
-          const addBtn = document.createElement('button');
-          addBtn.className = 'btn btn-primary';
-          addBtn.type = 'button';
-          addBtn.style.padding = '6px 10px';
-          addBtn.style.boxShadow = 'none';
-          addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> Add';
-          addBtn.addEventListener('click', () => addCaseToPack(c.id));
-          header.appendChild(addBtn);
+                // Ensure the latest transforms are rendered before capture.
+                await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
-          const metaRow = document.createElement('div');
-          metaRow.className = 'row';
-          metaRow.style.gap = '8px';
-          metaRow.appendChild(makeMiniCategoryChip(c.category));
+                const width = 320;
+                const height = 180;
+                const dataUrl = renderCameraToDataUrl(SceneManager.getCamera(), width, height, {
+                  mimeType: 'image/jpeg',
+                  quality: 0.72,
+                  hideGrid: true,
+                });
 
-          card.appendChild(header);
-          card.appendChild(metaRow);
-          caseListEl.appendChild(card);
-        });
-      }
+                const bytes = estimateDataUrlBytes(dataUrl);
+                const maxBytes = 150 * 1024;
+                if (bytes > maxBytes) {
+                  throw new Error(`Preview too large (${Math.round(bytes / 1024)}KB)`);
+                }
 
-      function makeBrowserChip(label, key, active, onClick, color) {
-        const el = document.createElement('div');
-        el.className = `chip ${active ? 'active' : ''}`;
-        el.tabIndex = 0;
-        const dot = document.createElement('span');
-        dot.className = 'chip-dot';
-        dot.style.background = color || 'var(--border-strong)';
-        const text = document.createElement('span');
-        text.textContent = label;
-        el.appendChild(dot);
-        el.appendChild(text);
-        el.addEventListener('click', onClick);
-        el.addEventListener('keydown', ev => {
-          if (ev.key === 'Enter') onClick();
-        });
-        return el;
-      }
+                PackLibrary.update(packId, {
+                  thumbnail: dataUrl,
+                  thumbnailUpdatedAt: Date.now(),
+                  thumbnailSource: source === 'manual' ? 'manual' : 'auto',
+                });
 
-      function makeMiniCategoryChip(categoryKey) {
-        const meta = CategoryService.meta(categoryKey || 'default');
-        const el = document.createElement('span');
-        el.className = 'chip';
-        el.style.cursor = 'default';
-        el.style.padding = '4px 10px';
-        const dot = document.createElement('span');
-        dot.className = 'chip-dot';
-        dot.style.background = meta.color;
-        const text = document.createElement('span');
-        text.textContent = meta.name;
-        el.appendChild(dot);
-        el.appendChild(text);
-        return el;
-      }
+                if (!quiet) UIComponents.showToast('Preview captured', 'success', { title: 'Preview' });
+                return true;
+              } catch (err) {
+                if (!quiet)
+                  {UIComponents.showToast(`Preview failed: ${err.message || err}`, 'warning', { title: 'Preview' });}
+                return false;
+              }
+            }
 
-      function addCaseToPack(caseId, positionInches) {
-        const packId = StateStore.get('currentPackId');
-        const pack = PackLibrary.getById(packId);
-        if (!pack) {
-          UIComponents.showToast('Create or open a pack first', 'warning');
-          AppShell.navigate('packs');
-          return;
-        }
+            function clearPackPreview(packId) {
+              const pack = PackLibrary.getById(packId);
+              if (!pack) return false;
+              if (!pack.thumbnail) return false;
+              PackLibrary.update(packId, { thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null });
+              UIComponents.showToast('Preview cleared', 'info', { title: 'Preview' });
+              return true;
+            }
 
-        const count = (pack.cases || []).length;
-        const caseData = CaseLibrary.getById(caseId);
-        if (!caseData) return;
-        const stageX = -90 - (count % 4) * 40;
-        const stageZ = (Math.floor(count / 4) - 2) * 34;
-        const pos = positionInches || { x: stageX, y: Math.max(1, caseData.dimensions.height / 2), z: stageZ };
-        const inst = PackLibrary.addInstance(packId, caseId, pos);
-        if (inst) {
-          StateStore.set({ selectedInstanceIds: [inst.id] }, { skipHistory: true });
-          UIComponents.showToast('Case added to pack', 'success');
-        }
-      }
+            function captureScreenshot() {
+              try {
+                const pack = getCurrentPack();
+                if (!pack) {
+                  UIComponents.showToast('Open a pack first', 'warning', { title: 'Export' });
+                  return;
+                }
+                const prefs = PreferencesManager.get();
+                const res = Utils.parseResolution(prefs.export && prefs.export.screenshotResolution);
+                const dataUrl = renderCameraToDataUrl(SceneManager.getCamera(), res.width, res.height, {
+                  mimeType: 'image/png',
+                  hideGrid: true,
+                });
+                downloadDataUrl(dataUrl, `truck-pack-${safeName(pack.title)}-${Date.now()}.png`);
+                UIComponents.showToast('Screenshot saved', 'success', { title: 'Export' });
+              } catch (err) {
+                console.error(err);
+                UIComponents.showToast('Screenshot failed: ' + err.message, 'error', { title: 'Export' });
+              }
+            }
 
-      function renderInspectorNoPack() {
-        inspectorEl.innerHTML = '';
-        const card = document.createElement('div');
-        card.className = 'card';
-        card.innerHTML = `
+            function generatePDF() {
+              try {
+                if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF not available');
+                const pack = getCurrentPack();
+                if (!pack) {
+                  UIComponents.showToast('Open a pack first', 'warning', { title: 'Export' });
+                  return;
+                }
+
+                const prefs = PreferencesManager.get();
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'letter' });
+
+                const pageWidth = doc.internal.pageSize.getWidth();
+                const pageHeight = doc.internal.pageSize.getHeight();
+                const margin = 40;
+                let y = margin;
+
+                // Header
+                doc.setFontSize(22);
+                doc.setFont('helvetica', 'bold');
+                doc.text(pack.title || 'Pack', margin, y);
+                y += 22;
+
+                doc.setFontSize(10);
+                doc.setFont('helvetica', 'normal');
+                doc.text(`Generated: ${new Date().toLocaleString()}`, margin, y);
+                y += 16;
+
+                const details = [
+                  pack.client ? `Client: ${pack.client}` : null,
+                  pack.projectName ? `Project: ${pack.projectName}` : null,
+                  pack.drawnBy ? `Drawn by: ${pack.drawnBy}` : null,
+                ].filter(Boolean);
+                details.forEach(line => {
+                  doc.text(line, margin, y);
+                  y += 14;
+                });
+                if (details.length) y += 8;
+
+                // Notes
+                if (pack.notes) {
+                  doc.setFont('helvetica', 'bold');
+                  doc.text('NOTES', margin, y);
+                  y += 14;
+                  doc.setFont('helvetica', 'normal');
+                  const lines = doc.splitTextToSize(pack.notes, pageWidth - margin * 2);
+                  doc.text(lines, margin, y);
+                  y += lines.length * 12 + 10;
+                }
+
+                // Views
+                const viewWPt = pageWidth - margin * 2;
+                const viewWpx = 960;
+                const viewHpx = 540;
+                const perspective = renderCameraToDataUrl(SceneManager.getCamera(), viewWpx, viewHpx, {
+                  mimeType: 'image/jpeg',
+                  quality: 0.92,
+                  hideGrid: true,
+                });
+
+                const { topCam, sideCam } = buildOrthoCameras(pack);
+                const topView = renderCameraToDataUrl(topCam, 960, 520, {
+                  mimeType: 'image/jpeg',
+                  quality: 0.9,
+                  hideGrid: true,
+                });
+                const sideView = renderCameraToDataUrl(sideCam, 960, 420, {
+                  mimeType: 'image/jpeg',
+                  quality: 0.9,
+                  hideGrid: true,
+                });
+
+                doc.setFont('helvetica', 'bold');
+                doc.setFontSize(12);
+                doc.text('PERSPECTIVE VIEW', margin, y);
+                y += 10;
+                y += 6;
+                const pvH = viewWPt * (viewHpx / viewWpx);
+                doc.addImage(perspective, 'JPEG', margin, y, viewWPt, pvH);
+                y += pvH + 16;
+
+                if (y + 220 > pageHeight - margin) {
+                  doc.addPage();
+                  y = margin;
+                }
+
+                doc.text('TOP VIEW', margin, y);
+                y += 10;
+                y += 6;
+                const tvH = viewWPt * (520 / 960);
+                doc.addImage(topView, 'JPEG', margin, y, viewWPt, tvH);
+                y += tvH + 16;
+
+                if (y + 200 > pageHeight - margin) {
+                  doc.addPage();
+                  y = margin;
+                }
+
+                doc.text('SIDE VIEW', margin, y);
+                y += 10;
+                y += 6;
+                const svH = viewWPt * (420 / 960);
+                doc.addImage(sideView, 'JPEG', margin, y, viewWPt, svH);
+
+                // Checklist page
+                doc.addPage();
+                y = margin;
+
+                doc.setFont('helvetica', 'bold');
+                doc.setFontSize(16);
+                doc.text('CASE CHECKLIST', margin, y);
+                y += 22;
+
+                const entries = buildChecklist(pack);
+
+                doc.setFontSize(9);
+                doc.setFont('helvetica', 'bold');
+                const x0 = margin;
+                const x1 = margin + 24;
+                const x2 = margin + 260;
+                const x3 = margin + 360;
+                const x4 = margin + 470;
+                doc.text('#', x0, y);
+                doc.text('Name', x1, y);
+                doc.text('Category', x2, y);
+                doc.text('Dims', x3, y);
+                doc.text('Weight', x4, y);
+                y += 8;
+                doc.line(margin, y, pageWidth - margin, y);
+                y += 14;
+
+                doc.setFont('helvetica', 'normal');
+                entries.forEach((e, idx) => {
+                  if (y > pageHeight - margin) {
+                    doc.addPage();
+                    y = margin;
+                    doc.setFont('helvetica', 'bold');
+                    doc.text('#', x0, y);
+                    doc.text('Name', x1, y);
+                    doc.text('Category', x2, y);
+                    doc.text('Dims', x3, y);
+                    doc.text('Weight', x4, y);
+                    y += 8;
+                    doc.line(margin, y, pageWidth - margin, y);
+                    y += 14;
+                    doc.setFont('helvetica', 'normal');
+                  }
+
+                  const lineHeight = 14;
+                  doc.text(String(idx + 1), x0, y);
+                  doc.text(e.name, x1, y);
+                  doc.text(e.category, x2, y);
+                  doc.text(e.dims, x3, y);
+                  doc.text(e.weight, x4, y);
+                  y += lineHeight;
+                });
+
+                // Summary
+                const includeStats = Boolean(prefs.export && prefs.export.pdfIncludeStats);
+                if (includeStats) {
+                  const stats = PackLibrary.computeStats(pack);
+                  if (y + 90 > pageHeight - margin) {
+                    doc.addPage();
+                    y = margin;
+                  } else {
+                    y += 16;
+                  }
+                  doc.setFont('helvetica', 'bold');
+                  doc.setFontSize(12);
+                  doc.text('SUMMARY', margin, y);
+                  y += 16;
+                  doc.setFont('helvetica', 'normal');
+                  doc.setFontSize(10);
+                  doc.text(`Cases loaded: ${stats.totalCases}`, margin, y);
+                  y += 14;
+                  doc.text(`Packed (in truck): ${stats.packedCases}`, margin, y);
+                  y += 14;
+                  doc.text(`Volume used: ${stats.volumePercent.toFixed(1)}%`, margin, y);
+                  y += 14;
+                  doc.text(`Total weight: ${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}`, margin, y);
+                  y += 14;
+                  doc.text(`Truck (in): ${pack.truck.length}×${pack.truck.width}×${pack.truck.height}`, margin, y);
+                }
+
+                doc.save(`${safeName(pack.title)}-plan.pdf`);
+                UIComponents.showToast('PDF exported', 'success', { title: 'Export' });
+              } catch (err) {
+                console.error(err);
+                UIComponents.showToast('PDF export failed: ' + err.message, 'error', { title: 'Export' });
+              }
+            }
+
+            function getCurrentPack() {
+              const packId = StateStore.get('currentPackId');
+              return packId ? PackLibrary.getById(packId) : null;
+            }
+
+            function safeName(name) {
+              return (
+                String(name || 'pack')
+                  .trim()
+                  .toLowerCase()
+                  .replace(/[^a-z0-9]+/g, '-')
+                  .replace(/^-+|-+$/g, '') || 'pack'
+              );
+            }
+
+            function downloadDataUrl(dataUrl, filename) {
+              const link = document.createElement('a');
+              link.href = dataUrl;
+              link.download = filename;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+            }
+
+            function buildOrthoCameras(pack) {
+              const lengthW = SceneManager.toWorld(pack.truck.length);
+              const widthW = SceneManager.toWorld(pack.truck.width);
+              const heightW = SceneManager.toWorld(pack.truck.height);
+              const centerX = lengthW / 2;
+              const centerY = heightW / 2;
+              const margin = 3;
+
+              const topCam = new THREE.OrthographicCamera(
+                -(lengthW / 2 + margin),
+                lengthW / 2 + margin,
+                widthW / 2 + margin,
+                -(widthW / 2 + margin),
+                0.1,
+                2000
+              );
+              topCam.position.set(centerX, heightW + 40, 0);
+              topCam.up.set(0, 0, -1);
+              topCam.lookAt(centerX, 0, 0);
+              topCam.updateProjectionMatrix();
+
+              const sideCam = new THREE.OrthographicCamera(
+                -(lengthW / 2 + margin),
+                lengthW / 2 + margin,
+                heightW / 2 + margin,
+                -(heightW / 2 + margin),
+                0.1,
+                2000
+              );
+              sideCam.position.set(centerX, centerY, widthW / 2 + 60);
+              sideCam.lookAt(centerX, centerY, 0);
+              sideCam.updateProjectionMatrix();
+
+              return { topCam, sideCam };
+            }
+
+            function buildChecklist(pack) {
+              const prefs = PreferencesManager.get();
+              const truck = pack.truck;
+              const unitLen = prefs.units.length;
+              const unitWt = prefs.units.weight;
+              return (pack.cases || []).map(inst => {
+                const c = CaseLibrary.getById(inst.caseId);
+                if (!c) return { name: 'Missing case', category: '—', dims: '—', weight: '—' };
+                const meta = CategoryService.meta(c.category);
+                return {
+                  name: c.name,
+                  category: meta.name,
+                  dims: Utils.formatDims(c.dimensions, unitLen),
+                  weight: Utils.formatWeight(Number(c.weight) || 0, unitWt),
+                  packed: isInsideTruckInstance(inst, c, truck) && !inst.hidden,
+                };
+              });
+            }
+
+	            function isInsideTruckInstance(inst, c, truck) {
+	              if (!inst || !c || !truck) return false;
+	              const zonesInches = TrailerGeometry.getTrailerUsableZones(truck);
+	              const dims = c.dimensions || { length: 0, width: 0, height: 0 };
+	              const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
+	              const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
+	              const aabb = {
+	                min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
+	                max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
+	              };
+	              return TrailerGeometry.isAabbContainedInAnyZone(aabb, zonesInches);
+	            }
+
+            function renderCameraToDataUrl(camera, width, height, options = {}) {
+              const renderer = SceneManager.getRenderer();
+              const scene = SceneManager.getScene();
+              if (!renderer || !scene || !camera) throw new Error('3D viewport not ready');
+
+              const mimeType = options.mimeType || 'image/png';
+              const quality = Number.isFinite(options.quality) ? options.quality : 0.92;
+
+              const prevTarget = renderer.getRenderTarget();
+              const prevViewport = new THREE.Vector4();
+              const prevScissor = new THREE.Vector4();
+              renderer.getViewport(prevViewport);
+              renderer.getScissor(prevScissor);
+              const prevScissorTest = renderer.getScissorTest ? renderer.getScissorTest() : false;
+              const prevPixelRatio = renderer.getPixelRatio();
+              const prevBg = scene.background;
+
+              const gridObj = scene.getObjectByName('grid');
+              const prevGridVisible = gridObj ? gridObj.visible : null;
+
+              const prevAspect = camera.isPerspectiveCamera ? camera.aspect : null;
+
+              const rt = new THREE.WebGLRenderTarget(width, height, { format: THREE.RGBAFormat });
+              const pixels = new Uint8Array(width * height * 4);
+
+              try {
+                if (options.hideGrid && gridObj) gridObj.visible = false;
+                renderer.setPixelRatio(1);
+                renderer.setRenderTarget(rt);
+                renderer.setViewport(0, 0, width, height);
+                renderer.setScissorTest(false);
+                if (camera.isPerspectiveCamera) {
+                  camera.aspect = width / height;
+                  camera.updateProjectionMatrix();
+                }
+                renderer.render(scene, camera);
+                renderer.readRenderTargetPixels(rt, 0, 0, width, height, pixels);
+              } finally {
+                renderer.setRenderTarget(prevTarget);
+                renderer.setPixelRatio(prevPixelRatio);
+                renderer.setViewport(prevViewport.x, prevViewport.y, prevViewport.z, prevViewport.w);
+                renderer.setScissor(prevScissor.x, prevScissor.y, prevScissor.z, prevScissor.w);
+                renderer.setScissorTest(prevScissorTest);
+                scene.background = prevBg;
+                if (gridObj && prevGridVisible != null) gridObj.visible = prevGridVisible;
+                if (camera.isPerspectiveCamera && prevAspect != null) {
+                  camera.aspect = prevAspect;
+                  camera.updateProjectionMatrix();
+                }
+                rt.dispose();
+              }
+
+              // Flip Y and encode
+              const canvas = document.createElement('canvas');
+              canvas.width = width;
+              canvas.height = height;
+              const ctx = canvas.getContext('2d');
+              const img = ctx.createImageData(width, height);
+              for (let y = 0; y < height; y++) {
+                const src = (height - y - 1) * width * 4;
+                const dst = y * width * 4;
+                img.data.set(pixels.subarray(src, src + width * 4), dst);
+              }
+              ctx.putImageData(img, 0, 0);
+              return canvas.toDataURL(mimeType, quality);
+            }
+
+            return { captureScreenshot, generatePDF, capturePackPreview, clearPackPreview };
+          })();
+
+          // ============================================================================
+          // SECTION: SCREEN UI (EDITOR)
+          // ============================================================================
+          const EditorUI = (() => {
+            const shellEl = document.querySelector('.editor-shell');
+            const leftEl = document.getElementById('editor-left');
+            const rightEl = document.getElementById('editor-right');
+            const btnLeft = document.getElementById('btn-editor-left');
+            const btnRight = document.getElementById('btn-editor-right');
+            const btnLeftClose = document.getElementById('btn-left-close');
+            const btnRightClose = document.getElementById('btn-right-close');
+            const viewportEl = document.getElementById('viewport');
+            const inspectorEl = document.getElementById('inspector-body');
+            const caseSearchEl = document.getElementById('editor-case-search');
+            const caseChipsEl = document.getElementById('editor-case-chips');
+            const caseListEl = document.getElementById('editor-case-list');
+            const btnAutopack = document.getElementById('btn-autopack');
+            const btnPng = document.getElementById('btn-screenshot');
+            const btnPdf = document.getElementById('btn-pdf');
+
+            let initialized = false;
+            const browserCats = new Set();
+
+            function initEditorUI() {
+              caseSearchEl.addEventListener('input', Utils.debounce(renderCaseBrowser, 250));
+              btnLeft.addEventListener('click', () => togglePanel('left'));
+              btnRight.addEventListener('click', () => togglePanel('right'));
+              btnLeftClose.addEventListener('click', () => setPanelVisible('left', false));
+              btnRightClose.addEventListener('click', () => setPanelVisible('right', false));
+
+              btnAutopack.addEventListener('click', async () => {
+                btnAutopack.disabled = true;
+                await AutoPackEngine.pack();
+                render();
+              });
+              btnPng.addEventListener('click', () => ExportService.captureScreenshot());
+              btnPdf.addEventListener('click', () => ExportService.generatePDF());
+
+              window.addEventListener(
+                'resize',
+                Utils.debounce(() => {
+                  if (StateStore.get('currentScreen') === 'editor') SceneManager.resize();
+                }, 120)
+              );
+            }
+
+            function ensureScene() {
+              if (initialized) return;
+              SceneManager.init(viewportEl);
+              InteractionManager.init(SceneManager.getRenderer().domElement);
+              wireDropToViewport(SceneManager.getRenderer().domElement);
+              initialized = true;
+            }
+
+            function render() {
+              if (StateStore.get('currentScreen') !== 'editor') return;
+              ensureScene();
+
+              const packId = StateStore.get('currentPackId');
+              const pack = PackLibrary.getById(packId);
+
+              btnAutopack.disabled = !pack || AutoPackEngine.running;
+              btnPng.disabled = !pack;
+              btnPdf.disabled = !pack;
+
+              if (!pack) {
+                SceneManager.setTruck({ length: 636, width: 102, height: 98 });
+                CaseScene.sync(null);
+                renderCaseBrowser();
+                renderInspectorNoPack();
+                SceneManager.resize();
+                return;
+              }
+
+              SceneManager.setTruck(pack.truck);
+              CaseScene.sync(pack);
+              CaseScene.setSelected(StateStore.get('selectedInstanceIds') || []);
+
+              renderCaseBrowser();
+              renderInspector(pack);
+              SceneManager.resize();
+            }
+
+            function renderCaseBrowser() {
+              const q = String(caseSearchEl.value || '').trim();
+              const cases = CaseLibrary.search(q, Array.from(browserCats)).sort((a, b) =>
+                (a.name || '').localeCompare(b.name || '')
+              );
+              const counts = CategoryService.listWithCounts(CaseLibrary.getCases());
+
+              caseChipsEl.innerHTML = '';
+              caseChipsEl.appendChild(
+                makeBrowserChip(
+                  'All',
+                  'all',
+                  browserCats.size === 0,
+                  () => {
+                    browserCats.clear();
+                    renderCaseBrowser();
+                  },
+                  '#9b9ba8'
+                )
+              );
+              counts.forEach(c => {
+                const active = browserCats.has(c.key);
+                caseChipsEl.appendChild(
+                  makeBrowserChip(
+                    `${c.name}: ${c.count}`,
+                    c.key,
+                    active,
+                    () => {
+                      if (browserCats.has(c.key)) browserCats.delete(c.key);
+                      else browserCats.add(c.key);
+                      renderCaseBrowser();
+                    },
+                    c.color
+                  )
+                );
+              });
+
+              caseListEl.innerHTML = '';
+              cases.forEach(c => {
+                const card = document.createElement('div');
+                card.className = 'card';
+                card.style.padding = '12px';
+                card.style.display = 'grid';
+                card.style.gap = '8px';
+                card.draggable = true;
+                card.addEventListener('dragstart', ev => {
+                  ev.dataTransfer.setData('text/plain', c.id);
+                  ev.dataTransfer.effectAllowed = 'copy';
+                });
+
+                const header = document.createElement('div');
+                header.className = 'row space-between';
+                const left = document.createElement('div');
+                left.style.display = 'grid';
+                left.style.gap = '2px';
+                const name = document.createElement('div');
+                name.style.fontWeight = 'var(--font-semibold)';
+                name.textContent = c.name;
+                const dims = document.createElement('div');
+                dims.className = 'muted';
+                dims.style.fontSize = 'var(--text-xs)';
+                dims.textContent = `${c.dimensions.length}×${c.dimensions.width}×${c.dimensions.height} in`;
+                left.appendChild(name);
+                left.appendChild(dims);
+                header.appendChild(left);
+
+                const metaRow = document.createElement('div');
+                metaRow.className = 'row space-between';
+                metaRow.style.gap = '8px';
+                metaRow.appendChild(makeMiniCategoryChip(c.category));
+
+                const addBtn = document.createElement('button');
+                addBtn.className = 'btn btn-primary';
+                addBtn.type = 'button';
+                addBtn.style.padding = '6px 10px';
+                addBtn.style.boxShadow = 'none';
+                addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> Add';
+                addBtn.addEventListener('click', () => addCaseToPack(c.id));
+                metaRow.appendChild(addBtn);
+
+                card.appendChild(header);
+                card.appendChild(metaRow);
+                caseListEl.appendChild(card);
+              });
+            }
+
+            function makeBrowserChip(label, key, active, onClick, color) {
+              const el = document.createElement('div');
+              el.className = `chip ${active ? 'active' : ''}`;
+              el.tabIndex = 0;
+              const dot = document.createElement('span');
+              dot.className = 'chip-dot';
+              dot.style.background = color || 'var(--border-strong)';
+              const text = document.createElement('span');
+              text.textContent = label;
+              el.appendChild(dot);
+              el.appendChild(text);
+              el.addEventListener('click', onClick);
+              el.addEventListener('keydown', ev => {
+                if (ev.key === 'Enter') onClick();
+              });
+              return el;
+            }
+
+            function makeMiniCategoryChip(categoryKey) {
+              const meta = CategoryService.meta(categoryKey || 'default');
+              const el = document.createElement('span');
+              el.className = 'chip';
+              el.style.cursor = 'default';
+              el.style.padding = '4px 10px';
+              const dot = document.createElement('span');
+              dot.className = 'chip-dot';
+              dot.style.background = meta.color;
+              const text = document.createElement('span');
+              text.textContent = meta.name;
+              el.appendChild(dot);
+              el.appendChild(text);
+              return el;
+            }
+
+            function addCaseToPack(caseId, positionInches) {
+              const packId = StateStore.get('currentPackId');
+              const pack = PackLibrary.getById(packId);
+              if (!pack) {
+                UIComponents.showToast('Create or open a pack first', 'warning');
+                AppShell.navigate('packs');
+                return;
+              }
+
+              const count = (pack.cases || []).length;
+              const caseData = CaseLibrary.getById(caseId);
+              if (!caseData) return;
+              const stageX = -90 - (count % 4) * 40;
+              const stageZ = (Math.floor(count / 4) - 2) * 34;
+              const pos = positionInches || { x: stageX, y: Math.max(1, caseData.dimensions.height / 2), z: stageZ };
+              const inst = PackLibrary.addInstance(packId, caseId, pos);
+              if (inst) {
+                StateStore.set({ selectedInstanceIds: [inst.id] }, { skipHistory: true });
+                UIComponents.showToast('Case added to pack', 'success');
+              }
+            }
+
+            function renderInspectorNoPack() {
+              inspectorEl.innerHTML = '';
+              const card = document.createElement('div');
+              card.className = 'card';
+              card.innerHTML = `
               <div style="font-weight:var(--font-semibold);margin-bottom:6px">No pack open</div>
               <div class="muted" style="font-size:var(--text-sm);margin-bottom:12px">Open a pack from the Packs screen to use the 3D editor.</div>
             `;
-        const btn = document.createElement('button');
-        btn.className = 'btn btn-primary';
-        btn.type = 'button';
-        btn.innerHTML = '<i class="fa-solid fa-layer-group"></i> Go to Packs';
-        btn.addEventListener('click', () => AppShell.navigate('packs'));
-        card.appendChild(btn);
-        inspectorEl.appendChild(card);
-      }
+              const btn = document.createElement('button');
+              btn.className = 'btn btn-primary';
+              btn.type = 'button';
+              btn.innerHTML = '<i class="fa-solid fa-layer-group"></i> Go to Packs';
+              btn.addEventListener('click', () => AppShell.navigate('packs'));
+              card.appendChild(btn);
+              inspectorEl.appendChild(card);
+            }
 
-      function renderInspector(pack) {
-        const prefs = PreferencesManager.get();
-        const sel = StateStore.get('selectedInstanceIds') || [];
-        inspectorEl.innerHTML = '';
+            function renderInspector(pack) {
+              const prefs = PreferencesManager.get();
+              const sel = StateStore.get('selectedInstanceIds') || [];
+              inspectorEl.innerHTML = '';
 
-        if (!sel.length) {
-          renderTruckInspector(pack, prefs);
-          return;
-        }
+              if (!sel.length) {
+                renderTruckInspector(pack, prefs);
+                return;
+              }
 
-        if (sel.length > 1) {
-          renderMultiInspector(pack, sel);
-          return;
-        }
+              if (sel.length > 1) {
+                renderMultiInspector(pack, sel);
+                return;
+              }
 
-        const instanceId = sel[0];
-        const inst = (pack.cases || []).find(i => i.id === instanceId);
-        if (!inst) {
-          StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
-          renderTruckInspector(pack, prefs);
-          return;
-        }
-        const c = CaseLibrary.getById(inst.caseId);
-        if (!c) return;
-        renderSingleInspector(pack, inst, c, prefs);
-      }
+              const instanceId = sel[0];
+              const inst = (pack.cases || []).find(i => i.id === instanceId);
+              if (!inst) {
+                StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
+                renderTruckInspector(pack, prefs);
+                return;
+              }
+              const c = CaseLibrary.getById(inst.caseId);
+              if (!c) return;
+              renderSingleInspector(pack, inst, c, prefs);
+            }
 
-      function renderTruckInspector(pack, prefs) {
-        const card = document.createElement('div');
-        card.className = 'card';
-        card.style.display = 'grid';
-        card.style.gap = '12px';
+	            function renderTruckInspector(pack, prefs) {
+	              const card = document.createElement('div');
+	              card.className = 'card';
+	              card.style.display = 'grid';
+	              card.style.gap = '12px';
 
-        const stats = PackLibrary.computeStats(pack);
-        card.innerHTML = `
-              <div style="font-weight:var(--font-semibold)">Truck</div>
-              <div class="muted" style="font-size:var(--text-sm)">Edit dimensions in inches (internal units). Display units follow Settings.</div>
-            `;
+	              const stats = PackLibrary.computeStats(pack);
+	              card.innerHTML = `
+	              <div style="font-weight:var(--font-semibold)">Truck</div>
+	              <div class="muted" style="font-size:var(--text-sm)">Edit dimensions in inches (internal units). Display units follow Settings.</div>
+	            `;
 
-        const dimsRow = document.createElement('div');
-        dimsRow.className = 'row';
-        dimsRow.style.display = 'grid';
-        dimsRow.style.gridTemplateColumns = 'repeat(3, minmax(0, 1fr))';
-        dimsRow.style.gap = '10px';
-        dimsRow.style.alignItems = 'end';
-        const fL = smallField('Length (in)', pack.truck.length);
-        const fW = smallField('Width (in)', pack.truck.width);
-        const fH = smallField('Height (in)', pack.truck.height);
-        [fL.wrap, fW.wrap, fH.wrap].forEach(wrap => (wrap.style.width = '100%'));
-        dimsRow.appendChild(fL.wrap);
-        dimsRow.appendChild(fW.wrap);
-        dimsRow.appendChild(fH.wrap);
+                const shapeRow = document.createElement('div');
+                shapeRow.className = 'row';
+                shapeRow.style.display = 'grid';
+                shapeRow.style.gridTemplateColumns = '1fr';
+                shapeRow.style.gap = '10px';
+                shapeRow.style.alignItems = 'flex-end';
+                const shapeWrap = document.createElement('div');
+                shapeWrap.className = 'field';
+                shapeWrap.style.minWidth = '0';
+                shapeWrap.style.width = '100%';
+	              const shapeLabel = document.createElement('div');
+	              shapeLabel.className = 'label';
+	              shapeLabel.textContent = 'Trailer Shape Mode';
+	              const shapeSelect = document.createElement('select');
+	              shapeSelect.className = 'select';
+                shapeSelect.style.width = '100%';
+	              shapeSelect.innerHTML = `
+	                <option value="rect">Rectangle (safe)</option>
+	                <option value="wheelWells">Rectangle + Wheel Wells</option>
+	                <option value="frontBonus">Rectangle + Front Bonus Zone</option>
+	              `;
+	              shapeSelect.value =
+	                pack && pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
+	                  ? pack.truck.shapeMode
+	                  : 'rect';
+	              shapeWrap.appendChild(shapeLabel);
+	              shapeWrap.appendChild(shapeSelect);
+	              shapeRow.appendChild(shapeWrap);
 
-        const btnSave = document.createElement('button');
-        btnSave.className = 'btn btn-primary';
-        btnSave.type = 'button';
-        btnSave.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Update truck';
-        btnSave.style.width = '100%';
-        btnSave.addEventListener('click', () => {
-          const next = {
-            length: Math.max(24, Number(fL.input.value) || pack.truck.length),
-            width: Math.max(24, Number(fW.input.value) || pack.truck.width),
-            height: Math.max(24, Number(fH.input.value) || pack.truck.height),
-          };
-          PackLibrary.update(pack.id, { truck: next });
-          UIComponents.showToast('Truck updated', 'success');
-        });
+	              const dimsRow = document.createElement('div');
+	              dimsRow.className = 'row';
+	              dimsRow.style.display = 'grid';
+	              dimsRow.style.gridTemplateColumns = 'repeat(3, minmax(0, 1fr))';
+	              dimsRow.style.gap = '10px';
+	              dimsRow.style.alignItems = 'end';
+	              const fL = smallField('Length (in)', pack.truck.length);
+              const fW = smallField('Width (in)', pack.truck.width);
+              const fH = smallField('Height (in)', pack.truck.height);
+              [fL.wrap, fW.wrap, fH.wrap].forEach(wrap => (wrap.style.width = '100%'));
+              dimsRow.appendChild(fL.wrap);
+              dimsRow.appendChild(fW.wrap);
+              dimsRow.appendChild(fH.wrap);
 
-        const statsEl = document.createElement('div');
-        statsEl.className = 'card';
-        statsEl.style.background = 'var(--bg-elevated)';
-        statsEl.style.boxShadow = 'none';
-        statsEl.style.display = 'grid';
-        statsEl.style.gap = '8px';
-        statsEl.style.marginTop = '16px';
-        statsEl.innerHTML = `
+                const btnSave = document.createElement('button');
+	              btnSave.className = 'btn btn-primary';
+	              btnSave.type = 'button';
+	              btnSave.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Update truck';
+                btnSave.style.width = '100%';
+	              btnSave.addEventListener('click', () => {
+	                const next = {
+	                  ...pack.truck,
+	                  length: Math.max(24, Number(fL.input.value) || pack.truck.length),
+	                  width: Math.max(24, Number(fW.input.value) || pack.truck.width),
+	                  height: Math.max(24, Number(fH.input.value) || pack.truck.height),
+	                  shapeMode:
+	                    pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
+	                      ? pack.truck.shapeMode
+	                      : 'rect',
+	                  shapeConfig:
+	                    pack.truck && pack.truck.shapeConfig && typeof pack.truck.shapeConfig === 'object'
+	                      ? Utils.deepClone(pack.truck.shapeConfig)
+	                      : {},
+	                };
+	                // Clamp config values to bounds (safe even if unused)
+	                if (next.shapeMode === 'wheelWells') {
+	                  const cfg = next.shapeConfig || {};
+		                  if (Number.isFinite(cfg.wellHeight)) cfg.wellHeight = Utils.clamp(Number(cfg.wellHeight), 0, next.height);
+		                  if (Number.isFinite(cfg.wellWidth)) cfg.wellWidth = Utils.clamp(Number(cfg.wellWidth), 0, next.width / 2);
+		                  if (Number.isFinite(cfg.wellLength)) cfg.wellLength = Utils.clamp(Number(cfg.wellLength), 0, next.length);
+		                  if (Number.isFinite(cfg.wellOffsetFromRear)) {
+		                    cfg.wellOffsetFromRear = Utils.clamp(Number(cfg.wellOffsetFromRear), 0, next.length);
+		                  }
+		                  next.shapeConfig = cfg;
+		                } else if (next.shapeMode === 'frontBonus') {
+		                  const cfg = next.shapeConfig || {};
+		                  if (Number.isFinite(cfg.bonusLength)) cfg.bonusLength = Utils.clamp(Number(cfg.bonusLength), 0, next.length);
+		                  if (Number.isFinite(cfg.bonusWidth)) cfg.bonusWidth = Utils.clamp(Number(cfg.bonusWidth), 0, next.width);
+	                  if (Number.isFinite(cfg.bonusHeight)) cfg.bonusHeight = Utils.clamp(Number(cfg.bonusHeight), 0, next.height);
+	                  next.shapeConfig = cfg;
+	                }
+
+	                PackLibrary.update(pack.id, { truck: next });
+	                UIComponents.showToast('Truck updated', 'success');
+	              });
+
+	              shapeSelect.addEventListener('change', () => {
+	                const mode = String(shapeSelect.value || 'rect');
+	                const nextTruck = {
+	                  ...pack.truck,
+	                  shapeMode: mode === 'wheelWells' || mode === 'frontBonus' ? mode : 'rect',
+	                  shapeConfig:
+	                    pack.truck && pack.truck.shapeConfig && typeof pack.truck.shapeConfig === 'object'
+	                      ? Utils.deepClone(pack.truck.shapeConfig)
+	                      : {},
+	                };
+
+	                // Fill sensible defaults (stored) + clamp to trailer bounds.
+	                if (nextTruck.shapeMode === 'wheelWells') {
+	                  const cfg = nextTruck.shapeConfig || {};
+	                  if (!Number.isFinite(cfg.wellHeight)) cfg.wellHeight = 0.35 * nextTruck.height;
+	                  if (!Number.isFinite(cfg.wellWidth)) cfg.wellWidth = 0.15 * nextTruck.width;
+	                  if (!Number.isFinite(cfg.wellLength)) cfg.wellLength = 0.35 * nextTruck.length;
+	                  if (!Number.isFinite(cfg.wellOffsetFromRear)) cfg.wellOffsetFromRear = 0.25 * nextTruck.length;
+	                  cfg.wellHeight = Utils.clamp(Number(cfg.wellHeight) || 0, 0, nextTruck.height);
+	                  cfg.wellWidth = Utils.clamp(Number(cfg.wellWidth) || 0, 0, nextTruck.width / 2);
+	                  cfg.wellLength = Utils.clamp(Number(cfg.wellLength) || 0, 0, nextTruck.length);
+	                  cfg.wellOffsetFromRear = Utils.clamp(Number(cfg.wellOffsetFromRear) || 0, 0, nextTruck.length);
+	                  nextTruck.shapeConfig = cfg;
+	                } else if (nextTruck.shapeMode === 'frontBonus') {
+	                  const cfg = nextTruck.shapeConfig || {};
+	                  if (!Number.isFinite(cfg.bonusLength)) cfg.bonusLength = 0.12 * nextTruck.length;
+	                  if (!Number.isFinite(cfg.bonusWidth)) cfg.bonusWidth = nextTruck.width;
+	                  if (!Number.isFinite(cfg.bonusHeight)) cfg.bonusHeight = nextTruck.height;
+	                  cfg.bonusLength = Utils.clamp(Number(cfg.bonusLength) || 0, 0, nextTruck.length);
+	                  cfg.bonusWidth = Utils.clamp(Number(cfg.bonusWidth) || 0, 0, nextTruck.width);
+	                  cfg.bonusHeight = Utils.clamp(Number(cfg.bonusHeight) || 0, 0, nextTruck.height);
+	                  nextTruck.shapeConfig = cfg;
+	                }
+
+	                const zonesInches = TrailerGeometry.getTrailerUsableZones(nextTruck);
+	                const rectZone = [
+	                  {
+	                    min: { x: 0, y: 0, z: -nextTruck.width / 2 },
+	                    max: { x: nextTruck.length, y: nextTruck.height, z: nextTruck.width / 2 },
+	                  },
+	                ];
+	                let outOfBoundsCount = 0;
+	                (pack.cases || []).forEach(inst => {
+	                  if (!inst || inst.hidden) return;
+	                  const c = CaseLibrary.getById(inst.caseId);
+	                  if (!c) return;
+	                  const dims = c.dimensions || { length: 0, width: 0, height: 0 };
+	                  const pos =
+	                    inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
+	                  const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
+	                  const aabb = {
+	                    min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
+	                    max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
+	                  };
+	                  const wasInsideRect = TrailerGeometry.isAabbContainedInAnyZone(aabb, rectZone);
+	                  const insideNew = TrailerGeometry.isAabbContainedInAnyZone(aabb, zonesInches);
+	                  if (wasInsideRect && !insideNew) outOfBoundsCount++;
+	                });
+
+	                PackLibrary.update(pack.id, { truck: nextTruck });
+	                if (outOfBoundsCount > 0) {
+	                  UIComponents.showToast('Some items may be out of bounds for this trailer shape.', 'warning');
+	                }
+	              });
+
+                const statsEl = document.createElement('div');
+	              statsEl.className = 'card';
+	              statsEl.style.background = 'var(--bg-elevated)';
+              statsEl.style.boxShadow = 'none';
+              statsEl.style.display = 'grid';
+              statsEl.style.gap = '8px';
+                statsEl.style.marginTop = '16px';
+              statsEl.innerHTML = `
               <div style="font-weight:var(--font-semibold)">Stats</div>
               <div class="muted" style="font-size:var(--text-sm)">Cases loaded: <b style="color:var(--text-primary)">${stats.totalCases}</b></div>
               <div class="muted" style="font-size:var(--text-sm)">Packed (in truck): <b style="color:var(--text-primary)">${stats.packedCases}</b></div>
@@ -4988,741 +6707,678 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
               <div class="muted" style="font-size:var(--text-sm)">Total weight: <b style="color:var(--text-primary)">${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}</b></div>
             `;
 
-        card.appendChild(dimsRow);
-        card.appendChild(btnSave);
-        inspectorEl.appendChild(card);
-        inspectorEl.appendChild(statsEl);
-      }
+	              card.appendChild(shapeRow);
+	              card.appendChild(dimsRow);
+	              card.appendChild(btnSave);
+	              inspectorEl.appendChild(card);
+	              inspectorEl.appendChild(statsEl);
+	            }
 
-      function renderMultiInspector(pack, selected) {
-        const card = document.createElement('div');
-        card.className = 'card';
-        card.style.display = 'grid';
-        card.style.gap = '12px';
-        card.innerHTML = `
+            function renderMultiInspector(pack, selected) {
+              const card = document.createElement('div');
+              card.className = 'card';
+              card.style.display = 'grid';
+              card.style.gap = '12px';
+              card.innerHTML = `
               <div style="font-weight:var(--font-semibold)">${selected.length} selected</div>
               <div class="muted" style="font-size:var(--text-sm)">Use keyboard shortcuts: Delete, Esc, Ctrl/Cmd+A.</div>
             `;
 
-        const row = document.createElement('div');
-        row.className = 'row';
-        row.style.justifyContent = 'flex-end';
-        const btnDelete = document.createElement('button');
-        btnDelete.className = 'btn btn-danger';
-        btnDelete.type = 'button';
-        btnDelete.innerHTML = '<i class="fa-solid fa-trash"></i> Delete';
-        btnDelete.addEventListener('click', () => InteractionManager.deleteSelection());
-        const btnClear = document.createElement('button');
-        btnClear.className = 'btn';
-        btnClear.type = 'button';
-        btnClear.innerHTML = '<i class="fa-solid fa-xmark"></i> Deselect';
-        btnClear.addEventListener('click', () => StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true }));
-        row.appendChild(btnClear);
-        row.appendChild(btnDelete);
-        card.appendChild(row);
-        inspectorEl.appendChild(card);
-      }
+              const row = document.createElement('div');
+              row.className = 'row';
+              row.style.justifyContent = 'flex-end';
+              const btnDelete = document.createElement('button');
+              btnDelete.className = 'btn btn-danger';
+              btnDelete.type = 'button';
+              btnDelete.innerHTML = '<i class="fa-solid fa-trash"></i> Delete';
+              btnDelete.addEventListener('click', () => InteractionManager.deleteSelection());
+              const btnClear = document.createElement('button');
+              btnClear.className = 'btn';
+              btnClear.type = 'button';
+              btnClear.innerHTML = '<i class="fa-solid fa-xmark"></i> Deselect';
+              btnClear.addEventListener('click', () =>
+                StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true })
+              );
+              row.appendChild(btnClear);
+              row.appendChild(btnDelete);
+              card.appendChild(row);
+              inspectorEl.appendChild(card);
+            }
 
-      function renderSingleInspector(pack, inst, caseData, prefs) {
-        const card = document.createElement('div');
-        card.className = 'card';
-        card.style.display = 'grid';
-        card.style.gap = '12px';
+            function renderSingleInspector(pack, inst, caseData, prefs) {
+              const card = document.createElement('div');
+              card.className = 'card';
+              card.style.display = 'grid';
+              card.style.gap = '12px';
 
-        const header = document.createElement('div');
-        const title = document.createElement('div');
-        title.style.fontWeight = 'var(--font-semibold)';
-        title.style.fontSize = 'var(--text-lg)';
-        title.textContent = caseData.name || '—';
-        const sub = document.createElement('div');
-        sub.className = 'muted';
-        sub.style.fontSize = 'var(--text-sm)';
-        const mfg = caseData.manufacturer ? caseData.manufacturer : '—';
-        const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
-        sub.textContent = `${mfg} • ${d.length}×${d.width}×${d.height} in`;
-        header.appendChild(title);
-        header.appendChild(sub);
-        card.appendChild(header);
-        card.appendChild(makeMiniCategoryChip(caseData.category));
+              const header = document.createElement('div');
+              const title = document.createElement('div');
+              title.style.fontWeight = 'var(--font-semibold)';
+              title.style.fontSize = 'var(--text-lg)';
+              title.textContent = caseData.name || '—';
+              const sub = document.createElement('div');
+              sub.className = 'muted';
+              sub.style.fontSize = 'var(--text-sm)';
+              const mfg = caseData.manufacturer ? caseData.manufacturer : '—';
+              const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
+              sub.textContent = `${mfg} • ${d.length}×${d.width}×${d.height} in`;
+              header.appendChild(title);
+              header.appendChild(sub);
+              card.appendChild(header);
+              card.appendChild(makeMiniCategoryChip(caseData.category));
 
-        const posRow = document.createElement('div');
-        posRow.className = 'row';
-        posRow.style.gap = '10px';
-        const pos = inst.transform.position || { x: 0, y: 0, z: 0 };
-        const fX = smallField(`X (${prefs.units.length})`, Utils.inchesToUnit(pos.x, prefs.units.length));
-        const fY = smallField(`Y (${prefs.units.length})`, Utils.inchesToUnit(pos.y, prefs.units.length));
-        const fZ = smallField(`Z (${prefs.units.length})`, Utils.inchesToUnit(pos.z, prefs.units.length));
-        posRow.appendChild(fX.wrap);
-        posRow.appendChild(fY.wrap);
-        posRow.appendChild(fZ.wrap);
+              const posRow = document.createElement('div');
+              posRow.className = 'row';
+              posRow.style.gap = '10px';
+              const pos = inst.transform.position || { x: 0, y: 0, z: 0 };
+              const fX = smallField(`X (${prefs.units.length})`, Utils.inchesToUnit(pos.x, prefs.units.length));
+              const fY = smallField(`Y (${prefs.units.length})`, Utils.inchesToUnit(pos.y, prefs.units.length));
+              const fZ = smallField(`Z (${prefs.units.length})`, Utils.inchesToUnit(pos.z, prefs.units.length));
+              posRow.appendChild(fX.wrap);
+              posRow.appendChild(fY.wrap);
+              posRow.appendChild(fZ.wrap);
 
-        const row2 = document.createElement('div');
-        row2.className = 'row';
-        row2.style.gap = '10px';
-        const hide = document.createElement('button');
-        hide.className = 'btn';
-        hide.type = 'button';
-        hide.innerHTML = inst.hidden
-          ? '<i class="fa-solid fa-eye"></i> Unhide'
-          : '<i class="fa-solid fa-eye-slash"></i> Hide';
-        hide.addEventListener('click', () => PackLibrary.updateInstance(pack.id, inst.id, { hidden: !inst.hidden }));
-        const remove = document.createElement('button');
-        remove.className = 'btn btn-danger';
-        remove.type = 'button';
-        remove.innerHTML = '<i class="fa-solid fa-trash"></i> Remove';
-        remove.addEventListener('click', () => {
-          PackLibrary.removeInstances(pack.id, [inst.id]);
-          StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
-        });
-        row2.appendChild(hide);
-        row2.appendChild(remove);
+              const row2 = document.createElement('div');
+              row2.className = 'row';
+              row2.style.gap = '10px';
+              const hide = document.createElement('button');
+              hide.className = 'btn';
+              hide.type = 'button';
+              hide.innerHTML = inst.hidden
+                ? '<i class="fa-solid fa-eye"></i> Unhide'
+                : '<i class="fa-solid fa-eye-slash"></i> Hide';
+              hide.addEventListener('click', () =>
+                PackLibrary.updateInstance(pack.id, inst.id, { hidden: !inst.hidden })
+              );
+              const remove = document.createElement('button');
+              remove.className = 'btn btn-danger';
+              remove.type = 'button';
+              remove.innerHTML = '<i class="fa-solid fa-trash"></i> Remove';
+              remove.addEventListener('click', () => {
+                PackLibrary.removeInstances(pack.id, [inst.id]);
+                StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
+              });
+              row2.appendChild(hide);
+              row2.appendChild(remove);
 
-        const savePos = document.createElement('button');
-        savePos.className = 'btn btn-primary';
-        savePos.type = 'button';
-        savePos.innerHTML = '<i class="fa-solid fa-location-crosshairs"></i> Apply position';
-        savePos.addEventListener('click', () => {
-          const nextPos = {
-            x: Utils.unitToInches(Number(fX.input.value) || 0, prefs.units.length),
-            y: Utils.unitToInches(Number(fY.input.value) || 0, prefs.units.length),
-            z: Utils.unitToInches(Number(fZ.input.value) || 0, prefs.units.length),
-          };
-          PackLibrary.updateInstance(pack.id, inst.id, { transform: { ...inst.transform, position: nextPos } });
-          SceneManager.focusOnWorldPoint(SceneManager.vecInchesToWorld(nextPos), { duration: 420 });
-          UIComponents.showToast('Position updated', 'success');
-        });
+              const savePos = document.createElement('button');
+              savePos.className = 'btn btn-primary';
+              savePos.type = 'button';
+              savePos.innerHTML = '<i class="fa-solid fa-location-crosshairs"></i> Apply position';
+              savePos.addEventListener('click', () => {
+                const nextPos = {
+                  x: Utils.unitToInches(Number(fX.input.value) || 0, prefs.units.length),
+                  y: Utils.unitToInches(Number(fY.input.value) || 0, prefs.units.length),
+                  z: Utils.unitToInches(Number(fZ.input.value) || 0, prefs.units.length),
+                };
+                PackLibrary.updateInstance(pack.id, inst.id, { transform: { ...inst.transform, position: nextPos } });
+                SceneManager.focusOnWorldPoint(SceneManager.vecInchesToWorld(nextPos), { duration: 420 });
+                UIComponents.showToast('Position updated', 'success');
+              });
 
-        card.appendChild(posRow);
-        card.appendChild(savePos);
-        card.appendChild(row2);
-        inspectorEl.appendChild(card);
-      }
+              card.appendChild(posRow);
+              card.appendChild(savePos);
+              card.appendChild(row2);
+              inspectorEl.appendChild(card);
+            }
 
-      function smallField(label, value) {
-        const wrap = document.createElement('div');
-        wrap.className = 'field';
-        wrap.style.minWidth = '90px';
-        const l = document.createElement('div');
-        l.className = 'label';
-        l.textContent = label;
-        const input = document.createElement('input');
-        input.className = 'input';
-        input.type = 'number';
-        input.step = '0.1';
-        input.value = String(Number(value).toFixed(1));
-        wrap.appendChild(l);
-        wrap.appendChild(input);
-        return { wrap, input };
-      }
+            function smallField(label, value) {
+              const wrap = document.createElement('div');
+              wrap.className = 'field';
+              wrap.style.minWidth = '90px';
+              const l = document.createElement('div');
+              l.className = 'label';
+              l.textContent = label;
+              const input = document.createElement('input');
+              input.className = 'input';
+              input.type = 'number';
+              input.step = '0.1';
+              input.value = String(Number(value).toFixed(1));
+              wrap.appendChild(l);
+              wrap.appendChild(input);
+              return { wrap, input };
+            }
 
-      function setPanelVisible(side, visible) {
-        const isMobile = window.matchMedia('(max-width: 899px)').matches;
-        const defaultCol = which => {
-          const compact = window.matchMedia('(max-width: 1279px)').matches;
-          if (which === 'left') return compact ? '270px' : '290px';
-          return compact ? '300px' : '340px';
-        };
-        if (side === 'left') {
-          if (isMobile) leftEl.classList.toggle('open', visible);
-          else shellEl.style.setProperty('--left-col', visible ? defaultCol('left') : '0px');
-        }
-        if (side === 'right') {
-          if (isMobile) rightEl.classList.toggle('open', visible);
-          else shellEl.style.setProperty('--right-col', visible ? defaultCol('right') : '0px');
-        }
-        scheduleViewportResize();
-      }
+            function setPanelVisible(side, visible) {
+              const isMobile = window.matchMedia('(max-width: 899px)').matches;
+              const defaultCol = which => {
+                const compact = window.matchMedia('(max-width: 1279px)').matches;
+                if (which === 'left') return compact ? '270px' : '290px';
+                return compact ? '300px' : '340px';
+              };
+              if (side === 'left') {
+                if (isMobile) leftEl.classList.toggle('open', visible);
+                else shellEl.style.setProperty('--left-col', visible ? defaultCol('left') : '0px');
+              }
+              if (side === 'right') {
+                if (isMobile) rightEl.classList.toggle('open', visible);
+                else shellEl.style.setProperty('--right-col', visible ? defaultCol('right') : '0px');
+              }
 
-      function togglePanel(side) {
-        const isMobile = window.matchMedia('(max-width: 899px)').matches;
-        if (side === 'left') {
-          if (isMobile) {setPanelVisible('left', !leftEl.classList.contains('open'));}
-          else {
-            const current = getComputedStyle(shellEl).getPropertyValue('--left-col').trim() || '290px';
-            setPanelVisible('left', current === '0px');
-          }
-        }
-        if (side === 'right') {
-          if (isMobile) {setPanelVisible('right', !rightEl.classList.contains('open'));}
-          else {
-            const current = getComputedStyle(shellEl).getPropertyValue('--right-col').trim() || '340px';
-            setPanelVisible('right', current === '0px');
-          }
-        }
-        scheduleViewportResize();
-      }
+              if (StateStore.get('currentScreen') === 'editor') {
+                window.requestAnimationFrame(() => {
+                  if (SceneManager && typeof SceneManager.resize === 'function') SceneManager.resize();
+                });
+              }
+            }
 
-      function wireDropToViewport(canvasEl) {
-        canvasEl.addEventListener('dragover', ev => {
-          ev.preventDefault();
-          ev.dataTransfer.dropEffect = 'copy';
-        });
-        canvasEl.addEventListener('drop', ev => {
-          ev.preventDefault();
-          const caseId = ev.dataTransfer.getData('text/plain');
-          if (!caseId) return;
-          const world = worldPointOnGround(ev.clientX, ev.clientY, canvasEl);
-          if (!world) {
-            addCaseToPack(caseId);
-            return;
-          }
-          const inches = SceneManager.vecWorldToInches(world);
-          const c = CaseLibrary.getById(caseId);
-          if (c && c.dimensions && c.dimensions.height) inches.y = Math.max(1, c.dimensions.height / 2);
-          addCaseToPack(caseId, inches);
-        });
-      }
+            function togglePanel(side) {
+              const isMobile = window.matchMedia('(max-width: 899px)').matches;
+              if (side === 'left') {
+                if (isMobile) {setPanelVisible('left', !leftEl.classList.contains('open'));}
+                else {
+                  const current = getComputedStyle(shellEl).getPropertyValue('--left-col').trim() || '290px';
+                  setPanelVisible('left', current === '0px');
+                }
+              }
+              if (side === 'right') {
+                if (isMobile) {setPanelVisible('right', !rightEl.classList.contains('open'));}
+                else {
+                  const current = getComputedStyle(shellEl).getPropertyValue('--right-col').trim() || '340px';
+                  setPanelVisible('right', current === '0px');
+                }
+              }
+            }
 
-      function worldPointOnGround(clientX, clientY, canvasEl) {
-        const camera = SceneManager.getCamera();
-        if (!camera) return null;
-        const rect = canvasEl.getBoundingClientRect();
-        const x = ((clientX - rect.left) / rect.width) * 2 - 1;
-        const y = -((clientY - rect.top) / rect.height) * 2 + 1;
-        const raycaster = new THREE.Raycaster();
-        raycaster.setFromCamera({ x, y }, camera);
-        const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-        const out = new THREE.Vector3();
-        const ok = raycaster.ray.intersectPlane(plane, out);
-        return ok ? out : null;
-      }
+            function wireDropToViewport(canvasEl) {
+              canvasEl.addEventListener('dragover', ev => {
+                ev.preventDefault();
+                ev.dataTransfer.dropEffect = 'copy';
+              });
+              canvasEl.addEventListener('drop', ev => {
+                ev.preventDefault();
+                const caseId = ev.dataTransfer.getData('text/plain');
+                if (!caseId) return;
+                const world = worldPointOnGround(ev.clientX, ev.clientY, canvasEl);
+                if (!world) {
+                  addCaseToPack(caseId);
+                  return;
+                }
+                const inches = SceneManager.vecWorldToInches(world);
+                const c = CaseLibrary.getById(caseId);
+                if (c && c.dimensions && c.dimensions.height) inches.y = Math.max(1, c.dimensions.height / 2);
+                addCaseToPack(caseId, inches);
+              });
+            }
 
-      return { init: initEditorUI, render };
-    })();
+            function worldPointOnGround(clientX, clientY, canvasEl) {
+              const camera = SceneManager.getCamera();
+              if (!camera) return null;
+              const rect = canvasEl.getBoundingClientRect();
+              const x = ((clientX - rect.left) / rect.width) * 2 - 1;
+              const y = -((clientY - rect.top) / rect.height) * 2 + 1;
+              const raycaster = new THREE.Raycaster();
+              raycaster.setFromCamera({ x, y }, camera);
+              const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+              const out = new THREE.Vector3();
+              const ok = raycaster.ray.intersectPlane(plane, out);
+              return ok ? out : null;
+            }
 
-    const UpdatesUI = (() => {
-      const listEl = document.getElementById('updates-list');
-      function initUpdatesUI() {}
-      function render() {
-        listEl.innerHTML = '';
-        Data.updates.forEach(u => {
-          const card = document.createElement('div');
-          card.className = 'card';
-          const header = document.createElement('div');
-          header.className = 'row space-between';
-          header.style.alignItems = 'flex-start';
-          const left = document.createElement('div');
-          left.innerHTML = `<div style="font-weight:var(--font-semibold);font-size:var(--text-lg)">Version ${u.version}</div><div class="muted" style="font-size:var(--text-xs)">${new Date(u.date).toLocaleDateString()}</div>`;
-          header.appendChild(left);
-          card.appendChild(header);
+            return { init: initEditorUI, render };
+          })();
 
-          const sections = [
-            { title: 'New Features', items: u.features || [] },
-            { title: 'Bug Fixes', items: u.bugFixes || [] },
-            { title: 'Breaking Changes', items: u.breakingChanges || [] },
-          ].filter(s => s.items.length);
-          sections.forEach(s => {
-            const t = document.createElement('div');
-            t.style.marginTop = '12px';
-            t.style.fontWeight = 'var(--font-semibold)';
-            t.textContent = s.title;
-            card.appendChild(t);
-            const ul = document.createElement('ul');
-            ul.style.margin = '8px 0 0 16px';
-            ul.style.color = 'var(--text-secondary)';
-            ul.style.fontSize = 'var(--text-sm)';
-            s.items.forEach(it => {
-              const li = document.createElement('li');
-              li.textContent = it;
-              ul.appendChild(li);
-            });
-            card.appendChild(ul);
-          });
-          listEl.appendChild(card);
-        });
-      }
-      return { init: initUpdatesUI, render };
-    })();
+          // ============================================================================
+          // SECTION: SCREEN UI (UPDATES)
+          // ============================================================================
+          const UpdatesUI = (() => {
+            const listEl = document.getElementById('updates-list');
+            function initUpdatesUI() {}
+            function render() {
+              listEl.innerHTML = '';
+              Data.updates.forEach(u => {
+                const card = document.createElement('div');
+                card.className = 'card';
+                const header = document.createElement('div');
+                header.className = 'row space-between';
+                header.style.alignItems = 'flex-start';
+                const left = document.createElement('div');
+                left.innerHTML = `<div style="font-weight:var(--font-semibold);font-size:var(--text-lg)">Version ${u.version}</div><div class="muted" style="font-size:var(--text-xs)">${new Date(u.date).toLocaleDateString()}</div>`;
+                header.appendChild(left);
+                card.appendChild(header);
 
-    const RoadmapUI = (() => {
-      const listEl = document.getElementById('roadmap-list');
-      function initRoadmapUI() {}
-      function render() {
-        listEl.innerHTML = '';
-        Data.roadmap.forEach(group => {
-          const wrap = document.createElement('div');
-          wrap.className = 'grid';
-          wrap.style.gap = '10px';
-          const h = document.createElement('div');
-          h.style.fontSize = 'var(--text-lg)';
-          h.style.fontWeight = 'var(--font-semibold)';
-          h.textContent = group.quarter;
-          wrap.appendChild(h);
-          const grid = document.createElement('div');
-          grid.className = 'pack-grid';
-          grid.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
-          group.items.forEach(item => {
-            const card = document.createElement('div');
-            card.className = 'card';
-            card.style.cursor = 'pointer';
-            card.innerHTML = `
+                const sections = [
+                  { title: 'New Features', items: u.features || [] },
+                  { title: 'Bug Fixes', items: u.bugFixes || [] },
+                  { title: 'Breaking Changes', items: u.breakingChanges || [] },
+                ].filter(s => s.items.length);
+                sections.forEach(s => {
+                  const t = document.createElement('div');
+                  t.style.marginTop = '12px';
+                  t.style.fontWeight = 'var(--font-semibold)';
+                  t.textContent = s.title;
+                  card.appendChild(t);
+                  const ul = document.createElement('ul');
+                  ul.style.margin = '8px 0 0 16px';
+                  ul.style.color = 'var(--text-secondary)';
+                  ul.style.fontSize = 'var(--text-sm)';
+                  s.items.forEach(it => {
+                    const li = document.createElement('li');
+                    li.textContent = it;
+                    ul.appendChild(li);
+                  });
+                  card.appendChild(ul);
+                });
+                listEl.appendChild(card);
+              });
+            }
+            return { init: initUpdatesUI, render };
+          })();
+
+          // ============================================================================
+          // SECTION: SCREEN UI (ROADMAP)
+          // ============================================================================
+          const RoadmapUI = (() => {
+            const listEl = document.getElementById('roadmap-list');
+            function initRoadmapUI() {}
+            function render() {
+              listEl.innerHTML = '';
+              Data.roadmap.forEach(group => {
+                const wrap = document.createElement('div');
+                wrap.className = 'grid';
+                wrap.style.gap = '10px';
+                const h = document.createElement('div');
+                h.style.fontSize = 'var(--text-lg)';
+                h.style.fontWeight = 'var(--font-semibold)';
+                h.textContent = group.quarter;
+                wrap.appendChild(h);
+                const grid = document.createElement('div');
+                grid.className = 'pack-grid';
+                grid.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
+                group.items.forEach(item => {
+                  const card = document.createElement('div');
+                  card.className = 'card';
+                  card.style.cursor = 'pointer';
+                  card.innerHTML = `
                   <div class="row space-between" style="gap:10px">
                     <div style="font-weight:var(--font-semibold)">${item.title}</div>
                     <div class="badge" style="border-color:transparent;background:${item.color};color:white">${item.badge} ${item.status}</div>
                   </div>
                   <div class="muted" style="font-size:var(--text-sm);margin-top:8px">${item.details}</div>
                 `;
-            card.addEventListener('click', () => {
-              UIComponents.showModal({
-                title: item.title,
-                content: `<div class="muted" style="font-size:var(--text-sm)">${item.details}</div>`,
-                actions: [{ label: 'Close', variant: 'primary' }],
-              });
-            });
-            grid.appendChild(card);
-          });
-          wrap.appendChild(grid);
-          listEl.appendChild(wrap);
-        });
-      }
-      return { init: initRoadmapUI, render };
-    })();
-
-    const SettingsUI = (() => {
-      const elLength = document.getElementById('pref-length');
-      const elWeight = document.getElementById('pref-weight');
-      const elTheme = document.getElementById('pref-theme');
-      const elLabel = document.getElementById('pref-label-size');
-      const elHidden = document.getElementById('pref-hidden-opacity');
-      const elSnap = document.getElementById('pref-snapping-enabled');
-      const elGrid = document.getElementById('pref-grid-size');
-      const elShot = document.getElementById('pref-shot-res');
-      const elPdfStats = document.getElementById('pref-pdf-stats');
-      const btnSave = document.getElementById('btn-save-prefs');
-      const btnReset = document.getElementById('btn-reset-demo');
-
-      function initSettingsUI() {
-        btnSave.addEventListener('click', () => save());
-        btnReset.addEventListener('click', async () => {
-          const ok = await UIComponents.confirm({
-            title: 'Reset demo data?',
-            message: 'This replaces your local data with the demo set.',
-            danger: true,
-            okLabel: 'Reset',
-          });
-          if (!ok) return;
-          Storage.clearAll();
-          clearSession();
-          window.location.reload();
-        });
-      }
-
-      function loadForm() {
-        const p = PreferencesManager.get();
-        elLength.value = p.units.length;
-        elWeight.value = p.units.weight;
-        elTheme.value = p.theme;
-        elLabel.value = String(p.labelFontSize);
-        elHidden.value = String(p.hiddenCaseOpacity);
-        elSnap.value = String(Boolean(p.snapping.enabled));
-        elGrid.value = String(p.snapping.gridSize);
-        elShot.value = p.export.screenshotResolution;
-        elPdfStats.value = String(Boolean(p.export.pdfIncludeStats));
-      }
-
-      function save() {
-        const prev = PreferencesManager.get();
-        const next = Utils.deepClone(prev);
-        next.units.length = elLength.value;
-        next.units.weight = elWeight.value;
-        next.theme = elTheme.value;
-        next.labelFontSize = Utils.clamp(Number(elLabel.value) || 12, 8, 24);
-        next.hiddenCaseOpacity = Utils.clamp(Number(elHidden.value) || 0.3, 0, 1);
-        next.snapping.enabled = elSnap.value === 'true';
-        next.snapping.gridSize = Math.max(0.25, Number(elGrid.value) || 1);
-        next.export.screenshotResolution = elShot.value;
-        next.export.pdfIncludeStats = elPdfStats.value === 'true';
-        PreferencesManager.set(next);
-        PreferencesManager.applyTheme(next.theme);
-        UIComponents.showToast('Preferences saved', 'success');
-      }
-
-      return { init: initSettingsUI, loadForm };
-    })();
-
-    const KeyboardManager = (() => {
-      let clipboard = null;
-
-      function initKeyboardManager() {
-        document.addEventListener('keydown', handleKeyDown);
-      }
-
-      function handleKeyDown(event) {
-        if (isTypingContext(event)) return;
-        const key = buildKeyString(event);
-        const handler = shortcuts[key];
-        if (!handler) return;
-        const handled = handler(event);
-        if (handled === false) return;
-        event.preventDefault();
-      }
-
-      function isTypingContext(event) {
-        const el = event.target;
-        if (!el) return false;
-        if (el.isContentEditable) return true;
-        return el.matches && el.matches('input, textarea, select');
-      }
-
-      function buildKeyString(event) {
-        const parts = [];
-        if (event.metaKey) parts.push('meta');
-        if (event.ctrlKey && !event.metaKey) parts.push('ctrl');
-        if (event.shiftKey) parts.push('shift');
-        if (event.altKey) parts.push('alt');
-        parts.push(String(event.key || '').toLowerCase());
-        return parts.join('+');
-      }
-
-      function inEditor() {
-        return StateStore.get('currentScreen') === 'editor';
-      }
-
-      function save() {
-        Storage.saveNow();
-        UIComponents.showToast('Saved locally', 'success', { title: 'Storage' });
-      }
-
-      function undo() {
-        const ok = StateStore.undo();
-        UIComponents.showToast(ok ? 'Undone' : 'Nothing to undo', ok ? 'info' : 'warning', { title: 'Edit' });
-      }
-
-      function redo() {
-        const ok = StateStore.redo();
-        UIComponents.showToast(ok ? 'Redone' : 'Nothing to redo', ok ? 'info' : 'warning', { title: 'Edit' });
-      }
-
-      function deselectAll() {
-        StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
-        CaseScene.setSelected([]);
-      }
-
-      function selectAll() {
-        if (!inEditor()) return;
-        InteractionManager.selectAllInPack();
-      }
-
-      function deleteSelected() {
-        if (!inEditor()) return;
-        InteractionManager.deleteSelection();
-      }
-
-      function duplicateSelected() {
-        if (!inEditor()) return;
-        const packId = StateStore.get('currentPackId');
-        const pack = PackLibrary.getById(packId);
-        const selected = StateStore.get('selectedInstanceIds') || [];
-        if (!pack || !selected.length) return;
-
-        const nextCases = [...(pack.cases || [])];
-        const newIds = [];
-        selected.forEach(id => {
-          const inst = (pack.cases || []).find(i => i.id === id);
-          if (!inst) return;
-          const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: -80, y: 10, z: 0 };
-          nextCases.push({
-            ...Utils.deepClone(inst),
-            id: Utils.uuid(),
-            transform: {
-              ...Utils.deepClone(inst.transform || {}),
-              position: { x: pos.x + 12, y: pos.y, z: pos.z + 12 },
-            },
-            hidden: false,
-          });
-          newIds.push(nextCases[nextCases.length - 1].id);
-        });
-
-        PackLibrary.update(packId, { cases: nextCases });
-        StateStore.set({ selectedInstanceIds: newIds }, { skipHistory: true });
-        UIComponents.showToast(`Duplicated ${newIds.length} case(s)`, 'success', { title: 'Edit' });
-      }
-
-      function copySelected() {
-        if (!inEditor()) return;
-        const packId = StateStore.get('currentPackId');
-        const pack = PackLibrary.getById(packId);
-        const selected = StateStore.get('selectedInstanceIds') || [];
-        if (!pack || !selected.length) return;
-        clipboard = selected
-          .map(id => (pack.cases || []).find(i => i.id === id))
-          .filter(Boolean)
-          .map(i => ({ caseId: i.caseId, transform: Utils.deepClone(i.transform || {}) }));
-        UIComponents.showToast(`Copied ${clipboard.length} case(s)`, 'info', { title: 'Clipboard' });
-      }
-
-      function pasteClipboard() {
-        if (!inEditor()) return;
-        const packId = StateStore.get('currentPackId');
-        const pack = PackLibrary.getById(packId);
-        if (!pack || !clipboard || !clipboard.length) return;
-
-        const nextCases = [...(pack.cases || [])];
-        const newIds = [];
-        clipboard.forEach(item => {
-          const pos = item.transform && item.transform.position ? item.transform.position : { x: -80, y: 10, z: 0 };
-          nextCases.push({
-            id: Utils.uuid(),
-            caseId: item.caseId,
-            transform: {
-              position: { x: pos.x + 12, y: pos.y, z: pos.z + 12 },
-              rotation: Utils.deepClone((item.transform && item.transform.rotation) || { x: 0, y: 0, z: 0 }),
-              scale: Utils.deepClone((item.transform && item.transform.scale) || { x: 1, y: 1, z: 1 }),
-            },
-            hidden: false,
-            groupId: null,
-          });
-          newIds.push(nextCases[nextCases.length - 1].id);
-        });
-
-        PackLibrary.update(packId, { cases: nextCases });
-        StateStore.set({ selectedInstanceIds: newIds }, { skipHistory: true });
-        UIComponents.showToast(`Pasted ${newIds.length} case(s)`, 'success', { title: 'Clipboard' });
-      }
-
-      function focusSelected() {
-        if (!inEditor()) return;
-        const selected = StateStore.get('selectedInstanceIds') || [];
-        if (!selected.length) return;
-        const obj = CaseScene.getObject(selected[0]);
-        if (!obj) return;
-        SceneManager.focusOnWorldPoint(obj.position.clone(), { duration: 600 });
-      }
-
-      function toggleGrid() {
-        if (!inEditor()) return;
-        const visible = SceneManager.toggleGrid();
-        UIComponents.showToast(visible ? 'Grid shown' : 'Grid hidden', 'info', { title: 'View', duration: 1200 });
-      }
-
-      function toggleShadows() {
-        if (!inEditor()) return;
-        const enabled = SceneManager.toggleShadows();
-        UIComponents.showToast(enabled ? 'Shadows enabled' : 'Shadows disabled', 'info', {
-          title: 'View',
-          duration: 1200,
-        });
-      }
-
-      function openPackDialog() {
-        const packs = PackLibrary.getPacks()
-          .slice()
-          .sort((a, b) => (b.lastEdited || 0) - (a.lastEdited || 0));
-        const content = document.createElement('div');
-        content.className = 'grid';
-        content.style.gap = '10px';
-        if (!packs.length) {
-          const empty = document.createElement('div');
-          empty.className = 'muted';
-          empty.style.fontSize = 'var(--text-sm)';
-          empty.textContent = 'No packs available.';
-          content.appendChild(empty);
-        } else {
-          packs.forEach(p => {
-            const row = document.createElement('button');
-            row.type = 'button';
-            row.className = 'btn';
-            row.style.justifyContent = 'space-between';
-            row.style.width = '100%';
-            const name = document.createElement('span');
-            name.style.fontWeight = 'var(--font-semibold)';
-            name.textContent = p.title || 'Untitled';
-            const meta = document.createElement('span');
-            meta.className = 'muted';
-            meta.style.fontSize = 'var(--text-xs)';
-            meta.textContent = `edited ${Utils.formatRelativeTime(p.lastEdited)}`;
-            row.appendChild(name);
-            row.appendChild(meta);
-            row.addEventListener('click', () => {
-              PackLibrary.open(p.id);
-              AppShell.navigate('editor');
-              modal.close();
-            });
-            content.appendChild(row);
-          });
-        }
-
-        const modal = UIComponents.showModal({
-          title: 'Open Pack',
-          content,
-          actions: [{ label: 'Close', variant: 'primary' }],
-        });
-      }
-
-      const shortcuts = {
-        'meta+s': save,
-        'ctrl+s': save,
-        'meta+z': undo,
-        'ctrl+z': undo,
-        'meta+shift+z': redo,
-        'ctrl+shift+z': redo,
-        'meta+a': selectAll,
-        'ctrl+a': selectAll,
-        'meta+shift+a': deselectAll,
-        'ctrl+shift+a': deselectAll,
-        escape: deselectAll,
-        delete: deleteSelected,
-        backspace: deleteSelected,
-        'meta+d': duplicateSelected,
-        'ctrl+d': duplicateSelected,
-        'meta+c': copySelected,
-        'ctrl+c': copySelected,
-        'meta+v': pasteClipboard,
-        'ctrl+v': pasteClipboard,
-        'meta+p': () => {
-          if (!inEditor()) return;
-          const session = getSession();
-          if (!canUseFeature('AUTOPACK', session)) {
-            UIComponents.showToast('AutoPack requires Pro', 'warning', { title: 'Upgrade' });
-            return;
-          }
-          AutoPackEngine.pack();
-        },
-        'ctrl+p': () => {
-          if (!inEditor()) return;
-          const session = getSession();
-          if (!canUseFeature('AUTOPACK', session)) {
-            UIComponents.showToast('AutoPack requires Pro', 'warning', { title: 'Upgrade' });
-            return;
-          }
-          AutoPackEngine.pack();
-        },
-        'meta+o': openPackDialog,
-        'ctrl+o': openPackDialog,
-        g: toggleGrid,
-        s: toggleShadows,
-        f: focusSelected,
-        p: () => {
-          if (!inEditor()) return;
-          SceneManager.toggleDevOverlay();
-        },
-      };
-
-      return { init: initKeyboardManager };
-    })();
-
-    function wireGlobalButtons() {
-      const btnAccount = document.getElementById('btn-account');
-      const btnExport = document.getElementById('btn-export-app');
-      const btnImport = document.getElementById('btn-import-app');
-      const btnTheme = document.getElementById('btn-theme');
-      const btnHelp = document.getElementById('btn-help');
-
-      function switchOrganization(nextOrgId) {
-        const orgId = String(nextOrgId || '').trim() || 'personal';
-        const storedOrg = Storage.loadOrg(orgId);
-        const allData = Storage.load();
-        const prefs =
-          allData && allData.preferences && typeof allData.preferences === 'object'
-            ? allData.preferences
-            : Defaults.defaultPreferences;
-        const normalized = Normalizer.normalizeAppData(
-          storedOrg || { caseLibrary: [], packLibrary: [], preferences: prefs, currentPackId: null }
-        );
-        const prev = StateStore.get();
-        const nextState = {
-          ...prev,
-          caseLibrary: normalized.caseLibrary,
-          packLibrary: normalized.packLibrary,
-          preferences: normalized.preferences,
-          currentPackId: normalized.currentPackId,
-          currentScreen: 'packs',
-          selectedInstanceIds: [],
-        };
-        StateStore.replace(nextState, { skipHistory: true });
-        Storage.saveNow();
-      }
-
-      mountAccountSwitcher({
-        buttonEl: btnAccount,
-        ui: UIComponents,
-        onOrgChange: payload => {
-          if (!payload || typeof payload !== 'object') return;
-          if (payload.phase === 'before') {
-            Storage.saveNow();
-            return;
-          }
-          if (payload.phase === 'after' && payload.nextOrgId) {
-            switchOrganization(payload.nextOrgId);
-          }
-        },
-      });
-
-      btnExport.addEventListener('click', () => {
-        const json = Storage.exportAppJSON();
-        Utils.downloadText(`truck-packer-3d-${Date.now()}.json`, json);
-        UIComponents.showToast('Exported app JSON', 'success');
-      });
-
-      btnImport.addEventListener('click', () => {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.json,application/json';
-        input.addEventListener('change', async () => {
-          const file = input.files && input.files[0];
-          if (!file) return;
-          const text = await file.text();
-          try {
-            const imported = Storage.importAppJSON(text);
-            Storage.replaceAll(imported.data);
-
-            const orgIds = imported.data && imported.data.orgData ? Object.keys(imported.data.orgData) : [];
-            const currentSession = getSession();
-            let targetOrgId =
-              currentSession && currentSession.user && currentSession.user.currentOrgId
-                ? currentSession.user.currentOrgId
-                : 'personal';
-            if (!imported.data || !imported.data.orgData || !imported.data.orgData[targetOrgId]) {
-              targetOrgId = orgIds.includes('personal') ? 'personal' : orgIds[0] || 'personal';
-              if (targetOrgId && !(currentSession.orgs || []).some(o => o && o.id === targetOrgId)) {
-                upsertOrg({
-                  id: targetOrgId,
-                  type: targetOrgId === 'personal' ? 'personal' : 'organization',
-                  name: targetOrgId === 'personal' ? 'Personal Account' : `Imported ${targetOrgId}`,
-                  role: 'Owner',
-                  plan: 'Trial',
-                  trialEndsAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+                  card.addEventListener('click', () => {
+                    UIComponents.showModal({
+                      title: item.title,
+                      content: `<div class="muted" style="font-size:var(--text-sm)">${item.details}</div>`,
+                      actions: [{ label: 'Close', variant: 'primary' }],
+                    });
+                  });
+                  grid.appendChild(card);
                 });
-              }
-              setCurrentOrgId(targetOrgId);
+                wrap.appendChild(grid);
+                listEl.appendChild(wrap);
+              });
+            }
+            return { init: initRoadmapUI, render };
+          })();
+
+          // ============================================================================
+          // SECTION: SCREEN UI (SETTINGS)
+          // ============================================================================
+          const SettingsUI = (() => {
+            const elLength = document.getElementById('pref-length');
+            const elWeight = document.getElementById('pref-weight');
+            const elTheme = document.getElementById('pref-theme');
+            const elLabel = document.getElementById('pref-label-size');
+            const elHidden = document.getElementById('pref-hidden-opacity');
+            const elSnap = document.getElementById('pref-snapping-enabled');
+            const elGrid = document.getElementById('pref-grid-size');
+            const elShot = document.getElementById('pref-shot-res');
+            const elPdfStats = document.getElementById('pref-pdf-stats');
+            const btnSave = document.getElementById('btn-save-prefs');
+            const btnReset = document.getElementById('btn-reset-demo');
+
+            function initSettingsUI() {
+              btnSave.addEventListener('click', () => save());
+              btnReset.addEventListener('click', async () => {
+                const ok = await UIComponents.confirm({
+                  title: 'Reset demo data?',
+                  message: 'This replaces your local data with the demo set.',
+                  danger: true,
+                  okLabel: 'Reset',
+                });
+                if (!ok) return;
+                Storage.clearAll();
+                window.location.reload();
+              });
             }
 
-            const storedOrg = Storage.loadOrg(targetOrgId);
-            const normalized = Normalizer.normalizeAppData(storedOrg || {});
-            const prev = StateStore.get();
-            const nextState = {
-              ...prev,
-              caseLibrary: normalized.caseLibrary,
-              packLibrary: normalized.packLibrary,
-              preferences: normalized.preferences,
-              currentPackId: normalized.currentPackId,
-              currentScreen: 'packs',
-              selectedInstanceIds: [],
+            function loadForm() {
+              const p = PreferencesManager.get();
+              elLength.value = p.units.length;
+              elWeight.value = p.units.weight;
+              elTheme.value = p.theme;
+              elLabel.value = String(p.labelFontSize);
+              elHidden.value = String(p.hiddenCaseOpacity);
+              elSnap.value = String(Boolean(p.snapping.enabled));
+              elGrid.value = String(p.snapping.gridSize);
+              elShot.value = p.export.screenshotResolution;
+              elPdfStats.value = String(Boolean(p.export.pdfIncludeStats));
+            }
+
+            function save() {
+              const prev = PreferencesManager.get();
+              const next = Utils.deepClone(prev);
+              next.units.length = elLength.value;
+              next.units.weight = elWeight.value;
+              next.theme = elTheme.value;
+              next.labelFontSize = Utils.clamp(Number(elLabel.value) || 12, 8, 24);
+              next.hiddenCaseOpacity = Utils.clamp(Number(elHidden.value) || 0.3, 0, 1);
+              next.snapping.enabled = elSnap.value === 'true';
+              next.snapping.gridSize = Math.max(0.25, Number(elGrid.value) || 1);
+              next.export.screenshotResolution = elShot.value;
+              next.export.pdfIncludeStats = elPdfStats.value === 'true';
+              PreferencesManager.set(next);
+              PreferencesManager.applyTheme(next.theme);
+              UIComponents.showToast('Preferences saved', 'success');
+            }
+
+            return { init: initSettingsUI, loadForm };
+          })();
+
+          // ============================================================================
+          // SECTION: GLOBAL INPUT (KEYBOARD)
+          // ============================================================================
+          const KeyboardManager = (() => {
+            let clipboard = null;
+
+            function initKeyboardManager() {
+              document.addEventListener('keydown', handleKeyDown);
+            }
+
+            function handleKeyDown(event) {
+              if (isTypingContext(event)) return;
+              const key = buildKeyString(event);
+              const handler = shortcuts[key];
+              if (!handler) return;
+              const handled = handler(event);
+              if (handled === false) return;
+              event.preventDefault();
+            }
+
+            function isTypingContext(event) {
+              const el = event.target;
+              if (!el) return false;
+              if (el.isContentEditable) return true;
+              return el.matches && el.matches('input, textarea, select');
+            }
+
+            function buildKeyString(event) {
+              const parts = [];
+              if (event.metaKey) parts.push('meta');
+              if (event.ctrlKey && !event.metaKey) parts.push('ctrl');
+              if (event.shiftKey) parts.push('shift');
+              if (event.altKey) parts.push('alt');
+              parts.push(String(event.key || '').toLowerCase());
+              return parts.join('+');
+            }
+
+            function inEditor() {
+              return StateStore.get('currentScreen') === 'editor';
+            }
+
+            function save() {
+              Storage.saveNow();
+              UIComponents.showToast('Saved locally', 'success', { title: 'Storage' });
+            }
+
+            function undo() {
+              const ok = StateStore.undo();
+              UIComponents.showToast(ok ? 'Undone' : 'Nothing to undo', ok ? 'info' : 'warning', { title: 'Edit' });
+            }
+
+            function redo() {
+              const ok = StateStore.redo();
+              UIComponents.showToast(ok ? 'Redone' : 'Nothing to redo', ok ? 'info' : 'warning', { title: 'Edit' });
+            }
+
+            function deselectAll() {
+              StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
+              CaseScene.setSelected([]);
+            }
+
+            function selectAll() {
+              if (!inEditor()) return;
+              InteractionManager.selectAllInPack();
+            }
+
+            function deleteSelected() {
+              if (!inEditor()) return;
+              InteractionManager.deleteSelection();
+            }
+
+            function duplicateSelected() {
+              if (!inEditor()) return;
+              const packId = StateStore.get('currentPackId');
+              const pack = PackLibrary.getById(packId);
+              const selected = StateStore.get('selectedInstanceIds') || [];
+              if (!pack || !selected.length) return;
+
+              const nextCases = [...(pack.cases || [])];
+              const newIds = [];
+              selected.forEach(id => {
+                const inst = (pack.cases || []).find(i => i.id === id);
+                if (!inst) return;
+                const pos =
+                  inst.transform && inst.transform.position ? inst.transform.position : { x: -80, y: 10, z: 0 };
+                nextCases.push({
+                  ...Utils.deepClone(inst),
+                  id: Utils.uuid(),
+                  transform: {
+                    ...Utils.deepClone(inst.transform || {}),
+                    position: { x: pos.x + 12, y: pos.y, z: pos.z + 12 },
+                  },
+                  hidden: false,
+                });
+                newIds.push(nextCases[nextCases.length - 1].id);
+              });
+
+              PackLibrary.update(packId, { cases: nextCases });
+              StateStore.set({ selectedInstanceIds: newIds }, { skipHistory: true });
+              UIComponents.showToast(`Duplicated ${newIds.length} case(s)`, 'success', { title: 'Edit' });
+            }
+
+            function copySelected() {
+              if (!inEditor()) return;
+              const packId = StateStore.get('currentPackId');
+              const pack = PackLibrary.getById(packId);
+              const selected = StateStore.get('selectedInstanceIds') || [];
+              if (!pack || !selected.length) return;
+              clipboard = selected
+                .map(id => (pack.cases || []).find(i => i.id === id))
+                .filter(Boolean)
+                .map(i => ({ caseId: i.caseId, transform: Utils.deepClone(i.transform || {}) }));
+              UIComponents.showToast(`Copied ${clipboard.length} case(s)`, 'info', { title: 'Clipboard' });
+            }
+
+            function pasteClipboard() {
+              if (!inEditor()) return;
+              const packId = StateStore.get('currentPackId');
+              const pack = PackLibrary.getById(packId);
+              if (!pack || !clipboard || !clipboard.length) return;
+
+              const nextCases = [...(pack.cases || [])];
+              const newIds = [];
+              clipboard.forEach(item => {
+                const pos =
+                  item.transform && item.transform.position ? item.transform.position : { x: -80, y: 10, z: 0 };
+                nextCases.push({
+                  id: Utils.uuid(),
+                  caseId: item.caseId,
+                  transform: {
+                    position: { x: pos.x + 12, y: pos.y, z: pos.z + 12 },
+                    rotation: Utils.deepClone((item.transform && item.transform.rotation) || { x: 0, y: 0, z: 0 }),
+                    scale: Utils.deepClone((item.transform && item.transform.scale) || { x: 1, y: 1, z: 1 }),
+                  },
+                  hidden: false,
+                  groupId: null,
+                });
+                newIds.push(nextCases[nextCases.length - 1].id);
+              });
+
+              PackLibrary.update(packId, { cases: nextCases });
+              StateStore.set({ selectedInstanceIds: newIds }, { skipHistory: true });
+              UIComponents.showToast(`Pasted ${newIds.length} case(s)`, 'success', { title: 'Clipboard' });
+            }
+
+            function focusSelected() {
+              if (!inEditor()) return;
+              const selected = StateStore.get('selectedInstanceIds') || [];
+              if (!selected.length) return;
+              const obj = CaseScene.getObject(selected[0]);
+              if (!obj) return;
+              SceneManager.focusOnWorldPoint(obj.position.clone(), { duration: 600 });
+            }
+
+            function toggleGrid() {
+              if (!inEditor()) return;
+              const visible = SceneManager.toggleGrid();
+              UIComponents.showToast(visible ? 'Grid shown' : 'Grid hidden', 'info', { title: 'View', duration: 1200 });
+            }
+
+            function toggleShadows() {
+              if (!inEditor()) return;
+              const enabled = SceneManager.toggleShadows();
+              UIComponents.showToast(enabled ? 'Shadows enabled' : 'Shadows disabled', 'info', {
+                title: 'View',
+                duration: 1200,
+              });
+            }
+
+            function openPackDialog() {
+              const packs = PackLibrary.getPacks()
+                .slice()
+                .sort((a, b) => (b.lastEdited || 0) - (a.lastEdited || 0));
+              const content = document.createElement('div');
+              content.className = 'grid';
+              content.style.gap = '10px';
+              if (!packs.length) {
+                const empty = document.createElement('div');
+                empty.className = 'muted';
+                empty.style.fontSize = 'var(--text-sm)';
+                empty.textContent = 'No packs available.';
+                content.appendChild(empty);
+              } else {
+                packs.forEach(p => {
+                  const row = document.createElement('button');
+                  row.type = 'button';
+                  row.className = 'btn';
+                  row.style.justifyContent = 'space-between';
+                  row.style.width = '100%';
+                  const name = document.createElement('span');
+                  name.style.fontWeight = 'var(--font-semibold)';
+                  name.textContent = p.title || 'Untitled';
+                  const meta = document.createElement('span');
+                  meta.className = 'muted';
+                  meta.style.fontSize = 'var(--text-xs)';
+                  meta.textContent = `edited ${Utils.formatRelativeTime(p.lastEdited)}`;
+                  row.appendChild(name);
+                  row.appendChild(meta);
+                  row.addEventListener('click', () => {
+                    PackLibrary.open(p.id);
+                    AppShell.navigate('editor');
+                    modal.close();
+                  });
+                  content.appendChild(row);
+                });
+              }
+
+              const modal = UIComponents.showModal({
+                title: 'Open Pack',
+                content,
+                actions: [{ label: 'Close', variant: 'primary' }],
+              });
+            }
+
+            const shortcuts = {
+              'meta+s': save,
+              'ctrl+s': save,
+              'meta+z': undo,
+              'ctrl+z': undo,
+              'meta+shift+z': redo,
+              'ctrl+shift+z': redo,
+              'meta+a': selectAll,
+              'ctrl+a': selectAll,
+              'meta+shift+a': deselectAll,
+              'ctrl+shift+a': deselectAll,
+              escape: deselectAll,
+              delete: deleteSelected,
+              backspace: deleteSelected,
+              'meta+d': duplicateSelected,
+              'ctrl+d': duplicateSelected,
+              'meta+c': copySelected,
+              'ctrl+c': copySelected,
+              'meta+v': pasteClipboard,
+              'ctrl+v': pasteClipboard,
+              'meta+p': () => {
+                if (!inEditor()) return;
+                AutoPackEngine.pack();
+              },
+              'ctrl+p': () => {
+                if (!inEditor()) return;
+                AutoPackEngine.pack();
+              },
+              'meta+o': openPackDialog,
+              'ctrl+o': openPackDialog,
+              g: toggleGrid,
+              s: toggleShadows,
+              f: focusSelected,
+              p: () => {
+                if (!inEditor()) return;
+                SceneManager.toggleDevOverlay();
+              },
             };
-            StateStore.replace(nextState, { skipHistory: false });
-            PreferencesManager.applyTheme(nextState.preferences.theme);
-            UIComponents.showToast('Imported app JSON', 'success');
-          } catch (err) {
-            UIComponents.showToast('Import failed: ' + err.message, 'error');
-          }
-        });
-        input.click();
-      });
 
-      btnTheme.addEventListener('click', () => {
-        const prefs = PreferencesManager.get();
-        const next = Utils.deepClone(prefs);
-        next.theme = prefs.theme === 'dark' ? 'light' : 'dark';
-        PreferencesManager.set(next);
-        PreferencesManager.applyTheme(next.theme);
-        UIComponents.showToast(`Theme: ${next.theme}`, 'info');
-      });
+            return { init: initKeyboardManager };
+          })();
 
-      if (btnHelp) {
-        btnHelp.addEventListener('click', () => {
-          UIComponents.showModal({
-            title: 'Help — Export / Import',
-            content: `
+          function wireGlobalButtons() {
+            const btnExport = document.getElementById('btn-export-app');
+            const btnImport = document.getElementById('btn-import-app');
+            const btnHelp = document.getElementById('btn-help');
+
+            btnExport.addEventListener('click', () => {
+              const json = Storage.exportAppJSON();
+              Utils.downloadText(`truck-packer-3d-${Date.now()}.json`, json);
+              UIComponents.showToast('Exported app JSON', 'success');
+            });
+
+            btnImport.addEventListener('click', () => {
+              const input = document.createElement('input');
+              input.type = 'file';
+              input.accept = '.json,application/json';
+              input.addEventListener('change', async () => {
+                const file = input.files && input.files[0];
+                if (!file) return;
+                const text = await file.text();
+                try {
+                  const imported = Storage.importAppJSON(text);
+                  const prev = StateStore.get();
+                  const nextState = {
+                    ...prev,
+                    caseLibrary: imported.caseLibrary,
+                    packLibrary: imported.packLibrary,
+                    preferences: imported.preferences,
+                    currentPackId: null,
+                    currentScreen: 'packs',
+                    selectedInstanceIds: [],
+                  };
+                  StateStore.replace(nextState, { skipHistory: false });
+                  Storage.saveNow();
+                  PreferencesManager.applyTheme(nextState.preferences.theme);
+                  UIComponents.showToast('Imported app JSON', 'success');
+                } catch (err) {
+                  UIComponents.showToast('Import failed: ' + err.message, 'error');
+                }
+              });
+              input.click();
+            });
+
+            if (btnHelp) {
+              btnHelp.addEventListener('click', () => {
+                UIComponents.showModal({
+                  title: 'Help — Export / Import',
+                  content: `
                   <div class="muted" style="font-size:var(--text-sm);line-height:var(--leading-relaxed)">
                     <strong>Export</strong>: Downloads data as JSON. Use the topbar <em>Export</em> to save a full app backup, or use a pack's <em>Export JSON</em> from the pack menu to export a single pack.<br><br>
                     <strong>Import</strong>: Loads a full-app JSON backup. Click the topbar <em>Import</em>, choose a previously exported app JSON, and the app state will be restored/merged.<br><br>
@@ -5730,292 +7386,196 @@ import { mountAccountSwitcher } from './ui/components/account-switcher.js';
                     Tip: Always use <em>Export</em> to make a backup before importing.
                   </div>
                 `,
-            actions: [{ label: 'Close', variant: 'primary' }],
-          });
-        });
-      }
-    }
-
-    function seedIfEmpty() {
-      initSession();
-      const session = getSession();
-      const orgId = session && session.user && session.user.currentOrgId ? session.user.currentOrgId : 'personal';
-
-      const storedOrg = Storage.loadOrg(orgId);
-      if (storedOrg && storedOrg.caseLibrary && storedOrg.packLibrary && storedOrg.preferences) {
-        const normalized = Normalizer.normalizeAppData(storedOrg);
-        const initialState = {
-          currentScreen: 'packs',
-          currentPackId: normalized.currentPackId || null,
-          selectedInstanceIds: [],
-          caseLibrary: normalized.caseLibrary,
-          packLibrary: normalized.packLibrary,
-          preferences: normalized.preferences,
-        };
-        StateStore.init(initialState);
-        return;
-      }
-
-      const allData = Storage.load();
-      const prefs =
-        allData && allData.preferences && typeof allData.preferences === 'object'
-          ? allData.preferences
-          : Defaults.defaultPreferences;
-
-      // New organizations start empty (personal account gets demo seed).
-      if (orgId !== 'personal') {
-        const initialState = {
-          currentScreen: 'packs',
-          currentPackId: null,
-          selectedInstanceIds: [],
-          caseLibrary: [],
-          packLibrary: [],
-          preferences: prefs,
-        };
-        StateStore.init(initialState);
-        Storage.saveNow();
-        return;
-      }
-
-      const cases = Defaults.seedCases();
-      cases.forEach(c => {
-        c.volume = Utils.volumeInCubicInches(c.dimensions);
-      });
-      const demoPack = Defaults.seedPack(cases);
-      demoPack.stats = PackLibrary.computeStats(demoPack, cases);
-      const initialState = {
-        currentScreen: 'packs',
-        currentPackId: demoPack.id,
-        selectedInstanceIds: [],
-        caseLibrary: cases,
-        packLibrary: [demoPack],
-        preferences: prefs,
-      };
-      StateStore.init(initialState);
-      Storage.saveNow();
-    }
-
-    function validateRuntime() {
-      const failures = window.__TP3D_BOOT && window.__TP3D_BOOT.cdnFailures ? window.__TP3D_BOOT.cdnFailures : [];
-      failures.forEach(f => {
-        UIComponents.showToast(`${f.name} failed to load`, 'error', {
-          title: 'CDN',
-          actions: [{ label: 'Retry', onClick: () => window.location.reload() }],
-        });
-      });
-
-      if (!Utils.hasWebGL()) {
-        SystemOverlay.show({
-          title: 'WebGL required',
-          message: 'This app requires WebGL. Please update your browser or enable hardware acceleration.',
-          items: ['Chrome/Edge: Settings → System → Use hardware acceleration', 'Safari: Update to Safari 14+'],
-        });
-        return false;
-      }
-
-      const missing = [];
-      if (!window.THREE) missing.push('three@0.160.0');
-      if (!window.THREE || !window.THREE.OrbitControls) missing.push('OrbitControls');
-      if (!window.TWEEN) missing.push('@tweenjs/tween.js');
-      if (!window.XLSX) missing.push('xlsx');
-      if (!window.jspdf) missing.push('jsPDF');
-      if (missing.length) {
-        SystemOverlay.show({
-          title: 'Missing dependencies',
-          message: 'Some required CDN libraries did not load. Check your connection or allowlisted CDNs.',
-          items: missing.map(m => `Missing: ${m}`),
-        });
-        return false;
-      }
-
-      return true;
-    }
-
-    function renderAll() {
-      AppShell.renderShell();
-      PacksUI.render();
-      CasesUI.render();
-      EditorUI.render();
-      UpdatesUI.render();
-      RoadmapUI.render();
-      SettingsUI.loadForm();
-    }
-
-    function installGlobalErrorHandlers() {
-      if (window.__TP3D_BOOT && window.__TP3D_BOOT._errorsInstalled) return;
-      window.__TP3D_BOOT = window.__TP3D_BOOT || {};
-      window.__TP3D_BOOT._errorsInstalled = true;
-
-      let shown = false;
-      const show = (title, message) => {
-        if (shown) return;
-        shown = true;
-        UIComponents.showToast(message, 'error', {
-          title,
-          duration: 0,
-          actions: [{ label: 'Reload', onClick: () => window.location.reload() }],
-        });
-      };
-
-      window.addEventListener(
-        'error',
-        ev => {
-          try {
-            const msg = ev && ev.message ? String(ev.message) : 'Unexpected error';
-            const src = ev && ev.filename ? String(ev.filename) : '';
-            if (src && (src.startsWith('chrome-extension://') || src.startsWith('moz-extension://'))) return;
-            console.error('[TruckPackerApp] Unhandled error', ev && ev.error ? ev.error : ev);
-            show('Unexpected error', msg);
-          } catch (_) {
-            // Ignore
+                  actions: [{ label: 'Close', variant: 'primary' }],
+                });
+              });
+            }
           }
-        },
-        true
-      );
 
-      window.addEventListener('unhandledrejection', ev => {
-        try {
-          const reason = ev && ev.reason ? ev.reason : null;
-          const msg = reason instanceof Error ? reason.message : String(reason || 'Unhandled promise rejection');
-          console.error('[TruckPackerApp] Unhandled rejection', reason);
-          show('Unhandled rejection', msg);
-        } catch (_) {
-          // Ignore
-        }
-      });
-    }
+          // ============================================================================
+          // SECTION: BOOT HELPERS (SEED)
+          // ============================================================================
+          function seedIfEmpty() {
+            const stored = Storage.load();
+            if (stored && stored.caseLibrary && stored.packLibrary && stored.preferences) {
+              const initialState = {
+                currentScreen: 'packs',
+                currentPackId: stored.currentPackId || null,
+                selectedInstanceIds: [],
+                caseLibrary: stored.caseLibrary,
+                packLibrary: stored.packLibrary,
+                preferences: stored.preferences,
+              };
+              StateStore.init(initialState);
+              return;
+            }
 
-    function init() {
-      console.info('[TruckPackerApp] init start');
-      installGlobalErrorHandlers();
-      if (!validateRuntime()) return;
-      seedIfEmpty();
+            const cases = Defaults.seedCases();
+            cases.forEach(c => {
+              c.volume = Utils.volumeInCubicInches(c.dimensions);
+            });
+            const demoPack = Defaults.seedPack(cases);
+            demoPack.stats = PackLibrary.computeStats(demoPack, cases);
+            const initialState = {
+              currentScreen: 'packs',
+              currentPackId: demoPack.id,
+              selectedInstanceIds: [],
+              caseLibrary: cases,
+              packLibrary: [demoPack],
+              preferences: Defaults.defaultPreferences,
+            };
+            StateStore.init(initialState);
+            Storage.saveNow();
+          }
 
-      // Hash router (works on any static server): #/packs, #/cases, ...
-      Router.init({
-        defaultScreen: 'packs',
-        onScreen: screen => {
-          if (StateStore.get('currentScreen') === screen) return;
-          StateStore.set({ currentScreen: screen }, { skipHistory: true });
-        },
-      });
+          // ============================================================================
+          // SECTION: BOOT HELPERS (RUNTIME VALIDATION)
+          // ============================================================================
+          function validateRuntime() {
+            const failures = window.__TP3D_BOOT && window.__TP3D_BOOT.cdnFailures ? window.__TP3D_BOOT.cdnFailures : [];
+            failures.forEach(f => {
+              UIComponents.showToast(`${f.name} failed to load`, 'error', {
+                title: 'CDN',
+                actions: [{ label: 'Retry', onClick: () => window.location.reload() }],
+              });
+            });
 
-      PreferencesManager.applyTheme(StateStore.get('preferences').theme);
+            if (!Utils.hasWebGL()) {
+              SystemOverlay.show({
+                title: 'WebGL required',
+                message: 'This app requires WebGL. Please update your browser or enable hardware acceleration.',
+                items: ['Chrome/Edge: Settings → System → Use hardware acceleration', 'Safari: Update to Safari 14+'],
+              });
+              return false;
+            }
 
-      AppShell.init();
-      PacksUI.init();
-      CasesUI.init();
-      EditorUI.init();
-      UpdatesUI.init();
-      RoadmapUI.init();
-      SettingsUI.init();
-      wireGlobalButtons();
-      KeyboardManager.init();
+            const missing = [];
+            if (!window.THREE) missing.push('three@0.160.0');
+            if (!window.THREE || !window.THREE.OrbitControls) missing.push('OrbitControls');
+            if (!window.TWEEN) missing.push('@tweenjs/tween.js');
+            if (!window.XLSX) missing.push('xlsx');
+            if (!window.jspdf) missing.push('jsPDF');
+            if (missing.length) {
+              SystemOverlay.show({
+                title: 'Missing dependencies',
+                message: 'Some required CDN libraries did not load. Check your connection or allowlisted CDNs.',
+                items: missing.map(m => `Missing: ${m}`),
+              });
+              return false;
+            }
 
-      StateStore.subscribe(changes => {
-        if (
-          changes.preferences ||
-          changes.caseLibrary ||
-          changes.packLibrary ||
-          changes.currentPackId ||
-          changes._undo ||
-          changes._redo ||
-          changes._replace
-        ) {
-          Storage.saveSoon();
-        }
-        if (changes.preferences || changes._undo || changes._redo || changes._replace) {
-          const prefs = StateStore.get('preferences');
-          if (prefs && prefs.theme) PreferencesManager.applyTheme(prefs.theme);
-          SceneManager.refreshTheme();
-          SettingsUI.loadForm();
-        }
+            return true;
+          }
 
-        if (changes.currentScreen) {
-          Router.setScreen(StateStore.get('currentScreen'));
-          AppShell.renderShell();
-          if (StateStore.get('currentScreen') === 'editor') EditorUI.render();
-        }
+          function renderAll() {
+            AppShell.renderShell();
+            PacksUI.render();
+            CasesUI.render();
+            EditorUI.render();
+            UpdatesUI.render();
+            RoadmapUI.render();
+            SettingsUI.loadForm();
+          }
 
-        if (changes.caseLibrary || changes.packLibrary || changes._undo || changes._redo || changes._replace) {
-          PacksUI.render();
-          CasesUI.render();
-          EditorUI.render();
-          if (StateStore.get('currentScreen') === 'editor') AppShell.renderShell();
-        }
-        if (changes.currentPackId) {
-          AppShell.renderShell();
-          EditorUI.render();
-        }
-        if (changes.selectedInstanceIds) {
-          EditorUI.render();
-        }
-      });
+          // ============================================================================
+          // SECTION: APP INIT (ORDER CRITICAL)
+          // ============================================================================
+          function init() {
+            console.info('[TruckPackerApp] init start');
+            if (!validateRuntime()) return;
+            seedIfEmpty();
 
-      renderAll();
-      UIComponents.showToast('Ready', 'success', { title: 'Truck Packer 3D' });
-    }
+            PreferencesManager.applyTheme(StateStore.get('preferences').theme);
 
-    return {
-      init,
-      ui: {
-        showToast: UIComponents.showToast,
-        showModal: UIComponents.showModal,
-        confirm: UIComponents.confirm,
-      },
-      _debug: { Utils, StateStore, Storage, CaseLibrary, PackLibrary, Defaults },
-    };
-  })();
+            AppShell.init();
+            PacksUI.init();
+            CasesUI.init();
+            EditorUI.init();
+            UpdatesUI.init();
+            RoadmapUI.init();
+            SettingsUI.init();
+            AccountSwitcher.init();
+            wireGlobalButtons();
+            KeyboardManager.init();
 
-  const boot = () => {
-    console.info('[TruckPackerApp] boot -> init');
-    try {
-      window.TruckPackerApp.init();
-    } catch (err) {
-      console.error('[TruckPackerApp] init failed', err);
-      try {
-        const overlay = document.getElementById('system-overlay');
-        const titleEl = document.getElementById('system-title');
-        const messageEl = document.getElementById('system-message');
-        const listEl = document.getElementById('system-list');
-        if (!overlay || !titleEl || !messageEl || !listEl) throw new Error('System overlay not available');
-        titleEl.textContent = 'Startup error';
-        messageEl.textContent =
-          err && err.message ? String(err.message) : 'An unexpected error occurred during startup.';
-        listEl.innerHTML = '';
-        [
-          'Try reloading the page',
-          'If this persists, clear site data (localStorage) and reload',
-          'Open DevTools Console for details',
-        ].forEach(text => {
-          const li = document.createElement('li');
-          li.textContent = text;
-          listEl.appendChild(li);
-        });
-        overlay.classList.add('active');
-      } catch (_) {
-        const message = err && err.message ? String(err.message) : 'An unexpected error occurred during startup.';
-        const fallbackTips =
-          '<ul><li>Try reloading the page</li><li>If this persists, clear site data (localStorage) and reload</li><li>Open DevTools Console for details</li></ul>';
-        const ui = window.TruckPackerApp && window.TruckPackerApp.ui;
-        if (ui && typeof ui.showModal === 'function') {
-          ui.showModal({
-            title: 'Startup error',
-            content: `<p>${message}</p>${fallbackTips}`,
-            actions: [{ label: 'Close' }],
-          });
-        } else if (ui && typeof ui.showToast === 'function') {
-          ui.showToast('Startup error: ' + message, 'error', { title: 'Truck Packer 3D' });
+            let prevScreen = StateStore.get('currentScreen');
+
+            StateStore.subscribe(changes => {
+              if (
+                changes.preferences ||
+                changes.caseLibrary ||
+                changes.packLibrary ||
+                changes.currentPackId ||
+                changes._undo ||
+                changes._redo ||
+                changes._replace
+              ) {
+                Storage.saveSoon();
+              }
+              if (changes.preferences || changes._undo || changes._redo || changes._replace) {
+                const prefs = StateStore.get('preferences');
+                if (prefs && prefs.theme) PreferencesManager.applyTheme(prefs.theme);
+                SceneManager.refreshTheme();
+                SettingsUI.loadForm();
+              }
+
+              if (changes.currentScreen) {
+                const nextScreen = StateStore.get('currentScreen');
+                if (prevScreen === 'editor' && nextScreen !== 'editor') {
+                  const packId = StateStore.get('currentPackId');
+                  const pack = packId ? PackLibrary.getById(packId) : null;
+                  const lastEdited = pack && Number.isFinite(pack.lastEdited) ? pack.lastEdited : 0;
+                  const thumbAt = pack && Number.isFinite(pack.thumbnailUpdatedAt) ? pack.thumbnailUpdatedAt : 0;
+                  const totalCases = pack && Array.isArray(pack.cases) ? pack.cases.length : 0;
+                  if (pack && totalCases > 0 && lastEdited > thumbAt) {
+                    ExportService.capturePackPreview(packId, { source: 'auto', quiet: true });
+                  }
+                }
+                prevScreen = nextScreen;
+
+                AppShell.renderShell();
+                if (StateStore.get('currentScreen') === 'editor') EditorUI.render();
+              }
+
+              if (changes.caseLibrary || changes.packLibrary || changes._undo || changes._redo || changes._replace) {
+                PacksUI.render();
+                CasesUI.render();
+                EditorUI.render();
+                if (StateStore.get('currentScreen') === 'editor') AppShell.renderShell();
+              }
+              if (changes.currentPackId) {
+                AppShell.renderShell();
+                EditorUI.render();
+              }
+              if (changes.selectedInstanceIds) {
+                EditorUI.render();
+              }
+            });
+
+            renderAll();
+            UIComponents.showToast('Ready', 'success', { title: 'Truck Packer 3D' });
+          }
+
+          return {
+            init,
+            ui: {
+              showToast: UIComponents.showToast,
+              showModal: UIComponents.showModal,
+              confirm: UIComponents.confirm,
+            },
+            _debug: { Utils, StateStore, Storage, CaseLibrary, PackLibrary, Defaults },
+          };
+        })();
+
+        const boot = () => {
+          console.info('[TruckPackerApp] boot -> init');
+          window.TruckPackerApp.init();
+        };
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', boot);
         } else {
-          console.error('Startup error:', message);
+          boot();
         }
-      }
-    }
-  };
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot);
-  } else {
-    boot();
-  }
-})();
+      })();
+    

@@ -2228,22 +2228,24 @@ import { createTableFooter } from './ui/table-footer.js';
               navButtons.forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-nav') === screen));
               document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
               const el = document.getElementById(`screen-${screen}`);
-              if (el) el.classList.add('active');
-              if (
-                screen === 'editor' &&
-                window.TruckPackerApp &&
-                window.TruckPackerApp.EditorUI &&
-                typeof window.TruckPackerApp.EditorUI.onActivated === 'function'
-              ) {
-                requestAnimationFrame(() => {
-                  requestAnimationFrame(() => {
-                    try {
-                      window.TruckPackerApp.EditorUI.onActivated();
-                    } catch (_) {
-                      /* noop */
-                    }
+              if (el) {
+                el.classList.add('active');
+                if (
+                  screen === 'editor' &&
+                  window.TruckPackerApp &&
+                  window.TruckPackerApp.EditorUI &&
+                  typeof window.TruckPackerApp.EditorUI.onActivated === 'function'
+                ) {
+                  window.requestAnimationFrame(() => {
+                    window.requestAnimationFrame(() => {
+                      try {
+                        window.TruckPackerApp.EditorUI.onActivated();
+                      } catch (err) {
+                        console.warn('[AppShell] Editor activation hook failed', err);
+                      }
+                    });
                   });
-                });
+                }
               }
               if (contentRoot) contentRoot.classList.toggle('editor-mode', screen === 'editor');
 
@@ -4600,7 +4602,7 @@ import { createTableFooter } from './ui/table-footer.js';
               camera.aspect = width / height;
               camera.updateProjectionMatrix();
               renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-              renderer.setSize(width, height, false);
+              renderer.setSize(width, height);
             }
 
 	            function refreshTheme() {
@@ -6123,14 +6125,19 @@ import { createTableFooter } from './ui/table-footer.js';
             const btnPdf = document.getElementById('btn-pdf');
 
             let initialized = false;
-            const browserCats = new Set();
             const supportsWebGL = Utils.hasWebGL();
-            const ACTIVATION_RETRY_LIMIT = 8;
-            const debouncedViewportActivation = Utils.debounce(() => {
-              if (StateStore.get('currentScreen') === 'editor') onActivated();
-            }, 90);
+            const browserCats = new Set();
+            let activationRaf = null;
 
             function initEditorUI() {
+              if (!supportsWebGL) {
+                SystemOverlay.show({
+                  title: 'Editor unavailable',
+                  message: 'This device does not support WebGL, so the 3D Editor cannot run here.',
+                  items: ['Try a different browser (Chrome/Safari)', 'Update iOS/Android', 'Use a desktop device'],
+                });
+              }
+
               caseSearchEl.addEventListener('input', Utils.debounce(renderCaseBrowser, 250));
               btnLeft.addEventListener('click', () => togglePanel('left'));
               btnRight.addEventListener('click', () => togglePanel('right'));
@@ -6145,18 +6152,14 @@ import { createTableFooter } from './ui/table-footer.js';
               btnPng.addEventListener('click', () => ExportService.captureScreenshot());
               btnPdf.addEventListener('click', () => ExportService.generatePDF());
 
-              window.addEventListener('resize', debouncedViewportActivation);
-              window.addEventListener('orientationchange', debouncedViewportActivation);
-              if (window.visualViewport && window.visualViewport.addEventListener) {
-                window.visualViewport.addEventListener('resize', debouncedViewportActivation);
-              }
+              const handleViewportChange = Utils.debounce(() => {
+                if (StateStore.get('currentScreen') === 'editor') onActivated();
+              }, 160);
 
-              if (!supportsWebGL) {
-                SystemOverlay.show({
-                  title: 'Editor unavailable',
-                  message: 'This device does not support WebGL, so the 3D Editor cannot run here.',
-                  items: ['Try a different browser (Chrome/Safari)', 'Update iOS/Android', 'Use a desktop device'],
-                });
+              window.addEventListener('resize', handleViewportChange);
+              window.addEventListener('orientationchange', handleViewportChange);
+              if (window.visualViewport && typeof window.visualViewport.addEventListener === 'function') {
+                window.visualViewport.addEventListener('resize', handleViewportChange);
               }
             }
 
@@ -6198,21 +6201,34 @@ import { createTableFooter } from './ui/table-footer.js';
             }
 
             function onActivated() {
-              if (!supportsWebGL) return;
+              if (!supportsWebGL || !viewportEl) return;
               ensureScene();
-              if (!viewportEl || typeof SceneManager.resize !== 'function') return;
+              if (activationRaf) {
+                window.cancelAnimationFrame(activationRaf);
+                activationRaf = null;
+              }
               let attempts = 0;
+              const maxAttempts = 8;
+              const finish = () => {
+                activationRaf = null;
+                if (typeof SceneManager.resize === 'function') SceneManager.resize();
+              };
               const attemptResize = () => {
                 attempts += 1;
                 const rect = viewportEl.getBoundingClientRect();
-                const ready = rect.width > 2 && rect.height > 2;
-                if (ready || attempts >= ACTIVATION_RETRY_LIMIT) {
-                  SceneManager.resize();
+                const width = Math.floor(rect.width);
+                const height = Math.floor(rect.height);
+                if (width > 2 && height > 2) {
+                  finish();
                   return;
                 }
-                requestAnimationFrame(attemptResize);
+                if (attempts >= maxAttempts) {
+                  finish();
+                  return;
+                }
+                activationRaf = window.requestAnimationFrame(attemptResize);
               };
-              requestAnimationFrame(attemptResize);
+              activationRaf = window.requestAnimationFrame(attemptResize);
             }
 
             function renderCaseBrowser() {
@@ -6727,7 +6743,9 @@ import { createTableFooter } from './ui/table-footer.js';
               }
 
               if (StateStore.get('currentScreen') === 'editor') {
-                window.requestAnimationFrame(() => onActivated());
+                window.requestAnimationFrame(() => {
+                  if (SceneManager && typeof SceneManager.resize === 'function') SceneManager.resize();
+                });
               }
             }
 

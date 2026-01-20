@@ -134,6 +134,12 @@ a {
   min-width: 240px;
 }
 
+#btn-account-switcher {
+  width: 100%;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+}
+
 .sidebar-header {
   padding: var(--space-5) var(--space-4);
   border-bottom: 1px solid var(--border-subtle);
@@ -450,6 +456,10 @@ a {
   display: block;
 }
 
+#screen-editor {
+  padding: 0;
+}
+
 .row {
   display: flex;
   align-items: center;
@@ -648,6 +658,14 @@ textarea:focus {
   height: 8px;
   border-radius: 999px;
   background: var(--border-strong);
+}
+
+#packs-filter-chip-partial .chip-dot {
+  background: var(--warning);
+}
+
+#packs-filter-chip-full .chip-dot {
+  background: var(--success);
 }
 
 .grid {

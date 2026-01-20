@@ -548,6 +548,7 @@ import { createTableFooter } from './ui/table-footer.js';
 	          const Defaults = (() => {
 	            const defaultPreferences = {
 	              packsViewMode: 'grid',
+	              casesViewMode: 'list',
 	              units: { length: 'in', weight: 'lb' },
 	              theme: 'light',
 	              labelFontSize: 12,
@@ -698,6 +699,7 @@ import { createTableFooter } from './ui/table-footer.js';
 	              const base = Utils.deepClone(Defaults.defaultPreferences);
 	              const next = { ...base, ...(prefs && typeof prefs === 'object' ? prefs : {}) };
 	              next.packsViewMode = next.packsViewMode === 'list' ? 'list' : 'grid';
+	              next.casesViewMode = next.casesViewMode === 'grid' ? 'grid' : 'list';
 	              next.units = next.units && typeof next.units === 'object' ? next.units : base.units;
 	              next.units.length = Utils.lengthUnits.includes(next.units.length) ? next.units.length : base.units.length;
 	              next.units.weight = Utils.weightUnits.includes(next.units.weight) ? next.units.weight : base.units.weight;
@@ -2321,6 +2323,22 @@ import { createTableFooter } from './ui/table-footer.js';
             let footerController = null;
             let filteredPacks = [];
 
+            function formatTruckDims(truck, lengthUnit) {
+              const unit = lengthUnit || 'in';
+              const l = Utils.formatLength(truck && truck.length, unit);
+              const w = Utils.formatLength(truck && truck.width, unit);
+              const h = Utils.formatLength(truck && truck.height, unit);
+              return `Truck: L ${l} • W ${w} • H ${h}`;
+            }
+
+            function formatPackStats(stats, prefs) {
+              const loaded = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : 0;
+              const packed = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : 0;
+              const pct = stats && Number.isFinite(stats.volumePercent) ? stats.volumePercent : 0;
+              const weight = Utils.formatWeight(stats && stats.totalWeight, prefs.units.weight);
+              return `Packed: ${packed}/${loaded} • Volume: ${pct.toFixed(1)}% • Weight: ${weight}`;
+            }
+
             function initPacksUI() {
               searchEl.addEventListener(
                 'input',
@@ -2585,6 +2603,13 @@ import { createTableFooter } from './ui/table-footer.js';
               const compareLength = (a, b) => (a.truck?.length || 0) - (b.truck?.length || 0);
               const compareWidth = (a, b) => (a.truck?.width || 0) - (b.truck?.width || 0);
               const compareHeight = (a, b) => (a.truck?.height || 0) - (b.truck?.height || 0);
+              const comparePacked = (a, b) => ((a.stats && a.stats.packedCases) || 0) - ((b.stats && b.stats.packedCases) || 0);
+              const compareVolume = (a, b) =>
+                ((a.stats && Number.isFinite(a.stats.volumePercent) ? a.stats.volumePercent : 0) || 0) -
+                ((b.stats && Number.isFinite(b.stats.volumePercent) ? b.stats.volumePercent : 0) || 0);
+              const compareWeight = (a, b) =>
+                ((a.stats && Number.isFinite(a.stats.totalWeight) ? a.stats.totalWeight : 0) || 0) -
+                ((b.stats && Number.isFinite(b.stats.totalWeight) ? b.stats.totalWeight : 0) || 0);
               const sorters = {
                 'edited-desc': (a, b) => compareLastEdited(b, a),
                 'edited-asc': (a, b) => compareLastEdited(a, b),
@@ -2600,6 +2625,12 @@ import { createTableFooter } from './ui/table-footer.js';
                 'width-desc': (a, b) => compareWidth(b, a),
                 'height-asc': (a, b) => compareHeight(a, b),
                 'height-desc': (a, b) => compareHeight(b, a),
+                'packed-asc': (a, b) => comparePacked(a, b),
+                'packed-desc': (a, b) => comparePacked(b, a),
+                'volume-asc': (a, b) => compareVolume(a, b),
+                'volume-desc': (a, b) => compareVolume(b, a),
+                'weight-asc': (a, b) => compareWeight(a, b),
+                'weight-desc': (a, b) => compareWeight(b, a),
               };
               allPacks.sort(sorters[sortKey] || sorters['edited-desc']);
 
@@ -2698,7 +2729,20 @@ import { createTableFooter } from './ui/table-footer.js';
                 tdCheck.appendChild(checkbox);
 
                 const tdTitle = document.createElement('td');
-                tdTitle.textContent = pack.title || 'Untitled Pack';
+                const titleWrap = document.createElement('div');
+                titleWrap.style.display = 'grid';
+                titleWrap.style.gap = '4px';
+
+                const title = document.createElement('div');
+                title.textContent = pack.title || 'Untitled Pack';
+                titleWrap.appendChild(title);
+
+                const stats = PackLibrary.computeStats(pack);
+                const truckLabel = formatTruckDims(pack.truck || {}, prefs.units.length);
+                const statsLabel = formatPackStats(stats, prefs);
+
+                tdTitle.title = `${truckLabel}\n${statsLabel}`;
+                tdTitle.appendChild(titleWrap);
 
                 const tdCases = document.createElement('td');
                 tdCases.textContent = (pack.cases || []).length;
@@ -2711,6 +2755,20 @@ import { createTableFooter } from './ui/table-footer.js';
 
                 const tdHeight = document.createElement('td');
                 tdHeight.textContent = Utils.formatLength(pack.truck.height, prefs.units.length);
+
+                const tdPacked = document.createElement('td');
+                const packedCases = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : null;
+                const totalCases = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : null;
+                tdPacked.textContent =
+                  packedCases === null || totalCases === null ? '—' : `${packedCases}/${totalCases}`;
+
+                const tdVolume = document.createElement('td');
+                const volumePercent = stats && Number.isFinite(stats.volumePercent) ? stats.volumePercent : null;
+                tdVolume.textContent = volumePercent === null ? '—' : `${volumePercent.toFixed(1)}%`;
+
+                const tdWeight = document.createElement('td');
+                const totalWeight = stats && Number.isFinite(stats.totalWeight) ? stats.totalWeight : null;
+                tdWeight.textContent = totalWeight === null ? '—' : Utils.formatWeight(totalWeight, prefs.units.weight);
 
                 const tdEdited = document.createElement('td');
                 tdEdited.textContent = Utils.formatRelativeTime(pack.lastEdited);
@@ -2759,6 +2817,9 @@ import { createTableFooter } from './ui/table-footer.js';
                 tr.appendChild(tdLength);
                 tr.appendChild(tdWidth);
                 tr.appendChild(tdHeight);
+                tr.appendChild(tdPacked);
+                tr.appendChild(tdVolume);
+                tr.appendChild(tdWeight);
                 tr.appendChild(tdEdited);
                 tr.appendChild(tdActions);
                 tbodyEl.appendChild(tr);
@@ -2766,6 +2827,7 @@ import { createTableFooter } from './ui/table-footer.js';
             }
 
             function renderGridView(packs) {
+              const prefs = PreferencesManager.get();
               packs.forEach(pack => {
                 const card = document.createElement('div');
                 card.className = 'card pack-card';
@@ -2800,10 +2862,17 @@ import { createTableFooter } from './ui/table-footer.js';
 
                 const truck = document.createElement('div');
                 truck.className = 'badge';
-                truck.textContent = `Truck ${pack.truck.length}"×${pack.truck.width}"×${pack.truck.height}"`;
+                truck.textContent = formatTruckDims(pack.truck || {}, prefs.units.length);
 
                 badgesWrap.appendChild(count);
                 badgesWrap.appendChild(truck);
+
+                const stats = PackLibrary.computeStats(pack);
+                const statsLine = document.createElement('div');
+                statsLine.className = 'muted';
+                statsLine.style.fontSize = 'var(--text-xs)';
+                statsLine.textContent = formatPackStats(stats, prefs);
+                badgesWrap.appendChild(statsLine);
 
                 const kebabWrap = document.createElement('div');
                 kebabWrap.className = 'kebab';
@@ -3172,6 +3241,7 @@ import { createTableFooter } from './ui/table-footer.js';
 	          const CasesUI = (() => {
 	            const searchEl = document.getElementById('cases-search');
 	            const filtersEl = document.getElementById('cases-filters');
+              const gridEl = document.getElementById('cases-grid');
 	            const tbodyEl = document.getElementById('cases-tbody');
 	            const emptyEl = document.getElementById('cases-empty');
 	            const selectAllEl = document.getElementById('cases-select-all');
@@ -3179,6 +3249,8 @@ import { createTableFooter } from './ui/table-footer.js';
 	            const btnTemplate = document.getElementById('btn-cases-template');
 	            const btnImport = document.getElementById('btn-cases-import');
 	            const btnManageCats = document.getElementById('btn-manage-categories');
+              const btnViewGrid = document.getElementById('cases-view-grid');
+              const btnViewList = document.getElementById('cases-view-list');
 	            const actionsDefaultEl = document.getElementById('cases-actions-default');
 	            const actionsBulkEl = document.getElementById('cases-actions-bulk');
 	            const selectedCountEl = document.getElementById('cases-selected-count');
@@ -3210,11 +3282,28 @@ import { createTableFooter } from './ui/table-footer.js';
 	              btnTemplate.addEventListener('click', () => downloadTemplate());
 	              btnImport.addEventListener('click', () => openImportModal());
 	              btnManageCats.addEventListener('click', () => openCategoryManager());
+                btnViewGrid && btnViewGrid.addEventListener('click', () => setViewMode('grid'));
+                btnViewList && btnViewList.addEventListener('click', () => setViewMode('list'));
 	              btnBulkDelete.addEventListener('click', () => bulkDeleteSelected());
 	              selectAllEl.addEventListener('change', () => toggleAllVisible(selectAllEl.checked));
 	              initTableHeaders();
                 initCasesFooter();
+                updateViewButtons();
 	            }
+
+              function setViewMode(mode) {
+                const prefs = PreferencesManager.get();
+                prefs.casesViewMode = mode === 'grid' ? 'grid' : 'list';
+                PreferencesManager.set(prefs);
+                updateViewButtons();
+                render();
+              }
+
+              function updateViewButtons() {
+                const mode = PreferencesManager.get().casesViewMode || 'list';
+                btnViewGrid && btnViewGrid.classList.toggle('btn-primary', mode === 'grid');
+                btnViewList && btnViewList.classList.toggle('btn-primary', mode === 'list');
+              }
 
 	            function clearSelection() {
 	              selectedIds.clear();
@@ -3390,6 +3479,125 @@ import { createTableFooter } from './ui/table-footer.js';
             function render() {
               renderFilters();
               renderTable();
+              renderViewMode();
+            }
+
+            function renderViewMode() {
+              const prefs = PreferencesManager.get();
+              const mode = prefs.casesViewMode || 'list';
+              updateViewButtons();
+
+              if (mode === 'grid') {
+                // Grid view does not support row selection/bulk actions.
+                clearSelection();
+                actionsDefaultEl.style.display = 'flex';
+                actionsBulkEl.style.display = 'none';
+                selectedCountEl.textContent = '';
+                btnBulkDelete.innerHTML = `<i class="fa-solid fa-trash"></i> Delete (0)`;
+                selectAllEl.checked = false;
+                selectAllEl.indeterminate = false;
+                selectAllEl.disabled = true;
+
+                if (casesTableWrap) casesTableWrap.style.display = 'none';
+                if (gridEl) gridEl.style.display = 'grid';
+                if (gridEl) renderGridView(filteredCases || [], prefs);
+                return;
+              }
+
+              if (gridEl) gridEl.style.display = 'none';
+              if (casesTableWrap) casesTableWrap.style.display = 'block';
+            }
+
+            function renderGridView(cases, prefs) {
+              if (!gridEl) return;
+              gridEl.innerHTML = '';
+              const list = Array.isArray(cases) ? cases : [];
+
+              if (!list.length) return;
+
+              list.forEach(c => {
+                const card = document.createElement('div');
+                card.className = 'card pack-card';
+                card.tabIndex = 0;
+                card.addEventListener('click', ev => {
+                  if (ev.target && ev.target.closest && ev.target.closest('[data-case-menu]')) return;
+                  openCaseModal(c);
+                });
+                card.addEventListener('keydown', ev => {
+                  if (ev.key === 'Enter') openCaseModal(c);
+                });
+
+                const title = document.createElement('h3');
+                title.textContent = c.name || '—';
+
+                const sub = document.createElement('div');
+                sub.className = 'muted';
+                sub.style.fontSize = 'var(--text-sm)';
+                if (c.manufacturer) sub.textContent = c.manufacturer;
+
+                const meta = document.createElement('div');
+                meta.className = 'pack-meta';
+
+                const badgesWrap = document.createElement('div');
+                badgesWrap.className = 'pack-meta-badges';
+
+                const cat = document.createElement('div');
+                cat.className = 'badge';
+                cat.textContent = CategoryService.meta(c.category).name;
+
+                const dims = document.createElement('div');
+                dims.className = 'badge';
+                const d = c.dimensions || { length: 0, width: 0, height: 0 };
+                const l = Utils.formatLength(d.length, prefs.units.length);
+                const w = Utils.formatLength(d.width, prefs.units.length);
+                const h = Utils.formatLength(d.height, prefs.units.length);
+                dims.textContent = `${l} × ${w} × ${h}`;
+
+                const weight = document.createElement('div');
+                weight.className = 'badge';
+                weight.textContent = Utils.formatWeight(c.weight, prefs.units.weight);
+
+                const edited = document.createElement('div');
+                edited.className = 'badge';
+                edited.textContent = `edited ${Utils.formatRelativeTime(c.updatedAt)}`;
+
+                badgesWrap.appendChild(cat);
+                badgesWrap.appendChild(dims);
+                badgesWrap.appendChild(weight);
+                badgesWrap.appendChild(edited);
+
+                const kebabWrap = document.createElement('div');
+                kebabWrap.className = 'kebab';
+                kebabWrap.setAttribute('data-case-menu', '1');
+                const kebabBtn = document.createElement('button');
+                kebabBtn.className = 'btn btn-ghost';
+                kebabBtn.type = 'button';
+                kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis"></i>';
+                kebabBtn.addEventListener('click', ev => {
+                  ev.stopPropagation();
+                  UIComponents.openDropdown(kebabBtn, [
+                    { label: 'Edit', icon: 'fa-solid fa-pen', onClick: () => openCaseModal(c) },
+                    {
+                      label: 'Duplicate',
+                      icon: 'fa-solid fa-clone',
+                      onClick: () => {
+                        CaseLibrary.duplicate(c.id);
+                        UIComponents.showToast('Case duplicated', 'success');
+                      },
+                    },
+                    { label: 'Delete', icon: 'fa-solid fa-trash', variant: 'danger', dividerBefore: true, onClick: () => deleteCase(c.id) },
+                  ]);
+                });
+                kebabWrap.appendChild(kebabBtn);
+
+                meta.appendChild(badgesWrap);
+                meta.appendChild(kebabWrap);
+
+                card.appendChild(title);
+                if (c.manufacturer) card.appendChild(sub);
+                card.appendChild(meta);
+                gridEl.appendChild(card);
+              });
             }
 
             function renderFilters() {

@@ -1,4 +1,6 @@
-
+import { createSystemOverlay } from './ui/system-overlay.js';
+import { createUIComponents } from './ui/ui-components.js';
+import { createTableFooter } from './ui/table-footer.js';
       (async function () {
         try {
           if (window.__TP3D_BOOT && window.__TP3D_BOOT.threeReady) {
@@ -7,6 +9,9 @@
         } catch (_) {
           // Ignore boot errors
         }
+
+        const UIComponents = createUIComponents();
+        const SystemOverlay = createSystemOverlay();
 
         // ============================================================================
         // SECTION: APP BOOTSTRAP ENTRY
@@ -256,361 +261,9 @@
           // ============================================================================
           // SECTION: UI PRIMITIVES (MODAL / TOAST)
           // ============================================================================
-          const UIComponents = (() => {
-            const modalRoot = document.getElementById('modal-root');
-            const toastContainer = document.getElementById('toast-container');
-            let dropdownKeyDownListener = null;
-            let dropdownRepositionListener = null;
-
-            const toastTypes = {
-              success: { title: 'Success', color: 'var(--success)', icon: '✓' },
-              error: { title: 'Error', color: 'var(--error)', icon: '✕' },
-              warning: { title: 'Warning', color: 'var(--warning)', icon: '⚠' },
-              info: { title: 'Info', color: 'var(--info)', icon: 'ℹ' },
-            };
-
-            function showToast(message, type = 'info', options = {}) {
-              const cfg = toastTypes[type] || toastTypes.info;
-              const toast = document.createElement('div');
-              toast.className = 'toast';
-              toast.setAttribute('role', 'status');
-
-              const icon = document.createElement('div');
-              icon.className = 'toast-icon';
-              icon.style.background = cfg.color;
-              icon.textContent = cfg.icon;
-
-              const body = document.createElement('div');
-              body.className = 'toast-body';
-
-              const title = document.createElement('div');
-              title.className = 'toast-title';
-              title.textContent = options.title || cfg.title;
-
-              const msg = document.createElement('div');
-              msg.className = 'toast-message';
-              msg.textContent = String(message || '');
-
-              body.appendChild(title);
-              body.appendChild(msg);
-
-              if (Array.isArray(options.actions) && options.actions.length) {
-                const actions = document.createElement('div');
-                actions.className = 'toast-actions';
-                options.actions.forEach(action => {
-                  const btn = document.createElement('button');
-                  btn.className = 'toast-btn';
-                  btn.type = 'button';
-                  btn.textContent = action.label || 'Action';
-                  btn.addEventListener('click', ev => {
-                    ev.stopPropagation();
-                    try {
-                      action.onClick && action.onClick();
-                    } catch (_) {
-                      // Ignore errors from action handlers
-                    }
-                    removeToast(toast);
-                  });
-                  actions.appendChild(btn);
-                });
-                body.appendChild(actions);
-              }
-
-              toast.appendChild(icon);
-              toast.appendChild(body);
-
-              toast.addEventListener('click', () => removeToast(toast));
-              toastContainer.appendChild(toast);
-
-              while (toastContainer.children.length > 3) {
-                toastContainer.removeChild(toastContainer.firstChild);
-              }
-
-              const duration = Number.isFinite(options.duration) ? options.duration : 3200;
-              if (duration > 0) window.setTimeout(() => removeToast(toast), duration);
-            }
-
-            function removeToast(toast) {
-              if (!toast || !toast.parentElement) return;
-              toast.style.opacity = '0';
-              toast.style.transform = 'translateX(12px)';
-              window.setTimeout(() => {
-                if (toast.parentElement) toast.parentElement.removeChild(toast);
-              }, 180);
-            }
-
-            function showModal(config) {
-              const overlay = document.createElement('div');
-              overlay.className = 'modal-overlay';
-
-              const modal = document.createElement('div');
-              modal.className = 'modal';
-
-              const header = document.createElement('div');
-              header.className = 'modal-header';
-
-              const title = document.createElement('h3');
-              title.className = 'modal-title';
-              title.textContent = config.title || 'Dialog';
-
-              const closeBtn = document.createElement('button');
-              closeBtn.className = 'btn btn-ghost';
-              closeBtn.type = 'button';
-              closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
-              closeBtn.addEventListener('click', () => close());
-
-              header.appendChild(title);
-              header.appendChild(closeBtn);
-
-              const body = document.createElement('div');
-              body.className = 'modal-body';
-              if (typeof config.content === 'string') {
-                // SECURITY: Treat string content as trusted HTML only. For user-provided text, pass an HTMLElement and set textContent.
-                const div = document.createElement('div');
-                div.innerHTML = config.content;
-                body.appendChild(div);
-              } else if (config.content instanceof HTMLElement) {
-                body.appendChild(config.content);
-              }
-
-              const footer = document.createElement('div');
-              footer.className = 'modal-footer';
-              (config.actions || [{ label: 'Close' }]).forEach(action => {
-                const btn = document.createElement('button');
-                btn.className = `btn ${action.variant === 'primary' ? 'btn-primary' : ''} ${action.variant === 'danger' ? 'btn-danger' : ''}`;
-                btn.type = 'button';
-                btn.textContent = action.label || 'OK';
-                btn.addEventListener('click', () => {
-                  try {
-                    const res = action.onClick ? action.onClick() : undefined;
-                    if (res === false) return;
-                  } catch (_) {
-                    // Ignore errors from modal actions
-                  }
-                  close();
-                });
-                footer.appendChild(btn);
-              });
-
-              modal.appendChild(header);
-              modal.appendChild(body);
-              modal.appendChild(footer);
-              overlay.appendChild(modal);
-
-              overlay.addEventListener('click', ev => {
-                if (ev.target === overlay && config.dismissible !== false) close();
-              });
-
-              function close() {
-                if (overlay.parentElement) overlay.parentElement.removeChild(overlay);
-                try {
-                  config.onClose && config.onClose();
-                } catch (_) {
-                  // Ignore errors from onClose callback
-                }
-              }
-
-              modalRoot.appendChild(overlay);
-              return { close, overlay, modal, body };
-            }
-
-            function confirm(options) {
-              return new Promise(resolve => {
-                showModal({
-                  title: options.title || 'Confirm',
-                  content: options.message || 'Are you sure?',
-                  actions: [
-                    { label: options.cancelLabel || 'Cancel', onClick: () => resolve(false) },
-                    {
-                      label: options.okLabel || 'Confirm',
-                      variant: options.danger ? 'danger' : 'primary',
-                      onClick: () => resolve(true),
-                    },
-                  ],
-                });
-              });
-            }
-
-	            function openDropdown(anchorEl, items, options = {}) {
-	              closeAllDropdowns();
-	              const wrap = document.createElement('div');
-	              wrap.className = 'dropdown-menu';
-	              // The stylesheet defines `.dropdown-menu` as `position:absolute` for inline dropdowns.
-	              // For floating viewport-clamped dropdowns we make it participate in layout so the
-	              // wrapper element has a measurable width/height.
-	              wrap.style.position = 'static';
-	              wrap.style.top = 'auto';
-	              wrap.style.left = 'auto';
-	              wrap.style.right = 'auto';
-
-	              items.forEach(item => {
-	                if (item && (item.type === 'divider' || item.divider === true)) {
-	                  const divider = document.createElement('div');
-                  divider.setAttribute('role', 'separator');
-                  divider.style.height = '1px';
-                  divider.style.margin = `${8}px ${6}px`;
-                  divider.style.background = 'var(--border-subtle)';
-                  wrap.appendChild(divider);
-                  return;
-                }
-
-                // Add divider before this item if requested
-                if (item && item.dividerBefore) {
-                  const divider = document.createElement('div');
-                  divider.setAttribute('role', 'separator');
-                  divider.style.height = '1px';
-                  divider.style.margin = `${8}px ${6}px`;
-                  divider.style.background = 'var(--border-subtle)';
-                  wrap.appendChild(divider);
-                }
-
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = 'dropdown-item';
-                
-                // Apply variant (e.g., danger for delete actions)
-                if (item && item.variant) {
-                  btn.dataset.variant = item.variant;
-                }
-                
-                if (item && item.disabled) {
-                  btn.disabled = true;
-                  btn.style.opacity = '0.6';
-                  btn.style.cursor = 'not-allowed';
-                }
-	                if (item.icon) {
-	                  const icon = document.createElement('i');
-	                  icon.className = item.icon;
-	                  btn.appendChild(icon);
-	                }
-                const text = document.createElement('span');
-                text.textContent = String(item.label || '');
-                text.style.flex = '1';
-                btn.appendChild(text);
-                if (item.rightIcon) {
-                  const iconRight = document.createElement('i');
-                  iconRight.className = item.rightIcon;
-                  iconRight.style.marginLeft = 'auto';
-                  iconRight.style.color = item.rightIconColor || 'var(--accent-primary)';
-                  btn.appendChild(iconRight);
-                }
-                btn.addEventListener('click', ev => {
-                  ev.stopPropagation();
-                  if (btn.disabled) return;
-                  closeAllDropdowns();
-                  item.onClick && item.onClick();
-                });
-                wrap.appendChild(btn);
-              });
-
-              const dropdown = document.createElement('div');
-              dropdown.className = 'dropdown';
-              dropdown.dataset.dropdown = '1';
-              dropdown.style.position = 'fixed';
-              dropdown.style.zIndex = '16000';
-              dropdown.style.visibility = 'hidden';
-
-              const preferredWidth = Math.max(180, Number(options.width) || 220);
-              dropdown.style.minWidth = `${preferredWidth}px`;
-              dropdown.appendChild(wrap);
-
-              document.body.appendChild(dropdown);
-
-	              const positionDropdown = () => {
-	                if (!dropdown.isConnected) return;
-	                const pad = 8;
-	                const gap = 6;
-	                const vw = window.innerWidth || document.documentElement.clientWidth || 0;
-	                const vh = window.innerHeight || document.documentElement.clientHeight || 0;
-	                const rect = anchorEl.getBoundingClientRect();
-
-	                dropdown.style.maxWidth = `${Math.max(0, vw - pad * 2)}px`;
-	                dropdown.style.maxHeight = `${Math.max(0, vh - pad * 2)}px`;
-	                dropdown.style.overflowY = 'auto';
-
-	                // Measure after maxWidth/minWidth are applied.
-	                const menuRect = dropdown.getBoundingClientRect();
-                const menuW = menuRect.width || preferredWidth;
-                const menuH = menuRect.height || 0;
-
-                // Default: open below the trigger.
-                let top = rect.bottom + gap;
-                if (top + menuH > vh - pad) top = rect.top - gap - menuH;
-                top = Math.max(pad, Math.min(top, Math.max(pad, vh - pad - menuH)));
-
-                // Backwards-compatible default: align dropdown's right edge with trigger's right edge.
-                let left = rect.right - menuW;
-                if (options.align === 'left') left = rect.left;
-                left = Math.max(pad, Math.min(left, Math.max(pad, vw - pad - menuW)));
-
-                dropdown.style.left = `${Math.round(left)}px`;
-                dropdown.style.top = `${Math.round(top)}px`;
-              };
-
-              positionDropdown();
-              dropdown.style.visibility = 'visible';
-              window.setTimeout(() => {
-                const onDocClick = () => closeAllDropdowns();
-                document.addEventListener('click', onDocClick, { once: true });
-              }, 0);
-
-              dropdownKeyDownListener = ev => {
-                if (ev.key === 'Escape') closeAllDropdowns();
-              };
-              document.addEventListener('keydown', dropdownKeyDownListener);
-
-              dropdownRepositionListener = () => positionDropdown();
-              window.addEventListener('resize', dropdownRepositionListener);
-              // Capture scroll events from nested scroll containers too.
-              window.addEventListener('scroll', dropdownRepositionListener, true);
-            }
-
-            function closeAllDropdowns() {
-              document.querySelectorAll('[data-dropdown="1"]').forEach(el => el.remove());
-              if (dropdownKeyDownListener) {
-                document.removeEventListener('keydown', dropdownKeyDownListener);
-                dropdownKeyDownListener = null;
-              }
-              if (dropdownRepositionListener) {
-                window.removeEventListener('resize', dropdownRepositionListener);
-                window.removeEventListener('scroll', dropdownRepositionListener, true);
-                dropdownRepositionListener = null;
-              }
-            }
-
-            return { showToast, showModal, confirm, openDropdown, closeAllDropdowns };
-          })();
-
           // ============================================================================
           // SECTION: SYSTEM OVERLAY (MISSING DEPS / FATALS)
           // ============================================================================
-          const SystemOverlay = (() => {
-            const overlay = document.getElementById('system-overlay');
-            const titleEl = document.getElementById('system-title');
-            const messageEl = document.getElementById('system-message');
-            const listEl = document.getElementById('system-list');
-            const retryBtn = document.getElementById('system-retry');
-            retryBtn.addEventListener('click', () => window.location.reload());
-
-            function show({ title, message, items }) {
-              titleEl.textContent = title || 'Truck Packer 3D';
-              messageEl.textContent = message || '';
-              listEl.innerHTML = '';
-              (items || []).forEach(text => {
-                const li = document.createElement('li');
-                li.textContent = text;
-                listEl.appendChild(li);
-              });
-              overlay.classList.add('active');
-            }
-
-            function hide() {
-              overlay.classList.remove('active');
-            }
-
-            return { show, hide };
-          })();
-
           // Normalizer helper removed (unused). Keep utilities within modules if needed.
 
           // ============================================================================
@@ -2576,6 +2229,22 @@
               document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
               const el = document.getElementById(`screen-${screen}`);
               if (el) el.classList.add('active');
+              if (
+                screen === 'editor' &&
+                window.TruckPackerApp &&
+                window.TruckPackerApp.EditorUI &&
+                typeof window.TruckPackerApp.EditorUI.onActivated === 'function'
+              ) {
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(() => {
+                    try {
+                      window.TruckPackerApp.EditorUI.onActivated();
+                    } catch (_) {
+                      /* noop */
+                    }
+                  });
+                });
+              }
               if (contentRoot) contentRoot.classList.toggle('editor-mode', screen === 'editor');
 
               const isMobile = window.matchMedia('(max-width: 899px)').matches;
@@ -2638,12 +2307,25 @@
             const selectedIds = new Set();
             let datasetKey = '';
             let sortKey = 'edited-desc';
+            const packsListState = {
+              pageIndex: 0,
+              rowsPerPage: 50,
+            };
+            let footerController = null;
+            let filteredPacks = [];
 
             function initPacksUI() {
-              searchEl.addEventListener('input', Utils.debounce(render, 200));
+              searchEl.addEventListener(
+                'input',
+                Utils.debounce(() => {
+                  packsListState.pageIndex = 0;
+                  render();
+                }, 200)
+              );
               searchEl.addEventListener('keydown', ev => {
                 if (ev.key === 'Escape') {
                   searchEl.value = '';
+                  packsListState.pageIndex = 0;
                   render();
                   searchEl.blur();
                 }
@@ -2659,6 +2341,7 @@
               btnBulkDelete.addEventListener('click', handleBulkDelete);
               initListHeaderSort();
               updateViewButtons();
+              initFooter();
             }
 
             function initListHeaderSort() {
@@ -2677,6 +2360,7 @@
                   } else {
                     sortKey = ascKey;
                   }
+                  packsListState.pageIndex = 0;
                   render();
                   updateListHeaderIcons();
                 };
@@ -2716,11 +2400,73 @@
               btnViewList.classList.toggle('btn-primary', mode === 'list');
             }
 
+            function initFooter() {
+              if (!listEl) return;
+              if (footerController) footerController.destroy();
+              footerController = createTableFooter({
+                mountEl: listEl,
+                onPageChange: ({ pageIndex: nextIndex, rowsPerPage }) => {
+                  if (typeof rowsPerPage === 'number') {
+                    packsListState.rowsPerPage = rowsPerPage;
+                  }
+                  packsListState.pageIndex = nextIndex;
+                  render();
+                },
+                onRowsPerPageChange: nextRows => {
+                  if (nextRows === packsListState.rowsPerPage) return;
+                  packsListState.rowsPerPage = nextRows;
+                  packsListState.pageIndex = 0;
+                  render();
+                },
+              });
+              syncFooterState();
+            }
+
+            function getPageMeta(list) {
+              const items = Array.isArray(list) ? list : [];
+              const perPage = Math.max(packsListState.rowsPerPage, 1);
+              const total = items.length;
+              const pageCount = Math.max(0, Math.ceil(total / perPage || 0));
+              const clampedIndex = pageCount === 0 ? 0 : Math.min(Math.max(0, packsListState.pageIndex), pageCount - 1);
+              packsListState.pageIndex = clampedIndex;
+              const start = clampedIndex * perPage;
+              return {
+                total,
+                pageCount,
+                slice: items.slice(start, start + perPage),
+              };
+            }
+
+            function syncFooterState(meta) {
+              if (!footerController) return;
+              const perPage = Math.max(packsListState.rowsPerPage, 1);
+              const effectiveMeta = meta || {
+                total: filteredPacks.length,
+                pageCount: Math.max(0, Math.ceil(filteredPacks.length / perPage || 0)),
+              };
+              const pageCount = effectiveMeta.pageCount;
+              const clampedIndex = pageCount === 0 ? 0 : Math.min(Math.max(0, packsListState.pageIndex), pageCount - 1);
+              packsListState.pageIndex = clampedIndex;
+              const filteredIds = new Set(filteredPacks.map(p => p.id));
+              Array.from(selectedIds).forEach(id => {
+                if (!filteredIds.has(id)) selectedIds.delete(id);
+              });
+              const selectedCount = filteredPacks.filter(p => selectedIds.has(p.id)).length;
+              footerController.setState({
+                selectedCount,
+                totalCount: effectiveMeta.total,
+                pageIndex: packsListState.pageIndex,
+                pageCount,
+                rowsPerPage: packsListState.rowsPerPage,
+              });
+            }
+
             function wireChip(el, key) {
               if (!el) return;
               const toggle = () => {
                 filters[key] = !filters[key];
                 el.classList.toggle('active', filters[key]);
+                packsListState.pageIndex = 0;
                 render();
               };
               el.addEventListener('click', toggle);
@@ -2866,12 +2612,16 @@
                   return false;
                 });
 
+              filteredPacks = packs;
+
               const newDatasetKey = `${q}::${sortKey}::${filters.empty}${filters.partial}${filters.full}`;
               if (datasetKey !== newDatasetKey) {
                 selectedIds.clear();
                 datasetKey = newDatasetKey;
+                packsListState.pageIndex = 0;
               }
 
+              const pageMeta = getPageMeta(packs);
               gridEl.innerHTML = '';
               tbodyEl.innerHTML = '';
 
@@ -2881,6 +2631,7 @@
                 gridEl.style.display = 'none';
                 listEl.style.display = 'none';
                 updateBulkActions();
+                syncFooterState(pageMeta);
                 return;
               }
 
@@ -2891,6 +2642,7 @@
                 gridEl.style.display = 'none';
                 listEl.style.display = 'none';
                 updateBulkActions();
+                syncFooterState(pageMeta);
                 return;
               }
 
@@ -2901,7 +2653,7 @@
               if (mode === 'list') {
                 gridEl.style.display = 'none';
                 listEl.style.display = 'block';
-                renderListView(packs);
+                renderListView(pageMeta.slice);
               } else {
                 gridEl.style.display = 'grid';
                 listEl.style.display = 'none';
@@ -2909,6 +2661,7 @@
               }
               updateListHeaderIcons();
               updateBulkActions();
+              syncFooterState(pageMeta);
             }
 
             function renderListView(packs) {
@@ -2933,6 +2686,7 @@
                   }
                   tr.classList.toggle('selected', selectedIds.has(pack.id));
                   updateBulkActions();
+                  syncFooterState();
                 });
                 tdCheck.appendChild(checkbox);
 
@@ -3423,15 +3177,28 @@
 	            const selectedCountEl = document.getElementById('cases-selected-count');
 	            const btnBulkDelete = document.getElementById('btn-cases-bulk-delete');
 
-	            const activeCategories = new Set(); // empty = all
-	            let sortBy = 'name'; // name, manufacturer, dimensions, volume, weight, category
-	            let sortDir = 'asc'; // asc or desc
-	            const selectedIds = new Set();
-	            let lastDatasetKey = '';
-	            let lastVisibleIds = [];
+              const activeCategories = new Set(); // empty = all
+              let sortBy = 'name'; // name, manufacturer, dimensions, volume, weight, category
+              let sortDir = 'asc'; // asc or desc
+              const selectedIds = new Set();
+              let lastDatasetKey = '';
+              let lastVisibleIds = [];
+              const casesTableWrap = document.querySelector('#screen-cases .table-wrap');
+              const casesListState = {
+                pageIndex: 0,
+                rowsPerPage: 50,
+              };
+              let casesFooterController = null;
+              let filteredCases = [];
 
               function initCasesUI() {
-	              searchEl.addEventListener('input', Utils.debounce(render, 300));
+                searchEl.addEventListener(
+                  'input',
+                  Utils.debounce(() => {
+                    casesListState.pageIndex = 0;
+                    render();
+                  }, 300)
+                );
 	              btnNew.addEventListener('click', () => openCaseModal(null));
 	              btnTemplate.addEventListener('click', () => downloadTemplate());
 	              btnImport.addEventListener('click', () => openImportModal());
@@ -3439,6 +3206,7 @@
 	              btnBulkDelete.addEventListener('click', () => bulkDeleteSelected());
 	              selectAllEl.addEventListener('change', () => toggleAllVisible(selectAllEl.checked));
 	              initTableHeaders();
+                initCasesFooter();
 	            }
 
 	            function clearSelection() {
@@ -3458,7 +3226,11 @@
 	              const visibleCount = lastVisibleIds.length;
 
 	              // Selected count is based on the current visible dataset after search/sort/category.
-	              const selectedCount = selectedIds.size;
+                const filteredVisible = new Set(filteredCases.map(c => c.id));
+                Array.from(selectedIds).forEach(id => {
+                  if (!filteredVisible.has(id)) selectedIds.delete(id);
+                });
+                const selectedCount = selectedIds.size;
 
 	              actionsDefaultEl.style.display = selectedCount ? 'none' : 'flex';
 	              actionsBulkEl.style.display = selectedCount ? 'flex' : 'none';
@@ -3521,8 +3293,9 @@
 	                  } else {
 	                    sortBy = sortField;
 	                    sortDir = 'asc';
-	                  }
-	                  render();
+                      }
+                    casesListState.pageIndex = 0;
+                    render();
 	                  updateHeaderIcons();
 	                };
 	                sortControl.addEventListener('click', toggleSort);
@@ -3547,6 +3320,65 @@
                 sortControl.classList.toggle('is-desc', isActive && sortDir === 'desc');
               });
             }
+
+              function initCasesFooter() {
+                if (!casesTableWrap) return;
+                if (casesFooterController) casesFooterController.destroy();
+                casesFooterController = createTableFooter({
+                  mountEl: casesTableWrap,
+                  onPageChange: ({ pageIndex: nextIndex, rowsPerPage }) => {
+                    if (typeof rowsPerPage === 'number') casesListState.rowsPerPage = rowsPerPage;
+                    casesListState.pageIndex = nextIndex;
+                    render();
+                  },
+                  onRowsPerPageChange: nextRows => {
+                    if (nextRows === casesListState.rowsPerPage) return;
+                    casesListState.rowsPerPage = nextRows;
+                    casesListState.pageIndex = 0;
+                    render();
+                  },
+                });
+                syncCasesFooter();
+              }
+
+              function getCasesPageMeta(list) {
+                const items = Array.isArray(list) ? list : [];
+                const perPage = Math.max(casesListState.rowsPerPage, 1);
+                const total = items.length;
+                const pageCount = Math.max(0, Math.ceil(total / perPage || 0));
+                const clampedIndex = pageCount === 0 ? 0 : Math.min(Math.max(0, casesListState.pageIndex), pageCount - 1);
+                casesListState.pageIndex = clampedIndex;
+                const start = clampedIndex * perPage;
+                return {
+                  total,
+                  pageCount,
+                  slice: items.slice(start, start + perPage),
+                };
+              }
+
+              function syncCasesFooter(meta) {
+                if (!casesFooterController) return;
+                const perPage = Math.max(casesListState.rowsPerPage, 1);
+                const effectiveMeta = meta || {
+                  total: filteredCases.length,
+                  pageCount: Math.max(0, Math.ceil(filteredCases.length / perPage || 0)),
+                };
+                const pageCount = effectiveMeta.pageCount;
+                const clampedIndex = pageCount === 0 ? 0 : Math.min(Math.max(0, casesListState.pageIndex), pageCount - 1);
+                casesListState.pageIndex = clampedIndex;
+                const filteredIds = new Set(filteredCases.map(c => c.id));
+                Array.from(selectedIds).forEach(id => {
+                  if (!filteredIds.has(id)) selectedIds.delete(id);
+                });
+                const selectedCount = filteredCases.filter(c => selectedIds.has(c.id)).length;
+                casesFooterController.setState({
+                  selectedCount,
+                  totalCount: effectiveMeta.total,
+                  pageIndex: casesListState.pageIndex,
+                  pageCount,
+                  rowsPerPage: casesListState.rowsPerPage,
+                });
+              }
 
             function render() {
               renderFilters();
@@ -3599,9 +3431,11 @@
 	              if (datasetKey !== lastDatasetKey) {
 	                clearSelection();
 	                lastDatasetKey = datasetKey;
+                  casesListState.pageIndex = 0;
 	              }
 
 	              const cases = CaseLibrary.search(q, Array.from(activeCategories));
+                filteredCases = cases;
 
 	              // Sort cases
 	              cases.sort((a, b) => {
@@ -3653,8 +3487,9 @@
                 return 0;
               });
 
-	              tbodyEl.innerHTML = '';
-	              const visibleIds = cases.map(c => c.id);
+                const casePageMeta = getCasesPageMeta(cases);
+                tbodyEl.innerHTML = '';
+                const visibleIds = cases.map(c => c.id);
 
 	              // Prune any stale selections (e.g. after deletes).
 	              const visibleIdSet = new Set(visibleIds);
@@ -3664,13 +3499,14 @@
 
 	              updateSelectionUI(visibleIds);
 
-	              if (!cases.length) {
-	                emptyEl.style.display = 'block';
-	                return;
-	              }
+                if (!cases.length) {
+                  emptyEl.style.display = 'block';
+                  syncCasesFooter(casePageMeta);
+                  return;
+                }
 	              emptyEl.style.display = 'none';
 
-	              cases.forEach(c => {
+                casePageMeta.slice.forEach(c => {
 	                const tr = document.createElement('tr');
 
 	                const tdSelect = document.createElement('td');
@@ -3754,7 +3590,8 @@
                 tr.appendChild(tdActions);
 
                 tbodyEl.appendChild(tr);
-              });
+                });
+                syncCasesFooter(casePageMeta);
             }
 
             function chip(label, key, active, onClick, color, count) {
@@ -3769,9 +3606,13 @@
               text.textContent = `${label}${Number.isFinite(count) ? `: ${count}` : ''}`;
               el.appendChild(dot);
               el.appendChild(text);
-              el.addEventListener('click', onClick);
+              const activate = () => {
+                casesListState.pageIndex = 0;
+                onClick();
+              };
+              el.addEventListener('click', activate);
               el.addEventListener('keydown', ev => {
-                if (ev.key === 'Enter') onClick();
+                if (ev.key === 'Enter') activate();
               });
               return el;
             }
@@ -4759,7 +4600,7 @@
               camera.aspect = width / height;
               camera.updateProjectionMatrix();
               renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-              renderer.setSize(width, height);
+              renderer.setSize(width, height, false);
             }
 
 	            function refreshTheme() {
@@ -6283,6 +6124,11 @@
 
             let initialized = false;
             const browserCats = new Set();
+            const supportsWebGL = Utils.hasWebGL();
+            const ACTIVATION_RETRY_LIMIT = 8;
+            const debouncedViewportActivation = Utils.debounce(() => {
+              if (StateStore.get('currentScreen') === 'editor') onActivated();
+            }, 90);
 
             function initEditorUI() {
               caseSearchEl.addEventListener('input', Utils.debounce(renderCaseBrowser, 250));
@@ -6299,16 +6145,23 @@
               btnPng.addEventListener('click', () => ExportService.captureScreenshot());
               btnPdf.addEventListener('click', () => ExportService.generatePDF());
 
-              window.addEventListener(
-                'resize',
-                Utils.debounce(() => {
-                  if (StateStore.get('currentScreen') === 'editor') SceneManager.resize();
-                }, 120)
-              );
+              window.addEventListener('resize', debouncedViewportActivation);
+              window.addEventListener('orientationchange', debouncedViewportActivation);
+              if (window.visualViewport && window.visualViewport.addEventListener) {
+                window.visualViewport.addEventListener('resize', debouncedViewportActivation);
+              }
+
+              if (!supportsWebGL) {
+                SystemOverlay.show({
+                  title: 'Editor unavailable',
+                  message: 'This device does not support WebGL, so the 3D Editor cannot run here.',
+                  items: ['Try a different browser (Chrome/Safari)', 'Update iOS/Android', 'Use a desktop device'],
+                });
+              }
             }
 
             function ensureScene() {
-              if (initialized) return;
+              if (initialized || !supportsWebGL) return;
               SceneManager.init(viewportEl);
               InteractionManager.init(SceneManager.getRenderer().domElement);
               wireDropToViewport(SceneManager.getRenderer().domElement);
@@ -6342,6 +6195,24 @@
               renderCaseBrowser();
               renderInspector(pack);
               SceneManager.resize();
+            }
+
+            function onActivated() {
+              if (!supportsWebGL) return;
+              ensureScene();
+              if (!viewportEl || typeof SceneManager.resize !== 'function') return;
+              let attempts = 0;
+              const attemptResize = () => {
+                attempts += 1;
+                const rect = viewportEl.getBoundingClientRect();
+                const ready = rect.width > 2 && rect.height > 2;
+                if (ready || attempts >= ACTIVATION_RETRY_LIMIT) {
+                  SceneManager.resize();
+                  return;
+                }
+                requestAnimationFrame(attemptResize);
+              };
+              requestAnimationFrame(attemptResize);
             }
 
             function renderCaseBrowser() {
@@ -6856,9 +6727,7 @@
               }
 
               if (StateStore.get('currentScreen') === 'editor') {
-                window.requestAnimationFrame(() => {
-                  if (SceneManager && typeof SceneManager.resize === 'function') SceneManager.resize();
-                });
+                window.requestAnimationFrame(() => onActivated());
               }
             }
 
@@ -6915,7 +6784,7 @@
               return ok ? out : null;
             }
 
-            return { init: initEditorUI, render };
+            return { init: initEditorUI, render, onActivated };
           })();
 
           // ============================================================================
@@ -7558,6 +7427,7 @@
 
           return {
             init,
+            EditorUI,
             ui: {
               showToast: UIComponents.showToast,
               showModal: UIComponents.showModal,

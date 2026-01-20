@@ -798,14 +798,109 @@
         background: var(--bg-secondary);
         border: 1px solid var(--border-subtle);
         border-radius: var(--radius-md);
-        overflow: hidden;
+        /* Allow horizontal scrolling on small screens instead of clipping columns */
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
         box-shadow: var(--shadow-sm);
       }
 
       table {
         width: 100%;
+        min-width: 980px;
         border-collapse: collapse;
         font-size: var(--text-sm);
+      }
+
+      .table-wrap table {
+        /* Make sure the table keeps its measured width for horizontal scroll */
+        width: 100%;
+      }
+
+      /* Table footer (pagination + selection summary) */
+      .table-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 12px;
+        border-top: 1px solid var(--border-subtle);
+        background: var(--bg-secondary);
+        flex-wrap: wrap;
+      }
+
+      .table-footer .tf-left,
+      .table-footer .tf-mid,
+      .table-footer .tf-right {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .table-footer .tf-left {
+        color: var(--text-secondary);
+        font-size: var(--text-sm);
+      }
+
+      .table-footer .tf-label {
+        color: var(--text-secondary);
+        font-size: var(--text-sm);
+      }
+
+      .table-footer select.tf-select {
+        background: var(--bg-primary);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-sm);
+        padding: 6px 10px;
+        font-size: var(--text-sm);
+        color: var(--text-primary);
+      }
+
+      .table-footer .tf-page {
+        color: var(--text-secondary);
+        font-size: var(--text-sm);
+        white-space: nowrap;
+      }
+
+      .table-footer .tf-btn {
+        border: 1px solid var(--border-subtle);
+        background: var(--bg-elevated);
+        color: var(--text-primary);
+        border-radius: var(--radius-sm);
+        width: 34px;
+        height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        box-shadow: var(--shadow-sm);
+      }
+
+      .table-footer .tf-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        box-shadow: none;
+      }
+
+      .table-footer .tf-btn i {
+        color: var(--text-secondary);
+      }
+
+      .table-footer .tf-btn:hover:not(:disabled) {
+        background: var(--bg-hover);
+      }
+
+      @media (max-width: 520px) {
+        .table-footer {
+          gap: 8px;
+        }
+        .table-footer .tf-left,
+        .table-footer .tf-mid,
+        .table-footer .tf-right {
+          width: 100%;
+          justify-content: space-between;
+        }
       }
 
       th,

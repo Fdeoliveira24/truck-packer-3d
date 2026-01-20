@@ -1236,6 +1236,10 @@ tr:hover td {
     grid-template-columns: 1fr;
   }
 
+  .app.sidebar-collapsed {
+    grid-template-columns: 1fr;
+  }
+
   .sidebar {
     position: fixed;
     left: 0;

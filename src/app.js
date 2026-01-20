@@ -2252,9 +2252,14 @@ import { createTableFooter } from './ui/table-footer.js';
               const isMobile = window.matchMedia('(max-width: 899px)').matches;
 
               if (screen === 'editor') {
-                // Collapse sidebar to maximize editor viewport
-                appRoot.classList.add('sidebar-collapsed');
-                sidebar.classList.remove('open');
+                // Collapse sidebar to maximize editor viewport (desktop only)
+                if (isMobile) {
+                  appRoot.classList.remove('sidebar-collapsed');
+                  sidebar.classList.remove('open');
+                } else {
+                  appRoot.classList.add('sidebar-collapsed');
+                  sidebar.classList.remove('open');
+                }
                 // Ensure editor panels visible to avoid empty canvas gap
                 const editorLeft = document.getElementById('editor-left');
                 const editorRight = document.getElementById('editor-right');

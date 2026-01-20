@@ -549,6 +549,26 @@ import { createTableFooter } from './ui/table-footer.js';
 	            const defaultPreferences = {
 	              packsViewMode: 'grid',
 	              casesViewMode: 'list',
+	              packsFiltersVisible: true,
+	              casesFiltersVisible: true,
+	              gridCardBadges: {
+	                packs: {
+	                  showCasesCount: true,
+	                  showTruckDims: true,
+	                  showPacked: true,
+	                  showVolume: true,
+	                  showWeight: true,
+	                  showEditedTime: true,
+	                },
+	                cases: {
+	                  showCategory: true,
+	                  showDims: true,
+	                  showVolume: true,
+	                  showWeight: true,
+	                  showFlip: true,
+	                  showEditedTime: true,
+	                },
+	              },
 	              units: { length: 'in', weight: 'lb' },
 	              theme: 'light',
 	              labelFontSize: 12,
@@ -700,6 +720,46 @@ import { createTableFooter } from './ui/table-footer.js';
 	              const next = { ...base, ...(prefs && typeof prefs === 'object' ? prefs : {}) };
 	              next.packsViewMode = next.packsViewMode === 'list' ? 'list' : 'grid';
 	              next.casesViewMode = next.casesViewMode === 'grid' ? 'grid' : 'list';
+	              next.packsFiltersVisible = next.packsFiltersVisible !== false;
+	              next.casesFiltersVisible = next.casesFiltersVisible !== false;
+	              const baseBadges = base.gridCardBadges || {};
+	              const inBadges = next.gridCardBadges && typeof next.gridCardBadges === 'object' ? next.gridCardBadges : {};
+	              const inPacks = inBadges.packs && typeof inBadges.packs === 'object' ? inBadges.packs : {};
+	              const inCases = inBadges.cases && typeof inBadges.cases === 'object' ? inBadges.cases : {};
+	              const basePacks = baseBadges.packs && typeof baseBadges.packs === 'object' ? baseBadges.packs : {};
+	              const baseCases = baseBadges.cases && typeof baseBadges.cases === 'object' ? baseBadges.cases : {};
+	              next.gridCardBadges = {
+	                packs: {
+	                  ...basePacks,
+	                  ...inPacks,
+	                },
+	                cases: {
+	                  ...baseCases,
+	                  ...inCases,
+	                },
+	              };
+	              const hasLegacyStatLine = Object.prototype.hasOwnProperty.call(inPacks, 'showPackedStatLine');
+	              const hasNewPacked = Object.prototype.hasOwnProperty.call(inPacks, 'showPacked');
+	              const hasNewVolume = Object.prototype.hasOwnProperty.call(inPacks, 'showVolume');
+	              const hasNewWeight = Object.prototype.hasOwnProperty.call(inPacks, 'showWeight');
+	              if (hasLegacyStatLine && !hasNewPacked && !hasNewVolume && !hasNewWeight) {
+	                const legacy = inPacks.showPackedStatLine !== false;
+	                next.gridCardBadges.packs.showPacked = legacy;
+	                next.gridCardBadges.packs.showVolume = legacy;
+	                next.gridCardBadges.packs.showWeight = legacy;
+	              }
+	              next.gridCardBadges.packs.showCasesCount = next.gridCardBadges.packs.showCasesCount !== false;
+	              next.gridCardBadges.packs.showTruckDims = next.gridCardBadges.packs.showTruckDims !== false;
+	              next.gridCardBadges.packs.showPacked = next.gridCardBadges.packs.showPacked !== false;
+	              next.gridCardBadges.packs.showVolume = next.gridCardBadges.packs.showVolume !== false;
+	              next.gridCardBadges.packs.showWeight = next.gridCardBadges.packs.showWeight !== false;
+	              next.gridCardBadges.packs.showEditedTime = next.gridCardBadges.packs.showEditedTime !== false;
+	              next.gridCardBadges.cases.showCategory = next.gridCardBadges.cases.showCategory !== false;
+	              next.gridCardBadges.cases.showDims = next.gridCardBadges.cases.showDims !== false;
+	              next.gridCardBadges.cases.showVolume = next.gridCardBadges.cases.showVolume !== false;
+	              next.gridCardBadges.cases.showWeight = next.gridCardBadges.cases.showWeight !== false;
+	              next.gridCardBadges.cases.showFlip = next.gridCardBadges.cases.showFlip !== false;
+	              next.gridCardBadges.cases.showEditedTime = next.gridCardBadges.cases.showEditedTime !== false;
 	              next.units = next.units && typeof next.units === 'object' ? next.units : base.units;
 	              next.units.length = Utils.lengthUnits.includes(next.units.length) ? next.units.length : base.units.length;
 	              next.units.weight = Utils.weightUnits.includes(next.units.weight) ? next.units.weight : base.units.weight;
@@ -1329,6 +1389,90 @@ import { createTableFooter } from './ui/table-footer.js';
             }
 
             return { open, close, isOpen, setActive };
+          })();
+
+          const CardDisplayOverlay = (() => {
+            function isOpen() {
+              return Boolean(document.querySelector('[data-dropdown="1"][data-role="card-display"]'));
+            }
+
+            function close() {
+              try {
+                UIComponents.closeAllDropdowns();
+              } catch {
+                // ignore
+              }
+            }
+
+            function open({ screen, force } = {}) {
+              const anchorEl =
+                screen === 'cases' ? document.getElementById('cases-card-display') : document.getElementById('packs-card-display');
+              if (!anchorEl) return;
+              const anchorId = anchorEl.id || '';
+              const existing = anchorId
+                ? document.querySelector(`[data-dropdown="1"][data-role="card-display"][data-anchor-id="${CSS.escape(anchorId)}"]`)
+                : null;
+              if (existing && !force) {
+                UIComponents.closeAllDropdowns();
+                return;
+              }
+              if (existing && force) UIComponents.closeAllDropdowns();
+
+              const prefs = PreferencesManager.get();
+              const badges = prefs.gridCardBadges || Defaults.defaultPreferences.gridCardBadges;
+              const packs = (badges && badges.packs) || Defaults.defaultPreferences.gridCardBadges.packs;
+              const cases = (badges && badges.cases) || Defaults.defaultPreferences.gridCardBadges.cases;
+
+              function setFlag(path, value) {
+                const prev = PreferencesManager.get();
+                const next = Utils.deepClone(prev);
+                next.gridCardBadges = next.gridCardBadges && typeof next.gridCardBadges === 'object' ? next.gridCardBadges : {};
+                next.gridCardBadges.packs =
+                  next.gridCardBadges.packs && typeof next.gridCardBadges.packs === 'object' ? next.gridCardBadges.packs : {};
+                next.gridCardBadges.cases =
+                  next.gridCardBadges.cases && typeof next.gridCardBadges.cases === 'object' ? next.gridCardBadges.cases : {};
+                if (path.startsWith('packs.')) next.gridCardBadges.packs[path.slice('packs.'.length)] = Boolean(value);
+                if (path.startsWith('cases.')) next.gridCardBadges.cases[path.slice('cases.'.length)] = Boolean(value);
+                PreferencesManager.set(next);
+                if (screen === 'cases') CasesUI.render();
+                else PacksUI.render();
+              }
+
+              function item(label, checked, onClick) {
+                return {
+                  label,
+                  rightIcon: checked ? 'fa-solid fa-check' : '',
+                  rightIconColor: checked ? 'var(--success)' : 'var(--text-muted)',
+                  onClick: () => {
+                    onClick();
+                    open({ screen, force: true });
+                  },
+                };
+              }
+
+              const items = [];
+              if (screen === 'cases') {
+                items.push({ type: 'header', label: 'Card Display - Cases' });
+                items.push(item('Show category', cases.showCategory !== false, () => setFlag('cases.showCategory', cases.showCategory === false)));
+                items.push(item('Show dimensions', cases.showDims !== false, () => setFlag('cases.showDims', cases.showDims === false)));
+                items.push(item('Show volume', cases.showVolume !== false, () => setFlag('cases.showVolume', cases.showVolume === false)));
+                items.push(item('Show weight', cases.showWeight !== false, () => setFlag('cases.showWeight', cases.showWeight === false)));
+                items.push(item('Show flip', cases.showFlip !== false, () => setFlag('cases.showFlip', cases.showFlip === false)));
+                items.push(item('Show edited time', cases.showEditedTime !== false, () => setFlag('cases.showEditedTime', cases.showEditedTime === false)));
+              } else {
+                items.push({ type: 'header', label: 'Card Display - Packs' });
+                items.push(item('Show cases count', packs.showCasesCount !== false, () => setFlag('packs.showCasesCount', packs.showCasesCount === false)));
+                items.push(item('Show truck dims', packs.showTruckDims !== false, () => setFlag('packs.showTruckDims', packs.showTruckDims === false)));
+                items.push(item('Show packed', packs.showPacked !== false, () => setFlag('packs.showPacked', packs.showPacked === false)));
+                items.push(item('Show volume', packs.showVolume !== false, () => setFlag('packs.showVolume', packs.showVolume === false)));
+                items.push(item('Show weight', packs.showWeight !== false, () => setFlag('packs.showWeight', packs.showWeight === false)));
+                items.push(item('Show edited time', packs.showEditedTime !== false, () => setFlag('packs.showEditedTime', packs.showEditedTime === false)));
+              }
+
+              UIComponents.openDropdown(anchorEl, items, { width: 320, align: 'left', role: 'card-display' });
+            }
+
+            return { open, close, isOpen };
           })();
 
           // ============================================================================
@@ -2305,6 +2449,8 @@ import { createTableFooter } from './ui/table-footer.js';
             const chipFull = document.getElementById('packs-filter-chip-full');
             const btnViewGrid = document.getElementById('packs-view-grid');
             const btnViewList = document.getElementById('packs-view-list');
+            const btnFiltersToggle = document.getElementById('packs-filters-toggle');
+            const btnCardDisplay = document.getElementById('packs-card-display');
             const selectAllEl = document.getElementById('packs-select-all');
             const titleHeaderButton = document.querySelector('#packs-list thead th[data-sort="title"] .th-sort');
             const defaultActionsEl = document.getElementById('packs-actions-default');
@@ -2322,6 +2468,7 @@ import { createTableFooter } from './ui/table-footer.js';
             };
             let footerController = null;
             let filteredPacks = [];
+            const filtersRowEl = chipEmpty ? chipEmpty.parentElement : null;
 
             function formatTruckDims(truck, lengthUnit) {
               const unit = lengthUnit || 'in';
@@ -2362,11 +2509,31 @@ import { createTableFooter } from './ui/table-footer.js';
               btnImport.addEventListener('click', () => openImportPackDialog());
               btnViewGrid.addEventListener('click', () => setViewMode('grid'));
               btnViewList.addEventListener('click', () => setViewMode('list'));
+              btnFiltersToggle && btnFiltersToggle.addEventListener('click', () => toggleFiltersVisible());
+              btnCardDisplay &&
+                btnCardDisplay.addEventListener('click', () => {
+                  // TODO: Add keyboard shortcut + update Keyboard Shortcuts modal later
+                  CardDisplayOverlay.open({ screen: 'packs' });
+                });
               selectAllEl.addEventListener('change', handleSelectAll);
               btnBulkDelete.addEventListener('click', handleBulkDelete);
               initListHeaderSort();
               updateViewButtons();
               initFooter();
+            }
+
+            function toggleFiltersVisible() {
+              const prefs = PreferencesManager.get();
+              prefs.packsFiltersVisible = !prefs.packsFiltersVisible;
+              PreferencesManager.set(prefs);
+              applyFiltersVisibility();
+            }
+
+            function applyFiltersVisibility() {
+              if (!filtersRowEl) return;
+              const visible = PreferencesManager.get().packsFiltersVisible !== false;
+              filtersRowEl.style.display = visible ? '' : 'none';
+              btnFiltersToggle && btnFiltersToggle.classList.toggle('btn-primary', visible);
             }
 
             function initListHeaderSort() {
@@ -2591,6 +2758,7 @@ import { createTableFooter } from './ui/table-footer.js';
             }
 
             function render() {
+              applyFiltersVisibility();
               const q = String(searchEl.value || '')
                 .trim()
                 .toLowerCase();
@@ -2704,6 +2872,8 @@ import { createTableFooter } from './ui/table-footer.js';
 
             function renderListView(packs) {
               const prefs = PreferencesManager.get();
+              const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.packs) || {};
+              applyListColumnVisibility(prefs);
               packs.forEach(pack => {
                 const tr = document.createElement('tr');
                 const isSelected = selectedIds.has(pack.id);
@@ -2746,32 +2916,40 @@ import { createTableFooter } from './ui/table-footer.js';
 
                 const tdCases = document.createElement('td');
                 tdCases.textContent = (pack.cases || []).length;
+                if (badgePrefs.showCasesCount === false) tdCases.style.display = 'none';
 
                 const tdLength = document.createElement('td');
                 tdLength.textContent = Utils.formatLength(pack.truck.length, prefs.units.length);
+                if (badgePrefs.showTruckDims === false) tdLength.style.display = 'none';
 
                 const tdWidth = document.createElement('td');
                 tdWidth.textContent = Utils.formatLength(pack.truck.width, prefs.units.length);
+                if (badgePrefs.showTruckDims === false) tdWidth.style.display = 'none';
 
                 const tdHeight = document.createElement('td');
                 tdHeight.textContent = Utils.formatLength(pack.truck.height, prefs.units.length);
+                if (badgePrefs.showTruckDims === false) tdHeight.style.display = 'none';
 
                 const tdPacked = document.createElement('td');
                 const packedCases = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : null;
                 const totalCases = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : null;
                 tdPacked.textContent =
                   packedCases === null || totalCases === null ? '—' : `${packedCases}/${totalCases}`;
+                if (badgePrefs.showPacked === false) tdPacked.style.display = 'none';
 
                 const tdVolume = document.createElement('td');
                 const volumePercent = stats && Number.isFinite(stats.volumePercent) ? stats.volumePercent : null;
                 tdVolume.textContent = volumePercent === null ? '—' : `${volumePercent.toFixed(1)}%`;
+                if (badgePrefs.showVolume === false) tdVolume.style.display = 'none';
 
                 const tdWeight = document.createElement('td');
                 const totalWeight = stats && Number.isFinite(stats.totalWeight) ? stats.totalWeight : null;
                 tdWeight.textContent = totalWeight === null ? '—' : Utils.formatWeight(totalWeight, prefs.units.weight);
+                if (badgePrefs.showWeight === false) tdWeight.style.display = 'none';
 
                 const tdEdited = document.createElement('td');
                 tdEdited.textContent = Utils.formatRelativeTime(pack.lastEdited);
+                if (badgePrefs.showEditedTime === false) tdEdited.style.display = 'none';
 
                 const tdActions = document.createElement('td');
                 tdActions.className = 'col-actions';
@@ -2826,8 +3004,27 @@ import { createTableFooter } from './ui/table-footer.js';
               });
             }
 
+            function applyListColumnVisibility(prefs) {
+              const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.packs) || {};
+              const show = {
+                cases: badgePrefs.showCasesCount !== false,
+                length: badgePrefs.showTruckDims !== false,
+                width: badgePrefs.showTruckDims !== false,
+                height: badgePrefs.showTruckDims !== false,
+                packed: badgePrefs.showPacked !== false,
+                volume: badgePrefs.showVolume !== false,
+                weight: badgePrefs.showWeight !== false,
+                edited: badgePrefs.showEditedTime !== false,
+              };
+              Object.keys(show).forEach(key => {
+                const th = document.querySelector(`#packs-list thead th[data-sort="${key}"]`);
+                if (th) th.style.display = show[key] ? '' : 'none';
+              });
+            }
+
             function renderGridView(packs) {
               const prefs = PreferencesManager.get();
+              const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.packs) || {};
               packs.forEach(pack => {
                 const card = document.createElement('div');
                 card.className = 'card pack-card';
@@ -2845,34 +3042,55 @@ import { createTableFooter } from './ui/table-footer.js';
                 const title = document.createElement('h3');
                 title.textContent = pack.title || 'Untitled Pack';
 
-                const sub = document.createElement('div');
-                sub.className = 'muted';
-                sub.style.fontSize = 'var(--text-sm)';
-                sub.textContent = `edited ${Utils.formatRelativeTime(pack.lastEdited)}`;
-
                 const meta = document.createElement('div');
                 meta.className = 'pack-meta';
 
                 const badgesWrap = document.createElement('div');
                 badgesWrap.className = 'pack-meta-badges';
 
-                const count = document.createElement('div');
-                count.className = 'badge';
-                count.textContent = `${(pack.cases || []).length} case(s)`;
+                if (badgePrefs.showCasesCount !== false) {
+                  const count = document.createElement('div');
+                  count.className = 'badge';
+                  count.textContent = `${(pack.cases || []).length} case(s)`;
+                  badgesWrap.appendChild(count);
+                }
 
-                const truck = document.createElement('div');
-                truck.className = 'badge';
-                truck.textContent = formatTruckDims(pack.truck || {}, prefs.units.length);
+                if (badgePrefs.showTruckDims !== false) {
+                  const truck = document.createElement('div');
+                  truck.className = 'badge';
+                  truck.textContent = formatTruckDims(pack.truck || {}, prefs.units.length);
+                  badgesWrap.appendChild(truck);
+                }
 
-                badgesWrap.appendChild(count);
-                badgesWrap.appendChild(truck);
+                const showPacked = badgePrefs.showPacked !== false;
+                const showVolume = badgePrefs.showVolume !== false;
+                const showWeight = badgePrefs.showWeight !== false;
+                if (showPacked || showVolume || showWeight) {
+                  const stats = PackLibrary.computeStats(pack);
+                  const loaded = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : 0;
+                  const packed = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : 0;
+                  const pct = stats && Number.isFinite(stats.volumePercent) ? stats.volumePercent : 0;
+                  const weight = Utils.formatWeight(stats && stats.totalWeight, prefs.units.weight);
 
-                const stats = PackLibrary.computeStats(pack);
-                const statsLine = document.createElement('div');
-                statsLine.className = 'muted';
-                statsLine.style.fontSize = 'var(--text-xs)';
-                statsLine.textContent = formatPackStats(stats, prefs);
-                badgesWrap.appendChild(statsLine);
+                  if (showPacked) {
+                    const packedBadge = document.createElement('div');
+                    packedBadge.className = 'badge';
+                    packedBadge.textContent = `Packed: ${packed}/${loaded}`;
+                    badgesWrap.appendChild(packedBadge);
+                  }
+                  if (showVolume) {
+                    const volBadge = document.createElement('div');
+                    volBadge.className = 'badge';
+                    volBadge.textContent = `Volume: ${pct.toFixed(1)}%`;
+                    badgesWrap.appendChild(volBadge);
+                  }
+                  if (showWeight) {
+                    const weightBadge = document.createElement('div');
+                    weightBadge.className = 'badge';
+                    weightBadge.textContent = `Weight: ${weight}`;
+                    badgesWrap.appendChild(weightBadge);
+                  }
+                }
 
                 const kebabWrap = document.createElement('div');
                 kebabWrap.className = 'kebab';
@@ -2911,12 +3129,17 @@ import { createTableFooter } from './ui/table-footer.js';
                 });
                 kebabWrap.appendChild(kebabBtn);
 
-                meta.appendChild(badgesWrap);
+                if (badgesWrap.children.length) meta.appendChild(badgesWrap);
                 meta.appendChild(kebabWrap);
 
                 card.appendChild(preview);
                 card.appendChild(title);
-                card.appendChild(sub);
+                if (badgePrefs.showEditedTime !== false) {
+                  const editedBadge = document.createElement('div');
+                  editedBadge.className = 'badge';
+                  editedBadge.textContent = `Edited: ${Utils.formatRelativeTime(pack.lastEdited)}`;
+                  badgesWrap.appendChild(editedBadge);
+                }
                 card.appendChild(meta);
                 gridEl.appendChild(card);
               });
@@ -3248,9 +3471,11 @@ import { createTableFooter } from './ui/table-footer.js';
 	            const btnNew = document.getElementById('btn-new-case');
 	            const btnTemplate = document.getElementById('btn-cases-template');
 	            const btnImport = document.getElementById('btn-cases-import');
-	            const btnManageCats = document.getElementById('btn-manage-categories');
+              const btnManageCats = document.getElementById('btn-manage-categories');
               const btnViewGrid = document.getElementById('cases-view-grid');
               const btnViewList = document.getElementById('cases-view-list');
+              const btnFiltersToggle = document.getElementById('cases-filters-toggle');
+              const btnCardDisplay = document.getElementById('cases-card-display');
 	            const actionsDefaultEl = document.getElementById('cases-actions-default');
 	            const actionsBulkEl = document.getElementById('cases-actions-bulk');
 	            const selectedCountEl = document.getElementById('cases-selected-count');
@@ -3281,14 +3506,21 @@ import { createTableFooter } from './ui/table-footer.js';
 	              btnNew.addEventListener('click', () => openCaseModal(null));
 	              btnTemplate.addEventListener('click', () => downloadTemplate());
 	              btnImport.addEventListener('click', () => openImportModal());
-	              btnManageCats.addEventListener('click', () => openCategoryManager());
+                btnManageCats.addEventListener('click', () => openCategoryManager());
                 btnViewGrid && btnViewGrid.addEventListener('click', () => setViewMode('grid'));
                 btnViewList && btnViewList.addEventListener('click', () => setViewMode('list'));
+                btnFiltersToggle && btnFiltersToggle.addEventListener('click', () => toggleFiltersVisible());
+                btnCardDisplay &&
+                  btnCardDisplay.addEventListener('click', () => {
+                    // TODO: Add keyboard shortcut + update Keyboard Shortcuts modal later
+                    CardDisplayOverlay.open({ screen: 'cases' });
+                  });
 	              btnBulkDelete.addEventListener('click', () => bulkDeleteSelected());
 	              selectAllEl.addEventListener('change', () => toggleAllVisible(selectAllEl.checked));
 	              initTableHeaders();
                 initCasesFooter();
                 updateViewButtons();
+                applyFiltersVisibility();
 	            }
 
               function setViewMode(mode) {
@@ -3303,6 +3535,20 @@ import { createTableFooter } from './ui/table-footer.js';
                 const mode = PreferencesManager.get().casesViewMode || 'list';
                 btnViewGrid && btnViewGrid.classList.toggle('btn-primary', mode === 'grid');
                 btnViewList && btnViewList.classList.toggle('btn-primary', mode === 'list');
+              }
+
+              function toggleFiltersVisible() {
+                const prefs = PreferencesManager.get();
+                prefs.casesFiltersVisible = !prefs.casesFiltersVisible;
+                PreferencesManager.set(prefs);
+                applyFiltersVisibility();
+              }
+
+              function applyFiltersVisibility() {
+                if (!filtersEl) return;
+                const visible = PreferencesManager.get().casesFiltersVisible !== false;
+                filtersEl.style.display = visible ? '' : 'none';
+                btnFiltersToggle && btnFiltersToggle.classList.toggle('btn-primary', visible);
               }
 
 	            function clearSelection() {
@@ -3480,6 +3726,7 @@ import { createTableFooter } from './ui/table-footer.js';
               renderFilters();
               renderTable();
               renderViewMode();
+              applyFiltersVisibility();
             }
 
             function renderViewMode() {
@@ -3512,6 +3759,7 @@ import { createTableFooter } from './ui/table-footer.js';
               if (!gridEl) return;
               gridEl.innerHTML = '';
               const list = Array.isArray(cases) ? cases : [];
+              const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.cases) || {};
 
               if (!list.length) return;
 
@@ -3541,30 +3789,51 @@ import { createTableFooter } from './ui/table-footer.js';
                 const badgesWrap = document.createElement('div');
                 badgesWrap.className = 'pack-meta-badges';
 
-                const cat = document.createElement('div');
-                cat.className = 'badge';
-                cat.textContent = CategoryService.meta(c.category).name;
+                if (badgePrefs.showCategory !== false) {
+                  const cat = document.createElement('div');
+                  cat.className = 'badge';
+                  cat.textContent = CategoryService.meta(c.category).name;
+                  badgesWrap.appendChild(cat);
+                }
 
-                const dims = document.createElement('div');
-                dims.className = 'badge';
-                const d = c.dimensions || { length: 0, width: 0, height: 0 };
-                const l = Utils.formatLength(d.length, prefs.units.length);
-                const w = Utils.formatLength(d.width, prefs.units.length);
-                const h = Utils.formatLength(d.height, prefs.units.length);
-                dims.textContent = `${l} × ${w} × ${h}`;
+                if (badgePrefs.showDims !== false) {
+                  const dims = document.createElement('div');
+                  dims.className = 'badge';
+                  const d = c.dimensions || { length: 0, width: 0, height: 0 };
+                  const l = Utils.formatLength(d.length, prefs.units.length);
+                  const w = Utils.formatLength(d.width, prefs.units.length);
+                  const h = Utils.formatLength(d.height, prefs.units.length);
+                  dims.textContent = `${l} × ${w} × ${h}`;
+                  badgesWrap.appendChild(dims);
+                }
 
-                const weight = document.createElement('div');
-                weight.className = 'badge';
-                weight.textContent = Utils.formatWeight(c.weight, prefs.units.weight);
+                if (badgePrefs.showVolume !== false) {
+                  const vol = document.createElement('div');
+                  vol.className = 'badge';
+                  vol.textContent = Utils.formatVolume(c.dimensions, prefs.units.length);
+                  badgesWrap.appendChild(vol);
+                }
 
-                const edited = document.createElement('div');
-                edited.className = 'badge';
-                edited.textContent = `edited ${Utils.formatRelativeTime(c.updatedAt)}`;
+                if (badgePrefs.showWeight !== false) {
+                  const weight = document.createElement('div');
+                  weight.className = 'badge';
+                  weight.textContent = Utils.formatWeight(c.weight, prefs.units.weight);
+                  badgesWrap.appendChild(weight);
+                }
 
-                badgesWrap.appendChild(cat);
-                badgesWrap.appendChild(dims);
-                badgesWrap.appendChild(weight);
-                badgesWrap.appendChild(edited);
+                if (badgePrefs.showFlip !== false) {
+                  const flip = document.createElement('div');
+                  flip.className = 'badge';
+                  flip.textContent = c.canFlip === true ? 'Flip: Yes' : 'Flip: No';
+                  badgesWrap.appendChild(flip);
+                }
+
+                if (badgePrefs.showEditedTime !== false) {
+                  const edited = document.createElement('div');
+                  edited.className = 'badge';
+                  edited.textContent = `Edited: ${Utils.formatRelativeTime(c.updatedAt)}`;
+                  badgesWrap.appendChild(edited);
+                }
 
                 const kebabWrap = document.createElement('div');
                 kebabWrap.className = 'kebab';
@@ -3590,7 +3859,7 @@ import { createTableFooter } from './ui/table-footer.js';
                 });
                 kebabWrap.appendChild(kebabBtn);
 
-                meta.appendChild(badgesWrap);
+                if (badgesWrap.children.length) meta.appendChild(badgesWrap);
                 meta.appendChild(kebabWrap);
 
                 card.appendChild(title);
@@ -3636,10 +3905,11 @@ import { createTableFooter } from './ui/table-footer.js';
               });
             }
 
-	            function renderTable() {
-	              const prefs = PreferencesManager.get();
-	              const q = String(searchEl.value || '').trim();
-	              const cats = Array.from(activeCategories).sort();
+            function renderTable() {
+              const prefs = PreferencesManager.get();
+              applyListColumnVisibility(prefs);
+              const q = String(searchEl.value || '').trim();
+              const cats = Array.from(activeCategories).sort();
 
 	              // Simplest stable behavior: clear selection when the visible dataset changes (search/sort/filter).
 	              const datasetKey = `${q}::${sortBy}::${sortDir}::${cats.join(',')}`;
@@ -3749,18 +4019,26 @@ import { createTableFooter } from './ui/table-footer.js';
 
                 const tdLength = document.createElement('td');
                 tdLength.textContent = Utils.formatLength(c.dimensions.length, prefs.units.length);
+                if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showDims === false)
+                  tdLength.style.display = 'none';
                 tr.appendChild(tdLength);
 
                 const tdWidth = document.createElement('td');
                 tdWidth.textContent = Utils.formatLength(c.dimensions.width, prefs.units.length);
+                if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showDims === false)
+                  tdWidth.style.display = 'none';
                 tr.appendChild(tdWidth);
 
                 const tdHeight = document.createElement('td');
                 tdHeight.textContent = Utils.formatLength(c.dimensions.height, prefs.units.length);
+                if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showDims === false)
+                  tdHeight.style.display = 'none';
                 tr.appendChild(tdHeight);
 
                 const tdVol = document.createElement('td');
                 tdVol.textContent = Utils.formatVolume(c.dimensions, prefs.units.length);
+                if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showVolume === false)
+                  tdVol.style.display = 'none';
                 tr.appendChild(tdVol);
 
                 const tdW = document.createElement('td');
@@ -3769,15 +4047,21 @@ import { createTableFooter } from './ui/table-footer.js';
                   ? `${(weight * 0.453592).toFixed(2)} kg`
                   : `${weight.toFixed(2)} lb`;
                 tdW.textContent = formattedWeight;
+                if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showWeight === false)
+                  tdW.style.display = 'none';
                 tr.appendChild(tdW);
 
                 const tdCat = document.createElement('td');
                 tdCat.appendChild(categoryChip(c.category));
+                if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showCategory === false)
+                  tdCat.style.display = 'none';
                 tr.appendChild(tdCat);
 
                 const tdFlip = document.createElement('td');
                 const flipLabel = c.canFlip === true ? 'Yes' : c.canFlip === false ? 'No' : '';
                 tdFlip.textContent = flipLabel;
+                if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showFlip === false)
+                  tdFlip.style.display = 'none';
                 tr.appendChild(tdFlip);
 
                 const tdActions = document.createElement('td');
@@ -3805,8 +4089,26 @@ import { createTableFooter } from './ui/table-footer.js';
                 tr.appendChild(tdActions);
 
                 tbodyEl.appendChild(tr);
-                });
-                syncCasesFooter(casePageMeta);
+              });
+              syncCasesFooter(casePageMeta);
+            }
+
+            function applyListColumnVisibility(prefs) {
+              const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.cases) || {};
+              const set = (sortKey, visible) => {
+                const th = document.querySelector(`#screen-cases table thead th[data-sort="${sortKey}"]`);
+                if (th) th.style.display = visible ? '' : 'none';
+              };
+              set('length', badgePrefs.showDims !== false);
+              set('width', badgePrefs.showDims !== false);
+              set('height', badgePrefs.showDims !== false);
+              set('volume', badgePrefs.showVolume !== false);
+              set('weight', badgePrefs.showWeight !== false);
+              set('category', badgePrefs.showCategory !== false);
+
+              const catTh = document.querySelector('#screen-cases table thead th[data-sort="category"]');
+              const flipTh = catTh ? catTh.nextElementSibling : null;
+              if (flipTh) flipTh.style.display = badgePrefs.showFlip !== false ? '' : 'none';
             }
 
             function chip(label, key, active, onClick, color, count) {

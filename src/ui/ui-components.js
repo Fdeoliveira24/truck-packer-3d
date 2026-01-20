@@ -3,6 +3,8 @@ export function createUIComponents() {
             const toastContainer = document.getElementById('toast-container');
             let dropdownKeyDownListener = null;
             let dropdownRepositionListener = null;
+            let dropdownDocClickListener = null;
+            let dropdownDocClickTimer = null;
 
             const toastTypes = {
               success: { title: 'Success', color: 'var(--success)', icon: '✓' },
@@ -186,6 +188,16 @@ export function createUIComponents() {
 	              wrap.style.right = 'auto';
 
 	              items.forEach(item => {
+	                if (item && item.type === 'header') {
+	                  const header = document.createElement('div');
+	                  header.style.padding = '10px 12px';
+	                  header.style.fontWeight = 'var(--font-semibold)';
+	                  header.style.borderBottom = '1px solid var(--border-subtle)';
+	                  header.textContent = String(item.label || '');
+	                  wrap.appendChild(header);
+	                  return;
+	                }
+
 	                if (item && (item.type === 'divider' || item.divider === true)) {
 	                  const divider = document.createElement('div');
                   divider.setAttribute('role', 'separator');
@@ -248,6 +260,8 @@ export function createUIComponents() {
               const dropdown = document.createElement('div');
               dropdown.className = 'dropdown';
               dropdown.dataset.dropdown = '1';
+              dropdown.dataset.anchorId = anchorEl && anchorEl.id ? String(anchorEl.id) : '';
+              if (options && options.role) dropdown.dataset.role = String(options.role);
               dropdown.style.position = 'fixed';
               dropdown.style.zIndex = '16000';
               dropdown.style.visibility = 'hidden';
@@ -291,9 +305,18 @@ export function createUIComponents() {
 
               positionDropdown();
               dropdown.style.visibility = 'visible';
-              window.setTimeout(() => {
-                const onDocClick = () => closeAllDropdowns();
-                document.addEventListener('click', onDocClick, { once: true });
+              if (dropdownDocClickTimer) {
+                window.clearTimeout(dropdownDocClickTimer);
+                dropdownDocClickTimer = null;
+              }
+              if (dropdownDocClickListener) {
+                document.removeEventListener('click', dropdownDocClickListener);
+                dropdownDocClickListener = null;
+              }
+              dropdownDocClickTimer = window.setTimeout(() => {
+                dropdownDocClickListener = () => closeAllDropdowns();
+                document.addEventListener('click', dropdownDocClickListener, { once: true });
+                dropdownDocClickTimer = null;
               }, 0);
 
               dropdownKeyDownListener = ev => {
@@ -309,6 +332,14 @@ export function createUIComponents() {
 
             function closeAllDropdowns() {
               document.querySelectorAll('[data-dropdown="1"]').forEach(el => el.remove());
+              if (dropdownDocClickTimer) {
+                window.clearTimeout(dropdownDocClickTimer);
+                dropdownDocClickTimer = null;
+              }
+              if (dropdownDocClickListener) {
+                document.removeEventListener('click', dropdownDocClickListener);
+                dropdownDocClickListener = null;
+              }
               if (dropdownKeyDownListener) {
                 document.removeEventListener('keydown', dropdownKeyDownListener);
                 dropdownKeyDownListener = null;

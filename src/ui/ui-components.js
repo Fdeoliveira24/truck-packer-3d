@@ -232,9 +232,13 @@ export function createUIComponents() {
                   btn.style.opacity = '0.6';
                   btn.style.cursor = 'not-allowed';
                 }
+                if (item && item.active) {
+                  btn.style.background = 'var(--bg-hover)';
+                }
 	                if (item.icon) {
 	                  const icon = document.createElement('i');
 	                  icon.className = item.icon;
+	                  if (item.iconColor) icon.style.color = String(item.iconColor);
 	                  btn.appendChild(icon);
 	                }
                 const text = document.createElement('span');
@@ -246,6 +250,16 @@ export function createUIComponents() {
                   iconRight.className = item.rightIcon;
                   iconRight.style.marginLeft = 'auto';
                   iconRight.style.color = item.rightIconColor || 'var(--accent-primary)';
+                  if (item.rightOnClick) {
+                    iconRight.style.cursor = 'pointer';
+                    iconRight.title = item.rightTitle ? String(item.rightTitle) : '';
+                    iconRight.addEventListener('click', ev => {
+                      ev.stopPropagation();
+                      if (btn.disabled) return;
+                      closeAllDropdowns();
+                      item.rightOnClick && item.rightOnClick();
+                    });
+                  }
                   btn.appendChild(iconRight);
                 }
                 btn.addEventListener('click', ev => {

@@ -1571,18 +1571,21 @@
                   aria-label="Search packs"
                 />
               </div>
-              <div class="row" style="gap: 4px">
-                <button class="btn" id="packs-view-grid" type="button" title="Grid view" aria-label="Grid view">
-                  <i class="fa-solid fa-grip"></i>
-                </button>
-                <button class="btn" id="packs-view-list" type="button" title="List view" aria-label="List view">
-                  <i class="fa-solid fa-list"></i>
-                </button>
-                <button class="btn" id="packs-filters-toggle" type="button" title="Toggle filters" aria-label="Toggle filters">
-                  <i class="fa-solid fa-filter"></i>
-                </button>
-                <button class="btn" id="packs-card-display" type="button" title="Card display" aria-label="Card display">
-                  <i class="fa-solid fa-pencil"></i>
+	              <div class="row" style="gap: 4px">
+	                <button class="btn" id="packs-view-grid" type="button" title="Grid view" aria-label="Grid view">
+	                  <i class="fa-solid fa-grip"></i>
+	                </button>
+	                <button class="btn" id="packs-view-list" type="button" title="List view" aria-label="List view">
+	                  <i class="fa-solid fa-list"></i>
+	                </button>
+	                <button class="btn" id="packs-trailer-presets" type="button" title="Trailer preset" aria-label="Trailer preset">
+	                  <i class="fa-solid fa-truck"></i>
+	                </button>
+	                <button class="btn" id="packs-filters-toggle" type="button" title="Toggle filters" aria-label="Toggle filters">
+	                  <i class="fa-solid fa-filter"></i>
+	                </button>
+	                <button class="btn" id="packs-card-display" type="button" title="Card display" aria-label="Card display">
+	                  <i class="fa-solid fa-pencil"></i>
                 </button>
               </div>
               <div class="search-shell" style="flex: 1; min-width: 260px; display: none">
@@ -1667,24 +1670,33 @@
                         </span>
                       </span>
                     </th>
-                    <th scope="col" data-sort="height">
-                      <span class="th-sort" role="button" tabindex="0">
-                        <span class="th-label">Height</span>
-                        <span class="th-chevrons" aria-hidden="true">
-                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
-                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
-                      </span>
-                    </th>
-                    <th scope="col" data-sort="packed">
-                      <span class="th-sort" role="button" tabindex="0">
-                        <span class="th-label">Packed</span>
-                        <span class="th-chevrons" aria-hidden="true">
-                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
-                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
-                      </span>
-                    </th>
+	                    <th scope="col" data-sort="height">
+	                      <span class="th-sort" role="button" tabindex="0">
+	                        <span class="th-label">Height</span>
+	                        <span class="th-chevrons" aria-hidden="true">
+	                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+	                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+	                        </span>
+	                      </span>
+	                    </th>
+	                    <th scope="col" data-sort="mode">
+	                      <span class="th-sort" role="button" tabindex="0">
+	                        <span class="th-label">SHAPE</span>
+	                        <span class="th-chevrons" aria-hidden="true">
+	                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+	                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+	                        </span>
+	                      </span>
+	                    </th>
+	                    <th scope="col" data-sort="packed">
+	                      <span class="th-sort" role="button" tabindex="0">
+	                        <span class="th-label">Packed</span>
+	                        <span class="th-chevrons" aria-hidden="true">
+	                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+	                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+	                        </span>
+	                      </span>
+	                    </th>
                     <th scope="col" data-sort="volume">
                       <span class="th-sort" role="button" tabindex="0">
                         <span class="th-label">Volume</span>

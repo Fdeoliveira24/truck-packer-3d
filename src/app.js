@@ -1,6 +1,7 @@
 import { createSystemOverlay } from './ui/system-overlay.js';
 import { createUIComponents } from './ui/ui-components.js';
 import { createTableFooter } from './ui/table-footer.js';
+import { TrailerPresets } from './trailer-presets.js';
       (async function () {
         try {
           if (window.__TP3D_BOOT && window.__TP3D_BOOT.threeReady) {
@@ -22,6 +23,7 @@ import { createTableFooter } from './ui/table-footer.js';
           'use strict';
 
           const APP_VERSION = '1.0.0';
+          const featureFlags = { trailerPresetsEnabled: true };
 
           // ============================================================================
           // SECTION: FOUNDATION / UTILS
@@ -551,15 +553,17 @@ import { createTableFooter } from './ui/table-footer.js';
 	              casesViewMode: 'list',
 	              packsFiltersVisible: true,
 	              casesFiltersVisible: true,
-	              gridCardBadges: {
-	                packs: {
-	                  showCasesCount: true,
-	                  showTruckDims: true,
-	                  showPacked: true,
-	                  showVolume: true,
-	                  showWeight: true,
-	                  showEditedTime: true,
-	                },
+		              gridCardBadges: {
+		                packs: {
+		                  showCasesCount: true,
+		                  showTruckDims: true,
+		                  showThumbnail: true,
+		                  showShapeMode: true,
+		                  showPacked: true,
+		                  showVolume: true,
+		                  showWeight: true,
+		                  showEditedTime: true,
+		                },
 	                cases: {
 	                  showCategory: true,
 	                  showDims: true,
@@ -738,22 +742,29 @@ import { createTableFooter } from './ui/table-footer.js';
 	                  ...inCases,
 	                },
 	              };
-	              const hasLegacyStatLine = Object.prototype.hasOwnProperty.call(inPacks, 'showPackedStatLine');
-	              const hasNewPacked = Object.prototype.hasOwnProperty.call(inPacks, 'showPacked');
-	              const hasNewVolume = Object.prototype.hasOwnProperty.call(inPacks, 'showVolume');
-	              const hasNewWeight = Object.prototype.hasOwnProperty.call(inPacks, 'showWeight');
-	              if (hasLegacyStatLine && !hasNewPacked && !hasNewVolume && !hasNewWeight) {
-	                const legacy = inPacks.showPackedStatLine !== false;
-	                next.gridCardBadges.packs.showPacked = legacy;
-	                next.gridCardBadges.packs.showVolume = legacy;
-	                next.gridCardBadges.packs.showWeight = legacy;
-	              }
-	              next.gridCardBadges.packs.showCasesCount = next.gridCardBadges.packs.showCasesCount !== false;
-	              next.gridCardBadges.packs.showTruckDims = next.gridCardBadges.packs.showTruckDims !== false;
-	              next.gridCardBadges.packs.showPacked = next.gridCardBadges.packs.showPacked !== false;
-	              next.gridCardBadges.packs.showVolume = next.gridCardBadges.packs.showVolume !== false;
-	              next.gridCardBadges.packs.showWeight = next.gridCardBadges.packs.showWeight !== false;
-	              next.gridCardBadges.packs.showEditedTime = next.gridCardBadges.packs.showEditedTime !== false;
+		              const hasLegacyStatLine = Object.prototype.hasOwnProperty.call(inPacks, 'showPackedStatLine');
+		              const hasNewPacked = Object.prototype.hasOwnProperty.call(inPacks, 'showPacked');
+		              const hasNewVolume = Object.prototype.hasOwnProperty.call(inPacks, 'showVolume');
+		              const hasNewWeight = Object.prototype.hasOwnProperty.call(inPacks, 'showWeight');
+		              const hasLegacyTrailerMode = Object.prototype.hasOwnProperty.call(inPacks, 'showTrailerMode');
+		              const hasShapeMode = Object.prototype.hasOwnProperty.call(inPacks, 'showShapeMode');
+		              if (hasLegacyStatLine && !hasNewPacked && !hasNewVolume && !hasNewWeight) {
+		                const legacy = inPacks.showPackedStatLine !== false;
+		                next.gridCardBadges.packs.showPacked = legacy;
+		                next.gridCardBadges.packs.showVolume = legacy;
+		                next.gridCardBadges.packs.showWeight = legacy;
+		              }
+		              if (hasLegacyTrailerMode && !hasShapeMode) {
+		                next.gridCardBadges.packs.showShapeMode = inPacks.showTrailerMode !== false;
+		              }
+		              next.gridCardBadges.packs.showCasesCount = next.gridCardBadges.packs.showCasesCount !== false;
+		              next.gridCardBadges.packs.showTruckDims = next.gridCardBadges.packs.showTruckDims !== false;
+		              next.gridCardBadges.packs.showThumbnail = next.gridCardBadges.packs.showThumbnail !== false;
+		              next.gridCardBadges.packs.showShapeMode = next.gridCardBadges.packs.showShapeMode !== false;
+		              next.gridCardBadges.packs.showPacked = next.gridCardBadges.packs.showPacked !== false;
+		              next.gridCardBadges.packs.showVolume = next.gridCardBadges.packs.showVolume !== false;
+		              next.gridCardBadges.packs.showWeight = next.gridCardBadges.packs.showWeight !== false;
+		              next.gridCardBadges.packs.showEditedTime = next.gridCardBadges.packs.showEditedTime !== false;
 	              next.gridCardBadges.cases.showCategory = next.gridCardBadges.cases.showCategory !== false;
 	              next.gridCardBadges.cases.showDims = next.gridCardBadges.cases.showDims !== false;
 	              next.gridCardBadges.cases.showVolume = next.gridCardBadges.cases.showVolume !== false;
@@ -1453,23 +1464,27 @@ import { createTableFooter } from './ui/table-footer.js';
               const items = [];
               if (screen === 'cases') {
                 items.push({ type: 'header', label: 'Card Display - Cases' });
-                items.push(item('Show category', cases.showCategory !== false, () => setFlag('cases.showCategory', cases.showCategory === false)));
-                items.push(item('Show dimensions', cases.showDims !== false, () => setFlag('cases.showDims', cases.showDims === false)));
-                items.push(item('Show volume', cases.showVolume !== false, () => setFlag('cases.showVolume', cases.showVolume === false)));
-                items.push(item('Show weight', cases.showWeight !== false, () => setFlag('cases.showWeight', cases.showWeight === false)));
-                items.push(item('Show flip', cases.showFlip !== false, () => setFlag('cases.showFlip', cases.showFlip === false)));
-                items.push(item('Show edited time', cases.showEditedTime !== false, () => setFlag('cases.showEditedTime', cases.showEditedTime === false)));
-              } else {
-                items.push({ type: 'header', label: 'Card Display - Packs' });
-                items.push(item('Show cases count', packs.showCasesCount !== false, () => setFlag('packs.showCasesCount', packs.showCasesCount === false)));
-                items.push(item('Show truck dims', packs.showTruckDims !== false, () => setFlag('packs.showTruckDims', packs.showTruckDims === false)));
-                items.push(item('Show packed', packs.showPacked !== false, () => setFlag('packs.showPacked', packs.showPacked === false)));
-                items.push(item('Show volume', packs.showVolume !== false, () => setFlag('packs.showVolume', packs.showVolume === false)));
-                items.push(item('Show weight', packs.showWeight !== false, () => setFlag('packs.showWeight', packs.showWeight === false)));
-                items.push(item('Show edited time', packs.showEditedTime !== false, () => setFlag('packs.showEditedTime', packs.showEditedTime === false)));
-              }
+                items.push(item('Show Category', cases.showCategory !== false, () => setFlag('cases.showCategory', cases.showCategory === false)));
+                items.push(item('Show Dimensions', cases.showDims !== false, () => setFlag('cases.showDims', cases.showDims === false)));
+                items.push(item('Show Volume', cases.showVolume !== false, () => setFlag('cases.showVolume', cases.showVolume === false)));
+                items.push(item('Show Weight', cases.showWeight !== false, () => setFlag('cases.showWeight', cases.showWeight === false)));
+                items.push(item('Show Flip', cases.showFlip !== false, () => setFlag('cases.showFlip', cases.showFlip === false)));
+                items.push(item('Show Edited Time', cases.showEditedTime !== false, () => setFlag('cases.showEditedTime', cases.showEditedTime === false)));
+	              } else {
+	                
+                  items.push({ type: 'header', label: 'Card Display - Packs' });
+                  items.push(item('Show Thumbnail', packs.showThumbnail !== false, () => setFlag('packs.showThumbnail', packs.showThumbnail === false)));
+	                items.push(item('Show Cases Count', packs.showCasesCount !== false, () => setFlag('packs.showCasesCount', packs.showCasesCount === false)));
+	                items.push(item('Show Dimensions', packs.showTruckDims !== false, () => setFlag('packs.showTruckDims', packs.showTruckDims === false)));
+	                
+	                items.push(item('Show Shape', packs.showShapeMode !== false, () => setFlag('packs.showShapeMode', packs.showShapeMode === false)));
+	                items.push(item('Show Packed', packs.showPacked !== false, () => setFlag('packs.showPacked', packs.showPacked === false)));
+	                items.push(item('Show Volume', packs.showVolume !== false, () => setFlag('packs.showVolume', packs.showVolume === false)));
+	                items.push(item('Show Weight', packs.showWeight !== false, () => setFlag('packs.showWeight', packs.showWeight === false)));
+	                items.push(item('Show Edited Time', packs.showEditedTime !== false, () => setFlag('packs.showEditedTime', packs.showEditedTime === false)));
+	              }
 
-              UIComponents.openDropdown(anchorEl, items, { width: 320, align: 'left', role: 'card-display' });
+              UIComponents.openDropdown(anchorEl, items, { width: 260, align: 'left', role: 'card-display' });
             }
 
             return { open, close, isOpen };
@@ -2447,10 +2462,11 @@ import { createTableFooter } from './ui/table-footer.js';
             const chipEmpty = document.getElementById('packs-filter-chip-empty');
             const chipPartial = document.getElementById('packs-filter-chip-partial');
             const chipFull = document.getElementById('packs-filter-chip-full');
-            const btnViewGrid = document.getElementById('packs-view-grid');
-            const btnViewList = document.getElementById('packs-view-list');
-            const btnFiltersToggle = document.getElementById('packs-filters-toggle');
-            const btnCardDisplay = document.getElementById('packs-card-display');
+	            const btnViewGrid = document.getElementById('packs-view-grid');
+	            const btnViewList = document.getElementById('packs-view-list');
+	            const btnTrailerPresets = document.getElementById('packs-trailer-presets');
+	            const btnFiltersToggle = document.getElementById('packs-filters-toggle');
+	            const btnCardDisplay = document.getElementById('packs-card-display');
             const selectAllEl = document.getElementById('packs-select-all');
             const titleHeaderButton = document.querySelector('#packs-list thead th[data-sort="title"] .th-sort');
             const defaultActionsEl = document.getElementById('packs-actions-default');
@@ -2470,23 +2486,30 @@ import { createTableFooter } from './ui/table-footer.js';
             let filteredPacks = [];
             const filtersRowEl = chipEmpty ? chipEmpty.parentElement : null;
 
-            function formatTruckDims(truck, lengthUnit) {
-              const unit = lengthUnit || 'in';
-              const l = Utils.formatLength(truck && truck.length, unit);
-              const w = Utils.formatLength(truck && truck.width, unit);
-              const h = Utils.formatLength(truck && truck.height, unit);
-              return `Truck: L ${l} • W ${w} • H ${h}`;
-            }
+	            function formatTruckDims(truck, lengthUnit) {
+	              const unit = lengthUnit || 'in';
+	              const l = Utils.formatLength(truck && truck.length, unit);
+	              const w = Utils.formatLength(truck && truck.width, unit);
+	              const h = Utils.formatLength(truck && truck.height, unit);
+	              return `Truck: L ${l} • W ${w} • H ${h}`;
+	            }
 
-            function formatPackStats(stats, prefs) {
-              const loaded = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : 0;
-              const packed = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : 0;
-              const pct = stats && Number.isFinite(stats.volumePercent) ? stats.volumePercent : 0;
+	            function trailerModeLabel(shapeMode) {
+	              const mode = String(shapeMode || 'rect');
+	              if (mode === 'wheelWells') return 'Box + Wheel Wells';
+	              if (mode === 'frontBonus') return 'Box + Front Overhang';
+	              return 'Standard';
+	            }
+
+	            function formatPackStats(stats, prefs) {
+	              const loaded = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : 0;
+	              const packed = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : 0;
+	              const pct = stats && Number.isFinite(stats.volumePercent) ? stats.volumePercent : 0;
               const weight = Utils.formatWeight(stats && stats.totalWeight, prefs.units.weight);
               return `Packed: ${packed}/${loaded} • Volume: ${pct.toFixed(1)}% • Weight: ${weight}`;
             }
 
-            function initPacksUI() {
+	            function initPacksUI() {
               searchEl.addEventListener(
                 'input',
                 Utils.debounce(() => {
@@ -2505,22 +2528,72 @@ import { createTableFooter } from './ui/table-footer.js';
               wireChip(chipEmpty, 'empty');
               wireChip(chipPartial, 'partial');
               wireChip(chipFull, 'full');
-              btnNew.addEventListener('click', () => openNewPackModal());
-              btnImport.addEventListener('click', () => openImportPackDialog());
-              btnViewGrid.addEventListener('click', () => setViewMode('grid'));
-              btnViewList.addEventListener('click', () => setViewMode('list'));
-              btnFiltersToggle && btnFiltersToggle.addEventListener('click', () => toggleFiltersVisible());
-              btnCardDisplay &&
-                btnCardDisplay.addEventListener('click', () => {
-                  // TODO: Add keyboard shortcut + update Keyboard Shortcuts modal later
-                  CardDisplayOverlay.open({ screen: 'packs' });
+	              btnNew.addEventListener('click', () => openNewPackModal());
+	              btnImport.addEventListener('click', () => openImportPackDialog());
+	              btnViewGrid.addEventListener('click', () => setViewMode('grid'));
+	              btnViewList.addEventListener('click', () => setViewMode('list'));
+	              if (!featureFlags.trailerPresetsEnabled && btnTrailerPresets) btnTrailerPresets.style.display = 'none';
+	              if (featureFlags.trailerPresetsEnabled && btnTrailerPresets) {
+	                btnTrailerPresets.addEventListener('click', ev => {
+	                  ev.stopPropagation();
+	                  openTrailerPresetsMenu(btnTrailerPresets);
+	                });
+	              }
+	              btnFiltersToggle && btnFiltersToggle.addEventListener('click', () => toggleFiltersVisible());
+	              btnCardDisplay &&
+	                btnCardDisplay.addEventListener('click', () => {
+	                  // TODO: Add keyboard shortcut + update Keyboard Shortcuts modal later
+	                  CardDisplayOverlay.open({ screen: 'packs' });
                 });
               selectAllEl.addEventListener('change', handleSelectAll);
               btnBulkDelete.addEventListener('click', handleBulkDelete);
               initListHeaderSort();
               updateViewButtons();
-              initFooter();
-            }
+	              initFooter();
+	            }
+
+	            function openTrailerPresetsMenu(anchorEl) {
+	              if (!anchorEl) return;
+	              if (!featureFlags.trailerPresetsEnabled) return;
+
+	              const selected = Array.from(selectedIds);
+	              let packId = null;
+	              if (selected.length === 1) {
+	                packId = selected[0];
+	              } else if (selected.length === 0) {
+	                if (filteredPacks && filteredPacks.length === 1) {
+	                  packId = filteredPacks[0].id;
+	                } else {
+	                  UIComponents.showToast('Select a pack first', 'warning');
+	                  return;
+	                }
+	              } else {
+	                UIComponents.showToast('Select a single pack first', 'warning');
+	                return;
+	              }
+	              const pack = PackLibrary.getById(packId);
+	              if (!pack) {
+	                UIComponents.showToast('Pack not found', 'error');
+	                return;
+	              }
+
+	              const items = [{ type: 'header', label: 'Trailer Presets' }];
+	              TrailerPresets.getAll().forEach(p => {
+	                items.push({
+	                  label: p.label,
+	                  icon: 'fa-solid fa-truck',
+	                  onClick: () => {
+	                    const nextTruck = TrailerPresets.applyToTruck(pack.truck, p);
+	                    PackLibrary.update(pack.id, { truck: nextTruck });
+	                    UIComponents.showToast(`Applied preset: ${p.label}`, 'success');
+	                    render();
+	                  },
+	                });
+	              });
+
+	              const rect = anchorEl.getBoundingClientRect();
+	              UIComponents.openDropdown(anchorEl, items, { align: 'right', width: Math.max(260, rect.width), role: 'trailer-presets' });
+	            }
 
             function toggleFiltersVisible() {
               const prefs = PreferencesManager.get();
@@ -2767,14 +2840,18 @@ import { createTableFooter } from './ui/table-footer.js';
               const compareTitle = (a, b) => (a.title || '').localeCompare(b.title || '');
               const compareCases = (a, b) => ((a.cases || []).length) - ((b.cases || []).length);
               const compareLastEdited = (a, b) => (a.lastEdited || 0) - (b.lastEdited || 0);
-              const compareCreated = (a, b) => (a.createdAt || 0) - (b.createdAt || 0);
-              const compareLength = (a, b) => (a.truck?.length || 0) - (b.truck?.length || 0);
-              const compareWidth = (a, b) => (a.truck?.width || 0) - (b.truck?.width || 0);
-              const compareHeight = (a, b) => (a.truck?.height || 0) - (b.truck?.height || 0);
-              const comparePacked = (a, b) => ((a.stats && a.stats.packedCases) || 0) - ((b.stats && b.stats.packedCases) || 0);
-              const compareVolume = (a, b) =>
-                ((a.stats && Number.isFinite(a.stats.volumePercent) ? a.stats.volumePercent : 0) || 0) -
-                ((b.stats && Number.isFinite(b.stats.volumePercent) ? b.stats.volumePercent : 0) || 0);
+	              const compareCreated = (a, b) => (a.createdAt || 0) - (b.createdAt || 0);
+	              const compareLength = (a, b) => (a.truck?.length || 0) - (b.truck?.length || 0);
+	              const compareWidth = (a, b) => (a.truck?.width || 0) - (b.truck?.width || 0);
+	              const compareHeight = (a, b) => (a.truck?.height || 0) - (b.truck?.height || 0);
+	              const compareMode = (a, b) =>
+	                trailerModeLabel(a && a.truck && a.truck.shapeMode).localeCompare(
+	                  trailerModeLabel(b && b.truck && b.truck.shapeMode)
+	                );
+	              const comparePacked = (a, b) => ((a.stats && a.stats.packedCases) || 0) - ((b.stats && b.stats.packedCases) || 0);
+	              const compareVolume = (a, b) =>
+	                ((a.stats && Number.isFinite(a.stats.volumePercent) ? a.stats.volumePercent : 0) || 0) -
+	                ((b.stats && Number.isFinite(b.stats.volumePercent) ? b.stats.volumePercent : 0) || 0);
               const compareWeight = (a, b) =>
                 ((a.stats && Number.isFinite(a.stats.totalWeight) ? a.stats.totalWeight : 0) || 0) -
                 ((b.stats && Number.isFinite(b.stats.totalWeight) ? b.stats.totalWeight : 0) || 0);
@@ -2790,13 +2867,15 @@ import { createTableFooter } from './ui/table-footer.js';
                 'length-asc': (a, b) => compareLength(a, b),
                 'length-desc': (a, b) => compareLength(b, a),
                 'width-asc': (a, b) => compareWidth(a, b),
-                'width-desc': (a, b) => compareWidth(b, a),
-                'height-asc': (a, b) => compareHeight(a, b),
-                'height-desc': (a, b) => compareHeight(b, a),
-                'packed-asc': (a, b) => comparePacked(a, b),
-                'packed-desc': (a, b) => comparePacked(b, a),
-                'volume-asc': (a, b) => compareVolume(a, b),
-                'volume-desc': (a, b) => compareVolume(b, a),
+	                'width-desc': (a, b) => compareWidth(b, a),
+	                'height-asc': (a, b) => compareHeight(a, b),
+	                'height-desc': (a, b) => compareHeight(b, a),
+	                'mode-asc': (a, b) => compareMode(a, b),
+	                'mode-desc': (a, b) => compareMode(b, a),
+	                'packed-asc': (a, b) => comparePacked(a, b),
+	                'packed-desc': (a, b) => comparePacked(b, a),
+	                'volume-asc': (a, b) => compareVolume(a, b),
+	                'volume-desc': (a, b) => compareVolume(b, a),
                 'weight-asc': (a, b) => compareWeight(a, b),
                 'weight-desc': (a, b) => compareWeight(b, a),
               };
@@ -2926,15 +3005,19 @@ import { createTableFooter } from './ui/table-footer.js';
                 tdWidth.textContent = Utils.formatLength(pack.truck.width, prefs.units.length);
                 if (badgePrefs.showTruckDims === false) tdWidth.style.display = 'none';
 
-                const tdHeight = document.createElement('td');
-                tdHeight.textContent = Utils.formatLength(pack.truck.height, prefs.units.length);
-                if (badgePrefs.showTruckDims === false) tdHeight.style.display = 'none';
+	                const tdHeight = document.createElement('td');
+	                tdHeight.textContent = Utils.formatLength(pack.truck.height, prefs.units.length);
+	                if (badgePrefs.showTruckDims === false) tdHeight.style.display = 'none';
 
-                const tdPacked = document.createElement('td');
-                const packedCases = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : null;
-                const totalCases = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : null;
-                tdPacked.textContent =
-                  packedCases === null || totalCases === null ? '—' : `${packedCases}/${totalCases}`;
+	                const tdMode = document.createElement('td');
+	                tdMode.textContent = trailerModeLabel(pack && pack.truck && pack.truck.shapeMode);
+	                if (badgePrefs.showShapeMode === false) tdMode.style.display = 'none';
+
+	                const tdPacked = document.createElement('td');
+	                const packedCases = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : null;
+	                const totalCases = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : null;
+	                tdPacked.textContent =
+	                  packedCases === null || totalCases === null ? '—' : `${packedCases}/${totalCases}`;
                 if (badgePrefs.showPacked === false) tdPacked.style.display = 'none';
 
                 const tdVolume = document.createElement('td');
@@ -2958,13 +3041,14 @@ import { createTableFooter } from './ui/table-footer.js';
                 kebabBtn.type = 'button';
                 kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
                 kebabBtn.addEventListener('click', ev => {
-                  ev.stopPropagation();
-                  UIComponents.openDropdown(kebabBtn, [
-                    { label: 'Open', icon: 'fa-solid fa-folder-open', onClick: () => openPack(pack.id) },
-                    { label: 'Rename', icon: 'fa-solid fa-pen', onClick: () => openRename(pack.id) },
-                    {
-                      label: 'Duplicate',
-                      icon: 'fa-solid fa-clone',
+	                  ev.stopPropagation();
+	                  UIComponents.openDropdown(kebabBtn, [
+	                    { label: 'Open', icon: 'fa-solid fa-folder-open', onClick: () => openPack(pack.id) },
+	                    { label: 'Edit', icon: 'fa-solid fa-pen-to-square', onClick: () => openEditPackModal(pack.id) },
+	                    { label: 'Rename', icon: 'fa-solid fa-pen', onClick: () => openRename(pack.id) },
+	                    {
+	                      label: 'Duplicate',
+	                      icon: 'fa-solid fa-clone',
                       onClick: () => {
                         PackLibrary.duplicate(pack.id);
                         UIComponents.showToast('Pack duplicated', 'success');
@@ -2991,51 +3075,54 @@ import { createTableFooter } from './ui/table-footer.js';
 
                 tr.appendChild(tdCheck);
                 tr.appendChild(tdTitle);
-                tr.appendChild(tdCases);
-                tr.appendChild(tdLength);
-                tr.appendChild(tdWidth);
-                tr.appendChild(tdHeight);
-                tr.appendChild(tdPacked);
-                tr.appendChild(tdVolume);
-                tr.appendChild(tdWeight);
-                tr.appendChild(tdEdited);
-                tr.appendChild(tdActions);
+	                tr.appendChild(tdCases);
+	                tr.appendChild(tdLength);
+	                tr.appendChild(tdWidth);
+	                tr.appendChild(tdHeight);
+	                tr.appendChild(tdMode);
+	                tr.appendChild(tdPacked);
+	                tr.appendChild(tdVolume);
+	                tr.appendChild(tdWeight);
+	                tr.appendChild(tdEdited);
+	                tr.appendChild(tdActions);
                 tbodyEl.appendChild(tr);
               });
             }
 
             function applyListColumnVisibility(prefs) {
               const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.packs) || {};
-              const show = {
-                cases: badgePrefs.showCasesCount !== false,
-                length: badgePrefs.showTruckDims !== false,
-                width: badgePrefs.showTruckDims !== false,
-                height: badgePrefs.showTruckDims !== false,
-                packed: badgePrefs.showPacked !== false,
-                volume: badgePrefs.showVolume !== false,
-                weight: badgePrefs.showWeight !== false,
-                edited: badgePrefs.showEditedTime !== false,
-              };
+	              const show = {
+	                cases: badgePrefs.showCasesCount !== false,
+	                length: badgePrefs.showTruckDims !== false,
+	                width: badgePrefs.showTruckDims !== false,
+	                height: badgePrefs.showTruckDims !== false,
+	                mode: badgePrefs.showShapeMode !== false,
+	                packed: badgePrefs.showPacked !== false,
+	                volume: badgePrefs.showVolume !== false,
+	                weight: badgePrefs.showWeight !== false,
+	                edited: badgePrefs.showEditedTime !== false,
+	              };
               Object.keys(show).forEach(key => {
                 const th = document.querySelector(`#packs-list thead th[data-sort="${key}"]`);
                 if (th) th.style.display = show[key] ? '' : 'none';
               });
             }
 
-            function renderGridView(packs) {
-              const prefs = PreferencesManager.get();
-              const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.packs) || {};
-              packs.forEach(pack => {
-                const card = document.createElement('div');
-                card.className = 'card pack-card';
-                card.tabIndex = 0;
-                card.addEventListener('click', ev => {
-                  if (ev.target && ev.target.closest && ev.target.closest('[data-pack-menu]')) return;
-                  openPack(pack.id);
-                });
-                card.addEventListener('keydown', ev => {
-                  if (ev.key === 'Enter') openPack(pack.id);
-                });
+	            function renderGridView(packs) {
+	              const prefs = PreferencesManager.get();
+	              const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.packs) || {};
+	              packs.forEach(pack => {
+	                const card = document.createElement('div');
+	                card.className = 'card pack-card';
+	                card.classList.toggle('selected', selectedIds.has(pack.id));
+	                card.tabIndex = 0;
+	                card.addEventListener('click', ev => {
+	                  if (ev.target && ev.target.closest && ev.target.closest('[data-pack-menu]')) return;
+	                  openPack(pack.id);
+	                });
+	                card.addEventListener('keydown', ev => {
+	                  if (ev.key === 'Enter') openPack(pack.id);
+	                });
 
                 const preview = buildPreview(pack);
 
@@ -3051,20 +3138,27 @@ import { createTableFooter } from './ui/table-footer.js';
                 if (badgePrefs.showCasesCount !== false) {
                   const count = document.createElement('div');
                   count.className = 'badge';
-                  count.textContent = `${(pack.cases || []).length} case(s)`;
+                  count.textContent = `Case count: ${(pack.cases || []).length}`;
                   badgesWrap.appendChild(count);
                 }
 
-                if (badgePrefs.showTruckDims !== false) {
-                  const truck = document.createElement('div');
-                  truck.className = 'badge';
-                  truck.textContent = formatTruckDims(pack.truck || {}, prefs.units.length);
-                  badgesWrap.appendChild(truck);
-                }
+	                if (badgePrefs.showTruckDims !== false) {
+	                  const truck = document.createElement('div');
+	                  truck.className = 'badge';
+	                  truck.textContent = formatTruckDims(pack.truck || {}, prefs.units.length).replace(/^Truck:/, 'Dimensions:');
+	                  badgesWrap.appendChild(truck);
+	                }
 
-                const showPacked = badgePrefs.showPacked !== false;
-                const showVolume = badgePrefs.showVolume !== false;
-                const showWeight = badgePrefs.showWeight !== false;
+	                if (badgePrefs.showShapeMode !== false) {
+	                  const mode = document.createElement('div');
+	                  mode.className = 'badge';
+	                  mode.textContent = `Shape: ${trailerModeLabel(pack && pack.truck && pack.truck.shapeMode)}`;
+	                  badgesWrap.appendChild(mode);
+	                }
+
+	                const showPacked = badgePrefs.showPacked !== false;
+	                const showVolume = badgePrefs.showVolume !== false;
+	                const showWeight = badgePrefs.showWeight !== false;
                 if (showPacked || showVolume || showWeight) {
                   const stats = PackLibrary.computeStats(pack);
                   const loaded = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : 0;
@@ -3092,21 +3186,34 @@ import { createTableFooter } from './ui/table-footer.js';
                   }
                 }
 
-                const kebabWrap = document.createElement('div');
-                kebabWrap.className = 'kebab';
-                kebabWrap.setAttribute('data-pack-menu', '1');
-                const kebabBtn = document.createElement('button');
-                kebabBtn.className = 'btn btn-ghost';
-                kebabBtn.type = 'button';
-                kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
-                kebabBtn.addEventListener('click', ev => {
-                  ev.stopPropagation();
-                  UIComponents.openDropdown(kebabBtn, [
-                    { label: 'Open', icon: 'fa-solid fa-folder-open', onClick: () => openPack(pack.id) },
-                    { label: 'Rename', icon: 'fa-solid fa-pen', onClick: () => openRename(pack.id) },
-                    {
-                      label: 'Duplicate',
-                      icon: 'fa-solid fa-clone',
+	                const kebabWrap = document.createElement('div');
+	                kebabWrap.className = 'kebab';
+	                kebabWrap.setAttribute('data-pack-menu', '1');
+	                const selectCb = document.createElement('input');
+	                selectCb.type = 'checkbox';
+	                selectCb.checked = selectedIds.has(pack.id);
+	                selectCb.setAttribute('aria-label', `Select ${pack.title || 'Untitled Pack'}`);
+	                selectCb.addEventListener('click', ev => ev.stopPropagation());
+	                selectCb.addEventListener('change', () => {
+	                  if (selectCb.checked) selectedIds.add(pack.id);
+	                  else selectedIds.delete(pack.id);
+	                  card.classList.toggle('selected', selectedIds.has(pack.id));
+	                  updateBulkActions();
+	                  syncFooterState();
+	                });
+	                const kebabBtn = document.createElement('button');
+	                kebabBtn.className = 'btn btn-ghost';
+	                kebabBtn.type = 'button';
+	                kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
+	                kebabBtn.addEventListener('click', ev => {
+	                  ev.stopPropagation();
+	                  UIComponents.openDropdown(kebabBtn, [
+	                    { label: 'Open', icon: 'fa-solid fa-folder-open', onClick: () => openPack(pack.id) },
+	                    { label: 'Edit', icon: 'fa-solid fa-pen-to-square', onClick: () => openEditPackModal(pack.id) },
+	                    { label: 'Rename', icon: 'fa-solid fa-pen', onClick: () => openRename(pack.id) },
+	                    {
+	                      label: 'Duplicate',
+	                      icon: 'fa-solid fa-clone',
                       onClick: () => {
                         PackLibrary.duplicate(pack.id);
                         UIComponents.showToast('Pack duplicated', 'success');
@@ -3127,12 +3234,13 @@ import { createTableFooter } from './ui/table-footer.js';
                     { label: 'Delete', icon: 'fa-solid fa-trash', variant: 'danger', dividerBefore: true, onClick: () => deletePack(pack.id) },
                   ]);
                 });
-                kebabWrap.appendChild(kebabBtn);
+	                kebabWrap.appendChild(selectCb);
+	                kebabWrap.appendChild(kebabBtn);
 
                 if (badgesWrap.children.length) meta.appendChild(badgesWrap);
                 meta.appendChild(kebabWrap);
 
-                card.appendChild(preview);
+                if (badgePrefs.showThumbnail !== false) card.appendChild(preview);
                 card.appendChild(title);
                 if (badgePrefs.showEditedTime !== false) {
                   const editedBadge = document.createElement('div');
@@ -3216,14 +3324,30 @@ import { createTableFooter } from './ui/table-footer.js';
                 opt.textContent = p.label;
                 presetSelect.appendChild(opt);
               });
-              presetWrap.appendChild(presetLabel);
-              presetWrap.appendChild(presetSelect);
+	              presetWrap.appendChild(presetLabel);
+	              presetWrap.appendChild(presetSelect);
 
-              const truckGrid = document.createElement('div');
-              truckGrid.className = 'row';
-              truckGrid.style.gap = '12px';
-              const tL = field('Truck length (in)', 'number', '636', true);
-              const tW = field('Truck width (in)', 'number', '102', true);
+	              const modeWrap = document.createElement('div');
+	              modeWrap.className = 'field';
+	              const modeLabel = document.createElement('div');
+	              modeLabel.className = 'label';
+	              modeLabel.textContent = 'Trailer Shape Mode';
+	              const modeSelect = document.createElement('select');
+	              modeSelect.className = 'select';
+	              modeSelect.innerHTML = `
+	                <option value="rect">Standard</option>
+	                <option value="wheelWells">Box + Wheel Wells</option>
+	                <option value="frontBonus">Box + Front Overhang</option>
+	              `;
+	              modeSelect.value = 'rect';
+	              modeWrap.appendChild(modeLabel);
+	              modeWrap.appendChild(modeSelect);
+
+	              const truckGrid = document.createElement('div');
+	              truckGrid.className = 'row';
+	              truckGrid.style.gap = '12px';
+	              const tL = field('Truck length (in)', 'number', '636', true);
+	              const tW = field('Truck width (in)', 'number', '102', true);
               const tH = field('Truck height (in)', 'number', '98', true);
               tL.wrap.style.flex = '1';
               tW.wrap.style.flex = '1';
@@ -3242,16 +3366,17 @@ import { createTableFooter } from './ui/table-footer.js';
 
               content.appendChild(title.wrap);
               content.appendChild(client.wrap);
-              content.appendChild(projectName.wrap);
-              content.appendChild(drawnBy.wrap);
-              content.appendChild(presetWrap);
-              content.appendChild(truckGrid);
+	              content.appendChild(projectName.wrap);
+	              content.appendChild(drawnBy.wrap);
+	              content.appendChild(presetWrap);
+	              content.appendChild(modeWrap);
+	              content.appendChild(truckGrid);
 
-              UIComponents.showModal({
-                title: 'New Pack',
-                content,
-                actions: [
-                  { label: 'Cancel' },
+	              UIComponents.showModal({
+	                title: 'New Pack',
+	                content,
+	                actions: [
+	                  { label: 'Cancel' },
                   {
                     label: 'Create',
                     variant: 'primary',
@@ -3267,24 +3392,117 @@ import { createTableFooter } from './ui/table-footer.js';
                         client: String(client.input.value || '').trim(),
                         projectName: String(projectName.input.value || '').trim(),
                         drawnBy: String(drawnBy.input.value || '').trim(),
-                        truck: {
-                          length: Number(tL.input.value) || 636,
-                          width: Number(tW.input.value) || 102,
-                          height: Number(tH.input.value) || 98,
-                        },
-                      });
+	                        truck: {
+	                          length: Number(tL.input.value) || 636,
+	                          width: Number(tW.input.value) || 102,
+	                          height: Number(tH.input.value) || 98,
+	                          shapeMode:
+	                            modeSelect.value === 'wheelWells' || modeSelect.value === 'frontBonus' ? modeSelect.value : 'rect',
+	                          shapeConfig: {},
+	                        },
+	                      });
                       UIComponents.showToast('Pack created', 'success');
                       PackLibrary.open(pack.id);
                       AppShell.navigate('editor');
                     },
                   },
-                ],
-              });
-            }
+	                ],
+	              });
+	            }
 
-            function openRename(packId) {
-              const pack = PackLibrary.getById(packId);
-              if (!pack) return;
+	            function openEditPackModal(packId) {
+	              const pack = PackLibrary.getById(packId);
+	              if (!pack) return;
+
+	              const content = document.createElement('div');
+	              content.style.display = 'grid';
+	              content.style.gap = '14px';
+	              content.style.gridTemplateColumns = 'repeat(auto-fit, minmax(260px, 1fr))';
+	              content.style.alignItems = 'flex-start';
+
+	              const title = field('Title (required)', 'text', '', true);
+	              title.input.value = pack.title || '';
+
+	              const modeWrap = document.createElement('div');
+	              modeWrap.className = 'field';
+	              const modeLabel = document.createElement('div');
+	              modeLabel.className = 'label';
+	              modeLabel.textContent = 'Trailer Shape Mode';
+	              const modeSelect = document.createElement('select');
+	              modeSelect.className = 'select';
+	              modeSelect.innerHTML = `
+	                <option value="rect">Standard</option>
+	                <option value="wheelWells">Box + Wheel Wells</option>
+	                <option value="frontBonus">Box + Front Overhang</option>
+	              `;
+	              modeSelect.value =
+	                pack && pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
+	                  ? pack.truck.shapeMode
+	                  : 'rect';
+	              modeWrap.appendChild(modeLabel);
+	              modeWrap.appendChild(modeSelect);
+
+	              const truckGrid = document.createElement('div');
+	              truckGrid.className = 'row';
+	              truckGrid.style.gap = '12px';
+	              const tL = field('Truck length (in)', 'number', '', true);
+	              const tW = field('Truck width (in)', 'number', '', true);
+	              const tH = field('Truck height (in)', 'number', '', true);
+	              tL.wrap.style.flex = '1';
+	              tW.wrap.style.flex = '1';
+	              tH.wrap.style.flex = '1';
+	              tL.input.value = String((pack.truck && pack.truck.length) || 636);
+	              tW.input.value = String((pack.truck && pack.truck.width) || 102);
+	              tH.input.value = String((pack.truck && pack.truck.height) || 98);
+	              truckGrid.appendChild(tL.wrap);
+	              truckGrid.appendChild(tW.wrap);
+	              truckGrid.appendChild(tH.wrap);
+
+	              content.appendChild(title.wrap);
+	              content.appendChild(modeWrap);
+	              content.appendChild(truckGrid);
+
+	              UIComponents.showModal({
+	                title: 'Edit Pack',
+	                content,
+	                actions: [
+	                  { label: 'Cancel' },
+	                  {
+	                    label: 'Save',
+	                    variant: 'primary',
+	                    onClick: () => {
+	                      const t = String(title.input.value || '').trim();
+	                      if (!t) {
+	                        UIComponents.showToast('Title is required', 'warning');
+	                        title.input.focus();
+	                        return false;
+	                      }
+	                      const shapeMode =
+	                        modeSelect.value === 'wheelWells' || modeSelect.value === 'frontBonus' ? modeSelect.value : 'rect';
+	                      const prevTruck = pack.truck && typeof pack.truck === 'object' ? pack.truck : {};
+	                      const shapeConfig =
+	                        prevTruck.shapeConfig && typeof prevTruck.shapeConfig === 'object' && !Array.isArray(prevTruck.shapeConfig)
+	                          ? Utils.deepClone(prevTruck.shapeConfig)
+	                          : {};
+	                      const nextTruck = {
+	                        ...prevTruck,
+	                        length: Number(tL.input.value) || prevTruck.length || 636,
+	                        width: Number(tW.input.value) || prevTruck.width || 102,
+	                        height: Number(tH.input.value) || prevTruck.height || 98,
+	                        shapeMode,
+	                        shapeConfig,
+	                      };
+	                      PackLibrary.update(packId, { title: t, truck: nextTruck });
+	                      UIComponents.showToast('Pack updated', 'success');
+	                    },
+	                  },
+	                ],
+	              });
+	            }
+
+	            function openRename(packId) {
+	              const pack = PackLibrary.getById(packId);
+	              if (!pack) return;
               const content = document.createElement('div');
               const f = field('Pack title', 'text', pack.title || '', true);
               f.input.value = pack.title || '';
@@ -3410,11 +3628,11 @@ import { createTableFooter } from './ui/table-footer.js';
               pack.createdAt = pack.createdAt || now;
               pack.lastEdited = now;
 
-              // New instance ids + caseId remap
-              pack.cases = (pack.cases || []).map(inst => {
-                const next = Utils.deepClone(inst);
-                next.id = Utils.uuid();
-                next.caseId = caseIdMap.get(next.caseId) || next.caseId;
+	              // New instance ids + caseId remap
+	              pack.cases = (pack.cases || []).map(inst => {
+	                const next = Utils.deepClone(inst);
+	                next.id = Utils.uuid();
+	                next.caseId = caseIdMap.get(next.caseId) || next.caseId;
                 if (!next.transform)
                   {next.transform = {
               position: { x: -80, y: 10, z: 0 },
@@ -3422,14 +3640,33 @@ import { createTableFooter } from './ui/table-footer.js';
               scale: { x: 1, y: 1, z: 1 },
             };}
                 if (!next.transform.position) next.transform.position = { x: -80, y: 10, z: 0 };
-                return next;
-              });
+	                return next;
+	              });
 
-              pack.stats = PackLibrary.computeStats(pack, nextCases);
+	              {
+	                const rawTruck = pack.truck && typeof pack.truck === 'object' ? pack.truck : {};
+	                const shapeMode =
+	                  rawTruck.shapeMode === 'wheelWells' || rawTruck.shapeMode === 'frontBonus' || rawTruck.shapeMode === 'rect'
+	                    ? rawTruck.shapeMode
+	                    : 'rect';
+	                const shapeConfig =
+	                  rawTruck.shapeConfig && typeof rawTruck.shapeConfig === 'object' && !Array.isArray(rawTruck.shapeConfig)
+	                    ? Utils.deepClone(rawTruck.shapeConfig)
+	                    : {};
+	                pack.truck = {
+	                  length: Number(rawTruck.length) || 636,
+	                  width: Number(rawTruck.width) || 102,
+	                  height: Number(rawTruck.height) || 98,
+	                  shapeMode,
+	                  shapeConfig,
+	                };
+	              }
 
-              StateStore.set(
-                {
-                  caseLibrary: nextCases,
+	              pack.stats = PackLibrary.computeStats(pack, nextCases);
+
+	              StateStore.set(
+	                {
+	                  caseLibrary: nextCases,
                   packLibrary: [...currentPacks, pack],
                   currentPackId: pack.id,
                   currentScreen: 'editor',
@@ -3503,10 +3740,14 @@ import { createTableFooter } from './ui/table-footer.js';
                     render();
                   }, 300)
                 );
-	              btnNew.addEventListener('click', () => openCaseModal(null));
-	              btnTemplate.addEventListener('click', () => downloadTemplate());
-	              btnImport.addEventListener('click', () => openImportModal());
-                btnManageCats.addEventListener('click', () => openCategoryManager());
+              btnNew.addEventListener('click', () => openCaseModal(null));
+              btnTemplate.addEventListener('click', () => downloadTemplate());
+              btnImport.addEventListener('click', () => openImportModal());
+                btnManageCats &&
+                  btnManageCats.addEventListener('click', ev => {
+                    ev.stopPropagation();
+                    toggleCategoriesPopover(btnManageCats);
+                  });
                 btnViewGrid && btnViewGrid.addEventListener('click', () => setViewMode('grid'));
                 btnViewList && btnViewList.addEventListener('click', () => setViewMode('list'));
                 btnFiltersToggle && btnFiltersToggle.addEventListener('click', () => toggleFiltersVisible());
@@ -4315,7 +4556,159 @@ import { createTableFooter } from './ui/table-footer.js';
               });
             }
 
-            function openCategoryManager() {
+            function toggleCategoriesPopover(anchorEl) {
+              if (!anchorEl) return;
+              const open = document.querySelector('[data-dropdown="1"][data-role="categories"]');
+              if (open && open.dataset.anchorId === anchorEl.id) {
+                UIComponents.closeAllDropdowns();
+                return;
+              }
+              openCategoriesPopover(anchorEl);
+            }
+
+            function openCategoriesPopover(anchorEl) {
+              const cases = CaseLibrary.getCases();
+              const list = CategoryService.listWithCounts(cases);
+
+              const items = [];
+              items.push({ type: 'header', label: 'Categories' });
+
+              items.push({
+                label: `All (${cases.length})`,
+                icon: 'fa-solid fa-circle',
+                iconColor: '#9b9ba8',
+                active: activeCategories.size === 0,
+                onClick: () => {
+                  activeCategories.clear();
+                  render();
+                },
+              });
+
+              list.forEach(cat => {
+                const isActive = activeCategories.has(cat.key);
+                items.push({
+                  label: `${cat.name} (${cat.count})`,
+                  icon: 'fa-solid fa-circle',
+                  iconColor: cat.color,
+                  active: isActive,
+                  onClick: () => {
+                    if (activeCategories.has(cat.key)) activeCategories.delete(cat.key);
+                    else activeCategories.add(cat.key);
+                    render();
+                  },
+                  rightIcon: 'fa-solid fa-pen',
+                  rightIconColor: 'var(--text-muted)',
+                  rightTitle: 'Edit',
+                  rightOnClick: () => openEditCategoryModal(cat),
+                });
+              });
+
+              items.push({ type: 'divider' });
+              items.push({
+                label: 'New category',
+                icon: 'fa-solid fa-plus',
+                onClick: () => createCategoryAndEdit(),
+              });
+
+              const rect = anchorEl.getBoundingClientRect();
+              UIComponents.openDropdown(anchorEl, items, { align: 'right', width: Math.max(220, rect.width), role: 'categories' });
+            }
+
+            function createCategoryAndEdit() {
+              const baseName = 'New Category';
+              let idx = 1;
+              let name = baseName;
+              const existing = new Set(CategoryService.all().map(c => String(c.name || '').toLowerCase()));
+              while (existing.has(name.toLowerCase())) {
+                idx += 1;
+                name = `${baseName} ${idx}`;
+              }
+              const next = CategoryService.upsert({ name });
+              render();
+              openEditCategoryModal(next);
+            }
+
+            function openEditCategoryModal(cat) {
+              const initial = cat && typeof cat === 'object' ? cat : CategoryService.meta('default');
+              const content = document.createElement('div');
+              content.style.display = 'grid';
+              content.style.gap = '12px';
+              content.style.minWidth = '320px';
+
+              const name = document.createElement('input');
+              name.type = 'text';
+              name.className = 'input';
+              name.value = initial.name || '';
+              name.placeholder = 'Category name';
+
+              const color = document.createElement('input');
+              color.type = 'color';
+              color.className = 'input';
+              color.value = initial.color || '#9ca3af';
+              color.style.width = '56px';
+              color.style.height = '40px';
+              color.style.padding = '0';
+              color.style.cursor = 'pointer';
+
+              const row = document.createElement('div');
+              row.style.display = 'flex';
+              row.style.alignItems = 'center';
+              row.style.gap = '12px';
+              row.appendChild(color);
+              row.appendChild(name);
+
+              content.appendChild(row);
+
+              let modal = null;
+              modal = UIComponents.showModal({
+                title: 'Edit Category',
+                content,
+                actions: [
+                  { label: 'Cancel' },
+                  ...(initial.key !== 'default'
+                    ? [
+                        {
+                          label: 'Delete',
+                          variant: 'danger',
+                          onClick: () => {
+                            UIComponents.confirm({
+                              title: `Delete "${initial.name}"?`,
+                              message: 'All cases in this category will be moved to Default.',
+                              okLabel: 'Delete',
+                              danger: true,
+                            }).then(ok => {
+                              if (!ok) return;
+                              CategoryService.remove(initial.key);
+                              render();
+                              UIComponents.showToast(`Deleted "${initial.name}"`, 'info');
+                              if (modal) modal.close();
+                            });
+                            return false;
+                          },
+                        },
+                      ]
+                    : []),
+                  {
+                    label: 'Save',
+                    variant: 'primary',
+                    onClick: () => {
+                      const nextName = String(name.value || '').trim();
+                      if (!nextName) {
+                        UIComponents.showToast('Name is required', 'warning');
+                        name.focus();
+                        return false;
+                      }
+                      const renamed = CategoryService.rename(initial.key, nextName, color.value);
+                      render();
+                      UIComponents.showToast(`Saved "${renamed.name}"`, 'success');
+                      return true;
+                    },
+                  },
+                ],
+              });
+            }
+
+            function _openCategoryManager() {
               const content = document.createElement('div');
               content.style.display = 'grid';
               content.style.gap = '14px';
@@ -6944,6 +7337,64 @@ import { createTableFooter } from './ui/table-footer.js';
 	              <div class="muted" style="font-size:var(--text-sm)">Edit dimensions in inches (internal units). Display units follow Settings.</div>
 	            `;
 
+	              const presetRow = document.createElement('div');
+	              presetRow.className = 'row';
+	              presetRow.style.display = 'grid';
+	              presetRow.style.gridTemplateColumns = '1fr';
+	              presetRow.style.gap = '10px';
+	              presetRow.style.alignItems = 'flex-end';
+
+	              const presetWrap = document.createElement('div');
+	              presetWrap.className = 'field';
+	              presetWrap.style.minWidth = '0';
+	              presetWrap.style.width = '100%';
+
+	              const presetLabel = document.createElement('div');
+	              presetLabel.className = 'label';
+	              presetLabel.textContent = 'Trailer preset';
+
+	              const presetSelect = document.createElement('select');
+	              presetSelect.className = 'select';
+	              presetSelect.style.width = '100%';
+
+	              function inferPresetIdFromTruck(truck) {
+	                const t = truck && typeof truck === 'object' ? truck : {};
+	                const tl = Number(t.length);
+	                const tw = Number(t.width);
+	                const th = Number(t.height);
+	                const tm = String(t.shapeMode || 'rect');
+	                const presets = TrailerPresets.getAll();
+	                for (let i = 0; i < presets.length; i++) {
+	                  const p = presets[i];
+	                  const pt = p && p.truck ? p.truck : null;
+	                  if (!pt) continue;
+	                  if (Number(pt.length) === tl && Number(pt.width) === tw && Number(pt.height) === th && String(pt.shapeMode || 'rect') === tm) {
+	                    return p.id;
+	                  }
+	                }
+	                return 'custom';
+	              }
+
+	              const presetOptions = TrailerPresets.getAll()
+	                .map(p => `<option value="${String(p.id)}">${String(p.label)}</option>`)
+	                .join('');
+	              presetSelect.innerHTML = `<option value="custom">Custom</option>${presetOptions}`;
+	              presetSelect.value = inferPresetIdFromTruck(pack.truck);
+
+	              presetSelect.addEventListener('change', () => {
+	                const id = String(presetSelect.value || 'custom');
+	                if (id === 'custom') return;
+	                const preset = TrailerPresets.getById(id);
+	                if (!preset) return;
+	                const nextTruck = TrailerPresets.applyToTruck(pack.truck, preset);
+	                PackLibrary.update(pack.id, { truck: nextTruck });
+	                UIComponents.showToast(`Applied preset: ${preset.label}`, 'success');
+	              });
+
+	              presetWrap.appendChild(presetLabel);
+	              presetWrap.appendChild(presetSelect);
+	              presetRow.appendChild(presetWrap);
+
                 const shapeRow = document.createElement('div');
                 shapeRow.className = 'row';
                 shapeRow.style.display = 'grid';
@@ -6961,9 +7412,9 @@ import { createTableFooter } from './ui/table-footer.js';
 	              shapeSelect.className = 'select';
                 shapeSelect.style.width = '100%';
 	              shapeSelect.innerHTML = `
-	                <option value="rect">Rectangle (safe)</option>
-	                <option value="wheelWells">Rectangle + Wheel Wells</option>
-	                <option value="frontBonus">Rectangle + Front Bonus Zone</option>
+	                <option value="rect">Standard</option>
+	                <option value="wheelWells">Box + Wheel Wells</option>
+	                <option value="frontBonus">Box + Front Overhang</option>
 	              `;
 	              shapeSelect.value =
 	                pack && pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
@@ -6973,6 +7424,7 @@ import { createTableFooter } from './ui/table-footer.js';
 	              shapeWrap.appendChild(shapeSelect);
 	              shapeRow.appendChild(shapeWrap);
 
+	              card.appendChild(presetRow);
 	              const dimsRow = document.createElement('div');
 	              dimsRow.className = 'row';
 	              dimsRow.style.display = 'grid';

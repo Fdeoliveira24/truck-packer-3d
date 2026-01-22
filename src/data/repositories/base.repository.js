@@ -1,3 +1,16 @@
+/**
+ * @file base.repository.js
+ * @description Base repository interface for CRUD operations.
+ * @module data/repositories/base.repository
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 export class BaseRepository {
   async find(_id, _filter) {
     throw new Error('Not implemented');

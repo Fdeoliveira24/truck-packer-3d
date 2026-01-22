@@ -1,3 +1,16 @@
+/**
+ * @file defaults.js
+ * @description Seed data and default preference definitions.
+ * @module core/defaults
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import { uuid } from './browser.js';
 
 export const defaultPreferences = {

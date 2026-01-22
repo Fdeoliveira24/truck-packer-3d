@@ -1,4 +1,17 @@
-import * as Utils from '../core/utils.js';
+/**
+ * @file import-export.js
+ * @description UI-free service module for import export operations and state updates.
+ * @module services/import-export
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
+import * as Utils from '../core/utils/index.js';
 import * as Defaults from '../core/defaults.js';
 import * as CoreStorage from '../core/storage.js';
 import * as CaseLibrary from './case-library.js';

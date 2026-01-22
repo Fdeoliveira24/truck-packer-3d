@@ -1,4 +1,17 @@
-import { deepClone } from './utils.js';
+/**
+ * @file state-store.js
+ * @description Global state store with snapshot and history support.
+ * @module core/state-store
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
+import { deepClone } from './utils/index.js';
 
 const MAX_HISTORY = 50;
 

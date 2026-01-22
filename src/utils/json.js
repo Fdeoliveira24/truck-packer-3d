@@ -1,3 +1,16 @@
+/**
+ * @file json.js
+ * @description JSON utilities for safe parsing, cloning, and sanitization.
+ * @module utils/json
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 export function safeJsonParse(text, fallback = null) {
   try {
     return JSON.parse(text);

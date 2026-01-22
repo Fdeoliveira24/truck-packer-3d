@@ -1,29 +1,53 @@
-// Core pure utilities extracted from app.js
-export { uuid } from '../utils/uuid.js';
+/**
+ * @file index.js
+ * @description Public utilities entrypoint used across the application.
+ * @module core/utils
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
+import { uuid as uuidImpl } from '../../utils/uuid.js';
+import { debounce as debounceImpl } from '../../utils/debounce.js';
+import { deepClone as deepCloneImpl, sanitizeJSON as sanitizeJSONImpl, safeJsonParse as safeJsonParseImpl } from '../../utils/json.js';
+import { downloadText, formatRelativeTime, getCssVar, hasWebGL } from '../browser.js';
+
+// ============================================================================
+// SECTION: CORE PRIMITIVES
+// ============================================================================
+
 export const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
-export function safeJsonParse(text, fallback = null) {
-  try {
-    return JSON.parse(text);
-  } catch (_) {
-    return fallback;
-  }
-}
+export const uuid = uuidImpl;
+export const debounce = debounceImpl;
 
-export function deepClone(obj) {
-  return JSON.parse(JSON.stringify(obj));
-}
+export const safeJsonParse = safeJsonParseImpl;
+export const sanitizeJSON = sanitizeJSONImpl;
+export const deepClone = deepCloneImpl;
 
-export function sanitizeJSON(value) {
-  // Prevent prototype pollution via imported JSON (__proto__/constructor/prototype keys).
-  if (Array.isArray(value)) return value.map(sanitizeJSON);
-  if (!value || typeof value !== 'object') return value;
-  const out = {};
-  Object.keys(value).forEach(key => {
-    if (key === '__proto__' || key === 'prototype' || key === 'constructor') return;
-    out[key] = sanitizeJSON(value[key]);
+export { downloadText, formatRelativeTime, getCssVar, hasWebGL };
+
+export function escapeHtml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, ch => {
+    switch (ch) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '"':
+        return '&quot;';
+      case "'":
+        return '&#39;';
+      default:
+        return ch;
+    }
   });
-  return out;
 }
 
 export function parseResolution(res) {
@@ -127,3 +151,46 @@ export function formatVolume(dimInches, lengthUnit) {
   const m3 = in3 * Math.pow(0.0254, 3);
   return `${m3.toFixed(3)} m³`;
 }
+
+// ============================================================================
+// SECTION: STABLE UTILS OBJECT
+// ============================================================================
+
+export const Utils = {
+  clamp,
+  uuid,
+  debounce,
+  safeJsonParse,
+  sanitizeJSON,
+  deepClone,
+  escapeHtml,
+  parseResolution,
+  lengthUnits,
+  weightUnits,
+  inchesToUnit,
+  unitToInches,
+  poundsToUnit,
+  unitToPounds,
+  formatLength,
+  formatWeight,
+  formatDims,
+  volumeInCubicInches,
+  formatVolume,
+  downloadText,
+  formatRelativeTime,
+  getCssVar,
+  hasWebGL,
+};
+
+function isDebugEnabledLocal() {
+  try {
+    const q = globalThis.location && typeof globalThis.location.search === 'string' ? globalThis.location.search : '';
+    const hasQuery = /\bdebug=1\b/.test(q);
+    const hasStorage = globalThis.localStorage && globalThis.localStorage.getItem('tp3dDebug') === '1';
+    return Boolean(hasQuery || hasStorage);
+  } catch {
+    return false;
+  }
+}
+
+if (isDebugEnabledLocal()) Object.freeze(Utils);

@@ -1,3 +1,16 @@
+/**
+ * @file browser.js
+ * @description Core primitives used across the application.
+ * @module core/browser
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 // Browser-dependent utilities extracted from app.js
 
 export function uuid() {

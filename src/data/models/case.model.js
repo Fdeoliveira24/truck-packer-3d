@@ -1,3 +1,16 @@
+/**
+ * @file case.model.js
+ * @description Case data model normalization.
+ * @module data/models/case.model
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import { uuid } from '../../utils/uuid.js';
 
 export function normalizeCase(data) {

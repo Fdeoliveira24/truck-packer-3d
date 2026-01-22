@@ -1,4 +1,17 @@
 #!/usr/bin/env node
+/**
+ * @file eslint-report.mjs
+ * @description Utility script for generating an ESLint JSON report.
+ * @module cleanup/scripts/eslint-report
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import fs from 'fs';
 import path from 'path';
 

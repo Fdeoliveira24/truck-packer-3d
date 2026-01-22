@@ -1,3 +1,16 @@
+/**
+ * @file account-switcher.js
+ * @description Account switcher component for switching between personal and organization contexts.
+ * @module ui/components/account-switcher
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import { clearSession, getSession, setCurrentOrgId, subscribeSession } from '../../auth/session.js';
 
 function el(tag, attrs = {}, children = []) {

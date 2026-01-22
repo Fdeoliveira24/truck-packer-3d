@@ -1,3 +1,16 @@
+/**
+ * @file eslint.config.js
+ * @description ESLint configuration for the Truck Packer 3D workspace.
+ * @module eslint.config
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import js from '@eslint/js';
 import html from 'eslint-plugin-html';
 import globals from 'globals';

@@ -1,3 +1,16 @@
+/**
+ * @file ui-components.js
+ * @description UI primitives (modal, toast, dropdown) used across the application.
+ * @module ui/ui-components
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 export function createUIComponents() {
             const modalRoot = document.getElementById('modal-root');
             const toastContainer = document.getElementById('toast-container');

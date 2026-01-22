@@ -1,3 +1,16 @@
+/**
+ * @file .stylelintrc.cjs
+ * @description Stylelint configuration for CSS linting in the Truck Packer 3D workspace.
+ * @module stylelint.config
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 module.exports = {
   extends: ['stylelint-config-standard', 'stylelint-config-html'],
   rules: {

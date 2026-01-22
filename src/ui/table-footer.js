@@ -1,3 +1,16 @@
+/**
+ * @file table-footer.js
+ * @description Table footer UI helper for pagination and row-count controls.
+ * @module ui/table-footer
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 const ROW_OPTIONS = [10, 25, 50, 100];
 const DEFAULT_ROWS_PER_PAGE = 50;
 

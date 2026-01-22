@@ -1,3 +1,16 @@
+/**
+ * @file packs.service.js
+ * @description Organization-scoped packs service backed by a repository.
+ * @module data/services/packs.service
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import { getSession } from '../../auth/session.js';
 import { LocalRepository } from '../repositories/local.repository.js';
 import { normalizePack } from '../models/pack.model.js';

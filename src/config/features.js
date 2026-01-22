@@ -1,3 +1,16 @@
+/**
+ * @file features.js
+ * @description Static configuration (plans, roles, and feature definitions).
+ * @module config/features
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import { isPlanAtLeast } from './plans.js';
 
 export const FEATURES = {

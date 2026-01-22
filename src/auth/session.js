@@ -1,3 +1,16 @@
+/**
+ * @file session.js
+ * @description Authentication/session helpers and permission checks.
+ * @module auth/session
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import { STORAGE_KEYS } from '../core/constants.js';
 import { readJson, removeKey, writeJson } from '../core/storage.js';
 import { deepClone } from '../utils/json.js';

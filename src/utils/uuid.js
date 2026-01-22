@@ -1,3 +1,16 @@
+/**
+ * @file uuid.js
+ * @description UUID generation utility used for creating stable identifiers.
+ * @module utils/uuid
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 export function uuid() {
   if (globalThis.crypto && globalThis.crypto.randomUUID) return globalThis.crypto.randomUUID();
   const cryptoObj = globalThis.crypto || globalThis.msCrypto;

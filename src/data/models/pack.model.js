@@ -1,3 +1,16 @@
+/**
+ * @file pack.model.js
+ * @description Pack data model normalization.
+ * @module data/models/pack.model
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import { uuid } from '../../utils/uuid.js';
 import { DEFAULT_TRUCK } from '../../core/constants.js';
 

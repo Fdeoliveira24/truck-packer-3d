@@ -1,3 +1,16 @@
+/**
+ * @file loader.js
+ * @description Loads external vendor libraries at runtime via dynamic imports.
+ * @module vendor/loader
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 export async function loadThree({ version = '0.160.0' } = {}) {
   if (window.THREE && window.THREE.OrbitControls) return window.THREE;
   const v = String(version || '0.160.0');

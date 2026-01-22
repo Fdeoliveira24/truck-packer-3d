@@ -1,3 +1,16 @@
+/**
+ * @file trailer-presets.js
+ * @description Curated trailer preset definitions and helpers for applying them to a pack truck.
+ * @module trailer-presets
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 export const TrailerPresets = (() => {
   const presets = [
     {

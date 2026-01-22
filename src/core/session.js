@@ -1,4 +1,17 @@
-import * as Utils from './utils.js';
+/**
+ * @file session.js
+ * @description Session storage and organization/account context helpers.
+ * @module core/session
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
+import * as Utils from './utils/index.js';
 import { emit } from './events.js';
 
 export const SESSION_KEY = 'truckPacker3d:session:v1';

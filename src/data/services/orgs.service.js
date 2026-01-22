@@ -1,3 +1,16 @@
+/**
+ * @file orgs.service.js
+ * @description Organization/session helper service for multi-tenant context switching.
+ * @module data/services/orgs.service
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import { createOrganization, getSession, setCurrentOrgId } from '../../auth/session.js';
 
 export const OrgsService = {

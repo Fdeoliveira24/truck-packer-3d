@@ -1,3 +1,16 @@
+/**
+ * @file analytics.service.js
+ * @description Analytics tracking service (feature-gated; provider integration to be added later).
+ * @module data/services/analytics.service
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import { canUseFeature } from '../../config/features.js';
 import { getSession } from '../../auth/session.js';
 

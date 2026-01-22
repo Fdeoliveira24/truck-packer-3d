@@ -1,0 +1,1157 @@
+/**
+ * @file packs-screen.js
+ * @description Screen factory responsible for rendering and binding UI for a specific screen.
+ * @module screens/packs-screen
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
+// Packs screen (extracted from src/app.js; behavior preserved)
+
+export function createPacksScreen({
+  Utils,
+  UIComponents,
+  PreferencesManager,
+  PackLibrary,
+  CaseLibrary,
+  StateStore,
+  TrailerPresets,
+  ImportExport,
+  ImportPackDialog,
+  createTableFooter,
+  AppShell,
+  ExportService,
+  CardDisplayOverlay,
+  featureFlags,
+  toast,
+  toAscii,
+}) {
+          const PacksUI = (() => {
+            const searchEl = document.getElementById('packs-search');
+            const gridEl = document.getElementById('packs-grid');
+            const listEl = document.getElementById('packs-list');
+            const tbodyEl = document.getElementById('packs-tbody');
+            const emptyEl = document.getElementById('packs-empty');
+            const filterEmptyEl = document.getElementById('packs-filter-empty');
+            const filterEmptyMsg = document.getElementById('packs-filter-empty-msg');
+            const btnNew = document.getElementById('btn-new-pack');
+            const btnImport = document.getElementById('btn-import-pack');
+            const chipEmpty = document.getElementById('packs-filter-chip-empty');
+            const chipPartial = document.getElementById('packs-filter-chip-partial');
+            const chipFull = document.getElementById('packs-filter-chip-full');
+	            const btnViewGrid = document.getElementById('packs-view-grid');
+	            const btnViewList = document.getElementById('packs-view-list');
+	            const btnTrailerPresets = document.getElementById('packs-trailer-presets');
+	            const btnFiltersToggle = document.getElementById('packs-filters-toggle');
+	            const btnCardDisplay = document.getElementById('packs-card-display');
+            const selectAllEl = document.getElementById('packs-select-all');
+            const titleHeaderButton = document.querySelector('#packs-list thead th[data-sort="title"] .th-sort');
+            const defaultActionsEl = document.getElementById('packs-actions-default');
+            const bulkActionsEl = document.getElementById('packs-actions-bulk');
+            const bulkCountEl = document.getElementById('packs-selected-count');
+            const btnBulkDelete = document.getElementById('btn-packs-bulk-delete');
+
+            const filters = { empty: false, partial: false, full: false };
+            const selectedIds = new Set();
+            let datasetKey = '';
+            let sortKey = 'edited-desc';
+            const packsListState = {
+              pageIndex: 0,
+              rowsPerPage: 50,
+            };
+            let footerController = null;
+            let filteredPacks = [];
+            const filtersRowEl = chipEmpty ? chipEmpty.parentElement : null;
+
+	            function formatTruckDims(truck, lengthUnit) {
+	              const unit = lengthUnit || 'in';
+	              const l = Utils.formatLength(truck && truck.length, unit);
+	              const w = Utils.formatLength(truck && truck.width, unit);
+	              const h = Utils.formatLength(truck && truck.height, unit);
+	              return `Truck: L ${l} • W ${w} • H ${h}`;
+	            }
+
+	            function trailerModeLabel(shapeMode) {
+	              const mode = String(shapeMode || 'rect');
+	              if (mode === 'wheelWells') return 'Box + Wheel Wells';
+	              if (mode === 'frontBonus') return 'Box + Front Overhang';
+	              return 'Standard';
+	            }
+
+	            function formatPackStats(stats, prefs) {
+	              const loaded = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : 0;
+	              const packed = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : 0;
+	              const pct = stats && Number.isFinite(stats.volumePercent) ? stats.volumePercent : 0;
+              const weight = Utils.formatWeight(stats && stats.totalWeight, prefs.units.weight);
+              return `Packed: ${packed}/${loaded} • Volume: ${pct.toFixed(1)}% • Weight: ${weight}`;
+            }
+
+	            function initPacksUI() {
+              searchEl.addEventListener(
+                'input',
+                Utils.debounce(() => {
+                  packsListState.pageIndex = 0;
+                  render();
+                }, 200)
+              );
+              searchEl.addEventListener('keydown', ev => {
+                if (ev.key === 'Escape') {
+                  searchEl.value = '';
+                  packsListState.pageIndex = 0;
+                  render();
+                  searchEl.blur();
+                }
+              });
+              wireChip(chipEmpty, 'empty');
+              wireChip(chipPartial, 'partial');
+              wireChip(chipFull, 'full');
+	              btnNew.addEventListener('click', () => openNewPackModal());
+	              btnImport.addEventListener('click', () => openImportPackDialog());
+	              btnViewGrid.addEventListener('click', () => setViewMode('grid'));
+	              btnViewList.addEventListener('click', () => setViewMode('list'));
+	              if (!featureFlags.trailerPresetsEnabled && btnTrailerPresets) btnTrailerPresets.style.display = 'none';
+	              if (featureFlags.trailerPresetsEnabled && btnTrailerPresets) {
+	                btnTrailerPresets.addEventListener('click', ev => {
+	                  ev.stopPropagation();
+	                  openTrailerPresetsMenu(btnTrailerPresets);
+	                });
+	              }
+	              btnFiltersToggle && btnFiltersToggle.addEventListener('click', () => toggleFiltersVisible());
+	              btnCardDisplay &&
+	                btnCardDisplay.addEventListener('click', () => {
+	                  // TODO: Add keyboard shortcut + update Keyboard Shortcuts modal later
+	                  CardDisplayOverlay.open({ screen: 'packs' });
+                });
+              selectAllEl.addEventListener('change', handleSelectAll);
+              btnBulkDelete.addEventListener('click', handleBulkDelete);
+              initListHeaderSort();
+              updateViewButtons();
+	              initFooter();
+	            }
+
+	            function openTrailerPresetsMenu(anchorEl) {
+	              if (!anchorEl) return;
+	              if (!featureFlags.trailerPresetsEnabled) return;
+
+	              const selected = Array.from(selectedIds);
+	              let packId = null;
+	              if (selected.length === 1) {
+	                packId = selected[0];
+	              } else if (selected.length === 0) {
+	                if (filteredPacks && filteredPacks.length === 1) {
+	                  packId = filteredPacks[0].id;
+	                } else {
+	                  UIComponents.showToast('Select a pack first', 'warning');
+	                  return;
+	                }
+	              } else {
+	                UIComponents.showToast('Select a single pack first', 'warning');
+	                return;
+	              }
+	              const pack = PackLibrary.getById(packId);
+	              if (!pack) {
+	                UIComponents.showToast('Pack not found', 'error');
+	                return;
+	              }
+
+	              const items = [{ type: 'header', label: 'Trailer Presets' }];
+	              TrailerPresets.getAll().forEach(p => {
+	                items.push({
+	                  label: p.label,
+	                  icon: 'fa-solid fa-truck',
+	                  onClick: () => {
+	                    const nextTruck = TrailerPresets.applyToTruck(pack.truck, p);
+	                    PackLibrary.update(pack.id, { truck: nextTruck });
+	                    UIComponents.showToast(`Applied preset: ${p.label}`, 'success');
+	                    render();
+	                  },
+	                });
+	              });
+
+	              const rect = anchorEl.getBoundingClientRect();
+	              UIComponents.openDropdown(anchorEl, items, { align: 'right', width: Math.max(260, rect.width), role: 'trailer-presets' });
+	            }
+
+            function toggleFiltersVisible() {
+              const prefs = PreferencesManager.get();
+              prefs.packsFiltersVisible = !prefs.packsFiltersVisible;
+              PreferencesManager.set(prefs);
+              applyFiltersVisibility();
+            }
+
+            function applyFiltersVisibility() {
+              if (!filtersRowEl) return;
+              const visible = PreferencesManager.get().packsFiltersVisible !== false;
+              filtersRowEl.style.display = visible ? '' : 'none';
+              btnFiltersToggle && btnFiltersToggle.classList.toggle('btn-primary', visible);
+            }
+
+            function initListHeaderSort() {
+              const headers = document.querySelectorAll('#packs-list thead th[data-sort]');
+              headers.forEach(th => {
+                const sortField = th.dataset.sort;
+                const button = th.querySelector('.th-sort');
+                if (!button) return;
+                const toggleSort = () => {
+                  const ascKey = `${sortField}-asc`;
+                  const descKey = `${sortField}-desc`;
+                  if (sortKey === ascKey) {
+                    sortKey = descKey;
+                  } else if (sortKey === descKey) {
+                    sortKey = ascKey;
+                  } else {
+                    sortKey = ascKey;
+                  }
+                  packsListState.pageIndex = 0;
+                  render();
+                  updateListHeaderIcons();
+                };
+                button.addEventListener('click', toggleSort);
+                button.addEventListener('keydown', ev => {
+                  if (ev.key === 'Enter' || ev.key === ' ') {
+                    ev.preventDefault();
+                    toggleSort();
+                  }
+                });
+              });
+              updateListHeaderIcons();
+            }
+
+            function updateListHeaderIcons() {
+              const headers = document.querySelectorAll('#packs-list thead th[data-sort]');
+              headers.forEach(th => {
+                const sortField = th.dataset.sort;
+                const button = th.querySelector('.th-sort');
+                if (!button) return;
+                button.classList.toggle('is-asc', sortKey === `${sortField}-asc`);
+                button.classList.toggle('is-desc', sortKey === `${sortField}-desc`);
+              });
+            }
+
+            function setViewMode(mode) {
+              const prefs = PreferencesManager.get();
+              prefs.packsViewMode = mode;
+              PreferencesManager.set(prefs);
+              updateViewButtons();
+              render();
+            }
+
+            function updateViewButtons() {
+              const mode = PreferencesManager.get().packsViewMode || 'grid';
+              btnViewGrid.classList.toggle('btn-primary', mode === 'grid');
+              btnViewList.classList.toggle('btn-primary', mode === 'list');
+            }
+
+            function initFooter() {
+              if (!listEl) return;
+              if (footerController) footerController.destroy();
+              footerController = createTableFooter({
+                mountEl: listEl,
+                onPageChange: ({ pageIndex: nextIndex, rowsPerPage }) => {
+                  if (typeof rowsPerPage === 'number') {
+                    packsListState.rowsPerPage = rowsPerPage;
+                  }
+                  packsListState.pageIndex = nextIndex;
+                  render();
+                },
+                onRowsPerPageChange: nextRows => {
+                  if (nextRows === packsListState.rowsPerPage) return;
+                  packsListState.rowsPerPage = nextRows;
+                  packsListState.pageIndex = 0;
+                  render();
+                },
+              });
+              syncFooterState();
+            }
+
+            function getPageMeta(list) {
+              const items = Array.isArray(list) ? list : [];
+              const perPage = Math.max(packsListState.rowsPerPage, 1);
+              const total = items.length;
+              const pageCount = Math.max(0, Math.ceil(total / perPage || 0));
+              const clampedIndex = pageCount === 0 ? 0 : Math.min(Math.max(0, packsListState.pageIndex), pageCount - 1);
+              packsListState.pageIndex = clampedIndex;
+              const start = clampedIndex * perPage;
+              return {
+                total,
+                pageCount,
+                slice: items.slice(start, start + perPage),
+              };
+            }
+
+            function syncFooterState(meta) {
+              if (!footerController) return;
+              const perPage = Math.max(packsListState.rowsPerPage, 1);
+              const effectiveMeta = meta || {
+                total: filteredPacks.length,
+                pageCount: Math.max(0, Math.ceil(filteredPacks.length / perPage || 0)),
+              };
+              const pageCount = effectiveMeta.pageCount;
+              const clampedIndex = pageCount === 0 ? 0 : Math.min(Math.max(0, packsListState.pageIndex), pageCount - 1);
+              packsListState.pageIndex = clampedIndex;
+              const filteredIds = new Set(filteredPacks.map(p => p.id));
+              Array.from(selectedIds).forEach(id => {
+                if (!filteredIds.has(id)) selectedIds.delete(id);
+              });
+              const selectedCount = filteredPacks.filter(p => selectedIds.has(p.id)).length;
+              footerController.setState({
+                selectedCount,
+                totalCount: effectiveMeta.total,
+                pageIndex: packsListState.pageIndex,
+                pageCount,
+                rowsPerPage: packsListState.rowsPerPage,
+              });
+            }
+
+            function wireChip(el, key) {
+              if (!el) return;
+              const toggle = () => {
+                filters[key] = !filters[key];
+                el.classList.toggle('active', filters[key]);
+                packsListState.pageIndex = 0;
+                render();
+              };
+              el.addEventListener('click', toggle);
+              el.addEventListener('keydown', ev => {
+                if (ev.key === 'Enter' || ev.key === ' ') toggle();
+              });
+            }
+
+            function handleSelectAll() {
+              const mode = PreferencesManager.get().packsViewMode || 'grid';
+              if (mode !== 'list') return;
+              const q = String(searchEl.value || '').trim().toLowerCase();
+              const allPacks = PackLibrary.getPacks();
+              const packs = allPacks
+                .filter(p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q))
+                .filter(p => {
+                  if (!filters.empty && !filters.partial && !filters.full) return true;
+                  const total = (p.cases || []).length;
+                  const percent = p.stats && Number.isFinite(p.stats.volumePercent) ? p.stats.volumePercent : 0;
+                  const isEmpty = total === 0;
+                  const isFull = percent >= 99.999;
+                  const isPartial = !isEmpty && percent > 0 && !isFull;
+                  if (filters.empty && isEmpty) return true;
+                  if (filters.partial && isPartial) return true;
+                  if (filters.full && isFull) return true;
+                  return false;
+                });
+              if (selectAllEl.checked) {
+                packs.forEach(p => selectedIds.add(p.id));
+              } else {
+                selectedIds.clear();
+              }
+              render();
+            }
+
+            function updateBulkActions() {
+              const mode = PreferencesManager.get().packsViewMode || 'grid';
+              const count = selectedIds.size;
+              if (mode === 'list' && count > 0) {
+                defaultActionsEl.style.display = 'none';
+                bulkActionsEl.style.display = 'flex';
+                bulkCountEl.textContent = `${count} pack${count === 1 ? '' : 's'} selected`;
+                btnBulkDelete.innerHTML = `<i class="fa-solid fa-trash"></i> Delete (${count})`;
+                const q = String(searchEl.value || '').trim().toLowerCase();
+                const allPacks = PackLibrary.getPacks();
+                const packs = allPacks
+                  .filter(p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q))
+                  .filter(p => {
+                    if (!filters.empty && !filters.partial && !filters.full) return true;
+                    const total = (p.cases || []).length;
+                    const percent = p.stats && Number.isFinite(p.stats.volumePercent) ? p.stats.volumePercent : 0;
+                    const isEmpty = total === 0;
+                    const isFull = percent >= 99.999;
+                    const isPartial = !isEmpty && percent > 0 && !isFull;
+                    if (filters.empty && isEmpty) return true;
+                    if (filters.partial && isPartial) return true;
+                    if (filters.full && isFull) return true;
+                    return false;
+                  });
+                const allSelected = packs.length > 0 && packs.every(p => selectedIds.has(p.id));
+                const someSelected = packs.some(p => selectedIds.has(p.id));
+                selectAllEl.checked = allSelected;
+                selectAllEl.indeterminate = someSelected && !allSelected;
+              } else {
+                defaultActionsEl.style.display = 'flex';
+                bulkActionsEl.style.display = 'none';
+                selectAllEl.checked = false;
+                selectAllEl.indeterminate = false;
+              }
+            }
+
+            function handleBulkDelete() {
+              const count = selectedIds.size;
+              if (count === 0) return;
+              const confirmed = confirm(`Delete ${count} pack${count === 1 ? '' : 's'}?\n\nThis action cannot be undone.`);
+              if (!confirmed) return;
+              const idsToDelete = Array.from(selectedIds);
+              const state = StateStore.get();
+              const currentPackId = state.currentPackId;
+              const isCurrentDeleted = idsToDelete.includes(currentPackId);
+              const updatedPacks = state.packs.filter(p => !idsToDelete.includes(p.id));
+              if (isCurrentDeleted) {
+                StateStore.set({
+                  ...state,
+                  packs: updatedPacks,
+                  currentPackId: null,
+                  instances: [],
+                  groups: [],
+                });
+                AppShell.navigate('packs');
+              } else {
+                StateStore.set({ ...state, packs: updatedPacks });
+              }
+              selectedIds.clear();
+              UIComponents.showToast(`${count} pack${count === 1 ? '' : 's'} deleted`, 'success');
+              render();
+            }
+
+            function render() {
+              applyFiltersVisibility();
+              const q = String(searchEl.value || '')
+                .trim()
+                .toLowerCase();
+              const allPacks = PackLibrary.getPacks().slice();
+
+              const compareTitle = (a, b) => (a.title || '').localeCompare(b.title || '');
+              const compareCases = (a, b) => ((a.cases || []).length) - ((b.cases || []).length);
+              const compareLastEdited = (a, b) => (a.lastEdited || 0) - (b.lastEdited || 0);
+	              const compareCreated = (a, b) => (a.createdAt || 0) - (b.createdAt || 0);
+	              const compareLength = (a, b) => (a.truck?.length || 0) - (b.truck?.length || 0);
+	              const compareWidth = (a, b) => (a.truck?.width || 0) - (b.truck?.width || 0);
+	              const compareHeight = (a, b) => (a.truck?.height || 0) - (b.truck?.height || 0);
+	              const compareMode = (a, b) =>
+	                trailerModeLabel(a && a.truck && a.truck.shapeMode).localeCompare(
+	                  trailerModeLabel(b && b.truck && b.truck.shapeMode)
+	                );
+	              const comparePacked = (a, b) => ((a.stats && a.stats.packedCases) || 0) - ((b.stats && b.stats.packedCases) || 0);
+	              const compareVolume = (a, b) =>
+	                ((a.stats && Number.isFinite(a.stats.volumePercent) ? a.stats.volumePercent : 0) || 0) -
+	                ((b.stats && Number.isFinite(b.stats.volumePercent) ? b.stats.volumePercent : 0) || 0);
+              const compareWeight = (a, b) =>
+                ((a.stats && Number.isFinite(a.stats.totalWeight) ? a.stats.totalWeight : 0) || 0) -
+                ((b.stats && Number.isFinite(b.stats.totalWeight) ? b.stats.totalWeight : 0) || 0);
+              const sorters = {
+                'edited-desc': (a, b) => compareLastEdited(b, a),
+                'edited-asc': (a, b) => compareLastEdited(a, b),
+                'title-asc': (a, b) => compareTitle(a, b),
+                'title-desc': (a, b) => compareTitle(b, a),
+                'cases-asc': (a, b) => compareCases(a, b),
+                'cases-desc': (a, b) => compareCases(b, a),
+                'created-desc': (a, b) => compareCreated(b, a),
+                'created-asc': (a, b) => compareCreated(a, b),
+                'length-asc': (a, b) => compareLength(a, b),
+                'length-desc': (a, b) => compareLength(b, a),
+                'width-asc': (a, b) => compareWidth(a, b),
+	                'width-desc': (a, b) => compareWidth(b, a),
+	                'height-asc': (a, b) => compareHeight(a, b),
+	                'height-desc': (a, b) => compareHeight(b, a),
+	                'mode-asc': (a, b) => compareMode(a, b),
+	                'mode-desc': (a, b) => compareMode(b, a),
+	                'packed-asc': (a, b) => comparePacked(a, b),
+	                'packed-desc': (a, b) => comparePacked(b, a),
+	                'volume-asc': (a, b) => compareVolume(a, b),
+	                'volume-desc': (a, b) => compareVolume(b, a),
+                'weight-asc': (a, b) => compareWeight(a, b),
+                'weight-desc': (a, b) => compareWeight(b, a),
+              };
+              allPacks.sort(sorters[sortKey] || sorters['edited-desc']);
+
+              const packs = allPacks
+                .filter(p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q))
+                .filter(p => {
+                  if (!filters.empty && !filters.partial && !filters.full) return true;
+                  const total = (p.cases || []).length;
+                  const percent = p.stats && Number.isFinite(p.stats.volumePercent) ? p.stats.volumePercent : 0;
+                  const isEmpty = total === 0;
+                  const isFull = percent >= 99.999;
+                  const isPartial = !isEmpty && percent > 0 && !isFull;
+
+                  if (filters.empty && isEmpty) return true;
+                  if (filters.partial && isPartial) return true;
+                  if (filters.full && isFull) return true;
+                  return false;
+                });
+
+              filteredPacks = packs;
+
+              const newDatasetKey = `${q}::${sortKey}::${filters.empty}${filters.partial}${filters.full}`;
+              if (datasetKey !== newDatasetKey) {
+                selectedIds.clear();
+                datasetKey = newDatasetKey;
+                packsListState.pageIndex = 0;
+              }
+
+              const pageMeta = getPageMeta(packs);
+              gridEl.innerHTML = '';
+              tbodyEl.innerHTML = '';
+
+              if (!allPacks.length) {
+                emptyEl.style.display = 'block';
+                filterEmptyEl.style.display = 'none';
+                gridEl.style.display = 'none';
+                listEl.style.display = 'none';
+                updateBulkActions();
+                syncFooterState(pageMeta);
+                return;
+              }
+
+              if (!packs.length) {
+                emptyEl.style.display = 'none';
+                filterEmptyMsg.textContent = q ? `No matching packs for "${q}"` : 'No matching packs';
+                filterEmptyEl.style.display = 'block';
+                gridEl.style.display = 'none';
+                listEl.style.display = 'none';
+                updateBulkActions();
+                syncFooterState(pageMeta);
+                return;
+              }
+
+              filterEmptyEl.style.display = 'none';
+              emptyEl.style.display = 'none';
+
+              const mode = PreferencesManager.get().packsViewMode || 'grid';
+              if (mode === 'list') {
+                gridEl.style.display = 'none';
+                listEl.style.display = 'block';
+                renderListView(pageMeta.slice);
+              } else {
+                gridEl.style.display = 'grid';
+                listEl.style.display = 'none';
+                renderGridView(packs);
+              }
+              updateListHeaderIcons();
+              updateBulkActions();
+              syncFooterState(pageMeta);
+            }
+
+            function renderListView(packs) {
+              const prefs = PreferencesManager.get();
+              const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.packs) || {};
+              applyListColumnVisibility(prefs);
+              packs.forEach(pack => {
+                const tr = document.createElement('tr');
+                const isSelected = selectedIds.has(pack.id);
+                if (isSelected) tr.classList.add('selected');
+
+                const tdCheck = document.createElement('td');
+                tdCheck.style.textAlign = 'center';
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = isSelected;
+                checkbox.setAttribute('aria-label', `Select ${pack.title || 'Untitled Pack'}`);
+                checkbox.addEventListener('click', ev => ev.stopPropagation());
+                checkbox.addEventListener('change', () => {
+                  if (checkbox.checked) {
+                    selectedIds.add(pack.id);
+                  } else {
+                    selectedIds.delete(pack.id);
+                  }
+                  tr.classList.toggle('selected', selectedIds.has(pack.id));
+                  updateBulkActions();
+                  syncFooterState();
+                });
+                tdCheck.appendChild(checkbox);
+
+                const tdTitle = document.createElement('td');
+                const titleWrap = document.createElement('div');
+                titleWrap.style.display = 'grid';
+                titleWrap.style.gap = '4px';
+
+                const title = document.createElement('div');
+                title.textContent = pack.title || 'Untitled Pack';
+                titleWrap.appendChild(title);
+
+                const stats = PackLibrary.computeStats(pack);
+                const truckLabel = formatTruckDims(pack.truck || {}, prefs.units.length);
+                const statsLabel = formatPackStats(stats, prefs);
+
+                tdTitle.title = `${truckLabel}\n${statsLabel}`;
+                tdTitle.appendChild(titleWrap);
+
+                const tdCases = document.createElement('td');
+                tdCases.textContent = (pack.cases || []).length;
+                if (badgePrefs.showCasesCount === false) tdCases.style.display = 'none';
+
+                const tdLength = document.createElement('td');
+                tdLength.textContent = Utils.formatLength(pack.truck.length, prefs.units.length);
+                if (badgePrefs.showTruckDims === false) tdLength.style.display = 'none';
+
+                const tdWidth = document.createElement('td');
+                tdWidth.textContent = Utils.formatLength(pack.truck.width, prefs.units.length);
+                if (badgePrefs.showTruckDims === false) tdWidth.style.display = 'none';
+
+	                const tdHeight = document.createElement('td');
+	                tdHeight.textContent = Utils.formatLength(pack.truck.height, prefs.units.length);
+	                if (badgePrefs.showTruckDims === false) tdHeight.style.display = 'none';
+
+	                const tdMode = document.createElement('td');
+	                tdMode.textContent = trailerModeLabel(pack && pack.truck && pack.truck.shapeMode);
+	                if (badgePrefs.showShapeMode === false) tdMode.style.display = 'none';
+
+	                const tdPacked = document.createElement('td');
+	                const packedCases = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : null;
+	                const totalCases = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : null;
+	                tdPacked.textContent =
+	                  packedCases === null || totalCases === null ? '—' : `${packedCases}/${totalCases}`;
+                if (badgePrefs.showPacked === false) tdPacked.style.display = 'none';
+
+                const tdVolume = document.createElement('td');
+                const volumePercent = stats && Number.isFinite(stats.volumePercent) ? stats.volumePercent : null;
+                tdVolume.textContent = volumePercent === null ? '—' : `${volumePercent.toFixed(1)}%`;
+                if (badgePrefs.showVolume === false) tdVolume.style.display = 'none';
+
+                const tdWeight = document.createElement('td');
+                const totalWeight = stats && Number.isFinite(stats.totalWeight) ? stats.totalWeight : null;
+                tdWeight.textContent = totalWeight === null ? '—' : Utils.formatWeight(totalWeight, prefs.units.weight);
+                if (badgePrefs.showWeight === false) tdWeight.style.display = 'none';
+
+                const tdEdited = document.createElement('td');
+                tdEdited.textContent = Utils.formatRelativeTime(pack.lastEdited);
+                if (badgePrefs.showEditedTime === false) tdEdited.style.display = 'none';
+
+                const tdActions = document.createElement('td');
+                tdActions.className = 'col-actions';
+                const kebabBtn = document.createElement('button');
+                kebabBtn.className = 'btn btn-ghost';
+                kebabBtn.type = 'button';
+                kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
+                kebabBtn.addEventListener('click', ev => {
+	                  ev.stopPropagation();
+	                  UIComponents.openDropdown(kebabBtn, [
+	                    { label: 'Open', icon: 'fa-solid fa-folder-open', onClick: () => openPack(pack.id) },
+	                    { label: 'Edit', icon: 'fa-solid fa-pen-to-square', onClick: () => openEditPackModal(pack.id) },
+	                    { label: 'Rename', icon: 'fa-solid fa-pen', onClick: () => openRename(pack.id) },
+	                    {
+	                      label: 'Duplicate',
+	                      icon: 'fa-solid fa-clone',
+                      onClick: () => {
+                        PackLibrary.duplicate(pack.id);
+                        UIComponents.showToast('Pack duplicated', 'success');
+                      },
+                    },
+                    {
+                      label: 'Capture Preview',
+                      icon: 'fa-solid fa-image',
+                      onClick: () => ExportService.capturePackPreview(pack.id, { source: 'manual' }),
+                    },
+                    {
+                      label: 'Clear Preview',
+                      icon: 'fa-solid fa-ban',
+                      disabled: !pack.thumbnail,
+                      onClick: () => ExportService.clearPackPreview(pack.id),
+                    },
+                    { label: 'Export Pack', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+                    { label: 'Delete', icon: 'fa-solid fa-trash', variant: 'danger', dividerBefore: true, onClick: () => deletePack(pack.id) },
+                  ]);
+                });
+                tdActions.appendChild(kebabBtn);
+
+                tr.addEventListener('click', () => openPack(pack.id));
+
+                tr.appendChild(tdCheck);
+                tr.appendChild(tdTitle);
+	                tr.appendChild(tdCases);
+	                tr.appendChild(tdLength);
+	                tr.appendChild(tdWidth);
+	                tr.appendChild(tdHeight);
+	                tr.appendChild(tdMode);
+	                tr.appendChild(tdPacked);
+	                tr.appendChild(tdVolume);
+	                tr.appendChild(tdWeight);
+	                tr.appendChild(tdEdited);
+	                tr.appendChild(tdActions);
+                tbodyEl.appendChild(tr);
+              });
+            }
+
+            function applyListColumnVisibility(prefs) {
+              const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.packs) || {};
+	              const show = {
+	                cases: badgePrefs.showCasesCount !== false,
+	                length: badgePrefs.showTruckDims !== false,
+	                width: badgePrefs.showTruckDims !== false,
+	                height: badgePrefs.showTruckDims !== false,
+	                mode: badgePrefs.showShapeMode !== false,
+	                packed: badgePrefs.showPacked !== false,
+	                volume: badgePrefs.showVolume !== false,
+	                weight: badgePrefs.showWeight !== false,
+	                edited: badgePrefs.showEditedTime !== false,
+	              };
+              Object.keys(show).forEach(key => {
+                const th = document.querySelector(`#packs-list thead th[data-sort="${key}"]`);
+                if (th) th.style.display = show[key] ? '' : 'none';
+              });
+            }
+
+	            function renderGridView(packs) {
+	              const prefs = PreferencesManager.get();
+	              const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.packs) || {};
+	              packs.forEach(pack => {
+	                const card = document.createElement('div');
+	                card.className = 'card pack-card';
+	                card.classList.toggle('selected', selectedIds.has(pack.id));
+	                card.tabIndex = 0;
+	                card.addEventListener('click', ev => {
+	                  if (ev.target && ev.target.closest && ev.target.closest('[data-pack-menu]')) return;
+	                  openPack(pack.id);
+	                });
+	                card.addEventListener('keydown', ev => {
+	                  if (ev.key === 'Enter') openPack(pack.id);
+	                });
+
+                const preview = buildPreview(pack);
+
+                const title = document.createElement('h3');
+                title.textContent = pack.title || 'Untitled Pack';
+
+                const meta = document.createElement('div');
+                meta.className = 'pack-meta';
+
+                const badgesWrap = document.createElement('div');
+                badgesWrap.className = 'pack-meta-badges';
+
+                if (badgePrefs.showCasesCount !== false) {
+                  const count = document.createElement('div');
+                  count.className = 'badge';
+                  count.textContent = `Case count: ${(pack.cases || []).length}`;
+                  badgesWrap.appendChild(count);
+                }
+
+	                if (badgePrefs.showTruckDims !== false) {
+	                  const truck = document.createElement('div');
+	                  truck.className = 'badge';
+	                  truck.textContent = formatTruckDims(pack.truck || {}, prefs.units.length).replace(/^Truck:/, 'Dimensions:');
+	                  badgesWrap.appendChild(truck);
+	                }
+
+	                if (badgePrefs.showShapeMode !== false) {
+	                  const mode = document.createElement('div');
+	                  mode.className = 'badge';
+	                  mode.textContent = `Shape: ${trailerModeLabel(pack && pack.truck && pack.truck.shapeMode)}`;
+	                  badgesWrap.appendChild(mode);
+	                }
+
+	                const showPacked = badgePrefs.showPacked !== false;
+	                const showVolume = badgePrefs.showVolume !== false;
+	                const showWeight = badgePrefs.showWeight !== false;
+                if (showPacked || showVolume || showWeight) {
+                  const stats = PackLibrary.computeStats(pack);
+                  const loaded = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : 0;
+                  const packed = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : 0;
+                  const pct = stats && Number.isFinite(stats.volumePercent) ? stats.volumePercent : 0;
+                  const weight = Utils.formatWeight(stats && stats.totalWeight, prefs.units.weight);
+
+                  if (showPacked) {
+                    const packedBadge = document.createElement('div');
+                    packedBadge.className = 'badge';
+                    packedBadge.textContent = `Packed: ${packed}/${loaded}`;
+                    badgesWrap.appendChild(packedBadge);
+                  }
+                  if (showVolume) {
+                    const volBadge = document.createElement('div');
+                    volBadge.className = 'badge';
+                    volBadge.textContent = `Volume: ${pct.toFixed(1)}%`;
+                    badgesWrap.appendChild(volBadge);
+                  }
+                  if (showWeight) {
+                    const weightBadge = document.createElement('div');
+                    weightBadge.className = 'badge';
+                    weightBadge.textContent = `Weight: ${weight}`;
+                    badgesWrap.appendChild(weightBadge);
+                  }
+                }
+
+	                const kebabWrap = document.createElement('div');
+	                kebabWrap.className = 'kebab';
+	                kebabWrap.setAttribute('data-pack-menu', '1');
+	                const selectCb = document.createElement('input');
+	                selectCb.type = 'checkbox';
+	                selectCb.checked = selectedIds.has(pack.id);
+	                selectCb.setAttribute('aria-label', `Select ${pack.title || 'Untitled Pack'}`);
+	                selectCb.addEventListener('click', ev => ev.stopPropagation());
+	                selectCb.addEventListener('change', () => {
+	                  if (selectCb.checked) selectedIds.add(pack.id);
+	                  else selectedIds.delete(pack.id);
+	                  card.classList.toggle('selected', selectedIds.has(pack.id));
+	                  updateBulkActions();
+	                  syncFooterState();
+	                });
+	                const kebabBtn = document.createElement('button');
+	                kebabBtn.className = 'btn btn-ghost';
+	                kebabBtn.type = 'button';
+	                kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
+	                kebabBtn.addEventListener('click', ev => {
+	                  ev.stopPropagation();
+	                  UIComponents.openDropdown(kebabBtn, [
+	                    { label: 'Open', icon: 'fa-solid fa-folder-open', onClick: () => openPack(pack.id) },
+	                    { label: 'Edit', icon: 'fa-solid fa-pen-to-square', onClick: () => openEditPackModal(pack.id) },
+	                    { label: 'Rename', icon: 'fa-solid fa-pen', onClick: () => openRename(pack.id) },
+	                    {
+	                      label: 'Duplicate',
+	                      icon: 'fa-solid fa-clone',
+                      onClick: () => {
+                        PackLibrary.duplicate(pack.id);
+                        UIComponents.showToast('Pack duplicated', 'success');
+                      },
+                    },
+                    {
+                      label: 'Capture Preview',
+                      icon: 'fa-solid fa-image',
+                      onClick: () => ExportService.capturePackPreview(pack.id, { source: 'manual' }),
+                    },
+                    {
+                      label: 'Clear Preview',
+                      icon: 'fa-solid fa-ban',
+                      disabled: !pack.thumbnail,
+                      onClick: () => ExportService.clearPackPreview(pack.id),
+                    },
+                    { label: 'Export Pack', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+                    { label: 'Delete', icon: 'fa-solid fa-trash', variant: 'danger', dividerBefore: true, onClick: () => deletePack(pack.id) },
+                  ]);
+                });
+	                kebabWrap.appendChild(selectCb);
+	                kebabWrap.appendChild(kebabBtn);
+
+                if (badgesWrap.children.length) meta.appendChild(badgesWrap);
+                meta.appendChild(kebabWrap);
+
+                if (badgePrefs.showThumbnail !== false) card.appendChild(preview);
+                card.appendChild(title);
+                if (badgePrefs.showEditedTime !== false) {
+                  const editedBadge = document.createElement('div');
+                  editedBadge.className = 'badge';
+                  editedBadge.textContent = `Edited: ${Utils.formatRelativeTime(pack.lastEdited)}`;
+                  badgesWrap.appendChild(editedBadge);
+                }
+                card.appendChild(meta);
+                gridEl.appendChild(card);
+              });
+            }
+
+            function buildPreview(pack) {
+              const preview = document.createElement('div');
+              if (pack && typeof pack.thumbnail === 'string' && pack.thumbnail) {
+                preview.className = 'pack-preview has-thumb';
+                const img = document.createElement('img');
+                img.loading = 'lazy';
+                img.alt = `${pack.title || 'Pack'} preview`;
+                img.src = pack.thumbnail;
+                preview.appendChild(img);
+                return preview;
+              }
+              const items = (pack.cases || []).slice(0, 12);
+
+              if (!items.length) {
+                preview.className = 'pack-preview empty';
+                preview.textContent = 'No items yet';
+                return preview;
+              }
+
+              preview.className = 'pack-preview';
+              items.forEach(inst => {
+                const cell = document.createElement('div');
+                cell.className = 'pack-preview-cell';
+                const meta = CaseLibrary.getById(inst.caseId);
+                if (meta && meta.color) cell.style.background = meta.color;
+                cell.title = meta ? meta.name : 'Case';
+                preview.appendChild(cell);
+              });
+              return preview;
+            }
+
+            function openPack(packId) {
+              const pack = PackLibrary.open(packId);
+              if (!pack) {
+                UIComponents.showToast('Pack not found', 'error');
+                return;
+              }
+              AppShell.navigate('editor');
+            }
+
+            function openNewPackModal() {
+              const content = document.createElement('div');
+              content.style.display = 'grid';
+              content.style.gap = '14px';
+              content.style.gridTemplateColumns = 'repeat(auto-fit, minmax(260px, 1fr))';
+              content.style.alignItems = 'flex-start';
+
+              const title = field('Title (required)', 'text', 'Summer Festival Tour', true);
+              const client = field('Client (optional)', 'text', 'Live Nation', false);
+              const projectName = field('Project name (optional)', 'text', 'Coachella 2024', false);
+              const drawnBy = field('Drawn by (optional)', 'text', 'John Smith', false);
+
+              const truckPresets = [
+                { label: '53ft Trailer (default)', truck: { length: 636, width: 102, height: 98 } },
+                { label: '26ft Box Truck', truck: { length: 312, width: 96, height: 96 } },
+                { label: 'Sprinter Van', truck: { length: 168, width: 70, height: 72 } },
+              ];
+
+              const presetWrap = document.createElement('div');
+              presetWrap.className = 'field';
+              const presetLabel = document.createElement('div');
+              presetLabel.className = 'label';
+              presetLabel.textContent = 'Truck preset';
+              const presetSelect = document.createElement('select');
+              presetSelect.className = 'select';
+              truckPresets.forEach((p, idx) => {
+                const opt = document.createElement('option');
+                opt.value = String(idx);
+                opt.textContent = p.label;
+                presetSelect.appendChild(opt);
+              });
+	              presetWrap.appendChild(presetLabel);
+	              presetWrap.appendChild(presetSelect);
+
+	              const modeWrap = document.createElement('div');
+	              modeWrap.className = 'field';
+	              const modeLabel = document.createElement('div');
+	              modeLabel.className = 'label';
+	              modeLabel.textContent = 'Trailer Shape Mode';
+	              const modeSelect = document.createElement('select');
+	              modeSelect.className = 'select';
+	              modeSelect.innerHTML = `
+	                <option value="rect">Standard</option>
+	                <option value="wheelWells">Box + Wheel Wells</option>
+	                <option value="frontBonus">Box + Front Overhang</option>
+	              `;
+	              modeSelect.value = 'rect';
+	              modeWrap.appendChild(modeLabel);
+	              modeWrap.appendChild(modeSelect);
+
+	              const truckGrid = document.createElement('div');
+	              truckGrid.className = 'row';
+	              truckGrid.style.gap = '12px';
+	              const tL = field('Truck length (in)', 'number', '636', true);
+	              const tW = field('Truck width (in)', 'number', '102', true);
+              const tH = field('Truck height (in)', 'number', '98', true);
+              tL.wrap.style.flex = '1';
+              tW.wrap.style.flex = '1';
+              tH.wrap.style.flex = '1';
+              truckGrid.appendChild(tL.wrap);
+              truckGrid.appendChild(tW.wrap);
+              truckGrid.appendChild(tH.wrap);
+
+              presetSelect.addEventListener('change', () => {
+                const idx = Number(presetSelect.value);
+                const preset = truckPresets[idx] || truckPresets[0];
+                tL.input.value = String(preset.truck.length);
+                tW.input.value = String(preset.truck.width);
+                tH.input.value = String(preset.truck.height);
+              });
+
+              content.appendChild(title.wrap);
+              content.appendChild(client.wrap);
+	              content.appendChild(projectName.wrap);
+	              content.appendChild(drawnBy.wrap);
+	              content.appendChild(presetWrap);
+	              content.appendChild(modeWrap);
+	              content.appendChild(truckGrid);
+
+	              UIComponents.showModal({
+	                title: 'New Pack',
+	                content,
+	                actions: [
+	                  { label: 'Cancel' },
+                  {
+                    label: 'Create',
+                    variant: 'primary',
+                    onClick: () => {
+                      const t = String(title.input.value || '').trim();
+                      if (!t) {
+                        UIComponents.showToast('Title is required', 'warning');
+                        title.input.focus();
+                        return;
+                      }
+                      const pack = PackLibrary.create({
+                        title: t,
+                        client: String(client.input.value || '').trim(),
+                        projectName: String(projectName.input.value || '').trim(),
+                        drawnBy: String(drawnBy.input.value || '').trim(),
+	                        truck: {
+	                          length: Number(tL.input.value) || 636,
+	                          width: Number(tW.input.value) || 102,
+	                          height: Number(tH.input.value) || 98,
+	                          shapeMode:
+	                            modeSelect.value === 'wheelWells' || modeSelect.value === 'frontBonus' ? modeSelect.value : 'rect',
+	                          shapeConfig: {},
+	                        },
+	                      });
+                      UIComponents.showToast('Pack created', 'success');
+                      PackLibrary.open(pack.id);
+                      AppShell.navigate('editor');
+                    },
+                  },
+	                ],
+	              });
+	            }
+
+	            function openEditPackModal(packId) {
+	              const pack = PackLibrary.getById(packId);
+	              if (!pack) return;
+
+	              const content = document.createElement('div');
+	              content.style.display = 'grid';
+	              content.style.gap = '14px';
+	              content.style.gridTemplateColumns = 'repeat(auto-fit, minmax(260px, 1fr))';
+	              content.style.alignItems = 'flex-start';
+
+	              const title = field('Title (required)', 'text', '', true);
+	              title.input.value = pack.title || '';
+
+	              const modeWrap = document.createElement('div');
+	              modeWrap.className = 'field';
+	              const modeLabel = document.createElement('div');
+	              modeLabel.className = 'label';
+	              modeLabel.textContent = 'Trailer Shape Mode';
+	              const modeSelect = document.createElement('select');
+	              modeSelect.className = 'select';
+	              modeSelect.innerHTML = `
+	                <option value="rect">Standard</option>
+	                <option value="wheelWells">Box + Wheel Wells</option>
+	                <option value="frontBonus">Box + Front Overhang</option>
+	              `;
+	              modeSelect.value =
+	                pack && pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
+	                  ? pack.truck.shapeMode
+	                  : 'rect';
+	              modeWrap.appendChild(modeLabel);
+	              modeWrap.appendChild(modeSelect);
+
+	              const truckGrid = document.createElement('div');
+	              truckGrid.className = 'row';
+	              truckGrid.style.gap = '12px';
+	              const tL = field('Truck length (in)', 'number', '', true);
+	              const tW = field('Truck width (in)', 'number', '', true);
+	              const tH = field('Truck height (in)', 'number', '', true);
+	              tL.wrap.style.flex = '1';
+	              tW.wrap.style.flex = '1';
+	              tH.wrap.style.flex = '1';
+	              tL.input.value = String((pack.truck && pack.truck.length) || 636);
+	              tW.input.value = String((pack.truck && pack.truck.width) || 102);
+	              tH.input.value = String((pack.truck && pack.truck.height) || 98);
+	              truckGrid.appendChild(tL.wrap);
+	              truckGrid.appendChild(tW.wrap);
+	              truckGrid.appendChild(tH.wrap);
+
+	              content.appendChild(title.wrap);
+	              content.appendChild(modeWrap);
+	              content.appendChild(truckGrid);
+
+	              UIComponents.showModal({
+	                title: 'Edit Pack',
+	                content,
+	                actions: [
+	                  { label: 'Cancel' },
+	                  {
+	                    label: 'Save',
+	                    variant: 'primary',
+	                    onClick: () => {
+	                      const t = String(title.input.value || '').trim();
+	                      if (!t) {
+	                        UIComponents.showToast('Title is required', 'warning');
+	                        title.input.focus();
+	                        return false;
+	                      }
+	                      const shapeMode =
+	                        modeSelect.value === 'wheelWells' || modeSelect.value === 'frontBonus' ? modeSelect.value : 'rect';
+	                      const prevTruck = pack.truck && typeof pack.truck === 'object' ? pack.truck : {};
+	                      const shapeConfig =
+	                        prevTruck.shapeConfig && typeof prevTruck.shapeConfig === 'object' && !Array.isArray(prevTruck.shapeConfig)
+	                          ? Utils.deepClone(prevTruck.shapeConfig)
+	                          : {};
+	                      const nextTruck = {
+	                        ...prevTruck,
+	                        length: Number(tL.input.value) || prevTruck.length || 636,
+	                        width: Number(tW.input.value) || prevTruck.width || 102,
+	                        height: Number(tH.input.value) || prevTruck.height || 98,
+	                        shapeMode,
+	                        shapeConfig,
+	                      };
+	                      PackLibrary.update(packId, { title: t, truck: nextTruck });
+	                      UIComponents.showToast('Pack updated', 'success');
+	                    },
+	                  },
+	                ],
+	              });
+	            }
+
+	            function openRename(packId) {
+	              const pack = PackLibrary.getById(packId);
+	              if (!pack) return;
+              const content = document.createElement('div');
+              const f = field('Pack title', 'text', pack.title || '', true);
+              f.input.value = pack.title || '';
+              content.appendChild(f.wrap);
+              UIComponents.showModal({
+                title: 'Rename Pack',
+                content,
+                actions: [
+                  { label: 'Cancel' },
+                  {
+                    label: 'Save',
+                    variant: 'primary',
+                    onClick: () => {
+                      const nextTitle = String(f.input.value || '').trim();
+                      if (!nextTitle) return;
+                      PackLibrary.update(packId, { title: nextTitle });
+                      UIComponents.showToast('Renamed', 'success');
+                    },
+                  },
+                ],
+              });
+            }
+
+            function exportPack(packId) {
+              const pack = PackLibrary.getById(packId);
+              if (!pack) return;
+              const json = ImportExport.buildPackExportJSON(pack);
+              Utils.downloadText(
+                `${(pack.title || 'pack').replace(/[^a-z0-9]+/gi, '-')}.json`,
+                json
+              );
+              toast('Pack JSON exported', 'success');
+            }
+
+            async function deletePack(packId) {
+              const ok = await UIComponents.confirm({
+                title: 'Delete pack?',
+                message: 'This cannot be undone.',
+                danger: true,
+                okLabel: 'Delete',
+              });
+              if (!ok) return;
+              PackLibrary.remove(packId);
+              UIComponents.showToast('Pack deleted', 'info');
+            }
+
+	            function openImportPackDialog() {
+	              if (ImportPackDialog && typeof ImportPackDialog.open === 'function') ImportPackDialog.open();
+	            }
+
+            function field(label, type, placeholder, required) {
+              const wrap = document.createElement('div');
+              wrap.className = 'field';
+              const l = document.createElement('div');
+              l.className = 'label';
+              l.textContent = required ? `${label}` : label;
+              const input = document.createElement('input');
+              input.className = 'input';
+              input.type = type;
+              input.placeholder = placeholder || '';
+              wrap.appendChild(l);
+              wrap.appendChild(input);
+              return { wrap, input };
+            }
+
+            return { init: initPacksUI, render };
+          })();
+
+  return PacksUI;
+}

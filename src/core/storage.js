@@ -1,5 +1,18 @@
+/**
+ * @file storage.js
+ * @description Persistence adapter for saving and loading app state.
+ * @module core/storage
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import { APP_VERSION } from './version.js';
-import * as Utils from './utils.js';
+import * as Utils from './utils/index.js';
 import { debounce } from './browser.js';
 import * as StateStore from './state-store.js';
 import { emit } from './events.js';

@@ -1,4 +1,17 @@
-import * as CoreUtils from './utils.js';
+/**
+ * @file normalizer.js
+ * @description Normalization helpers to keep stored data and preferences safe and compatible.
+ * @module core/normalizer
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
+import * as CoreUtils from './utils/index.js';
 import * as CoreDefaults from './defaults.js';
 import { uuid } from './browser.js';
 

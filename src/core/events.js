@@ -1,3 +1,16 @@
+/**
+ * @file events.js
+ * @description Lightweight event bus helpers for app-wide decoupled communication.
+ * @module core/events
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 const listeners = new Map();
 
 function getSet(eventName) {

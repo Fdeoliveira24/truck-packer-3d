@@ -1,3 +1,16 @@
+/**
+ * @file billing.service.js
+ * @description Billing and plan helpers (stub; no payment provider integration yet).
+ * @module data/services/billing.service
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import { getSession } from '../../auth/session.js';
 
 export const BillingService = {

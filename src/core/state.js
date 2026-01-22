@@ -1,3 +1,16 @@
+/**
+ * @file state.js
+ * @description Core primitives used across the application.
+ * @module core/state
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import { deepClone } from '../utils/json.js';
 
 export function createStateStore({ maxHistory = 50 } = {}) {

@@ -1,3 +1,16 @@
+/**
+ * @file roles.js
+ * @description Static configuration (plans, roles, and feature definitions).
+ * @module config/roles
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 export const ROLE_HIERARCHY = {
   Viewer: 0,
   Member: 1,

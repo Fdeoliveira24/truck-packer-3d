@@ -1,3 +1,16 @@
+/**
+ * @file category-service.js
+ * @description UI-free service module for category service operations and state updates.
+ * @module services/category-service
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import * as StateStore from '../core/state-store.js';
 import * as Defaults from '../core/defaults.js';
 

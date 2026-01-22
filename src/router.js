@@ -1,3 +1,16 @@
+/**
+ * @file router.js
+ * @description Hash-based router for navigating between application screens.
+ * @module router
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 const KNOWN_SCREENS = new Set(['packs', 'cases', 'editor', 'updates', 'roadmap', 'settings']);
 
 export const Router = {

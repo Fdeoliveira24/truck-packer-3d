@@ -1,3 +1,16 @@
+/**
+ * @file system-overlay.js
+ * @description System-level overlay UI for fatal/runtime failures (missing dependencies, startup errors).
+ * @module ui/system-overlay
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 export function createSystemOverlay() {
   const overlay = document.getElementById('system-overlay');
   const titleEl = document.getElementById('system-title');

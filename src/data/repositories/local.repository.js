@@ -1,3 +1,16 @@
+/**
+ * @file local.repository.js
+ * @description LocalStorage-backed repository implementation with basic filtering.
+ * @module data/repositories/local.repository
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import { STORAGE_KEYS } from '../../core/constants.js';
 import { readJson, writeJson } from '../../core/storage.js';
 import { deepClone } from '../../utils/json.js';

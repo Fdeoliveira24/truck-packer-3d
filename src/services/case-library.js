@@ -1,5 +1,18 @@
+/**
+ * @file case-library.js
+ * @description UI-free service module for case library operations and state updates.
+ * @module services/case-library
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import * as StateStore from '../core/state-store.js';
-import * as Utils from '../core/utils.js';
+import * as Utils from '../core/utils/index.js';
 import * as CoreDefaults from '../core/defaults.js';
 
 function applyCaseDefaultColor(caseObj) {

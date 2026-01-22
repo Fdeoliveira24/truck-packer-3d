@@ -1,3 +1,16 @@
+/**
+ * @file event-bus.js
+ * @description Core primitives used across the application.
+ * @module core/event-bus
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 export function createEventBus() {
   const listeners = new Map();
 

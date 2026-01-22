@@ -1,3 +1,16 @@
+/**
+ * @file permissions.js
+ * @description Authentication/session helpers and permission checks.
+ * @module auth/permissions
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import { hasRoleAtLeast } from '../config/roles.js';
 import { isPlanAtLeast } from '../config/plans.js';
 

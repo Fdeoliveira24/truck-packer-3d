@@ -1,5 +1,18 @@
+/**
+ * @file pack-library.js
+ * @description UI-free service module for pack library operations and state updates.
+ * @module services/pack-library
+ * @created Unknown
+ * @updated 01/22/2026
+ * @author Truck Packer 3D Team
+ */
+
+// ============================================================================
+// SECTION: IMPORTS AND DEPENDENCIES
+// ============================================================================
+
 import * as StateStore from '../core/state-store.js';
-import * as Utils from '../core/utils.js';
+import * as Utils from '../core/utils/index.js';
 import * as CoreNormalizer from '../core/normalizer.js';
 import * as CaseLibrary from './case-library.js';
 

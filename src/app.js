@@ -10,6 +10,10 @@ import * as CoreNormalizer from './core/normalizer.js';
 import * as CoreStorage from './core/storage.js';
 import * as CoreSession from './core/session.js';
 import * as CategoryService from './services/category-service.js';
+import * as CoreCaseLibrary from './services/case-library.js';
+import * as CorePackLibrary from './services/pack-library.js';
+import * as ImportExport from './services/import-export.js';
+import * as CorePreferencesManager from './services/preferences-manager.js';
 import { on } from './core/events.js';
 import { APP_VERSION } from './core/version.js';
       (async function () {
@@ -67,13 +71,26 @@ import { APP_VERSION } from './core/version.js';
             subscribe: CoreStateStore.subscribe,
           };
 
-          // ============================================================================
-          // SECTION: PERSISTENCE (LOCALSTORAGE)
-          // ============================================================================
           function toAscii(msg) {
             return String(msg || '')
               .replace(/[^\x20-\x7E]+/g, '')
               .trim();
+          }
+
+          function toast(message, variant, options) {
+            const safeMessage = toAscii(message);
+            let safeOptions = options;
+            if (options && typeof options === 'object') {
+              safeOptions = { ...options };
+              if (safeOptions.title) safeOptions.title = toAscii(safeOptions.title);
+              if (Array.isArray(safeOptions.actions)) {
+                safeOptions.actions = safeOptions.actions.map(a => ({
+                  ...a,
+                  label: toAscii(a && a.label),
+                }));
+              }
+            }
+            UIComponents.showToast(safeMessage, variant, safeOptions);
           }
 
           const Storage = CoreStorage;
@@ -134,21 +151,7 @@ import { APP_VERSION } from './core/version.js';
           // ============================================================================
           // SECTION: PREFERENCES (THEME/UNITS)
           // ============================================================================
-          const PreferencesManager = (() => {
-            function applyTheme(theme) {
-              document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'light');
-            }
-
-            function get() {
-              return StateStore.get('preferences');
-            }
-
-            function set(nextPrefs) {
-              StateStore.set({ preferences: nextPrefs });
-            }
-
-            return { get, set, applyTheme };
-          })();
+          const PreferencesManager = CorePreferencesManager;
 
           // ============================================================================
           // SECTION: OVERLAYS (SETTINGS)
@@ -799,95 +802,7 @@ import { APP_VERSION } from './core/version.js';
 	          // ============================================================================
 	          // SECTION: DOMAIN DATA (CASES)
 	          // ============================================================================
-	          const CaseLibrary = (() => {
-            function getCases() {
-              return StateStore.get('caseLibrary') || [];
-            }
-
-            function getById(caseId) {
-              return getCases().find(c => c.id === caseId) || null;
-            }
-
-            function upsert(caseData) {
-              const now = Date.now();
-              const cases = getCases();
-              const idx = cases.findIndex(c => c.id === caseData.id);
-	            let next = applyCaseDefaultColor({ ...caseData });
-              next.updatedAt = now;
-              if (!next.createdAt) next.createdAt = now;
-              next.dimensions = {
-                length: Number(next.dimensions.length) || 0,
-                width: Number(next.dimensions.width) || 0,
-                height: Number(next.dimensions.height) || 0,
-              };
-              next.weight = Number(next.weight) || 0;
-              next.volume = Utils.volumeInCubicInches(next.dimensions);
-
-              const nextCases = idx > -1 ? cases.map((c, i) => (i === idx ? next : c)) : [...cases, next];
-
-              StateStore.set({ caseLibrary: nextCases });
-            }
-
-            function reassignCategory(oldKey, newKey) {
-              const from = oldKey ? oldKey.trim().toLowerCase() : '';
-              const to = newKey ? newKey.trim().toLowerCase() : 'default';
-              if (!from || from === to) return;
-              const next = getCases().map(c => (c.category === from ? { ...c, category: to } : c));
-              StateStore.set({ caseLibrary: next });
-            }
-
-            function remove(caseId) {
-              const cases = getCases().filter(c => c.id !== caseId);
-              StateStore.set({ caseLibrary: cases });
-            }
-
-            function duplicate(caseId) {
-              const original = getById(caseId);
-              if (!original) return null;
-              const now = Date.now();
-              const copy = {
-                ...Utils.deepClone(original),
-                id: Utils.uuid(),
-                name: original.name + ' (Copy)',
-                createdAt: now,
-                updatedAt: now,
-              };
-              upsert(copy);
-              return copy;
-            }
-
-            function search(query, categoryKeys) {
-              const q = String(query || '')
-                .trim()
-                .toLowerCase();
-              const cats = (categoryKeys || []).filter(k => k && k !== 'all');
-              return getCases().filter(c => {
-                const matchesQ =
-                  !q || (c.name || '').toLowerCase().includes(q) || (c.manufacturer || '').toLowerCase().includes(q);
-                const matchesCat = !cats.length || cats.includes(c.category);
-                return matchesQ && matchesCat;
-              });
-            }
-
-            function countsByCategory() {
-              const counts = {};
-              getCases().forEach(c => {
-                counts[c.category] = (counts[c.category] || 0) + 1;
-              });
-              return counts;
-            }
-
-            return {
-              getCases,
-              getById,
-              upsert,
-              remove,
-              duplicate,
-              search,
-              countsByCategory,
-              reassignCategory,
-            };
-	          })();
+            const CaseLibrary = CoreCaseLibrary;
 
 	          // ============================================================================
 	          // SECTION: GEOMETRY / DIMENSIONS
@@ -1152,198 +1067,7 @@ import { APP_VERSION } from './core/version.js';
 	          // ============================================================================
 	          // SECTION: DOMAIN DATA (PACKS)
 	          // ============================================================================
-	          const PackLibrary = (() => {
-	            function getPacks() {
-	              return StateStore.get('packLibrary') || [];
-	            }
-
-            function getById(packId) {
-              return getPacks().find(p => p.id === packId) || null;
-            }
-
-	            function create(packData) {
-	              const now = Date.now();
-	              const rawTruck = packData.truck || { length: 636, width: 102, height: 98 };
-	              const shapeMode =
-	                rawTruck &&
-	                (rawTruck.shapeMode === 'wheelWells' ||
-	                  rawTruck.shapeMode === 'frontBonus' ||
-	                  rawTruck.shapeMode === 'rect')
-	                  ? rawTruck.shapeMode
-	                  : 'rect';
-	              const shapeConfig =
-	                rawTruck && rawTruck.shapeConfig && typeof rawTruck.shapeConfig === 'object' && !Array.isArray(rawTruck.shapeConfig)
-	                  ? Utils.deepClone(rawTruck.shapeConfig)
-	                  : {};
-	              const truck = {
-	                length: Number(rawTruck.length) || 636,
-	                width: Number(rawTruck.width) || 102,
-	                height: Number(rawTruck.height) || 98,
-	                shapeMode,
-	                shapeConfig,
-	              };
-	              const pack = {
-	                id: Utils.uuid(),
-	                title: packData.title || 'Untitled Pack',
-	                client: packData.client || '',
-	                projectName: packData.projectName || '',
-	                drawnBy: packData.drawnBy || '',
-	                notes: packData.notes || '',
-	                truck,
-	                cases: [],
-	                groups: [],
-	                stats: { totalCases: 0, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
-	                createdAt: now,
-                lastEdited: now,
-                thumbnail: null,
-                thumbnailUpdatedAt: null,
-                thumbnailSource: null,
-              };
-              StateStore.set({ packLibrary: [...getPacks(), pack] });
-              return pack;
-            }
-
-            function update(packId, patch) {
-              const packs = getPacks();
-              const idx = packs.findIndex(p => p.id === packId);
-              if (idx === -1) return null;
-              const now = Date.now();
-              const cloned = Utils.deepClone(patch);
-              const prev = packs[idx];
-              const next = { ...prev, ...cloned };
-
-              const lastEditedKeys = ['title', 'client', 'projectName', 'drawnBy', 'notes', 'truck', 'cases', 'groups'];
-              const hasLastEditedKey = Object.keys(cloned || {}).some(k => lastEditedKeys.includes(k));
-              next.lastEdited = hasLastEditedKey ? now : prev.lastEdited || now;
-              next.stats = computeStats(next);
-              const nextPacks = packs.map((p, i) => (i === idx ? next : p));
-              StateStore.set({ packLibrary: nextPacks });
-              return next;
-            }
-
-            function remove(packId) {
-              const packs = getPacks().filter(p => p.id !== packId);
-              const current = StateStore.get('currentPackId');
-              StateStore.set(
-                { packLibrary: packs, currentPackId: current === packId ? null : current, selectedInstanceIds: [] },
-                { skipHistory: true }
-              );
-            }
-
-            function duplicate(packId) {
-              const pack = getById(packId);
-              if (!pack) return null;
-              const now = Date.now();
-              const copy = Utils.deepClone(pack);
-              copy.id = Utils.uuid();
-              copy.title = pack.title + ' (Copy)';
-              copy.createdAt = now;
-              copy.lastEdited = now;
-              copy.thumbnail = null;
-              copy.thumbnailUpdatedAt = null;
-              copy.thumbnailSource = null;
-              // New instance ids
-              copy.cases = (copy.cases || []).map(i => ({ ...i, id: Utils.uuid() }));
-              StateStore.set({ packLibrary: [...getPacks(), copy] });
-              return copy;
-            }
-
-            function open(packId) {
-              const pack = getById(packId);
-              if (!pack) return null;
-              StateStore.set({ currentPackId: packId, selectedInstanceIds: [] }, { skipHistory: true });
-              return pack;
-            }
-
-            function addInstance(packId, caseId, position) {
-              const pack = getById(packId);
-              if (!pack) return null;
-              const caseData = CaseLibrary.getById(caseId);
-              if (!caseData) return null;
-              const instance = {
-                id: Utils.uuid(),
-                caseId,
-                transform: {
-                  position: position || { x: -80, y: Math.max(1, caseData.dimensions.height / 2), z: 0 },
-                  rotation: { x: 0, y: 0, z: 0 },
-                  scale: { x: 1, y: 1, z: 1 },
-                },
-                hidden: false,
-                groupId: null,
-              };
-              const nextCases = [...(pack.cases || []), instance];
-              update(packId, { cases: nextCases });
-              return instance;
-            }
-
-            function updateInstance(packId, instanceId, patch) {
-              const pack = getById(packId);
-              if (!pack) return null;
-              const nextInstances = (pack.cases || []).map(i =>
-                i.id === instanceId ? { ...i, ...Utils.deepClone(patch) } : i
-              );
-              return update(packId, { cases: nextInstances });
-            }
-
-            function removeInstances(packId, instanceIds) {
-              const pack = getById(packId);
-              if (!pack) return null;
-              const idSet = new Set(instanceIds || []);
-              const nextInstances = (pack.cases || []).filter(i => !idSet.has(i.id));
-              return update(packId, { cases: nextInstances });
-            }
-
-	            function computeStats(pack, caseLibraryOverride) {
-	              const zonesInches = TrailerGeometry.getTrailerUsableZones(pack && pack.truck);
-	              const truckVol = TrailerGeometry.getTrailerCapacityInches3(pack && pack.truck);
-	              let usedIn3 = 0;
-	              let totalWeight = 0;
-	              let packedCases = 0;
-              const getCase = caseId => {
-                if (Array.isArray(caseLibraryOverride)) return caseLibraryOverride.find(c => c.id === caseId) || null;
-                return CaseLibrary.getById(caseId);
-              };
-	              (pack.cases || []).forEach(inst => {
-	                const c = getCase(inst.caseId);
-	                if (!c) return;
-	                if (inst.hidden) return;
-	                const dims = c.dimensions || { length: 0, width: 0, height: 0 };
-	                const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
-	                const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
-	                const aabb = {
-	                  min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
-	                  max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
-	                };
-	                const insideTruck = TrailerGeometry.isAabbContainedInAnyZone(aabb, zonesInches);
-	                if (!insideTruck) return;
-	                packedCases++;
-	                usedIn3 += c.volume || Utils.volumeInCubicInches(dims);
-	                totalWeight += Number(c.weight) || 0;
-	              });
-              const volumePercent = truckVol > 0 ? (usedIn3 / truckVol) * 100 : 0;
-              return {
-                totalCases: (pack.cases || []).length,
-                packedCases,
-                volumeUsed: usedIn3,
-                volumePercent,
-                totalWeight,
-              };
-            }
-
-            return {
-              getPacks,
-              getById,
-              create,
-              update,
-              remove,
-              duplicate,
-              open,
-              addInstance,
-              updateInstance,
-              removeInstances,
-              computeStats,
-            };
-          })();
+            const PackLibrary = CorePackLibrary;
 
           // ============================================================================
           // SECTION: STATIC CONTENT (UPDATES/ROADMAP)
@@ -2624,16 +2348,10 @@ import { APP_VERSION } from './core/version.js';
             function exportPack(packId) {
               const pack = PackLibrary.getById(packId);
               if (!pack) return;
-              const payload = {
-                app: 'Truck Packer 3D',
-                version: APP_VERSION,
-                exportedAt: Date.now(),
-                pack,
-                bundledCases: (pack.cases || []).map(i => CaseLibrary.getById(i.caseId)).filter(Boolean),
-              };
+              const json = ImportExport.buildPackExportJSON(pack);
               Utils.downloadText(
                 `${(pack.title || 'pack').replace(/[^a-z0-9]+/gi, '-')}.json`,
-                JSON.stringify(payload, null, 2)
+                json
               );
               UIComponents.showToast('Pack JSON exported', 'success');
             }
@@ -2659,117 +2377,14 @@ import { APP_VERSION } from './core/version.js';
                 if (!file) return;
                 try {
                   const text = await file.text();
-                  const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(text, null));
-                  if (!parsed) throw new Error('Invalid JSON');
-                  const payload = parsed.pack ? parsed : { pack: parsed };
-                  importPackPayload(payload);
+                  const payload = ImportExport.parsePackImportJSON(text);
+                  PackLibrary.importPackPayload(payload);
                   UIComponents.showToast('Pack imported', 'success');
                 } catch (err) {
                   UIComponents.showToast('Import failed: ' + err.message, 'error');
                 }
               });
               input.click();
-            }
-
-            function importPackPayload(payload) {
-              const now = Date.now();
-              const incomingPack = payload.pack;
-              if (!incomingPack || !incomingPack.truck || !Array.isArray(incomingPack.cases))
-                {throw new Error('Invalid pack format');}
-
-              const bundled = Array.isArray(payload.bundledCases) ? payload.bundledCases : [];
-              const currentCases = CaseLibrary.getCases();
-              const currentPacks = PackLibrary.getPacks();
-
-              const caseById = new Map(currentCases.map(c => [c.id, c]));
-              const caseByName = new Map(
-                currentCases.map(c => [
-                  String(c.name || '')
-                    .trim()
-                    .toLowerCase(),
-                  c,
-                ])
-              );
-              const caseIdMap = new Map();
-              const nextCases = [...currentCases];
-
-              bundled.forEach(c => {
-                if (!c || !c.id) return;
-                const nameKey = String(c.name || '')
-                  .trim()
-                  .toLowerCase();
-                if (caseById.has(c.id)) {
-                  caseIdMap.set(c.id, c.id);
-                  return;
-                }
-                if (nameKey && caseByName.has(nameKey)) {
-                  caseIdMap.set(c.id, caseByName.get(nameKey).id);
-                  return;
-                }
-	            let copy = Utils.deepClone(c);
-                copy.createdAt = copy.createdAt || now;
-                copy.updatedAt = now;
-	            copy = applyCaseDefaultColor(copy);
-	            copy.volume =
-	              copy.volume || Utils.volumeInCubicInches(copy.dimensions || { length: 0, width: 0, height: 0 });
-	            nextCases.push(copy);
-                caseById.set(copy.id, copy);
-                if (nameKey) caseByName.set(nameKey, copy);
-                caseIdMap.set(c.id, copy.id);
-              });
-
-              const pack = Utils.deepClone(incomingPack);
-              pack.id = currentPacks.some(p => p.id === pack.id) ? Utils.uuid() : pack.id || Utils.uuid();
-              pack.title = pack.title ? `${pack.title} (Imported)` : 'Imported Pack';
-              pack.createdAt = pack.createdAt || now;
-              pack.lastEdited = now;
-
-	              // New instance ids + caseId remap
-	              pack.cases = (pack.cases || []).map(inst => {
-	                const next = Utils.deepClone(inst);
-	                next.id = Utils.uuid();
-	                next.caseId = caseIdMap.get(next.caseId) || next.caseId;
-                if (!next.transform)
-                  {next.transform = {
-              position: { x: -80, y: 10, z: 0 },
-              rotation: { x: 0, y: 0, z: 0 },
-              scale: { x: 1, y: 1, z: 1 },
-            };}
-                if (!next.transform.position) next.transform.position = { x: -80, y: 10, z: 0 };
-	                return next;
-	              });
-
-	              {
-	                const rawTruck = pack.truck && typeof pack.truck === 'object' ? pack.truck : {};
-	                const shapeMode =
-	                  rawTruck.shapeMode === 'wheelWells' || rawTruck.shapeMode === 'frontBonus' || rawTruck.shapeMode === 'rect'
-	                    ? rawTruck.shapeMode
-	                    : 'rect';
-	                const shapeConfig =
-	                  rawTruck.shapeConfig && typeof rawTruck.shapeConfig === 'object' && !Array.isArray(rawTruck.shapeConfig)
-	                    ? Utils.deepClone(rawTruck.shapeConfig)
-	                    : {};
-	                pack.truck = {
-	                  length: Number(rawTruck.length) || 636,
-	                  width: Number(rawTruck.width) || 102,
-	                  height: Number(rawTruck.height) || 98,
-	                  shapeMode,
-	                  shapeConfig,
-	                };
-	              }
-
-	              pack.stats = PackLibrary.computeStats(pack, nextCases);
-
-	              StateStore.set(
-	                {
-	                  caseLibrary: nextCases,
-                  packLibrary: [...currentPacks, pack],
-                  currentPackId: pack.id,
-                  currentScreen: 'editor',
-                  selectedInstanceIds: [],
-                },
-                { skipHistory: false }
-              );
             }
 
             function field(label, type, placeholder, required) {
@@ -2837,7 +2452,7 @@ import { APP_VERSION } from './core/version.js';
                   }, 300)
                 );
               btnNew.addEventListener('click', () => openCaseModal(null));
-              btnTemplate.addEventListener('click', () => downloadTemplate());
+              btnTemplate.addEventListener('click', () => ImportExport.downloadCasesTemplate());
               btnImport.addEventListener('click', () => openImportModal());
                 btnManageCats &&
                   btnManageCats.addEventListener('click', ev => {
@@ -3976,16 +3591,6 @@ import { APP_VERSION } from './core/version.js';
               UIComponents.showToast('Case deleted', 'info');
             }
 
-            function downloadTemplate() {
-              const csv = [
-                'name,manufacturer,category,length,width,height,weight,canFlip,notes',
-                'Line Array Case,L-Acoustics,audio,48,24,32,125,false,',
-                'Truss Section,Global Truss,lighting,120,12,12,45,true,',
-              ].join('\n');
-              Utils.downloadText('cases_template.csv', csv, 'text/csv');
-              UIComponents.showToast('Template downloaded', 'success');
-            }
-
             function openImportModal() {
               const content = document.createElement('div');
               content.style.display = 'grid';
@@ -4057,7 +3662,7 @@ import { APP_VERSION } from './core/version.js';
 
             async function handleFile(file, resultsEl, modal) {
               try {
-                const parsed = await parseAndValidateSpreadsheet(file);
+                const parsed = await ImportExport.parseAndValidateSpreadsheet(file);
                 resultsEl.style.display = 'block';
                 resultsEl.innerHTML = '';
 
@@ -4065,7 +3670,7 @@ import { APP_VERSION } from './core/version.js';
                 summary.className = 'card';
                 summary.innerHTML = `
                 <div style="font-weight:var(--font-semibold);margin-bottom:6px">Import Preview</div>
-                <div class="muted" style="font-size:var(--text-sm)">File: ${escapeHtml(file.name)}</div>
+                <div class="muted" style="font-size:var(--text-sm)">File: ${Utils.escapeHtml(file.name)}</div>
                 <div style="height:8px"></div>
                 <div style="display:flex;gap:12px;flex-wrap:wrap">
                   <div class="badge" style="border-color:rgba(16,185,129,.25);background:rgba(16,185,129,.12);color:var(--text-primary)">✓ Valid: ${parsed.valid.length}</div>
@@ -4084,7 +3689,9 @@ import { APP_VERSION } from './core/version.js';
                 btn.textContent = 'Import valid rows';
                 btn.disabled = parsed.valid.length === 0;
                 btn.addEventListener('click', () => {
-                  importRows(parsed.valid);
+                  const result = ImportExport.importCaseRows(parsed.valid);
+                  StateStore.set({ caseLibrary: result.nextCaseLibrary });
+                  UIComponents.showToast(`Imported ${result.added} case(s)`, result.added ? 'success' : 'warning');
                   modal.close();
                 });
                 actionsRow.appendChild(btn);
@@ -4134,179 +3741,6 @@ import { APP_VERSION } from './core/version.js';
               } catch (err) {
                 UIComponents.showToast('Import failed: ' + err.message, 'error');
               }
-            }
-
-            function escapeHtml(s) {
-              return String(s || '').replace(
-                /[&<>"']/g,
-                c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]
-              );
-            }
-
-            function importRows(rows) {
-              const now = Date.now();
-              const existingNames = new Set(
-                CaseLibrary.getCases().map(c =>
-                  String(c.name || '')
-                    .trim()
-                    .toLowerCase()
-                )
-              );
-              const next = [...CaseLibrary.getCases()];
-              let added = 0;
-              rows.forEach(r => {
-                const nameKey = String(r.name || '')
-                  .trim()
-                  .toLowerCase();
-                if (!nameKey || existingNames.has(nameKey)) return;
-                existingNames.add(nameKey);
-	            const record = applyCaseDefaultColor({
-                  id: Utils.uuid(),
-                  name: String(r.name || '').trim(),
-                  manufacturer: String(r.manufacturer || '').trim(),
-                  category:
-                    String(r.category || 'default')
-                      .trim()
-                      .toLowerCase() || 'default',
-                  dimensions: { length: Number(r.length), width: Number(r.width), height: Number(r.height) },
-                  weight: Number(r.weight) || 0,
-                  volume: Utils.volumeInCubicInches({
-                    length: Number(r.length),
-                    width: Number(r.width),
-                    height: Number(r.height),
-                  }),
-                  canFlip: Boolean(r.canFlip),
-                  notes: String(r.notes || '').trim(),
-	              color: normalizeHex(r.color),
-                  createdAt: now,
-                  updatedAt: now,
-	            });
-	            next.push(record);
-                added++;
-              });
-              StateStore.set({ caseLibrary: next });
-              UIComponents.showToast(`Imported ${added} case(s)`, added ? 'success' : 'warning');
-            }
-
-            async function parseAndValidateSpreadsheet(file) {
-              if (!window.XLSX) throw new Error('XLSX library not available');
-              const ext = String(file.name || '')
-                .split('.')
-                .pop()
-                .toLowerCase();
-              let workbook;
-              if (ext === 'csv') {
-                const text = await file.text();
-                workbook = window.XLSX.read(text, { type: 'string' });
-              } else {
-                const buf = await file.arrayBuffer();
-                workbook = window.XLSX.read(buf, { type: 'array' });
-              }
-              const sheetName = workbook.SheetNames[0];
-              const sheet = workbook.Sheets[sheetName];
-              const rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-              if (!rows || !rows.length) throw new Error('Empty file');
-
-              const headerRow = rows[0].map(h => String(h || '').trim());
-              const header = headerRow.map(normalizeHeader);
-              const idx = indexMap(header);
-
-              const required = ['name', 'length', 'width', 'height'];
-              const missing = required.filter(r => idx[r] == null);
-              if (missing.length) throw new Error('Missing required columns: ' + missing.join(', '));
-
-              const existingNames = new Set(
-                CaseLibrary.getCases().map(c =>
-                  String(c.name || '')
-                    .trim()
-                    .toLowerCase()
-                )
-              );
-              const errors = [];
-              const duplicates = [];
-              const valid = [];
-
-              for (let r = 1; r < rows.length; r++) {
-                const row = rows[r];
-                if (!row || row.every(v => String(v || '').trim() === '')) continue;
-                const rowNum = r + 1;
-                const record = {
-                  name: String(getField(row, idx.name)).trim(),
-                  manufacturer: String(getField(row, idx.manufacturer)).trim(),
-                  category: String(getField(row, idx.category)).trim().toLowerCase() || 'default',
-                  length: Number(getField(row, idx.length)),
-                  width: Number(getField(row, idx.width)),
-                  height: Number(getField(row, idx.height)),
-                  weight: Number(getField(row, idx.weight)),
-                  canFlip: parseBool(getField(row, idx.canFlip)),
-                  notes: String(getField(row, idx.notes)).trim(),
-                  color: String(getField(row, idx.color)).trim(),
-                };
-
-                const rowErrors = [];
-                if (!record.name) rowErrors.push(`Row ${rowNum}: Missing required field 'name'`);
-                if (!Number.isFinite(record.length) || record.length <= 0)
-                  {rowErrors.push(`Row ${rowNum}: Invalid number for 'length'`);}
-                if (!Number.isFinite(record.width) || record.width <= 0)
-                  {rowErrors.push(`Row ${rowNum}: Invalid number for 'width'`);}
-                if (!Number.isFinite(record.height) || record.height <= 0)
-                  {rowErrors.push(`Row ${rowNum}: Invalid number for 'height'`);}
-
-                const nameKey = record.name.toLowerCase();
-                if (record.name && existingNames.has(nameKey)) {
-                  duplicates.push(`Row ${rowNum}: Duplicate name "${record.name}" (skipped)`);
-                  continue;
-                }
-
-                if (rowErrors.length) {
-                  errors.push(...rowErrors);
-                  continue;
-                }
-                valid.push(record);
-              }
-
-              return { valid, errors, duplicates };
-            }
-
-            function normalizeHeader(s) {
-              return String(s || '')
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, '');
-            }
-
-            function indexMap(headers) {
-              const find = candidates => {
-                for (const c of candidates) {
-                  const idx = headers.indexOf(c);
-                  if (idx > -1) return idx;
-                }
-                return null;
-              };
-              return {
-                name: find(['name', 'casename', 'item', 'title']),
-                manufacturer: find(['manufacturer', 'mfg', 'brand']),
-                category: find(['category', 'cat', 'type']),
-                length: find(['length', 'l']),
-                width: find(['width', 'w']),
-                height: find(['height', 'h']),
-                weight: find(['weight', 'wt']),
-                canFlip: find(['canflip', 'flippable', 'canrotate', 'flip']),
-                notes: find(['notes', 'note', 'description', 'desc']),
-                color: find(['color', 'hex', 'casecolor']),
-              };
-            }
-
-            function getField(row, idx) {
-              if (idx == null) return '';
-              return row[idx];
-            }
-
-            function parseBool(v) {
-              const s = String(v || '')
-                .trim()
-                .toLowerCase();
-              if (!s) return false;
-              return ['true', '1', 'yes', 'y', 'on'].includes(s);
             }
 
               return { init: initCasesUI, render };
@@ -5455,7 +4889,7 @@ import { APP_VERSION } from './core/version.js';
               }
 
               isRunning = true;
-              UIComponents.showToast('AutoPack starting…', 'info', { title: 'AutoPack', duration: 1800 });
+              toast('AutoPack starting...', 'info', { title: 'AutoPack', duration: 1800 });
 
               const truck = packData.truck;
               const packItems = (packData.cases || [])
@@ -7288,7 +6722,7 @@ import { APP_VERSION } from './core/version.js';
             const btnHelp = document.getElementById('btn-help');
 
             btnExport.addEventListener('click', () => {
-              const json = Storage.exportAppJSON();
+              const json = ImportExport.buildAppExportJSON();
               Utils.downloadText(`truck-packer-3d-${Date.now()}.json`, json);
               UIComponents.showToast('Exported app JSON', 'success');
             });
@@ -7302,7 +6736,7 @@ import { APP_VERSION } from './core/version.js';
                 if (!file) return;
                 const text = await file.text();
                 try {
-                  const imported = Storage.importAppJSON(text);
+                  const imported = ImportExport.parseAppImportJSON(text);
                   const prev = StateStore.get();
                   const importedCases = (imported.caseLibrary || []).map(applyCaseDefaultColor);
                   const nextState = {

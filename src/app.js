@@ -2,6 +2,15 @@ import { createSystemOverlay } from './ui/system-overlay.js';
 import { createUIComponents } from './ui/ui-components.js';
 import { createTableFooter } from './ui/table-footer.js';
 import { TrailerPresets } from './trailer-presets.js';
+import * as CoreUtils from './core/utils.js';
+import * as BrowserUtils from './core/browser.js';
+import * as CoreDefaults from './core/defaults.js';
+import * as CoreStateStore from './core/state-store.js';
+import * as CoreNormalizer from './core/normalizer.js';
+import * as CoreStorage from './core/storage.js';
+import * as CoreSession from './core/session.js';
+import { on } from './core/events.js';
+import { APP_VERSION } from './core/version.js';
       (async function () {
         try {
           if (window.__TP3D_BOOT && window.__TP3D_BOOT.threeReady) {
@@ -22,205 +31,12 @@ import { TrailerPresets } from './trailer-presets.js';
         window.TruckPackerApp = (function () {
           'use strict';
 
-          const APP_VERSION = '1.0.0';
           const featureFlags = { trailerPresetsEnabled: true };
 
           // ============================================================================
           // SECTION: FOUNDATION / UTILS
           // ============================================================================
           const Utils = (() => {
-            const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
-
-            function safeJsonParse(text, fallback = null) {
-              try {
-                return JSON.parse(text);
-              } catch (_) {
-                return fallback;
-              }
-            }
-
-            function deepClone(obj) {
-              return JSON.parse(JSON.stringify(obj));
-            }
-
-            function sanitizeJSON(value) {
-              // Prevent prototype pollution via imported JSON (__proto__/constructor/prototype keys).
-              if (Array.isArray(value)) return value.map(sanitizeJSON);
-              if (!value || typeof value !== 'object') return value;
-              const out = {};
-              Object.keys(value).forEach(key => {
-                if (key === '__proto__' || key === 'prototype' || key === 'constructor') return;
-                out[key] = sanitizeJSON(value[key]);
-              });
-              return out;
-            }
-
-            function uuid() {
-              if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
-              const buf = new Uint8Array(16);
-              (window.crypto || window.msCrypto).getRandomValues(buf);
-              buf[6] = (buf[6] & 0x0f) | 0x40;
-              buf[8] = (buf[8] & 0x3f) | 0x80;
-              const hex = Array.from(buf).map(b => b.toString(16).padStart(2, '0'));
-              return (
-                hex.slice(0, 4).join('') +
-                '-' +
-                hex.slice(4, 6).join('') +
-                '-' +
-                hex.slice(6, 8).join('') +
-                '-' +
-                hex.slice(8, 10).join('') +
-                '-' +
-                hex.slice(10, 16).join('')
-              );
-            }
-
-            function debounce(fn, waitMs) {
-              let t = null;
-              return function (...args) {
-                window.clearTimeout(t);
-                t = window.setTimeout(() => fn.apply(this, args), waitMs);
-              };
-            }
-
-            function formatRelativeTime(ts) {
-              if (!ts) return '—';
-              const delta = Date.now() - ts;
-              const s = Math.floor(delta / 1000);
-              if (s < 10) return 'just now';
-              if (s < 60) return `${s}s ago`;
-              const m = Math.floor(s / 60);
-              if (m < 60) return `${m}m ago`;
-              const h = Math.floor(m / 60);
-              if (h < 24) return `${h}h ago`;
-              const d = Math.floor(h / 24);
-              if (d < 30) return `${d}d ago`;
-              return new Date(ts).toLocaleDateString();
-            }
-
-            function downloadText(filename, text, mime = 'application/json') {
-              const blob = new Blob([text], { type: mime });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = filename;
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-              URL.revokeObjectURL(url);
-            }
-
-            function parseResolution(res) {
-              const m = String(res || '').match(/^(\d+)x(\d+)$/);
-              if (!m) return { width: 1920, height: 1080 };
-              return { width: Number(m[1]), height: Number(m[2]) };
-            }
-
-            const lengthUnits = ['in', 'ft', 'mm', 'cm', 'm'];
-            const weightUnits = ['lb', 'kg'];
-
-            function inchesToUnit(inches, unit) {
-              switch (unit) {
-                case 'in':
-                  return inches;
-                case 'ft':
-                  return inches / 12;
-                case 'mm':
-                  return inches * 25.4;
-                case 'cm':
-                  return inches * 2.54;
-                case 'm':
-                  return inches * 0.0254;
-                default:
-                  return inches;
-              }
-            }
-
-            function unitToInches(value, unit) {
-              switch (unit) {
-                case 'in':
-                  return value;
-                case 'ft':
-                  return value * 12;
-                case 'mm':
-                  return value / 25.4;
-                case 'cm':
-                  return value / 2.54;
-                case 'm':
-                  return value / 0.0254;
-                default:
-                  return value;
-              }
-            }
-
-            function poundsToUnit(lb, unit) {
-              switch (unit) {
-                case 'lb':
-                  return lb;
-                case 'kg':
-                  return lb * 0.45359237;
-                default:
-                  return lb;
-              }
-            }
-
-            function unitToPounds(value, unit) {
-              switch (unit) {
-                case 'lb':
-                  return value;
-                case 'kg':
-                  return value / 0.45359237;
-                default:
-                  return value;
-              }
-            }
-
-            function formatLength(inches, unit, digits = 1) {
-              const v = inchesToUnit(inches, unit);
-              const fixed = unit === 'in' ? 0 : digits;
-              return `${Number.isFinite(v) ? v.toFixed(fixed) : '—'} ${unit}`;
-            }
-
-            function formatWeight(lb, unit, digits = 1) {
-              const v = poundsToUnit(lb, unit);
-              const fixed = unit === 'lb' ? 0 : digits;
-              return `${Number.isFinite(v) ? v.toFixed(fixed) : '—'} ${unit}`;
-            }
-
-            function formatDims(dimInches, lengthUnit) {
-              const l = inchesToUnit(dimInches.length, lengthUnit);
-              const w = inchesToUnit(dimInches.width, lengthUnit);
-              const h = inchesToUnit(dimInches.height, lengthUnit);
-              const fixed = lengthUnit === 'in' ? 0 : 1;
-              return `${l.toFixed(fixed)}×${w.toFixed(fixed)}×${h.toFixed(fixed)} ${lengthUnit}`;
-            }
-
-            function volumeInCubicInches(dimInches) {
-              const { length, width, height } = dimInches;
-              return Math.max(0, Number(length) * Number(width) * Number(height));
-            }
-
-            function formatVolume(dimInches, lengthUnit) {
-              const in3 = volumeInCubicInches(dimInches);
-              if (!Number.isFinite(in3)) return '—';
-              const isImperial = lengthUnit === 'in' || lengthUnit === 'ft';
-              if (isImperial) {
-                const ft3 = in3 / 1728;
-                return `${ft3.toFixed(1)} ft³`;
-              }
-              const m3 = in3 * Math.pow(0.0254, 3);
-              return `${m3.toFixed(3)} m³`;
-            }
-
-            function hasWebGL() {
-              try {
-                const canvas = document.createElement('canvas');
-                return Boolean(canvas.getContext('webgl') || canvas.getContext('experimental-webgl'));
-              } catch (_) {
-                return false;
-              }
-            }
-
             function cssHexToInt(hex) {
               const s = String(hex || '').trim();
               const m = s.match(/^#([0-9a-f]{6})$/i);
@@ -228,719 +44,88 @@ import { TrailerPresets } from './trailer-presets.js';
               return parseInt(m[1], 16);
             }
 
-            function getCssVar(name) {
-              return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-            }
-
             return {
               APP_VERSION,
-              clamp,
-              safeJsonParse,
-              deepClone,
-              sanitizeJSON,
-              uuid,
-              debounce,
-              formatRelativeTime,
-              downloadText,
-              parseResolution,
-              lengthUnits,
-              weightUnits,
-              inchesToUnit,
-              unitToInches,
-              poundsToUnit,
-              unitToPounds,
-              formatLength,
-              formatWeight,
-              formatDims,
-              volumeInCubicInches,
-              formatVolume,
-              hasWebGL,
+              ...CoreUtils,
+              ...BrowserUtils,
               cssHexToInt,
-              getCssVar,
             };
           })();
-
-          // ============================================================================
-          // SECTION: UI PRIMITIVES (MODAL / TOAST)
-          // ============================================================================
-          // ============================================================================
-          // SECTION: SYSTEM OVERLAY (MISSING DEPS / FATALS)
-          // ============================================================================
-          // Normalizer helper removed (unused). Keep utilities within modules if needed.
 
           // ============================================================================
           // SECTION: STATE STORE (UNDO/REDO)
           // ============================================================================
-          const StateStore = (() => {
-            const MAX_HISTORY = 50;
-            let state = null;
-            let history = [];
-            let historyPointer = -1;
-            const subscribers = [];
-
-            function historySlice(s) {
-              return Utils.deepClone({
-                caseLibrary: s.caseLibrary,
-                packLibrary: s.packLibrary,
-                preferences: s.preferences,
-              });
-            }
-
-            function initStateStore(initialState) {
-              state = Utils.deepClone(initialState);
-              history = [historySlice(state)];
-              historyPointer = 0;
-            }
-
-            function get(key) {
-              if (!state) return key ? undefined : null;
-              if (!key) return state;
-              return state[key];
-            }
-
-            function set(patch, options = {}) {
-              const next = { ...state, ...patch };
-              const significant = options.skipHistory ? false : isSignificantChange(patch);
-              state = next;
-              if (significant) pushHistory(historySlice(next));
-              if (!options.skipNotify) notify(patch, state);
-            }
-
-            function replace(nextState, options = {}) {
-              state = Utils.deepClone(nextState);
-              if (!options.skipHistory) pushHistory(historySlice(state));
-              notify({ _replace: true }, state);
-            }
-
-            function snapshotState() {
-              return Utils.deepClone(state);
-            }
-
-            function pushHistory(snapshot) {
-              history = history.slice(0, historyPointer + 1);
-              history.push(Utils.deepClone(snapshot));
-              if (history.length > MAX_HISTORY) history.shift();
-              historyPointer = history.length - 1;
-            }
-
-            function undo() {
-              if (historyPointer <= 0) return false;
-              historyPointer--;
-              state = { ...state, ...Utils.deepClone(history[historyPointer]) };
-              notify({ _undo: true }, state);
-              return true;
-            }
-
-            function redo() {
-              if (historyPointer >= history.length - 1) return false;
-              historyPointer++;
-              state = { ...state, ...Utils.deepClone(history[historyPointer]) };
-              notify({ _redo: true }, state);
-              return true;
-            }
-
-            function subscribe(fn) {
-              subscribers.push(fn);
-              return () => {
-                const idx = subscribers.indexOf(fn);
-                if (idx > -1) subscribers.splice(idx, 1);
-              };
-            }
-
-            function notify(changes, nextState) {
-              subscribers.forEach(fn => {
-                try {
-                  fn(changes, nextState);
-                } catch (err) {
-                  console.error('Subscriber error', err);
-                }
-              });
-            }
-
-            function isSignificantChange(patch) {
-              const keys = Object.keys(patch || {});
-              const significant = ['caseLibrary', 'packLibrary', 'preferences'];
-              return keys.some(k => significant.includes(k));
-            }
-
-            return {
-              init: initStateStore,
-              get,
-              set,
-              replace,
-              snapshot: snapshotState,
-              undo,
-              redo,
-              subscribe,
-            };
-          })();
+          const StateStore = {
+            init: CoreStateStore.init,
+            get: CoreStateStore.get,
+            set: CoreStateStore.set,
+            replace: CoreStateStore.replace,
+            snapshot: CoreStateStore.snapshot,
+            undo: CoreStateStore.undo,
+            redo: CoreStateStore.redo,
+            subscribe: CoreStateStore.subscribe,
+          };
 
           // ============================================================================
           // SECTION: PERSISTENCE (LOCALSTORAGE)
           // ============================================================================
-          const Storage = (() => {
-            const KEY = 'truckPacker3d:v1';
-            const saveDebounced = Utils.debounce(saveNow, 250);
+          function toAscii(msg) {
+            return String(msg || '')
+              .replace(/[^\x20-\x7E]+/g, '')
+              .trim();
+          }
 
-            function load() {
-              const raw = window.localStorage.getItem(KEY);
-              if (!raw) return null;
-              const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(raw, null));
-              if (!parsed || typeof parsed !== 'object') return null;
-              if (parsed.version !== APP_VERSION) {
-                // Soft-migrate: allow older versions if shape matches.
-                return parsed;
-              }
-              return parsed;
-            }
-
-            function saveSoon() {
-              saveDebounced();
-            }
-
-            function saveNow() {
-              try {
-                const state = StateStore.get();
-                const payload = {
-                  version: APP_VERSION,
-                  savedAt: Date.now(),
-                  caseLibrary: state.caseLibrary,
-                  packLibrary: state.packLibrary,
-                  preferences: state.preferences,
-                  currentPackId: state.currentPackId,
-                };
-                window.localStorage.setItem(KEY, JSON.stringify(payload));
-              } catch (err) {
-                console.error('Save failed', err);
-                UIComponents.showToast('Save failed: ' + err.message, 'error', { title: 'Storage' });
-              }
-            }
-
-            function clearAll() {
-              window.localStorage.removeItem(KEY);
-            }
-
-            function exportAppJSON() {
-              const state = StateStore.get();
-              const payload = {
-                app: 'Truck Packer 3D',
-                version: APP_VERSION,
-                exportedAt: Date.now(),
-                data: {
-                  caseLibrary: state.caseLibrary,
-                  packLibrary: state.packLibrary,
-                  preferences: state.preferences,
-                },
-              };
-              return JSON.stringify(payload, null, 2);
-            }
-
-            function importAppJSON(jsonText) {
-              const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
-              if (!parsed || typeof parsed !== 'object') throw new Error('Invalid JSON');
-              const data = parsed.data || parsed;
-              if (!data.caseLibrary || !data.packLibrary || !data.preferences) throw new Error('Missing required keys');
-              return {
-                caseLibrary: data.caseLibrary,
-                packLibrary: data.packLibrary,
-                preferences: data.preferences,
-              };
-            }
-
-            return { load, saveSoon, saveNow, clearAll, exportAppJSON, importAppJSON };
-          })();
+          const Storage = CoreStorage;
+          on('storage:save_error', p => {
+            UIComponents.showToast(
+              'Save failed: ' + toAscii(p && p.message),
+              'error',
+              { title: 'Storage' }
+            );
+          });
+          on('storage:load_error', p => {
+            UIComponents.showToast(
+              'Load failed: ' + toAscii(p && p.message),
+              'error',
+              { title: 'Storage' }
+            );
+          });
 
           // ============================================================================
           // SECTION: SESSION (LOCALSTORAGE)
           // ============================================================================
-          const SessionManager = (() => {
-            const KEY = 'truckPacker3d:session:v1';
-            let session = null;
-            const subscribers = [];
-            const LEGACY = { name: 'Agro Felix', email: 'agrofelixbraganca@gmail.com' };
-            const DEMO = { name: 'Demo User', email: 'info@pxl360.com' };
-
-            function defaultDemoSession() {
-              return {
-                user: { name: 'Demo User', email: 'info@pxl360.com' },
-                currentAccount: { type: 'personal', name: 'Personal Account', role: 'Owner' },
-              };
-            }
-
-            function defaultSignedOutSession() {
-              return {
-                user: { name: 'Guest', email: '' },
-                currentAccount: { type: 'personal', name: 'Personal Account', role: '' },
-              };
-            }
-
-            function notify() {
-              subscribers.forEach(fn => {
-                try {
-                  fn(session);
-                } catch (err) {
-                  console.error('[Session] subscriber error', err);
-                }
-              });
-            }
-
-            function load() {
-              try {
-                const raw = window.localStorage.getItem(KEY);
-                if (!raw) return null;
-                const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(raw, null));
-                return parsed && typeof parsed === 'object' ? parsed : null;
-              } catch {
-                return null;
-              }
-            }
-
-            function save(next) {
-              try {
-                window.localStorage.setItem(KEY, JSON.stringify(next));
-              } catch {
-                // ignore
-              }
-            }
-
-            function migrate(next) {
-              if (!next || typeof next !== 'object') return next;
-              next.user = next.user && typeof next.user === 'object' ? next.user : {};
-              const name = String(next.user.name || '');
-              const email = String(next.user.email || '');
-              if (name === LEGACY.name || email === LEGACY.email) {
-                next.user.name = DEMO.name;
-                next.user.email = DEMO.email;
-              }
-              return next;
-            }
-
-            function get() {
-              if (session) return session;
-              const stored = load();
-              session = migrate(stored || defaultDemoSession());
-              save(session);
-              return session;
-            }
-
-            function clear() {
-              try {
-                window.localStorage.removeItem(KEY);
-              } catch {
-                // ignore
-              }
-              session = defaultSignedOutSession();
-              notify();
-            }
-
-            function subscribe(fn) {
-              subscribers.push(fn);
-              return () => {
-                const idx = subscribers.indexOf(fn);
-                if (idx > -1) subscribers.splice(idx, 1);
-              };
-            }
-
-            return { get, clear, subscribe };
-          })();
+          const SessionManager = CoreSession;
+          on('session:error', p => {
+            UIComponents.showToast(
+              'Session error: ' + toAscii(p && p.message),
+              'error',
+              { title: 'Session' }
+            );
+          });
 
 	          // ============================================================================
 	          // SECTION: DEFAULTS (PREFERENCES)
 	          // ============================================================================
-	          const Defaults = (() => {
-	            const defaultPreferences = {
-	              packsViewMode: 'grid',
-	              casesViewMode: 'list',
-	              packsFiltersVisible: true,
-	              casesFiltersVisible: true,
-		              gridCardBadges: {
-		                packs: {
-		                  showCasesCount: true,
-		                  showTruckDims: true,
-		                  showThumbnail: true,
-		                  showShapeMode: true,
-		                  showPacked: true,
-		                  showVolume: true,
-		                  showWeight: true,
-		                  showEditedTime: true,
-		                },
-	                cases: {
-	                  showCategory: true,
-	                  showDims: true,
-	                  showVolume: true,
-	                  showWeight: true,
-	                  showFlip: true,
-	                  showEditedTime: true,
-	                },
-	              },
-	              units: { length: 'in', weight: 'lb' },
-	              theme: 'light',
-	              labelFontSize: 12,
-	              hiddenCaseOpacity: 0.3,
-	              snapping: { enabled: true, gridSize: 1 },
-              camera: { defaultView: 'perspective' },
-              export: { screenshotResolution: '1920x1080', pdfIncludeStats: true },
-              categories: [],
-            };
-
-            const categories = [
-              { key: 'all', name: 'All', color: '#9b9ba8' },
-              { key: 'audio', name: 'Audio', color: '#f59e0b' },
-              { key: 'lighting', name: 'Lighting', color: '#3b82f6' },
-              { key: 'stage', name: 'Stage', color: '#10b981' },
-              { key: 'backline', name: 'Backline', color: '#ec4899' },
-              { key: 'default', name: 'Default', color: '#9ca3af' },
-            ];
-
-            function seedCases() {
-              const now = Date.now();
-              return [
-                {
-                  id: Utils.uuid(),
-                  name: 'Line Array Case',
-                  manufacturer: 'L-Acoustics',
-                  category: 'audio',
-                  dimensions: { length: 48, width: 24, height: 32 },
-                  weight: 125,
-                  canFlip: false,
-                  notes: '',
-                  color: '#ff9f1c',
-                  createdAt: now,
-                  updatedAt: now,
-                },
-                {
-                  id: Utils.uuid(),
-                  name: 'Subwoofer Crate',
-                  manufacturer: 'JBL',
-                  category: 'audio',
-                  dimensions: { length: 36, width: 36, height: 24 },
-                  weight: 95,
-                  canFlip: true,
-                  notes: '',
-                  color: '#ff9f1c',
-                  createdAt: now,
-                  updatedAt: now,
-                },
-                {
-                  id: Utils.uuid(),
-                  name: 'Truss Section',
-                  manufacturer: 'Global Truss',
-                  category: 'lighting',
-                  dimensions: { length: 120, width: 12, height: 12 },
-                  weight: 45,
-                  canFlip: true,
-                  notes: '',
-                  color: '#3b82f6',
-                  createdAt: now,
-                  updatedAt: now,
-                },
-                {
-                  id: Utils.uuid(),
-                  name: 'Stage Deck',
-                  manufacturer: 'StagingCo',
-                  category: 'stage',
-                  dimensions: { length: 96, width: 48, height: 8 },
-                  weight: 80,
-                  canFlip: false,
-                  notes: '',
-                  color: '#10b981',
-                  createdAt: now,
-                  updatedAt: now,
-                },
-                {
-                  id: Utils.uuid(),
-                  name: 'Guitar Rack',
-                  manufacturer: 'Backline Inc',
-                  category: 'backline',
-                  dimensions: { length: 40, width: 22, height: 46 },
-                  weight: 110,
-                  canFlip: false,
-                  notes: '',
-                  color: '#ec4899',
-                  createdAt: now,
-                  updatedAt: now,
-                },
-              ];
-            }
-
-            function seedPack(caseLibrary) {
-              const now = Date.now();
-              const pick = name => caseLibrary.find(c => c.name === name)?.id;
-              const packId = Utils.uuid();
-              const instances = [];
-              const add = (caseId, x, y, z) => {
-                instances.push({
-                  id: Utils.uuid(),
-                  caseId,
-                  transform: { position: { x, y, z }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
-                  hidden: false,
-                  groupId: null,
-                });
-              };
-              add(pick('Line Array Case'), -80, 16, 0);
-              add(pick('Subwoofer Crate'), -90, 12, 28);
-              add(pick('Truss Section'), -70, 6, -24);
-
+            const Defaults = (() => {
               return {
-                id: packId,
-                title: 'Demo Pack',
-                client: 'Example Client',
-                projectName: 'Envato Preview',
-                drawnBy: 'Truck Packer 3D',
-                notes: 'Tip: Use AutoPack (Ctrl/Cmd+P) to fill the truck.',
-                truck: { length: 636, width: 102, height: 98 },
-                cases: instances.filter(i => Boolean(i.caseId)),
-                groups: [],
-                stats: { totalCases: instances.length, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
-                createdAt: now,
-                lastEdited: now,
+                defaultPreferences: CoreDefaults.defaultPreferences,
+                categories: CoreDefaults.categories,
+                seedCases: CoreDefaults.seedCases,
+                seedPack: CoreDefaults.seedPack,
               };
-            }
-
-            return { defaultPreferences, categories, seedCases, seedPack };
-          })();
+            })();
 
           const Normalizer = (() => {
-            const DEFAULT_TRUCK = { length: 636, width: 102, height: 98 };
-
-            function finiteNumber(value, fallback) {
-              const n = Number(value);
-              return Number.isFinite(n) ? n : fallback;
+            function normalizeAppDataWithStats(data) {
+              const normalized = CoreNormalizer.normalizeAppData(data);
+              const packsWithStats = (normalized.packLibrary || []).map(p => ({
+                ...p,
+                stats: PackLibrary.computeStats(p, normalized.caseLibrary),
+              }));
+              return { ...normalized, packLibrary: packsWithStats };
             }
 
-            function positiveNumber(value, fallback) {
-              const n = finiteNumber(value, fallback);
-              return n > 0 ? n : fallback;
-            }
-
-            function safeString(value, fallback = '') {
-              const s = value == null ? '' : String(value);
-              const t = s.trim();
-              return t || fallback;
-            }
-
-	            function normalizePreferences(prefs) {
-	              const base = Utils.deepClone(Defaults.defaultPreferences);
-	              const next = { ...base, ...(prefs && typeof prefs === 'object' ? prefs : {}) };
-	              next.packsViewMode = next.packsViewMode === 'list' ? 'list' : 'grid';
-	              next.casesViewMode = next.casesViewMode === 'grid' ? 'grid' : 'list';
-	              next.packsFiltersVisible = next.packsFiltersVisible !== false;
-	              next.casesFiltersVisible = next.casesFiltersVisible !== false;
-	              const baseBadges = base.gridCardBadges || {};
-	              const inBadges = next.gridCardBadges && typeof next.gridCardBadges === 'object' ? next.gridCardBadges : {};
-	              const inPacks = inBadges.packs && typeof inBadges.packs === 'object' ? inBadges.packs : {};
-	              const inCases = inBadges.cases && typeof inBadges.cases === 'object' ? inBadges.cases : {};
-	              const basePacks = baseBadges.packs && typeof baseBadges.packs === 'object' ? baseBadges.packs : {};
-	              const baseCases = baseBadges.cases && typeof baseBadges.cases === 'object' ? baseBadges.cases : {};
-	              next.gridCardBadges = {
-	                packs: {
-	                  ...basePacks,
-	                  ...inPacks,
-	                },
-	                cases: {
-	                  ...baseCases,
-	                  ...inCases,
-	                },
-	              };
-		              const hasLegacyStatLine = Object.prototype.hasOwnProperty.call(inPacks, 'showPackedStatLine');
-		              const hasNewPacked = Object.prototype.hasOwnProperty.call(inPacks, 'showPacked');
-		              const hasNewVolume = Object.prototype.hasOwnProperty.call(inPacks, 'showVolume');
-		              const hasNewWeight = Object.prototype.hasOwnProperty.call(inPacks, 'showWeight');
-		              const hasLegacyTrailerMode = Object.prototype.hasOwnProperty.call(inPacks, 'showTrailerMode');
-		              const hasShapeMode = Object.prototype.hasOwnProperty.call(inPacks, 'showShapeMode');
-		              if (hasLegacyStatLine && !hasNewPacked && !hasNewVolume && !hasNewWeight) {
-		                const legacy = inPacks.showPackedStatLine !== false;
-		                next.gridCardBadges.packs.showPacked = legacy;
-		                next.gridCardBadges.packs.showVolume = legacy;
-		                next.gridCardBadges.packs.showWeight = legacy;
-		              }
-		              if (hasLegacyTrailerMode && !hasShapeMode) {
-		                next.gridCardBadges.packs.showShapeMode = inPacks.showTrailerMode !== false;
-		              }
-		              next.gridCardBadges.packs.showCasesCount = next.gridCardBadges.packs.showCasesCount !== false;
-		              next.gridCardBadges.packs.showTruckDims = next.gridCardBadges.packs.showTruckDims !== false;
-		              next.gridCardBadges.packs.showThumbnail = next.gridCardBadges.packs.showThumbnail !== false;
-		              next.gridCardBadges.packs.showShapeMode = next.gridCardBadges.packs.showShapeMode !== false;
-		              next.gridCardBadges.packs.showPacked = next.gridCardBadges.packs.showPacked !== false;
-		              next.gridCardBadges.packs.showVolume = next.gridCardBadges.packs.showVolume !== false;
-		              next.gridCardBadges.packs.showWeight = next.gridCardBadges.packs.showWeight !== false;
-		              next.gridCardBadges.packs.showEditedTime = next.gridCardBadges.packs.showEditedTime !== false;
-	              next.gridCardBadges.cases.showCategory = next.gridCardBadges.cases.showCategory !== false;
-	              next.gridCardBadges.cases.showDims = next.gridCardBadges.cases.showDims !== false;
-	              next.gridCardBadges.cases.showVolume = next.gridCardBadges.cases.showVolume !== false;
-	              next.gridCardBadges.cases.showWeight = next.gridCardBadges.cases.showWeight !== false;
-	              next.gridCardBadges.cases.showFlip = next.gridCardBadges.cases.showFlip !== false;
-	              next.gridCardBadges.cases.showEditedTime = next.gridCardBadges.cases.showEditedTime !== false;
-	              next.units = next.units && typeof next.units === 'object' ? next.units : base.units;
-	              next.units.length = Utils.lengthUnits.includes(next.units.length) ? next.units.length : base.units.length;
-	              next.units.weight = Utils.weightUnits.includes(next.units.weight) ? next.units.weight : base.units.weight;
-	              next.theme = next.theme === 'dark' ? 'dark' : 'light';
-	              next.labelFontSize = Utils.clamp(finiteNumber(next.labelFontSize, base.labelFontSize), 8, 24);
-              next.hiddenCaseOpacity = Utils.clamp(finiteNumber(next.hiddenCaseOpacity, base.hiddenCaseOpacity), 0, 1);
-              next.snapping = next.snapping && typeof next.snapping === 'object' ? next.snapping : base.snapping;
-              next.snapping.enabled = Boolean(next.snapping.enabled);
-              next.snapping.gridSize = Math.max(0.25, finiteNumber(next.snapping.gridSize, base.snapping.gridSize));
-              next.camera = next.camera && typeof next.camera === 'object' ? next.camera : base.camera;
-              next.camera.defaultView = next.camera.defaultView === 'orthographic' ? 'orthographic' : 'perspective';
-              next.export = next.export && typeof next.export === 'object' ? next.export : base.export;
-              next.export.screenshotResolution = safeString(
-                next.export.screenshotResolution,
-                base.export.screenshotResolution
-              );
-              next.export.pdfIncludeStats = Boolean(next.export.pdfIncludeStats);
-              const normalizeCatKey = key =>
-                String(key || '')
-                  .trim()
-                  .toLowerCase();
-              const prefCats = Array.isArray(next.categories) ? next.categories : base.categories;
-              next.categories = (prefCats || [])
-                .map(c => ({
-                  key: normalizeCatKey(c.key || c.name),
-                  name: safeString(c.name, c.key || ''),
-                  color: safeString(c.color, ''),
-                }))
-                .filter(c => c.key);
-              if (!next.categories.length) {
-                next.categories = (Defaults.categories || [])
-                  .filter(c => c.key !== 'all')
-                  .map(c => ({ key: c.key, name: c.name, color: c.color }));
-              }
-              return next;
-            }
-
-            function normalizeCase(c, now) {
-              const createdAt = finiteNumber(c && c.createdAt, now);
-              const updatedAt = finiteNumber(c && c.updatedAt, now);
-              const dims = c && c.dimensions && typeof c.dimensions === 'object' ? c.dimensions : {};
-              const length = positiveNumber(dims.length, 48);
-              const width = positiveNumber(dims.width, 24);
-              const height = positiveNumber(dims.height, 24);
-              const category = safeString(c && c.category, 'default').toLowerCase();
-              const color = safeString(c && c.color, CategoryService.meta(category).color);
-              return {
-                id: safeString(c && c.id, Utils.uuid()),
-                name: safeString(c && c.name, 'Unnamed Case'),
-                manufacturer: safeString(c && c.manufacturer, ''),
-                category,
-                dimensions: { length, width, height },
-                weight: Math.max(0, finiteNumber(c && c.weight, 0)),
-                volume: Utils.volumeInCubicInches({ length, width, height }),
-                canFlip: Boolean(c && c.canFlip),
-                notes: safeString(c && c.notes, ''),
-                color,
-                createdAt,
-                updatedAt,
-              };
-            }
-
-	            function normalizeTruck(truck) {
-	              const t = truck && typeof truck === 'object' ? truck : {};
-	              const mode = t.shapeMode === 'wheelWells' || t.shapeMode === 'frontBonus' || t.shapeMode === 'rect' ? t.shapeMode : 'rect';
-	              const shapeConfig =
-	                t.shapeConfig && typeof t.shapeConfig === 'object' && !Array.isArray(t.shapeConfig) ? t.shapeConfig : {};
-	              return {
-	                length: positiveNumber(t.length, DEFAULT_TRUCK.length),
-	                width: positiveNumber(t.width, DEFAULT_TRUCK.width),
-	                height: positiveNumber(t.height, DEFAULT_TRUCK.height),
-	                shapeMode: mode,
-	                shapeConfig,
-	              };
-	            }
-
-            function normalizeInstance(inst, caseMap) {
-              const transform = inst && inst.transform && typeof inst.transform === 'object' ? inst.transform : {};
-              const pos = transform.position && typeof transform.position === 'object' ? transform.position : {};
-              const rot =
-                transform.rotation && typeof transform.rotation === 'object'
-                  ? transform.rotation
-                  : { x: 0, y: 0, z: 0 };
-              const scale =
-                transform.scale && typeof transform.scale === 'object' ? transform.scale : { x: 1, y: 1, z: 1 };
-              const caseId = safeString(inst && inst.caseId, '');
-              const caseData = caseMap.get(caseId) || null;
-              const halfY = caseData ? Math.max(1, (caseData.dimensions.height || 1) / 2) : 10;
-
-              return {
-                id: safeString(inst && inst.id, Utils.uuid()),
-                caseId,
-                transform: {
-                  position: {
-                    x: finiteNumber(pos.x, -80),
-                    y: finiteNumber(pos.y, halfY),
-                    z: finiteNumber(pos.z, 0),
-                  },
-                  rotation: {
-                    x: finiteNumber(rot.x, 0),
-                    y: finiteNumber(rot.y, 0),
-                    z: finiteNumber(rot.z, 0),
-                  },
-                  scale: {
-                    x: finiteNumber(scale.x, 1),
-                    y: finiteNumber(scale.y, 1),
-                    z: finiteNumber(scale.z, 1),
-                  },
-                },
-                hidden: Boolean(inst && inst.hidden),
-                groupId: inst && inst.groupId != null ? inst.groupId : null,
-              };
-            }
-
-            function normalizePack(p, caseMap, now) {
-              const truck = normalizeTruck(p && p.truck);
-              const rawCases = Array.isArray(p && p.cases) ? p.cases : [];
-              const instances = rawCases.map(i => normalizeInstance(i, caseMap)).filter(i => Boolean(i.caseId));
-              const thumbnail = typeof (p && p.thumbnail) === 'string' ? p.thumbnail : null;
-              const thumbnailUpdatedAt = Number.isFinite(p && p.thumbnailUpdatedAt) ? p.thumbnailUpdatedAt : null;
-              const thumbnailSource =
-                p && (p.thumbnailSource === 'auto' || p.thumbnailSource === 'manual') ? p.thumbnailSource : null;
-              const pack = {
-                id: safeString(p && p.id, Utils.uuid()),
-                title: safeString(p && p.title, 'Untitled Pack'),
-                client: safeString(p && p.client, ''),
-                projectName: safeString(p && p.projectName, ''),
-                drawnBy: safeString(p && p.drawnBy, ''),
-                notes: safeString(p && p.notes, ''),
-                truck,
-                cases: instances,
-                groups: Array.isArray(p && p.groups) ? p.groups : [],
-                stats: { totalCases: 0, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
-                createdAt: finiteNumber(p && p.createdAt, now),
-                lastEdited: finiteNumber(p && p.lastEdited, now),
-                thumbnail,
-                thumbnailUpdatedAt,
-                thumbnailSource,
-              };
-              pack.stats = PackLibrary.computeStats(pack, Array.from(caseMap.values()));
-              return pack;
-            }
-
-            function normalizeAppData(data) {
-              const now = Date.now();
-              const rawCases = Array.isArray(data && data.caseLibrary) ? data.caseLibrary : [];
-              const cases = rawCases.map(c => normalizeCase(c, now));
-
-              // Deduplicate case ids if needed
-              const seenCaseIds = new Set();
-              cases.forEach(c => {
-                if (!seenCaseIds.has(c.id)) {
-                  seenCaseIds.add(c.id);
-                  return;
-                }
-                c.id = Utils.uuid();
-              });
-              const caseMap = new Map(cases.map(c => [c.id, c]));
-
-              const rawPacks = Array.isArray(data && data.packLibrary) ? data.packLibrary : [];
-              const packs = rawPacks.map(p => normalizePack(p, caseMap, now));
-
-              const prefs = normalizePreferences(data && data.preferences);
-              const currentPackId = safeString(data && data.currentPackId, '');
-              const current = packs.some(p => p.id === currentPackId) ? currentPackId : packs[0] ? packs[0].id : null;
-
-              return { caseLibrary: cases, packLibrary: packs, preferences: prefs, currentPackId: current };
-            }
-
-            return { normalizeAppData };
+            return { ...CoreNormalizer, normalizeAppData: normalizeAppDataWithStats };
           })();
 
           window.Normalizer = Normalizer;
@@ -1701,6 +886,19 @@ import { TrailerPresets } from './trailer-presets.js';
             return { meta, listWithCounts, upsert, remove, rename, all };
           })();
 
+            function applyCaseDefaultColor(caseObj) {
+              const next = { ...(caseObj || {}) };
+              const existing = String(next.color || '').trim();
+              if (existing) return next;
+              const key = String(next.category || 'default')
+                .trim()
+                .toLowerCase() || 'default';
+              const cats = Defaults.categories || [];
+              const found = cats.find(c => c.key === key) || cats.find(c => c.key === 'default');
+              next.color = (found && found.color) || '#9ca3af';
+              return next;
+            }
+
 	          // ============================================================================
 	          // SECTION: DOMAIN DATA (CASES)
 	          // ============================================================================
@@ -1717,7 +915,7 @@ import { TrailerPresets } from './trailer-presets.js';
               const now = Date.now();
               const cases = getCases();
               const idx = cases.findIndex(c => c.id === caseData.id);
-              const next = { ...caseData };
+	            let next = applyCaseDefaultColor({ ...caseData });
               next.updatedAt = now;
               if (!next.createdAt) next.createdAt = now;
               next.dimensions = {
@@ -3611,12 +2809,13 @@ import { TrailerPresets } from './trailer-presets.js';
                   caseIdMap.set(c.id, caseByName.get(nameKey).id);
                   return;
                 }
-                const copy = Utils.deepClone(c);
+	            let copy = Utils.deepClone(c);
                 copy.createdAt = copy.createdAt || now;
                 copy.updatedAt = now;
-                copy.volume =
-                  copy.volume || Utils.volumeInCubicInches(copy.dimensions || { length: 0, width: 0, height: 0 });
-                nextCases.push(copy);
+	            copy = applyCaseDefaultColor(copy);
+	            copy.volume =
+	              copy.volume || Utils.volumeInCubicInches(copy.dimensions || { length: 0, width: 0, height: 0 });
+	            nextCases.push(copy);
                 caseById.set(copy.id, copy);
                 if (nameKey) caseByName.set(nameKey, copy);
                 caseIdMap.set(c.id, copy.id);
@@ -5064,8 +4263,7 @@ import { TrailerPresets } from './trailer-presets.js';
                   .toLowerCase();
                 if (!nameKey || existingNames.has(nameKey)) return;
                 existingNames.add(nameKey);
-                const meta = CategoryService.meta(r.category || 'default');
-                next.push({
+	            const record = applyCaseDefaultColor({
                   id: Utils.uuid(),
                   name: String(r.name || '').trim(),
                   manufacturer: String(r.manufacturer || '').trim(),
@@ -5082,10 +4280,11 @@ import { TrailerPresets } from './trailer-presets.js';
                   }),
                   canFlip: Boolean(r.canFlip),
                   notes: String(r.notes || '').trim(),
-                  color: normalizeHex(r.color) || normalizeHex(meta.color) || '#ff9f1c',
+	              color: normalizeHex(r.color),
                   createdAt: now,
                   updatedAt: now,
-                });
+	            });
+	            next.push(record);
                 added++;
               });
               StateStore.set({ caseLibrary: next });
@@ -8208,9 +7407,10 @@ import { TrailerPresets } from './trailer-presets.js';
                 try {
                   const imported = Storage.importAppJSON(text);
                   const prev = StateStore.get();
+                  const importedCases = (imported.caseLibrary || []).map(applyCaseDefaultColor);
                   const nextState = {
                     ...prev,
-                    caseLibrary: imported.caseLibrary,
+                    caseLibrary: importedCases,
                     packLibrary: imported.packLibrary,
                     preferences: imported.preferences,
                     currentPackId: null,
@@ -8252,11 +7452,12 @@ import { TrailerPresets } from './trailer-presets.js';
           function seedIfEmpty() {
             const stored = Storage.load();
             if (stored && stored.caseLibrary && stored.packLibrary && stored.preferences) {
+              const storedCases = (stored.caseLibrary || []).map(applyCaseDefaultColor);
               const initialState = {
                 currentScreen: 'packs',
                 currentPackId: stored.currentPackId || null,
                 selectedInstanceIds: [],
-                caseLibrary: stored.caseLibrary,
+                caseLibrary: storedCases,
                 packLibrary: stored.packLibrary,
                 preferences: stored.preferences,
               };

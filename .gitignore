@@ -33,6 +33,8 @@ dist/
 build/
 *.min.js
 *.min.css
+!vendor/*.min.js
+# ^ Exception: Keep vendor files for offline fallback
 
 # Temporary files
 *.tmp

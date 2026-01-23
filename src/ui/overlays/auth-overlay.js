@@ -21,7 +21,6 @@
 export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey } = {}) {
   let overlayEl = null;
   let modalEl = null;
-  let badgeEl = null;
   let isOpen = false;
   let busy = false;
   let inFlight = false;
@@ -114,33 +113,6 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
 
     overlayEl.appendChild(modalEl);
     modalRoot.appendChild(overlayEl);
-
-    badgeEl = document.createElement('button');
-    badgeEl.type = 'button';
-    badgeEl.className = 'btn btn-ghost';
-    badgeEl.setAttribute('data-auth-signout', '1');
-    badgeEl.style.position = 'fixed';
-    badgeEl.style.top = '12px';
-    badgeEl.style.right = '12px';
-    badgeEl.style.zIndex = '99998';
-    badgeEl.style.display = 'none';
-    badgeEl.style.padding = '8px 10px';
-    badgeEl.style.maxWidth = 'calc(100vw - 24px)';
-    badgeEl.style.whiteSpace = 'nowrap';
-    badgeEl.style.overflow = 'hidden';
-    badgeEl.style.textOverflow = 'ellipsis';
-    badgeEl.innerHTML = '<i class="fa-solid fa-right-from-bracket"></i> Sign out';
-    badgeEl.addEventListener('click', async () => {
-      try {
-        badgeEl.disabled = true;
-        await SupabaseClient.signOut();
-      } catch {
-        // App-level auth listener will handle messaging.
-      } finally {
-        badgeEl.disabled = false;
-      }
-    });
-    modalRoot.appendChild(badgeEl);
   }
 
   function setBusy(next) {
@@ -290,31 +262,6 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       info.style.marginBottom = '12px';
       info.textContent = `Signed in as ${toAscii(signedInEmail)}`;
       body.appendChild(info);
-
-      const row = document.createElement('div');
-      row.style.display = 'flex';
-      row.style.justifyContent = 'flex-end';
-      row.style.gap = '10px';
-
-      const signOutBtn = document.createElement('button');
-      signOutBtn.className = 'btn btn-ghost';
-      signOutBtn.type = 'button';
-      signOutBtn.textContent = 'Sign out';
-      signOutBtn.addEventListener('click', async () => {
-        setInlineError('');
-        try {
-          setBusy(true);
-          await SupabaseClient.signOut();
-        } catch (err) {
-          const msg = toAscii((err && err.message) || 'Sign out failed');
-          setInlineError(msg);
-        } finally {
-          setBusy(false);
-        }
-      });
-
-      row.appendChild(signOutBtn);
-      body.appendChild(row);
     } else {
       const hint = document.createElement('div');
       hint.className = 'muted';
@@ -628,7 +575,6 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     }
     isOpen = true;
     overlayEl.style.display = 'flex';
-    if (badgeEl) badgeEl.style.display = 'none';
     installKeydownBlocker();
     try {
       document.body.style.overflow = 'hidden';
@@ -649,18 +595,6 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     if (!isOpen) return;
     isOpen = false;
     overlayEl.style.display = 'none';
-    const user = (() => {
-      try {
-        return SupabaseClient && SupabaseClient.getUser ? SupabaseClient.getUser() : null;
-      } catch {
-        return null;
-      }
-    })();
-    if (badgeEl) {
-      badgeEl.style.display = user ? 'inline-flex' : 'none';
-      if (user && user.email) badgeEl.title = `Signed in as ${toAscii(user.email)}`;
-      else badgeEl.title = '';
-    }
     removeKeydownBlocker();
     try {
       document.body.style.overflow = '';

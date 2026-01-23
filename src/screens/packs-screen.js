@@ -510,22 +510,22 @@ export function createPacksScreen({
               syncFooterState(pageMeta);
             }
 
-            function renderListView(packs) {
-              const prefs = PreferencesManager.get();
-              const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.packs) || {};
-              applyListColumnVisibility(prefs);
-              packs.forEach(pack => {
-                const tr = document.createElement('tr');
-                const isSelected = selectedIds.has(pack.id);
-                if (isSelected) tr.classList.add('selected');
-
-                const tdCheck = document.createElement('td');
-                tdCheck.style.textAlign = 'center';
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.checked = isSelected;
-                checkbox.setAttribute('aria-label', `Select ${pack.title || 'Untitled Pack'}`);
-                checkbox.addEventListener('click', ev => ev.stopPropagation());
+	            function renderListView(packs) {
+	              const prefs = PreferencesManager.get();
+	              const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.packs) || {};
+	              applyListColumnVisibility(prefs);
+	              packs.forEach(pack => {
+	                const tr = document.createElement('tr');
+	                const isSelected = selectedIds.has(pack.id);
+	                if (isSelected) tr.classList.add('selected');
+	
+	                const tdCheck = document.createElement('td');
+	                tdCheck.classList.add('tp3d-packs-td-check-center');
+	                const checkbox = document.createElement('input');
+	                checkbox.type = 'checkbox';
+	                checkbox.checked = isSelected;
+	                checkbox.setAttribute('aria-label', `Select ${pack.title || 'Untitled Pack'}`);
+	                checkbox.addEventListener('click', ev => ev.stopPropagation());
                 checkbox.addEventListener('change', () => {
                   if (checkbox.checked) {
                     selectedIds.add(pack.id);
@@ -537,15 +537,14 @@ export function createPacksScreen({
                   syncFooterState();
                 });
                 tdCheck.appendChild(checkbox);
-
-                const tdTitle = document.createElement('td');
-                const titleWrap = document.createElement('div');
-                titleWrap.style.display = 'grid';
-                titleWrap.style.gap = '4px';
-
-                const title = document.createElement('div');
-                title.textContent = pack.title || 'Untitled Pack';
-                titleWrap.appendChild(title);
+	
+	                const tdTitle = document.createElement('td');
+	                const titleWrap = document.createElement('div');
+	                titleWrap.classList.add('tp3d-packs-titlewrap');
+	
+	                const title = document.createElement('div');
+	                title.textContent = pack.title || 'Untitled Pack';
+	                titleWrap.appendChild(title);
 
                 const stats = PackLibrary.computeStats(pack);
                 const truckLabel = formatTruckDims(pack.truck || {}, prefs.units.length);
@@ -692,22 +691,14 @@ export function createPacksScreen({
 
                 const preview = buildPreview(pack);
 
-                const title = document.createElement('h3');
-                title.textContent = pack.title || 'Untitled Pack';
-                title.title = pack.title || 'Untitled Pack';
-                title.style.margin = '0';
-                title.style.flex = '1';
-                title.style.minWidth = '0';
-                title.style.whiteSpace = 'nowrap';
-                title.style.overflow = 'hidden';
-                title.style.textOverflow = 'ellipsis';
-
-                const head = document.createElement('div');
-                head.className = 'card-head';
-                head.style.display = 'flex';
-                head.style.alignItems = 'center';
-                head.style.gap = 'var(--space-3)';
-                head.style.marginBottom = 'var(--space-2)';
+	                const title = document.createElement('h3');
+	                title.textContent = pack.title || 'Untitled Pack';
+	                title.title = pack.title || 'Untitled Pack';
+	                title.classList.add('tp3d-packs-card-title-truncate');
+	
+	                const head = document.createElement('div');
+	                head.className = 'card-head';
+	                head.classList.add('tp3d-packs-card-head');
 
                 const meta = document.createElement('div');
                 meta.className = 'pack-meta';
@@ -814,14 +805,11 @@ export function createPacksScreen({
                   ]);
                 });
 
-	                const actions = document.createElement('div');
-	                actions.className = 'card-head-actions';
-	                actions.style.display = 'flex';
-	                actions.style.alignItems = 'center';
-	                actions.style.gap = 'var(--space-1)';
-	                actions.style.marginLeft = 'auto';
-	                actions.appendChild(selectCb);
-	                actions.appendChild(kebabBtn);
+		                const actions = document.createElement('div');
+		                actions.className = 'card-head-actions';
+		                actions.classList.add('tp3d-packs-card-head-actions');
+		                actions.appendChild(selectCb);
+		                actions.appendChild(kebabBtn);
 
 	                head.appendChild(title);
 	                head.appendChild(actions);
@@ -881,19 +869,16 @@ export function createPacksScreen({
               AppShell.navigate('editor');
             }
 
-            function openNewPackModal() {
-              const content = document.createElement('div');
-              content.style.display = 'grid';
-              content.style.gap = '10px';
-              content.style.gridTemplateColumns = 'repeat(auto-fit, minmax(220px, 1fr))';
-              content.style.alignItems = 'flex-start';
-
-              const title = field('Title (required)', 'text', 'Summer Festival Tour', true);
-              const client = field('Client (optional)', 'text', 'Live Nation', false);
-              const projectName = field('Project name (optional)', 'text', 'Coachella 2024', false);
-              const drawnBy = field('Drawn by (optional)', 'text', 'John Smith', false);
-              const notes = textareaField('Notes (optional)', 'Add notes for this pack...');
-              title.wrap.style.gridColumn = '1 / -1';
+	            function openNewPackModal() {
+	              const content = document.createElement('div');
+	              content.classList.add('tp3d-packs-modal-grid');
+	
+	              const title = field('Title (required)', 'text', 'Summer Festival Tour', true);
+	              const client = field('Client (optional)', 'text', 'Live Nation', false);
+	              const projectName = field('Project name (optional)', 'text', 'Coachella 2024', false);
+	              const drawnBy = field('Drawn by (optional)', 'text', 'John Smith', false);
+	              const notes = textareaField('Notes (optional)', 'Add notes for this pack...');
+	              title.wrap.classList.add('tp3d-grid-span-full');
 
               const presets = TrailerPresets.getAll();
               const hasPresets = Array.isArray(presets) && presets.length > 0;
@@ -930,24 +915,24 @@ export function createPacksScreen({
 	                <option value="wheelWells">Box + Wheel Wells</option>
 	                <option value="frontBonus">Box + Front Overhang</option>
 	              `;
-	              modeSelect.value = 'rect';
-	              modeWrap.appendChild(modeLabel);
-	              modeWrap.appendChild(modeSelect);
-	              modeWrap.style.gridColumn = '1 / -1';
-
-	              const truckGrid = document.createElement('div');
-	              truckGrid.className = 'row';
-	              truckGrid.style.gap = '12px';
-	              truckGrid.style.gridColumn = '1 / -1';
-	              const tL = field('Truck length (in)', 'number', '636', true);
-	              const tW = field('Truck width (in)', 'number', '102', true);
-              const tH = field('Truck height (in)', 'number', '98', true);
-              tL.wrap.style.flex = '1';
-              tW.wrap.style.flex = '1';
-              tH.wrap.style.flex = '1';
-              truckGrid.appendChild(tL.wrap);
-              truckGrid.appendChild(tW.wrap);
-              truckGrid.appendChild(tH.wrap);
+		              modeSelect.value = 'rect';
+		              modeWrap.appendChild(modeLabel);
+		              modeWrap.appendChild(modeSelect);
+		              modeWrap.classList.add('tp3d-grid-span-full');
+	
+		              const truckGrid = document.createElement('div');
+		              truckGrid.className = 'row';
+		              truckGrid.classList.add('tp3d-packs-truck-grid');
+		              truckGrid.classList.add('tp3d-grid-span-full');
+		              const tL = field('Truck length (in)', 'number', '636', true);
+		              const tW = field('Truck width (in)', 'number', '102', true);
+	              const tH = field('Truck height (in)', 'number', '98', true);
+	              tL.wrap.classList.add('tp3d-flex-1');
+	              tW.wrap.classList.add('tp3d-flex-1');
+	              tH.wrap.classList.add('tp3d-flex-1');
+	              truckGrid.appendChild(tL.wrap);
+	              truckGrid.appendChild(tW.wrap);
+	              truckGrid.appendChild(tH.wrap);
 
               presetSelect.addEventListener('change', () => {
                 const selectedId = String(presetSelect.value || '');
@@ -1016,15 +1001,12 @@ export function createPacksScreen({
               const pack = PackLibrary.getById(packId);
               if (!pack) return;
 
-              const content = document.createElement('div');
-              content.style.display = 'grid';
-              content.style.gap = '10px';
-              content.style.gridTemplateColumns = 'repeat(auto-fit, minmax(220px, 1fr))';
-              content.style.alignItems = 'flex-start';
+	              const content = document.createElement('div');
+	              content.classList.add('tp3d-packs-modal-grid');
 
-              const title = field('Title (required)', 'text', '', true);
-              title.input.value = pack.title || '';
-              title.wrap.style.gridColumn = '1 / -1';
+	              const title = field('Title (required)', 'text', '', true);
+	              title.input.value = pack.title || '';
+	              title.wrap.classList.add('tp3d-grid-span-full');
 
               const client = field('Client (optional)', 'text', '', false);
               client.input.value = pack.client || '';
@@ -1065,7 +1047,7 @@ export function createPacksScreen({
               modeLabel.className = 'label';
               modeLabel.textContent = 'Trailer Shape Mode';
               const modeSelect = document.createElement('select');
-              modeSelect.className = 'select';
+	              modeSelect.className = 'select';
               modeSelect.innerHTML = `
                 <option value="rect">Standard</option>
                 <option value="wheelWells">Box + Wheel Wells</option>
@@ -1075,20 +1057,20 @@ export function createPacksScreen({
                 pack && pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
                   ? pack.truck.shapeMode
                   : 'rect';
-              modeWrap.appendChild(modeLabel);
-              modeWrap.appendChild(modeSelect);
-              modeWrap.style.gridColumn = '1 / -1';
+	              modeWrap.appendChild(modeLabel);
+	              modeWrap.appendChild(modeSelect);
+	              modeWrap.classList.add('tp3d-grid-span-full');
 
-              const truckGrid = document.createElement('div');
-              truckGrid.className = 'row';
-              truckGrid.style.gap = '12px';
-              truckGrid.style.gridColumn = '1 / -1';
-              const tL = field('Truck length (in)', 'number', '', true);
-              const tW = field('Truck width (in)', 'number', '', true);
-              const tH = field('Truck height (in)', 'number', '', true);
-              tL.wrap.style.flex = '1';
-              tW.wrap.style.flex = '1';
-              tH.wrap.style.flex = '1';
+	              const truckGrid = document.createElement('div');
+	              truckGrid.className = 'row';
+	              truckGrid.classList.add('tp3d-packs-truck-grid');
+	              truckGrid.classList.add('tp3d-grid-span-full');
+	              const tL = field('Truck length (in)', 'number', '', true);
+	              const tW = field('Truck width (in)', 'number', '', true);
+	              const tH = field('Truck height (in)', 'number', '', true);
+	              tL.wrap.classList.add('tp3d-flex-1');
+	              tW.wrap.classList.add('tp3d-flex-1');
+	              tH.wrap.classList.add('tp3d-flex-1');
               tL.input.value = String((pack.truck && pack.truck.length) || 636);
               tW.input.value = String((pack.truck && pack.truck.width) || 102);
               tH.input.value = String((pack.truck && pack.truck.height) || 98);
@@ -1266,22 +1248,22 @@ export function createPacksScreen({
               return { wrap, input };
             }
 
-            function textareaField(label, placeholder) {
-              const wrap = document.createElement('div');
-              wrap.className = 'field';
-              wrap.style.gridColumn = '1 / -1';
-              const l = document.createElement('div');
-              l.className = 'label';
-              l.textContent = label;
-              const textarea = document.createElement('textarea');
-              textarea.className = 'input';
-              textarea.rows = 3;
-              textarea.placeholder = placeholder || '';
-              textarea.style.minHeight = '48px';
-              wrap.appendChild(l);
-              wrap.appendChild(textarea);
-              return { wrap, textarea };
-            }
+	            function textareaField(label, placeholder) {
+	              const wrap = document.createElement('div');
+	              wrap.className = 'field';
+	              wrap.classList.add('tp3d-grid-span-full');
+	              const l = document.createElement('div');
+	              l.className = 'label';
+	              l.textContent = label;
+	              const textarea = document.createElement('textarea');
+	              textarea.className = 'input';
+	              textarea.rows = 3;
+	              textarea.placeholder = placeholder || '';
+	              textarea.classList.add('tp3d-textarea-minh-48');
+	              wrap.appendChild(l);
+	              wrap.appendChild(textarea);
+	              return { wrap, textarea };
+	            }
 
             return { init: initPacksUI, render };
           })();

@@ -190,6 +190,7 @@ import { APP_VERSION } from './core/version.js';
             Defaults,
             Utils,
             getAccountSwitcher: () => AccountSwitcher,
+            SupabaseClient,
           });
           const CardDisplayOverlay = createCardDisplayOverlay({
             documentRef: document,
@@ -220,13 +221,36 @@ import { APP_VERSION } from './core/version.js';
             const mounts = new Map();
 
             function getDisplay() {
-              const s = SessionManager.get();
-              const account = s.currentAccount || {};
-              const user = s.user || {};
+              let user = null;
+              try {
+                user = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
+              } catch {
+                user = null;
+              }
+
+              const isAuthed = Boolean(user);
+
+              let email = '';
+              if (user && user.email) email = String(user.email);
+
+              let displayName = '';
+              if (user && user.user_metadata) {
+                displayName = user.user_metadata.full_name || user.user_metadata.name || '';
+              }
+              if (!displayName && email) {
+                displayName = email.split('@')[0] || '';
+              }
+
+              if (!displayName) {
+                const s = SessionManager.get();
+                const demoUser = (s && s.user) || {};
+                displayName = demoUser.name || (isAuthed ? 'User' : 'Guest');
+              }
+
               return {
-                accountName: account.name || 'Personal Account',
-                role: account.role || 'Owner',
-                userName: user.name || '—',
+                accountName: 'Workspace',
+                role: isAuthed ? 'Owner' : '',
+                userName: displayName || '—',
               };
             }
 
@@ -2163,27 +2187,78 @@ import { APP_VERSION } from './core/version.js';
             if (!validateRuntime()) return;
             installDevHelpers({ app: window.TruckPackerApp, stateStore: StateStore, Utils, documentRef: document });
             seedIfEmpty();
-
+ 
             PreferencesManager.applyTheme(StateStore.get('preferences').theme);
 
-            let supabaseInitOk = false;
-            try {
-              const cfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : null;
-              const url = cfg ? cfg.url : '';
-              const anonKey = cfg ? cfg.anonKey : '';
-              if (!url || !anonKey) {
-                AuthOverlay.setPhase('cantconnect', {
-                  error: new Error('Supabase config missing'),
-                });
-                AuthOverlay.show();
-                return;
+            const debugEnabled = () => {
+              try {
+                return window && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1';
+              } catch {
+                return false;
               }
+            };
+
+            let supabaseInitOk = false;
+            const cfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : null;
+            const url = cfg ? cfg.url : '';
+            const anonKey = cfg ? cfg.anonKey : '';
+            
+            if (!url || !anonKey) {
+              AuthOverlay.setPhase('cantconnect', {
+                error: new Error('Supabase config missing'),
+                onRetry: async () => {
+                  const retryBootstrap = async () => {
+                    const retryCfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : null;
+                    const retryUrl = retryCfg ? retryCfg.url : '';
+                    const retryKey = retryCfg ? retryCfg.anonKey : '';
+                    if (!retryUrl || !retryKey) throw new Error('Supabase config still missing');
+                    await SupabaseClient.init({ url: retryUrl, anonKey: retryKey });
+                  };
+                  await retryBootstrap();
+                  window.location.reload();
+                },
+              });
+              AuthOverlay.show();
+              return;
+            }
+
+            try {
               await SupabaseClient.init({ url, anonKey });
               supabaseInitOk = true;
             } catch (err) {
-              AuthOverlay.setPhase('cantconnect', { error: err });
-              AuthOverlay.show();
-              return;
+              if (debugEnabled()) console.info('[TruckPackerApp] Supabase init failed, attempting vendor-ready retry');
+              
+              let vendorReadyOk = false;
+              if (typeof window.__tp3dVendorAllReady === 'function') {
+                try {
+                  const vendorTimeoutMs = 6000;
+                  await Promise.race([
+                    window.__tp3dVendorAllReady(),
+                    new Promise((_, rej) => window.setTimeout(() => rej(new Error('Vendor ready timeout')), vendorTimeoutMs)),
+                  ]);
+                  vendorReadyOk = true;
+                  if (debugEnabled()) console.info('[TruckPackerApp] Vendor ready resolved');
+                } catch (vendorErr) {
+                  if (debugEnabled()) console.info('[TruckPackerApp] Vendor ready timed out or failed:', vendorErr && vendorErr.message ? vendorErr.message : '');
+                }
+              }
+
+              if (vendorReadyOk) {
+                try {
+                  await SupabaseClient.init({ url, anonKey });
+                  supabaseInitOk = true;
+                  if (debugEnabled()) console.info('[TruckPackerApp] Supabase init retry success');
+                } catch (retryErr) {
+                  if (debugEnabled()) console.info('[TruckPackerApp] Supabase init retry failed:', retryErr && retryErr.message ? retryErr.message : '');
+                  AuthOverlay.setPhase('cantconnect', { error: retryErr, onRetry: () => window.location.reload() });
+                  AuthOverlay.show();
+                  return;
+                }
+              } else {
+                AuthOverlay.setPhase('cantconnect', { error: err, onRetry: () => window.location.reload() });
+                AuthOverlay.show();
+                return;
+              }
             }
 
             const bootstrapAuthGate = async () => {
@@ -2221,12 +2296,18 @@ import { APP_VERSION } from './core/version.js';
                     return null;
                   }
                 })();
+                try {
+                  emit('auth:changed', { event, userId: user && user.id ? String(user.id) : '' });
+                } catch {
+                  // ignore
+                }
 
                 if (user) {
                   AuthOverlay.hide();
                   if (event === 'SIGNED_IN') {
                     UIComponents.showToast('Signed in', 'success', { title: 'Auth' });
                   }
+                  if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') SettingsOverlay.handleAuthChange(event);
                   showReadyOnce();
                   return;
                 }
@@ -2236,6 +2317,7 @@ import { APP_VERSION } from './core/version.js';
                 if (event === 'SIGNED_OUT') {
                   UIComponents.showToast('Signed out', 'info', { title: 'Auth' });
                 }
+                if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') SettingsOverlay.handleAuthChange(event);
               });
             }
 

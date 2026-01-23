@@ -15,6 +15,14 @@ let _client = null;
 let _session = null;
 let _initPromise = null;
 
+function debugEnabled() {
+  try {
+    return window && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1';
+  } catch {
+    return false;
+  }
+}
+
 function requireClient() {
   if (!_client) throw new Error('SupabaseClient not initialized. Call SupabaseClient.init({ url, anonKey }) first.');
   return _client;
@@ -25,33 +33,46 @@ function requireClient() {
 // ============================================================================
 
 export function init({ url, anonKey }) {
+  if (_client) return Promise.resolve(_client);
   if (_initPromise) return _initPromise;
 
   _initPromise = (async () => {
-    const u = String(url || '').trim();
-    const k = String(anonKey || '').trim();
-    if (!u || !k) throw new Error('Supabase config missing (url/anonKey).');
-
-    const globalSupabase = typeof window !== 'undefined' ? window.supabase : null;
-    if (!globalSupabase || typeof globalSupabase.createClient !== 'function') {
-      throw new Error('Supabase CDN not loaded (window.supabase.createClient missing).');
-    }
-
-    _client = globalSupabase.createClient(u, k);
-
     try {
-      const { data, error } = await _client.auth.getSession();
-      if (error) throw error;
-      _session = data && data.session ? data.session : null;
-    } catch {
+      const u = String(url || '').trim();
+      const k = String(anonKey || '').trim();
+      if (!u || !k) throw new Error('Supabase config missing (url/anonKey).');
+
+      if (debugEnabled()) console.info('[SupabaseClient] init start');
+
+      const globalSupabase = typeof window !== 'undefined' ? window.supabase : null;
+      if (!globalSupabase || typeof globalSupabase.createClient !== 'function') {
+        throw new Error('Supabase CDN not loaded (window.supabase.createClient missing).');
+      }
+
+      _client = globalSupabase.createClient(u, k);
+
+      try {
+        const { data, error } = await _client.auth.getSession();
+        if (error) throw error;
+        _session = data && data.session ? data.session : null;
+      } catch {
+        _session = null;
+      }
+
+      _client.auth.onAuthStateChange((_event, nextSession) => {
+        _session = nextSession || null;
+      });
+
+      if (debugEnabled()) console.info('[SupabaseClient] init success');
+      return _client;
+    } catch (err) {
+      if (debugEnabled())
+        console.info('[SupabaseClient] init failed:', err && err.message ? String(err.message) : String(err));
+      _initPromise = null;
+      _client = null;
       _session = null;
+      throw err;
     }
-
-    _client.auth.onAuthStateChange((_event, nextSession) => {
-      _session = nextSession || null;
-    });
-
-    return _client;
   })();
 
   return _initPromise;

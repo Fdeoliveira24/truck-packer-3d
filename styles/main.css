@@ -1409,7 +1409,14 @@ tr:hover td {
   background: rgba(255, 255, 255, 0.86);
   border: 1px solid rgba(0, 0, 0, 0.08);
   box-shadow: var(--shadow-md);
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
+}
+
+@supports not (backdrop-filter: blur(8px)) {
+  .viewport-toolbar {
+    background: rgba(255, 255, 255, 0.95);
+  }
 }
 
 [data-theme='dark'] .viewport-toolbar {
@@ -1619,3 +1626,191 @@ tr:hover td {
 .tp3d-textarea-minh-48 {
   min-height: 48px;
 }
+
+/* ================================
+   TP3D Cases Screen (Phase 1.0)
+================================== */
+
+.tp3d-cases-muted-sm {
+  font-size: var(--text-sm);
+}
+
+.tp3d-cases-td-select {
+  width: 36px;
+  text-align: center;
+}
+
+.tp3d-cases-modal-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.tp3d-cases-cat-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.tp3d-cases-cat-swatch {
+  width: 44px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+}
+
+.tp3d-cases-flip-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--text-sm);
+}
+
+.tp3d-textarea-minh-60 {
+  min-height: 60px;
+}
+
+.tp3d-cases-managecats-grid {
+  display: grid;
+  gap: 12px;
+  min-width: 320px;
+}
+
+.tp3d-cases-color-btn {
+  width: 56px;
+  height: 40px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.tp3d-cases-color-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ================================
+   TP3D Editor Screen (Phase 1.0)
+================================== */
+
+.tp3d-editor-card-grid-gap-12 {
+  display: grid;
+  gap: 12px;
+}
+
+.tp3d-editor-preset-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.tp3d-editor-wrap-full {
+  min-width: 0;
+  width: 100%;
+}
+
+.tp3d-editor-select-full {
+  width: 100%;
+}
+
+.tp3d-editor-dims-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.tp3d-editor-field-wrap-full {
+  width: 100%;
+}
+
+.tp3d-editor-btn-full {
+  width: 100%;
+}
+
+.tp3d-editor-stats-card {
+  background: var(--bg-elevated);
+  box-shadow: none;
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.tp3d-editor-row-justify-end {
+  justify-content: flex-end;
+}
+
+.tp3d-editor-title-lg-semibold {
+  font-weight: var(--font-semibold);
+  font-size: var(--text-lg);
+}
+
+.tp3d-editor-sub-sm {
+  font-size: var(--text-sm);
+}
+
+.tp3d-editor-row-gap-10 {
+  gap: 10px;
+}
+
+.tp3d-editor-minw-90 {
+  min-width: 90px;
+}
+
+/* === Phase 2.0: Editor Screen CSS Migration === */
+
+/* Case browser card layout */
+.tp3d-editor-card-padding-12 {
+  padding: 12px;
+}
+
+.tp3d-editor-card-grid-gap-8 {
+  display: grid;
+  gap: 8px;
+}
+
+/* Text column layout */
+.tp3d-editor-col-grid-gap-2 {
+  display: grid;
+  gap: 2px;
+}
+
+/* Typography utilities */
+.tp3d-editor-fw-semibold {
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-editor-fs-xs {
+  font-size: var(--text-xs);
+}
+
+.tp3d-editor-fs-sm {
+  font-size: var(--text-sm);
+}
+
+.tp3d-editor-mb-6 {
+  margin-bottom: 6px;
+}
+
+.tp3d-editor-mb-12 {
+  margin-bottom: 12px;
+}
+
+/* Button styles */
+.tp3d-editor-btn-add {
+  padding: 6px 10px;
+  box-shadow: none;
+}
+
+/* Chip styles */
+.tp3d-editor-chip-mini {
+  cursor: default;
+  padding: 4px 10px;
+}
+
+/* Interaction styles */
+.tp3d-editor-no-touch-action {
+  touch-action: none;
+}
+

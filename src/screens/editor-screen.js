@@ -341,7 +341,7 @@ export function createInteractionManager({ SceneManager, CaseScene, StateStore, 
 
             function initInteraction(canvasEl) {
               domEl = canvasEl;
-              domEl.style.touchAction = 'none';
+              domEl.classList.add('tp3d-editor-no-touch-action');
               domEl.addEventListener('pointermove', onMove);
               domEl.addEventListener('pointerdown', onDown);
               window.addEventListener('pointerup', onUp);
@@ -781,9 +781,7 @@ export function createEditorScreen({
               cases.forEach(c => {
                 const card = document.createElement('div');
                 card.className = 'card';
-                card.style.padding = '12px';
-                card.style.display = 'grid';
-                card.style.gap = '8px';
+                card.classList.add('tp3d-editor-card-padding-12', 'tp3d-editor-card-grid-gap-8');
                 card.draggable = true;
                 card.addEventListener('dragstart', ev => {
                   ev.dataTransfer.setData('text/plain', c.id);
@@ -793,14 +791,13 @@ export function createEditorScreen({
                 const header = document.createElement('div');
                 header.className = 'row space-between';
                 const left = document.createElement('div');
-                left.style.display = 'grid';
-                left.style.gap = '2px';
+                left.classList.add('tp3d-editor-col-grid-gap-2');
                 const name = document.createElement('div');
                 name.style.fontWeight = 'var(--font-semibold)';
                 name.textContent = c.name;
                 const dims = document.createElement('div');
                 dims.className = 'muted';
-                dims.style.fontSize = 'var(--text-xs)';
+                dims.classList.add('tp3d-editor-fs-xs');
                 dims.textContent = `${c.dimensions.length}×${c.dimensions.width}×${c.dimensions.height} in`;
                 left.appendChild(name);
                 left.appendChild(dims);
@@ -808,14 +805,13 @@ export function createEditorScreen({
 
                 const metaRow = document.createElement('div');
                 metaRow.className = 'row space-between';
-                metaRow.style.gap = '8px';
+                metaRow.classList.add('tp3d-editor-card-grid-gap-8');
                 metaRow.appendChild(makeMiniCategoryChip(c.category));
 
                 const addBtn = document.createElement('button');
                 addBtn.className = 'btn btn-primary';
                 addBtn.type = 'button';
-                addBtn.style.padding = '6px 10px';
-                addBtn.style.boxShadow = 'none';
+                addBtn.classList.add('tp3d-editor-btn-add');
                 addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> Add';
                 addBtn.addEventListener('click', () => addCaseToPack(c.id));
                 metaRow.appendChild(addBtn);
@@ -848,8 +844,7 @@ export function createEditorScreen({
               const meta = CategoryService.meta(categoryKey || 'default');
               const el = document.createElement('span');
               el.className = 'chip';
-              el.style.cursor = 'default';
-              el.style.padding = '4px 10px';
+              el.classList.add('tp3d-editor-chip-mini');
               const dot = document.createElement('span');
               dot.className = 'chip-dot';
               dot.style.background = meta.color;
@@ -887,8 +882,8 @@ export function createEditorScreen({
               const card = document.createElement('div');
               card.className = 'card';
               card.innerHTML = `
-              <div style="font-weight:var(--font-semibold);margin-bottom:6px">No pack open</div>
-              <div class="muted" style="font-size:var(--text-sm);margin-bottom:12px">Open a pack from the Packs screen to use the 3D editor.</div>
+              <div class="tp3d-editor-fw-semibold tp3d-editor-mb-6">No pack open</div>
+              <div class="muted tp3d-editor-fs-sm tp3d-editor-mb-12">Open a pack from the Packs screen to use the 3D editor.</div>
             `;
               const btn = document.createElement('button');
               btn.className = 'btn btn-primary';
@@ -926,37 +921,32 @@ export function createEditorScreen({
               renderSingleInspector(pack, inst, c, prefs);
             }
 
-	            function renderTruckInspector(pack, prefs) {
-	              const card = document.createElement('div');
-	              card.className = 'card';
-	              card.style.display = 'grid';
-	              card.style.gap = '12px';
+		            function renderTruckInspector(pack, prefs) {
+		              const card = document.createElement('div');
+		              card.className = 'card';
+		              card.classList.add('tp3d-editor-card-grid-gap-12');
 
 	              const stats = PackLibrary.computeStats(pack);
 	              card.innerHTML = `
-	              <div style="font-weight:var(--font-semibold)">Truck</div>
-	              <div class="muted" style="font-size:var(--text-sm)">Edit dimensions in inches (internal units). Display units follow Settings.</div>
-	            `;
+              <div class="tp3d-editor-fw-semibold">Truck</div>
+              <div class="muted tp3d-editor-fs-sm">Edit dimensions in inches (internal units). Display units follow Settings.</div>
+            `;
 
-	              const presetRow = document.createElement('div');
-	              presetRow.className = 'row';
-	              presetRow.style.display = 'grid';
-	              presetRow.style.gridTemplateColumns = '1fr';
-	              presetRow.style.gap = '10px';
-	              presetRow.style.alignItems = 'flex-end';
+		              const presetRow = document.createElement('div');
+		              presetRow.className = 'row';
+		              presetRow.classList.add('tp3d-editor-preset-row');
 
-	              const presetWrap = document.createElement('div');
-	              presetWrap.className = 'field';
-	              presetWrap.style.minWidth = '0';
-	              presetWrap.style.width = '100%';
+		              const presetWrap = document.createElement('div');
+		              presetWrap.className = 'field';
+		              presetWrap.classList.add('tp3d-editor-wrap-full');
 
 	              const presetLabel = document.createElement('div');
 	              presetLabel.className = 'label';
 	              presetLabel.textContent = 'Trailer preset';
 
-	              const presetSelect = document.createElement('select');
-	              presetSelect.className = 'select';
-	              presetSelect.style.width = '100%';
+		              const presetSelect = document.createElement('select');
+		              presetSelect.className = 'select';
+		              presetSelect.classList.add('tp3d-editor-select-full');
 
 	              function inferPresetIdFromTruck(truck) {
 	                const t = truck && typeof truck === 'object' ? truck : {};
@@ -998,20 +988,16 @@ export function createEditorScreen({
 
                 const shapeRow = document.createElement('div');
                 shapeRow.className = 'row';
-                shapeRow.style.display = 'grid';
-                shapeRow.style.gridTemplateColumns = '1fr';
-                shapeRow.style.gap = '10px';
-                shapeRow.style.alignItems = 'flex-end';
+                shapeRow.classList.add('tp3d-editor-preset-row');
                 const shapeWrap = document.createElement('div');
                 shapeWrap.className = 'field';
-                shapeWrap.style.minWidth = '0';
-                shapeWrap.style.width = '100%';
+                shapeWrap.classList.add('tp3d-editor-wrap-full');
 	              const shapeLabel = document.createElement('div');
 	              shapeLabel.className = 'label';
 	              shapeLabel.textContent = 'Trailer Shape Mode';
-	              const shapeSelect = document.createElement('select');
-	              shapeSelect.className = 'select';
-                shapeSelect.style.width = '100%';
+                const shapeSelect = document.createElement('select');
+                shapeSelect.className = 'select';
+                shapeSelect.classList.add('tp3d-editor-select-full');
 	              shapeSelect.innerHTML = `
 	                <option value="rect">Standard</option>
 	                <option value="wheelWells">Box + Wheel Wells</option>
@@ -1026,25 +1012,22 @@ export function createEditorScreen({
 	              shapeRow.appendChild(shapeWrap);
 
 	              card.appendChild(presetRow);
-	              const dimsRow = document.createElement('div');
-	              dimsRow.className = 'row';
-	              dimsRow.style.display = 'grid';
-	              dimsRow.style.gridTemplateColumns = 'repeat(3, minmax(0, 1fr))';
-	              dimsRow.style.gap = '10px';
-	              dimsRow.style.alignItems = 'end';
-	              const fL = smallField('Length (in)', pack.truck.length);
-              const fW = smallField('Width (in)', pack.truck.width);
-              const fH = smallField('Height (in)', pack.truck.height);
-              [fL.wrap, fW.wrap, fH.wrap].forEach(wrap => (wrap.style.width = '100%'));
+		              const dimsRow = document.createElement('div');
+		              dimsRow.className = 'row';
+		              dimsRow.classList.add('tp3d-editor-dims-row');
+		              const fL = smallField('Length (in)', pack.truck.length);
+	              const fW = smallField('Width (in)', pack.truck.width);
+	              const fH = smallField('Height (in)', pack.truck.height);
+	              [fL.wrap, fW.wrap, fH.wrap].forEach(wrap => wrap.classList.add('tp3d-editor-field-wrap-full'));
               dimsRow.appendChild(fL.wrap);
               dimsRow.appendChild(fW.wrap);
               dimsRow.appendChild(fH.wrap);
 
-                const btnSave = document.createElement('button');
-	              btnSave.className = 'btn btn-primary';
-	              btnSave.type = 'button';
-	              btnSave.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Update truck';
-                btnSave.style.width = '100%';
+	                const btnSave = document.createElement('button');
+		              btnSave.className = 'btn btn-primary';
+		              btnSave.type = 'button';
+		              btnSave.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Update truck';
+	                btnSave.classList.add('tp3d-editor-btn-full');
 	              btnSave.addEventListener('click', () => {
 	                const next = {
 	                  ...pack.truck,
@@ -1148,18 +1131,14 @@ export function createEditorScreen({
 	              });
 
                 const statsEl = document.createElement('div');
-	              statsEl.className = 'card';
-	              statsEl.style.background = 'var(--bg-elevated)';
-              statsEl.style.boxShadow = 'none';
-              statsEl.style.display = 'grid';
-              statsEl.style.gap = '8px';
-                statsEl.style.marginTop = '16px';
+		              statsEl.className = 'card';
+		              statsEl.classList.add('tp3d-editor-stats-card');
               statsEl.innerHTML = `
-              <div style="font-weight:var(--font-semibold)">Stats</div>
-              <div class="muted" style="font-size:var(--text-sm)">Cases loaded: <b style="color:var(--text-primary)">${stats.totalCases}</b></div>
-              <div class="muted" style="font-size:var(--text-sm)">Packed (in truck): <b style="color:var(--text-primary)">${stats.packedCases}</b></div>
-              <div class="muted" style="font-size:var(--text-sm)">Volume used: <b style="color:var(--text-primary)">${stats.volumePercent.toFixed(1)}%</b></div>
-              <div class="muted" style="font-size:var(--text-sm)">Total weight: <b style="color:var(--text-primary)">${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}</b></div>
+              <div class="tp3d-editor-fw-semibold">Stats</div>
+              <div class="muted tp3d-editor-fs-sm">Cases loaded: <b style="color:var(--text-primary)">${stats.totalCases}</b></div>
+              <div class="muted tp3d-editor-fs-sm">Packed (in truck): <b style="color:var(--text-primary)">${stats.packedCases}</b></div>
+              <div class="muted tp3d-editor-fs-sm">Volume used: <b style="color:var(--text-primary)">${stats.volumePercent.toFixed(1)}%</b></div>
+              <div class="muted tp3d-editor-fs-sm">Total weight: <b style="color:var(--text-primary)">${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}</b></div>
             `;
 
 	              card.appendChild(shapeRow);
@@ -1172,16 +1151,15 @@ export function createEditorScreen({
             function renderMultiInspector(pack, selected) {
               const card = document.createElement('div');
               card.className = 'card';
-              card.style.display = 'grid';
-              card.style.gap = '12px';
+              card.classList.add('tp3d-editor-card-grid-gap-12');
               card.innerHTML = `
-              <div style="font-weight:var(--font-semibold)">${selected.length} selected</div>
-              <div class="muted" style="font-size:var(--text-sm)">Use keyboard shortcuts: Delete, Esc, Ctrl/Cmd+A.</div>
+              <div class="tp3d-editor-fw-semibold">${selected.length} selected</div>
+              <div class="muted tp3d-editor-fs-sm">Use keyboard shortcuts: Delete, Esc, Ctrl/Cmd+A.</div>
             `;
 
-              const row = document.createElement('div');
-              row.className = 'row';
-              row.style.justifyContent = 'flex-end';
+	              const row = document.createElement('div');
+	              row.className = 'row';
+	              row.classList.add('tp3d-editor-row-justify-end');
               const btnDelete = document.createElement('button');
               btnDelete.className = 'btn btn-danger';
               btnDelete.type = 'button';
@@ -1200,20 +1178,18 @@ export function createEditorScreen({
               inspectorEl.appendChild(card);
             }
 
-            function renderSingleInspector(pack, inst, caseData, prefs) {
-              const card = document.createElement('div');
-              card.className = 'card';
-              card.style.display = 'grid';
-              card.style.gap = '12px';
+	            function renderSingleInspector(pack, inst, caseData, prefs) {
+	              const card = document.createElement('div');
+	              card.className = 'card';
+	              card.classList.add('tp3d-editor-card-grid-gap-12');
 
-              const header = document.createElement('div');
-              const title = document.createElement('div');
-              title.style.fontWeight = 'var(--font-semibold)';
-              title.style.fontSize = 'var(--text-lg)';
-              title.textContent = caseData.name || '—';
-              const sub = document.createElement('div');
-              sub.className = 'muted';
-              sub.style.fontSize = 'var(--text-sm)';
+	              const header = document.createElement('div');
+	              const title = document.createElement('div');
+	              title.classList.add('tp3d-editor-title-lg-semibold');
+	              title.textContent = caseData.name || '—';
+	              const sub = document.createElement('div');
+	              sub.className = 'muted';
+	              sub.classList.add('tp3d-editor-sub-sm');
               const mfg = caseData.manufacturer ? caseData.manufacturer : '—';
               const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
               sub.textContent = `${mfg} • ${d.length}×${d.width}×${d.height} in`;
@@ -1222,9 +1198,9 @@ export function createEditorScreen({
               card.appendChild(header);
               card.appendChild(makeMiniCategoryChip(caseData.category));
 
-              const posRow = document.createElement('div');
-              posRow.className = 'row';
-              posRow.style.gap = '10px';
+	              const posRow = document.createElement('div');
+	              posRow.className = 'row';
+	              posRow.classList.add('tp3d-editor-row-gap-10');
               const pos = inst.transform.position || { x: 0, y: 0, z: 0 };
               const fX = smallField(`X (${prefs.units.length})`, Utils.inchesToUnit(pos.x, prefs.units.length));
               const fY = smallField(`Y (${prefs.units.length})`, Utils.inchesToUnit(pos.y, prefs.units.length));
@@ -1233,9 +1209,9 @@ export function createEditorScreen({
               posRow.appendChild(fY.wrap);
               posRow.appendChild(fZ.wrap);
 
-              const row2 = document.createElement('div');
-              row2.className = 'row';
-              row2.style.gap = '10px';
+	              const row2 = document.createElement('div');
+	              row2.className = 'row';
+	              row2.classList.add('tp3d-editor-row-gap-10');
               const hide = document.createElement('button');
               hide.className = 'btn';
               hide.type = 'button';
@@ -1277,10 +1253,10 @@ export function createEditorScreen({
               inspectorEl.appendChild(card);
             }
 
-            function smallField(label, value) {
-              const wrap = document.createElement('div');
-              wrap.className = 'field';
-              wrap.style.minWidth = '90px';
+	            function smallField(label, value) {
+	              const wrap = document.createElement('div');
+	              wrap.className = 'field';
+	              wrap.classList.add('tp3d-editor-minw-90');
               const l = document.createElement('div');
               l.className = 'label';
               l.textContent = label;

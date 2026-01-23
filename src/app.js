@@ -2403,7 +2403,32 @@ import { APP_VERSION } from './core/version.js';
           };
         })();
 
+        function checkBrowserSupport() {
+          const ua = navigator.userAgent || '';
+          const safariMatch = ua.match(/Version\/(\d+\.\d+).*Safari/);
+          if (safariMatch) {
+            const version = parseFloat(safariMatch[1]);
+            if (version < 13.1) {
+              console.warn('[TruckPackerApp] Safari ' + version + ' detected. Safari 13.1+ required for ES2020 support.');
+              return false;
+            }
+          }
+          const firefoxMatch = ua.match(/Firefox\/(\d+)/);
+          if (firefoxMatch) {
+            const version = parseInt(firefoxMatch[1], 10);
+            if (version < 88) {
+              console.warn('[TruckPackerApp] Firefox ' + version + ' detected. Firefox 88+ recommended.');
+              return false;
+            }
+          }
+          return true;
+        }
+
         const boot = () => {
+          if (!checkBrowserSupport()) {
+            const msg = 'Your browser version may not be fully supported. Please upgrade to Chrome 90+, Firefox 88+, Safari 13.1+, or Edge 90+ for the best experience.';
+            console.warn('[TruckPackerApp]', msg);
+          }
           console.info('[TruckPackerApp] boot -> init');
           window.TruckPackerApp.init();
         };

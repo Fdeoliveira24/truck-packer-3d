@@ -347,10 +347,10 @@ export function createCasesScreen({
                 const title = document.createElement('h3');
                 title.textContent = c.name || '—';
 
-                const sub = document.createElement('div');
-                sub.className = 'muted';
-                sub.style.fontSize = 'var(--text-sm)';
-                if (c.manufacturer) sub.textContent = c.manufacturer;
+	                const sub = document.createElement('div');
+	                sub.className = 'muted';
+	                sub.classList.add('tp3d-cases-muted-sm');
+	                if (c.manufacturer) sub.textContent = c.manufacturer;
 
                 const meta = document.createElement('div');
                 meta.className = 'pack-meta';
@@ -563,10 +563,9 @@ export function createCasesScreen({
                 casePageMeta.slice.forEach(c => {
 	                const tr = document.createElement('tr');
 
-	                const tdSelect = document.createElement('td');
-	                tdSelect.style.width = '36px';
-	                tdSelect.style.textAlign = 'center';
-	                const cb = document.createElement('input');
+		                const tdSelect = document.createElement('td');
+		                tdSelect.classList.add('tp3d-cases-td-select');
+		                const cb = document.createElement('input');
 	                cb.type = 'checkbox';
 	                cb.checked = selectedIds.has(c.id);
 	                cb.addEventListener('click', ev => ev.stopPropagation());
@@ -741,10 +740,8 @@ export function createCasesScreen({
                     updatedAt: now,
                   };
 
-              const content = document.createElement('div');
-              content.style.display = 'grid';
-              content.style.gridTemplateColumns = '1fr 1fr';
-              content.style.gap = '14px';
+	              const content = document.createElement('div');
+	              content.classList.add('tp3d-cases-modal-grid-2col');
 
               const fName = field('Name', 'text', 'Line Array Case', true);
               fName.input.value = initial.name || '';
@@ -752,24 +749,19 @@ export function createCasesScreen({
               const fMfg = field('Manufacturer', 'text', 'L-Acoustics', false);
               fMfg.input.value = initial.manufacturer || '';
 
-              const catWrap = document.createElement('div');
-              catWrap.className = 'field';
-              catWrap.style.gridColumn = '1 / -1';
+	              const catWrap = document.createElement('div');
+	              catWrap.className = 'field';
+	              catWrap.classList.add('tp3d-grid-span-full');
               const catLabel = document.createElement('div');
               catLabel.className = 'label';
               catLabel.textContent = 'Category';
-              const catRow = document.createElement('div');
-              catRow.style.display = 'flex';
-              catRow.style.gap = '8px';
-              catRow.style.alignItems = 'center';
-              const catColorSwatch = document.createElement('div');
-              catColorSwatch.style.width = '44px';
-              catColorSwatch.style.height = '32px';
-              catColorSwatch.style.borderRadius = '8px';
-              catColorSwatch.style.border = '1px solid var(--border-subtle)';
-              const catSelect = document.createElement('select');
-              catSelect.className = 'select';
-              catSelect.style.flex = '1';
+	              const catRow = document.createElement('div');
+	              catRow.classList.add('tp3d-cases-cat-row');
+	              const catColorSwatch = document.createElement('div');
+	              catColorSwatch.classList.add('tp3d-cases-cat-swatch');
+	              const catSelect = document.createElement('select');
+	              catSelect.className = 'select';
+	              catSelect.classList.add('tp3d-flex-1');
               const catOptions = CategoryService.all();
               const currentKey = catOptions.find(c => c.key === initial.category) ? initial.category : 'default';
               catOptions.forEach(c => {
@@ -802,12 +794,9 @@ export function createCasesScreen({
               const weightValue = Utils.poundsToUnit(Number(initial.weight) || 0, weightUnit);
               fWeight.input.value = String(Math.round(weightValue * 100) / 100);
 
-              const flipRow = document.createElement('label');
-              flipRow.style.display = 'flex';
-              flipRow.style.alignItems = 'center';
-              flipRow.style.gap = '10px';
-              flipRow.style.fontSize = 'var(--text-sm)';
-              flipRow.style.gridColumn = '1 / -1';
+	              const flipRow = document.createElement('label');
+	              flipRow.classList.add('tp3d-cases-flip-row');
+	              flipRow.classList.add('tp3d-grid-span-full');
               const flip = document.createElement('input');
               flip.type = 'checkbox';
               flip.checked = Boolean(initial.canFlip);
@@ -816,15 +805,15 @@ export function createCasesScreen({
               flipRow.appendChild(flip);
               flipRow.appendChild(flipText);
 
-              const notesWrap = document.createElement('div');
-              notesWrap.className = 'field';
-              notesWrap.style.gridColumn = '1 / -1';
+	              const notesWrap = document.createElement('div');
+	              notesWrap.className = 'field';
+	              notesWrap.classList.add('tp3d-grid-span-full');
               const notesLabel = document.createElement('div');
               notesLabel.className = 'label';
               notesLabel.textContent = 'Notes';
-              const notes = document.createElement('textarea');
-              notes.className = 'input';
-              notes.style.minHeight = '60px';
+	              const notes = document.createElement('textarea');
+	              notes.className = 'input';
+	              notes.classList.add('tp3d-textarea-minh-60');
               notes.value = initial.notes || '';
               notesWrap.appendChild(notesLabel);
               notesWrap.appendChild(notes);
@@ -958,10 +947,8 @@ export function createCasesScreen({
 
             function openEditCategoryModal(cat) {
               const initial = cat && typeof cat === 'object' ? cat : CategoryService.meta('default');
-              const content = document.createElement('div');
-              content.style.display = 'grid';
-              content.style.gap = '12px';
-              content.style.minWidth = '320px';
+	              const content = document.createElement('div');
+	              content.classList.add('tp3d-cases-managecats-grid');
 
               const name = document.createElement('input');
               name.type = 'text';
@@ -969,19 +956,14 @@ export function createCasesScreen({
               name.value = initial.name || '';
               name.placeholder = 'Category name';
 
-              const color = document.createElement('input');
-              color.type = 'color';
-              color.className = 'input';
-              color.value = initial.color || '#9ca3af';
-              color.style.width = '56px';
-              color.style.height = '40px';
-              color.style.padding = '0';
-              color.style.cursor = 'pointer';
+	              const color = document.createElement('input');
+	              color.type = 'color';
+	              color.className = 'input';
+	              color.value = initial.color || '#9ca3af';
+	              color.classList.add('tp3d-cases-color-btn');
 
-              const row = document.createElement('div');
-              row.style.display = 'flex';
-              row.style.alignItems = 'center';
-              row.style.gap = '12px';
+	              const row = document.createElement('div');
+	              row.classList.add('tp3d-cases-color-row');
               row.appendChild(color);
               row.appendChild(name);
 

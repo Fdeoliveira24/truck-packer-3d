@@ -158,10 +158,12 @@ truck-packer-3d/
 
 ## Browser Compatibility
 
-- ✅ Chrome 90+
-- ✅ Firefox 88+
-- ✅ Safari 14+
-- ✅ Edge 90+
+- ✅ Chrome 90+ (ES2020 support)
+- ✅ Firefox 103+ (backdrop-filter support; 88-102 partial support)
+- ✅ Safari 13.1+ (optional chaining support; 14+ recommended)
+- ✅ Edge 90+ (ES2020 support)
+
+**Note**: Requires ES2020 features including optional chaining (`?.`) and nullish coalescing (`??`).
 
 ## Help
 

@@ -1814,3 +1814,68 @@ tr:hover td {
   touch-action: none;
 }
 
+/* Text color utilities */
+.tp3d-text-primary {
+  color: var(--text-primary);
+}
+
+/* ================================
+   TP3D Cases Screen (Phase 1.1)
+   Category Manager modal
+================================== */
+
+.tp3d-cases-catmgr-content {
+  display: grid;
+  gap: 14px;
+  min-width: 480px;
+}
+
+.tp3d-cases-catmgr-list {
+  display: grid;
+  gap: 8px;
+}
+
+.tp3d-cases-catmgr-row {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: var(--space-3);
+  background: var(--bg-elevated);
+  box-shadow: none;
+}
+
+.tp3d-cases-catmgr-color-wrap {
+  position: relative;
+}
+
+.tp3d-cases-catmgr-color-input {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  cursor: pointer;
+  border: 2px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.tp3d-cases-catmgr-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.tp3d-cases-catmgr-btn-pad {
+  padding: 6px 10px;
+}
+
+.tp3d-cases-catmgr-del-color {
+  color: var(--error);
+}
+
+.tp3d-cases-catmgr-add-full {
+  width: 100%;
+}
+
+.tp3d-chip-readonly {
+  cursor: default;
+}
+

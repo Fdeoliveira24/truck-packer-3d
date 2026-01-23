@@ -793,7 +793,7 @@ export function createEditorScreen({
                 const left = document.createElement('div');
                 left.classList.add('tp3d-editor-col-grid-gap-2');
                 const name = document.createElement('div');
-                name.style.fontWeight = 'var(--font-semibold)';
+                name.classList.add('tp3d-editor-fw-semibold');
                 name.textContent = c.name;
                 const dims = document.createElement('div');
                 dims.className = 'muted';
@@ -1135,10 +1135,10 @@ export function createEditorScreen({
 		              statsEl.classList.add('tp3d-editor-stats-card');
               statsEl.innerHTML = `
               <div class="tp3d-editor-fw-semibold">Stats</div>
-              <div class="muted tp3d-editor-fs-sm">Cases loaded: <b style="color:var(--text-primary)">${stats.totalCases}</b></div>
-              <div class="muted tp3d-editor-fs-sm">Packed (in truck): <b style="color:var(--text-primary)">${stats.packedCases}</b></div>
-              <div class="muted tp3d-editor-fs-sm">Volume used: <b style="color:var(--text-primary)">${stats.volumePercent.toFixed(1)}%</b></div>
-              <div class="muted tp3d-editor-fs-sm">Total weight: <b style="color:var(--text-primary)">${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}</b></div>
+              <div class="muted tp3d-editor-fs-sm">Cases loaded: <b class="tp3d-text-primary">${stats.totalCases}</b></div>
+              <div class="muted tp3d-editor-fs-sm">Packed (in truck): <b class="tp3d-text-primary">${stats.packedCases}</b></div>
+              <div class="muted tp3d-editor-fs-sm">Volume used: <b class="tp3d-text-primary">${stats.volumePercent.toFixed(1)}%</b></div>
+              <div class="muted tp3d-editor-fs-sm">Total weight: <b class="tp3d-text-primary">${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}</b></div>
             `;
 
 	              card.appendChild(shapeRow);

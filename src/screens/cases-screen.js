@@ -706,7 +706,7 @@ export function createCasesScreen({
               const meta = CategoryService.meta(categoryKey || 'default');
               const el = document.createElement('span');
               el.className = 'chip';
-              el.style.cursor = 'default';
+              el.classList.add('tp3d-chip-readonly');
               const dot = document.createElement('span');
               dot.className = 'chip-dot';
               dot.style.background = meta.color;
@@ -1020,39 +1020,25 @@ export function createCasesScreen({
 
             function _openCategoryManager() {
               const content = document.createElement('div');
-              content.style.display = 'grid';
-              content.style.gap = '14px';
-              content.style.minWidth = '480px';
+              content.classList.add('tp3d-cases-catmgr-content');
 
               const listEl = document.createElement('div');
-              listEl.style.display = 'grid';
-              listEl.style.gap = '8px';
+              listEl.classList.add('tp3d-cases-catmgr-list');
 
               const renderList = () => {
                 listEl.innerHTML = '';
                 CategoryService.all().forEach(cat => {
                   const row = document.createElement('div');
                   row.className = 'card';
-                  row.style.display = 'grid';
-                  row.style.gridTemplateColumns = '40px 1fr auto';
-                  row.style.gap = '12px';
-                  row.style.alignItems = 'center';
-                  row.style.padding = 'var(--space-3)';
-                  row.style.background = 'var(--bg-elevated)';
-                  row.style.boxShadow = 'none';
+                  row.classList.add('tp3d-cases-catmgr-row');
 
                   const colorWrap = document.createElement('div');
-                  colorWrap.style.position = 'relative';
+                  colorWrap.classList.add('tp3d-cases-catmgr-color-wrap');
                   const color = document.createElement('input');
                   color.type = 'color';
                   color.value = cat.color || '#9ca3af';
                   color.className = 'input';
-                  color.style.width = '40px';
-                  color.style.height = '40px';
-                  color.style.padding = '0';
-                  color.style.cursor = 'pointer';
-                  color.style.border = '2px solid var(--border-subtle)';
-                  color.style.borderRadius = 'var(--radius-sm)';
+                  color.classList.add('tp3d-cases-catmgr-color-input');
                   colorWrap.appendChild(color);
 
                   const name = document.createElement('input');
@@ -1062,13 +1048,12 @@ export function createCasesScreen({
                   name.placeholder = 'Category name';
 
                   const actions = document.createElement('div');
-                  actions.style.display = 'flex';
-                  actions.style.gap = '6px';
+                  actions.classList.add('tp3d-cases-catmgr-actions');
 
                   const saveBtn = document.createElement('button');
                   saveBtn.type = 'button';
                   saveBtn.className = 'btn btn-ghost';
-                  saveBtn.style.padding = '6px 10px';
+                  saveBtn.classList.add('tp3d-cases-catmgr-btn-pad');
                   saveBtn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i>';
                   saveBtn.title = 'Save changes';
                   saveBtn.addEventListener('click', () => {
@@ -1082,8 +1067,7 @@ export function createCasesScreen({
                     const delBtn = document.createElement('button');
                     delBtn.type = 'button';
                     delBtn.className = 'btn btn-ghost';
-                    delBtn.style.padding = '6px 10px';
-                    delBtn.style.color = 'var(--error)';
+                    delBtn.classList.add('tp3d-cases-catmgr-btn-pad', 'tp3d-cases-catmgr-del-color');
                     delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
                     delBtn.title = 'Delete category';
                     delBtn.addEventListener('click', async () => {
@@ -1113,7 +1097,7 @@ export function createCasesScreen({
               const addBtn = document.createElement('button');
               addBtn.type = 'button';
               addBtn.className = 'btn btn-primary';
-              addBtn.style.width = '100%';
+              addBtn.classList.add('tp3d-cases-catmgr-add-full');
               addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> New Category';
               addBtn.addEventListener('click', () => {
                 const baseName = 'New Category';

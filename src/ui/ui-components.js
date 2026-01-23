@@ -248,17 +248,36 @@ export function createUIComponents() {
                 if (item && item.active) {
                   btn.style.background = 'var(--bg-hover)';
                 }
-	                if (item.icon) {
-	                  const icon = document.createElement('i');
-	                  icon.className = item.icon;
-	                  if (item.iconColor) icon.style.color = String(item.iconColor);
-	                  btn.appendChild(icon);
-	                }
+                if (item.icon) {
+                  const icon = document.createElement('i');
+                  icon.className = item.icon;
+                  if (item.iconColor) icon.style.color = String(item.iconColor);
+                  btn.appendChild(icon);
+                }
                 const text = document.createElement('span');
                 text.textContent = String(item.label || '');
                 text.style.flex = '1';
                 btn.appendChild(text);
-                if (item.rightIcon) {
+
+                if (item.checkbox === true) {
+                  const cb = document.createElement('input');
+                  cb.type = 'checkbox';
+                  cb.checked = Boolean(item.checked);
+                  cb.disabled = Boolean(item.disabled);
+                  cb.style.marginLeft = 'auto';
+                  cb.setAttribute('aria-label', item.checkboxLabel || text.textContent || 'Toggle');
+                  cb.addEventListener('click', ev => ev.stopPropagation());
+                  cb.addEventListener('change', ev => {
+                    if (btn.disabled) return;
+                    try {
+                      const handler = item.onCheckboxChange || item.onClick;
+                      if (handler) handler(ev.target.checked);
+                    } finally {
+                      if (options.closeOnCheckboxChange !== false) closeAllDropdowns();
+                    }
+                  });
+                  btn.appendChild(cb);
+                } else if (item.rightIcon) {
                   const iconRight = document.createElement('i');
                   iconRight.className = item.rightIcon;
                   iconRight.style.marginLeft = 'auto';

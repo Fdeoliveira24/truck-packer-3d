@@ -19,39 +19,161 @@ export function createImportAppDialog({
   Storage,
   PreferencesManager,
   applyCaseDefaultColor,
+  Utils,
 } = {}) {
   const doc = documentRef;
 
-  function open() {
-    const input = doc.createElement('input');
-    input.type = 'file';
-    input.accept = '.json,application/json';
-    input.addEventListener('change', async () => {
-      const file = input.files && input.files[0];
-      if (!file) return;
-      const text = await file.text();
-      try {
-        const imported = ImportExport.parseAppImportJSON(text);
-        const prev = StateStore.get();
-        const importedCases = (imported.caseLibrary || []).map(applyCaseDefaultColor);
-        const nextState = {
-          ...prev,
-          caseLibrary: importedCases,
-          packLibrary: imported.packLibrary,
-          preferences: imported.preferences,
-          currentPackId: null,
-          currentScreen: 'packs',
-          selectedInstanceIds: [],
-        };
-        StateStore.replace(nextState, { skipHistory: false });
-        Storage.saveNow();
-        PreferencesManager.applyTheme(nextState.preferences.theme);
-        UIComponents.showToast('Imported app JSON', 'success');
-      } catch (err) {
-        UIComponents.showToast('Import failed: ' + (err && err.message), 'error');
-      }
+  async function handleFile(file, resultsEl, modal) {
+    resultsEl.style.display = 'block';
+    resultsEl.innerHTML = '';
+
+    if (!file) {
+      UIComponents.showToast('No file selected', 'warning');
+      return;
+    }
+
+    const name = String(file.name || '');
+    const lower = name.toLowerCase();
+    const isJson = lower.endsWith('.json') || String(file.type || '').includes('json');
+    if (!isJson) {
+      UIComponents.showToast('Invalid file type. Supported: .json', 'warning');
+      return;
+    }
+
+    let text = '';
+    try {
+      text = await file.text();
+    } catch (err) {
+      UIComponents.showToast('Import failed: ' + (err && err.message), 'error');
+      return;
+    }
+
+    let imported = null;
+    try {
+      imported = ImportExport.parseAppImportJSON(text);
+    } catch (err) {
+      UIComponents.showToast('Invalid App JSON: ' + (err && err.message), 'error');
+      UIComponents.showToast('If you are importing only packs, use Import Pack.', 'info');
+      return;
+    }
+
+    if (!imported || !Array.isArray(imported.packLibrary) || !Array.isArray(imported.caseLibrary) || !imported.preferences) {
+      UIComponents.showToast('Invalid App JSON: missing required keys', 'error');
+      return;
+    }
+
+    const ok = await UIComponents.confirm({
+      title: 'Import App JSON?',
+      message: 'This will replace your current data with the imported backup. This cannot be undone.',
+      danger: true,
+      okLabel: 'Replace & Import',
     });
-    input.click();
+    if (!ok) return;
+
+    try {
+      const prev = StateStore.get();
+      const importedCases = (imported.caseLibrary || []).map(applyCaseDefaultColor);
+      const nextState = {
+        ...prev,
+        caseLibrary: importedCases,
+        packLibrary: imported.packLibrary,
+        preferences: imported.preferences,
+        currentPackId: null,
+        currentScreen: 'packs',
+        selectedInstanceIds: [],
+      };
+      StateStore.replace(nextState, { skipHistory: false });
+      Storage.saveNow();
+      if (PreferencesManager && typeof PreferencesManager.applyTheme === 'function') {
+        PreferencesManager.applyTheme(nextState.preferences.theme);
+      }
+
+      const summary = doc.createElement('div');
+      summary.className = 'card';
+      summary.innerHTML = `
+        <div style="font-weight:var(--font-semibold);margin-bottom:6px">Import Result</div>
+        <div class="muted" style="font-size:var(--text-sm)">File: ${Utils && Utils.escapeHtml ? Utils.escapeHtml(file.name) : file.name}</div>
+        <div style="height:8px"></div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <div class="badge" style="border-color:rgba(16,185,129,.25);background:rgba(16,185,129,.12);color:var(--text-primary)">Packs: ${(imported.packLibrary || []).length}</div>
+          <div class="badge" style="border-color:rgba(59,130,246,.25);background:rgba(59,130,246,.12);color:var(--text-primary)">Cases: ${(imported.caseLibrary || []).length}</div>
+        </div>
+      `;
+      resultsEl.appendChild(summary);
+
+      UIComponents.showToast('App data imported', 'success');
+      modal.close();
+    } catch (err) {
+      UIComponents.showToast('Import failed: ' + (err && err.message), 'error');
+    }
+  }
+
+  function open() {
+    const content = doc.createElement('div');
+    content.style.display = 'grid';
+    content.style.gap = '14px';
+
+    const drop = doc.createElement('div');
+    drop.className = 'card';
+    drop.style.borderStyle = 'dashed';
+    drop.style.background = 'var(--bg-elevated)';
+    drop.style.textAlign = 'center';
+    drop.style.padding = '22px';
+    drop.innerHTML = `
+      <div style="font-size:28px;margin-bottom:6px"><i class="fa-solid fa-star"></i></div>
+      <div style="font-weight:var(--font-semibold);margin-bottom:6px">Drag & Drop Backup File Here</div>
+      <div class="muted" style="font-size:var(--text-sm)">Supported: .json</div>
+      <div style="height:12px"></div>
+    `;
+    const browseBtn = doc.createElement('button');
+    browseBtn.className = 'btn';
+    browseBtn.type = 'button';
+    browseBtn.innerHTML = '<i class="fa-solid fa-folder-open"></i> Browse Backup files';
+    drop.appendChild(browseBtn);
+
+    const hint = doc.createElement('div');
+    hint.className = 'muted';
+    hint.style.fontSize = 'var(--text-sm)';
+    hint.innerHTML =
+      'Required: <b>packLibrary</b>, <b>caseLibrary</b>, <b>preferences</b><br>Warning: This will replace your current data.';
+
+    const results = doc.createElement('div');
+    results.style.display = 'none';
+
+    content.appendChild(drop);
+    content.appendChild(hint);
+    content.appendChild(results);
+
+    const fileInput = doc.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.json,application/json';
+
+    const modal = UIComponents.showModal({
+      title: 'Import App JSON',
+      content,
+      actions: [{ label: 'Close', variant: 'primary' }],
+    });
+
+    browseBtn.addEventListener('click', () => fileInput.click());
+
+    drop.addEventListener('dragover', ev => {
+      ev.preventDefault();
+      drop.style.borderColor = 'rgba(255, 159, 28, 0.6)';
+    });
+    drop.addEventListener('dragleave', () => {
+      drop.style.borderColor = 'var(--border-subtle)';
+    });
+    drop.addEventListener('drop', ev => {
+      ev.preventDefault();
+      drop.style.borderColor = 'var(--border-subtle)';
+      const file = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+      if (file) handleFile(file, results, modal);
+    });
+
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (file) handleFile(file, results, modal);
+    });
   }
 
   function init() {

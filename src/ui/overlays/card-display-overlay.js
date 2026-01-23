@@ -72,8 +72,12 @@ export function createCardDisplayOverlay({
     function item(label, checked, onClick) {
       return {
         label,
-        rightIcon: checked ? 'fa-solid fa-check' : '',
-        rightIconColor: checked ? 'var(--success)' : 'var(--text-muted)',
+        checkbox: true,
+        checked,
+        onCheckboxChange: () => {
+          onClick();
+          open({ screen, force: true });
+        },
         onClick: () => {
           onClick();
           open({ screen, force: true });
@@ -102,7 +106,7 @@ export function createCardDisplayOverlay({
       items.push(item('Show Edited Time', packs.showEditedTime !== false, () => setFlag('packs.showEditedTime', packs.showEditedTime === false)));
     }
 
-    UIComponents.openDropdown(anchorEl, items, { width: 260, align: 'left', role: 'card-display' });
+    UIComponents.openDropdown(anchorEl, items, { width: 260, align: 'left', role: 'card-display', closeOnCheckboxChange: false });
   }
 
   function init() {

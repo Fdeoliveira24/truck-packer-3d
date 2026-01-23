@@ -7,6 +7,15 @@
  * @author Truck Packer 3D Team
  */
 
+/*
+  RUNTIME CORE (v1) - DO NOT MIX WITH LEGACY/V2 MODULES WITHOUT RECONCILING APIS
+  - State:    ./core/state-store.js
+  - Events:   ./core/events.js
+  - Version:  ./core/version.js (APP_VERSION)
+  - Storage:  ./core/storage.js (STORAGE_KEY = 'truckPacker3d:v1')
+  - Session:  ./core/session.js (SESSION_KEY = 'truckPacker3d:session:v1')
+*/
+
 // ============================================================================
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
@@ -39,6 +48,8 @@ import { createImportPackDialog } from './ui/overlays/import-pack-dialog.js';
 import { createImportCasesDialog } from './ui/overlays/import-cases-dialog.js';
 import { createAppHelpers } from './core/app-helpers.js';
 import { installDevHelpers } from './core/dev/dev-helpers.js';
+import * as SupabaseClient from './core/supabase-client.js';
+import { createAuthOverlay } from './ui/overlays/auth-overlay.js';
 import { on, emit } from './core/events.js';
 import { APP_VERSION } from './core/version.js';
 
@@ -189,6 +200,7 @@ import { APP_VERSION } from './core/version.js';
             getCasesUI: () => CasesUI,
             getPacksUI: () => PacksUI,
           });
+          const AuthOverlay = createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 'tp3dDebug' });
 
           const HelpModal = createHelpModal({ UIComponents });
           const ImportAppDialog = createImportAppDialog({
@@ -199,6 +211,7 @@ import { APP_VERSION } from './core/version.js';
             Storage,
             PreferencesManager,
             applyCaseDefaultColor,
+            Utils,
           });
           // ============================================================================
           // SECTION: UI WIDGET (ACCOUNT SWITCHER)
@@ -1504,6 +1517,7 @@ import { APP_VERSION } from './core/version.js';
             UIComponents,
             ImportExport,
             PackLibrary,
+            Utils,
           });
           const ImportCasesDialog = createImportCasesDialog({
             documentRef: document,
@@ -1990,9 +2004,49 @@ import { APP_VERSION } from './core/version.js';
             const btnHelp = document.getElementById('btn-help');
 
             btnExport.addEventListener('click', () => {
-              const json = ImportExport.buildAppExportJSON();
-              Utils.downloadText(`truck-packer-3d-${Date.now()}.json`, json);
-              toast('Exported app JSON', 'success');
+              const content = document.createElement('div');
+              content.style.display = 'grid';
+              content.style.gap = '12px';
+
+              const blurb = document.createElement('div');
+              blurb.className = 'muted';
+              blurb.style.fontSize = 'var(--text-sm)';
+              blurb.innerHTML =
+                '<div><strong>App Export</strong> downloads a full JSON backup of packs, cases, and settings.</div>' +
+                '<div style="height:8px"></div>' +
+                '<div>This file can be imported back to restore everything.</div>';
+
+              const filename = `truck-packer-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
+              const meta = document.createElement('div');
+              meta.className = 'card';
+              meta.innerHTML = `
+                <div style="font-weight:var(--font-semibold);margin-bottom:6px">Export details</div>
+                <div class="muted" style="font-size:var(--text-sm)">File: ${Utils.escapeHtml(filename)}</div>
+              `;
+
+              content.appendChild(blurb);
+              content.appendChild(meta);
+
+              UIComponents.showModal({
+                title: 'Export App JSON',
+                content,
+                actions: [
+                  { label: 'Cancel' },
+                  {
+                    label: 'Export',
+                    variant: 'primary',
+                    onClick: () => {
+                      try {
+                        const json = ImportExport.buildAppExportJSON();
+                        Utils.downloadText(filename, json);
+                        UIComponents.showToast('App JSON exported', 'success');
+                      } catch (err) {
+                        UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
+                      }
+                    },
+                  },
+                ],
+              });
             });
 
             btnImport.addEventListener('click', () => {
@@ -2095,13 +2149,95 @@ import { APP_VERSION } from './core/version.js';
           // ============================================================================
           // SECTION: APP INIT (ORDER CRITICAL)
           // ============================================================================
-          function init() {
+          let authListenerInstalled = false;
+          let readyToastShown = false;
+
+          function showReadyOnce() {
+            if (readyToastShown) return;
+            readyToastShown = true;
+            UIComponents.showToast('Ready', 'success', { title: 'Truck Packer 3D' });
+          }
+
+          async function init() {
             console.info('[TruckPackerApp] init start');
             if (!validateRuntime()) return;
             installDevHelpers({ app: window.TruckPackerApp, stateStore: StateStore, Utils, documentRef: document });
             seedIfEmpty();
 
             PreferencesManager.applyTheme(StateStore.get('preferences').theme);
+
+            let supabaseInitOk = false;
+            try {
+              const cfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : null;
+              const url = cfg ? cfg.url : '';
+              const anonKey = cfg ? cfg.anonKey : '';
+              if (!url || !anonKey) {
+                AuthOverlay.setPhase('cantconnect', {
+                  error: new Error('Supabase config missing'),
+                });
+                AuthOverlay.show();
+                return;
+              }
+              await SupabaseClient.init({ url, anonKey });
+              supabaseInitOk = true;
+            } catch (err) {
+              AuthOverlay.setPhase('cantconnect', { error: err });
+              AuthOverlay.show();
+              return;
+            }
+
+            const bootstrapAuthGate = async () => {
+              AuthOverlay.setPhase('checking', { onRetry: bootstrapAuthGate });
+              AuthOverlay.show();
+              try {
+                const timeoutMs = 12000;
+                const session = await Promise.race([
+                  SupabaseClient.refreshSession(),
+                  new Promise((_, rej) => window.setTimeout(() => rej(new Error('Session check timed out')), timeoutMs)),
+                ]);
+                const user = session && session.user ? session.user : null;
+                if (user) {
+                  AuthOverlay.hide();
+                  showReadyOnce();
+                  return true;
+                }
+                AuthOverlay.setPhase('form', { onRetry: bootstrapAuthGate });
+                AuthOverlay.show();
+                return false;
+              } catch (err) {
+                AuthOverlay.setPhase('cantconnect', { error: err, onRetry: bootstrapAuthGate });
+                AuthOverlay.show();
+                return false;
+              }
+            };
+
+            if (!authListenerInstalled) {
+              authListenerInstalled = true;
+              SupabaseClient.onAuthStateChange((event, _session) => {
+                const user = (() => {
+                  try {
+                    return SupabaseClient.getUser();
+                  } catch {
+                    return null;
+                  }
+                })();
+
+                if (user) {
+                  AuthOverlay.hide();
+                  if (event === 'SIGNED_IN') {
+                    UIComponents.showToast('Signed in', 'success', { title: 'Auth' });
+                  }
+                  showReadyOnce();
+                  return;
+                }
+
+                AuthOverlay.setPhase('form', { onRetry: bootstrapAuthGate });
+                AuthOverlay.show();
+                if (event === 'SIGNED_OUT') {
+                  UIComponents.showToast('Signed out', 'info', { title: 'Auth' });
+                }
+              });
+            }
 
             AppShell.init();
             PacksUI.init();
@@ -2169,7 +2305,8 @@ import { APP_VERSION } from './core/version.js';
             });
 
             renderAll();
-            UIComponents.showToast('Ready', 'success', { title: 'Truck Packer 3D' });
+            if (!supabaseInitOk) return;
+            await bootstrapAuthGate();
           }
 
           return {

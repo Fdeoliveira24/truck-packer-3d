@@ -97,7 +97,7 @@ export function createImportCasesDialog({
     drop.style.textAlign = 'center';
     drop.style.padding = '22px';
     drop.innerHTML = `
-	              <div style="font-size:28px;margin-bottom:6px">📄</div>
+	              <div style="font-size:28px;margin-bottom:6px"><i class="fa-solid fa-star"></i></div>
 	              <div style="font-weight:var(--font-semibold);margin-bottom:6px">Drag & Drop File Here</div>
 	              <div class="muted" style="font-size:var(--text-sm)">Supported: .csv, .xlsx</div>
 	              <div style="height:12px"></div>

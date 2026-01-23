@@ -12,6 +12,7 @@ The following raw.githubusercontent.com URLs point to the repository files (owne
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/config/plans.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/config/roles.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/core/browser.js
+- https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/core/app-helpers.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/core/constants.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/core/defaults.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/core/event-bus.js
@@ -21,6 +22,7 @@ The following raw.githubusercontent.com URLs point to the repository files (owne
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/core/state-store.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/core/state.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/core/storage.js
+- https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/core/supabase-client.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/core/utils/index.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/core/dev/dev-helpers.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/core/version.js
@@ -56,6 +58,7 @@ The following raw.githubusercontent.com URLs point to the repository files (owne
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/ui/ui-components.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/ui/overlays/settings-overlay.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/ui/overlays/card-display-overlay.js
+- https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/ui/overlays/auth-overlay.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/ui/overlays/help-modal.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/ui/overlays/import-app-dialog.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/ui/overlays/import-pack-dialog.js
@@ -65,5 +68,4 @@ The following raw.githubusercontent.com URLs point to the repository files (owne
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/utils/uuid.js
 - https://raw.githubusercontent.com/Fdeoliveira24/truck-packer-3d/main/src/vendor/loader.js
 
-
-All URLs checked at creation time and returned HTTP 200.
+Note: URL availability depends on what has been committed and pushed to the `main` branch.

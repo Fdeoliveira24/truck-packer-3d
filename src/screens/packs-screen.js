@@ -352,31 +352,16 @@ export function createPacksScreen({
             function updateBulkActions() {
               const mode = PreferencesManager.get().packsViewMode || 'grid';
               const count = selectedIds.size;
-              if (mode === 'list' && count > 0) {
+              if (count > 0) {
                 defaultActionsEl.style.display = 'none';
                 bulkActionsEl.style.display = 'flex';
                 bulkCountEl.textContent = `${count} pack${count === 1 ? '' : 's'} selected`;
                 btnBulkDelete.innerHTML = `<i class="fa-solid fa-trash"></i> Delete (${count})`;
-                const q = String(searchEl.value || '').trim().toLowerCase();
-                const allPacks = PackLibrary.getPacks();
-                const packs = allPacks
-                  .filter(p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q))
-                  .filter(p => {
-                    if (!filters.empty && !filters.partial && !filters.full) return true;
-                    const total = (p.cases || []).length;
-                    const percent = p.stats && Number.isFinite(p.stats.volumePercent) ? p.stats.volumePercent : 0;
-                    const isEmpty = total === 0;
-                    const isFull = percent >= 99.999;
-                    const isPartial = !isEmpty && percent > 0 && !isFull;
-                    if (filters.empty && isEmpty) return true;
-                    if (filters.partial && isPartial) return true;
-                    if (filters.full && isFull) return true;
-                    return false;
-                  });
-                const allSelected = packs.length > 0 && packs.every(p => selectedIds.has(p.id));
-                const someSelected = packs.some(p => selectedIds.has(p.id));
-                selectAllEl.checked = allSelected;
-                selectAllEl.indeterminate = someSelected && !allSelected;
+                const visiblePacks = Array.isArray(filteredPacks) ? filteredPacks : [];
+                const allSelected = visiblePacks.length > 0 && visiblePacks.every(p => selectedIds.has(p.id));
+                const someSelected = visiblePacks.some(p => selectedIds.has(p.id));
+                selectAllEl.checked = mode === 'list' ? allSelected : false;
+                selectAllEl.indeterminate = mode === 'list' ? someSelected && !allSelected : false;
               } else {
                 defaultActionsEl.style.display = 'flex';
                 bulkActionsEl.style.display = 'none';
@@ -385,30 +370,24 @@ export function createPacksScreen({
               }
             }
 
-            function handleBulkDelete() {
+            async function handleBulkDelete() {
               const count = selectedIds.size;
               if (count === 0) return;
-              const confirmed = confirm(`Delete ${count} pack${count === 1 ? '' : 's'}?\n\nThis action cannot be undone.`);
-              if (!confirmed) return;
               const idsToDelete = Array.from(selectedIds);
-              const state = StateStore.get();
-              const currentPackId = state.currentPackId;
-              const isCurrentDeleted = idsToDelete.includes(currentPackId);
-              const updatedPacks = state.packs.filter(p => !idsToDelete.includes(p.id));
-              if (isCurrentDeleted) {
-                StateStore.set({
-                  ...state,
-                  packs: updatedPacks,
-                  currentPackId: null,
-                  instances: [],
-                  groups: [],
-                });
-                AppShell.navigate('packs');
-              } else {
-                StateStore.set({ ...state, packs: updatedPacks });
-              }
+              const ok = await UIComponents.confirm({
+                title: 'Delete packs?',
+                message: `This will permanently delete ${count} pack(s). This cannot be undone.`,
+                danger: true,
+                okLabel: 'Delete',
+              });
+              if (!ok) return;
+
+              const currentPackId = StateStore.get('currentPackId');
+              const isCurrentDeleted = currentPackId && idsToDelete.includes(currentPackId);
+              idsToDelete.forEach(id => PackLibrary.remove(id));
+              if (isCurrentDeleted) AppShell.navigate('packs');
               selectedIds.clear();
-              UIComponents.showToast(`${count} pack${count === 1 ? '' : 's'} deleted`, 'success');
+              UIComponents.showToast(`${count} pack(s) deleted`, 'success');
               render();
             }
 
@@ -699,7 +678,12 @@ export function createPacksScreen({
 	                card.classList.toggle('selected', selectedIds.has(pack.id));
 	                card.tabIndex = 0;
 	                card.addEventListener('click', ev => {
-	                  if (ev.target && ev.target.closest && ev.target.closest('[data-pack-menu]')) return;
+	                  if (
+	                    ev.target &&
+	                    ev.target.closest &&
+	                    (ev.target.closest('[data-pack-menu]') || ev.target.closest('[data-pack-select]'))
+	                  )
+	                    return;
 	                  openPack(pack.id);
 	                });
 	                card.addEventListener('keydown', ev => {
@@ -710,6 +694,20 @@ export function createPacksScreen({
 
                 const title = document.createElement('h3');
                 title.textContent = pack.title || 'Untitled Pack';
+                title.title = pack.title || 'Untitled Pack';
+                title.style.margin = '0';
+                title.style.flex = '1';
+                title.style.minWidth = '0';
+                title.style.whiteSpace = 'nowrap';
+                title.style.overflow = 'hidden';
+                title.style.textOverflow = 'ellipsis';
+
+                const head = document.createElement('div');
+                head.className = 'card-head';
+                head.style.display = 'flex';
+                head.style.alignItems = 'center';
+                head.style.gap = 'var(--space-3)';
+                head.style.marginBottom = 'var(--space-2)';
 
                 const meta = document.createElement('div');
                 meta.className = 'pack-meta';
@@ -768,12 +766,10 @@ export function createPacksScreen({
                   }
                 }
 
-	                const kebabWrap = document.createElement('div');
-	                kebabWrap.className = 'kebab';
-	                kebabWrap.setAttribute('data-pack-menu', '1');
 	                const selectCb = document.createElement('input');
 	                selectCb.type = 'checkbox';
 	                selectCb.checked = selectedIds.has(pack.id);
+	                selectCb.setAttribute('data-pack-select', '1');
 	                selectCb.setAttribute('aria-label', `Select ${pack.title || 'Untitled Pack'}`);
 	                selectCb.addEventListener('click', ev => ev.stopPropagation());
 	                selectCb.addEventListener('change', () => {
@@ -786,6 +782,7 @@ export function createPacksScreen({
 	                const kebabBtn = document.createElement('button');
 	                kebabBtn.className = 'btn btn-ghost';
 	                kebabBtn.type = 'button';
+	                kebabBtn.setAttribute('data-pack-menu', '1');
 	                kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
 	                kebabBtn.addEventListener('click', ev => {
 	                  ev.stopPropagation();
@@ -816,14 +813,23 @@ export function createPacksScreen({
                     { label: 'Delete', icon: 'fa-solid fa-trash', variant: 'danger', dividerBefore: true, onClick: () => deletePack(pack.id) },
                   ]);
                 });
-	                kebabWrap.appendChild(selectCb);
-	                kebabWrap.appendChild(kebabBtn);
+
+	                const actions = document.createElement('div');
+	                actions.className = 'card-head-actions';
+	                actions.style.display = 'flex';
+	                actions.style.alignItems = 'center';
+	                actions.style.gap = 'var(--space-1)';
+	                actions.style.marginLeft = 'auto';
+	                actions.appendChild(selectCb);
+	                actions.appendChild(kebabBtn);
+
+	                head.appendChild(title);
+	                head.appendChild(actions);
 
                 if (badgesWrap.children.length) meta.appendChild(badgesWrap);
-                meta.appendChild(kebabWrap);
 
                 if (badgePrefs.showThumbnail !== false) card.appendChild(preview);
-                card.appendChild(title);
+                card.appendChild(head);
                 if (badgePrefs.showEditedTime !== false) {
                   const editedBadge = document.createElement('div');
                   editedBadge.className = 'badge';
@@ -878,20 +884,20 @@ export function createPacksScreen({
             function openNewPackModal() {
               const content = document.createElement('div');
               content.style.display = 'grid';
-              content.style.gap = '14px';
-              content.style.gridTemplateColumns = 'repeat(auto-fit, minmax(260px, 1fr))';
+              content.style.gap = '10px';
+              content.style.gridTemplateColumns = 'repeat(auto-fit, minmax(220px, 1fr))';
               content.style.alignItems = 'flex-start';
 
               const title = field('Title (required)', 'text', 'Summer Festival Tour', true);
               const client = field('Client (optional)', 'text', 'Live Nation', false);
               const projectName = field('Project name (optional)', 'text', 'Coachella 2024', false);
               const drawnBy = field('Drawn by (optional)', 'text', 'John Smith', false);
+              const notes = textareaField('Notes (optional)', 'Add notes for this pack...');
+              title.wrap.style.gridColumn = '1 / -1';
 
-              const truckPresets = [
-                { label: '53ft Trailer (default)', truck: { length: 636, width: 102, height: 98 } },
-                { label: '26ft Box Truck', truck: { length: 312, width: 96, height: 96 } },
-                { label: 'Sprinter Van', truck: { length: 168, width: 70, height: 72 } },
-              ];
+              const presets = TrailerPresets.getAll();
+              const hasPresets = Array.isArray(presets) && presets.length > 0;
+              const fallbackTruck = { length: 636, width: 102, height: 98, shapeMode: 'rect' };
 
               const presetWrap = document.createElement('div');
               presetWrap.className = 'field';
@@ -900,10 +906,13 @@ export function createPacksScreen({
               presetLabel.textContent = 'Truck preset';
               const presetSelect = document.createElement('select');
               presetSelect.className = 'select';
-              truckPresets.forEach((p, idx) => {
+              const presetOptions = hasPresets
+                ? presets
+                : [{ id: 'default', label: '53ft Trailer (default)', truck: fallbackTruck, tags: ['Default'] }];
+              presetOptions.forEach(preset => {
                 const opt = document.createElement('option');
-                opt.value = String(idx);
-                opt.textContent = p.label;
+                opt.value = String(preset.id);
+                opt.textContent = preset.label;
                 presetSelect.appendChild(opt);
               });
 	              presetWrap.appendChild(presetLabel);
@@ -924,10 +933,12 @@ export function createPacksScreen({
 	              modeSelect.value = 'rect';
 	              modeWrap.appendChild(modeLabel);
 	              modeWrap.appendChild(modeSelect);
+	              modeWrap.style.gridColumn = '1 / -1';
 
 	              const truckGrid = document.createElement('div');
 	              truckGrid.className = 'row';
 	              truckGrid.style.gap = '12px';
+	              truckGrid.style.gridColumn = '1 / -1';
 	              const tL = field('Truck length (in)', 'number', '636', true);
 	              const tW = field('Truck width (in)', 'number', '102', true);
               const tH = field('Truck height (in)', 'number', '98', true);
@@ -939,11 +950,18 @@ export function createPacksScreen({
               truckGrid.appendChild(tH.wrap);
 
               presetSelect.addEventListener('change', () => {
-                const idx = Number(presetSelect.value);
-                const preset = truckPresets[idx] || truckPresets[0];
-                tL.input.value = String(preset.truck.length);
-                tW.input.value = String(preset.truck.width);
-                tH.input.value = String(preset.truck.height);
+                const selectedId = String(presetSelect.value || '');
+                const preset =
+                  (TrailerPresets.getById && TrailerPresets.getById(selectedId)) ||
+                  presetOptions.find(p => String(p && p.id) === selectedId) ||
+                  null;
+                const nextTruck = (preset && preset.truck) || fallbackTruck;
+                tL.input.value = String(nextTruck.length);
+                tW.input.value = String(nextTruck.width);
+                tH.input.value = String(nextTruck.height);
+                if (nextTruck.shapeMode === 'wheelWells' || nextTruck.shapeMode === 'frontBonus' || nextTruck.shapeMode === 'rect') {
+                  modeSelect.value = nextTruck.shapeMode;
+                }
               });
 
               content.appendChild(title.wrap);
@@ -953,12 +971,13 @@ export function createPacksScreen({
 	              content.appendChild(presetWrap);
 	              content.appendChild(modeWrap);
 	              content.appendChild(truckGrid);
+	              content.appendChild(notes.wrap);
 
-	              UIComponents.showModal({
-	                title: 'New Pack',
-	                content,
-	                actions: [
-	                  { label: 'Cancel' },
+              UIComponents.showModal({
+                title: 'New Pack',
+                content,
+                actions: [
+                  { label: 'Cancel' },
                   {
                     label: 'Create',
                     variant: 'primary',
@@ -974,6 +993,7 @@ export function createPacksScreen({
                         client: String(client.input.value || '').trim(),
                         projectName: String(projectName.input.value || '').trim(),
                         drawnBy: String(drawnBy.input.value || '').trim(),
+                        notes: String(notes.textarea.value || '').trim(),
 	                        truck: {
 	                          length: Number(tL.input.value) || 636,
 	                          width: Number(tW.input.value) || 102,
@@ -992,95 +1012,191 @@ export function createPacksScreen({
 	              });
 	            }
 
-	            function openEditPackModal(packId) {
-	              const pack = PackLibrary.getById(packId);
-	              if (!pack) return;
+            function openEditPackModal(packId) {
+              const pack = PackLibrary.getById(packId);
+              if (!pack) return;
 
-	              const content = document.createElement('div');
-	              content.style.display = 'grid';
-	              content.style.gap = '14px';
-	              content.style.gridTemplateColumns = 'repeat(auto-fit, minmax(260px, 1fr))';
-	              content.style.alignItems = 'flex-start';
+              const content = document.createElement('div');
+              content.style.display = 'grid';
+              content.style.gap = '10px';
+              content.style.gridTemplateColumns = 'repeat(auto-fit, minmax(220px, 1fr))';
+              content.style.alignItems = 'flex-start';
 
-	              const title = field('Title (required)', 'text', '', true);
-	              title.input.value = pack.title || '';
+              const title = field('Title (required)', 'text', '', true);
+              title.input.value = pack.title || '';
+              title.wrap.style.gridColumn = '1 / -1';
 
-	              const modeWrap = document.createElement('div');
-	              modeWrap.className = 'field';
-	              const modeLabel = document.createElement('div');
-	              modeLabel.className = 'label';
-	              modeLabel.textContent = 'Trailer Shape Mode';
-	              const modeSelect = document.createElement('select');
-	              modeSelect.className = 'select';
-	              modeSelect.innerHTML = `
-	                <option value="rect">Standard</option>
-	                <option value="wheelWells">Box + Wheel Wells</option>
-	                <option value="frontBonus">Box + Front Overhang</option>
-	              `;
-	              modeSelect.value =
-	                pack && pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
-	                  ? pack.truck.shapeMode
-	                  : 'rect';
-	              modeWrap.appendChild(modeLabel);
-	              modeWrap.appendChild(modeSelect);
+              const client = field('Client (optional)', 'text', '', false);
+              client.input.value = pack.client || '';
 
-	              const truckGrid = document.createElement('div');
-	              truckGrid.className = 'row';
-	              truckGrid.style.gap = '12px';
-	              const tL = field('Truck length (in)', 'number', '', true);
-	              const tW = field('Truck width (in)', 'number', '', true);
-	              const tH = field('Truck height (in)', 'number', '', true);
-	              tL.wrap.style.flex = '1';
-	              tW.wrap.style.flex = '1';
-	              tH.wrap.style.flex = '1';
-	              tL.input.value = String((pack.truck && pack.truck.length) || 636);
-	              tW.input.value = String((pack.truck && pack.truck.width) || 102);
-	              tH.input.value = String((pack.truck && pack.truck.height) || 98);
-	              truckGrid.appendChild(tL.wrap);
-	              truckGrid.appendChild(tW.wrap);
-	              truckGrid.appendChild(tH.wrap);
+              const projectName = field('Project name (optional)', 'text', '', false);
+              projectName.input.value = pack.projectName || '';
 
-	              content.appendChild(title.wrap);
-	              content.appendChild(modeWrap);
-	              content.appendChild(truckGrid);
+              const drawnBy = field('Drawn by (optional)', 'text', '', false);
+              drawnBy.input.value = pack.drawnBy || '';
 
-	              UIComponents.showModal({
-	                title: 'Edit Pack',
-	                content,
-	                actions: [
-	                  { label: 'Cancel' },
-	                  {
-	                    label: 'Save',
-	                    variant: 'primary',
-	                    onClick: () => {
-	                      const t = String(title.input.value || '').trim();
-	                      if (!t) {
-	                        UIComponents.showToast('Title is required', 'warning');
-	                        title.input.focus();
-	                        return false;
-	                      }
-	                      const shapeMode =
-	                        modeSelect.value === 'wheelWells' || modeSelect.value === 'frontBonus' ? modeSelect.value : 'rect';
-	                      const prevTruck = pack.truck && typeof pack.truck === 'object' ? pack.truck : {};
-	                      const shapeConfig =
-	                        prevTruck.shapeConfig && typeof prevTruck.shapeConfig === 'object' && !Array.isArray(prevTruck.shapeConfig)
-	                          ? Utils.deepClone(prevTruck.shapeConfig)
-	                          : {};
-	                      const nextTruck = {
-	                        ...prevTruck,
-	                        length: Number(tL.input.value) || prevTruck.length || 636,
-	                        width: Number(tW.input.value) || prevTruck.width || 102,
-	                        height: Number(tH.input.value) || prevTruck.height || 98,
-	                        shapeMode,
-	                        shapeConfig,
-	                      };
-	                      PackLibrary.update(packId, { title: t, truck: nextTruck });
-	                      UIComponents.showToast('Pack updated', 'success');
-	                    },
-	                  },
-	                ],
-	              });
-	            }
+              const notes = textareaField('Notes (optional)', 'Add notes for this pack...');
+              notes.textarea.value = pack.notes || '';
+
+              const presets = TrailerPresets.getAll();
+              const presetWrap = document.createElement('div');
+              presetWrap.className = 'field';
+              const presetLabel = document.createElement('div');
+              presetLabel.className = 'label';
+              presetLabel.textContent = 'Truck preset';
+              const presetSelect = document.createElement('select');
+              presetSelect.className = 'select';
+              const customOpt = document.createElement('option');
+              customOpt.value = 'custom';
+              customOpt.textContent = 'Custom';
+              presetSelect.appendChild(customOpt);
+              (Array.isArray(presets) ? presets : []).forEach(preset => {
+                const opt = document.createElement('option');
+                opt.value = String(preset.id);
+                opt.textContent = preset.label;
+                presetSelect.appendChild(opt);
+              });
+              presetWrap.appendChild(presetLabel);
+              presetWrap.appendChild(presetSelect);
+
+              const modeWrap = document.createElement('div');
+              modeWrap.className = 'field';
+              const modeLabel = document.createElement('div');
+              modeLabel.className = 'label';
+              modeLabel.textContent = 'Trailer Shape Mode';
+              const modeSelect = document.createElement('select');
+              modeSelect.className = 'select';
+              modeSelect.innerHTML = `
+                <option value="rect">Standard</option>
+                <option value="wheelWells">Box + Wheel Wells</option>
+                <option value="frontBonus">Box + Front Overhang</option>
+              `;
+              modeSelect.value =
+                pack && pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
+                  ? pack.truck.shapeMode
+                  : 'rect';
+              modeWrap.appendChild(modeLabel);
+              modeWrap.appendChild(modeSelect);
+              modeWrap.style.gridColumn = '1 / -1';
+
+              const truckGrid = document.createElement('div');
+              truckGrid.className = 'row';
+              truckGrid.style.gap = '12px';
+              truckGrid.style.gridColumn = '1 / -1';
+              const tL = field('Truck length (in)', 'number', '', true);
+              const tW = field('Truck width (in)', 'number', '', true);
+              const tH = field('Truck height (in)', 'number', '', true);
+              tL.wrap.style.flex = '1';
+              tW.wrap.style.flex = '1';
+              tH.wrap.style.flex = '1';
+              tL.input.value = String((pack.truck && pack.truck.length) || 636);
+              tW.input.value = String((pack.truck && pack.truck.width) || 102);
+              tH.input.value = String((pack.truck && pack.truck.height) || 98);
+              truckGrid.appendChild(tL.wrap);
+              truckGrid.appendChild(tW.wrap);
+              truckGrid.appendChild(tH.wrap);
+
+              function findPresetIdByDims(length, width, height) {
+                const list = Array.isArray(presets) ? presets : [];
+                const l = Number(length);
+                const w = Number(width);
+                const h = Number(height);
+                const match = list.find(p => {
+                  const t = p && p.truck;
+                  return t && Number(t.length) === l && Number(t.width) === w && Number(t.height) === h;
+                });
+                return match ? String(match.id) : 'custom';
+              }
+
+              let applyingPreset = false;
+              function syncPresetFromInputs() {
+                if (applyingPreset) return;
+                const nextId = findPresetIdByDims(tL.input.value, tW.input.value, tH.input.value);
+                presetSelect.value = nextId;
+              }
+
+              presetSelect.value = findPresetIdByDims(tL.input.value, tW.input.value, tH.input.value);
+
+              presetSelect.addEventListener('change', () => {
+                const selectedId = String(presetSelect.value || 'custom');
+                if (selectedId === 'custom') return;
+                const preset =
+                  (TrailerPresets.getById && TrailerPresets.getById(selectedId)) ||
+                  (Array.isArray(presets) ? presets : []).find(p => String(p && p.id) === selectedId) ||
+                  null;
+                if (!preset || !preset.truck) return;
+                applyingPreset = true;
+                tL.input.value = String(preset.truck.length);
+                tW.input.value = String(preset.truck.width);
+                tH.input.value = String(preset.truck.height);
+                if (
+                  preset.truck.shapeMode === 'wheelWells' ||
+                  preset.truck.shapeMode === 'frontBonus' ||
+                  preset.truck.shapeMode === 'rect'
+                ) {
+                  modeSelect.value = preset.truck.shapeMode;
+                }
+                applyingPreset = false;
+                syncPresetFromInputs();
+              });
+
+              tL.input.addEventListener('input', syncPresetFromInputs);
+              tW.input.addEventListener('input', syncPresetFromInputs);
+              tH.input.addEventListener('input', syncPresetFromInputs);
+
+              content.appendChild(title.wrap);
+              content.appendChild(client.wrap);
+              content.appendChild(projectName.wrap);
+              content.appendChild(drawnBy.wrap);
+              content.appendChild(presetWrap);
+              content.appendChild(modeWrap);
+              content.appendChild(truckGrid);
+              content.appendChild(notes.wrap);
+
+              UIComponents.showModal({
+                title: 'Edit Pack',
+                content,
+                actions: [
+                  { label: 'Cancel' },
+                  {
+                    label: 'Save',
+                    variant: 'primary',
+                    onClick: () => {
+                      const t = String(title.input.value || '').trim();
+                      if (!t) {
+                        UIComponents.showToast('Title is required', 'warning');
+                        title.input.focus();
+                        return false;
+                      }
+                      const shapeMode =
+                        modeSelect.value === 'wheelWells' || modeSelect.value === 'frontBonus' ? modeSelect.value : 'rect';
+                      const prevTruck = pack.truck && typeof pack.truck === 'object' ? pack.truck : {};
+                      const shapeConfig =
+                        prevTruck.shapeConfig && typeof prevTruck.shapeConfig === 'object' && !Array.isArray(prevTruck.shapeConfig)
+                          ? Utils.deepClone(prevTruck.shapeConfig)
+                          : {};
+                      const nextTruck = {
+                        ...prevTruck,
+                        length: Number(tL.input.value) || prevTruck.length || 636,
+                        width: Number(tW.input.value) || prevTruck.width || 102,
+                        height: Number(tH.input.value) || prevTruck.height || 98,
+                        shapeMode,
+                        shapeConfig,
+                      };
+                      PackLibrary.update(packId, {
+                        title: t,
+                        client: String(client.input.value || '').trim(),
+                        projectName: String(projectName.input.value || '').trim(),
+                        drawnBy: String(drawnBy.input.value || '').trim(),
+                        notes: String(notes.textarea.value || '').trim(),
+                        truck: nextTruck,
+                      });
+                      UIComponents.showToast('Pack updated', 'success');
+                    },
+                  },
+                ],
+              });
+            }
 
 	            function openRename(packId) {
 	              const pack = PackLibrary.getById(packId);
@@ -1122,7 +1238,7 @@ export function createPacksScreen({
             async function deletePack(packId) {
               const ok = await UIComponents.confirm({
                 title: 'Delete pack?',
-                message: 'This cannot be undone.',
+                message: 'This will permanently delete 1 pack(s). This cannot be undone.',
                 danger: true,
                 okLabel: 'Delete',
               });
@@ -1148,6 +1264,23 @@ export function createPacksScreen({
               wrap.appendChild(l);
               wrap.appendChild(input);
               return { wrap, input };
+            }
+
+            function textareaField(label, placeholder) {
+              const wrap = document.createElement('div');
+              wrap.className = 'field';
+              wrap.style.gridColumn = '1 / -1';
+              const l = document.createElement('div');
+              l.className = 'label';
+              l.textContent = label;
+              const textarea = document.createElement('textarea');
+              textarea.className = 'input';
+              textarea.rows = 3;
+              textarea.placeholder = placeholder || '';
+              textarea.style.minHeight = '48px';
+              wrap.appendChild(l);
+              wrap.appendChild(textarea);
+              return { wrap, textarea };
             }
 
             return { init: initPacksUI, render };

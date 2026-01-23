@@ -1,4 +1,10 @@
 /**
+ * • LEGACY / NOT USED BY CURRENT RUNTIME IMPORT CHAIN
+ * • Do NOT import this file unless you also reconcile storage/session APIs and key strategy.
+ * • If applicable: This module expects readJson/writeJson/removeKey from storage, but current core storage does not export them.
+ */
+
+/**
  * @file local.repository.js
  * @description LocalStorage-backed repository implementation with basic filtering.
  * @module data/repositories/local.repository

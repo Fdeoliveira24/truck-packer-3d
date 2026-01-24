@@ -38,7 +38,7 @@ function createButton(iconClass, label) {
 }
 
 export function createTableFooter(options = {}) {
-  const { mountEl, onPageChange = () => {}, onRowsPerPageChange = () => {} } = options;
+  const { mountEl, onPageChange = () => {}, onRowsPerPageChange = () => {}, onSelectAllToggle = () => {} } = options;
   if (!mountEl) {
     return {
       setState: () => {},
@@ -50,11 +50,18 @@ export function createTableFooter(options = {}) {
 
   const footerEl = document.createElement('div');
   footerEl.className = 'table-footer';
+  footerEl.classList.add('is-sticky');
 
   const leftEl = document.createElement('div');
   leftEl.className = 'tf-left';
+  const selectAllWrap = document.createElement('span');
+  const selectAllInput = document.createElement('input');
+  selectAllInput.type = 'checkbox';
+  selectAllInput.setAttribute('aria-label', 'Select all rows');
+  selectAllWrap.appendChild(selectAllInput);
   const leftText = document.createElement('span');
   leftText.textContent = '0 of 0 row(s) selected.';
+  leftEl.appendChild(selectAllWrap);
   leftEl.appendChild(leftText);
 
   const midEl = document.createElement('div');
@@ -101,11 +108,18 @@ export function createTableFooter(options = {}) {
     pageIndex: 0,
     pageCount: 0,
     rowsPerPage: DEFAULT_ROWS_PER_PAGE,
+    selectAllVisible: false,
+    selectAllChecked: false,
+    selectAllIndeterminate: false,
   };
 
   const render = () => {
-    const { selectedCount, totalCount, pageIndex, pageCount, rowsPerPage } = state;
+    const { selectedCount, totalCount, pageIndex, pageCount, rowsPerPage, selectAllVisible, selectAllChecked, selectAllIndeterminate } = state;
     leftText.textContent = `${selectedCount} of ${totalCount} row(s) selected.`;
+    selectAllWrap.hidden = !selectAllVisible;
+    selectAllInput.disabled = !selectAllVisible || totalCount === 0;
+    selectAllInput.checked = Boolean(selectAllChecked);
+    selectAllInput.indeterminate = Boolean(selectAllIndeterminate) && !selectAllChecked;
     if (selectEl.value !== String(rowsPerPage)) {
       selectEl.value = String(rowsPerPage);
     }
@@ -144,12 +158,16 @@ export function createTableFooter(options = {}) {
   const handlePrev = () => goToPage(state.pageIndex - 1);
   const handleNext = () => goToPage(state.pageIndex + 1);
   const handleLast = () => goToPage(state.pageCount - 1);
+  const handleToggleSelectAll = () => {
+    onSelectAllToggle(selectAllInput.checked);
+  };
 
   selectEl.addEventListener('change', handleSelectChange);
   btnFirst.addEventListener('click', handleFirst);
   btnPrev.addEventListener('click', handlePrev);
   btnNext.addEventListener('click', handleNext);
   btnLast.addEventListener('click', handleLast);
+  selectAllInput.addEventListener('change', handleToggleSelectAll);
 
   const setState = nextState => {
     const merged = { ...state, ...nextState };
@@ -159,13 +177,21 @@ export function createTableFooter(options = {}) {
       rowsPerPage: normalizeRowsPerPage(merged.rowsPerPage),
       pageCount: Math.max(0, Number(merged.pageCount) || 0),
       pageIndex: Number(merged.pageIndex) || 0,
+      selectAllVisible: Boolean(merged.selectAllVisible),
+      selectAllChecked: Boolean(merged.selectAllChecked),
+      selectAllIndeterminate: Boolean(merged.selectAllIndeterminate),
     };
+    if (sanitized.totalCount === 0) {
+      sanitized.selectAllChecked = false;
+      sanitized.selectAllIndeterminate = false;
+    }
     if (sanitized.pageCount === 0) {
       sanitized.pageIndex = 0;
     } else {
       sanitized.pageIndex = Math.min(Math.max(0, sanitized.pageIndex), sanitized.pageCount - 1);
     }
     state = sanitized;
+    footerEl.classList.toggle('is-hidden', state.totalCount === 0);
     render();
   };
 
@@ -175,6 +201,7 @@ export function createTableFooter(options = {}) {
     btnPrev.removeEventListener('click', handlePrev);
     btnNext.removeEventListener('click', handleNext);
     btnLast.removeEventListener('click', handleLast);
+    selectAllInput.removeEventListener('change', handleToggleSelectAll);
     footerEl.remove();
   };
 

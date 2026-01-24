@@ -58,6 +58,8 @@ export function createCasesScreen({
                 rowsPerPage: 50,
               };
               let casesFooterController = null;
+              let casesFooterMountEl = null;
+              let lastCasePageMeta = null;
               let filteredCases = [];
 
               function initCasesUI() {
@@ -87,10 +89,16 @@ export function createCasesScreen({
 	              btnBulkDelete.addEventListener('click', () => bulkDeleteSelected());
 	              selectAllEl.addEventListener('change', () => toggleAllVisible(selectAllEl.checked));
 	              initTableHeaders();
-                initCasesFooter();
                 updateViewButtons();
                 applyFiltersVisibility();
 	            }
+
+            function getCasesFooterMountElForMode(mode) {
+              const viewMode = mode || PreferencesManager.get().casesViewMode || 'list';
+              if (viewMode === 'list') return casesTableWrap;
+              if (viewMode === 'grid') return gridEl && gridEl.parentElement ? gridEl.parentElement : null;
+              return null;
+            }
 
               function setViewMode(mode) {
                 const prefs = PreferencesManager.get();
@@ -125,12 +133,17 @@ export function createCasesScreen({
 	            }
 
 	            function toggleAllVisible(checked) {
-	              const ids = lastVisibleIds || [];
-	              if (!ids.length) return;
-	              if (checked) ids.forEach(id => selectedIds.add(id));
-	              else ids.forEach(id => selectedIds.delete(id));
-	              render();
+                applySelectAllFiltered(checked);
 	            }
+
+              function applySelectAllFiltered(shouldSelect) {
+                selectedIds.clear();
+                if (shouldSelect) {
+                  const ids = Array.isArray(filteredCases) ? filteredCases.map(c => c.id) : [];
+                  ids.forEach(id => selectedIds.add(id));
+                }
+                render();
+              }
 
 	            function updateSelectionUI(visibleIds) {
 	              lastVisibleIds = visibleIds || [];
@@ -232,11 +245,14 @@ export function createCasesScreen({
               });
             }
 
-              function initCasesFooter() {
-                if (!casesTableWrap) return;
+              function initCasesFooter(mode) {
+                const mountEl = getCasesFooterMountElForMode(mode);
+                if (!mountEl) return;
+                if (casesFooterController && casesFooterMountEl === mountEl) return;
                 if (casesFooterController) casesFooterController.destroy();
+                casesFooterMountEl = mountEl;
                 casesFooterController = createTableFooter({
-                  mountEl: casesTableWrap,
+                  mountEl,
                   onPageChange: ({ pageIndex: nextIndex, rowsPerPage }) => {
                     if (typeof rowsPerPage === 'number') casesListState.rowsPerPage = rowsPerPage;
                     casesListState.pageIndex = nextIndex;
@@ -248,8 +264,8 @@ export function createCasesScreen({
                     casesListState.pageIndex = 0;
                     render();
                   },
+                  onSelectAllToggle: applySelectAllFiltered,
                 });
-                syncCasesFooter();
               }
 
               function getCasesPageMeta(list) {
@@ -282,41 +298,48 @@ export function createCasesScreen({
                   if (!filteredIds.has(id)) selectedIds.delete(id);
                 });
                 const selectedCount = filteredCases.filter(c => selectedIds.has(c.id)).length;
+                const allSelected = filteredCases.length > 0 && filteredCases.every(c => selectedIds.has(c.id));
+                const someSelected = selectedCount > 0 && !allSelected;
                 casesFooterController.setState({
                   selectedCount,
                   totalCount: effectiveMeta.total,
                   pageIndex: casesListState.pageIndex,
                   pageCount,
                   rowsPerPage: casesListState.rowsPerPage,
+                  selectAllVisible: effectiveMeta.total > 0,
+                  selectAllChecked: allSelected,
+                  selectAllIndeterminate: someSelected,
                 });
               }
 
             function render() {
+              const mode = PreferencesManager.get().casesViewMode || 'list';
+              initCasesFooter(mode);
               renderFilters();
               renderTable();
-              renderViewMode();
+              renderViewMode(mode);
               applyFiltersVisibility();
             }
 
-            function renderViewMode() {
+	            function renderViewMode(mode) {
               const prefs = PreferencesManager.get();
-              const mode = prefs.casesViewMode || 'list';
+              const viewMode = mode || prefs.casesViewMode || 'list';
               updateViewButtons();
+              const pageMeta = lastCasePageMeta || getCasesPageMeta(filteredCases);
 
-              if (mode === 'grid') {
-                // Grid view does not support row selection/bulk actions.
-                clearSelection();
-                actionsDefaultEl.style.display = 'flex';
-                actionsBulkEl.style.display = 'none';
-                selectedCountEl.textContent = '';
-                btnBulkDelete.innerHTML = `<i class="fa-solid fa-trash"></i> Delete (0)`;
-                selectAllEl.checked = false;
-                selectAllEl.indeterminate = false;
-                selectAllEl.disabled = true;
-
+              if (!filteredCases.length) {
+                if (gridEl) gridEl.style.display = 'none';
                 if (casesTableWrap) casesTableWrap.style.display = 'none';
-                if (gridEl) gridEl.style.display = 'grid';
-                if (gridEl) renderGridView(filteredCases || [], prefs);
+                return;
+              }
+
+              if (viewMode === 'grid') {
+                if (casesTableWrap) casesTableWrap.style.display = 'none';
+                if (gridEl) {
+                  gridEl.style.display = 'grid';
+                  gridEl.innerHTML = '';
+                  renderGridView((pageMeta && pageMeta.slice) || [], prefs);
+                }
                 return;
               }
 
@@ -324,119 +347,147 @@ export function createCasesScreen({
               if (casesTableWrap) casesTableWrap.style.display = 'block';
             }
 
-            function renderGridView(cases, prefs) {
-              if (!gridEl) return;
-              gridEl.innerHTML = '';
-              const list = Array.isArray(cases) ? cases : [];
-              const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.cases) || {};
 
-              if (!list.length) return;
+              function renderGridView(cases, prefs) {
+                if (!gridEl) return;
+                gridEl.innerHTML = '';
+                const list = Array.isArray(cases) ? cases : [];
+                const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.cases) || {};
 
-              list.forEach(c => {
-                const card = document.createElement('div');
-                card.className = 'card pack-card';
-                card.tabIndex = 0;
-                card.addEventListener('click', ev => {
-                  if (ev.target && ev.target.closest && ev.target.closest('[data-case-menu]')) return;
-                  openCaseModal(c);
-                });
-                card.addEventListener('keydown', ev => {
-                  if (ev.key === 'Enter') openCaseModal(c);
-                });
+                if (!list.length) return;
 
-                const title = document.createElement('h3');
-                title.textContent = c.name || '—';
+                list.forEach(c => {
+                  const card = document.createElement('div');
+                  card.className = 'card pack-card';
+                  card.classList.toggle('selected', selectedIds.has(c.id));
+                  card.tabIndex = 0;
+                  card.addEventListener('click', ev => {
+                    if (
+                      ev.target &&
+                      ev.target.closest &&
+                      (ev.target.closest('[data-case-menu]') || ev.target.closest('[data-case-select]'))
+                    )
+                      {return;}
+                    openCaseModal(c);
+                  });
+                  card.addEventListener('keydown', ev => {
+                    if (ev.key === 'Enter') openCaseModal(c);
+                  });
 
-	                const sub = document.createElement('div');
-	                sub.className = 'muted';
-	                sub.classList.add('tp3d-cases-muted-sm');
-	                if (c.manufacturer) sub.textContent = c.manufacturer;
+                  const title = document.createElement('h3');
+                  title.textContent = c.name || '—';
 
-                const meta = document.createElement('div');
-                meta.className = 'pack-meta';
+                  const sub = document.createElement('div');
+                  sub.className = 'muted';
+                  sub.classList.add('tp3d-cases-muted-sm');
+                  if (c.manufacturer) sub.textContent = c.manufacturer;
 
-                const badgesWrap = document.createElement('div');
-                badgesWrap.className = 'pack-meta-badges';
+                  const meta = document.createElement('div');
+                  meta.className = 'pack-meta';
 
-                if (badgePrefs.showCategory !== false) {
-                  const cat = document.createElement('div');
-                  cat.className = 'badge';
-                  cat.textContent = CategoryService.meta(c.category).name;
-                  badgesWrap.appendChild(cat);
-                }
+                  const badgesWrap = document.createElement('div');
+                  badgesWrap.className = 'pack-meta-badges';
 
-                if (badgePrefs.showDims !== false) {
-                  const dims = document.createElement('div');
-                  dims.className = 'badge';
-                  const d = c.dimensions || { length: 0, width: 0, height: 0 };
-                  const l = Utils.formatLength(d.length, prefs.units.length);
-                  const w = Utils.formatLength(d.width, prefs.units.length);
-                  const h = Utils.formatLength(d.height, prefs.units.length);
-                  dims.textContent = `${l} × ${w} × ${h}`;
-                  badgesWrap.appendChild(dims);
-                }
+                  if (badgePrefs.showCategory !== false) {
+                    const cat = document.createElement('div');
+                    cat.className = 'badge';
+                    cat.textContent = CategoryService.meta(c.category).name;
+                    badgesWrap.appendChild(cat);
+                  }
 
-                if (badgePrefs.showVolume !== false) {
-                  const vol = document.createElement('div');
-                  vol.className = 'badge';
-                  vol.textContent = Utils.formatVolume(c.dimensions, prefs.units.length);
-                  badgesWrap.appendChild(vol);
-                }
+                  if (badgePrefs.showDims !== false) {
+                    const dims = document.createElement('div');
+                    dims.className = 'badge';
+                    const d = c.dimensions || { length: 0, width: 0, height: 0 };
+                    const l = Utils.formatLength(d.length, prefs.units.length);
+                    const w = Utils.formatLength(d.width, prefs.units.length);
+                    const h = Utils.formatLength(d.height, prefs.units.length);
+                    dims.textContent = `L: ${l} • W: ${w} • H: ${h}`;
+                    badgesWrap.appendChild(dims);
+                  }
 
-                if (badgePrefs.showWeight !== false) {
-                  const weight = document.createElement('div');
-                  weight.className = 'badge';
-                  weight.textContent = Utils.formatWeight(c.weight, prefs.units.weight);
-                  badgesWrap.appendChild(weight);
-                }
+                  if (badgePrefs.showVolume !== false) {
+                    const vol = document.createElement('div');
+                    vol.className = 'badge';
+                    vol.textContent = `Volume: ${Utils.formatVolume(c.dimensions, prefs.units.length)}`;
+                    badgesWrap.appendChild(vol);
+                  }
 
-                if (badgePrefs.showFlip !== false) {
-                  const flip = document.createElement('div');
-                  flip.className = 'badge';
-                  flip.textContent = c.canFlip === true ? 'Flip: Yes' : 'Flip: No';
-                  badgesWrap.appendChild(flip);
-                }
+                  if (badgePrefs.showWeight !== false) {
+                    const weight = document.createElement('div');
+                    weight.className = 'badge';
+                    const formattedWeight = Utils.formatWeight(c.weight, prefs.units.weight);
+                    weight.textContent = `Weight: ${formattedWeight}`;
+                    badgesWrap.appendChild(weight);
+                  }
 
-                if (badgePrefs.showEditedTime !== false) {
-                  const edited = document.createElement('div');
-                  edited.className = 'badge';
-                  edited.textContent = `Edited: ${Utils.formatRelativeTime(c.updatedAt)}`;
-                  badgesWrap.appendChild(edited);
-                }
+                  if (badgePrefs.showFlip !== false) {
+                    const flip = document.createElement('div');
+                    flip.className = 'badge';
+                    flip.textContent = c.canFlip === true ? 'Flip: Yes' : 'Flip: No';
+                    badgesWrap.appendChild(flip);
+                  }
 
-                const kebabWrap = document.createElement('div');
-                kebabWrap.className = 'kebab';
-                kebabWrap.setAttribute('data-case-menu', '1');
-                const kebabBtn = document.createElement('button');
-                kebabBtn.className = 'btn btn-ghost';
-                kebabBtn.type = 'button';
-                kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis"></i>';
-                kebabBtn.addEventListener('click', ev => {
-                  ev.stopPropagation();
-                  UIComponents.openDropdown(kebabBtn, [
-                    { label: 'Edit', icon: 'fa-solid fa-pen', onClick: () => openCaseModal(c) },
-                    {
-                      label: 'Duplicate',
-                      icon: 'fa-solid fa-clone',
-                      onClick: () => {
-                        CaseLibrary.duplicate(c.id);
-                        UIComponents.showToast('Case duplicated', 'success');
+                  if (badgePrefs.showEditedTime !== false) {
+                    const edited = document.createElement('div');
+                    edited.className = 'badge';
+                    edited.textContent = `Edited: ${Utils.formatRelativeTime(c.updatedAt)}`;
+                    badgesWrap.appendChild(edited);
+                  }
+
+                  const selectCb = document.createElement('input');
+                  selectCb.type = 'checkbox';
+                  selectCb.checked = selectedIds.has(c.id);
+                  selectCb.setAttribute('data-case-select', '1');
+                  selectCb.setAttribute('aria-label', `Select ${c.name || 'Case'}`);
+                  selectCb.addEventListener('click', ev => ev.stopPropagation());
+                  selectCb.addEventListener('change', () => {
+                    if (selectCb.checked) selectedIds.add(c.id);
+                    else selectedIds.delete(c.id);
+                    card.classList.toggle('selected', selectedIds.has(c.id));
+                    updateSelectionUI(lastVisibleIds);
+                    syncCasesFooter();
+                  });
+
+                  const kebabBtn = document.createElement('button');
+                  kebabBtn.className = 'btn btn-ghost';
+                  kebabBtn.type = 'button';
+                  kebabBtn.setAttribute('data-case-menu', '1');
+                  kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
+                  kebabBtn.addEventListener('click', ev => {
+                    ev.stopPropagation();
+                    UIComponents.openDropdown(kebabBtn, [
+                      { label: 'Edit', icon: 'fa-solid fa-pen', onClick: () => openCaseModal(c) },
+                      {
+                        label: 'Duplicate',
+                        icon: 'fa-solid fa-clone',
+                        onClick: () => {
+                          CaseLibrary.duplicate(c.id);
+                          UIComponents.showToast('Case duplicated', 'success');
+                        },
                       },
-                    },
-                    { label: 'Delete', icon: 'fa-solid fa-trash', variant: 'danger', dividerBefore: true, onClick: () => deleteCase(c.id) },
-                  ]);
+                      { label: 'Delete', icon: 'fa-solid fa-trash', variant: 'danger', dividerBefore: true, onClick: () => deleteCase(c.id) },
+                    ]);
+                  });
+
+                  const actions = document.createElement('div');
+                  actions.className = 'card-head-actions tp3d-cases-card-head-actions';
+                  actions.appendChild(selectCb);
+                  actions.appendChild(kebabBtn);
+
+                  const head = document.createElement('div');
+                  head.className = 'card-head tp3d-cases-card-head';
+                  head.appendChild(title);
+                  head.appendChild(actions);
+
+                  if (badgesWrap.children.length) meta.appendChild(badgesWrap);
+
+                  card.appendChild(head);
+                  if (c.manufacturer) card.appendChild(sub);
+                  card.appendChild(meta);
+                  gridEl.appendChild(card);
                 });
-                kebabWrap.appendChild(kebabBtn);
-
-                if (badgesWrap.children.length) meta.appendChild(badgesWrap);
-                meta.appendChild(kebabWrap);
-
-                card.appendChild(title);
-                if (c.manufacturer) card.appendChild(sub);
-                card.appendChild(meta);
-                gridEl.appendChild(card);
-              });
-            }
+              }
 
             function renderFilters() {
               const cases = CaseLibrary.getCases();
@@ -542,6 +593,7 @@ export function createCasesScreen({
               });
 
                 const casePageMeta = getCasesPageMeta(cases);
+                lastCasePageMeta = casePageMeta;
                 tbodyEl.innerHTML = '';
                 const visibleIds = cases.map(c => c.id);
 
@@ -588,25 +640,25 @@ export function createCasesScreen({
                 const tdLength = document.createElement('td');
                 tdLength.textContent = Utils.formatLength(c.dimensions.length, prefs.units.length);
                 if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showDims === false)
-                  tdLength.style.display = 'none';
+                  {tdLength.style.display = 'none';}
                 tr.appendChild(tdLength);
 
                 const tdWidth = document.createElement('td');
                 tdWidth.textContent = Utils.formatLength(c.dimensions.width, prefs.units.length);
                 if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showDims === false)
-                  tdWidth.style.display = 'none';
+                  {tdWidth.style.display = 'none';}
                 tr.appendChild(tdWidth);
 
                 const tdHeight = document.createElement('td');
                 tdHeight.textContent = Utils.formatLength(c.dimensions.height, prefs.units.length);
                 if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showDims === false)
-                  tdHeight.style.display = 'none';
+                  {tdHeight.style.display = 'none';}
                 tr.appendChild(tdHeight);
 
                 const tdVol = document.createElement('td');
                 tdVol.textContent = Utils.formatVolume(c.dimensions, prefs.units.length);
                 if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showVolume === false)
-                  tdVol.style.display = 'none';
+                  {tdVol.style.display = 'none';}
                 tr.appendChild(tdVol);
 
                 const tdW = document.createElement('td');
@@ -616,20 +668,20 @@ export function createCasesScreen({
                   : `${weight.toFixed(2)} lb`;
                 tdW.textContent = formattedWeight;
                 if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showWeight === false)
-                  tdW.style.display = 'none';
+                  {tdW.style.display = 'none';}
                 tr.appendChild(tdW);
 
                 const tdCat = document.createElement('td');
                 tdCat.appendChild(categoryChip(c.category));
                 if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showCategory === false)
-                  tdCat.style.display = 'none';
+                  {tdCat.style.display = 'none';}
                 tr.appendChild(tdCat);
 
                 const tdFlip = document.createElement('td');
                 const flipLabel = c.canFlip === true ? 'Yes' : c.canFlip === false ? 'No' : '';
                 tdFlip.textContent = flipLabel;
                 if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showFlip === false)
-                  tdFlip.style.display = 'none';
+                  {tdFlip.style.display = 'none';}
                 tr.appendChild(tdFlip);
 
                 const tdActions = document.createElement('td');
@@ -637,7 +689,7 @@ export function createCasesScreen({
                 const btn = document.createElement('button');
                 btn.type = 'button';
                 btn.className = 'btn btn-ghost';
-                btn.innerHTML = '<i class="fa-solid fa-ellipsis"></i>';
+                btn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
                 btn.addEventListener('click', ev => {
                   ev.stopPropagation();
                   UIComponents.openDropdown(btn, [

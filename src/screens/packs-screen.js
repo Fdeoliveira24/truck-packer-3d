@@ -65,6 +65,7 @@ export function createPacksScreen({
               rowsPerPage: 50,
             };
             let footerController = null;
+            let footerMountEl = null;
             let filteredPacks = [];
             const filtersRowEl = chipEmpty ? chipEmpty.parentElement : null;
 
@@ -247,11 +248,21 @@ export function createPacksScreen({
               btnViewList.classList.toggle('btn-primary', mode === 'list');
             }
 
-            function initFooter() {
-              if (!listEl) return;
+            function getPacksFooterMountElForMode(mode) {
+              const viewMode = mode || PreferencesManager.get().packsViewMode || 'grid';
+              if (viewMode === 'list') return listEl;
+              if (viewMode === 'grid') return gridEl && gridEl.parentElement ? gridEl.parentElement : null;
+              return null;
+            }
+
+            function initFooter(mode) {
+              const mountEl = getPacksFooterMountElForMode(mode);
+              if (!mountEl) return;
+              if (footerController && footerMountEl === mountEl) return;
               if (footerController) footerController.destroy();
+              footerMountEl = mountEl;
               footerController = createTableFooter({
-                mountEl: listEl,
+                mountEl,
                 onPageChange: ({ pageIndex: nextIndex, rowsPerPage }) => {
                   if (typeof rowsPerPage === 'number') {
                     packsListState.rowsPerPage = rowsPerPage;
@@ -265,8 +276,8 @@ export function createPacksScreen({
                   packsListState.pageIndex = 0;
                   render();
                 },
+                onSelectAllToggle: applySelectAllFiltered,
               });
-              syncFooterState();
             }
 
             function getPageMeta(list) {
@@ -299,12 +310,17 @@ export function createPacksScreen({
                 if (!filteredIds.has(id)) selectedIds.delete(id);
               });
               const selectedCount = filteredPacks.filter(p => selectedIds.has(p.id)).length;
+              const allSelected = filteredPacks.length > 0 && filteredPacks.every(p => selectedIds.has(p.id));
+              const someSelected = selectedCount > 0 && !allSelected;
               footerController.setState({
                 selectedCount,
                 totalCount: effectiveMeta.total,
                 pageIndex: packsListState.pageIndex,
                 pageCount,
                 rowsPerPage: packsListState.rowsPerPage,
+                selectAllVisible: effectiveMeta.total > 0,
+                selectAllChecked: allSelected,
+                selectAllIndeterminate: someSelected,
               });
             }
 
@@ -323,28 +339,15 @@ export function createPacksScreen({
             }
 
             function handleSelectAll() {
-              const mode = PreferencesManager.get().packsViewMode || 'grid';
-              if (mode !== 'list') return;
-              const q = String(searchEl.value || '').trim().toLowerCase();
-              const allPacks = PackLibrary.getPacks();
-              const packs = allPacks
-                .filter(p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q))
-                .filter(p => {
-                  if (!filters.empty && !filters.partial && !filters.full) return true;
-                  const total = (p.cases || []).length;
-                  const percent = p.stats && Number.isFinite(p.stats.volumePercent) ? p.stats.volumePercent : 0;
-                  const isEmpty = total === 0;
-                  const isFull = percent >= 99.999;
-                  const isPartial = !isEmpty && percent > 0 && !isFull;
-                  if (filters.empty && isEmpty) return true;
-                  if (filters.partial && isPartial) return true;
-                  if (filters.full && isFull) return true;
-                  return false;
-                });
-              if (selectAllEl.checked) {
-                packs.forEach(p => selectedIds.add(p.id));
-              } else {
-                selectedIds.clear();
+              const shouldSelect = Boolean(selectAllEl && selectAllEl.checked);
+              applySelectAllFiltered(shouldSelect);
+            }
+
+            function applySelectAllFiltered(shouldSelect) {
+              selectedIds.clear();
+              if (shouldSelect) {
+                const ids = Array.isArray(filteredPacks) ? filteredPacks.map(p => p.id) : [];
+                ids.forEach(id => selectedIds.add(id));
               }
               render();
             }
@@ -468,6 +471,8 @@ export function createPacksScreen({
               }
 
               const pageMeta = getPageMeta(packs);
+              const mode = PreferencesManager.get().packsViewMode || 'grid';
+              initFooter(mode);
               gridEl.innerHTML = '';
               tbodyEl.innerHTML = '';
 
@@ -495,7 +500,6 @@ export function createPacksScreen({
               filterEmptyEl.style.display = 'none';
               emptyEl.style.display = 'none';
 
-              const mode = PreferencesManager.get().packsViewMode || 'grid';
               if (mode === 'list') {
                 gridEl.style.display = 'none';
                 listEl.style.display = 'block';
@@ -503,7 +507,7 @@ export function createPacksScreen({
               } else {
                 gridEl.style.display = 'grid';
                 listEl.style.display = 'none';
-                renderGridView(packs);
+                renderGridView(pageMeta.slice);
               }
               updateListHeaderIcons();
               updateBulkActions();
@@ -682,7 +686,7 @@ export function createPacksScreen({
 	                    ev.target.closest &&
 	                    (ev.target.closest('[data-pack-menu]') || ev.target.closest('[data-pack-select]'))
 	                  )
-	                    return;
+	                    {return;}
 	                  openPack(pack.id);
 	                });
 	                card.addEventListener('keydown', ev => {
@@ -716,7 +720,7 @@ export function createPacksScreen({
 	                if (badgePrefs.showTruckDims !== false) {
 	                  const truck = document.createElement('div');
 	                  truck.className = 'badge';
-	                  truck.textContent = formatTruckDims(pack.truck || {}, prefs.units.length).replace(/^Truck:/, 'Dimensions:');
+                    truck.textContent = formatTruckDims(pack.truck || {}, prefs.units.length).replace(/^Truck:/, 'Dim:');
 	                  badgesWrap.appendChild(truck);
 	                }
 

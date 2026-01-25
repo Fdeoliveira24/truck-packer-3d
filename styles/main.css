@@ -1531,6 +1531,10 @@ tr:hover td {
   max-width: 360px;
 }
 
+body.modal-open {
+  overflow: hidden;
+}
+
 .toast {
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);

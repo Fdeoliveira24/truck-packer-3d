@@ -32,6 +32,9 @@ export function createSettingsOverlay({
   let settingsRightPane = null;
   let settingsActiveTab = 'account';
   let unmountAccountButton = null;
+  let lastFocusedEl = null;
+  let trapKeydownHandler = null;
+  let warnedMissingModalRoot = false;
 
   // NOTE: Phase 2+ will optionally pass a profile row (profiles table) into this helper.
   // For now, keep Supabase-only behavior and safe fallbacks.
@@ -103,6 +106,19 @@ export function createSettingsOverlay({
     }
 
     try {
+      doc.body.classList.remove('modal-open');
+    } catch {
+      // ignore
+    }
+
+    try {
+      if (trapKeydownHandler) doc.removeEventListener('keydown', trapKeydownHandler, true);
+    } catch {
+      // ignore
+    }
+    trapKeydownHandler = null;
+
+    try {
       if (settingsOverlay.parentElement) settingsOverlay.parentElement.removeChild(settingsOverlay);
     } catch {
       // ignore
@@ -112,6 +128,15 @@ export function createSettingsOverlay({
     settingsModal = null;
     settingsLeftPane = null;
     settingsRightPane = null;
+
+    try {
+      if (lastFocusedEl && typeof lastFocusedEl.focus === 'function') {
+        lastFocusedEl.focus();
+      }
+    } catch {
+      // ignore
+    }
+    lastFocusedEl = null;
   }
 
   function setActive(tab) {
@@ -472,12 +497,17 @@ export function createSettingsOverlay({
   function open(tab) {
     if (settingsOverlay) return setActive(tab || settingsActiveTab);
 
+    lastFocusedEl = doc.activeElement && typeof doc.activeElement.focus === 'function' ? doc.activeElement : null;
+
     settingsOverlay = doc.createElement('div');
     settingsOverlay.className = 'modal-overlay';
 
     settingsModal = doc.createElement('div');
     settingsModal.className = 'modal';
     settingsModal.classList.add('tp3d-settings-modal');
+    settingsModal.setAttribute('role', 'dialog');
+    settingsModal.setAttribute('aria-modal', 'true');
+    settingsModal.setAttribute('tabindex', '-1');
 
     settingsLeftPane = doc.createElement('div');
     settingsLeftPane.classList.add('tp3d-settings-left-pane');
@@ -493,20 +523,65 @@ export function createSettingsOverlay({
       if (ev.target === settingsOverlay) close();
     });
 
-    function onKeyDown(ev) {
-      if (ev.key === 'Escape') close();
-    }
-    doc.addEventListener('keydown', onKeyDown);
+    trapKeydownHandler = ev => {
+      if (ev.key === 'Escape') {
+        close();
+        return;
+      }
+
+      if (ev.key !== 'Tab') return;
+      if (!settingsModal) return;
+      const focusables = Array.from(
+        settingsModal.querySelectorAll(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        )
+      ).filter(el => !el.hasAttribute('disabled') && el.offsetParent !== null);
+      if (!focusables.length) {
+        ev.preventDefault();
+        settingsModal.focus();
+        return;
+      }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = doc.activeElement;
+      if (ev.shiftKey) {
+        if (active === first || active === settingsModal) {
+          ev.preventDefault();
+          last.focus();
+        }
+      } else if (active === last) {
+        ev.preventDefault();
+        first.focus();
+      }
+    };
+    doc.addEventListener('keydown', trapKeydownHandler, true);
 
     const root = doc.getElementById('modal-root');
-    root.appendChild(settingsOverlay);
+    if (root) {
+      root.appendChild(settingsOverlay);
+    } else {
+      if (!warnedMissingModalRoot) {
+        console.warn('Settings overlay: #modal-root not found, falling back to document.body');
+        warnedMissingModalRoot = true;
+      }
+      doc.body.appendChild(settingsOverlay);
+    }
+
+    doc.body.classList.add('modal-open');
 
     settingsOverlay._tp3dCleanup = () => {
-      doc.removeEventListener('keydown', onKeyDown);
+      if (trapKeydownHandler) {
+        doc.removeEventListener('keydown', trapKeydownHandler, true);
+      }
     };
 
     if (tab) settingsActiveTab = String(tab);
     render();
+
+    const focusTarget = settingsModal.querySelector(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    (focusTarget || settingsModal).focus();
   }
 
   function init() {

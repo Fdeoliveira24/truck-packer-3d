@@ -59,9 +59,13 @@ export function createTableFooter(options = {}) {
   selectAllInput.type = 'checkbox';
   selectAllInput.setAttribute('aria-label', 'Select all rows');
   selectAllWrap.appendChild(selectAllInput);
+  const selectAllLabel = document.createElement('span');
+  selectAllLabel.className = 'tf-label';
+  selectAllLabel.textContent = 'Select all';
   const leftText = document.createElement('span');
   leftText.textContent = '0 of 0 row(s) selected.';
   leftEl.appendChild(selectAllWrap);
+  leftEl.appendChild(selectAllLabel);
   leftEl.appendChild(leftText);
 
   const midEl = document.createElement('div');
@@ -115,8 +119,11 @@ export function createTableFooter(options = {}) {
 
   const render = () => {
     const { selectedCount, totalCount, pageIndex, pageCount, rowsPerPage, selectAllVisible, selectAllChecked, selectAllIndeterminate } = state;
+    const showSummary = selectedCount === totalCount && totalCount > 0;
     leftText.textContent = `${selectedCount} of ${totalCount} row(s) selected.`;
+    leftText.hidden = !showSummary;
     selectAllWrap.hidden = !selectAllVisible;
+    selectAllLabel.hidden = !selectAllVisible;
     selectAllInput.disabled = !selectAllVisible || totalCount === 0;
     selectAllInput.checked = Boolean(selectAllChecked);
     selectAllInput.indeterminate = Boolean(selectAllIndeterminate) && !selectAllChecked;

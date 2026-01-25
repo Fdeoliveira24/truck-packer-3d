@@ -191,6 +191,9 @@ import { APP_VERSION } from './core/version.js';
             Utils,
             getAccountSwitcher: () => AccountSwitcher,
             SupabaseClient,
+            onExportApp: openExportAppModal,
+            onImportApp: openImportAppDialog,
+            onHelp: openHelpModal,
           });
           const CardDisplayOverlay = createCardDisplayOverlay({
             documentRef: document,
@@ -2022,66 +2025,68 @@ import { APP_VERSION } from './core/version.js';
             return { init: initKeyboardManager };
           })();
 
+          function openExportAppModal() {
+            const content = document.createElement('div');
+            content.style.display = 'grid';
+            content.style.gap = '12px';
+
+            const blurb = document.createElement('div');
+            blurb.className = 'muted';
+            blurb.style.fontSize = 'var(--text-sm)';
+            blurb.innerHTML =
+              '<div><strong>App Export</strong> downloads a full JSON backup of packs, cases, and settings.</div>' +
+              '<div style="height:8px"></div>' +
+              '<div>This file can be imported back to restore everything.</div>';
+
+            const filename = `truck-packer-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
+            const meta = document.createElement('div');
+            meta.className = 'card';
+            meta.innerHTML = `
+              <div style="font-weight:var(--font-semibold);margin-bottom:6px">Export details</div>
+              <div class="muted" style="font-size:var(--text-sm)">File: ${Utils.escapeHtml(filename)}</div>
+            `;
+
+            content.appendChild(blurb);
+            content.appendChild(meta);
+
+            UIComponents.showModal({
+              title: 'Export App JSON',
+              content,
+              actions: [
+                { label: 'Cancel' },
+                {
+                  label: 'Export',
+                  variant: 'primary',
+                  onClick: () => {
+                    try {
+                      const json = ImportExport.buildAppExportJSON();
+                      Utils.downloadText(filename, json);
+                      UIComponents.showToast('App JSON exported', 'success');
+                    } catch (err) {
+                      UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
+                    }
+                  },
+                },
+              ],
+            });
+          }
+
+          function openImportAppDialog() {
+            ImportAppDialog.open();
+          }
+
+          function openHelpModal() {
+            HelpModal.open();
+          }
+
           function wireGlobalButtons() {
             const btnExport = document.getElementById('btn-export-app');
             const btnImport = document.getElementById('btn-import-app');
             const btnHelp = document.getElementById('btn-help');
 
-            btnExport.addEventListener('click', () => {
-              const content = document.createElement('div');
-              content.style.display = 'grid';
-              content.style.gap = '12px';
-
-              const blurb = document.createElement('div');
-              blurb.className = 'muted';
-              blurb.style.fontSize = 'var(--text-sm)';
-              blurb.innerHTML =
-                '<div><strong>App Export</strong> downloads a full JSON backup of packs, cases, and settings.</div>' +
-                '<div style="height:8px"></div>' +
-                '<div>This file can be imported back to restore everything.</div>';
-
-              const filename = `truck-packer-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
-              const meta = document.createElement('div');
-              meta.className = 'card';
-              meta.innerHTML = `
-                <div style="font-weight:var(--font-semibold);margin-bottom:6px">Export details</div>
-                <div class="muted" style="font-size:var(--text-sm)">File: ${Utils.escapeHtml(filename)}</div>
-              `;
-
-              content.appendChild(blurb);
-              content.appendChild(meta);
-
-              UIComponents.showModal({
-                title: 'Export App JSON',
-                content,
-                actions: [
-                  { label: 'Cancel' },
-                  {
-                    label: 'Export',
-                    variant: 'primary',
-                    onClick: () => {
-                      try {
-                        const json = ImportExport.buildAppExportJSON();
-                        Utils.downloadText(filename, json);
-                        UIComponents.showToast('App JSON exported', 'success');
-                      } catch (err) {
-                        UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
-                      }
-                    },
-                  },
-                ],
-              });
-            });
-
-            btnImport.addEventListener('click', () => {
-              ImportAppDialog.open();
-            });
-
-            if (btnHelp) {
-              btnHelp.addEventListener('click', () => {
-                HelpModal.open();
-              });
-            }
+            if (btnExport) btnExport.addEventListener('click', openExportAppModal);
+            if (btnImport) btnImport.addEventListener('click', openImportAppDialog);
+            if (btnHelp) btnHelp.addEventListener('click', openHelpModal);
           }
 
           // ============================================================================

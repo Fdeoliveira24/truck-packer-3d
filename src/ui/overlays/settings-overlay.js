@@ -14,12 +14,15 @@
 export function createSettingsOverlay({
   documentRef = document,
   UIComponents,
-  SessionManager,
+  SessionManager: _SessionManager,
   PreferencesManager,
-  Defaults,
+  Defaults: _Defaults,
   Utils,
   getAccountSwitcher,
   SupabaseClient,
+  onExportApp,
+  onImportApp,
+  onHelp,
 }) {
   const doc = documentRef;
 
@@ -131,7 +134,6 @@ export function createSettingsOverlay({
 
   function render() {
     if (!settingsOverlay) return;
-    const session = SessionManager.get();
     const prefs = PreferencesManager.get();
 
     settingsLeftPane.innerHTML = '';
@@ -144,13 +146,11 @@ export function createSettingsOverlay({
     accountBtn.className = 'btn';
     accountBtn.classList.add('tp3d-settings-account-btn');
     accountBtn.innerHTML = `
-      <span style="display:flex;align-items:center;gap:var(--space-3);min-width:0">
-        <span class="brand-mark" aria-hidden="true" style="width:34px;height:34px;border-radius:12px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-weight:var(--font-semibold);color:var(--text-inverse)">${userView.initials || ''}</span>
-        <span style="display:flex;flex-direction:column;align-items:flex-start;min-width:0">
-          <span style="font-weight:var(--font-semibold);line-height:1.1">Workspace</span>
-          <span class="muted" data-account-name style="font-size:var(--text-sm);line-height:1.1">${
-            userView.displayName || '—'
-          }</span>
+      <span class="tp3d-settings-account-inner">
+        <span class="brand-mark tp3d-settings-account-avatar" aria-hidden="true">${userView.initials || ''}</span>
+        <span class="tp3d-settings-account-text">
+          <span class="tp3d-settings-account-name">Workspace</span>
+          <span class="muted tp3d-settings-account-sub" data-account-name>${userView.displayName || '—'}</span>
         </span>
       </span>
       <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
@@ -183,14 +183,13 @@ export function createSettingsOverlay({
         const i = doc.createElement('i');
         i.className = icon;
         i.classList.add('tp3d-settings-nav-icon');
-        i.style.color = settingsActiveTab === key ? 'var(--accent-primary)' : 'var(--text-secondary)';
-        if (indent) i.style.marginLeft = '16px';
+        if (indent) i.classList.add('is-indented');
         btn.appendChild(i);
       }
 
       const text = doc.createElement('span');
       text.textContent = label;
-      text.style.flex = '1';
+      text.classList.add('tp3d-settings-nav-label');
       btn.appendChild(text);
 
       btn.classList.toggle('active', settingsActiveTab === key);
@@ -201,6 +200,7 @@ export function createSettingsOverlay({
     navWrap.appendChild(makeHeader('Account'));
     navWrap.appendChild(makeItem({ key: 'account', label: 'Account', icon: 'fa-regular fa-user' }));
     navWrap.appendChild(makeItem({ key: 'preferences', label: 'Preferences', icon: 'fa-solid fa-gear' }));
+    navWrap.appendChild(makeItem({ key: 'resources', label: 'Resources', icon: 'fa-solid fa-life-ring' }));
     navWrap.appendChild(makeHeader('Organization'));
     navWrap.appendChild(makeItem({ key: 'org-general', label: 'General', icon: 'fa-regular fa-building', indent: true }));
     navWrap.appendChild(
@@ -219,7 +219,9 @@ export function createSettingsOverlay({
         ? 'Account'
         : settingsActiveTab === 'preferences'
           ? 'Display Units'
-          : 'Organization';
+          : settingsActiveTab === 'resources'
+            ? 'Resources'
+            : 'Organization';
     const closeBtn = doc.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'btn btn-ghost';
@@ -248,10 +250,10 @@ export function createSettingsOverlay({
       const userView = getCurrentUserView();
       const nameRow = doc.createElement('div');
       nameRow.className = 'row';
-      nameRow.style.gap = '12px';
-      nameRow.innerHTML = `<span class="brand-mark" aria-hidden="true" style="width:40px;height:40px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-weight:var(--font-semibold);color:var(--text-inverse)">${userView.initials || ''}</span><div style="font-weight:var(--font-semibold)">${
-        userView.displayName || '—'
-      }</div>`;
+      nameRow.classList.add('tp3d-settings-account-row');
+      nameRow.innerHTML = `<span class="brand-mark tp3d-settings-account-avatar-lg" aria-hidden="true">${
+        userView.initials || ''
+      }</span><div class="tp3d-settings-account-display">${userView.displayName || '—'}</div>`;
       body.appendChild(nameRow);
 
       const emailEl = doc.createElement('div');
@@ -261,8 +263,8 @@ export function createSettingsOverlay({
       const danger = doc.createElement('div');
       danger.classList.add('tp3d-settings-danger');
       danger.innerHTML = `
-        <div style="font-size:var(--text-xl);font-weight:var(--font-semibold);margin-bottom:10px">Danger Zone</div>
-        <div style="border-top:1px solid var(--border-subtle)"></div>
+        <div class="tp3d-settings-danger-title">Danger Zone</div>
+        <div class="tp3d-settings-danger-divider"></div>
       `;
       const dangerRow = doc.createElement('div');
       dangerRow.classList.add('tp3d-settings-danger-row');
@@ -361,6 +363,39 @@ export function createSettingsOverlay({
       );
       actions.appendChild(saveBtn);
       body.appendChild(actions);
+    } else if (settingsActiveTab === 'resources') {
+      const container = doc.createElement('div');
+      container.className = 'grid';
+
+      const subtitle = doc.createElement('div');
+      subtitle.className = 'muted';
+      subtitle.textContent = 'Access exports, imports, and help resources.';
+      container.appendChild(subtitle);
+
+      const makeBtn = (label, variant, onClick) => {
+        const btn = doc.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn';
+        if (variant) btn.classList.add(variant);
+        btn.textContent = label;
+        btn.addEventListener('click', onClick);
+        return btn;
+      };
+
+      const exportBtn = makeBtn('Export App', null, () => {
+        if (typeof onExportApp === 'function') onExportApp();
+      });
+      const importBtn = makeBtn('Import App', null, () => {
+        if (typeof onImportApp === 'function') onImportApp();
+      });
+      const helpBtn = makeBtn('Help', null, () => {
+        if (typeof onHelp === 'function') onHelp();
+      });
+
+      container.appendChild(exportBtn);
+      container.appendChild(importBtn);
+      container.appendChild(helpBtn);
+      body.appendChild(container);
     } else if (settingsActiveTab === 'org-general') {
       const userView = getCurrentUserView();
       const orgName = 'Workspace';
@@ -369,37 +404,67 @@ export function createSettingsOverlay({
       const orgCard = doc.createElement('div');
       orgCard.className = 'card';
       orgCard.classList.add('tp3d-settings-card-max');
-      orgCard.innerHTML = `
-        <div style="display:grid;gap:18px">
-          <div style="font-size:var(--text-xl);font-weight:var(--font-semibold)">Organization</div>
-          <div style="border-top:1px solid var(--border-subtle)"></div>
-          <div style="display:grid;gap:0">
-            <div style="display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:center;padding:16px 0;border-bottom:1px solid var(--border-subtle)">
-              <div style="font-weight:var(--font-semibold)">Logo</div>
-              <div><span class="brand-mark" aria-hidden="true" style="width:64px;height:64px;border-radius:18px;display:flex;align-items:center;justify-content:center;font-weight:var(--font-semibold);color:var(--text-inverse)">${userView.initials || ''}</span></div>
-            </div>
-            <div style="display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:center;padding:16px 0;border-bottom:1px solid var(--border-subtle)">
-              <div style="font-weight:var(--font-semibold)">Name</div>
-              <div>${orgName}</div>
-            </div>
-            <div style="display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:center;padding:16px 0;border-bottom:1px solid var(--border-subtle)">
-              <div style="font-weight:var(--font-semibold)">Role</div>
-              <div>${orgRole}</div>
-            </div>
-          </div>
-        </div>
-      `;
+      const orgWrap = doc.createElement('div');
+      orgWrap.classList.add('tp3d-settings-org');
+
+      const orgTitle = doc.createElement('div');
+      orgTitle.classList.add('tp3d-settings-org-title');
+      orgTitle.textContent = 'Organization';
+
+      const orgDivider = doc.createElement('div');
+      orgDivider.classList.add('tp3d-settings-org-divider');
+
+      const orgRows = doc.createElement('div');
+      orgRows.classList.add('tp3d-settings-org-rows');
+
+      const orgRow = (label, valueEl) => {
+        const wrap = doc.createElement('div');
+        wrap.classList.add('tp3d-settings-row');
+        const l = doc.createElement('div');
+        l.classList.add('tp3d-settings-row-label');
+        l.textContent = label;
+        wrap.appendChild(l);
+        wrap.appendChild(valueEl);
+        return wrap;
+      };
+
+      const logo = doc.createElement('span');
+      logo.className = 'brand-mark tp3d-settings-org-logo';
+      logo.setAttribute('aria-hidden', 'true');
+      logo.textContent = userView.initials || '';
+      orgRows.appendChild(orgRow('Logo', logo));
+
+      const orgNameEl = doc.createElement('div');
+      orgNameEl.textContent = orgName;
+      orgRows.appendChild(orgRow('Name', orgNameEl));
+
+      const orgRoleEl = doc.createElement('div');
+      orgRoleEl.textContent = orgRole;
+      orgRows.appendChild(orgRow('Role', orgRoleEl));
+
+      orgWrap.appendChild(orgTitle);
+      orgWrap.appendChild(orgDivider);
+      orgWrap.appendChild(orgRows);
+      orgCard.appendChild(orgWrap);
       body.appendChild(orgCard);
     } else {
       const billingCard = doc.createElement('div');
       billingCard.className = 'card';
       billingCard.classList.add('tp3d-settings-card-max');
-      billingCard.innerHTML = `
-        <div style="display:grid;gap:12px">
-          <div style="font-size:var(--text-xl);font-weight:var(--font-semibold)">Billing</div>
-          <div class="muted">Billing is not set up yet.</div>
-        </div>
-      `;
+      const billingWrap = doc.createElement('div');
+      billingWrap.classList.add('tp3d-settings-billing');
+
+      const billingTitle = doc.createElement('div');
+      billingTitle.classList.add('tp3d-settings-billing-title');
+      billingTitle.textContent = 'Billing';
+
+      const billingMsg = doc.createElement('div');
+      billingMsg.className = 'muted tp3d-settings-billing-msg';
+      billingMsg.textContent = 'Billing is not set up yet.';
+
+      billingWrap.appendChild(billingTitle);
+      billingWrap.appendChild(billingMsg);
+      billingCard.appendChild(billingWrap);
       body.appendChild(billingCard);
     }
   }

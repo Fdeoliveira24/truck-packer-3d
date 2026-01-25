@@ -24,7 +24,7 @@ export function createImportAppDialog({
   const doc = documentRef;
 
   async function handleFile(file, resultsEl, modal) {
-    resultsEl.style.display = 'block';
+    resultsEl.classList.add('is-visible');
     resultsEl.innerHTML = '';
 
     if (!file) {
@@ -91,12 +91,14 @@ export function createImportAppDialog({
       const summary = doc.createElement('div');
       summary.className = 'card';
       summary.innerHTML = `
-        <div style="font-weight:var(--font-semibold);margin-bottom:6px">Import Result</div>
-        <div class="muted" style="font-size:var(--text-sm)">File: ${Utils && Utils.escapeHtml ? Utils.escapeHtml(file.name) : file.name}</div>
-        <div style="height:8px"></div>
-        <div style="display:flex;gap:12px;flex-wrap:wrap">
-          <div class="badge" style="border-color:rgba(16,185,129,.25);background:rgba(16,185,129,.12);color:var(--text-primary)">Packs: ${(imported.packLibrary || []).length}</div>
-          <div class="badge" style="border-color:rgba(59,130,246,.25);background:rgba(59,130,246,.12);color:var(--text-primary)">Cases: ${(imported.caseLibrary || []).length}</div>
+        <div class="tp3d-import-summary-title">Import Result</div>
+        <div class="muted tp3d-import-summary-meta">File: ${
+          Utils && Utils.escapeHtml ? Utils.escapeHtml(file.name) : file.name
+        }</div>
+        <div class="tp3d-import-summary-spacer"></div>
+        <div class="tp3d-import-badges">
+          <div class="badge tp3d-import-badge-success">Packs: ${(imported.packLibrary || []).length}</div>
+          <div class="badge tp3d-import-badge-info">Cases: ${(imported.caseLibrary || []).length}</div>
         </div>
       `;
       resultsEl.appendChild(summary);
@@ -110,20 +112,15 @@ export function createImportAppDialog({
 
   function open() {
     const content = doc.createElement('div');
-    content.style.display = 'grid';
-    content.style.gap = '14px';
+    content.classList.add('tp3d-import-content');
 
     const drop = doc.createElement('div');
     drop.className = 'card';
-    drop.style.borderStyle = 'dashed';
-    drop.style.background = 'var(--bg-elevated)';
-    drop.style.textAlign = 'center';
-    drop.style.padding = '22px';
+    drop.classList.add('tp3d-import-drop');
     drop.innerHTML = `
-      <div style="font-size:28px;margin-bottom:6px"><i class="fa-solid fa-star"></i></div>
-      <div style="font-weight:var(--font-semibold);margin-bottom:6px">Drag & Drop Backup File Here</div>
-      <div class="muted" style="font-size:var(--text-sm)">Supported: .json</div>
-      <div style="height:12px"></div>
+      <div class="tp3d-import-drop-title">Drag & Drop Backup File Here</div>
+      <div class="muted tp3d-import-drop-sub">Supported: .json</div>
+      <div class="tp3d-import-drop-spacer"></div>
     `;
     const browseBtn = doc.createElement('button');
     browseBtn.className = 'btn';
@@ -133,12 +130,19 @@ export function createImportAppDialog({
 
     const hint = doc.createElement('div');
     hint.className = 'muted';
-    hint.style.fontSize = 'var(--text-sm)';
-    hint.innerHTML =
-      'Required: <b>packLibrary</b>, <b>caseLibrary</b>, <b>preferences</b><br>Warning: This will replace your current data.';
+    hint.classList.add('tp3d-import-hint');
+    hint.innerHTML = `
+      <div class="tp3d-import-warning">
+        <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+        <div>
+          <span class="tp3d-import-warning-label">Warning:</span>
+          <span class="tp3d-import-warning-text"> This will replace your current data.</span>
+        </div>
+      </div>
+    `;
 
     const results = doc.createElement('div');
-    results.style.display = 'none';
+    results.classList.add('tp3d-import-results');
 
     content.appendChild(drop);
     content.appendChild(hint);
@@ -158,14 +162,14 @@ export function createImportAppDialog({
 
     drop.addEventListener('dragover', ev => {
       ev.preventDefault();
-      drop.style.borderColor = 'rgba(255, 159, 28, 0.6)';
+      drop.classList.add('is-dragover');
     });
     drop.addEventListener('dragleave', () => {
-      drop.style.borderColor = 'var(--border-subtle)';
+      drop.classList.remove('is-dragover');
     });
     drop.addEventListener('drop', ev => {
       ev.preventDefault();
-      drop.style.borderColor = 'var(--border-subtle)';
+      drop.classList.remove('is-dragover');
       const file = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
       if (file) handleFile(file, results, modal);
     });

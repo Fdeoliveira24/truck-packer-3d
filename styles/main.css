@@ -434,6 +434,7 @@ a {
   flex: 1;
   overflow: auto;
   padding: var(--space-5);
+  padding-bottom: 0;
   background-color: var(--bg-primary);
   background-image:
     linear-gradient(var(--pattern-line) 1px, transparent 1px),
@@ -851,7 +852,34 @@ input[type="checkbox"] {
   height: 16px;
   margin: 0;
   vertical-align: middle;
-  accent-color: var(--accent-primary);
+  appearance: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+input[type="checkbox"]:checked {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+}
+
+input[type="checkbox"]::after {
+  content: "\f00c";
+  font-family: "Font Awesome 6 Free";
+  font-weight: 900;
+  font-size: 11px;
+  color: var(--text-inverse);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+input[type="checkbox"]:checked::after {
+  opacity: 1;
 }
 
 /* Table footer (pagination + selection summary) */
@@ -1429,8 +1457,26 @@ tr:hover td {
   font-size: var(--text-sm);
   line-height: var(--leading-relaxed);
   background: var(--bg-secondary);
-  border-left: 4px solid var(--accent-primary);
   padding: 12px 14px;
+}
+
+.tp3d-import-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tp3d-import-warning i {
+  color: var(--danger);
+}
+
+.tp3d-import-warning-label {
+  font-weight: var(--font-semibold);
+  color: var(--danger);
+}
+
+.tp3d-import-warning-text {
+  color: var(--text-secondary);
 }
 
 .tp3d-import-results {

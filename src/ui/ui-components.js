@@ -306,7 +306,9 @@ export function createUIComponents() {
               const dropdown = document.createElement('div');
               dropdown.className = 'dropdown';
               dropdown.dataset.dropdown = '1';
-              dropdown.dataset.anchorId = anchorEl && anchorEl.id ? String(anchorEl.id) : '';
+              const anchorKey = options && options.anchorKey ? String(options.anchorKey) : '';
+              const fallbackAnchorId = anchorEl && anchorEl.id ? String(anchorEl.id) : '';
+              dropdown.dataset.anchorId = anchorKey || fallbackAnchorId;
               if (options && options.role) dropdown.dataset.role = String(options.role);
               dropdown.style.position = 'fixed';
               dropdown.style.zIndex = '16000';

@@ -21,7 +21,7 @@ export function createImportPackDialog({
   const doc = documentRef;
 
   async function handleFile(file, resultsEl, modal) {
-    resultsEl.style.display = 'block';
+    resultsEl.classList.add('is-visible');
     resultsEl.innerHTML = '';
 
     if (!file) {
@@ -67,10 +67,10 @@ export function createImportPackDialog({
       const summary = doc.createElement('div');
       summary.className = 'card';
       summary.innerHTML = `
-        <div style="font-weight:var(--font-semibold);margin-bottom:6px">Import Result</div>
-        <div class="muted" style="font-size:var(--text-sm)">File: ${Utils && Utils.escapeHtml ? Utils.escapeHtml(file.name) : file.name}</div>
-        <div style="height:8px"></div>
-        <div class="badge" style="border-color:rgba(16,185,129,.25);background:rgba(16,185,129,.12);color:var(--text-primary)">Imported: 1 pack(s)</div>
+        <div class="tp3d-import-summary-title">Import Result</div>
+        <div class="muted tp3d-import-summary-meta">File: ${Utils && Utils.escapeHtml ? Utils.escapeHtml(file.name) : file.name}</div>
+        <div class="tp3d-import-summary-spacer"></div>
+        <div class="badge tp3d-import-badge-success">Imported: 1 pack(s)</div>
       `;
       resultsEl.appendChild(summary);
 
@@ -83,20 +83,16 @@ export function createImportPackDialog({
 
   function open() {
     const content = doc.createElement('div');
-    content.style.display = 'grid';
-    content.style.gap = '14px';
+    content.classList.add('tp3d-import-content');
 
     const drop = doc.createElement('div');
     drop.className = 'card';
-    drop.style.borderStyle = 'dashed';
-    drop.style.background = 'var(--bg-elevated)';
-    drop.style.textAlign = 'center';
-    drop.style.padding = '22px';
+    drop.classList.add('tp3d-import-drop');
     drop.innerHTML = `
-      <div style="font-size:28px;margin-bottom:6px"><i class="fa-solid fa-star"></i></div>
-      <div style="font-weight:var(--font-semibold);margin-bottom:6px">Drag & Drop File Here</div>
-      <div class="muted" style="font-size:var(--text-sm)">Supported: .json</div>
-      <div style="height:12px"></div>
+      <div class="tp3d-import-drop-icon"><i class="fa-solid fa-star"></i></div>
+      <div class="tp3d-import-drop-title">Drag & Drop File Here</div>
+      <div class="muted tp3d-import-drop-sub">Supported: .json</div>
+      <div class="tp3d-import-drop-spacer"></div>
     `;
     const browseBtn = doc.createElement('button');
     browseBtn.className = 'btn';
@@ -106,12 +102,12 @@ export function createImportPackDialog({
 
     const hint = doc.createElement('div');
     hint.className = 'muted';
-    hint.style.fontSize = 'var(--text-sm)';
+    hint.classList.add('tp3d-import-hint');
     hint.innerHTML =
       'Required: <b>pack</b> object with <b>title</b>, <b>truck</b> { length, width, height, shapeMode }, <b>cases</b> (array)<br>Optional: client, projectName, drawnBy, notes, groups, stats, createdAt, lastEdited, thumbnail fields';
 
     const results = doc.createElement('div');
-    results.style.display = 'none';
+    results.classList.add('tp3d-import-results');
 
     content.appendChild(drop);
     content.appendChild(hint);
@@ -131,14 +127,14 @@ export function createImportPackDialog({
 
     drop.addEventListener('dragover', ev => {
       ev.preventDefault();
-      drop.style.borderColor = 'rgba(255, 159, 28, 0.6)';
+      drop.classList.add('is-dragover');
     });
     drop.addEventListener('dragleave', () => {
-      drop.style.borderColor = 'var(--border-subtle)';
+      drop.classList.remove('is-dragover');
     });
     drop.addEventListener('drop', ev => {
       ev.preventDefault();
-      drop.style.borderColor = 'var(--border-subtle)';
+      drop.classList.remove('is-dragover');
       const file = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
       if (file) handleFile(file, results, modal);
     });

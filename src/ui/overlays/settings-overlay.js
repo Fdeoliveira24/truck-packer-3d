@@ -11,6 +11,8 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
+import { getUserAvatarView } from '../../core/utils/index.js';
+
 export function createSettingsOverlay({
   documentRef = document,
   UIComponents,
@@ -23,6 +25,8 @@ export function createSettingsOverlay({
   onExportApp,
   onImportApp,
   onHelp,
+  onUpdates,
+  onRoadmap,
 }) {
   const doc = documentRef;
 
@@ -30,14 +34,14 @@ export function createSettingsOverlay({
   let settingsModal = null;
   let settingsLeftPane = null;
   let settingsRightPane = null;
-  let settingsActiveTab = 'account';
+  let settingsActiveTab = 'preferences';
   let unmountAccountButton = null;
   let lastFocusedEl = null;
   let trapKeydownHandler = null;
   let warnedMissingModalRoot = false;
 
   // NOTE: Phase 2+ will optionally pass a profile row (profiles table) into this helper.
-  // For now, keep Supabase-only behavior and safe fallbacks.
+  // Keep one shared source of truth for avatar displayName/initials.
   function getCurrentUserView(profile = null) {
     let user = null;
     try {
@@ -46,44 +50,15 @@ export function createSettingsOverlay({
       user = null;
     }
 
-    const isAuthed = Boolean(user);
-    const userId = user && user.id ? String(user.id) : '';
-    const email = user && user.email ? String(user.email) : '';
-
-    let displayName = '';
-    if (profile && typeof profile === 'object') {
-      if (profile.full_name) displayName = String(profile.full_name);
-      if (!displayName && (profile.first_name || profile.last_name)) {
-        displayName = `${profile.first_name || ''} ${profile.last_name || ''}`.trim();
-      }
-    }
-    if (user && user.user_metadata) {
-      if (!displayName) displayName = user.user_metadata.full_name || user.user_metadata.name || '';
-    }
-    if (!displayName && email) {
-      const prefix = email.split('@')[0];
-      displayName = prefix || '';
-    }
-    if (!displayName) displayName = isAuthed ? 'User' : 'Guest';
-
-    let initials = '';
-    if (displayName && displayName !== 'Guest') {
-      const words = displayName.trim().split(/\s+/).filter(Boolean);
-      if (words.length >= 2) {
-        initials = (words[0][0] + words[1][0]).toUpperCase();
-      } else if (words.length === 1 && words[0].length >= 2) {
-        initials = words[0].substring(0, 2).toUpperCase();
-      } else if (words[0]) {
-        initials = words[0][0].toUpperCase();
-      }
-    }
-    if (!initials && email && email.length >= 2) {
-      initials = email.substring(0, 2).toUpperCase();
+    let sessionUser = null;
+    try {
+      const s = _SessionManager && typeof _SessionManager.get === 'function' ? _SessionManager.get() : null;
+      sessionUser = s && s.user ? s.user : null;
+    } catch {
+      sessionUser = null;
     }
 
-    const workspaceShareId = userId ? userId.slice(0, 8) : '';
-
-    return { isAuthed, userId, email, displayName, initials, workspaceShareId };
+    return getUserAvatarView({ user, sessionUser, profile });
   }
 
   function isOpen() {
@@ -140,7 +115,7 @@ export function createSettingsOverlay({
   }
 
   function setActive(tab) {
-    settingsActiveTab = String(tab || 'account');
+    settingsActiveTab = String(tab || 'preferences');
     render();
   }
 
@@ -222,8 +197,7 @@ export function createSettingsOverlay({
       return btn;
     };
 
-    navWrap.appendChild(makeHeader('Account'));
-    navWrap.appendChild(makeItem({ key: 'account', label: 'Account', icon: 'fa-regular fa-user' }));
+    navWrap.appendChild(makeHeader('Settings'));
     navWrap.appendChild(makeItem({ key: 'preferences', label: 'Preferences', icon: 'fa-solid fa-gear' }));
     navWrap.appendChild(makeItem({ key: 'resources', label: 'Resources', icon: 'fa-solid fa-life-ring' }));
     navWrap.appendChild(makeHeader('Organization'));
@@ -237,22 +211,59 @@ export function createSettingsOverlay({
     const header = doc.createElement('div');
     header.className = 'row space-between';
     header.classList.add('tp3d-settings-right-header');
+
+    const meta = (() => {
+      switch (settingsActiveTab) {
+        case 'preferences':
+          return {
+            title: 'Preferences',
+            helper: 'Set your units, labels, and theme.',
+          };
+        case 'resources':
+          return {
+            title: 'Resources',
+            helper: 'See updates, roadmap, exports, imports, and help in one place.',
+          };
+        case 'org-general':
+          return {
+            title: 'Organization',
+            helper: 'View workspace details and role.',
+          };
+        case 'org-billing':
+          return {
+            title: 'Billing',
+            helper: 'Manage billing and subscription details.',
+          };
+        default:
+          return {
+            title: 'Settings',
+            helper: 'Adjust your preferences.',
+          };
+      }
+    })();
+
+    const headerText = doc.createElement('div');
+    headerText.classList.add('tp3d-settings-right-text');
+
     const title = doc.createElement('div');
     title.classList.add('tp3d-settings-right-title');
-    title.textContent =
-      settingsActiveTab === 'account'
-        ? 'Account'
-        : settingsActiveTab === 'preferences'
-          ? 'Display Units'
-          : settingsActiveTab === 'resources'
-            ? 'Resources'
-            : 'Organization';
+    title.textContent = meta.title;
+
+    const helper = doc.createElement('div');
+    helper.classList.add('tp3d-settings-right-subtitle');
+    helper.classList.add('muted');
+    helper.textContent = meta.helper;
+
+    headerText.appendChild(title);
+    headerText.appendChild(helper);
+
     const closeBtn = doc.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'btn btn-ghost';
     closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
     closeBtn.addEventListener('click', () => close());
-    header.appendChild(title);
+
+    header.appendChild(headerText);
     header.appendChild(closeBtn);
     settingsRightPane.appendChild(header);
 
@@ -271,56 +282,7 @@ export function createSettingsOverlay({
       return wrap;
     }
 
-    if (settingsActiveTab === 'account') {
-      const userView = getCurrentUserView();
-      const nameRow = doc.createElement('div');
-      nameRow.className = 'row';
-      nameRow.classList.add('tp3d-settings-account-row');
-      nameRow.innerHTML = `<span class="brand-mark tp3d-settings-account-avatar-lg" aria-hidden="true">${
-        userView.initials || ''
-      }</span><div class="tp3d-settings-account-display">${userView.displayName || '—'}</div>`;
-      body.appendChild(nameRow);
-
-      const emailEl = doc.createElement('div');
-      emailEl.textContent = userView.isAuthed && userView.email ? userView.email : 'Not signed in';
-      body.appendChild(row('Email', emailEl));
-
-      const danger = doc.createElement('div');
-      danger.classList.add('tp3d-settings-danger');
-      danger.innerHTML = `
-        <div class="tp3d-settings-danger-title">Danger Zone</div>
-        <div class="tp3d-settings-danger-divider"></div>
-      `;
-      const dangerRow = doc.createElement('div');
-      dangerRow.classList.add('tp3d-settings-danger-row');
-      const dLeft = doc.createElement('div');
-      dLeft.classList.add('tp3d-settings-danger-left');
-      dLeft.textContent = 'Delete Account';
-      const dRight = doc.createElement('div');
-      dRight.classList.add('tp3d-settings-danger-right');
-      const delBtn = doc.createElement('button');
-      delBtn.type = 'button';
-      delBtn.className = 'btn btn-danger';
-      delBtn.textContent = 'Delete account';
-      delBtn.disabled = true;
-      const dMsg = doc.createElement('div');
-      dMsg.className = 'muted';
-      dMsg.classList.add('tp3d-settings-danger-msg');
-      const warnIcon = doc.createElement('i');
-      warnIcon.className = 'fa-solid fa-triangle-exclamation';
-      warnIcon.setAttribute('aria-hidden', 'true');
-      warnIcon.classList.add('tp3d-settings-danger-warn-icon');
-      const warnText = doc.createElement('span');
-      warnText.textContent = 'Delete account is not set up yet.';
-      dMsg.appendChild(warnIcon);
-      dMsg.appendChild(warnText);
-      dRight.appendChild(delBtn);
-      dRight.appendChild(dMsg);
-      dangerRow.appendChild(dLeft);
-      dangerRow.appendChild(dRight);
-      danger.appendChild(dangerRow);
-      body.appendChild(danger);
-    } else if (settingsActiveTab === 'preferences') {
+    if (settingsActiveTab === 'preferences') {
       const length = doc.createElement('select');
       length.className = 'select';
       length.innerHTML = `
@@ -392,10 +354,11 @@ export function createSettingsOverlay({
       const container = doc.createElement('div');
       container.className = 'grid';
 
-      const subtitle = doc.createElement('div');
-      subtitle.className = 'muted';
-      subtitle.textContent = 'Access exports, imports, and help resources.';
-      container.appendChild(subtitle);
+      const runResourceAction = (cb, { closeFirst = true } = {}) => {
+        if (typeof cb !== 'function') return;
+        if (closeFirst) close();
+        cb();
+      };
 
       const makeBtn = (label, variant, onClick) => {
         const btn = doc.createElement('button');
@@ -407,16 +370,15 @@ export function createSettingsOverlay({
         return btn;
       };
 
-      const exportBtn = makeBtn('Export App', null, () => {
-        if (typeof onExportApp === 'function') onExportApp();
-      });
-      const importBtn = makeBtn('Import App', null, () => {
-        if (typeof onImportApp === 'function') onImportApp();
-      });
-      const helpBtn = makeBtn('Help', null, () => {
-        if (typeof onHelp === 'function') onHelp();
-      });
+      const exportBtn = makeBtn('Export App', null, () => runResourceAction(onExportApp));
+      const importBtn = makeBtn('Import App', null, () => runResourceAction(onImportApp));
+      const helpBtn = makeBtn('Help', null, () => runResourceAction(onHelp));
 
+      const updatesBtn = makeBtn('Updates', null, () => runResourceAction(onUpdates));
+      const roadmapBtn = makeBtn('Roadmap', null, () => runResourceAction(onRoadmap));
+
+      container.appendChild(updatesBtn);
+      container.appendChild(roadmapBtn);
       container.appendChild(exportBtn);
       container.appendChild(importBtn);
       container.appendChild(helpBtn);
@@ -575,7 +537,9 @@ export function createSettingsOverlay({
       }
     };
 
-    if (tab) settingsActiveTab = String(tab);
+    if (tab) {
+      settingsActiveTab = String(tab);
+    }
     render();
 
     const focusTarget = settingsModal.querySelector(

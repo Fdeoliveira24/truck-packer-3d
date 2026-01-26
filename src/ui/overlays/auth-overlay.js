@@ -61,14 +61,14 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     const msg = raw.toLowerCase();
     let friendly = '';
 
-    if (msg.includes('invalid login credentials')) friendly = 'Incorrect email or password.';
-    else if (msg.includes('email not confirmed')) friendly = 'Please confirm your email, then sign in.';
+    if (msg.includes('invalid login credentials')) {friendly = 'Incorrect email or password.';}
+    else if (msg.includes('email not confirmed')) {friendly = 'Please confirm your email, then sign in.';}
     else if (msg.includes('user already registered') || msg.includes('user already exists')) {
       friendly = 'Account already exists. Try Sign In.';
-    } else if (msg.includes('password') && msg.includes('weak')) friendly = 'Password is too weak.';
-    else if (msg.includes('password') && msg.includes('characters')) friendly = raw ? toAscii(raw) : 'Password is too weak.';
-    else if (raw) friendly = toAscii(raw);
-    else friendly = action === 'signup' ? 'Sign up failed.' : 'Sign in failed.';
+    } else if (msg.includes('password') && msg.includes('weak')) {friendly = 'Password is too weak.';}
+    else if (msg.includes('password') && msg.includes('characters')) {friendly = raw ? toAscii(raw) : 'Password is too weak.';}
+    else if (raw) {friendly = toAscii(raw);}
+    else {friendly = action === 'signup' ? 'Sign up failed.' : 'Sign in failed.';}
 
     const title = action === 'signup' ? 'Sign up failed' : 'Sign in failed';
     let full = `${title}: ${friendly}`;
@@ -412,7 +412,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
             setInlineSuccess('Check your email to confirm your account, then come back and sign in.');
             mode = 'signin';
             render();
-            return;
+            
           }
         } catch (err) {
           const mapped = mapAuthError(err, 'signup');
@@ -548,7 +548,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
 
         if (!isTyping && (ev.metaKey || ev.ctrlKey || ev.altKey)) {
           ev.stopPropagation();
-          return;
+          
         }
       } catch {
         // ignore

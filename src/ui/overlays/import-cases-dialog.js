@@ -23,26 +23,24 @@ export function createImportCasesDialog({
   async function handleFile(file, resultsEl, modal) {
     try {
       const parsed = await ImportExport.parseAndValidateSpreadsheet(file);
-      resultsEl.style.display = 'block';
+      resultsEl.classList.add('is-visible');
       resultsEl.innerHTML = '';
 
       const summary = doc.createElement('div');
       summary.className = 'card';
       summary.innerHTML = `
-                <div style="font-weight:var(--font-semibold);margin-bottom:6px">Import Preview</div>
-                <div class="muted" style="font-size:var(--text-sm)">File: ${Utils.escapeHtml(file.name)}</div>
-                <div style="height:8px"></div>
-                <div style="display:flex;gap:12px;flex-wrap:wrap">
-                  <div class="badge" style="border-color:rgba(16,185,129,.25);background:rgba(16,185,129,.12);color:var(--text-primary)">✓ Valid: ${parsed.valid.length}</div>
-                  <div class="badge" style="border-color:rgba(245,158,11,.25);background:rgba(245,158,11,.12);color:var(--text-primary)">↷ Duplicates skipped: ${parsed.duplicates.length}</div>
-                  <div class="badge" style="border-color:rgba(239,68,68,.25);background:rgba(239,68,68,.12);color:var(--text-primary)">⚠ Invalid: ${parsed.errors.length}</div>
+                <div class="tp3d-import-summary-title">Import Preview</div>
+                <div class="muted tp3d-import-summary-meta">File: ${Utils.escapeHtml(file.name)}</div>
+                <div class="tp3d-import-summary-spacer"></div>
+                <div class="tp3d-import-badges">
+                  <div class="badge tp3d-import-badge-success">✓ Valid: ${parsed.valid.length}</div>
+                  <div class="badge tp3d-import-badge-warn">↷ Duplicates skipped: ${parsed.duplicates.length}</div>
+                  <div class="badge tp3d-import-badge-error">⚠ Invalid: ${parsed.errors.length}</div>
                 </div>
               `;
 
       const actionsRow = doc.createElement('div');
-      actionsRow.className = 'row';
-      actionsRow.style.justifyContent = 'flex-end';
-      actionsRow.style.marginTop = '12px';
+      actionsRow.className = 'row tp3d-import-actions';
       const btn = doc.createElement('button');
       btn.className = 'btn btn-primary';
       btn.type = 'button';
@@ -62,11 +60,9 @@ export function createImportCasesDialog({
       if (parsed.errors.length) {
         const err = doc.createElement('div');
         err.className = 'card';
-        err.innerHTML = '<div style="font-weight:var(--font-semibold);margin-bottom:6px">Errors</div>';
+        err.innerHTML = '<div class="tp3d-import-summary-title">Errors</div>';
         const ul = doc.createElement('ul');
-        ul.style.margin = '8px 0 0 16px';
-        ul.style.color = 'var(--text-secondary)';
-        ul.style.fontSize = 'var(--text-sm)';
+        ul.className = 'tp3d-import-errors-list';
         parsed.errors.slice(0, 12).forEach(e => {
           const li = doc.createElement('li');
           li.textContent = e;
@@ -87,21 +83,17 @@ export function createImportCasesDialog({
 
   function open() {
     const content = doc.createElement('div');
-    content.style.display = 'grid';
-    content.style.gap = '14px';
+    content.classList.add('tp3d-import-content');
 
     const drop = doc.createElement('div');
     drop.className = 'card';
-    drop.style.borderStyle = 'dashed';
-    drop.style.background = 'var(--bg-elevated)';
-    drop.style.textAlign = 'center';
-    drop.style.padding = '22px';
+    drop.classList.add('tp3d-import-drop');
     drop.innerHTML = `
-	              <div style="font-size:28px;margin-bottom:6px"><i class="fa-solid fa-star"></i></div>
-	              <div style="font-weight:var(--font-semibold);margin-bottom:6px">Drag & Drop File Here</div>
-	              <div class="muted" style="font-size:var(--text-sm)">Supported: .csv, .xlsx</div>
-	              <div style="height:12px"></div>
-	            `;
+                <div class="tp3d-import-drop-icon"><i class="fa-solid fa-star"></i></div>
+                <div class="tp3d-import-drop-title">Drag & Drop File Here</div>
+                <div class="muted tp3d-import-drop-sub">Supported: .csv, .xlsx</div>
+                <div class="tp3d-import-drop-spacer"></div>
+              `;
     const browseBtn = doc.createElement('button');
     browseBtn.className = 'btn';
     browseBtn.type = 'button';
@@ -110,12 +102,12 @@ export function createImportCasesDialog({
 
     const hint = doc.createElement('div');
     hint.className = 'muted';
-    hint.style.fontSize = 'var(--text-sm)';
+    hint.classList.add('tp3d-import-hint');
     hint.innerHTML =
       'Required: <b>name</b>, <b>length</b>, <b>width</b>, <b>height</b><br>Optional: manufacturer, category, weight, canFlip, notes';
 
     const results = doc.createElement('div');
-    results.style.display = 'none';
+    results.classList.add('tp3d-import-results');
 
     content.appendChild(drop);
     content.appendChild(hint);
@@ -135,14 +127,14 @@ export function createImportCasesDialog({
 
     drop.addEventListener('dragover', ev => {
       ev.preventDefault();
-      drop.style.borderColor = 'rgba(255, 159, 28, 0.6)';
+      drop.classList.add('is-dragover');
     });
     drop.addEventListener('dragleave', () => {
-      drop.style.borderColor = 'var(--border-subtle)';
+      drop.classList.remove('is-dragover');
     });
     drop.addEventListener('drop', ev => {
       ev.preventDefault();
-      drop.style.borderColor = 'var(--border-subtle)';
+      drop.classList.remove('is-dragover');
       const file = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
       if (file) handleFile(file, results, modal);
     });

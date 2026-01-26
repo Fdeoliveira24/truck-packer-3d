@@ -67,7 +67,7 @@ export function init({ url, anonKey }) {
       return _client;
     } catch (err) {
       if (debugEnabled())
-        console.info('[SupabaseClient] init failed:', err && err.message ? String(err.message) : String(err));
+        {console.info('[SupabaseClient] init failed:', err && err.message ? String(err.message) : String(err));}
       _initPromise = null;
       _client = null;
       _session = null;

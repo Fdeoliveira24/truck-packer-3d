@@ -1,3 +1,6 @@
+/* ================================
+  Theme Tokens
+================================== */
 
 :root {
   /* Backgrounds */
@@ -66,6 +69,10 @@
   --radius-lg: 14px;
 }
 
+/* ================================
+  Dark Theme Tokens
+================================== */
+
 [data-theme='dark'] {
   --bg-primary: #121318;
   --bg-secondary: #1c1e26;
@@ -85,6 +92,10 @@
   --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.5);
 }
+
+/* ================================
+  Base Reset & Typography
+================================== */
 
 * {
   box-sizing: border-box;
@@ -107,11 +118,9 @@ a {
   color: inherit;
 }
 
-.app {
-  display: grid;
-  grid-template-columns: 240px 1fr;
-  grid-template-rows: 100vh;
-}
+/* ================================
+  Layout Shell
+================================== */
 
 .app.sidebar-collapsed {
   grid-template-columns: 0px 1fr;
@@ -126,6 +135,16 @@ a {
   pointer-events: none;
   border-right: none;
 }
+
+.app {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  grid-template-rows: 100vh;
+}
+
+/* ================================
+  Sidebar & Navigation
+================================== */
 
 .sidebar {
   background: var(--bg-secondary);
@@ -380,6 +399,10 @@ a {
   font-size: var(--text-xs);
 }
 
+/* ================================
+  Main Layout & Topbar
+================================== */
+
 .main {
   overflow: hidden;
   display: flex;
@@ -458,6 +481,22 @@ a {
   display: block;
 }
 
+#screen-packs,
+#screen-cases {
+  min-height: calc(100vh - 58px - var(--space-5));
+}
+
+#screen-packs.active,
+#screen-cases.active {
+  display: flex;
+  flex-direction: column;
+}
+
+#screen-packs > .table-footer,
+#screen-cases > .table-footer {
+  margin-top: auto;
+}
+
 #screen-editor {
   padding: 0;
 }
@@ -472,6 +511,10 @@ a {
 .row.space-between {
   justify-content: space-between;
 }
+
+/* ================================
+  Buttons
+================================== */
 
 .btn {
   border: 1px solid var(--border-subtle);
@@ -537,6 +580,10 @@ a {
   transform: none;
 }
 
+/* ================================
+  Form Inputs
+================================== */
+
 .input,
 .select,
 textarea {
@@ -564,6 +611,10 @@ textarea:focus {
   border-color: var(--accent-primary);
   box-shadow: 0 0 0 3px rgba(255, 159, 28, 0.14);
 }
+
+/* ================================
+   Search & Field Helpers
+================================== */
 
 .search-shell {
   display: grid;
@@ -621,6 +672,10 @@ textarea:focus {
   color: var(--text-secondary);
   font-weight: var(--font-medium);
 }
+
+/* ================================
+  Cards, Chips & Badges
+================================== */
 
 .card {
   background: var(--bg-secondary);
@@ -826,6 +881,10 @@ textarea:focus {
   margin-left: auto;
 }
 
+/* ================================
+  Tables & Checkboxes
+================================== */
+
 .table-wrap {
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
@@ -882,7 +941,9 @@ input[type="checkbox"]:checked::after {
   opacity: 1;
 }
 
-/* Table footer (pagination + selection summary) */
+/* ================================
+  Table Footer (Pagination + Selection)
+================================== */
 .table-footer {
   display: flex;
   align-items: center;
@@ -911,11 +972,20 @@ input[type="checkbox"]:checked::after {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  flex: 1 1 0;
 }
 
 .table-footer .tf-left {
   color: var(--text-secondary);
   font-size: var(--text-sm);
+}
+
+.table-footer .tf-mid {
+  justify-content: center;
+}
+
+.table-footer .tf-right {
+  justify-content: flex-end;
 }
 
 .table-footer .tf-label {
@@ -1112,7 +1182,9 @@ tr:hover td {
   background: var(--bg-hover);
 }
 
-/* Modal */
+/* ================================
+  Modal
+================================== */
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -1162,7 +1234,9 @@ tr:hover td {
   gap: var(--space-2);
 }
 
-/* TP3D Settings overlay (extracted from src/ui/overlays/settings-overlay.js) */
+/* ================================
+  TP3D Settings Overlay
+================================== */
 .tp3d-settings-account-btn {
   width: 100%;
   justify-content: space-between;
@@ -1213,6 +1287,12 @@ tr:hover td {
 .tp3d-settings-nav-header {
   margin-top: 10px;
   font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-secondary);
+}
+
+.tp3d-settings-nav-header:first-of-type {
+  margin-top: 0;
 }
 
 .tp3d-settings-nav-item {
@@ -1286,9 +1366,20 @@ tr:hover td {
   align-items: flex-start;
 }
 
+.tp3d-settings-right-text {
+  display: grid;
+  gap: 6px;
+}
+
 .tp3d-settings-right-title {
   font-size: var(--text-2xl);
   font-weight: var(--font-semibold);
+}
+
+.tp3d-settings-right-subtitle {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
 }
 
 .tp3d-settings-right-body {
@@ -1467,12 +1558,12 @@ tr:hover td {
 }
 
 .tp3d-import-warning i {
-  color: var(--danger);
+  color: var(--error);
 }
 
 .tp3d-import-warning-label {
   font-weight: var(--font-semibold);
-  color: var(--danger);
+  color: var(--error);
 }
 
 .tp3d-import-warning-text {
@@ -1519,7 +1610,9 @@ tr:hover td {
   border-color: rgba(59, 130, 246, 0.24);
 }
 
-/* Toasts */
+/* ================================
+  Toasts
+================================== */
 #toast-container {
   position: fixed;
   bottom: 18px;
@@ -1610,7 +1703,9 @@ body.modal-open {
   }
 }
 
-/* Editor layout */
+/* ================================
+  Editor Layout
+================================== */
 .editor-shell {
   --left-col: 290px;
   --right-col: 340px;
@@ -1728,7 +1823,9 @@ body.modal-open {
   background: rgba(255, 159, 28, 0.14);
 }
 
-/* System overlays */
+/* ================================
+  System Overlays
+================================== */
 .system-overlay {
   position: fixed;
   inset: 0;
@@ -1771,7 +1868,9 @@ body.modal-open {
   color: var(--text-secondary);
 }
 
-/* Responsive */
+/* ================================
+   Responsive
+================================== */
 @media (max-width: 1279px) {
   .pack-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2141,19 +2240,6 @@ body.modal-open {
 
 .tp3d-cases-catmgr-row {
   display: grid;
-  grid-template-columns: 40px 1fr auto;
-  gap: 12px;
-  align-items: center;
-  padding: var(--space-3);
-  background: var(--bg-elevated);
-  box-shadow: none;
-}
-
-.tp3d-cases-catmgr-color-wrap {
-  position: relative;
-}
-
-.tp3d-cases-catmgr-color-input {
   width: 40px;
   height: 40px;
   padding: 0;

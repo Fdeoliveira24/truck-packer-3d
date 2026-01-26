@@ -3,6 +3,35 @@
  * @description Main browser entrypoint that bootstraps Truck Packer 3D, wires services/screens, and installs minimal global helpers.
  * @module app
  * @created Unknown
+          function closeDropdowns() {
+            try {
+              UIComponents.closeAllDropdowns && UIComponents.closeAllDropdowns();
+            } catch {
+              // ignore
+            }
+          }
+
+          function openSettingsOverlay(tab = 'preferences') {
+            closeDropdowns();
+            try {
+              if (AccountOverlay && typeof AccountOverlay.close === 'function') AccountOverlay.close();
+            } catch {
+              // ignore
+            }
+            const nextTab = tab === 'account' ? 'preferences' : tab;
+            SettingsOverlay.open(nextTab);
+          }
+
+          function openAccountOverlay() {
+            closeDropdowns();
+            try {
+              if (SettingsOverlay && typeof SettingsOverlay.close === 'function') SettingsOverlay.close();
+            } catch {
+              // ignore
+            }
+            AccountOverlay.open();
+          }
+
  * @updated 01/22/2026
  * @author Truck Packer 3D Team
  */
@@ -41,6 +70,7 @@ import * as CorePackLibrary from './services/pack-library.js';
 import * as ImportExport from './services/import-export.js';
 import * as CorePreferencesManager from './services/preferences-manager.js';
 import { createSettingsOverlay } from './ui/overlays/settings-overlay.js';
+import { createAccountOverlay } from './ui/overlays/account-overlay.js';
 import { createCardDisplayOverlay } from './ui/overlays/card-display-overlay.js';
 import { createHelpModal } from './ui/overlays/help-modal.js';
 import { createImportAppDialog } from './ui/overlays/import-app-dialog.js';
@@ -194,6 +224,12 @@ import { APP_VERSION } from './core/version.js';
             onExportApp: openExportAppModal,
             onImportApp: openImportAppDialog,
             onHelp: openHelpModal,
+            onUpdates: openUpdatesScreen,
+            onRoadmap: openRoadmapScreen,
+          });
+          const AccountOverlay = createAccountOverlay({
+            documentRef: document,
+            SupabaseClient,
           });
           const CardDisplayOverlay = createCardDisplayOverlay({
             documentRef: document,
@@ -217,63 +253,123 @@ import { APP_VERSION } from './core/version.js';
             applyCaseDefaultColor,
             Utils,
           });
+
+          function closeDropdowns() {
+            try {
+              UIComponents.closeAllDropdowns && UIComponents.closeAllDropdowns();
+            } catch {
+              // ignore
+            }
+          }
+
+          function openSettingsOverlay(tab = 'preferences') {
+            closeDropdowns();
+            try {
+              if (AccountOverlay && typeof AccountOverlay.close === 'function') AccountOverlay.close();
+            } catch {
+              // ignore
+            }
+            try {
+              SettingsOverlay.open(tab);
+            } catch {
+              // ignore
+            }
+          }
+
+          function openAccountOverlay() {
+            closeDropdowns();
+            try {
+              if (SettingsOverlay && typeof SettingsOverlay.close === 'function') SettingsOverlay.close();
+            } catch {
+              // ignore
+            }
+            try {
+              AccountOverlay.open();
+            } catch {
+              // ignore
+            }
+          }
+
+          function getSidebarAvatarView() {
+            let user = null;
+            try {
+              user =
+                SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
+            } catch {
+              user = null;
+            }
+
+            let sessionUser = null;
+            try {
+              const s = SessionManager.get();
+              sessionUser = s && s.user ? s.user : null;
+            } catch {
+              sessionUser = null;
+            }
+
+            return Utils.getUserAvatarView({ user, sessionUser });
+          }
+
+          function renderSidebarBrandMarks() {
+            const view = getSidebarAvatarView();
+            const initials = (view && view.initials) || '';
+
+            const switcherMark = document.querySelector('#btn-account-switcher .brand-mark');
+            if (switcherMark) switcherMark.textContent = initials;
+          }
+
           // ============================================================================
           // SECTION: UI WIDGET (ACCOUNT SWITCHER)
           // ============================================================================
           const AccountSwitcher = (() => {
+            let anchorKeyCounter = 0;
             const mounts = new Map();
 
             function getDisplay() {
-              let user = null;
-              try {
-                user = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
-              } catch {
-                user = null;
-              }
-
-              const isAuthed = Boolean(user);
-
-              let email = '';
-              if (user && user.email) email = String(user.email);
-
-              let displayName = '';
-              if (user && user.user_metadata) {
-                displayName = user.user_metadata.full_name || user.user_metadata.name || '';
-              }
-              if (!displayName && email) {
-                displayName = email.split('@')[0] || '';
-              }
-
-              if (!displayName) {
-                const s = SessionManager.get();
-                const demoUser = (s && s.user) || {};
-                displayName = demoUser.name || (isAuthed ? 'User' : 'Guest');
-              }
+              const view = getSidebarAvatarView();
+              const isAuthed = Boolean(view && view.isAuthed);
+              const displayName =
+                (view && view.displayName) || (isAuthed ? 'User' : 'Guest');
 
               return {
                 accountName: 'Workspace',
-                role: isAuthed ? 'Owner' : '',
+                role: isAuthed ? 'Owner' : 'Guest',
                 userName: displayName || '—',
+                initials: (view && view.initials) || '',
               };
             }
 
             function renderButton(buttonEl) {
               if (!buttonEl) return;
               const display = getDisplay();
+              const avatarEl = buttonEl.querySelector('.brand-mark');
+              if (avatarEl) avatarEl.textContent = display.initials || '';
               const nameEl = buttonEl.querySelector('[data-account-name]');
               if (nameEl) nameEl.textContent = display.userName;
+              renderSidebarBrandMarks();
             }
 
             function showComingSoon() {
               UIComponents.showToast('Coming soon', 'info');
             }
 
-            function logout() {
+            async function logout() {
               try {
                 UIComponents.closeAllDropdowns();
                 SettingsOverlay.close();
+                AccountOverlay.close();
               } catch {
                 // ignore
+              }
+
+              // If Supabase auth is active, signing out there is the real "logout".
+              // SessionManager.clear() only resets the local demo session.
+              try {
+                if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
+                  await SupabaseClient.signOut();
+                }
+              } catch {
+                // ignore (e.g. Supabase not initialized in demo mode)
               }
 
               SessionManager.clear();
@@ -281,8 +377,23 @@ import { APP_VERSION } from './core/version.js';
               UIComponents.showToast('Logged out', 'info');
             }
 
+            function getAnchorKey(anchorEl) {
+              if (!anchorEl) return '';
+              if (!anchorEl.dataset.accountSwitcherKey) {
+                anchorEl.dataset.accountSwitcherKey = `account-switcher-${++anchorKeyCounter}`;
+              }
+              return anchorEl.dataset.accountSwitcherKey;
+            }
+
             function openMenu(anchorEl, { align } = {}) {
               const display = getDisplay();
+              const anchorKey = getAnchorKey(anchorEl);
+              const existingDropdown = document.querySelector('[data-dropdown="1"][data-role="account-switcher"]');
+              if (existingDropdown && existingDropdown.dataset.anchorId === anchorKey) {
+                closeDropdowns();
+                return;
+              }
+              closeDropdowns();
               const items = [
                 {
                   label: `${display.accountName} (${display.role})`,
@@ -297,19 +408,29 @@ import { APP_VERSION } from './core/version.js';
                 },
                 { type: 'divider' },
                 {
+                  label: 'Account',
+                  icon: 'fa-regular fa-user',
+                  onClick: () => openAccountOverlay(),
+                },
+                {
                   label: 'Settings',
                   icon: 'fa-solid fa-gear',
-                  onClick: () => SettingsOverlay.open('preferences'),
+                  onClick: () => openSettingsOverlay('preferences'),
                 },
                 {
                   label: 'Log out',
                   icon: 'fa-solid fa-right-from-bracket',
-                  onClick: () => logout(),
+                  onClick: () => void logout(),
                 },
               ];
 
               const rect = anchorEl.getBoundingClientRect();
-              UIComponents.openDropdown(anchorEl, items, { align: align || 'left', width: rect.width });
+              UIComponents.openDropdown(anchorEl, items, {
+                align: align || 'left',
+                width: rect.width,
+                role: 'account-switcher',
+                anchorKey,
+              });
             }
 
             function bind(buttonEl, { align } = {}) {
@@ -2079,6 +2200,16 @@ import { APP_VERSION } from './core/version.js';
             HelpModal.open();
           }
 
+          function openUpdatesScreen() {
+            SettingsOverlay.close();
+            AppShell.navigate('updates');
+          }
+
+          function openRoadmapScreen() {
+            SettingsOverlay.close();
+            AppShell.navigate('roadmap');
+          }
+
           function wireGlobalButtons() {
             const btnExport = document.getElementById('btn-export-app');
             const btnImport = document.getElementById('btn-import-app');
@@ -2312,7 +2443,9 @@ import { APP_VERSION } from './core/version.js';
                   if (event === 'SIGNED_IN') {
                     UIComponents.showToast('Signed in', 'success', { title: 'Auth' });
                   }
-                  if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') SettingsOverlay.handleAuthChange(event);
+                    if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') SettingsOverlay.handleAuthChange(event);
+                    if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') AccountOverlay.handleAuthChange(event);
+                  renderSidebarBrandMarks();
                   showReadyOnce();
                   return;
                 }
@@ -2323,6 +2456,8 @@ import { APP_VERSION } from './core/version.js';
                   UIComponents.showToast('Signed out', 'info', { title: 'Auth' });
                 }
                 if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') SettingsOverlay.handleAuthChange(event);
+                if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') AccountOverlay.handleAuthChange(event);
+                renderSidebarBrandMarks();
               });
             }
 

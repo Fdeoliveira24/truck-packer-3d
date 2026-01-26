@@ -119,11 +119,11 @@ export function createTableFooter(options = {}) {
 
   const render = () => {
     const { selectedCount, totalCount, pageIndex, pageCount, rowsPerPage, selectAllVisible, selectAllChecked, selectAllIndeterminate } = state;
-    const showSummary = selectedCount === totalCount && totalCount > 0;
+    const showSummary = (selectedCount === totalCount || selectAllChecked) && totalCount > 0;
     leftText.textContent = `${selectedCount} of ${totalCount} row(s) selected.`;
     leftText.hidden = !showSummary;
     selectAllWrap.hidden = !selectAllVisible;
-    selectAllLabel.hidden = !selectAllVisible;
+    selectAllLabel.hidden = !selectAllVisible || selectAllChecked;
     selectAllInput.disabled = !selectAllVisible || totalCount === 0;
     selectAllInput.checked = Boolean(selectAllChecked);
     selectAllInput.indeterminate = Boolean(selectAllIndeterminate) && !selectAllChecked;

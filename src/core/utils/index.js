@@ -56,6 +56,68 @@ export function parseResolution(res) {
   return { width: Number(m[1]), height: Number(m[2]) };
 }
 
+export function getUserAvatarView({ user, sessionUser, profile } = {}) {
+  const u = user && typeof user === 'object' ? user : null;
+  const su = sessionUser && typeof sessionUser === 'object' ? sessionUser : null;
+
+  const isAuthed = Boolean(u) || Boolean(su && (su.email || su.name));
+  const userId = u && u.id ? String(u.id) : '';
+  const email = u && u.email ? String(u.email) : su && su.email ? String(su.email) : '';
+
+  let displayName = '';
+  let derivedFromEmail = false;
+
+  if (profile && typeof profile === 'object') {
+    if (profile.full_name) displayName = String(profile.full_name);
+    if (!displayName && (profile.first_name || profile.last_name)) {
+      displayName = `${profile.first_name || ''} ${profile.last_name || ''}`.trim();
+    }
+  }
+
+  if (!displayName && u && u.user_metadata) {
+    displayName = u.user_metadata.full_name || u.user_metadata.name || '';
+  }
+
+  // If a Supabase user exists but has no usable name metadata,
+  // prefer deriving from the Supabase email before falling back to the demo session name.
+  if (!displayName && email) {
+    const prefix = email.split('@')[0];
+    displayName = prefix || '';
+    derivedFromEmail = Boolean(displayName);
+  }
+
+  if (!displayName && !u && su && su.name) {
+    displayName = String(su.name || '').trim();
+  }
+
+  if (!displayName) displayName = isAuthed ? 'User' : 'Guest';
+
+  let initials = '';
+  if (displayName && displayName !== 'Guest') {
+    const words = displayName
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+
+    if (words.length >= 2) {
+      initials = (words[0][0] + words[1][0]).toUpperCase();
+    } else if (words.length === 1) {
+      if (derivedFromEmail && words[0].length >= 2) initials = words[0].substring(0, 2).toUpperCase();
+      else initials = (words[0][0] || '').toUpperCase();
+    }
+  }
+
+  if (!initials && email) {
+    const prefix = email.split('@')[0] || '';
+    initials = prefix.length >= 2 ? prefix.substring(0, 2).toUpperCase() : (prefix[0] || '').toUpperCase();
+  }
+
+  if (!initials) initials = isAuthed ? 'U' : '?';
+
+  const workspaceShareId = userId ? userId.slice(0, 8) : '';
+  return { isAuthed, userId, email, displayName, initials, workspaceShareId };
+}
+
 export const lengthUnits = ['in', 'ft', 'mm', 'cm', 'm'];
 export const weightUnits = ['lb', 'kg'];
 
@@ -165,6 +227,7 @@ export const Utils = {
   deepClone,
   escapeHtml,
   parseResolution,
+  getUserAvatarView,
   lengthUnits,
   weightUnits,
   inchesToUnit,

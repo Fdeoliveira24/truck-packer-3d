@@ -18,8 +18,7 @@
             } catch {
               // ignore
             }
-            const nextTab = tab === 'account' ? 'preferences' : tab;
-            SettingsOverlay.open(nextTab);
+            SettingsOverlay.open(tab);
           }
 
           function openAccountOverlay() {
@@ -410,7 +409,7 @@ import { APP_VERSION } from './core/version.js';
                 {
                   label: 'Account',
                   icon: 'fa-regular fa-user',
-                  onClick: () => openAccountOverlay(),
+                  onClick: () => openSettingsOverlay('account'),
                 },
                 {
                   label: 'Settings',

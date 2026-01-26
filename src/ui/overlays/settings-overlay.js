@@ -385,6 +385,7 @@ export function createSettingsOverlay({
     navWrap.appendChild(makeHeader('Settings'));
     navWrap.appendChild(makeItem({ key: 'preferences', label: 'Preferences', icon: 'fa-solid fa-gear' }));
     navWrap.appendChild(makeItem({ key: 'resources', label: 'Resources', icon: 'fa-solid fa-life-ring' }));
+    navWrap.appendChild(makeItem({ key: 'account', label: 'Account', icon: 'fa-regular fa-user' }));
     navWrap.appendChild(makeHeader('Organization'));
     navWrap.appendChild(makeItem({ key: 'org-general', label: 'General', icon: 'fa-regular fa-building', indent: true }));
     navWrap.appendChild(
@@ -423,6 +424,11 @@ export function createSettingsOverlay({
           return {
             title: 'Resources',
             helper: 'See updates, roadmap, exports, imports, and help in one place.',
+          };
+        case 'account':
+          return {
+            title: 'Account',
+            helper: 'Manage your profile and workspace identity.',
           };
         case 'org-general':
           return {
@@ -611,6 +617,59 @@ export function createSettingsOverlay({
         container.appendChild(helpBtn);
         body.appendChild(container);
       }
+    } else if (settingsActiveTab === 'account') {
+      const userView = getCurrentUserView();
+
+      // Account avatar and name row
+      const nameRow = doc.createElement('div');
+      nameRow.className = 'row';
+      nameRow.classList.add('tp3d-settings-account-row');
+      nameRow.innerHTML = `<span class="brand-mark tp3d-settings-account-avatar-lg" aria-hidden="true">${
+        userView.initials || ''
+      }</span><div class="tp3d-settings-account-display">${userView.displayName || '—'}</div>`;
+      body.appendChild(nameRow);
+
+      // Email row
+      const emailEl = doc.createElement('div');
+      emailEl.textContent = userView.isAuthed && userView.email ? userView.email : 'Not signed in';
+      body.appendChild(row('Email', emailEl));
+
+      // Danger zone
+      const danger = doc.createElement('div');
+      danger.classList.add('tp3d-settings-danger');
+      danger.innerHTML = `
+        <div class="tp3d-settings-danger-title">Danger Zone</div>
+        <div class="tp3d-settings-danger-divider"></div>
+      `;
+      const dangerRow = doc.createElement('div');
+      dangerRow.classList.add('tp3d-settings-danger-row');
+      const dLeft = doc.createElement('div');
+      dLeft.classList.add('tp3d-settings-danger-left');
+      dLeft.textContent = 'Delete Account';
+      const dRight = doc.createElement('div');
+      dRight.classList.add('tp3d-settings-danger-right');
+      const delBtn = doc.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'btn btn-danger';
+      delBtn.textContent = 'Delete account';
+      delBtn.disabled = true;
+      const dMsg = doc.createElement('div');
+      dMsg.className = 'muted';
+      dMsg.classList.add('tp3d-settings-danger-msg');
+      const warnIcon = doc.createElement('i');
+      warnIcon.className = 'fa-solid fa-triangle-exclamation';
+      warnIcon.setAttribute('aria-hidden', 'true');
+      warnIcon.classList.add('tp3d-settings-danger-warn-icon');
+      const warnText = doc.createElement('span');
+      warnText.textContent = 'Delete account is not set up yet.';
+      dMsg.appendChild(warnIcon);
+      dMsg.appendChild(warnText);
+      dRight.appendChild(delBtn);
+      dRight.appendChild(dMsg);
+      dangerRow.appendChild(dLeft);
+      dangerRow.appendChild(dRight);
+      danger.appendChild(dangerRow);
+      body.appendChild(danger);
     } else if (settingsActiveTab === 'org-general') {
       const userView = getCurrentUserView();
       const orgName = 'Workspace';

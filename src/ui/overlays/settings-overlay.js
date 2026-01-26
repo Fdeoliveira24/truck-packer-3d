@@ -35,10 +35,86 @@ export function createSettingsOverlay({
   let settingsLeftPane = null;
   let settingsRightPane = null;
   let settingsActiveTab = 'preferences';
+  let resourcesSubView = 'root'; // 'root' | 'updates' | 'roadmap'
   let unmountAccountButton = null;
   let lastFocusedEl = null;
   let trapKeydownHandler = null;
   let warnedMissingModalRoot = false;
+
+  // Static content for Updates and Roadmap (embedded to avoid external dependencies)
+  const updatesData = [
+    {
+      version: '1.0.0',
+      date: '2026-01-15',
+      features: [
+        'Multi-screen workspace (Packs, Cases, Editor, Updates, Roadmap, Settings)',
+        'Three.js 3D editor with drag placement',
+        'CSV/XLSX import, PNG + PDF export',
+      ],
+      bugFixes: [],
+      breakingChanges: [],
+    },
+    {
+      version: '1.1.0',
+      date: '2026-03-01',
+      features: ['(Example) Weight balance view', '(Example) Case rotation'],
+      bugFixes: ['(Example) Improved collision edge cases'],
+      breakingChanges: [],
+    },
+  ];
+
+  const roadmapData = [
+    {
+      quarter: 'Q1 2026',
+      items: [
+        {
+          title: 'Weight balance',
+          status: 'Completed',
+          badge: '✓',
+          color: 'var(--success)',
+          details: 'Add center-of-gravity and axle load estimates.',
+        },
+        {
+          title: 'Rotation (MVP)',
+          status: 'In Progress',
+          badge: '⏱',
+          color: 'var(--warning)',
+          details: 'Allow 90° rotations and pack-time heuristics.',
+        },
+      ],
+    },
+    {
+      quarter: 'Q2 2026',
+      items: [
+        {
+          title: 'Multi-user',
+          status: 'Planned',
+          badge: '📋',
+          color: 'var(--info)',
+          details: 'Presence + change tracking (no real-time yet).',
+        },
+        {
+          title: '3D export',
+          status: 'Planned',
+          badge: '📋',
+          color: 'var(--info)',
+          details: 'GLB/GLTF export for downstream tools.',
+        },
+      ],
+    },
+    {
+      quarter: 'Future',
+      items: [
+        {
+          title: 'AR view',
+          status: 'Idea',
+          badge: '💡',
+          color: 'var(--text-muted)',
+          details: 'Preview a load-out in real space on mobile.',
+        },
+      ],
+    },
+  ];
 
   // NOTE: Phase 2+ will optionally pass a profile row (profiles table) into this helper.
   // Keep one shared source of truth for avatar displayName/initials.
@@ -103,6 +179,7 @@ export function createSettingsOverlay({
     settingsModal = null;
     settingsLeftPane = null;
     settingsRightPane = null;
+    resourcesSubView = 'root'; // Reset sub-view on close
 
     try {
       if (lastFocusedEl && typeof lastFocusedEl.focus === 'function') {
@@ -116,6 +193,15 @@ export function createSettingsOverlay({
 
   function setActive(tab) {
     settingsActiveTab = String(tab || 'preferences');
+    // Reset sub-view when switching tabs
+    if (tab !== 'resources') {
+      resourcesSubView = 'root';
+    }
+    render();
+  }
+
+  function setResourcesSubView(subView) {
+    resourcesSubView = subView;
     render();
   }
 
@@ -130,6 +216,105 @@ export function createSettingsOverlay({
     PreferencesManager.set(next);
     PreferencesManager.applyTheme(next.theme);
     UIComponents.showToast('Preferences saved', 'success');
+  }
+
+  // Render Updates content inside the modal
+  function renderUpdatesContent(container) {
+    const wrap = doc.createElement('div');
+    wrap.className = 'grid';
+    wrap.style.gap = 'var(--space-4)';
+
+    updatesData.forEach(u => {
+      const card = doc.createElement('div');
+      card.className = 'card';
+
+      const header = doc.createElement('div');
+      header.className = 'row space-between';
+      header.style.alignItems = 'flex-start';
+
+      const left = doc.createElement('div');
+      left.innerHTML = `<div style="font-weight:var(--font-semibold);font-size:var(--text-lg)">Version ${u.version}</div><div class="muted" style="font-size:var(--text-xs)">${new Date(u.date).toLocaleDateString()}</div>`;
+      header.appendChild(left);
+      card.appendChild(header);
+
+      const sections = [
+        { title: 'New Features', items: u.features || [] },
+        { title: 'Bug Fixes', items: u.bugFixes || [] },
+        { title: 'Breaking Changes', items: u.breakingChanges || [] },
+      ].filter(s => s.items.length);
+
+      sections.forEach(s => {
+        const t = doc.createElement('div');
+        t.style.marginTop = '12px';
+        t.style.fontWeight = 'var(--font-semibold)';
+        t.textContent = s.title;
+        card.appendChild(t);
+
+        const ul = doc.createElement('ul');
+        ul.style.margin = '8px 0 0 16px';
+        ul.style.color = 'var(--text-secondary)';
+        ul.style.fontSize = 'var(--text-sm)';
+        s.items.forEach(it => {
+          const li = doc.createElement('li');
+          li.textContent = it;
+          ul.appendChild(li);
+        });
+        card.appendChild(ul);
+      });
+
+      wrap.appendChild(card);
+    });
+
+    container.appendChild(wrap);
+  }
+
+  // Render Roadmap content inside the modal
+  function renderRoadmapContent(container) {
+    const wrap = doc.createElement('div');
+    wrap.className = 'grid';
+    wrap.style.gap = 'var(--space-5)';
+
+    roadmapData.forEach(group => {
+      const groupWrap = doc.createElement('div');
+      groupWrap.className = 'grid';
+      groupWrap.style.gap = '10px';
+
+      const h = doc.createElement('div');
+      h.style.fontSize = 'var(--text-lg)';
+      h.style.fontWeight = 'var(--font-semibold)';
+      h.textContent = group.quarter;
+      groupWrap.appendChild(h);
+
+      const grid = doc.createElement('div');
+      grid.className = 'grid';
+      grid.style.gap = 'var(--space-3)';
+
+      group.items.forEach(item => {
+        const card = doc.createElement('div');
+        card.className = 'card';
+        card.style.cursor = 'pointer';
+        card.innerHTML = `
+          <div class="row space-between" style="gap:10px">
+            <div style="font-weight:var(--font-semibold)">${item.title}</div>
+            <div class="badge" style="border-color:transparent;background:${item.color};color:white">${item.badge} ${item.status}</div>
+          </div>
+          <div class="muted" style="font-size:var(--text-sm);margin-top:8px">${item.details}</div>
+        `;
+        card.addEventListener('click', () => {
+          UIComponents.showModal({
+            title: item.title,
+            content: `<div class="muted" style="font-size:var(--text-sm)">${item.details}</div>`,
+            actions: [{ label: 'Close', variant: 'primary' }],
+          });
+        });
+        grid.appendChild(card);
+      });
+
+      groupWrap.appendChild(grid);
+      wrap.appendChild(groupWrap);
+    });
+
+    container.appendChild(wrap);
   }
 
   function render() {
@@ -220,6 +405,21 @@ export function createSettingsOverlay({
             helper: 'Set your units, labels, and theme.',
           };
         case 'resources':
+          // Handle sub-views within Resources
+          if (resourcesSubView === 'updates') {
+            return {
+              title: 'Updates',
+              helper: 'Release notes and recent changes.',
+              showBack: true,
+            };
+          }
+          if (resourcesSubView === 'roadmap') {
+            return {
+              title: 'Roadmap',
+              helper: 'Product direction and upcoming features.',
+              showBack: true,
+            };
+          }
           return {
             title: 'Resources',
             helper: 'See updates, roadmap, exports, imports, and help in one place.',
@@ -242,6 +442,22 @@ export function createSettingsOverlay({
       }
     })();
 
+    const headerLeft = doc.createElement('div');
+    headerLeft.className = 'row';
+    headerLeft.style.gap = 'var(--space-3)';
+    headerLeft.style.alignItems = 'center';
+
+    // Back button for sub-views
+    if (meta.showBack) {
+      const backBtn = doc.createElement('button');
+      backBtn.type = 'button';
+      backBtn.className = 'btn btn-ghost';
+      backBtn.innerHTML = '<i class="fa-solid fa-arrow-left"></i>';
+      backBtn.title = 'Back to Resources';
+      backBtn.addEventListener('click', () => setResourcesSubView('root'));
+      headerLeft.appendChild(backBtn);
+    }
+
     const headerText = doc.createElement('div');
     headerText.classList.add('tp3d-settings-right-text');
 
@@ -256,6 +472,7 @@ export function createSettingsOverlay({
 
     headerText.appendChild(title);
     headerText.appendChild(helper);
+    headerLeft.appendChild(headerText);
 
     const closeBtn = doc.createElement('button');
     closeBtn.type = 'button';
@@ -263,7 +480,7 @@ export function createSettingsOverlay({
     closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
     closeBtn.addEventListener('click', () => close());
 
-    header.appendChild(headerText);
+    header.appendChild(headerLeft);
     header.appendChild(closeBtn);
     settingsRightPane.appendChild(header);
 
@@ -351,38 +568,49 @@ export function createSettingsOverlay({
       actions.appendChild(saveBtn);
       body.appendChild(actions);
     } else if (settingsActiveTab === 'resources') {
-      const container = doc.createElement('div');
-      container.className = 'grid';
+      // Handle sub-views within Resources
+      if (resourcesSubView === 'updates') {
+        // Render embedded Updates content
+        renderUpdatesContent(body);
+      } else if (resourcesSubView === 'roadmap') {
+        // Render embedded Roadmap content
+        renderRoadmapContent(body);
+      } else {
+        // Root view: show buttons
+        const container = doc.createElement('div');
+        container.className = 'grid';
 
-      const runResourceAction = (cb, { closeFirst = true } = {}) => {
-        if (typeof cb !== 'function') return;
-        if (closeFirst) close();
-        cb();
-      };
+        const runResourceAction = (cb, { closeFirst = true } = {}) => {
+          if (typeof cb !== 'function') return;
+          if (closeFirst) close();
+          cb();
+        };
 
-      const makeBtn = (label, variant, onClick) => {
-        const btn = doc.createElement('button');
-        btn.type = 'button';
-        btn.className = 'btn';
-        if (variant) btn.classList.add(variant);
-        btn.textContent = label;
-        btn.addEventListener('click', onClick);
-        return btn;
-      };
+        const makeBtn = (label, variant, onClick) => {
+          const btn = doc.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn';
+          if (variant) btn.classList.add(variant);
+          btn.textContent = label;
+          btn.addEventListener('click', onClick);
+          return btn;
+        };
 
-      const exportBtn = makeBtn('Export App', null, () => runResourceAction(onExportApp));
-      const importBtn = makeBtn('Import App', null, () => runResourceAction(onImportApp));
-      const helpBtn = makeBtn('Help', null, () => runResourceAction(onHelp));
+        const exportBtn = makeBtn('Export App', null, () => runResourceAction(onExportApp));
+        const importBtn = makeBtn('Import App', null, () => runResourceAction(onImportApp));
+        const helpBtn = makeBtn('Help', null, () => runResourceAction(onHelp));
 
-      const updatesBtn = makeBtn('Updates', null, () => runResourceAction(onUpdates));
-      const roadmapBtn = makeBtn('Roadmap', null, () => runResourceAction(onRoadmap));
+        // Updates and Roadmap buttons now switch sub-views instead of closing modal
+        const updatesBtn = makeBtn('Updates', null, () => setResourcesSubView('updates'));
+        const roadmapBtn = makeBtn('Roadmap', null, () => setResourcesSubView('roadmap'));
 
-      container.appendChild(updatesBtn);
-      container.appendChild(roadmapBtn);
-      container.appendChild(exportBtn);
-      container.appendChild(importBtn);
-      container.appendChild(helpBtn);
-      body.appendChild(container);
+        container.appendChild(updatesBtn);
+        container.appendChild(roadmapBtn);
+        container.appendChild(exportBtn);
+        container.appendChild(importBtn);
+        container.appendChild(helpBtn);
+        body.appendChild(container);
+      }
     } else if (settingsActiveTab === 'org-general') {
       const userView = getCurrentUserView();
       const orgName = 'Workspace';

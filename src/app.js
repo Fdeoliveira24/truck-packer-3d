@@ -3,35 +3,6 @@
  * @description Main browser entrypoint that bootstraps Truck Packer 3D, wires services/screens, and installs minimal global helpers.
  * @module app
  * @created Unknown
-          function closeDropdowns() {
-            try {
-              UIComponents.closeAllDropdowns && UIComponents.closeAllDropdowns();
-            } catch {
-              // ignore
-            }
-          }
-
-          function openSettingsOverlay(tab = 'preferences') {
-            closeDropdowns();
-            try {
-              if (AccountOverlay && typeof AccountOverlay.close === 'function') AccountOverlay.close();
-            } catch {
-              // ignore
-            }
-            const nextTab = tab === 'account' ? 'preferences' : tab;
-            SettingsOverlay.open(nextTab);
-          }
-
-          function openAccountOverlay() {
-            closeDropdowns();
-            try {
-              if (SettingsOverlay && typeof SettingsOverlay.close === 'function') SettingsOverlay.close();
-            } catch {
-              // ignore
-            }
-            AccountOverlay.open();
-          }
-
  * @updated 01/22/2026
  * @author Truck Packer 3D Team
  */
@@ -70,7 +41,6 @@ import * as CorePackLibrary from './services/pack-library.js';
 import * as ImportExport from './services/import-export.js';
 import * as CorePreferencesManager from './services/preferences-manager.js';
 import { createSettingsOverlay } from './ui/overlays/settings-overlay.js';
-import { createAccountOverlay } from './ui/overlays/account-overlay.js';
 import { createCardDisplayOverlay } from './ui/overlays/card-display-overlay.js';
 import { createHelpModal } from './ui/overlays/help-modal.js';
 import { createImportAppDialog } from './ui/overlays/import-app-dialog.js';
@@ -227,10 +197,6 @@ import { APP_VERSION } from './core/version.js';
             onUpdates: openUpdatesScreen,
             onRoadmap: openRoadmapScreen,
           });
-          const AccountOverlay = createAccountOverlay({
-            documentRef: document,
-            SupabaseClient,
-          });
           const CardDisplayOverlay = createCardDisplayOverlay({
             documentRef: document,
             UIComponents,
@@ -265,26 +231,7 @@ import { APP_VERSION } from './core/version.js';
           function openSettingsOverlay(tab = 'preferences') {
             closeDropdowns();
             try {
-              if (AccountOverlay && typeof AccountOverlay.close === 'function') AccountOverlay.close();
-            } catch {
-              // ignore
-            }
-            try {
               SettingsOverlay.open(tab);
-            } catch {
-              // ignore
-            }
-          }
-
-          function openAccountOverlay() {
-            closeDropdowns();
-            try {
-              if (SettingsOverlay && typeof SettingsOverlay.close === 'function') SettingsOverlay.close();
-            } catch {
-              // ignore
-            }
-            try {
-              AccountOverlay.open();
             } catch {
               // ignore
             }
@@ -357,7 +304,6 @@ import { APP_VERSION } from './core/version.js';
               try {
                 UIComponents.closeAllDropdowns();
                 SettingsOverlay.close();
-                AccountOverlay.close();
               } catch {
                 // ignore
               }
@@ -410,7 +356,7 @@ import { APP_VERSION } from './core/version.js';
                 {
                   label: 'Account',
                   icon: 'fa-regular fa-user',
-                  onClick: () => openAccountOverlay(),
+                  onClick: () => openSettingsOverlay('account'),
                 },
                 {
                   label: 'Settings',
@@ -2444,7 +2390,6 @@ import { APP_VERSION } from './core/version.js';
                     UIComponents.showToast('Signed in', 'success', { title: 'Auth' });
                   }
                     if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') SettingsOverlay.handleAuthChange(event);
-                    if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') AccountOverlay.handleAuthChange(event);
                   renderSidebarBrandMarks();
                   showReadyOnce();
                   return;
@@ -2456,7 +2401,6 @@ import { APP_VERSION } from './core/version.js';
                   UIComponents.showToast('Signed out', 'info', { title: 'Auth' });
                 }
                 if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') SettingsOverlay.handleAuthChange(event);
-                if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') AccountOverlay.handleAuthChange(event);
                 renderSidebarBrandMarks();
               });
             }
@@ -2539,7 +2483,16 @@ import { APP_VERSION } from './core/version.js';
               showModal: UIComponents.showModal,
               confirm: UIComponents.confirm,
             },
-            _debug: { Utils, StateStore, Storage, CaseLibrary, PackLibrary, Defaults },
+            _debug: { 
+              Utils, 
+              StateStore, 
+              Storage, 
+              CaseLibrary, 
+              PackLibrary, 
+              Defaults,
+              // Remove Before Production: Consider removing or gating this behind a debug flag
+              Supabase: SupabaseClient
+            },
           };
         })();
 

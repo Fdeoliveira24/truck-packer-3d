@@ -155,3 +155,41 @@ export async function resendConfirmation(email) {
   if (error) throw error;
   return true;
 }
+
+export async function getProfile(userId = null) {
+  const client = requireClient();
+  const uid = userId || (getUser() && getUser().id ? getUser().id : null);
+  if (!uid) return null;
+
+  const { data, error } = await client
+    .from('profiles')
+    .select('*')
+    .eq('id', uid)
+    .single();
+
+  if (error) return null;
+  return data || null;
+}
+
+export async function updateProfile(updates) {
+  const client = requireClient();
+  const user = getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  const { data, error } = await client
+    .from('profiles')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', user.id)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function getUserOrganizations() {
+  const client = requireClient();
+  const { data, error } = await client.rpc('get_user_organizations');
+  if (error) throw error;
+  return data || [];
+}

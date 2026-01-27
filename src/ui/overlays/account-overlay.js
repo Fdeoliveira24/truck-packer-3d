@@ -15,12 +15,17 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
   let lastFocusedEl = null;
   let warnedMissingModalRoot = false;
 
-  function getCurrentUserView(profile = null) {
+  async function getCurrentUserView() {
     let user = null;
+    let profile = null;
+
     try {
       user = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
+      if (user && SupabaseClient && typeof SupabaseClient.getProfile === 'function') {
+        profile = await SupabaseClient.getProfile(user.id);
+      }
     } catch {
-      user = null;
+      profile = null;
     }
 
     return getUserAvatarView({ user, profile });
@@ -82,10 +87,10 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     return wrap;
   }
 
-  function render() {
+  async function render() {
     if (!accountModal) return;
 
-    const userView = getCurrentUserView();
+    const userView = await getCurrentUserView();
 
     accountModal.innerHTML = '';
 
@@ -134,6 +139,57 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     emailEl.textContent = userView.isAuthed && userView.email ? userView.email : 'Not signed in';
     body.appendChild(row('Email', emailEl));
 
+    const avatarRow = doc.createElement('div');
+    avatarRow.classList.add('tp3d-settings-row');
+    const avatarLabel = doc.createElement('div');
+    avatarLabel.classList.add('tp3d-settings-row-label');
+    avatarLabel.textContent = 'Avatar';
+    const avatarRight = doc.createElement('div');
+    avatarRight.style.display = 'flex';
+    avatarRight.style.flexDirection = 'column';
+    avatarRight.style.gap = '6px';
+    const avatarInput = doc.createElement('input');
+    avatarInput.type = 'file';
+    avatarInput.accept = 'image/jpeg,image/png,image/webp';
+    avatarInput.disabled = !userView.isAuthed;
+    const avatarHint = doc.createElement('div');
+    avatarHint.className = 'muted';
+    avatarHint.textContent = userView.isAuthed ? 'Upload a JPG, PNG, or WebP.' : 'Sign in to upload an avatar.';
+    avatarInput.addEventListener('change', async e => {
+      const file = e && e.target && e.target.files ? e.target.files[0] : null;
+      if (!file) return;
+      const user = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
+      if (!user) return;
+
+      try {
+        avatarInput.disabled = true;
+        const ext = String(file.name || '').split('.').pop() || 'png';
+        const safeExt = ext.toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+        const filePath = `${user.id}/avatar.${safeExt}`;
+        const client = SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
+        if (!client || !client.storage) throw new Error('Storage not available');
+
+        const { error } = await client.storage.from('avatars').upload(filePath, file, { upsert: true });
+        if (error) throw error;
+
+        const { data } = client.storage.from('avatars').getPublicUrl(filePath);
+        const publicUrl = data && data.publicUrl ? data.publicUrl : '';
+        if (publicUrl && SupabaseClient && typeof SupabaseClient.updateProfile === 'function') {
+          await SupabaseClient.updateProfile({ avatar_url: publicUrl });
+        }
+      } catch (err) {
+        console.warn('Avatar upload failed:', err && err.message ? err.message : err);
+      } finally {
+        avatarInput.disabled = !userView.isAuthed;
+        render();
+      }
+    });
+    avatarRight.appendChild(avatarInput);
+    avatarRight.appendChild(avatarHint);
+    avatarRow.appendChild(avatarLabel);
+    avatarRow.appendChild(avatarRight);
+    body.appendChild(avatarRow);
+
     const danger = doc.createElement('div');
     danger.classList.add('tp3d-settings-danger');
     danger.innerHTML = `
@@ -151,7 +207,41 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     delBtn.type = 'button';
     delBtn.className = 'btn btn-danger';
     delBtn.textContent = 'Delete account';
-    delBtn.disabled = true;
+    delBtn.disabled = !userView.isAuthed;
+    delBtn.addEventListener('click', async () => {
+      if (!userView.isAuthed) return;
+      if (!confirm('Are you sure? This action cannot be undone.')) return;
+
+      try {
+        const session = SupabaseClient && typeof SupabaseClient.getSession === 'function' ? SupabaseClient.getSession() : null;
+        const token = session && session.access_token ? session.access_token : '';
+        if (!token) throw new Error('No active session');
+
+        const cfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : null;
+        const baseUrl = cfg && cfg.url ? String(cfg.url) : '';
+        if (!baseUrl) throw new Error('Supabase URL missing');
+
+        const response = await fetch(`${baseUrl.replace(/\/$/, '')}/functions/v1/delete-account`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(errText || 'Delete failed');
+        }
+
+        if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
+          await SupabaseClient.signOut();
+        }
+        window.location.reload();
+      } catch (err) {
+        alert(`Delete failed: ${err && err.message ? err.message : err}`);
+      }
+    });
     const dMsg = doc.createElement('div');
     dMsg.className = 'muted';
     dMsg.classList.add('tp3d-settings-danger-msg');
@@ -160,7 +250,7 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     warnIcon.setAttribute('aria-hidden', 'true');
     warnIcon.classList.add('tp3d-settings-danger-warn-icon');
     const warnText = doc.createElement('span');
-    warnText.textContent = 'Delete account is not set up yet.';
+    warnText.textContent = 'This action is permanent and cannot be undone.';
     dMsg.appendChild(warnIcon);
     dMsg.appendChild(warnText);
     dRight.appendChild(delBtn);
@@ -246,7 +336,7 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
       }
     };
 
-    render();
+    void render();
 
     const focusTarget = accountModal.querySelector(
       'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
@@ -256,7 +346,7 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
 
   function handleAuthChange() {
     if (isOpen()) {
-      render();
+      void render();
     }
   }
 

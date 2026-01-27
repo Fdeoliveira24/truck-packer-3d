@@ -214,17 +214,17 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
 
       try {
         const session = SupabaseClient && typeof SupabaseClient.getSession === 'function' ? SupabaseClient.getSession() : null;
-        const token = session && session.access_token ? session.access_token : '';
-        if (!token) throw new Error('No active session');
+        if (!session || !session.access_token) throw new Error('No active session');
 
-        const cfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : null;
+        const cfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : {};
         const baseUrl = cfg && cfg.url ? String(cfg.url) : '';
         if (!baseUrl) throw new Error('Supabase URL missing');
 
         const response = await fetch(`${baseUrl.replace(/\/$/, '')}/functions/v1/delete-account`, {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${token}`,
+            Authorization: `Bearer ${session.access_token}`,
+            apikey: cfg.anonKey || '',
             'Content-Type': 'application/json',
           },
         });
@@ -234,8 +234,14 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
           throw new Error(errText || 'Delete failed');
         }
 
-        if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
-          await SupabaseClient.signOut();
+        // Local-only sign out (no server call since user is already deleted)
+        try {
+          const client = SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
+          if (client && client.auth) {
+            await client.auth.signOut({ scope: 'local' });
+          }
+        } catch {
+          // Ignore errors - user already deleted on server
         }
         window.location.reload();
       } catch (err) {

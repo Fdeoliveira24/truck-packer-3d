@@ -376,7 +376,18 @@ export function createSettingsOverlay({
             return;
           }
 
-          const res = await client.functions.invoke('delete-account', { body: {} });
+          // Get session and validate access token
+          const session = SupabaseClient && typeof SupabaseClient.getSession === 'function' ? SupabaseClient.getSession() : null;
+          if (!session || !session.access_token) {
+            UIComponents.showToast('No active session', 'error');
+            return;
+          }
+
+          // Invoke with explicit Authorization header
+          const res = await client.functions.invoke('delete-account', {
+            headers: { Authorization: `Bearer ${session.access_token}` },
+            body: {}
+          });
           if (res && res.error) {
             UIComponents.showToast('Delete failed: ' + String(res.error.message || 'Unknown error'), 'error');
             return;
@@ -384,13 +395,16 @@ export function createSettingsOverlay({
 
           UIComponents.showToast('Account deleted', 'success');
 
+          // Local-only sign out (no server call since user is already deleted)
           try {
-            if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
-              await SupabaseClient.signOut();
+            if (client && client.auth) {
+              await client.auth.signOut({ scope: 'local' });
             }
           } catch {
-            // ignore
+            // Ignore errors - user already deleted on server
           }
+
+          window.location.reload();
         } catch (err) {
           UIComponents.showToast('Delete failed: ' + String((err && err.message) || 'Unknown error'), 'error');
         } finally {

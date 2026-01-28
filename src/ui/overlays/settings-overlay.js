@@ -11,8 +11,6 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
-import * as CoreStorage from '../../core/storage.js';
-import * as StateStore from '../../core/state-store.js';
 import { getUserAvatarView } from '../../core/utils/index.js';
 
 export function createSettingsOverlay({
@@ -24,11 +22,11 @@ export function createSettingsOverlay({
   Utils,
   getAccountSwitcher,
   SupabaseClient,
-  onExportApp: _onExportApp,
-  onImportApp: _onImportApp,
-  onHelp: _onHelp,
-  onUpdates: _onUpdates,
-  onRoadmap: _onRoadmap,
+  onExportApp,
+  onImportApp,
+  onHelp,
+  onUpdates,
+  onRoadmap,
 }) {
   const doc = documentRef;
 
@@ -37,11 +35,86 @@ export function createSettingsOverlay({
   let settingsLeftPane = null;
   let settingsRightPane = null;
   let settingsActiveTab = 'preferences';
-  let resourcesSubView = 'root';
+  let resourcesSubView = 'root'; // 'root' | 'updates' | 'roadmap'
   let unmountAccountButton = null;
   let lastFocusedEl = null;
   let trapKeydownHandler = null;
   let warnedMissingModalRoot = false;
+
+  // Static content for Updates and Roadmap (embedded to avoid external dependencies)
+  const updatesData = [
+    {
+      version: '1.0.0',
+      date: '2026-01-15',
+      features: [
+        'Multi-screen workspace (Packs, Cases, Editor, Updates, Roadmap, Settings)',
+        'Three.js 3D editor with drag placement',
+        'CSV/XLSX import, PNG + PDF export',
+      ],
+      bugFixes: [],
+      breakingChanges: [],
+    },
+    {
+      version: '1.1.0',
+      date: '2026-03-01',
+      features: ['(Example) Weight balance view', '(Example) Case rotation'],
+      bugFixes: ['(Example) Improved collision edge cases'],
+      breakingChanges: [],
+    },
+  ];
+
+  const roadmapData = [
+    {
+      quarter: 'Q1 2026',
+      items: [
+        {
+          title: 'Weight balance',
+          status: 'Completed',
+          badge: '✓',
+          color: 'var(--success)',
+          details: 'Add center-of-gravity and axle load estimates.',
+        },
+        {
+          title: 'Rotation (MVP)',
+          status: 'In Progress',
+          badge: '⏱',
+          color: 'var(--warning)',
+          details: 'Allow 90° rotations and pack-time heuristics.',
+        },
+      ],
+    },
+    {
+      quarter: 'Q2 2026',
+      items: [
+        {
+          title: 'Multi-user',
+          status: 'Planned',
+          badge: '📋',
+          color: 'var(--info)',
+          details: 'Presence + change tracking (no real-time yet).',
+        },
+        {
+          title: '3D export',
+          status: 'Planned',
+          badge: '📋',
+          color: 'var(--info)',
+          details: 'GLB/GLTF export for downstream tools.',
+        },
+      ],
+    },
+    {
+      quarter: 'Future',
+      items: [
+        {
+          title: 'AR view',
+          status: 'Idea',
+          badge: '💡',
+          color: 'var(--text-muted)',
+          details: 'Preview a load-out in real space on mobile.',
+        },
+      ],
+    },
+  ];
 
   // NOTE: Phase 2+ will optionally pass a profile row (profiles table) into this helper.
   // Keep one shared source of truth for avatar displayName/initials.
@@ -70,7 +143,6 @@ export function createSettingsOverlay({
 
   function close() {
     if (!settingsOverlay) return;
-    resourcesSubView = 'root';
     try {
       if (typeof unmountAccountButton === 'function') unmountAccountButton();
     } catch {
@@ -107,6 +179,7 @@ export function createSettingsOverlay({
     settingsModal = null;
     settingsLeftPane = null;
     settingsRightPane = null;
+    resourcesSubView = 'root'; // Reset sub-view on close
 
     try {
       if (lastFocusedEl && typeof lastFocusedEl.focus === 'function') {
@@ -120,7 +193,15 @@ export function createSettingsOverlay({
 
   function setActive(tab) {
     settingsActiveTab = String(tab || 'preferences');
-    resourcesSubView = 'root';
+    // Reset sub-view when switching tabs
+    if (tab !== 'resources') {
+      resourcesSubView = 'root';
+    }
+    render();
+  }
+
+  function setResourcesSubView(subView) {
+    resourcesSubView = subView;
     render();
   }
 
@@ -135,6 +216,105 @@ export function createSettingsOverlay({
     PreferencesManager.set(next);
     PreferencesManager.applyTheme(next.theme);
     UIComponents.showToast('Preferences saved', 'success');
+  }
+
+  // Render Updates content inside the modal
+  function renderUpdatesContent(container) {
+    const wrap = doc.createElement('div');
+    wrap.className = 'grid';
+    wrap.style.gap = 'var(--space-4)';
+
+    updatesData.forEach(u => {
+      const card = doc.createElement('div');
+      card.className = 'card';
+
+      const header = doc.createElement('div');
+      header.className = 'row space-between';
+      header.style.alignItems = 'flex-start';
+
+      const left = doc.createElement('div');
+      left.innerHTML = `<div style="font-weight:var(--font-semibold);font-size:var(--text-lg)">Version ${u.version}</div><div class="muted" style="font-size:var(--text-xs)">${new Date(u.date).toLocaleDateString()}</div>`;
+      header.appendChild(left);
+      card.appendChild(header);
+
+      const sections = [
+        { title: 'New Features', items: u.features || [] },
+        { title: 'Bug Fixes', items: u.bugFixes || [] },
+        { title: 'Breaking Changes', items: u.breakingChanges || [] },
+      ].filter(s => s.items.length);
+
+      sections.forEach(s => {
+        const t = doc.createElement('div');
+        t.style.marginTop = '12px';
+        t.style.fontWeight = 'var(--font-semibold)';
+        t.textContent = s.title;
+        card.appendChild(t);
+
+        const ul = doc.createElement('ul');
+        ul.style.margin = '8px 0 0 16px';
+        ul.style.color = 'var(--text-secondary)';
+        ul.style.fontSize = 'var(--text-sm)';
+        s.items.forEach(it => {
+          const li = doc.createElement('li');
+          li.textContent = it;
+          ul.appendChild(li);
+        });
+        card.appendChild(ul);
+      });
+
+      wrap.appendChild(card);
+    });
+
+    container.appendChild(wrap);
+  }
+
+  // Render Roadmap content inside the modal
+  function renderRoadmapContent(container) {
+    const wrap = doc.createElement('div');
+    wrap.className = 'grid';
+    wrap.style.gap = 'var(--space-5)';
+
+    roadmapData.forEach(group => {
+      const groupWrap = doc.createElement('div');
+      groupWrap.className = 'grid';
+      groupWrap.style.gap = '10px';
+
+      const h = doc.createElement('div');
+      h.style.fontSize = 'var(--text-lg)';
+      h.style.fontWeight = 'var(--font-semibold)';
+      h.textContent = group.quarter;
+      groupWrap.appendChild(h);
+
+      const grid = doc.createElement('div');
+      grid.className = 'grid';
+      grid.style.gap = 'var(--space-3)';
+
+      group.items.forEach(item => {
+        const card = doc.createElement('div');
+        card.className = 'card';
+        card.style.cursor = 'pointer';
+        card.innerHTML = `
+          <div class="row space-between" style="gap:10px">
+            <div style="font-weight:var(--font-semibold)">${item.title}</div>
+            <div class="badge" style="border-color:transparent;background:${item.color};color:white">${item.badge} ${item.status}</div>
+          </div>
+          <div class="muted" style="font-size:var(--text-sm);margin-top:8px">${item.details}</div>
+        `;
+        card.addEventListener('click', () => {
+          UIComponents.showModal({
+            title: item.title,
+            content: `<div class="muted" style="font-size:var(--text-sm)">${item.details}</div>`,
+            actions: [{ label: 'Close', variant: 'primary' }],
+          });
+        });
+        grid.appendChild(card);
+      });
+
+      groupWrap.appendChild(grid);
+      wrap.appendChild(groupWrap);
+    });
+
+    container.appendChild(wrap);
   }
 
   function render() {
@@ -202,11 +382,10 @@ export function createSettingsOverlay({
       return btn;
     };
 
-    navWrap.appendChild(makeHeader('Account Settings'));
-    navWrap.appendChild(makeItem({ key: 'account', label: 'Account', icon: 'fa-regular fa-user' }));
     navWrap.appendChild(makeHeader('Settings'));
     navWrap.appendChild(makeItem({ key: 'preferences', label: 'Preferences', icon: 'fa-solid fa-gear' }));
     navWrap.appendChild(makeItem({ key: 'resources', label: 'Resources', icon: 'fa-solid fa-life-ring' }));
+    navWrap.appendChild(makeItem({ key: 'account', label: 'Account', icon: 'fa-regular fa-user' }));
     navWrap.appendChild(makeHeader('Organization'));
     navWrap.appendChild(makeItem({ key: 'org-general', label: 'General', icon: 'fa-regular fa-building', indent: true }));
     navWrap.appendChild(
@@ -221,20 +400,35 @@ export function createSettingsOverlay({
 
     const meta = (() => {
       switch (settingsActiveTab) {
-        case 'account':
-          return {
-            title: 'Account',
-            helper: 'Manage your profile and workspace identity.',
-          };
         case 'preferences':
           return {
             title: 'Preferences',
             helper: 'Set your units, labels, and theme.',
           };
         case 'resources':
+          // Handle sub-views within Resources
+          if (resourcesSubView === 'updates') {
+            return {
+              title: 'Updates',
+              helper: 'Release notes and recent changes.',
+              showBack: true,
+            };
+          }
+          if (resourcesSubView === 'roadmap') {
+            return {
+              title: 'Roadmap',
+              helper: 'Product direction and upcoming features.',
+              showBack: true,
+            };
+          }
           return {
             title: 'Resources',
             helper: 'See updates, roadmap, exports, imports, and help in one place.',
+          };
+        case 'account':
+          return {
+            title: 'Account',
+            helper: 'Manage your profile and workspace identity.',
           };
         case 'org-general':
           return {
@@ -254,6 +448,22 @@ export function createSettingsOverlay({
       }
     })();
 
+    const headerLeft = doc.createElement('div');
+    headerLeft.className = 'row';
+    headerLeft.style.gap = 'var(--space-3)';
+    headerLeft.style.alignItems = 'center';
+
+    // Back button for sub-views
+    if (meta.showBack) {
+      const backBtn = doc.createElement('button');
+      backBtn.type = 'button';
+      backBtn.className = 'btn btn-ghost';
+      backBtn.innerHTML = '<i class="fa-solid fa-arrow-left"></i>';
+      backBtn.title = 'Back to Resources';
+      backBtn.addEventListener('click', () => setResourcesSubView('root'));
+      headerLeft.appendChild(backBtn);
+    }
+
     const headerText = doc.createElement('div');
     headerText.classList.add('tp3d-settings-right-text');
 
@@ -268,6 +478,7 @@ export function createSettingsOverlay({
 
     headerText.appendChild(title);
     headerText.appendChild(helper);
+    headerLeft.appendChild(headerText);
 
     const closeBtn = doc.createElement('button');
     closeBtn.type = 'button';
@@ -275,7 +486,7 @@ export function createSettingsOverlay({
     closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
     closeBtn.addEventListener('click', () => close());
 
-    header.appendChild(headerText);
+    header.appendChild(headerLeft);
     header.appendChild(closeBtn);
     settingsRightPane.appendChild(header);
 
@@ -294,139 +505,7 @@ export function createSettingsOverlay({
       return wrap;
     }
 
-    if (settingsActiveTab === 'account') {
-      const nameRow = doc.createElement('div');
-      nameRow.className = 'row';
-      nameRow.classList.add('tp3d-settings-account-row');
-      nameRow.innerHTML = `<span class="brand-mark tp3d-settings-account-avatar-lg" aria-hidden="true">${
-        userView.initials || ''
-      }</span><div class="tp3d-settings-account-display">${userView.displayName || '—'}</div>`;
-      body.appendChild(nameRow);
-
-      const emailEl = doc.createElement('div');
-      emailEl.textContent = userView.isAuthed && userView.email ? userView.email : 'Not signed in';
-      body.appendChild(row('Email', emailEl));
-
-      const danger = doc.createElement('div');
-      danger.classList.add('tp3d-settings-danger');
-
-      const dzTitle = doc.createElement('div');
-      dzTitle.classList.add('tp3d-settings-danger-title');
-      dzTitle.textContent = 'Deleting account';
-      danger.appendChild(dzTitle);
-
-      const dzDivider = doc.createElement('div');
-      dzDivider.classList.add('tp3d-settings-danger-divider');
-      danger.appendChild(dzDivider);
-
-      const dzDesc = doc.createElement('div');
-      dzDesc.className = 'muted';
-      dzDesc.classList.add('tp3d-settings-delete-desc');
-      dzDesc.textContent =
-        'Deleting your account will remove all of your information from our database. This cannot be undone.';
-      danger.appendChild(dzDesc);
-
-      const dzConfirmLabel = doc.createElement('div');
-      dzConfirmLabel.className = 'muted';
-      dzConfirmLabel.classList.add('tp3d-settings-delete-confirm-label');
-      dzConfirmLabel.textContent = 'To confirm this, type "DELETE"';
-      danger.appendChild(dzConfirmLabel);
-
-      const dzConfirmRow = doc.createElement('div');
-      dzConfirmRow.classList.add('tp3d-settings-delete-confirm-row');
-      const dzConfirmInput = doc.createElement('input');
-      dzConfirmInput.className = 'input';
-      dzConfirmInput.type = 'text';
-      dzConfirmInput.placeholder = 'Type DELETE';
-      dzConfirmInput.autocomplete = 'off';
-      dzConfirmInput.spellcheck = false;
-      dzConfirmInput.setAttribute('aria-label', 'Type DELETE to confirm account deletion');
-      const dzDeleteBtn = doc.createElement('button');
-      dzDeleteBtn.type = 'button';
-      dzDeleteBtn.className = 'btn btn-danger';
-      dzDeleteBtn.textContent = 'Delete account';
-      dzDeleteBtn.disabled = true;
-
-      const syncDeleteEnabled = () => {
-        const ok = userView.isAuthed && String(dzConfirmInput.value || '').trim() === 'DELETE';
-        dzDeleteBtn.disabled = !ok;
-      };
-      dzConfirmInput.addEventListener('input', syncDeleteEnabled);
-
-      let dzInFlight = false;
-      dzDeleteBtn.addEventListener('click', async () => {
-        if (dzInFlight) return;
-        if (!userView.isAuthed) {
-          UIComponents.showToast('Not signed in', 'warning');
-          return;
-        }
-        if (String(dzConfirmInput.value || '').trim() !== 'DELETE') return;
-
-        dzInFlight = true;
-        dzConfirmInput.disabled = true;
-        dzDeleteBtn.disabled = true;
-        const prevText = dzDeleteBtn.textContent;
-        dzDeleteBtn.textContent = 'Deleting...';
-
-        try {
-          const client =
-            SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
-          if (!client || !client.functions || typeof client.functions.invoke !== 'function') {
-            UIComponents.showToast('Delete account is not set up yet.', 'warning');
-            return;
-          }
-
-          // Get session and validate access token
-          const session = SupabaseClient && typeof SupabaseClient.getSession === 'function' ? SupabaseClient.getSession() : null;
-          if (!session || !session.access_token) {
-            UIComponents.showToast('No active session', 'error');
-            return;
-          }
-
-          // Invoke with explicit Authorization header
-          const res = await client.functions.invoke('delete-account', {
-            headers: { Authorization: `Bearer ${session.access_token}` },
-            body: {}
-          });
-          if (res && res.error) {
-            UIComponents.showToast('Delete failed: ' + String(res.error.message || 'Unknown error'), 'error');
-            return;
-          }
-
-          UIComponents.showToast('Account deleted', 'success');
-
-          // Local-only sign out (no server call since user is already deleted)
-          try {
-            if (client && client.auth) {
-              await client.auth.signOut({ scope: 'local' });
-            }
-          } catch {
-            // Ignore errors - user already deleted on server
-          }
-
-          window.location.reload();
-        } catch (err) {
-          UIComponents.showToast('Delete failed: ' + String((err && err.message) || 'Unknown error'), 'error');
-        } finally {
-          dzDeleteBtn.textContent = prevText;
-          dzConfirmInput.disabled = false;
-          dzConfirmInput.value = '';
-          dzInFlight = false;
-          syncDeleteEnabled();
-        }
-      });
-
-      dzConfirmRow.appendChild(dzConfirmInput);
-      dzConfirmRow.appendChild(dzDeleteBtn);
-      danger.appendChild(dzConfirmRow);
-
-      if (!userView.isAuthed) {
-        dzConfirmInput.disabled = true;
-        dzDeleteBtn.disabled = true;
-      }
-
-      body.appendChild(danger);
-    } else if (settingsActiveTab === 'preferences') {
+    if (settingsActiveTab === 'preferences') {
       const length = doc.createElement('select');
       length.className = 'select';
       length.innerHTML = `
@@ -495,41 +574,41 @@ export function createSettingsOverlay({
       actions.appendChild(saveBtn);
       body.appendChild(actions);
     } else if (settingsActiveTab === 'resources') {
-      const makeBtn = (label, variant, onClick) => {
-        const btn = doc.createElement('button');
-        btn.type = 'button';
-        btn.className = 'btn';
-        if (variant) btn.classList.add(variant);
-        btn.textContent = label;
-        btn.addEventListener('click', onClick);
-        return btn;
-      };
-
-      const renderResourcesRoot = () => {
+      // Handle sub-views within Resources
+      if (resourcesSubView === 'updates') {
+        // Render embedded Updates content
+        renderUpdatesContent(body);
+      } else if (resourcesSubView === 'roadmap') {
+        // Render embedded Roadmap content
+        renderRoadmapContent(body);
+      } else {
+        // Root view: show buttons
         const container = doc.createElement('div');
         container.className = 'grid';
 
-        const updatesBtn = makeBtn('Updates', null, () => {
-          resourcesSubView = 'updates';
-          render();
-        });
-        const roadmapBtn = makeBtn('Roadmap', null, () => {
-          resourcesSubView = 'roadmap';
-          render();
-        });
+        const runResourceAction = (cb, { closeFirst = true } = {}) => {
+          if (typeof cb !== 'function') return;
+          if (closeFirst) close();
+          cb();
+        };
 
-        const exportBtn = makeBtn('Export App', null, () => {
-          resourcesSubView = 'export-app';
-          render();
-        });
-        const importBtn = makeBtn('Import App', null, () => {
-          resourcesSubView = 'import-app';
-          render();
-        });
-        const helpBtn = makeBtn('Help', null, () => {
-          resourcesSubView = 'help';
-          render();
-        });
+        const makeBtn = (label, variant, onClick) => {
+          const btn = doc.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn';
+          if (variant) btn.classList.add(variant);
+          btn.textContent = label;
+          btn.addEventListener('click', onClick);
+          return btn;
+        };
+
+        const exportBtn = makeBtn('Export App', null, () => runResourceAction(onExportApp));
+        const importBtn = makeBtn('Import App', null, () => runResourceAction(onImportApp));
+        const helpBtn = makeBtn('Help', null, () => runResourceAction(onHelp));
+
+        // Updates and Roadmap buttons now switch sub-views instead of closing modal
+        const updatesBtn = makeBtn('Updates', null, () => setResourcesSubView('updates'));
+        const roadmapBtn = makeBtn('Roadmap', null, () => setResourcesSubView('roadmap'));
 
         container.appendChild(updatesBtn);
         container.appendChild(roadmapBtn);
@@ -537,363 +616,60 @@ export function createSettingsOverlay({
         container.appendChild(importBtn);
         container.appendChild(helpBtn);
         body.appendChild(container);
-      };
-
-      const renderResourcesSubView = view => {
-        const wrap = doc.createElement('div');
-        wrap.className = 'grid';
-
-        const backBtn = doc.createElement('button');
-        backBtn.type = 'button';
-        backBtn.className = 'btn btn-ghost';
-        backBtn.innerHTML = '<i class="fa-solid fa-arrow-left" aria-hidden="true"></i> Back to Resources';
-        backBtn.addEventListener('click', () => {
-          resourcesSubView = 'root';
-          render();
-        });
-        wrap.appendChild(backBtn);
-
-        if (view === 'updates') {
-          const card = doc.createElement('div');
-          card.className = 'card';
-
-          const h = doc.createElement('div');
-          h.classList.add('tp3d-settings-account-display');
-          h.textContent = 'Product Updates';
-
-          const p = doc.createElement('div');
-          p.className = 'muted';
-          p.textContent = 'Release notes for recent versions.';
-
-          const list = doc.createElement('div');
-          list.className = 'grid';
-
-          const makeUpdate = ({ version, date, items }) => {
-            const c = doc.createElement('div');
-            c.className = 'card';
-            const t = doc.createElement('div');
-            t.classList.add('tp3d-settings-account-display');
-            t.textContent = `Version ${version}`;
-            const d = doc.createElement('div');
-            d.className = 'muted';
-            d.textContent = date;
-            const ul = doc.createElement('ul');
-            items.forEach(text => {
-              const li = doc.createElement('li');
-              li.textContent = text;
-              ul.appendChild(li);
-            });
-            c.appendChild(t);
-            c.appendChild(d);
-            c.appendChild(ul);
-            return c;
-          };
-
-          const updates = [
-            {
-              version: '1.0.0',
-              date: 'MVP',
-              items: [
-                'Packs and Cases libraries',
-                '3D editor with drag and AutoPack',
-                'CSV/XLSX import and JSON export/import',
-              ],
-            },
-          ];
-
-          updates.forEach(u => list.appendChild(makeUpdate(u)));
-
-          card.appendChild(h);
-          card.appendChild(p);
-          wrap.appendChild(card);
-          wrap.appendChild(list);
-        } else if (view === 'roadmap') {
-          const card = doc.createElement('div');
-          card.className = 'card';
-
-          const h = doc.createElement('div');
-          h.classList.add('tp3d-settings-account-display');
-          h.textContent = 'Roadmap';
-
-          const p = doc.createElement('div');
-          p.className = 'muted';
-          p.textContent = 'Planned improvements and future features.';
-
-          const list = doc.createElement('div');
-          list.className = 'grid';
-
-          const makeItemCard = ({ title: itemTitle, status }) => {
-            const c = doc.createElement('div');
-            c.className = 'card';
-            const t = doc.createElement('div');
-            t.classList.add('tp3d-settings-account-display');
-            t.textContent = itemTitle;
-            const s = doc.createElement('div');
-            s.className = 'muted';
-            s.textContent = status;
-            c.appendChild(t);
-            c.appendChild(s);
-            return c;
-          };
-
-          [
-            { title: 'Rotation in AutoPack', status: 'Planned' },
-            { title: 'Weight balance tools', status: 'Planned' },
-            { title: 'Multi-user collaboration', status: 'Future' },
-          ].forEach(item => list.appendChild(makeItemCard(item)));
-
-          card.appendChild(h);
-          card.appendChild(p);
-          wrap.appendChild(card);
-          wrap.appendChild(list);
-        } else if (view === 'export-app') {
-          const card = doc.createElement('div');
-          card.className = 'card';
-
-          const h = doc.createElement('div');
-          h.classList.add('tp3d-settings-account-display');
-          h.textContent = 'Export App JSON';
-
-          const p = doc.createElement('div');
-          p.className = 'muted';
-          p.textContent =
-            'Exports a full JSON backup of packs, cases, and preferences. You can import it later to restore everything.';
-
-          const details = doc.createElement('div');
-          details.className = 'card';
-
-          const dt = doc.createElement('div');
-          dt.classList.add('tp3d-settings-account-display');
-          dt.textContent = 'Export details';
-
-          const fileLine = doc.createElement('div');
-          fileLine.className = 'muted';
-          const today = new Date();
-          const yyyy = String(today.getFullYear());
-          const mm = String(today.getMonth() + 1).padStart(2, '0');
-          const dd = String(today.getDate()).padStart(2, '0');
-          const filename = `truck-packer-app-backup-${yyyy}-${mm}-${dd}.json`;
-          fileLine.textContent = `File: ${filename}`;
-
-          details.appendChild(dt);
-          details.appendChild(fileLine);
-
-          const actions = doc.createElement('div');
-          actions.className = 'row';
-          actions.classList.add('tp3d-settings-actions-row');
-
-          const exportBtn = doc.createElement('button');
-          exportBtn.type = 'button';
-          exportBtn.className = 'btn btn-primary';
-          exportBtn.textContent = 'Export';
-          exportBtn.addEventListener('click', () => {
-            try {
-              const json = CoreStorage.exportAppJSON();
-              const blob = new Blob([json], { type: 'application/json' });
-              const url = URL.createObjectURL(blob);
-              const a = doc.createElement('a');
-              a.href = url;
-              a.download = filename;
-              doc.body.appendChild(a);
-              a.click();
-              doc.body.removeChild(a);
-              URL.revokeObjectURL(url);
-              UIComponents.showToast('App JSON exported', 'success');
-            } catch (err) {
-              UIComponents.showToast('Export failed: ' + String((err && err.message) || 'Unknown error'), 'error');
-            }
-          });
-
-          actions.appendChild(exportBtn);
-
-          card.appendChild(h);
-          card.appendChild(p);
-          card.appendChild(details);
-          card.appendChild(actions);
-          wrap.appendChild(card);
-        } else if (view === 'import-app') {
-          const content = doc.createElement('div');
-          content.className = 'tp3d-import-content';
-
-          const drop = doc.createElement('div');
-          drop.className = 'tp3d-import-drop';
-          drop.innerHTML = `
-            <div class="tp3d-import-drop-icon" aria-hidden="true"><i class="fa-solid fa-file-arrow-up"></i></div>
-            <div class="tp3d-import-drop-title">Drag & Drop Backup File Here</div>
-            <div class="muted tp3d-import-drop-sub">Supported: .json</div>
-          `;
-
-          const browseBtn = doc.createElement('button');
-          browseBtn.type = 'button';
-          browseBtn.className = 'btn';
-          browseBtn.innerHTML = '<i class="fa-solid fa-folder-open" aria-hidden="true"></i> Browse backup files';
-
-          const fileInput = doc.createElement('input');
-          fileInput.type = 'file';
-          fileInput.accept = '.json,application/json';
-          fileInput.style.display = 'none';
-
-          const helper = doc.createElement('div');
-          helper.className = 'tp3d-import-helper';
-          helper.innerHTML = `
-            <div><strong>Required:</strong> <code>packLibrary</code>, <code>caseLibrary</code>, <code>preferences</code></div>
-            <div class="tp3d-import-warning"><strong>Warning:</strong> This will replace your current data.</div>
-          `;
-
-          const status = doc.createElement('div');
-          status.className = 'muted';
-
-          const actions = doc.createElement('div');
-          actions.className = 'row';
-          actions.classList.add('tp3d-settings-actions-row');
-
-          const importBtn = doc.createElement('button');
-          importBtn.type = 'button';
-          importBtn.className = 'btn btn-primary';
-          importBtn.textContent = 'Replace and Import';
-          importBtn.disabled = true;
-
-          const cancelBtn = doc.createElement('button');
-          cancelBtn.type = 'button';
-          cancelBtn.className = 'btn btn-ghost';
-          cancelBtn.textContent = 'Back';
-          cancelBtn.addEventListener('click', () => {
-            resourcesSubView = 'root';
-            render();
-          });
-
-          actions.appendChild(cancelBtn);
-          actions.appendChild(importBtn);
-
-          let pendingImport = null;
-
-          const setError = msg => {
-            status.textContent = String(msg || '');
-            importBtn.disabled = true;
-            pendingImport = null;
-          };
-
-          const setReady = ({ packsCount, casesCount, preferencesCount }) => {
-            status.textContent = `Ready to import. Packs: ${packsCount}. Cases: ${casesCount}. Preferences: ${preferencesCount}.`;
-            importBtn.disabled = false;
-          };
-
-          const readFileText = file =>
-            new Promise((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(String(reader.result || ''));
-              reader.onerror = () => reject(new Error('Failed to read file'));
-              reader.readAsText(file);
-            });
-
-          const handleFile = async file => {
-            if (!file) return setError('No file selected.');
-            const name = String(file.name || '').toLowerCase();
-            if (!name.endsWith('.json')) return setError('Invalid file type. Please choose a .json file.');
-            try {
-              const text = await readFileText(file);
-              const parsed = CoreStorage.importAppJSON(text);
-              pendingImport = parsed;
-              const packsCount = Array.isArray(parsed.packLibrary) ? parsed.packLibrary.length : 0;
-              const casesCount = Array.isArray(parsed.caseLibrary) ? parsed.caseLibrary.length : 0;
-              const preferencesCount = parsed.preferences && typeof parsed.preferences === 'object' ? 1 : 0;
-              setReady({ packsCount, casesCount, preferencesCount });
-            } catch (err) {
-              setError('Invalid App JSON: ' + String((err && err.message) || 'Unknown error'));
-            }
-          };
-
-          browseBtn.addEventListener('click', () => fileInput.click());
-          fileInput.addEventListener('change', () => handleFile(fileInput.files && fileInput.files[0]));
-
-          drop.addEventListener('dragover', ev => {
-            ev.preventDefault();
-            drop.classList.add('is-dragover');
-          });
-          drop.addEventListener('dragleave', () => drop.classList.remove('is-dragover'));
-          drop.addEventListener('drop', ev => {
-            ev.preventDefault();
-            drop.classList.remove('is-dragover');
-            const f = ev.dataTransfer && ev.dataTransfer.files ? ev.dataTransfer.files[0] : null;
-            handleFile(f);
-          });
-
-          importBtn.addEventListener('click', () => {
-            if (!pendingImport) return;
-            try {
-              const prev = StateStore.get();
-              const next = { ...prev };
-              next.caseLibrary = pendingImport.caseLibrary;
-              next.packLibrary = pendingImport.packLibrary;
-              next.preferences = pendingImport.preferences;
-              StateStore.replace(next);
-              UIComponents.showToast('App data imported', 'success');
-              resourcesSubView = 'root';
-              render();
-            } catch (err) {
-              UIComponents.showToast('Import failed: ' + String((err && err.message) || 'Unknown error'), 'error');
-            }
-          });
-
-          content.appendChild(drop);
-          content.appendChild(browseBtn);
-          content.appendChild(fileInput);
-          content.appendChild(helper);
-          content.appendChild(status);
-          wrap.appendChild(content);
-          wrap.appendChild(actions);
-        } else if (view === 'help') {
-          const card = doc.createElement('div');
-          card.className = 'card';
-
-          const h = doc.createElement('div');
-          h.classList.add('tp3d-settings-account-display');
-          h.textContent = 'Help - Export / Import';
-
-          const p = doc.createElement('div');
-          p.className = 'muted';
-          p.textContent = 'Export and import tools are available in Settings -> Resources.';
-
-          const list = doc.createElement('div');
-          list.className = 'grid';
-
-          const lines = [
-            'App Export: Use Export App to download a full JSON backup.',
-            'App Import: Use Import App to restore from a backup JSON. This replaces current data.',
-            'Pack Export: In Packs, open the pack menu (three dots) and choose Export Pack.',
-            'Pack Import: In Packs, use Import Pack to add a shared pack JSON.',
-            'Cases Template: On the Cases screen, click Template to download CSV headers.',
-            'Cases Import: On the Cases screen, click Import Case to upload CSV or XLSX.',
-          ];
-
-          const ul = doc.createElement('ul');
-          lines.forEach(text => {
-            const li = doc.createElement('li');
-            li.textContent = text;
-            ul.appendChild(li);
-          });
-
-          list.appendChild(ul);
-          card.appendChild(h);
-          card.appendChild(p);
-          card.appendChild(list);
-          wrap.appendChild(card);
-        }
-
-        body.appendChild(wrap);
-      };
-
-      if (
-        resourcesSubView === 'updates' ||
-        resourcesSubView === 'roadmap' ||
-        resourcesSubView === 'export-app' ||
-        resourcesSubView === 'import-app' ||
-        resourcesSubView === 'help'
-      ) {
-        renderResourcesSubView(resourcesSubView);
-      } else {
-        renderResourcesRoot();
       }
+    } else if (settingsActiveTab === 'account') {
+      const userView = getCurrentUserView();
+
+      // Account avatar and name row
+      const nameRow = doc.createElement('div');
+      nameRow.className = 'row';
+      nameRow.classList.add('tp3d-settings-account-row');
+      nameRow.innerHTML = `<span class="brand-mark tp3d-settings-account-avatar-lg" aria-hidden="true">${
+        userView.initials || ''
+      }</span><div class="tp3d-settings-account-display">${userView.displayName || '—'}</div>`;
+      body.appendChild(nameRow);
+
+      // Email row
+      const emailEl = doc.createElement('div');
+      emailEl.textContent = userView.isAuthed && userView.email ? userView.email : 'Not signed in';
+      body.appendChild(row('Email', emailEl));
+
+      // Danger zone
+      const danger = doc.createElement('div');
+      danger.classList.add('tp3d-settings-danger');
+      danger.innerHTML = `
+        <div class="tp3d-settings-danger-title">Danger Zone</div>
+        <div class="tp3d-settings-danger-divider"></div>
+      `;
+      const dangerRow = doc.createElement('div');
+      dangerRow.classList.add('tp3d-settings-danger-row');
+      const dLeft = doc.createElement('div');
+      dLeft.classList.add('tp3d-settings-danger-left');
+      dLeft.textContent = 'Delete Account';
+      const dRight = doc.createElement('div');
+      dRight.classList.add('tp3d-settings-danger-right');
+      const delBtn = doc.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'btn btn-danger';
+      delBtn.textContent = 'Delete account';
+      delBtn.disabled = true;
+      const dMsg = doc.createElement('div');
+      dMsg.className = 'muted';
+      dMsg.classList.add('tp3d-settings-danger-msg');
+      const warnIcon = doc.createElement('i');
+      warnIcon.className = 'fa-solid fa-triangle-exclamation';
+      warnIcon.setAttribute('aria-hidden', 'true');
+      warnIcon.classList.add('tp3d-settings-danger-warn-icon');
+      const warnText = doc.createElement('span');
+      warnText.textContent = 'Delete account is not set up yet.';
+      dMsg.appendChild(warnIcon);
+      dMsg.appendChild(warnText);
+      dRight.appendChild(delBtn);
+      dRight.appendChild(dMsg);
+      dangerRow.appendChild(dLeft);
+      dangerRow.appendChild(dRight);
+      danger.appendChild(dangerRow);
+      body.appendChild(danger);
     } else if (settingsActiveTab === 'org-general') {
       const userView = getCurrentUserView();
       const orgName = 'Workspace';
@@ -1051,7 +827,6 @@ export function createSettingsOverlay({
     if (tab) {
       settingsActiveTab = String(tab);
     }
-    resourcesSubView = 'root';
     render();
 
     const focusTarget = settingsModal.querySelector(

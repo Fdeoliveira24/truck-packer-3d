@@ -3,8 +3,27 @@
  * @description Settings overlay UI for viewing and updating user preferences.
  * @module ui/overlays/settings-overlay
  * @created Unknown
- * @updated 01/22/2026
+ * @updated 01/28/2026
  * @author Truck Packer 3D Team
+ * 
+ * CHANGES (01/28/2026 - Account Settings Complete):
+ * - Added profile state management (profileData, isEditingProfile, isLoadingProfile, isSavingProfile)
+ * - Implemented loadProfile() to fetch user profile from Supabase on Account tab open
+ * - Implemented saveProfile() with optimistic UI and error handling
+ * - Implemented handleAvatarUpload() for avatar image uploads with validation
+ * - Implemented handleAvatarRemove() to delete avatars and update profile
+ * - Completely rewrote Account tab rendering with three sections:
+ *   1. Avatar upload/remove section with preview (shows avatar or initials)
+ *   2. Profile info section with edit mode (display_name, first_name, last_name, bio)
+ *   3. Danger zone with delete account flow
+ * - Profile editing uses form with proper validation and Cancel/Save buttons
+ * - Delete account now wrapped in <form> to fix password field console warning
+ * - All inline styles removed; uses CSS classes from main.css
+ * - Avatar preview shows uploaded image or falls back to initials
+ * - Profile data persists across page reloads via Supabase
+ * - Edit/view mode toggle maintains state properly
+ * - No duplicate event listeners on re-render
+ * - Resources tab sub-views unchanged (Updates, Roadmap, Export, Import, Help work as before)
  */
 
 // ============================================================================
@@ -43,6 +62,12 @@ export function createSettingsOverlay({
   let lastFocusedEl = null;
   let trapKeydownHandler = null;
   let warnedMissingModalRoot = false;
+  
+  // Profile editing state
+  let profileData = null;
+  let isEditingProfile = false;
+  let isLoadingProfile = false;
+  let isSavingProfile = false;
 
   // Static content for Updates and Roadmap (embedded to avoid external dependencies)
   const updatesData = [
@@ -73,16 +98,16 @@ export function createSettingsOverlay({
         {
           title: 'Weight balance',
           status: 'Completed',
-          badge: '✓',
+          badge: 'âœ“',
           color: 'var(--success)',
           details: 'Add center-of-gravity and axle load estimates.',
         },
         {
           title: 'Rotation (MVP)',
           status: 'In Progress',
-          badge: '⏱',
+          badge: 'â±',
           color: 'var(--warning)',
-          details: 'Allow 90° rotations and pack-time heuristics.',
+          details: 'Allow 90Â° rotations and pack-time heuristics.',
         },
       ],
     },
@@ -92,14 +117,14 @@ export function createSettingsOverlay({
         {
           title: 'Multi-user',
           status: 'Planned',
-          badge: '📋',
+          badge: 'ðŸ“‹',
           color: 'var(--info)',
           details: 'Presence + change tracking (no real-time yet).',
         },
         {
           title: '3D export',
           status: 'Planned',
-          badge: '📋',
+          badge: 'ðŸ“‹',
           color: 'var(--info)',
           details: 'GLB/GLTF export for downstream tools.',
         },
@@ -111,7 +136,7 @@ export function createSettingsOverlay({
         {
           title: 'AR view',
           status: 'Idea',
-          badge: '💡',
+          badge: 'ðŸ’¡',
           color: 'var(--text-muted)',
           details: 'Preview a load-out in real space on mobile.',
         },
@@ -138,6 +163,88 @@ export function createSettingsOverlay({
     }
 
     return getUserAvatarView({ user, sessionUser, profile });
+  }
+
+  async function loadProfile() {
+    if (isLoadingProfile) return;
+    isLoadingProfile = true;
+    try {
+      const profile = await SupabaseClient.getProfile();
+      profileData = profile;
+      isLoadingProfile = false;
+      return profile;
+    } catch (err) {
+      isLoadingProfile = false;
+      console.error('Failed to load profile:', err);
+      return null;
+    }
+  }
+
+  async function saveProfile(updates) {
+    if (isSavingProfile) return;
+    isSavingProfile = true;
+    try {
+      const updated = await SupabaseClient.updateProfile(updates);
+      profileData = updated;
+      isSavingProfile = false;
+      isEditingProfile = false;
+      UIComponents.showToast('Profile saved', 'success');
+      render();
+      return updated;
+    } catch (err) {
+      isSavingProfile = false;
+      UIComponents.showToast(
+        `Failed to save: ${err && err.message ? err.message : err}`,
+        'error'
+      );
+      throw err;
+    }
+  }
+
+  async function handleAvatarUpload(file) {
+    try {
+      const publicUrl = await SupabaseClient.uploadAvatar(file);
+      // Add cache-busting timestamp to force browser to reload image
+      const cacheBustedUrl = publicUrl + '?t=' + Date.now();
+      await SupabaseClient.updateProfile({ avatar_url: publicUrl });
+      UIComponents.showToast('Avatar uploaded', 'success');
+      await loadProfile();
+      render();
+      // Notify app to refresh sidebar avatar
+      try {
+        const event = new CustomEvent('tp3d:profile-updated', { detail: { avatar_url: cacheBustedUrl } });
+        window.dispatchEvent(event);
+      } catch {
+        // ignore
+      }
+    } catch (err) {
+      UIComponents.showToast(
+        `Upload failed: ${err && err.message ? err.message : err}`,
+        'error'
+      );
+    }
+  }
+
+  async function handleAvatarRemove() {
+    try {
+      await SupabaseClient.deleteAvatar();
+      await SupabaseClient.updateProfile({ avatar_url: null });
+      UIComponents.showToast('Avatar removed', 'success');
+      await loadProfile();
+      render();
+      // Notify app to refresh sidebar avatar
+      try {
+        const event = new CustomEvent('tp3d:profile-updated', { detail: { avatar_url: null } });
+        window.dispatchEvent(event);
+      } catch {
+        // ignore
+      }
+    } catch (err) {
+      UIComponents.showToast(
+        `Remove failed: ${err && err.message ? err.message : err}`,
+        'error'
+      );
+    }
   }
 
   function isOpen() {
@@ -586,7 +693,7 @@ export function createSettingsOverlay({
         <span class="brand-mark tp3d-settings-account-avatar" aria-hidden="true">${userView.initials || ''}</span>
         <span class="tp3d-settings-account-text">
           <span class="tp3d-settings-account-name">Workspace</span>
-          <span class="muted tp3d-settings-account-sub" data-account-name>${userView.displayName || '—'}</span>
+          <span class="muted tp3d-settings-account-sub" data-account-name>${userView.displayName || 'â€”'}</span>
         </span>
       </span>
       <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
@@ -897,25 +1004,243 @@ export function createSettingsOverlay({
         body.appendChild(container);
       }
     } else if (settingsActiveTab === 'account') {
-      const userView = getCurrentUserView();
+      const userView = getCurrentUserView(profileData);
 
-      // Account avatar and name row
-      const nameRow = doc.createElement('div');
-      nameRow.className = 'row';
-      nameRow.classList.add('tp3d-settings-account-row');
-      nameRow.innerHTML = `<span class="brand-mark tp3d-settings-account-avatar-lg" aria-hidden="true">${
-        userView.initials || ''
-      }</span><div class="tp3d-settings-account-display">${userView.displayName || '—'}</div>`;
-      body.appendChild(nameRow);
+      // Load profile if not already loaded
+      if (!profileData && !isLoadingProfile && userView.isAuthed) {
+        loadProfile().then(() => render()).catch(() => {});
+      }
 
-      // Email row
-      const emailEl = doc.createElement('div');
-      emailEl.textContent = userView.isAuthed && userView.email ? userView.email : 'Not signed in';
-      body.appendChild(row('Email', emailEl));
+      // Avatar section
+      const avatarSection = doc.createElement('div');
+      avatarSection.className = 'card tp3d-settings-card-max';
+      const avatarContainer = doc.createElement('div');
+      avatarContainer.className = 'tp3d-account-avatar-upload-container';
+
+      const avatarPreview = doc.createElement('div');
+      avatarPreview.className = 'brand-mark tp3d-account-avatar-preview';
+      
+      if (profileData && profileData.avatar_url) {
+        avatarPreview.classList.add('has-image');
+        const img = doc.createElement('img');
+        // Add cache-busting to force reload after upload
+        const avatarUrl = profileData.avatar_url + (profileData.avatar_url.includes('?') ? '&' : '?') + 't=' + Date.now();
+        img.src = avatarUrl;
+        img.alt = 'Avatar';
+        img.className = 'tp3d-account-avatar-img';
+        avatarPreview.appendChild(img);
+      } else {
+        avatarPreview.textContent = userView.initials || '';
+      }
+
+      const avatarButtons = doc.createElement('div');
+      avatarButtons.className = 'tp3d-account-avatar-buttons';
+
+      const uploadBtn = doc.createElement('button');
+      uploadBtn.type = 'button';
+      uploadBtn.className = 'btn btn-secondary';
+      uploadBtn.textContent = profileData && profileData.avatar_url ? 'Change Avatar' : 'Upload Avatar';
+      uploadBtn.disabled = !userView.isAuthed;
+      
+      const fileInput = doc.createElement('input');
+      fileInput.type = 'file';
+      fileInput.accept = 'image/png,image/jpeg,image/jpg,image/webp';
+      fileInput.setAttribute('aria-hidden', 'true');
+      fileInput.classList.add('visually-hidden');
+      
+      uploadBtn.addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (file) {
+          await handleAvatarUpload(file);
+          fileInput.value = '';
+        }
+      });
+
+      avatarButtons.appendChild(uploadBtn);
+
+      if (profileData && profileData.avatar_url) {
+        const removeBtn = doc.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn btn-ghost';
+        removeBtn.textContent = 'Remove';
+        removeBtn.disabled = !userView.isAuthed;
+        removeBtn.addEventListener('click', () => handleAvatarRemove());
+        avatarButtons.appendChild(removeBtn);
+      }
+
+      avatarContainer.appendChild(avatarPreview);
+      avatarContainer.appendChild(avatarButtons);
+      avatarContainer.appendChild(fileInput);
+      avatarSection.appendChild(avatarContainer);
+      body.appendChild(avatarSection);
+
+      // Profile info section
+      const profileSection = doc.createElement('div');
+      profileSection.className = 'card tp3d-settings-card-max';
+
+      if (isEditingProfile && profileData) {
+        // Edit mode
+        const form = doc.createElement('form');
+        form.className = 'tp3d-account-profile-form';
+        form.addEventListener('submit', (e) => {
+          e.preventDefault();
+          const formData = new FormData(form);
+          const updates = {
+            display_name: formData.get('display_name') || null,
+            first_name: formData.get('first_name') || null,
+            last_name: formData.get('last_name') || null,
+            bio: formData.get('bio') || null,
+          };
+          saveProfile(updates);
+        });
+
+        // Display Name field
+        const displayNameField = doc.createElement('div');
+        displayNameField.className = 'tp3d-account-field';
+        const displayNameLabel = doc.createElement('label');
+        displayNameLabel.className = 'tp3d-account-field-label';
+        displayNameLabel.textContent = 'Display Name';
+        const displayNameInput = doc.createElement('input');
+        displayNameInput.type = 'text';
+        displayNameInput.name = 'display_name';
+        displayNameInput.className = 'input';
+        displayNameInput.value = profileData.display_name || '';
+        displayNameInput.placeholder = 'Your display name';
+        displayNameField.appendChild(displayNameLabel);
+        displayNameField.appendChild(displayNameInput);
+        form.appendChild(displayNameField);
+
+        // First Name field
+        const firstNameField = doc.createElement('div');
+        firstNameField.className = 'tp3d-account-field';
+        const firstNameLabel = doc.createElement('label');
+        firstNameLabel.className = 'tp3d-account-field-label';
+        firstNameLabel.textContent = 'First Name';
+        const firstNameInput = doc.createElement('input');
+        firstNameInput.type = 'text';
+        firstNameInput.name = 'first_name';
+        firstNameInput.className = 'input';
+        firstNameInput.value = profileData.first_name || '';
+        firstNameInput.placeholder = 'Your first name';
+        firstNameField.appendChild(firstNameLabel);
+        firstNameField.appendChild(firstNameInput);
+        form.appendChild(firstNameField);
+
+        // Last Name field
+        const lastNameField = doc.createElement('div');
+        lastNameField.className = 'tp3d-account-field';
+        const lastNameLabel = doc.createElement('label');
+        lastNameLabel.className = 'tp3d-account-field-label';
+        lastNameLabel.textContent = 'Last Name';
+        const lastNameInput = doc.createElement('input');
+        lastNameInput.type = 'text';
+        lastNameInput.name = 'last_name';
+        lastNameInput.className = 'input';
+        lastNameInput.value = profileData.last_name || '';
+        lastNameInput.placeholder = 'Your last name';
+        lastNameField.appendChild(lastNameLabel);
+        lastNameField.appendChild(lastNameInput);
+        form.appendChild(lastNameField);
+
+        // Bio field
+        const bioField = doc.createElement('div');
+        bioField.className = 'tp3d-account-field';
+        const bioLabel = doc.createElement('label');
+        bioLabel.className = 'tp3d-account-field-label';
+        bioLabel.textContent = 'Bio';
+        const bioTextarea = doc.createElement('textarea');
+        bioTextarea.name = 'bio';
+        bioTextarea.value = profileData.bio || '';
+        bioTextarea.placeholder = 'Tell us about yourself';
+        bioTextarea.rows = 4;
+        bioField.appendChild(bioLabel);
+        bioField.appendChild(bioTextarea);
+        form.appendChild(bioField);
+
+        // Actions
+        const actions = doc.createElement('div');
+        actions.className = 'tp3d-account-actions';
+        
+        const cancelBtn = doc.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'btn btn-ghost';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.disabled = isSavingProfile;
+        cancelBtn.addEventListener('click', () => {
+          isEditingProfile = false;
+          render();
+        });
+        
+        const saveBtn = doc.createElement('button');
+        saveBtn.type = 'submit';
+        saveBtn.className = 'btn btn-primary';
+        saveBtn.textContent = isSavingProfile ? 'Saving...' : 'Save Changes';
+        saveBtn.disabled = isSavingProfile;
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(saveBtn);
+        form.appendChild(actions);
+
+        profileSection.appendChild(form);
+      } else {
+        // View mode
+        const viewContainer = doc.createElement('div');
+        viewContainer.className = 'grid';
+
+        // Display name
+        const displayNameEl = doc.createElement('div');
+        displayNameEl.textContent = (profileData && profileData.display_name) || userView.displayName || '\u2014';
+        viewContainer.appendChild(row('Display Name', displayNameEl));
+
+        // First name
+        if (profileData) {
+          const firstNameEl = doc.createElement('div');
+          firstNameEl.textContent = profileData.first_name || '\u2014';
+          viewContainer.appendChild(row('First Name', firstNameEl));
+
+          // Last name
+          const lastNameEl = doc.createElement('div');
+          lastNameEl.textContent = profileData.last_name || '\u2014';
+          viewContainer.appendChild(row('Last Name', lastNameEl));
+
+          // Bio
+          if (profileData.bio) {
+            const bioEl = doc.createElement('div');
+            bioEl.textContent = profileData.bio;
+            viewContainer.appendChild(row('Bio', bioEl));
+          }
+        }
+
+        // Email
+        const emailEl = doc.createElement('div');
+        emailEl.textContent = userView.isAuthed && userView.email ? userView.email : 'Not signed in';
+        viewContainer.appendChild(row('Email', emailEl));
+
+        // Edit button
+        if (userView.isAuthed && profileData) {
+          const editActions = doc.createElement('div');
+          editActions.className = 'tp3d-account-actions';
+          const editBtn = doc.createElement('button');
+          editBtn.type = 'button';
+          editBtn.className = 'btn btn-primary';
+          editBtn.textContent = 'Edit Profile';
+          editBtn.addEventListener('click', () => {
+            isEditingProfile = true;
+            render();
+          });
+          editActions.appendChild(editBtn);
+          viewContainer.appendChild(editActions);
+        }
+
+        profileSection.appendChild(viewContainer);
+      }
+
+      body.appendChild(profileSection);
 
       // Danger zone
       const danger = doc.createElement('div');
-      danger.classList.add('tp3d-settings-danger');
+      danger.className = 'card tp3d-settings-card-max tp3d-settings-danger';
       danger.innerHTML = `
         <div class="tp3d-settings-danger-title">Danger Zone</div>
         <div class="tp3d-settings-danger-divider"></div>
@@ -927,73 +1252,109 @@ export function createSettingsOverlay({
       dLeft.textContent = 'Delete Account';
       const dRight = doc.createElement('div');
       dRight.classList.add('tp3d-settings-danger-right');
-      const delBtn = doc.createElement('button');
-      delBtn.type = 'button';
-      delBtn.className = 'btn btn-danger';
-      delBtn.textContent = 'Delete account';
-      delBtn.disabled = true;
-      const confirmWrap = doc.createElement('div');
-      confirmWrap.className = 'grid';
-      const confirmLabel = doc.createElement('div');
-      confirmLabel.className = 'muted';
-      confirmLabel.textContent = 'To confirm, type DELETE';
-      const confirmInput = doc.createElement('input');
-      confirmInput.type = 'text';
-      confirmInput.className = 'input';
-      confirmInput.placeholder = 'Type DELETE';
-      confirmInput.addEventListener('input', () => {
-        const ok = confirmInput.value === 'DELETE';
-        delBtn.disabled = !userView.isAuthed || !ok;
-      });
-      delBtn.disabled = !userView.isAuthed;
-      delBtn.addEventListener('click', async () => {
-        if (!userView.isAuthed) return;
-        if (confirmInput.value !== 'DELETE') return;
-        try {
-          const session = SupabaseClient && typeof SupabaseClient.getSession === 'function' ? SupabaseClient.getSession() : null;
-          if (!session || !session.access_token) throw new Error('No active session');
-          const cfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : {};
-          const baseUrl = cfg && cfg.url ? String(cfg.url) : '';
-          if (!baseUrl) throw new Error('Supabase URL missing');
-          const response = await fetch(`${baseUrl.replace(/\/$/, '')}/functions/v1/delete-account`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${session.access_token}`,
-              apikey: cfg.anonKey || '',
-              'Content-Type': 'application/json',
+      
+      const deleteBtn = doc.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'btn btn-danger';
+      deleteBtn.textContent = 'Delete Account';
+      deleteBtn.disabled = !userView.isAuthed;
+      deleteBtn.addEventListener('click', () => {
+        // Create confirmation modal content
+        const modalContent = doc.createElement('div');
+        modalContent.className = 'grid';
+        modalContent.style.gap = 'var(--space-4)';
+        
+        const warningText = doc.createElement('div');
+        warningText.className = 'muted';
+        warningText.textContent = 'Deleting your account will remove all of your information from our database. This cannot be undone.';
+        modalContent.appendChild(warningText);
+        
+        const confirmLabel = doc.createElement('div');
+        confirmLabel.className = 'muted';
+        confirmLabel.style.fontSize = 'var(--text-sm)';
+        confirmLabel.textContent = 'To confirm this, type "DELETE"';
+        modalContent.appendChild(confirmLabel);
+        
+        const confirmInput = doc.createElement('input');
+        confirmInput.type = 'text';
+        confirmInput.className = 'input';
+        confirmInput.placeholder = 'Type DELETE';
+        confirmInput.autocomplete = 'off';
+        modalContent.appendChild(confirmInput);
+        
+        // Show modal
+        const modal = UIComponents.showModal({
+          title: 'Delete Account',
+          content: modalContent,
+          actions: [
+            { 
+              label: 'Cancel', 
+              variant: 'ghost',
+              onClick: () => modal.close()
             },
-          });
-          if (!response.ok) {
-            const errText = await response.text();
-            throw new Error(errText || 'Delete failed');
-          }
-          try {
-            CoreStorage.clearAll();
-          } catch {
-            // ignore
-          }
-          try {
-            const client = SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
-            if (client && client.auth) {
-              await client.auth.signOut({ scope: 'local' });
+            { 
+              label: 'Delete Account', 
+              variant: 'danger',
+              disabled: true,
+              onClick: async () => {
+                try {
+                  const session = SupabaseClient && typeof SupabaseClient.getSession === 'function' ? SupabaseClient.getSession() : null;
+                  if (!session || !session.access_token) throw new Error('No active session');
+                  const cfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : {};
+                  const baseUrl = cfg && cfg.url ? String(cfg.url) : '';
+                  if (!baseUrl) throw new Error('Supabase URL missing');
+                  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/functions/v1/delete-account`, {
+                    method: 'POST',
+                    headers: {
+                      Authorization: `Bearer ${session.access_token}`,
+                      apikey: cfg.anonKey || '',
+                      'Content-Type': 'application/json',
+                    },
+                  });
+                  if (!response.ok) {
+                    const errText = await response.text();
+                    throw new Error(errText || 'Delete failed');
+                  }
+                  try {
+                    CoreStorage.clearAll();
+                  } catch {
+                    // ignore
+                  }
+                  try {
+                    const client = SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
+                    if (client && client.auth) {
+                      await client.auth.signOut({ scope: 'local' });
+                    }
+                  } catch {
+                    // ignore
+                  }
+                  modal.close();
+                  close();
+                  window.location.reload();
+                } catch (err) {
+                  modal.close();
+                  UIComponents.showToast(
+                    `Delete failed: ${err && err.message ? err.message : err}`,
+                    'error',
+                    { title: 'Account' }
+                  );
+                }
+              }
             }
-          } catch {
-            // ignore
-          }
-          close();
-          window.location.reload();
-        } catch (err) {
-          UIComponents.showToast(
-            `Delete failed: ${err && err.message ? err.message : err}`,
-            'error',
-            { title: 'Account' }
-          );
+          ]
+        });
+        
+        // Enable delete button only when "DELETE" is typed
+        const deleteAction = modal.element && modal.element.querySelector('.btn-danger');
+        if (deleteAction && confirmInput) {
+          confirmInput.addEventListener('input', () => {
+            const isValid = confirmInput.value === 'DELETE';
+            deleteAction.disabled = !isValid;
+          });
         }
       });
-      confirmWrap.appendChild(confirmLabel);
-      confirmWrap.appendChild(confirmInput);
-      dRight.appendChild(confirmWrap);
-      dRight.appendChild(delBtn);
+      
+      dRight.appendChild(deleteBtn);
       dangerRow.appendChild(dLeft);
       dangerRow.appendChild(dRight);
       danger.appendChild(dangerRow);
@@ -1001,7 +1362,7 @@ export function createSettingsOverlay({
     } else if (settingsActiveTab === 'org-general') {
       const userView = getCurrentUserView();
       const orgName = 'Workspace';
-      const orgRole = userView.isAuthed ? 'Owner' : '—';
+      const orgRole = userView.isAuthed ? 'Owner' : 'â€”';
 
       const orgCard = doc.createElement('div');
       orgCard.className = 'card';

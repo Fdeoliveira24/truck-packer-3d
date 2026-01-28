@@ -3,8 +3,16 @@
  * @description UI-free Supabase client wrapper (init + auth helpers) for browser runtime.
  * @module core/supabase-client
  * @created Unknown
- * @updated 01/22/2026
+ * @updated 01/28/2026
  * @author Truck Packer 3D Team
+ * 
+ * CHANGES (01/28/2026):
+ * - Added uploadAvatar() function for avatar image uploads to 'avatars' storage bucket
+ * - Added deleteAvatar() function to remove user avatars from storage
+ * - Implemented file type validation (PNG, JPG, WEBP only)
+ * - Implemented file size validation (2MB max)
+ * - Avatar storage follows pattern: ${userId}/avatar.${ext}
+ * - Both functions respect RLS policies based on storage.foldername(name)[1] == auth.uid()
  */
 
 // ============================================================================
@@ -192,4 +200,93 @@ export async function getUserOrganizations() {
   const { data, error } = await client.rpc('get_user_organizations');
   if (error) throw error;
   return data || [];
+}
+
+/**
+ * Upload a user avatar to storage bucket 'avatars'.
+ * @param {File} file - The image file to upload
+ * @returns {Promise<string>} The public URL of the uploaded avatar
+ */
+export async function uploadAvatar(file) {
+  const client = requireClient();
+  const user = getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  // Validate file type
+  const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+  if (!validTypes.includes(file.type)) {
+    throw new Error('Invalid file type. Please use PNG, JPG, or WEBP.');
+  }
+
+  // Validate file size (2MB)
+  const maxSize = 2 * 1024 * 1024;
+  if (file.size > maxSize) {
+    throw new Error('File size must be less than 2MB.');
+  }
+
+  // Delete old avatar files first (to ensure clean replacement)
+  try {
+    const { data: files } = await client.storage
+      .from('avatars')
+      .list(user.id);
+    
+    if (files && files.length > 0) {
+      const filePaths = files.map(f => `${user.id}/${f.name}`);
+      await client.storage
+        .from('avatars')
+        .remove(filePaths);
+    }
+  } catch {
+    // Ignore errors during cleanup
+  }
+
+  // Get file extension
+  const ext = file.name.split('.').pop() || 'png';
+  const filePath = `${user.id}/avatar.${ext}`;
+
+  // Upload to storage
+  const { data, error } = await client.storage
+    .from('avatars')
+    .upload(filePath, file, {
+      cacheControl: '3600',
+      upsert: true,
+    });
+
+  if (error) throw error;
+
+  // Get public URL
+  const { data: urlData } = client.storage
+    .from('avatars')
+    .getPublicUrl(filePath);
+
+  return urlData.publicUrl;
+}
+
+/**
+ * Delete the user's avatar from storage.
+ * @returns {Promise<boolean>}
+ */
+export async function deleteAvatar() {
+  const client = requireClient();
+  const user = getUser();
+  if (!user) throw new Error('Not authenticated');
+
+  // List all files in user's folder
+  const { data: files, error: listError } = await client.storage
+    .from('avatars')
+    .list(user.id);
+
+  if (listError) throw listError;
+
+  // Delete all avatar files
+  if (files && files.length > 0) {
+    const filePaths = files.map(f => `${user.id}/${f.name}`);
+    const { error: deleteError } = await client.storage
+      .from('avatars')
+      .remove(filePaths);
+
+    if (deleteError) throw deleteError;
+  }
+
+  return true;
 }

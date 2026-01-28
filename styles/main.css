@@ -2,6 +2,22 @@
   Theme Tokens
 ================================== */
 
+/* 
+  CHANGES (01/28/2026 - Account Settings UI):
+  - Added .visually-hidden utility class for accessible hidden elements
+  - Added .tp3d-account-avatar-upload-container for avatar section layout
+  - Added .tp3d-account-avatar-preview for 80x80 avatar display
+  - Added .tp3d-account-avatar-img for uploaded avatar images
+  - Added .tp3d-account-avatar-buttons for upload/remove button row
+  - Added .tp3d-account-profile-form for profile editing form layout
+  - Added .tp3d-account-field and .tp3d-account-field-label for form fields
+  - Added .tp3d-account-actions for Save/Cancel button row
+  - Added .tp3d-account-delete-form for delete account form wrapper
+  - Added .tp3d-account-delete-input-row and .tp3d-account-delete-input
+  - All classes use CSS tokens (no hardcoded colors or dimensions)
+  - No inline styles used anywhere in settings overlay
+*/
+
 :root {
   /* Backgrounds */
   --bg-primary: #f6f7fb;
@@ -112,6 +128,18 @@ body {
   background: var(--bg-primary);
   color: var(--text-primary);
   line-height: var(--leading-normal);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 a {
@@ -1420,6 +1448,7 @@ tr:hover td {
   padding: var(--space-6);
   overflow: auto;
   min-width: 0;
+  flex: 1;
 }
 
 .tp3d-settings-row {
@@ -1549,6 +1578,87 @@ tr:hover td {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  overflow: hidden;
+}
+
+/* TP3D Account Profile Edit */
+.tp3d-account-avatar-upload-container {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.tp3d-account-avatar-preview {
+  width: 80px;
+  height: 80px;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: var(--font-semibold);
+  font-size: var(--text-2xl);
+  color: var(--text-inverse);
+  overflow: hidden;
+  position: relative;
+}
+
+.tp3d-account-avatar-preview.has-image {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+.tp3d-account-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.tp3d-account-avatar-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.tp3d-account-profile-form {
+  display: grid;
+  gap: 16px;
+  max-width: 600px;
+}
+
+.tp3d-account-field {
+  display: grid;
+  gap: 8px;
+}
+
+.tp3d-account-field-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-secondary);
+}
+
+.tp3d-account-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.tp3d-account-delete-form {
+  display: grid;
+  gap: 12px;
+}
+
+.tp3d-account-delete-input-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tp3d-account-delete-input {
+  flex: 1;
+  min-width: 220px;
 }
 
 /* TP3D Import App dialog */

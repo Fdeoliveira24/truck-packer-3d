@@ -2324,3 +2324,52 @@ body.modal-open {
 .tp3d-chip-readonly {
   cursor: default;
 }
+
+/* ================================
+   TP3D Settings Resources Views
+================================== */
+
+.tp3d-resources-view {
+  display: grid;
+  gap: 12px;
+}
+
+.tp3d-resources-text {
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.tp3d-resources-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  padding: 14px 16px;
+  display: grid;
+  gap: 6px;
+}
+
+.tp3d-resources-card-title {
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+
+.tp3d-resources-card-sub {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.tp3d-resources-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.tp3d-resources-help {
+  display: grid;
+  gap: 10px;
+}
+
+.tp3d-resources-help-line {
+  color: var(--text-secondary);
+  line-height: 1.5;
+}

@@ -12,6 +12,9 @@
 // ============================================================================
 
 import { getUserAvatarView } from '../../core/utils/index.js';
+import * as ImportExport from '../../services/import-export.js';
+import * as StateStore from '../../core/state-store.js';
+import * as CoreStorage from '../../core/storage.js';
 
 export function createSettingsOverlay({
   documentRef = document,
@@ -35,7 +38,7 @@ export function createSettingsOverlay({
   let settingsLeftPane = null;
   let settingsRightPane = null;
   let settingsActiveTab = 'preferences';
-  let resourcesSubView = 'root'; // 'root' | 'updates' | 'roadmap'
+  let resourcesSubView = 'root'; // 'root' | 'updates' | 'roadmap' | 'export' | 'import' | 'help'
   let unmountAccountButton = null;
   let lastFocusedEl = null;
   let trapKeydownHandler = null;
@@ -317,6 +320,254 @@ export function createSettingsOverlay({
     container.appendChild(wrap);
   }
 
+  function renderExportContent(container) {
+    const wrap = doc.createElement('div');
+    wrap.className = 'tp3d-resources-view';
+
+    const blurb = doc.createElement('div');
+    blurb.className = 'muted tp3d-resources-text';
+    blurb.textContent =
+      'App Export downloads a full JSON backup of packs, cases, and settings. This file can be imported back to restore everything.';
+
+    const filename = `truck-packer-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    const meta = doc.createElement('div');
+    meta.className = 'card tp3d-resources-card';
+
+    const metaTitle = doc.createElement('div');
+    metaTitle.className = 'tp3d-resources-card-title';
+    metaTitle.textContent = 'Export details';
+
+    const metaValue = doc.createElement('div');
+    metaValue.className = 'muted tp3d-resources-card-sub';
+    metaValue.textContent = `File: ${filename}`;
+
+    meta.appendChild(metaTitle);
+    meta.appendChild(metaValue);
+
+    const actions = doc.createElement('div');
+    actions.className = 'tp3d-resources-actions';
+    const exportBtn = doc.createElement('button');
+    exportBtn.type = 'button';
+    exportBtn.className = 'btn btn-primary';
+    exportBtn.textContent = 'Export';
+    exportBtn.addEventListener('click', () => {
+      try {
+        const json = ImportExport.buildAppExportJSON();
+        Utils.downloadText(filename, json);
+        UIComponents.showToast('App JSON exported', 'success');
+      } catch (err) {
+        UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
+      }
+    });
+    actions.appendChild(exportBtn);
+
+    wrap.appendChild(blurb);
+    wrap.appendChild(meta);
+    wrap.appendChild(actions);
+    container.appendChild(wrap);
+  }
+
+  function applyCaseDefaultColor(caseObj) {
+    const next = { ...(caseObj || {}) };
+    const existing = String(next.color || '').trim();
+    if (existing) return next;
+    const key = String(next.category || 'default')
+      .trim()
+      .toLowerCase() || 'default';
+    const cats = (_Defaults && _Defaults.categories) || [];
+    const found = cats.find(c => c.key === key) || cats.find(c => c.key === 'default');
+    next.color = (found && found.color) || '#9ca3af';
+    return next;
+  }
+
+  async function handleImportAppFile(file, resultsEl) {
+    resultsEl.classList.add('is-visible');
+    resultsEl.innerHTML = '';
+
+    if (!file) {
+      UIComponents.showToast('No file selected', 'warning');
+      return;
+    }
+
+    const name = String(file.name || '');
+    const lower = name.toLowerCase();
+    const isJson = lower.endsWith('.json') || String(file.type || '').includes('json');
+    if (!isJson) {
+      UIComponents.showToast('Invalid file type. Supported: .json', 'warning');
+      return;
+    }
+
+    let text = '';
+    try {
+      text = await file.text();
+    } catch (err) {
+      UIComponents.showToast('Import failed: ' + (err && err.message), 'error');
+      return;
+    }
+
+    let imported = null;
+    try {
+      imported = ImportExport.parseAppImportJSON(text);
+    } catch (err) {
+      UIComponents.showToast('Invalid App JSON: ' + (err && err.message), 'error');
+      UIComponents.showToast('If you are importing only packs, use Import Pack.', 'info');
+      return;
+    }
+
+    if (!imported || !Array.isArray(imported.packLibrary) || !Array.isArray(imported.caseLibrary) || !imported.preferences) {
+      UIComponents.showToast('Invalid App JSON: missing required keys', 'error');
+      return;
+    }
+
+    const ok = await UIComponents.confirm({
+      title: 'Import App JSON?',
+      message: 'This will replace your current data with the imported backup. This cannot be undone.',
+      danger: true,
+      okLabel: 'Replace & Import',
+    });
+    if (!ok) return;
+
+    try {
+      const prev = StateStore.get();
+      const importedCases = (imported.caseLibrary || []).map(applyCaseDefaultColor);
+      const nextState = {
+        ...prev,
+        caseLibrary: importedCases,
+        packLibrary: imported.packLibrary,
+        preferences: imported.preferences,
+        currentPackId: null,
+        currentScreen: 'packs',
+        selectedInstanceIds: [],
+      };
+      StateStore.replace(nextState, { skipHistory: false });
+      CoreStorage.saveNow();
+      if (PreferencesManager && typeof PreferencesManager.applyTheme === 'function') {
+        PreferencesManager.applyTheme(nextState.preferences.theme);
+      }
+
+      const summary = doc.createElement('div');
+      summary.className = 'card';
+      summary.innerHTML = `
+        <div class="tp3d-import-summary-title">Import Result</div>
+        <div class="muted tp3d-import-summary-meta">File: ${
+          Utils && Utils.escapeHtml ? Utils.escapeHtml(file.name) : file.name
+        }</div>
+        <div class="tp3d-import-summary-spacer"></div>
+        <div class="tp3d-import-badges">
+          <div class="badge tp3d-import-badge-success">Packs: ${(imported.packLibrary || []).length}</div>
+          <div class="badge tp3d-import-badge-info">Cases: ${(imported.caseLibrary || []).length}</div>
+        </div>
+      `;
+      resultsEl.appendChild(summary);
+
+      UIComponents.showToast('App data imported', 'success');
+    } catch (err) {
+      UIComponents.showToast('Import failed: ' + (err && err.message), 'error');
+    }
+  }
+
+  function renderImportContent(container) {
+    const content = doc.createElement('div');
+    content.className = 'tp3d-import-content';
+
+    const drop = doc.createElement('div');
+    drop.className = 'card tp3d-import-drop';
+    drop.innerHTML = `
+      <div class="tp3d-import-drop-title">Drag & Drop Backup File Here</div>
+      <div class="muted tp3d-import-drop-sub">Supported: .json</div>
+      <div class="tp3d-import-drop-spacer"></div>
+    `;
+    const browseBtn = doc.createElement('button');
+    browseBtn.className = 'btn';
+    browseBtn.type = 'button';
+    browseBtn.innerHTML = '<i class="fa-solid fa-folder-open"></i> Browse Backup files';
+    drop.appendChild(browseBtn);
+
+    const hint = doc.createElement('div');
+    hint.className = 'muted tp3d-import-hint';
+    hint.innerHTML = `
+      <div class="tp3d-import-warning">
+        <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+        <div>
+          <span class="tp3d-import-warning-label">Warning:</span>
+          <span class="tp3d-import-warning-text"> This will replace your current data.</span>
+        </div>
+      </div>
+    `;
+
+    const results = doc.createElement('div');
+    results.classList.add('tp3d-import-results');
+
+    content.appendChild(drop);
+    content.appendChild(hint);
+    content.appendChild(results);
+    container.appendChild(content);
+
+    const fileInput = doc.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.json,application/json';
+
+    browseBtn.addEventListener('click', () => fileInput.click());
+
+    drop.addEventListener('dragover', ev => {
+      ev.preventDefault();
+      drop.classList.add('is-dragover');
+    });
+    drop.addEventListener('dragleave', () => {
+      drop.classList.remove('is-dragover');
+    });
+    drop.addEventListener('drop', ev => {
+      ev.preventDefault();
+      drop.classList.remove('is-dragover');
+      const file = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+      if (file) handleImportAppFile(file, results);
+    });
+
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (file) handleImportAppFile(file, results);
+    });
+  }
+
+  function renderHelpContent(container) {
+    const wrap = doc.createElement('div');
+    wrap.className = 'tp3d-resources-view';
+
+    const block = doc.createElement('div');
+    block.className = 'card tp3d-resources-card';
+
+    const text = doc.createElement('div');
+    text.className = 'tp3d-resources-help';
+
+    const p1 = doc.createElement('div');
+    p1.className = 'tp3d-resources-help-line';
+    p1.innerHTML = '<strong>App Export/Import:</strong> Use Export to download a full JSON backup. Use Import to restore from that backup.';
+    const p2 = doc.createElement('div');
+    p2.className = 'tp3d-resources-help-line';
+    p2.innerHTML =
+      '<strong>Pack Export/Import:</strong> In Packs, open the pack menu and choose Export Pack to download a single pack JSON. Use Import Pack on the Packs screen to add a shared pack JSON.';
+    const p3 = doc.createElement('div');
+    p3.className = 'tp3d-resources-help-line';
+    p3.innerHTML =
+      '<strong>Cases Template:</strong> On the Cases screen, click Template to download the CSV headers for cases.';
+    const p4 = doc.createElement('div');
+    p4.className = 'tp3d-resources-help-line';
+    p4.innerHTML =
+      '<strong>Cases Import:</strong> Click Import on the Cases screen to upload CSV or XLSX. Valid rows are added; duplicates and invalid rows are skipped.';
+    const p5 = doc.createElement('div');
+    p5.className = 'tp3d-resources-help-line muted';
+    p5.textContent = 'Tip: Export the app before importing to keep a backup.';
+
+    text.appendChild(p1);
+    text.appendChild(p2);
+    text.appendChild(p3);
+    text.appendChild(p4);
+    text.appendChild(p5);
+    block.appendChild(text);
+    wrap.appendChild(block);
+    container.appendChild(wrap);
+  }
+
   function render() {
     if (!settingsOverlay) return;
     const prefs = PreferencesManager.get();
@@ -382,10 +633,11 @@ export function createSettingsOverlay({
       return btn;
     };
 
+    navWrap.appendChild(makeHeader('Account Settings'));
+    navWrap.appendChild(makeItem({ key: 'account', label: 'Account', icon: 'fa-regular fa-user' }));
     navWrap.appendChild(makeHeader('Settings'));
     navWrap.appendChild(makeItem({ key: 'preferences', label: 'Preferences', icon: 'fa-solid fa-gear' }));
     navWrap.appendChild(makeItem({ key: 'resources', label: 'Resources', icon: 'fa-solid fa-life-ring' }));
-    navWrap.appendChild(makeItem({ key: 'account', label: 'Account', icon: 'fa-regular fa-user' }));
     navWrap.appendChild(makeHeader('Organization'));
     navWrap.appendChild(makeItem({ key: 'org-general', label: 'General', icon: 'fa-regular fa-building', indent: true }));
     navWrap.appendChild(
@@ -418,6 +670,27 @@ export function createSettingsOverlay({
             return {
               title: 'Roadmap',
               helper: 'Product direction and upcoming features.',
+              showBack: true,
+            };
+          }
+          if (resourcesSubView === 'export') {
+            return {
+              title: 'Export App JSON',
+              helper: 'Download a full JSON backup of packs, cases, and settings.',
+              showBack: true,
+            };
+          }
+          if (resourcesSubView === 'import') {
+            return {
+              title: 'Import App JSON',
+              helper: 'Restore your data from a JSON backup.',
+              showBack: true,
+            };
+          }
+          if (resourcesSubView === 'help') {
+            return {
+              title: 'Help - Export / Import',
+              helper: 'Guidance for exports and imports.',
               showBack: true,
             };
           }
@@ -581,6 +854,12 @@ export function createSettingsOverlay({
       } else if (resourcesSubView === 'roadmap') {
         // Render embedded Roadmap content
         renderRoadmapContent(body);
+      } else if (resourcesSubView === 'export') {
+        renderExportContent(body);
+      } else if (resourcesSubView === 'import') {
+        renderImportContent(body);
+      } else if (resourcesSubView === 'help') {
+        renderHelpContent(body);
       } else {
         // Root view: show buttons
         const container = doc.createElement('div');
@@ -602,11 +881,11 @@ export function createSettingsOverlay({
           return btn;
         };
 
-        const exportBtn = makeBtn('Export App', null, () => runResourceAction(onExportApp));
-        const importBtn = makeBtn('Import App', null, () => runResourceAction(onImportApp));
-        const helpBtn = makeBtn('Help', null, () => runResourceAction(onHelp));
+        const exportBtn = makeBtn('Export App', null, () => setResourcesSubView('export'));
+        const importBtn = makeBtn('Import App', null, () => setResourcesSubView('import'));
+        const helpBtn = makeBtn('Help', null, () => setResourcesSubView('help'));
 
-        // Updates and Roadmap buttons now switch sub-views instead of closing modal
+        // Updates and Roadmap buttons switch sub-views
         const updatesBtn = makeBtn('Updates', null, () => setResourcesSubView('updates'));
         const roadmapBtn = makeBtn('Roadmap', null, () => setResourcesSubView('roadmap'));
 
@@ -653,19 +932,68 @@ export function createSettingsOverlay({
       delBtn.className = 'btn btn-danger';
       delBtn.textContent = 'Delete account';
       delBtn.disabled = true;
-      const dMsg = doc.createElement('div');
-      dMsg.className = 'muted';
-      dMsg.classList.add('tp3d-settings-danger-msg');
-      const warnIcon = doc.createElement('i');
-      warnIcon.className = 'fa-solid fa-triangle-exclamation';
-      warnIcon.setAttribute('aria-hidden', 'true');
-      warnIcon.classList.add('tp3d-settings-danger-warn-icon');
-      const warnText = doc.createElement('span');
-      warnText.textContent = 'Delete account is not set up yet.';
-      dMsg.appendChild(warnIcon);
-      dMsg.appendChild(warnText);
+      const confirmWrap = doc.createElement('div');
+      confirmWrap.className = 'grid';
+      const confirmLabel = doc.createElement('div');
+      confirmLabel.className = 'muted';
+      confirmLabel.textContent = 'To confirm, type DELETE';
+      const confirmInput = doc.createElement('input');
+      confirmInput.type = 'text';
+      confirmInput.className = 'input';
+      confirmInput.placeholder = 'Type DELETE';
+      confirmInput.addEventListener('input', () => {
+        const ok = confirmInput.value === 'DELETE';
+        delBtn.disabled = !userView.isAuthed || !ok;
+      });
+      delBtn.disabled = !userView.isAuthed;
+      delBtn.addEventListener('click', async () => {
+        if (!userView.isAuthed) return;
+        if (confirmInput.value !== 'DELETE') return;
+        try {
+          const session = SupabaseClient && typeof SupabaseClient.getSession === 'function' ? SupabaseClient.getSession() : null;
+          if (!session || !session.access_token) throw new Error('No active session');
+          const cfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : {};
+          const baseUrl = cfg && cfg.url ? String(cfg.url) : '';
+          if (!baseUrl) throw new Error('Supabase URL missing');
+          const response = await fetch(`${baseUrl.replace(/\/$/, '')}/functions/v1/delete-account`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+              apikey: cfg.anonKey || '',
+              'Content-Type': 'application/json',
+            },
+          });
+          if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(errText || 'Delete failed');
+          }
+          try {
+            CoreStorage.clearAll();
+          } catch {
+            // ignore
+          }
+          try {
+            const client = SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
+            if (client && client.auth) {
+              await client.auth.signOut({ scope: 'local' });
+            }
+          } catch {
+            // ignore
+          }
+          close();
+          window.location.reload();
+        } catch (err) {
+          UIComponents.showToast(
+            `Delete failed: ${err && err.message ? err.message : err}`,
+            'error',
+            { title: 'Account' }
+          );
+        }
+      });
+      confirmWrap.appendChild(confirmLabel);
+      confirmWrap.appendChild(confirmInput);
+      dRight.appendChild(confirmWrap);
       dRight.appendChild(delBtn);
-      dRight.appendChild(dMsg);
       dangerRow.appendChild(dLeft);
       dangerRow.appendChild(dRight);
       danger.appendChild(dangerRow);

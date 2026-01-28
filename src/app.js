@@ -41,6 +41,7 @@ import * as CorePackLibrary from './services/pack-library.js';
 import * as ImportExport from './services/import-export.js';
 import * as CorePreferencesManager from './services/preferences-manager.js';
 import { createSettingsOverlay } from './ui/overlays/settings-overlay.js';
+import { createAccountOverlay } from './ui/overlays/account-overlay.js';
 import { createCardDisplayOverlay } from './ui/overlays/card-display-overlay.js';
 import { createHelpModal } from './ui/overlays/help-modal.js';
 import { createImportAppDialog } from './ui/overlays/import-app-dialog.js';
@@ -182,10 +183,10 @@ import { APP_VERSION } from './core/version.js';
           // ============================================================================
           // SECTION: OVERLAYS (SETTINGS + CARD DISPLAY)
           // ============================================================================
-          const SettingsOverlay = createSettingsOverlay({
-            documentRef: document,
-            UIComponents,
-            SessionManager,
+	          const SettingsOverlay = createSettingsOverlay({
+	            documentRef: document,
+	            UIComponents,
+	            SessionManager,
             PreferencesManager,
             Defaults,
             Utils,
@@ -194,13 +195,14 @@ import { APP_VERSION } from './core/version.js';
             onExportApp: openExportAppModal,
             onImportApp: openImportAppDialog,
             onHelp: openHelpModal,
-            onUpdates: openUpdatesScreen,
-            onRoadmap: openRoadmapScreen,
-          });
-          const CardDisplayOverlay = createCardDisplayOverlay({
-            documentRef: document,
-            UIComponents,
-            PreferencesManager,
+	            onUpdates: openUpdatesScreen,
+	            onRoadmap: openRoadmapScreen,
+	          });
+	          const AccountOverlay = createAccountOverlay({ documentRef: document, SupabaseClient });
+	          const CardDisplayOverlay = createCardDisplayOverlay({
+	            documentRef: document,
+	            UIComponents,
+	            PreferencesManager,
             Defaults,
             Utils,
             getCasesUI: () => CasesUI,
@@ -228,14 +230,23 @@ import { APP_VERSION } from './core/version.js';
             }
           }
 
-          function openSettingsOverlay(tab = 'preferences') {
-            closeDropdowns();
-            try {
-              SettingsOverlay.open(tab);
-            } catch {
-              // ignore
-            }
-          }
+	          function openSettingsOverlay(tab = 'preferences') {
+	            closeDropdowns();
+	            try {
+	              SettingsOverlay.open(tab);
+	            } catch {
+	              // ignore
+	            }
+	          }
+
+	          function openAccountOverlay() {
+	            closeDropdowns();
+	            try {
+	              AccountOverlay.open();
+	            } catch {
+	              // ignore
+	            }
+	          }
 
           function getSidebarAvatarView() {
             let user = null;
@@ -353,14 +364,14 @@ import { APP_VERSION } from './core/version.js';
                   onClick: () => showComingSoon(),
                 },
                 { type: 'divider' },
-                {
-                  label: 'Account',
-                  icon: 'fa-regular fa-user',
-                  onClick: () => openSettingsOverlay('account'),
-                },
-                {
-                  label: 'Settings',
-                  icon: 'fa-solid fa-gear',
+	                {
+	                  label: 'Account',
+	                  icon: 'fa-regular fa-user',
+	                  onClick: () => openAccountOverlay(),
+	                },
+	                {
+	                  label: 'Settings',
+	                  icon: 'fa-solid fa-gear',
                   onClick: () => openSettingsOverlay('preferences'),
                 },
                 {
@@ -2386,24 +2397,26 @@ import { APP_VERSION } from './core/version.js';
 
                 if (user) {
                   AuthOverlay.hide();
-                  if (event === 'SIGNED_IN') {
-                    UIComponents.showToast('Signed in', 'success', { title: 'Auth' });
-                  }
-                    if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') SettingsOverlay.handleAuthChange(event);
-                  renderSidebarBrandMarks();
-                  showReadyOnce();
-                  return;
-                }
+	                  if (event === 'SIGNED_IN') {
+	                    UIComponents.showToast('Signed in', 'success', { title: 'Auth' });
+	                  }
+	                    if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') SettingsOverlay.handleAuthChange(event);
+	                    if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') AccountOverlay.handleAuthChange(event);
+	                  renderSidebarBrandMarks();
+	                  showReadyOnce();
+	                  return;
+	                }
 
                 AuthOverlay.setPhase('form', { onRetry: bootstrapAuthGate });
                 AuthOverlay.show();
-                if (event === 'SIGNED_OUT') {
-                  UIComponents.showToast('Signed out', 'info', { title: 'Auth' });
-                }
-                if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') SettingsOverlay.handleAuthChange(event);
-                renderSidebarBrandMarks();
-              });
-            }
+	                if (event === 'SIGNED_OUT') {
+	                  UIComponents.showToast('Signed out', 'info', { title: 'Auth' });
+	                }
+	                if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') SettingsOverlay.handleAuthChange(event);
+	                if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') AccountOverlay.handleAuthChange(event);
+	                renderSidebarBrandMarks();
+	              });
+	            }
 
             AppShell.init();
             PacksUI.init();

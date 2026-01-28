@@ -1743,10 +1743,16 @@ import { APP_VERSION } from './core/version.js';
                 const card = document.createElement('div');
                 card.className = 'card';
                 const header = document.createElement('div');
-                header.className = 'row space-between';
-                header.style.alignItems = 'flex-start';
+                header.className = 'row space-between tp3d-updates-header';
                 const left = document.createElement('div');
-                left.innerHTML = `<div style="font-weight:var(--font-semibold);font-size:var(--text-lg)">Version ${u.version}</div><div class="muted" style="font-size:var(--text-xs)">${new Date(u.date).toLocaleDateString()}</div>`;
+                const versionEl = document.createElement('div');
+                versionEl.className = 'tp3d-updates-version';
+                versionEl.textContent = `Version ${u.version}`;
+                const dateEl = document.createElement('div');
+                dateEl.className = 'muted tp3d-updates-date';
+                dateEl.textContent = new Date(u.date).toLocaleDateString();
+                left.appendChild(versionEl);
+                left.appendChild(dateEl);
                 header.appendChild(left);
                 card.appendChild(header);
 
@@ -1757,14 +1763,11 @@ import { APP_VERSION } from './core/version.js';
                 ].filter(s => s.items.length);
                 sections.forEach(s => {
                   const t = document.createElement('div');
-                  t.style.marginTop = '12px';
-                  t.style.fontWeight = 'var(--font-semibold)';
+                  t.className = 'tp3d-updates-feature-title';
                   t.textContent = s.title;
                   card.appendChild(t);
                   const ul = document.createElement('ul');
-                  ul.style.margin = '8px 0 0 16px';
-                  ul.style.color = 'var(--text-secondary)';
-                  ul.style.fontSize = 'var(--text-sm)';
+                  ul.className = 'tp3d-updates-feature-list';
                   s.items.forEach(it => {
                     const li = document.createElement('li');
                     li.textContent = it;
@@ -1788,31 +1791,36 @@ import { APP_VERSION } from './core/version.js';
               listEl.innerHTML = '';
               Data.roadmap.forEach(group => {
                 const wrap = document.createElement('div');
-                wrap.className = 'grid';
-                wrap.style.gap = '10px';
+                wrap.className = 'grid tp3d-roadmap-group';
                 const h = document.createElement('div');
-                h.style.fontSize = 'var(--text-lg)';
-                h.style.fontWeight = 'var(--font-semibold)';
+                h.className = 'tp3d-roadmap-quarter';
                 h.textContent = group.quarter;
                 wrap.appendChild(h);
                 const grid = document.createElement('div');
-                grid.className = 'pack-grid';
-                grid.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
+                grid.className = 'pack-grid tp3d-roadmap-grid';
                 group.items.forEach(item => {
                   const card = document.createElement('div');
-                  card.className = 'card';
-                  card.style.cursor = 'pointer';
-                  card.innerHTML = `
-                  <div class="row space-between" style="gap:10px">
-                    <div style="font-weight:var(--font-semibold)">${item.title}</div>
-                    <div class="badge" style="border-color:transparent;background:${item.color};color:white">${item.badge} ${item.status}</div>
-                  </div>
-                  <div class="muted" style="font-size:var(--text-sm);margin-top:8px">${item.details}</div>
-                `;
+                  card.className = 'card tp3d-roadmap-card';
+                  const cardHeader = document.createElement('div');
+                  cardHeader.className = 'row space-between tp3d-roadmap-card-header';
+                  const cardTitle = document.createElement('div');
+                  cardTitle.className = 'tp3d-roadmap-item-title';
+                  cardTitle.textContent = item.title;
+                  const badge = document.createElement('div');
+                  badge.className = 'badge tp3d-roadmap-badge';
+                  badge.style.background = item.color;
+                  badge.textContent = `${item.badge} ${item.status}`;
+                  cardHeader.appendChild(cardTitle);
+                  cardHeader.appendChild(badge);
+                  const cardDetails = document.createElement('div');
+                  cardDetails.className = 'muted tp3d-roadmap-item-details';
+                  cardDetails.textContent = item.details;
+                  card.appendChild(cardHeader);
+                  card.appendChild(cardDetails);
                   card.addEventListener('click', () => {
                     UIComponents.showModal({
                       title: item.title,
-                      content: `<div class="muted" style="font-size:var(--text-sm)">${item.details}</div>`,
+                      content: `<div class="muted tp3d-roadmap-item-details">${item.details}</div>`,
                       actions: [{ label: 'Close', variant: 'primary' }],
                     });
                   });
@@ -2063,27 +2071,22 @@ import { APP_VERSION } from './core/version.js';
                 .slice()
                 .sort((a, b) => (b.lastEdited || 0) - (a.lastEdited || 0));
               const content = document.createElement('div');
-              content.className = 'grid';
-              content.style.gap = '10px';
+              content.className = 'grid tp3d-pack-dialog-content';
               if (!packs.length) {
                 const empty = document.createElement('div');
-                empty.className = 'muted';
-                empty.style.fontSize = 'var(--text-sm)';
+                empty.className = 'muted tp3d-pack-dialog-empty';
                 empty.textContent = 'No packs available.';
                 content.appendChild(empty);
               } else {
                 packs.forEach(p => {
                   const row = document.createElement('button');
                   row.type = 'button';
-                  row.className = 'btn';
-                  row.style.justifyContent = 'space-between';
-                  row.style.width = '100%';
+                  row.className = 'btn tp3d-pack-dialog-row';
                   const name = document.createElement('span');
-                  name.style.fontWeight = 'var(--font-semibold)';
+                  name.className = 'tp3d-pack-dialog-name';
                   name.textContent = p.title || 'Untitled';
                   const meta = document.createElement('span');
-                  meta.className = 'muted';
-                  meta.style.fontSize = 'var(--text-xs)';
+                  meta.className = 'muted tp3d-pack-dialog-meta';
                   meta.textContent = `edited ${Utils.formatRelativeTime(p.lastEdited)}`;
                   row.appendChild(name);
                   row.appendChild(meta);
@@ -2147,24 +2150,31 @@ import { APP_VERSION } from './core/version.js';
 
           function openExportAppModal() {
             const content = document.createElement('div');
-            content.style.display = 'grid';
-            content.style.gap = '12px';
+            content.className = 'tp3d-export-app-content';
 
             const blurb = document.createElement('div');
-            blurb.className = 'muted';
-            blurb.style.fontSize = 'var(--text-sm)';
-            blurb.innerHTML =
-              '<div><strong>App Export</strong> downloads a full JSON backup of packs, cases, and settings.</div>' +
-              '<div style="height:8px"></div>' +
-              '<div>This file can be imported back to restore everything.</div>';
+            blurb.className = 'muted tp3d-export-app-blurb';
+            const blurbTitle = document.createElement('div');
+            blurbTitle.innerHTML = '<strong>App Export</strong> downloads a full JSON backup of packs, cases, and settings.';
+            const blurbSpacer = document.createElement('div');
+            blurbSpacer.className = 'tp3d-export-app-spacer';
+            const blurbInfo = document.createElement('div');
+            blurbInfo.textContent = 'This file can be imported back to restore everything.';
+            blurb.appendChild(blurbTitle);
+            blurb.appendChild(blurbSpacer);
+            blurb.appendChild(blurbInfo);
 
             const filename = `truck-packer-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
             const meta = document.createElement('div');
             meta.className = 'card';
-            meta.innerHTML = `
-              <div style="font-weight:var(--font-semibold);margin-bottom:6px">Export details</div>
-              <div class="muted" style="font-size:var(--text-sm)">File: ${Utils.escapeHtml(filename)}</div>
-            `;
+            const metaTitle = document.createElement('div');
+            metaTitle.className = 'tp3d-export-app-meta-title';
+            metaTitle.textContent = 'Export details';
+            const metaFile = document.createElement('div');
+            metaFile.className = 'muted tp3d-export-app-meta-file';
+            metaFile.textContent = `File: ${Utils.escapeHtml(filename)}`;
+            meta.appendChild(metaTitle);
+            meta.appendChild(metaFile);
 
             content.appendChild(blurb);
             content.appendChild(meta);

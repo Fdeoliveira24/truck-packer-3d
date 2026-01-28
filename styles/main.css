@@ -1,22 +1,12 @@
 /* ================================
+  01 Tokens / CSS variables
+================================== */
+
+/* ================================
   Theme Tokens
 ================================== */
 
-/* 
-  CHANGES (01/28/2026 - Account Settings UI):
-  - Added .visually-hidden utility class for accessible hidden elements
-  - Added .tp3d-account-avatar-upload-container for avatar section layout
-  - Added .tp3d-account-avatar-preview for 80x80 avatar display
-  - Added .tp3d-account-avatar-img for uploaded avatar images
-  - Added .tp3d-account-avatar-buttons for upload/remove button row
-  - Added .tp3d-account-profile-form for profile editing form layout
-  - Added .tp3d-account-field and .tp3d-account-field-label for form fields
-  - Added .tp3d-account-actions for Save/Cancel button row
-  - Added .tp3d-account-delete-form for delete account form wrapper
-  - Added .tp3d-account-delete-input-row and .tp3d-account-delete-input
-  - All classes use CSS tokens (no hardcoded colors or dimensions)
-  - No inline styles used anywhere in settings overlay
-*/
+/* Account settings utilities added on 01/28/2026. */
 
 :root {
   /* Backgrounds */
@@ -109,6 +99,11 @@
   --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.5);
 }
 
+
+/* ================================
+  02 Base / Reset
+================================== */
+
 /* ================================
   Base Reset & Typography
 ================================== */
@@ -145,6 +140,11 @@ body {
 a {
   color: inherit;
 }
+
+
+/* ================================
+  03 Layout
+================================== */
 
 /* ================================
   Layout Shell
@@ -273,10 +273,6 @@ a {
   transition: background 0.15s ease;
 }
 
-.account-toggle:hover {
-  background: var(--bg-hover);
-}
-
 .account-avatar {
   width: 40px;
   height: 40px;
@@ -389,10 +385,6 @@ a {
   color: var(--accent-primary);
   border-color: transparent;
   box-shadow: none;
-}
-
-.account-menu .btn.btn-create:hover {
-  background: var(--bg-hover);
 }
 
 .account-menu hr {
@@ -529,16 +521,126 @@ a {
   padding: 0;
 }
 
-.row {
-  display: flex;
-  align-items: center;
+/* ================================
+  Editor Layout
+================================== */
+.editor-shell {
+  --left-col: 290px;
+  --right-col: 340px;
+  height: calc(100vh - 58px);
+  display: grid;
+  grid-template-columns: var(--left-col) 1fr var(--right-col);
+  grid-template-rows: 100%;
   gap: var(--space-3);
-  flex-wrap: wrap;
+  padding: var(--space-3);
+  background: var(--bg-primary);
 }
 
-.row.space-between {
-  justify-content: space-between;
+.panel {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
 }
+
+.panel-header {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.panel-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  margin: 0;
+}
+
+.panel-body {
+  padding: var(--space-3);
+  overflow: auto;
+}
+
+.canvas-wrap {
+  position: relative;
+  min-height: 0;
+}
+
+#viewport {
+  position: absolute;
+  inset: 0;
+}
+
+.viewport-overlay {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  background: rgba(0, 0, 0, 0.55);
+  color: white;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: var(--text-xs);
+  max-width: 360px;
+  pointer-events: none;
+}
+
+.viewport-toolbar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: var(--space-2);
+  padding: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-md);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+@supports not (backdrop-filter: blur(8px)) {
+  .viewport-toolbar {
+    background: rgba(255, 255, 255, 0.95);
+  }
+}
+
+[data-theme='dark'] .viewport-toolbar {
+  background: rgba(28, 30, 38, 0.82);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.toolbar-btn {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  padding: 7px 10px;
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: var(--shadow-sm);
+}
+
+.toolbar-btn.active {
+  border-color: rgba(255, 159, 28, 0.32);
+  background: rgba(255, 159, 28, 0.14);
+}
+
+
+/* ================================
+  04 Components
+================================== */
 
 /* ================================
   Buttons
@@ -739,10 +841,6 @@ textarea:focus {
   box-shadow: var(--shadow-sm);
 }
 
-.muted {
-  color: var(--text-secondary);
-}
-
 .chip {
   display: inline-flex;
   align-items: center;
@@ -779,11 +877,6 @@ textarea:focus {
   background: var(--success);
 }
 
-#packs-selected-count,
-#cases-selected-count {
-  font-size: var(--text-sm);
-}
-
 #cases-filters {
   gap: 8px;
 }
@@ -792,21 +885,12 @@ textarea:focus {
   gap: 8px;
 }
 
-#editor-case-list {
-  gap: 10px;
-}
-
 #updates-list {
   gap: 12px;
 }
 
 #roadmap-list {
   gap: 16px;
-}
-
-.grid {
-  display: grid;
-  gap: var(--space-4);
 }
 
 .pack-grid {
@@ -1086,10 +1170,6 @@ input[type="checkbox"]:checked::after {
   color: var(--text-secondary);
 }
 
-.table-footer .tf-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-
 @media (max-width: 520px) {
   .table-footer {
     gap: 8px;
@@ -1203,6 +1283,12 @@ tr:hover td {
   display: inline-block;
 }
 
+.dropdown.tp3d-dropdown {
+  position: fixed;
+  z-index: 16000;
+  visibility: hidden;
+}
+
 .dropdown-menu {
   position: absolute;
   right: auto;
@@ -1215,6 +1301,25 @@ tr:hover td {
   box-shadow: var(--shadow-lg);
   padding: var(--space-2);
   z-index: 1000;
+}
+
+.dropdown-menu.tp3d-dropdown-menu {
+  position: static;
+  top: auto;
+  left: auto;
+  right: auto;
+}
+
+.tp3d-dropdown-header {
+  padding: 10px 12px;
+  font-weight: var(--font-semibold);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.tp3d-dropdown-divider {
+  height: 1px;
+  margin: 8px 6px;
+  background: var(--border-subtle);
 }
 
 .dropdown-item {
@@ -1232,8 +1337,27 @@ tr:hover td {
   font-size: var(--text-sm);
 }
 
-.dropdown-item:hover {
-  background: var(--bg-hover);
+.dropdown-item.is-disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+
+.tp3d-dropdown-item-text {
+  flex: 1;
+}
+
+.tp3d-dropdown-item-checkbox {
+  margin-left: auto;
+}
+
+.tp3d-dropdown-item-right-icon {
+  margin-left: auto;
+  color: var(--accent-primary);
+}
+
+.tp3d-dropdown-item-right-icon.is-clickable {
+  cursor: pointer;
 }
 
 .dropdown-item[data-variant='danger'] {
@@ -1295,6 +1419,150 @@ tr:hover td {
   justify-content: flex-end;
   gap: var(--space-2);
 }
+
+/* ================================
+  Toasts
+================================== */
+#toast-container {
+  position: fixed;
+  bottom: 18px;
+  right: 18px;
+  z-index: 20000;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 10px;
+  max-width: 360px;
+}
+
+body.modal-open {
+  overflow: hidden;
+}
+
+.toast {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 12px 12px;
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  cursor: pointer;
+  animation: toastIn 0.22s ease;
+}
+
+.toast-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: var(--font-bold);
+  color: white;
+  flex: 0 0 auto;
+}
+
+.toast-icon i {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.toast-body {
+  display: grid;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.toast-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  line-height: var(--leading-tight);
+}
+
+.toast-message {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: var(--leading-normal);
+}
+
+.toast-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: 6px;
+}
+
+.toast-btn {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+@keyframes toastIn {
+  from {
+    transform: translateX(12px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* ================================
+  System Overlays
+================================== */
+.system-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  background:
+    radial-gradient(circle at 20% 10%, rgba(255, 159, 28, 0.18), transparent 40%),
+    radial-gradient(circle at 80% 70%, rgba(59, 130, 246, 0.12), transparent 45%), rgba(0, 0, 0, 0.65);
+}
+
+.system-overlay.active {
+  display: flex;
+}
+
+.system-card {
+  width: min(760px, 100%);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-6);
+}
+
+.system-card h2 {
+  margin: 0 0 var(--space-2) 0;
+  font-size: var(--text-2xl);
+}
+
+.system-card p {
+  margin: 0 0 var(--space-4) 0;
+  color: var(--text-secondary);
+}
+
+.system-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+}
+
+
+/* ================================
+  05 TP3D Overlays & Screens
+================================== */
 
 /* ================================
   TP3D Settings Overlay
@@ -1512,7 +1780,8 @@ tr:hover td {
 }
 
 .tp3d-settings-danger-right {
-  display: grid;
+  display: flex;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -1661,6 +1930,264 @@ tr:hover td {
   min-width: 220px;
 }
 
+/* TP3D Organization View/Edit */
+
+.tp3d-organization-edit-actions {
+  margin-top: var(--space-4);
+}
+
+.tp3d-organization-notice-card {
+  margin-top: var(--space-4);
+}
+
+/* TP3D Updates & Roadmap Content */
+
+.tp3d-updates-header {
+  align-items: flex-start;
+}
+
+.tp3d-updates-feature-title {
+  margin-top: 12px;
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-updates-feature-list {
+  margin: 8px 0 0 16px;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.tp3d-roadmap-wrap {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.tp3d-roadmap-group {
+  display: grid;
+  gap: 10px;
+}
+
+.tp3d-roadmap-quarter {
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-roadmap-items {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.tp3d-roadmap-card {
+  cursor: pointer;
+}
+
+.tp3d-settings-header-left {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+/* TP3D Delete Account Modal */
+
+/* TP3D Account Overlay */
+.tp3d-account-overlay-modal {
+  display: flex;
+  flex-direction: column;
+}
+
+.tp3d-account-avatar-right {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* TP3D Auth Overlay */
+.tp3d-auth-overlay {
+  z-index: 99999;
+  pointer-events: auto;
+}
+
+.tp3d-auth-modal {
+  max-width: 460px;
+  width: calc(100% - 48px);
+  padding: 18px;
+}
+
+.tp3d-auth-hint {
+  margin-bottom: 10px;
+}
+
+.tp3d-auth-hint-lg {
+  margin-bottom: 12px;
+}
+
+.tp3d-auth-cant-title {
+  font-weight: var(--font-semibold);
+  margin-bottom: 6px;
+}
+
+.tp3d-auth-cant-message {
+  margin-bottom: 12px;
+}
+
+.tp3d-auth-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.tp3d-auth-debug-details {
+  margin-top: 12px;
+}
+
+.tp3d-auth-debug-pre {
+  white-space: pre-wrap;
+  margin-top: 8px;
+}
+
+.tp3d-auth-field-label {
+  font-weight: var(--font-semibold);
+  margin-bottom: 6px;
+}
+
+.tp3d-auth-field-label-spaced {
+  margin-top: 10px;
+}
+
+.tp3d-auth-pass-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.tp3d-auth-show-password {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.tp3d-auth-error {
+  margin-top: 10px;
+  color: var(--error);
+  display: none;
+}
+
+.tp3d-auth-success {
+  margin-top: 10px;
+  color: var(--success);
+  display: none;
+}
+
+.tp3d-auth-status {
+  margin-top: 8px;
+}
+
+.tp3d-auth-btn-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.tp3d-auth-mode-row {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.tp3d-auth-resend-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 10px;
+}
+
+.tp3d-auth-debug-note {
+  margin-top: 10px;
+}
+
+.tp3d-updates-version {
+  font-weight: var(--font-semibold);
+  font-size: var(--text-lg);
+}
+
+.tp3d-updates-date {
+  font-size: var(--text-xs);
+}
+
+.tp3d-roadmap-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.tp3d-roadmap-item-title {
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-roadmap-badge {
+  border-color: transparent;
+  color: white;
+}
+
+.tp3d-roadmap-item-details {
+  font-size: var(--text-sm);
+  margin-top: 8px;
+}
+
+.tp3d-pack-dialog-row {
+  justify-content: space-between;
+  width: 100%;
+}
+
+.tp3d-pack-dialog-name {
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-pack-dialog-meta {
+  font-size: var(--text-xs);
+}
+
+.tp3d-export-app-content {
+  display: grid;
+  gap: 12px;
+}
+
+.tp3d-export-app-spacer {
+  height: 8px;
+}
+
+.tp3d-export-app-meta-title {
+  font-weight: var(--font-semibold);
+  margin-bottom: 6px;
+}
+
+.tp3d-dev-overlay {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  background: rgba(0, 0, 0, 0.85);
+  color: #0f0;
+  font-family: "Courier New", monospace;
+  font-size: 11px;
+  padding: 8px 12px;
+  border-radius: 4px;
+  z-index: 10000;
+  line-height: 1.5;
+  pointer-events: none;
+  display: none;
+  min-width: 180px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+.tp3d-dev-overlay-fps {
+  font-weight: bold;
+}
+
+.tp3d-dev-overlay-divider {
+  margin-top: 4px;
+  border-top: 1px solid #333;
+  padding-top: 4px;
+}
+
 /* TP3D Import App dialog */
 .tp3d-import-content {
   display: grid;
@@ -1750,10 +2277,6 @@ tr:hover td {
   font-weight: var(--font-semibold);
 }
 
-.tp3d-import-summary-meta {
-  font-size: var(--text-sm);
-}
-
 .tp3d-import-summary-spacer {
   height: 8px;
 }
@@ -1777,266 +2300,371 @@ tr:hover td {
 }
 
 /* ================================
-  Toasts
+   TP3D Packs Screen (Phase 1.0)
 ================================== */
-#toast-container {
-  position: fixed;
-  bottom: 18px;
-  right: 18px;
-  z-index: 20000;
-  display: flex;
-  flex-direction: column-reverse;
-  gap: 10px;
-  max-width: 360px;
+
+.tp3d-packs-td-check-center {
+  text-align: center;
 }
 
-body.modal-open {
-  overflow: hidden;
-}
-
-.toast {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-  padding: 12px 12px;
-  display: flex;
-  gap: var(--space-3);
-  align-items: flex-start;
-  cursor: pointer;
-  animation: toastIn 0.22s ease;
-}
-
-.toast-icon {
-  width: 26px;
-  height: 26px;
-  border-radius: 999px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: var(--font-bold);
-  color: white;
-  flex: 0 0 auto;
-}
-
-.toast-body {
+.tp3d-packs-titlewrap {
   display: grid;
   gap: 4px;
+}
+
+.tp3d-packs-card-title-truncate {
+  margin: 0;
   flex: 1;
   min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.toast-title {
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  line-height: var(--leading-tight);
-}
-
-.toast-message {
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-  line-height: var(--leading-normal);
-}
-
-.toast-actions {
+.tp3d-packs-card-head {
   display: flex;
-  gap: var(--space-2);
-  margin-top: 6px;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
 }
 
-.toast-btn {
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-  padding: 6px 10px;
-  border-radius: var(--radius-sm);
-  font-size: var(--text-xs);
-  cursor: pointer;
+.tp3d-packs-card-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
 }
 
-.toast-btn:hover {
-  background: var(--bg-hover);
+.tp3d-cases-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
 }
 
-@keyframes toastIn {
-  from {
-    transform: translateX(12px);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
+.tp3d-cases-card-head h3 {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tp3d-cases-card-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+.tp3d-packs-modal-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-items: flex-start;
+}
+
+.tp3d-packs-truck-grid {
+  gap: 12px;
 }
 
 /* ================================
-  Editor Layout
+   TP3D Cases Screen (Phase 1.0)
 ================================== */
-.editor-shell {
-  --left-col: 290px;
-  --right-col: 340px;
-  height: calc(100vh - 58px);
-  display: grid;
-  grid-template-columns: var(--left-col) 1fr var(--right-col);
-  grid-template-rows: 100%;
-  gap: var(--space-3);
-  padding: var(--space-3);
-  background: var(--bg-primary);
+
+.tp3d-cases-td-select {
+  width: 36px;
+  text-align: center;
 }
 
-.panel {
-  background: var(--bg-secondary);
+.tp3d-cases-modal-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.tp3d-cases-cat-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.tp3d-cases-cat-swatch {
+  width: 44px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+}
+
+.tp3d-cases-flip-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--text-sm);
+}
+
+.tp3d-cases-managecats-grid {
+  display: grid;
+  gap: 12px;
+  min-width: 320px;
+}
+
+.tp3d-cases-color-btn {
+  width: 56px;
+  height: 40px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.tp3d-cases-color-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ================================
+   TP3D Editor Screen (Phase 1.0)
+================================== */
+
+.tp3d-editor-card-grid-gap-12 {
+  display: grid;
+  gap: 12px;
+}
+
+.tp3d-editor-preset-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.tp3d-editor-wrap-full {
+  min-width: 0;
+  width: 100%;
+}
+
+.tp3d-editor-dims-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.tp3d-editor-stats-card {
+  background: var(--bg-elevated);
+  box-shadow: none;
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.tp3d-editor-row-justify-end {
+  justify-content: flex-end;
+}
+
+.tp3d-editor-title-lg-semibold {
+  font-weight: var(--font-semibold);
+  font-size: var(--text-lg);
+}
+
+.tp3d-editor-minw-90 {
+  min-width: 90px;
+}
+
+/* === Phase 2.0: Editor Screen CSS Migration === */
+
+/* Case browser card layout */
+.tp3d-editor-card-padding-12 {
+  padding: 12px;
+}
+
+.tp3d-editor-card-grid-gap-8 {
+  display: grid;
+  gap: 8px;
+}
+
+/* Text column layout */
+.tp3d-editor-col-grid-gap-2 {
+  display: grid;
+  gap: 2px;
+}
+
+/* Typography utilities */
+.tp3d-editor-fw-semibold {
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-editor-fs-xs {
+  font-size: var(--text-xs);
+}
+
+.tp3d-editor-mb-6 {
+  margin-bottom: 6px;
+}
+
+.tp3d-editor-mb-12 {
+  margin-bottom: 12px;
+}
+
+/* Button styles */
+.tp3d-editor-btn-add {
+  padding: 6px 10px;
+  box-shadow: none;
+}
+
+/* Chip styles */
+.tp3d-editor-chip-mini {
+  cursor: default;
+  padding: 4px 10px;
+}
+
+/* Interaction styles */
+.tp3d-editor-no-touch-action {
+  touch-action: none;
+}
+
+/* Text color utilities */
+.tp3d-text-primary {
+  color: var(--text-primary);
+}
+
+/* ================================
+   TP3D Settings Resources Views
+================================== */
+
+.tp3d-resources-view {
+  display: grid;
+  gap: 12px;
+}
+
+.tp3d-resources-text {
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.tp3d-resources-card {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
+  background: var(--bg-secondary);
+  padding: 14px 16px;
+  display: grid;
+  gap: 6px;
 }
 
-.panel-header {
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--border-subtle);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.panel-title {
-  font-size: var(--text-sm);
+.tp3d-resources-card-title {
   font-weight: var(--font-semibold);
-  margin: 0;
-}
-
-.panel-body {
-  padding: var(--space-3);
-  overflow: auto;
-}
-
-.canvas-wrap {
-  position: relative;
-  min-height: 0;
-}
-
-#viewport {
-  position: absolute;
-  inset: 0;
-}
-
-.viewport-overlay {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  background: rgba(0, 0, 0, 0.55);
-  color: white;
-  padding: 8px 10px;
-  border-radius: 10px;
-  font-size: var(--text-xs);
-  max-width: 360px;
-  pointer-events: none;
-}
-
-.viewport-toolbar {
-  position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  gap: var(--space-2);
-  padding: 8px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.86);
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  box-shadow: var(--shadow-md);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-}
-
-@supports not (backdrop-filter: blur(8px)) {
-  .viewport-toolbar {
-    background: rgba(255, 255, 255, 0.95);
-  }
-}
-
-[data-theme='dark'] .viewport-toolbar {
-  background: rgba(28, 30, 38, 0.82);
-  border-color: rgba(255, 255, 255, 0.08);
-}
-
-.toolbar-btn {
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-elevated);
   color: var(--text-primary);
-  padding: 7px 10px;
-  border-radius: 999px;
-  font-size: var(--text-xs);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  box-shadow: var(--shadow-sm);
 }
 
+.tp3d-resources-card-sub {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.tp3d-resources-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.tp3d-resources-help {
+  display: grid;
+  gap: 10px;
+}
+
+.tp3d-resources-help-line {
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+
+/* ================================
+  06 Utilities
+================================== */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.row.space-between {
+  justify-content: space-between;
+}
+
+.muted {
+  color: var(--text-secondary);
+}
+
+.grid,
+.tp3d-organization-grid,
+.tp3d-updates-wrap,
+.tp3d-delete-modal-content {
+  display: grid;
+  gap: var(--space-4);
+}
+
+#packs-selected-count,
+#cases-selected-count,
+.tp3d-organization-notice-text,
+.tp3d-delete-confirm-label,
+.tp3d-pack-dialog-empty,
+.tp3d-export-app-blurb,
+.tp3d-export-app-meta-file,
+.tp3d-import-summary-meta,
+.tp3d-cases-muted-sm,
+.tp3d-editor-sub-sm,
+.tp3d-editor-fs-sm {
+  font-size: var(--text-sm);
+}
+
+#editor-case-list,
+.tp3d-roadmap-card-header,
+.tp3d-pack-dialog-content,
+.tp3d-editor-row-gap-10 {
+  gap: 10px;
+}
+
+.tp3d-editor-select-full,
+.tp3d-editor-field-wrap-full,
+.tp3d-editor-btn-full {
+  width: 100%;
+}
+
+.tp3d-grid-span-full {
+  grid-column: 1 / -1;
+}
+
+.tp3d-flex-1 {
+  flex: 1;
+}
+
+.tp3d-textarea-minh-48 {
+  min-height: 48px;
+}
+
+.tp3d-textarea-minh-60 {
+  min-height: 60px;
+}
+
+.account-toggle:hover,
+.account-menu .btn.btn-create:hover,
+.table-footer .tf-btn:hover:not(:disabled),
+.dropdown-item.is-active,
+.dropdown-item:hover,
+.toast-btn:hover,
 .toolbar-btn:hover {
   background: var(--bg-hover);
 }
 
-.toolbar-btn.active {
-  border-color: rgba(255, 159, 28, 0.32);
-  background: rgba(255, 159, 28, 0.14);
-}
 
 /* ================================
-  System Overlays
+  07 Responsive Overrides
 ================================== */
-.system-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 30000;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-6);
-  background:
-    radial-gradient(circle at 20% 10%, rgba(255, 159, 28, 0.18), transparent 40%),
-    radial-gradient(circle at 80% 70%, rgba(59, 130, 246, 0.12), transparent 45%), rgba(0, 0, 0, 0.65);
-}
 
-.system-overlay.active {
-  display: flex;
-}
-
-.system-card {
-  width: min(760px, 100%);
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-  padding: var(--space-6);
-}
-
-.system-card h2 {
-  margin: 0 0 var(--space-2) 0;
-  font-size: var(--text-2xl);
-}
-
-.system-card p {
-  margin: 0 0 var(--space-4) 0;
-  color: var(--text-secondary);
-}
-
-.system-list {
-  margin: 0;
-  padding-left: 18px;
-  color: var(--text-secondary);
-}
-
-/* ================================
-   Responsive
-================================== */
+/* App + editor responsive */
 @media (max-width: 1279px) {
   .pack-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2114,372 +2742,140 @@ body.modal-open {
   }
 }
 
-/* ================================
-   TP3D Packs Screen (Phase 1.0)
-================================== */
+/* Settings overlay responsive */
 
-.tp3d-packs-td-check-center {
-  text-align: center;
+/* Tablet and below (iPad, smaller laptops) */
+@media (max-width: 1024px) {
+  .tp3d-settings-modal {
+    width: 95vw;
+    height: 90vh;
+    grid-template-columns: 240px 1fr;
+  }
 }
 
-.tp3d-packs-titlewrap {
-  display: grid;
-  gap: 4px;
+/* Mobile landscape and small tablets */
+@media (max-width: 768px) {
+  /* Settings Modal - Stack vertically on mobile */
+  .tp3d-settings-modal {
+    width: 98vw;
+    height: 95vh;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  
+  .tp3d-settings-left-pane {
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+    padding: var(--space-4);
+    overflow-x: auto;
+  }
+  
+  .tp3d-settings-tabs {
+    display: flex;
+    flex-direction: row;
+    overflow-x: auto;
+    gap: var(--space-2);
+    white-space: nowrap;
+  }
+  
+  .tp3d-settings-tab {
+    flex-shrink: 0;
+  }
+  
+  /* Danger zone on mobile */
+  .tp3d-settings-danger-row {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  
+  .tp3d-settings-danger-right {
+    justify-content: flex-start;
+  }
+  
+  /* Account avatar section on mobile */
+  .tp3d-account-avatar-upload-container {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  
+  .tp3d-account-avatar-buttons {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  
+  /* General modals on mobile */
+  .modal {
+    width: 95vw;
+    max-width: 95vw;
+    margin: var(--space-4);
+  }
+  
+  .modal-body {
+    max-height: 60vh;
+  }
+  
+  .modal-footer {
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  
+  .modal-footer .btn {
+    width: 100%;
+  }
 }
 
-.tp3d-packs-card-title-truncate {
-  margin: 0;
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* Small mobile devices */
+@media (max-width: 480px) {
+  /* Compact settings on very small screens */
+  .tp3d-settings-right-body {
+    padding: var(--space-4);
+  }
+  
+  .tp3d-settings-card-max {
+    padding: var(--space-4);
+  }
+  
+  .tp3d-account-field {
+    gap: var(--space-2);
+  }
+  
+  /* Compact profile form */
+  .tp3d-account-profile-form {
+    gap: var(--space-3);
+  }
+  
+  /* Stack action buttons vertically on very small screens */
+  .tp3d-account-actions {
+    flex-direction: column;
+  }
+  
+  .tp3d-account-actions .btn {
+    width: 100%;
+  }
+  
+  /* Modal adjustments for small screens */
+  .modal {
+    width: 100vw;
+    height: 100vh;
+    max-width: 100vw;
+    max-height: 100vh;
+    margin: 0;
+    border-radius: 0;
+  }
+  
+  .modal-body {
+    max-height: calc(100vh - 140px);
+  }
 }
 
-.tp3d-packs-card-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-2);
-}
-
-.tp3d-packs-card-head-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-left: auto;
-}
-
-.tp3d-cases-card-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-2);
-}
-
-.tp3d-cases-card-head h3 {
-  margin: 0;
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.tp3d-cases-card-head-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-left: auto;
-}
-
-.tp3d-packs-modal-grid {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  align-items: flex-start;
-}
-
-.tp3d-grid-span-full {
-  grid-column: 1 / -1;
-}
-
-.tp3d-packs-truck-grid {
-  gap: 12px;
-}
-
-.tp3d-flex-1 {
-  flex: 1;
-}
-
-.tp3d-textarea-minh-48 {
-  min-height: 48px;
-}
-
-/* ================================
-   TP3D Cases Screen (Phase 1.0)
-================================== */
-
-.tp3d-cases-muted-sm {
-  font-size: var(--text-sm);
-}
-
-.tp3d-cases-td-select {
-  width: 36px;
-  text-align: center;
-}
-
-.tp3d-cases-modal-grid-2col {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
-}
-
-.tp3d-cases-cat-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.tp3d-cases-cat-swatch {
-  width: 44px;
-  height: 32px;
-  border-radius: 8px;
-  border: 1px solid var(--border-subtle);
-}
-
-.tp3d-cases-flip-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: var(--text-sm);
-}
-
-.tp3d-textarea-minh-60 {
-  min-height: 60px;
-}
-
-.tp3d-cases-managecats-grid {
-  display: grid;
-  gap: 12px;
-  min-width: 320px;
-}
-
-.tp3d-cases-color-btn {
-  width: 56px;
-  height: 40px;
-  padding: 0;
-  cursor: pointer;
-}
-
-.tp3d-cases-color-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-/* ================================
-   TP3D Editor Screen (Phase 1.0)
-================================== */
-
-.tp3d-editor-card-grid-gap-12 {
-  display: grid;
-  gap: 12px;
-}
-
-.tp3d-editor-preset-row {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 10px;
-  align-items: flex-end;
-}
-
-.tp3d-editor-wrap-full {
-  min-width: 0;
-  width: 100%;
-}
-
-.tp3d-editor-select-full {
-  width: 100%;
-}
-
-.tp3d-editor-dims-row {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  align-items: end;
-}
-
-.tp3d-editor-field-wrap-full {
-  width: 100%;
-}
-
-.tp3d-editor-btn-full {
-  width: 100%;
-}
-
-.tp3d-editor-stats-card {
-  background: var(--bg-elevated);
-  box-shadow: none;
-  display: grid;
-  gap: 8px;
-  margin-top: 16px;
-}
-
-.tp3d-editor-row-justify-end {
-  justify-content: flex-end;
-}
-
-.tp3d-editor-title-lg-semibold {
-  font-weight: var(--font-semibold);
-  font-size: var(--text-lg);
-}
-
-.tp3d-editor-sub-sm {
-  font-size: var(--text-sm);
-}
-
-.tp3d-editor-row-gap-10 {
-  gap: 10px;
-}
-
-.tp3d-editor-minw-90 {
-  min-width: 90px;
-}
-
-/* === Phase 2.0: Editor Screen CSS Migration === */
-
-/* Case browser card layout */
-.tp3d-editor-card-padding-12 {
-  padding: 12px;
-}
-
-.tp3d-editor-card-grid-gap-8 {
-  display: grid;
-  gap: 8px;
-}
-
-/* Text column layout */
-.tp3d-editor-col-grid-gap-2 {
-  display: grid;
-  gap: 2px;
-}
-
-/* Typography utilities */
-.tp3d-editor-fw-semibold {
-  font-weight: var(--font-semibold);
-}
-
-.tp3d-editor-fs-xs {
-  font-size: var(--text-xs);
-}
-
-.tp3d-editor-fs-sm {
-  font-size: var(--text-sm);
-}
-
-.tp3d-editor-mb-6 {
-  margin-bottom: 6px;
-}
-
-.tp3d-editor-mb-12 {
-  margin-bottom: 12px;
-}
-
-/* Button styles */
-.tp3d-editor-btn-add {
-  padding: 6px 10px;
-  box-shadow: none;
-}
-
-/* Chip styles */
-.tp3d-editor-chip-mini {
-  cursor: default;
-  padding: 4px 10px;
-}
-
-/* Interaction styles */
-.tp3d-editor-no-touch-action {
-  touch-action: none;
-}
-
-/* Text color utilities */
-.tp3d-text-primary {
-  color: var(--text-primary);
-}
-
-/* ================================
-   TP3D Cases Screen (Phase 1.1)
-   Category Manager modal
-================================== */
-
-.tp3d-cases-catmgr-content {
-  display: grid;
-  gap: 14px;
-  min-width: 480px;
-}
-
-.tp3d-cases-catmgr-list {
-  display: grid;
-  gap: 8px;
-}
-
-.tp3d-cases-catmgr-row {
-  display: grid;
-  width: 40px;
-  height: 40px;
-  padding: 0;
-  cursor: pointer;
-  border: 2px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-}
-
-.tp3d-cases-catmgr-actions {
-  display: flex;
-  gap: 6px;
-}
-
-.tp3d-cases-catmgr-btn-pad {
-  padding: 6px 10px;
-}
-
-.tp3d-cases-catmgr-del-color {
-  color: var(--error);
-}
-
-.tp3d-cases-catmgr-add-full {
-  width: 100%;
-}
-
-.tp3d-chip-readonly {
-  cursor: default;
-}
-
-/* ================================
-   TP3D Settings Resources Views
-================================== */
-
-.tp3d-resources-view {
-  display: grid;
-  gap: 12px;
-}
-
-.tp3d-resources-text {
-  color: var(--text-secondary);
-  line-height: 1.5;
-}
-
-.tp3d-resources-card {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-secondary);
-  padding: 14px 16px;
-  display: grid;
-  gap: 6px;
-}
-
-.tp3d-resources-card-title {
-  font-weight: var(--font-semibold);
-  color: var(--text-primary);
-}
-
-.tp3d-resources-card-sub {
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-}
-
-.tp3d-resources-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.tp3d-resources-help {
-  display: grid;
-  gap: 10px;
-}
-
-.tp3d-resources-help-line {
-  color: var(--text-secondary);
-  line-height: 1.5;
+/* Landscape orientation adjustments */
+@media (max-height: 600px) and (orientation: landscape) {
+  .tp3d-settings-modal {
+    height: 98vh;
+  }
+  
+  .modal-body {
+    max-height: 50vh;
+  }
 }

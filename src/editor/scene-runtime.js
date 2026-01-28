@@ -46,23 +46,7 @@ export function createSceneRuntime({ Utils, UIComponents, PreferencesManager, Tr
               function create() {
                 if (overlayEl) return;
                 overlayEl = document.createElement('div');
-                overlayEl.style.cssText = `
-                position: fixed;
-                top: 10px;
-                right: 10px;
-                background: rgba(0, 0, 0, 0.85);
-                color: #0f0;
-                font-family: 'Courier New', monospace;
-                font-size: 11px;
-                padding: 8px 12px;
-                border-radius: 4px;
-                z-index: 10000;
-                line-height: 1.5;
-                pointer-events: none;
-                display: none;
-                min-width: 180px;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.5);
-              `;
+                overlayEl.className = 'tp3d-dev-overlay';
                 document.body.appendChild(overlayEl);
               }
 
@@ -94,10 +78,10 @@ export function createSceneRuntime({ Utils, UIComponents, PreferencesManager, Tr
 
                 const fpsColor = stats.fps >= 55 ? '#0f0' : stats.fps >= 30 ? '#ff0' : '#f00';
                 overlayEl.innerHTML = `
-                <div style="color: ${fpsColor}; font-weight: bold;">FPS: ${stats.fps}</div>
+                <div class="tp3d-dev-overlay-fps" style="color: ${fpsColor};">FPS: ${stats.fps}</div>
                 <div>Frame: ${stats.frameTime}ms</div>
                 ${stats.memory ? `<div>Memory: ${stats.memory}MB</div>` : ''}
-                <div style="margin-top: 4px; border-top: 1px solid #333; padding-top: 4px;">
+                <div class="tp3d-dev-overlay-divider">
                   <div>Calls: ${stats.drawCalls}</div>
                   <div>Tris: ${stats.triangles}</div>
                   <div>Geom: ${stats.geometries}</div>

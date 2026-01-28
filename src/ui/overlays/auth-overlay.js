@@ -98,18 +98,13 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     if (!modalRoot) return;
 
     overlayEl = document.createElement('div');
-    overlayEl.className = 'modal-overlay';
+    overlayEl.className = 'modal-overlay tp3d-auth-overlay';
     overlayEl.setAttribute('data-auth-overlay', '1');
-    overlayEl.style.zIndex = '99999';
-    overlayEl.style.pointerEvents = 'auto';
 
     modalEl = document.createElement('div');
-    modalEl.className = 'modal';
+    modalEl.className = 'modal tp3d-auth-modal';
     modalEl.setAttribute('role', 'dialog');
     modalEl.setAttribute('aria-modal', 'true');
-    modalEl.style.maxWidth = '460px';
-    modalEl.style.width = 'calc(100% - 48px)';
-    modalEl.style.padding = '18px';
 
     overlayEl.appendChild(modalEl);
     modalRoot.appendChild(overlayEl);
@@ -190,8 +185,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
 
     if (phase === 'checking') {
       const hint = document.createElement('div');
-      hint.className = 'muted';
-      hint.style.marginBottom = '10px';
+      hint.className = 'muted tp3d-auth-hint';
       hint.textContent = 'Checking session...';
       body.appendChild(hint);
 
@@ -207,21 +201,17 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
 
     if (phase === 'cantconnect') {
       const t = document.createElement('div');
-      t.style.fontWeight = 'var(--font-semibold)';
-      t.style.marginBottom = '6px';
+      t.className = 'tp3d-auth-cant-title';
       t.textContent = "Can't connect";
       body.appendChild(t);
 
       const msg = document.createElement('div');
-      msg.className = 'muted';
-      msg.style.marginBottom = '12px';
+      msg.className = 'muted tp3d-auth-cant-message';
       msg.textContent = 'Please check your connection and try again.';
       body.appendChild(msg);
 
       const row = document.createElement('div');
-      row.style.display = 'flex';
-      row.style.gap = '10px';
-      row.style.justifyContent = 'flex-end';
+      row.className = 'tp3d-auth-actions';
 
       const retryBtn = document.createElement('button');
       retryBtn.className = 'btn btn-primary';
@@ -240,12 +230,11 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
 
       if (isDebugEnabled() && lastBootstrapError) {
         const details = document.createElement('details');
-        details.style.marginTop = '12px';
+        details.className = 'tp3d-auth-debug-details';
         const summary = document.createElement('summary');
         summary.textContent = 'Debug';
         const pre = document.createElement('pre');
-        pre.style.whiteSpace = 'pre-wrap';
-        pre.style.marginTop = '8px';
+        pre.className = 'tp3d-auth-debug-pre';
         pre.textContent = toAscii(lastBootstrapError && lastBootstrapError.message ? lastBootstrapError.message : String(lastBootstrapError));
         details.appendChild(summary);
         details.appendChild(pre);
@@ -258,19 +247,17 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
 
     if (signedInEmail) {
       const info = document.createElement('div');
-      info.className = 'muted';
-      info.style.marginBottom = '12px';
+      info.className = 'muted tp3d-auth-hint-lg';
       info.textContent = `Signed in as ${toAscii(signedInEmail)}`;
       body.appendChild(info);
     } else {
       const hint = document.createElement('div');
-      hint.className = 'muted';
-      hint.style.marginBottom = '12px';
+      hint.className = 'muted tp3d-auth-hint-lg';
       hint.textContent = 'Please sign in to continue.';
       body.appendChild(hint);
 
       const emailLabel = document.createElement('div');
-      emailLabel.className = 'label';
+      emailLabel.className = 'label tp3d-auth-field-label';
       emailLabel.textContent = 'Email';
       body.appendChild(emailLabel);
 
@@ -283,8 +270,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       body.appendChild(emailInput);
 
       const passLabel = document.createElement('div');
-      passLabel.className = 'label';
-      passLabel.style.marginTop = '10px';
+      passLabel.className = 'label tp3d-auth-field-label tp3d-auth-field-label-spaced';
       passLabel.textContent = 'Password';
       body.appendChild(passLabel);
 
@@ -297,17 +283,10 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       body.appendChild(passInput);
 
       const passRow = document.createElement('div');
-      passRow.style.display = 'flex';
-      passRow.style.alignItems = 'center';
-      passRow.style.justifyContent = 'space-between';
-      passRow.style.marginTop = '8px';
+      passRow.className = 'tp3d-auth-pass-row';
 
       const showPwLabel = document.createElement('label');
-      showPwLabel.className = 'muted';
-      showPwLabel.style.display = 'flex';
-      showPwLabel.style.alignItems = 'center';
-      showPwLabel.style.gap = '8px';
-      showPwLabel.style.cursor = 'pointer';
+      showPwLabel.className = 'muted tp3d-auth-show-password';
 
       const showPw = document.createElement('input');
       showPw.type = 'checkbox';
@@ -326,32 +305,23 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       body.appendChild(passRow);
 
       const errorBox = document.createElement('div');
-      errorBox.className = 'muted';
+      errorBox.className = 'muted tp3d-auth-error';
       errorBox.setAttribute('data-auth-error', '1');
-      errorBox.style.marginTop = '10px';
-      errorBox.style.color = 'var(--error)';
-      errorBox.style.display = 'none';
       body.appendChild(errorBox);
 
       const successBox = document.createElement('div');
-      successBox.className = 'muted';
+      successBox.className = 'muted tp3d-auth-success';
       successBox.setAttribute('data-auth-success', '1');
-      successBox.style.marginTop = '10px';
-      successBox.style.color = 'var(--success)';
-      successBox.style.display = 'none';
       body.appendChild(successBox);
 
       const status = document.createElement('div');
-      status.className = 'muted';
+      status.className = 'muted tp3d-auth-status';
       status.setAttribute('data-auth-status', '1');
-      status.style.marginTop = '8px';
       status.textContent = '';
       body.appendChild(status);
 
       const btnRow = document.createElement('div');
-      btnRow.style.display = 'flex';
-      btnRow.style.gap = '10px';
-      btnRow.style.marginTop = '14px';
+      btnRow.className = 'tp3d-auth-btn-row';
 
       const signInBtn = document.createElement('button');
       signInBtn.className = mode === 'signin' ? 'btn btn-primary' : 'btn';
@@ -429,9 +399,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       body.appendChild(btnRow);
 
       const modeRow = document.createElement('div');
-      modeRow.style.display = 'flex';
-      modeRow.style.justifyContent = 'space-between';
-      modeRow.style.marginTop = '10px';
+      modeRow.className = 'tp3d-auth-mode-row';
 
       const modeText = document.createElement('div');
       modeText.className = 'muted';
@@ -467,9 +435,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
 
       if (showResend) {
         const resendRow = document.createElement('div');
-        resendRow.style.display = 'flex';
-        resendRow.style.justifyContent = 'flex-start';
-        resendRow.style.marginTop = '10px';
+        resendRow.className = 'tp3d-auth-resend-row';
 
         const resendBtn = document.createElement('button');
         resendBtn.className = 'btn btn-ghost';
@@ -513,8 +479,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       try {
         if (window && window.localStorage && window.localStorage.getItem(tp3dDebugKey) === '1') {
           const dbg = document.createElement('div');
-          dbg.className = 'muted';
-          dbg.style.marginTop = '10px';
+          dbg.className = 'muted tp3d-auth-debug-note';
           dbg.textContent = 'Debug: Auth overlay enabled';
           modalEl.appendChild(dbg);
         }

@@ -69,6 +69,13 @@ export function createSettingsOverlay({
   let isLoadingProfile = false;
   let isSavingProfile = false;
 
+  // Organization state
+  let organizationData = null;
+  let isEditingOrganization = false;
+  let isLoadingOrganization = false;
+  let isSavingOrganization = false;
+  let myOrgRole = null;
+
   // Static content for Updates and Roadmap (embedded to avoid external dependencies)
   const updatesData = [
     {
@@ -98,16 +105,16 @@ export function createSettingsOverlay({
         {
           title: 'Weight balance',
           status: 'Completed',
-          badge: 'âœ“',
+          badge: 'Ã¢Å“â€œ',
           color: 'var(--success)',
           details: 'Add center-of-gravity and axle load estimates.',
         },
         {
           title: 'Rotation (MVP)',
           status: 'In Progress',
-          badge: 'â±',
+          badge: 'Ã¢ÂÂ±',
           color: 'var(--warning)',
-          details: 'Allow 90Â° rotations and pack-time heuristics.',
+          details: 'Allow 90Ã‚Â° rotations and pack-time heuristics.',
         },
       ],
     },
@@ -117,14 +124,14 @@ export function createSettingsOverlay({
         {
           title: 'Multi-user',
           status: 'Planned',
-          badge: 'ðŸ“‹',
+          badge: 'Ã°Å¸â€œâ€¹',
           color: 'var(--info)',
           details: 'Presence + change tracking (no real-time yet).',
         },
         {
           title: '3D export',
           status: 'Planned',
-          badge: 'ðŸ“‹',
+          badge: 'Ã°Å¸â€œâ€¹',
           color: 'var(--info)',
           details: 'GLB/GLTF export for downstream tools.',
         },
@@ -136,7 +143,7 @@ export function createSettingsOverlay({
         {
           title: 'AR view',
           status: 'Idea',
-          badge: 'ðŸ’¡',
+          badge: 'Ã°Å¸â€™Â¡',
           color: 'var(--text-muted)',
           details: 'Preview a load-out in real space on mobile.',
         },
@@ -247,6 +254,46 @@ export function createSettingsOverlay({
     }
   }
 
+  // Organization management functions
+  async function loadOrganization() {
+    if (isLoadingOrganization) return;
+    isLoadingOrganization = true;
+    try {
+      const org = await SupabaseClient.getCurrentOrganization();
+      organizationData = org;
+      if (org && org.id) {
+        myOrgRole = await SupabaseClient.getMyOrgRole(org.id);
+      }
+      isLoadingOrganization = false;
+      return org;
+    } catch (err) {
+      console.error('Failed to load organization:', err);
+      organizationData = null;
+      myOrgRole = null;
+      isLoadingOrganization = false;
+      throw err;
+    }
+  }
+
+  async function saveOrganization(updates) {
+    if (isSavingOrganization || !organizationData || !organizationData.id) return;
+    isSavingOrganization = true;
+    try {
+      const updated = await SupabaseClient.updateOrganization(organizationData.id, updates);
+      organizationData = updated;
+      isSavingOrganization = false;
+      isEditingOrganization = false;
+      UIComponents.showToast('Organization updated', 'success');
+      render();
+    } catch (err) {
+      isSavingOrganization = false;
+      UIComponents.showToast(
+        `Update failed: ${err && err.message ? err.message : err}`,
+        'error'
+      );
+    }
+  }
+
   function isOpen() {
     return Boolean(settingsOverlay);
   }
@@ -331,16 +378,14 @@ export function createSettingsOverlay({
   // Render Updates content inside the modal
   function renderUpdatesContent(container) {
     const wrap = doc.createElement('div');
-    wrap.className = 'grid';
-    wrap.style.gap = 'var(--space-4)';
+    wrap.className = 'tp3d-updates-wrap';
 
     updatesData.forEach(u => {
       const card = doc.createElement('div');
       card.className = 'card';
 
       const header = doc.createElement('div');
-      header.className = 'row space-between';
-      header.style.alignItems = 'flex-start';
+      header.className = 'row space-between tp3d-updates-header';
 
       const left = doc.createElement('div');
       left.innerHTML = `<div style="font-weight:var(--font-semibold);font-size:var(--text-lg)">Version ${u.version}</div><div class="muted" style="font-size:var(--text-xs)">${new Date(u.date).toLocaleDateString()}</div>`;
@@ -355,15 +400,12 @@ export function createSettingsOverlay({
 
       sections.forEach(s => {
         const t = doc.createElement('div');
-        t.style.marginTop = '12px';
-        t.style.fontWeight = 'var(--font-semibold)';
+        t.className = 'tp3d-updates-feature-title';
         t.textContent = s.title;
         card.appendChild(t);
 
         const ul = doc.createElement('ul');
-        ul.style.margin = '8px 0 0 16px';
-        ul.style.color = 'var(--text-secondary)';
-        ul.style.fontSize = 'var(--text-sm)';
+        ul.className = 'tp3d-updates-feature-list';
         s.items.forEach(it => {
           const li = doc.createElement('li');
           li.textContent = it;
@@ -381,28 +423,23 @@ export function createSettingsOverlay({
   // Render Roadmap content inside the modal
   function renderRoadmapContent(container) {
     const wrap = doc.createElement('div');
-    wrap.className = 'grid';
-    wrap.style.gap = 'var(--space-5)';
+    wrap.className = 'tp3d-roadmap-wrap';
 
     roadmapData.forEach(group => {
       const groupWrap = doc.createElement('div');
-      groupWrap.className = 'grid';
-      groupWrap.style.gap = '10px';
+      groupWrap.className = 'tp3d-roadmap-group';
 
       const h = doc.createElement('div');
-      h.style.fontSize = 'var(--text-lg)';
-      h.style.fontWeight = 'var(--font-semibold)';
+      h.className = 'tp3d-roadmap-quarter';
       h.textContent = group.quarter;
       groupWrap.appendChild(h);
 
       const grid = doc.createElement('div');
-      grid.className = 'grid';
-      grid.style.gap = 'var(--space-3)';
+      grid.className = 'tp3d-roadmap-items';
 
       group.items.forEach(item => {
         const card = doc.createElement('div');
-        card.className = 'card';
-        card.style.cursor = 'pointer';
+        card.className = 'card tp3d-roadmap-card';
         card.innerHTML = `
           <div class="row space-between" style="gap:10px">
             <div style="font-weight:var(--font-semibold)">${item.title}</div>
@@ -693,7 +730,7 @@ export function createSettingsOverlay({
         <span class="brand-mark tp3d-settings-account-avatar" aria-hidden="true">${userView.initials || ''}</span>
         <span class="tp3d-settings-account-text">
           <span class="tp3d-settings-account-name">Workspace</span>
-          <span class="muted tp3d-settings-account-sub" data-account-name>${userView.displayName || 'â€”'}</span>
+          <span class="muted tp3d-settings-account-sub" data-account-name>${userView.displayName || 'Ã¢â‚¬â€'}</span>
         </span>
       </span>
       <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
@@ -741,12 +778,12 @@ export function createSettingsOverlay({
     };
 
     navWrap.appendChild(makeHeader('Account Settings'));
-    navWrap.appendChild(makeItem({ key: 'account', label: 'Account', icon: 'fa-regular fa-user' }));
+    navWrap.appendChild(makeItem({ key: 'profile', label: 'User Profile', icon: 'fa-regular fa-user' }));
     navWrap.appendChild(makeHeader('Settings'));
     navWrap.appendChild(makeItem({ key: 'preferences', label: 'Preferences', icon: 'fa-solid fa-gear' }));
     navWrap.appendChild(makeItem({ key: 'resources', label: 'Resources', icon: 'fa-solid fa-life-ring' }));
     navWrap.appendChild(makeHeader('Organization'));
-    navWrap.appendChild(makeItem({ key: 'org-general', label: 'General', icon: 'fa-regular fa-building', indent: true }));
+    navWrap.appendChild(makeItem({ key: 'organization', label: 'Organization', icon: 'fa-regular fa-building' }));
     navWrap.appendChild(
       makeItem({ key: 'org-billing', label: 'Billing', icon: 'fa-regular fa-credit-card', indent: true })
     );
@@ -805,15 +842,15 @@ export function createSettingsOverlay({
             title: 'Resources',
             helper: 'See updates, roadmap, exports, imports, and help in one place.',
           };
-        case 'account':
+        case 'profile':
           return {
-            title: 'Account',
-            helper: 'Manage your profile and workspace identity.',
+            title: 'User Profile',
+            helper: 'Manage your personal profile and avatar.',
           };
-        case 'org-general':
+        case 'organization':
           return {
             title: 'Organization',
-            helper: 'View workspace details and role.',
+            helper: 'Manage your organization details.',
           };
         case 'org-billing':
           return {
@@ -829,9 +866,7 @@ export function createSettingsOverlay({
     })();
 
     const headerLeft = doc.createElement('div');
-    headerLeft.className = 'row';
-    headerLeft.style.gap = 'var(--space-3)';
-    headerLeft.style.alignItems = 'center';
+    headerLeft.className = 'tp3d-settings-header-left';
 
     // Back button for sub-views
     if (meta.showBack) {
@@ -1003,7 +1038,7 @@ export function createSettingsOverlay({
         container.appendChild(helpBtn);
         body.appendChild(container);
       }
-    } else if (settingsActiveTab === 'account') {
+    } else if (settingsActiveTab === 'profile') {
       const userView = getCurrentUserView(profileData);
 
       // Load profile if not already loaded
@@ -1261,8 +1296,7 @@ export function createSettingsOverlay({
       deleteBtn.addEventListener('click', () => {
         // Create confirmation modal content
         const modalContent = doc.createElement('div');
-        modalContent.className = 'grid';
-        modalContent.style.gap = 'var(--space-4)';
+        modalContent.className = 'tp3d-delete-modal-content';
         
         const warningText = doc.createElement('div');
         warningText.className = 'muted';
@@ -1270,8 +1304,7 @@ export function createSettingsOverlay({
         modalContent.appendChild(warningText);
         
         const confirmLabel = doc.createElement('div');
-        confirmLabel.className = 'muted';
-        confirmLabel.style.fontSize = 'var(--text-sm)';
+        confirmLabel.className = 'muted tp3d-delete-confirm-label';
         confirmLabel.textContent = 'To confirm this, type "DELETE"';
         modalContent.appendChild(confirmLabel);
         
@@ -1359,57 +1392,178 @@ export function createSettingsOverlay({
       dangerRow.appendChild(dRight);
       danger.appendChild(dangerRow);
       body.appendChild(danger);
-    } else if (settingsActiveTab === 'org-general') {
+    } else if (settingsActiveTab === 'organization') {
       const userView = getCurrentUserView();
-      const orgName = 'Workspace';
-      const orgRole = userView.isAuthed ? 'Owner' : 'â€”';
 
-      const orgCard = doc.createElement('div');
-      orgCard.className = 'card';
-      orgCard.classList.add('tp3d-settings-card-max');
-      const orgWrap = doc.createElement('div');
-      orgWrap.classList.add('tp3d-settings-org');
+      // Load organization if not already loaded
+      if (!organizationData && !isLoadingOrganization && userView.isAuthed) {
+        loadOrganization().then(() => render()).catch(() => {});
+      }
 
-      const orgTitle = doc.createElement('div');
-      orgTitle.classList.add('tp3d-settings-org-title');
-      orgTitle.textContent = 'Organization';
+      const canEdit = myOrgRole === 'owner' || myOrgRole === 'admin';
 
-      const orgDivider = doc.createElement('div');
-      orgDivider.classList.add('tp3d-settings-org-divider');
+      if (isLoadingOrganization || !organizationData) {
+        // Loading state
+        const loadingCard = doc.createElement('div');
+        loadingCard.className = 'card tp3d-settings-card-max';
+        loadingCard.textContent = isLoadingOrganization ? 'Loading organization...' : 'No organization found';
+        body.appendChild(loadingCard);
+      } else if (isEditingOrganization && canEdit) {
+        // Edit mode
+        const editCard = doc.createElement('div');
+        editCard.className = 'card tp3d-settings-card-max';
 
-      const orgRows = doc.createElement('div');
-      orgRows.classList.add('tp3d-settings-org-rows');
+        const form = doc.createElement('form');
+        form.className = 'tp3d-account-profile-form';
+        form.addEventListener('submit', (e) => {
+          e.preventDefault();
+          if (isSavingOrganization) return;
+          const formData = new FormData(form);
+          const updates = {
+            name: formData.get('name') || '',
+            phone: formData.get('phone') || '',
+          };
+          saveOrganization(updates);
+        });
 
-      const orgRow = (label, valueEl) => {
-        const wrap = doc.createElement('div');
-        wrap.classList.add('tp3d-settings-row');
-        const l = doc.createElement('div');
-        l.classList.add('tp3d-settings-row-label');
-        l.textContent = label;
-        wrap.appendChild(l);
-        wrap.appendChild(valueEl);
-        return wrap;
-      };
+        // Organization Name
+        const nameField = doc.createElement('div');
+        nameField.className = 'tp3d-account-field';
+        const nameLabel = doc.createElement('label');
+        nameLabel.className = 'tp3d-account-field-label';
+        nameLabel.textContent = 'Organization Name';
+        const nameInput = doc.createElement('input');
+        nameInput.type = 'text';
+        nameInput.name = 'name';
+        nameInput.className = 'input';
+        nameInput.value = organizationData.name || '';
+        nameInput.placeholder = 'Your Organization';
+        nameInput.disabled = isSavingOrganization;
+        nameField.appendChild(nameLabel);
+        nameField.appendChild(nameInput);
+        form.appendChild(nameField);
 
-      const logo = doc.createElement('span');
-      logo.className = 'brand-mark tp3d-settings-org-logo';
-      logo.setAttribute('aria-hidden', 'true');
-      logo.textContent = userView.initials || '';
-      orgRows.appendChild(orgRow('Logo', logo));
+        // Phone
+        const phoneField = doc.createElement('div');
+        phoneField.className = 'tp3d-account-field';
+        const phoneLabel = doc.createElement('label');
+        phoneLabel.className = 'tp3d-account-field-label';
+        phoneLabel.textContent = 'Phone';
+        const phoneInput = doc.createElement('input');
+        phoneInput.type = 'tel';
+        phoneInput.name = 'phone';
+        phoneInput.className = 'input';
+        phoneInput.value = organizationData.phone || '';
+        phoneInput.placeholder = '+1 (555) 123-4567';
+        phoneInput.disabled = isSavingOrganization;
+        phoneField.appendChild(phoneLabel);
+        phoneField.appendChild(phoneInput);
+        form.appendChild(phoneField);
 
-      const orgNameEl = doc.createElement('div');
-      orgNameEl.textContent = orgName;
-      orgRows.appendChild(orgRow('Name', orgNameEl));
+        // Action buttons
+        const actions = doc.createElement('div');
+        actions.className = 'tp3d-account-actions';
 
-      const orgRoleEl = doc.createElement('div');
-      orgRoleEl.textContent = orgRole;
-      orgRows.appendChild(orgRow('Role', orgRoleEl));
+        const cancelBtn = doc.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'btn btn-ghost';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.disabled = isSavingOrganization;
+        cancelBtn.addEventListener('click', () => {
+          isEditingOrganization = false;
+          render();
+        });
 
-      orgWrap.appendChild(orgTitle);
-      orgWrap.appendChild(orgDivider);
-      orgWrap.appendChild(orgRows);
-      orgCard.appendChild(orgWrap);
-      body.appendChild(orgCard);
+        const saveBtn = doc.createElement('button');
+        saveBtn.type = 'submit';
+        saveBtn.className = 'btn btn-primary';
+        saveBtn.textContent = isSavingOrganization ? 'Saving...' : 'Save Changes';
+        saveBtn.disabled = isSavingOrganization;
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(saveBtn);
+        form.appendChild(actions);
+
+        editCard.appendChild(form);
+        body.appendChild(editCard);
+      } else {
+        // View mode
+        const viewCard = doc.createElement('div');
+        viewCard.className = 'card tp3d-settings-card-max';
+
+        const grid = doc.createElement('div');
+        grid.className = 'tp3d-organization-grid';
+
+        // Organization Name
+        const nameRow = doc.createElement('div');
+        nameRow.className = 'tp3d-account-field';
+        const nameLabel = doc.createElement('div');
+        nameLabel.className = 'tp3d-account-field-label';
+        nameLabel.textContent = 'Organization Name';
+        const nameValue = doc.createElement('div');
+        nameValue.textContent = organizationData.name || '—';
+        nameRow.appendChild(nameLabel);
+        nameRow.appendChild(nameValue);
+        grid.appendChild(nameRow);
+
+        // Phone
+        const phoneRow = doc.createElement('div');
+        phoneRow.className = 'tp3d-account-field';
+        const phoneLabel = doc.createElement('div');
+        phoneLabel.className = 'tp3d-account-field-label';
+        phoneLabel.textContent = 'Phone';
+        const phoneValue = doc.createElement('div');
+        phoneValue.textContent = organizationData.phone || '—';
+        phoneRow.appendChild(phoneLabel);
+        phoneRow.appendChild(phoneValue);
+        grid.appendChild(phoneRow);
+
+        // Your Role
+        const roleRow = doc.createElement('div');
+        roleRow.className = 'tp3d-account-field';
+        const roleLabel = doc.createElement('div');
+        roleLabel.className = 'tp3d-account-field-label';
+        roleLabel.textContent = 'Your Role';
+        const roleValue = doc.createElement('div');
+        const roleText = myOrgRole ? myOrgRole.charAt(0).toUpperCase() + myOrgRole.slice(1) : '—';
+        roleValue.textContent = roleText;
+        roleRow.appendChild(roleLabel);
+        roleRow.appendChild(roleValue);
+        grid.appendChild(roleRow);
+
+        viewCard.appendChild(grid);
+
+        // Edit button (only for owners/admins)
+        if (canEdit && userView.isAuthed) {
+          const editActions = doc.createElement('div');
+          editActions.className = 'tp3d-account-actions tp3d-organization-edit-actions';
+
+          const editBtn = doc.createElement('button');
+          editBtn.type = 'button';
+          editBtn.className = 'btn btn-primary';
+          editBtn.textContent = 'Edit Organization';
+          editBtn.addEventListener('click', () => {
+            isEditingOrganization = true;
+            render();
+          });
+
+          editActions.appendChild(editBtn);
+          viewCard.appendChild(editActions);
+        }
+
+        body.appendChild(viewCard);
+
+        // Read-only notice for non-owners/admins
+        if (!canEdit && userView.isAuthed) {
+          const noticeCard = doc.createElement('div');
+          noticeCard.className = 'card tp3d-settings-card-max tp3d-organization-notice-card';
+          const notice = doc.createElement('div');
+          notice.className = 'muted tp3d-organization-notice-text';
+          notice.textContent = 'Only organization owners and admins can edit organization details.';
+          noticeCard.appendChild(notice);
+          body.appendChild(noticeCard);
+        }
+      }
     } else {
       const billingCard = doc.createElement('div');
       billingCard.className = 'card';

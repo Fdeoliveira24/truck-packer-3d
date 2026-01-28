@@ -132,7 +132,7 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     nameRow.classList.add('tp3d-settings-account-row');
     nameRow.innerHTML = `<span class="brand-mark tp3d-settings-account-avatar-lg" aria-hidden="true">${
       userView.initials || ''
-    }</span><div class="tp3d-settings-account-display">${userView.displayName || '—'}</div>`;
+    }</span><div class="tp3d-settings-account-display">${userView.displayName || 'â€”'}</div>`;
     body.appendChild(nameRow);
 
     const emailEl = doc.createElement('div');
@@ -145,9 +145,7 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     avatarLabel.classList.add('tp3d-settings-row-label');
     avatarLabel.textContent = 'Avatar';
     const avatarRight = doc.createElement('div');
-    avatarRight.style.display = 'flex';
-    avatarRight.style.flexDirection = 'column';
-    avatarRight.style.gap = '6px';
+    avatarRight.className = 'tp3d-account-avatar-right';
     const avatarInput = doc.createElement('input');
     avatarInput.type = 'file';
     avatarInput.accept = 'image/jpeg,image/png,image/webp';
@@ -279,9 +277,7 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     accountOverlay.className = 'modal-overlay';
 
     accountModal = doc.createElement('div');
-    accountModal.className = 'modal tp3d-settings-modal';
-    accountModal.style.display = 'flex';
-    accountModal.style.flexDirection = 'column';
+    accountModal.className = 'modal tp3d-settings-modal tp3d-account-overlay-modal';
     accountModal.setAttribute('role', 'dialog');
     accountModal.setAttribute('aria-modal', 'true');
     accountModal.setAttribute('tabindex', '-1');

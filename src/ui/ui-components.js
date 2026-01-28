@@ -20,10 +20,10 @@ export function createUIComponents() {
             let dropdownDocClickTimer = null;
 
             const toastTypes = {
-              success: { title: 'Success', color: 'var(--success)', icon: '✓' },
-              error: { title: 'Error', color: 'var(--error)', icon: '✕' },
-              warning: { title: 'Warning', color: 'var(--warning)', icon: '⚠' },
-              info: { title: 'Info', color: 'var(--info)', icon: 'ℹ' },
+              success: { title: 'Success', color: 'var(--success)', icon: 'fa-check' },
+              error: { title: 'Error', color: 'var(--error)', icon: 'fa-xmark' },
+              warning: { title: 'Warning', color: 'var(--warning)', icon: 'fa-triangle-exclamation' },
+              info: { title: 'Info', color: 'var(--info)', icon: 'fa-circle-info' },
             };
 
             function showToast(message, type = 'info', options = {}) {
@@ -35,7 +35,7 @@ export function createUIComponents() {
               const icon = document.createElement('div');
               icon.className = 'toast-icon';
               icon.style.background = cfg.color;
-              icon.textContent = cfg.icon;
+              icon.innerHTML = `<i class="fa-solid ${cfg.icon}" aria-hidden="true"></i>`;
 
               const body = document.createElement('div');
               body.className = 'toast-body';
@@ -135,8 +135,10 @@ export function createUIComponents() {
               (config.actions || [{ label: 'Close' }]).forEach(action => {
                 const btn = document.createElement('button');
                 btn.className = `btn ${action.variant === 'primary' ? 'btn-primary' : ''} ${action.variant === 'danger' ? 'btn-danger' : ''}`;
+                if (action.variant === 'ghost') btn.className = 'btn btn-ghost';
                 btn.type = 'button';
                 btn.textContent = action.label || 'OK';
+                if (action.disabled) btn.disabled = true;
                 btn.addEventListener('click', () => {
                   try {
                     const res = action.onClick ? action.onClick() : undefined;
@@ -158,7 +160,16 @@ export function createUIComponents() {
                 if (ev.target === overlay && config.dismissible !== false) close();
               });
 
+              // Add ESC key handling
+              const handleEsc = (e) => {
+                if (e.key === 'Escape' && config.dismissible !== false) {
+                  close();
+                }
+              };
+              document.addEventListener('keydown', handleEsc);
+
               function close() {
+                document.removeEventListener('keydown', handleEsc);
                 if (overlay.parentElement) overlay.parentElement.removeChild(overlay);
                 try {
                   config.onClose && config.onClose();
@@ -168,7 +179,7 @@ export function createUIComponents() {
               }
 
               modalRoot.appendChild(overlay);
-              return { close, overlay, modal, body };
+              return { close, overlay, modal, body, element: modal };
             }
 
             function confirm(options) {
@@ -190,22 +201,13 @@ export function createUIComponents() {
 
 	            function openDropdown(anchorEl, items, options = {}) {
 	              closeAllDropdowns();
-	              const wrap = document.createElement('div');
-	              wrap.className = 'dropdown-menu';
-	              // The stylesheet defines `.dropdown-menu` as `position:absolute` for inline dropdowns.
-	              // For floating viewport-clamped dropdowns we make it participate in layout so the
-	              // wrapper element has a measurable width/height.
-	              wrap.style.position = 'static';
-	              wrap.style.top = 'auto';
-	              wrap.style.left = 'auto';
-	              wrap.style.right = 'auto';
+              const wrap = document.createElement('div');
+              wrap.className = 'dropdown-menu tp3d-dropdown-menu';
 
 	              items.forEach(item => {
 	                if (item && item.type === 'header') {
 	                  const header = document.createElement('div');
-	                  header.style.padding = '10px 12px';
-	                  header.style.fontWeight = 'var(--font-semibold)';
-	                  header.style.borderBottom = '1px solid var(--border-subtle)';
+	                  header.className = 'tp3d-dropdown-header';
 	                  header.textContent = String(item.label || '');
 	                  wrap.appendChild(header);
 	                  return;
@@ -214,9 +216,7 @@ export function createUIComponents() {
 	                if (item && (item.type === 'divider' || item.divider === true)) {
 	                  const divider = document.createElement('div');
                   divider.setAttribute('role', 'separator');
-                  divider.style.height = '1px';
-                  divider.style.margin = `${8}px ${6}px`;
-                  divider.style.background = 'var(--border-subtle)';
+                  divider.className = 'tp3d-dropdown-divider';
                   wrap.appendChild(divider);
                   return;
                 }
@@ -225,9 +225,7 @@ export function createUIComponents() {
                 if (item && item.dividerBefore) {
                   const divider = document.createElement('div');
                   divider.setAttribute('role', 'separator');
-                  divider.style.height = '1px';
-                  divider.style.margin = `${8}px ${6}px`;
-                  divider.style.background = 'var(--border-subtle)';
+                  divider.className = 'tp3d-dropdown-divider';
                   wrap.appendChild(divider);
                 }
 
@@ -242,11 +240,10 @@ export function createUIComponents() {
                 
                 if (item && item.disabled) {
                   btn.disabled = true;
-                  btn.style.opacity = '0.6';
-                  btn.style.cursor = 'not-allowed';
+                  btn.classList.add('is-disabled');
                 }
                 if (item && item.active) {
-                  btn.style.background = 'var(--bg-hover)';
+                  btn.classList.add('is-active');
                 }
                 if (item.icon) {
                   const icon = document.createElement('i');
@@ -256,7 +253,7 @@ export function createUIComponents() {
                 }
                 const text = document.createElement('span');
                 text.textContent = String(item.label || '');
-                text.style.flex = '1';
+                text.className = 'tp3d-dropdown-item-text';
                 btn.appendChild(text);
 
                 if (item.checkbox === true) {
@@ -264,7 +261,7 @@ export function createUIComponents() {
                   cb.type = 'checkbox';
                   cb.checked = Boolean(item.checked);
                   cb.disabled = Boolean(item.disabled);
-                  cb.style.marginLeft = 'auto';
+                  cb.className = 'tp3d-dropdown-item-checkbox';
                   cb.setAttribute('aria-label', item.checkboxLabel || text.textContent || 'Toggle');
                   cb.addEventListener('click', ev => ev.stopPropagation());
                   cb.addEventListener('change', ev => {
@@ -279,11 +276,10 @@ export function createUIComponents() {
                   btn.appendChild(cb);
                 } else if (item.rightIcon) {
                   const iconRight = document.createElement('i');
-                  iconRight.className = item.rightIcon;
-                  iconRight.style.marginLeft = 'auto';
-                  iconRight.style.color = item.rightIconColor || 'var(--accent-primary)';
+                  iconRight.className = `${item.rightIcon} tp3d-dropdown-item-right-icon`;
+                  if (item.rightIconColor) iconRight.style.color = item.rightIconColor;
                   if (item.rightOnClick) {
-                    iconRight.style.cursor = 'pointer';
+                    iconRight.classList.add('is-clickable');
                     iconRight.title = item.rightTitle ? String(item.rightTitle) : '';
                     iconRight.addEventListener('click', ev => {
                       ev.stopPropagation();
@@ -304,14 +300,12 @@ export function createUIComponents() {
               });
 
               const dropdown = document.createElement('div');
-              dropdown.className = 'dropdown';
+              dropdown.className = 'dropdown tp3d-dropdown';
               dropdown.dataset.dropdown = '1';
               const anchorKey = options && options.anchorKey ? String(options.anchorKey) : '';
               const fallbackAnchorId = anchorEl && anchorEl.id ? String(anchorEl.id) : '';
               dropdown.dataset.anchorId = anchorKey || fallbackAnchorId;
               if (options && options.role) dropdown.dataset.role = String(options.role);
-              dropdown.style.position = 'fixed';
-              dropdown.style.zIndex = '16000';
               dropdown.style.visibility = 'hidden';
 
               const preferredWidth = Math.max(180, Number(options.width) || 220);

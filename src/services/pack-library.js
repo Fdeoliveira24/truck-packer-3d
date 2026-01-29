@@ -196,7 +196,10 @@ export function update(packId, patch) {
 export function remove(packId) {
   const packs = getPacks().filter(p => p.id !== packId);
   const current = StateStore.get('currentPackId');
-  StateStore.set({ packLibrary: packs, currentPackId: current === packId ? null : current, selectedInstanceIds: [] }, { skipHistory: true });
+  StateStore.set(
+    { packLibrary: packs, currentPackId: current === packId ? null : current, selectedInstanceIds: [] },
+    { skipHistory: true }
+  );
 }
 
 export function duplicate(packId) {
@@ -309,13 +312,20 @@ export function importPackPayload(payload) {
 
   const caseById = new Map(currentCases.map(c => [c.id, c]));
   const caseByName = new Map(
-    currentCases.map(c => [String(c.name || '').trim().toLowerCase(), c])
+    currentCases.map(c => [
+      String(c.name || '')
+        .trim()
+        .toLowerCase(),
+      c,
+    ])
   );
   const caseIdMap = new Map();
 
   bundled.forEach(c => {
     if (!c || !c.id) return;
-    const nameKey = String(c.name || '').trim().toLowerCase();
+    const nameKey = String(c.name || '')
+      .trim()
+      .toLowerCase();
     if (caseById.has(c.id)) {
       caseIdMap.set(c.id, c.id);
       return;

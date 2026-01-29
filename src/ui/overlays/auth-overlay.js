@@ -61,14 +61,21 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     const msg = raw.toLowerCase();
     let friendly = '';
 
-    if (msg.includes('invalid login credentials')) {friendly = 'Incorrect email or password.';}
-    else if (msg.includes('email not confirmed')) {friendly = 'Please confirm your email, then sign in.';}
-    else if (msg.includes('user already registered') || msg.includes('user already exists')) {
+    if (msg.includes('invalid login credentials')) {
+      friendly = 'Incorrect email or password.';
+    } else if (msg.includes('email not confirmed')) {
+      friendly = 'Please confirm your email, then sign in.';
+    } else if (msg.includes('user already registered') || msg.includes('user already exists')) {
       friendly = 'Account already exists. Try Sign In.';
-    } else if (msg.includes('password') && msg.includes('weak')) {friendly = 'Password is too weak.';}
-    else if (msg.includes('password') && msg.includes('characters')) {friendly = raw ? toAscii(raw) : 'Password is too weak.';}
-    else if (raw) {friendly = toAscii(raw);}
-    else {friendly = action === 'signup' ? 'Sign up failed.' : 'Sign in failed.';}
+    } else if (msg.includes('password') && msg.includes('weak')) {
+      friendly = 'Password is too weak.';
+    } else if (msg.includes('password') && msg.includes('characters')) {
+      friendly = raw ? toAscii(raw) : 'Password is too weak.';
+    } else if (raw) {
+      friendly = toAscii(raw);
+    } else {
+      friendly = action === 'signup' ? 'Sign up failed.' : 'Sign in failed.';
+    }
 
     const title = action === 'signup' ? 'Sign up failed' : 'Sign in failed';
     let full = `${title}: ${friendly}`;
@@ -246,7 +253,9 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
         const pre = document.createElement('pre');
         pre.style.whiteSpace = 'pre-wrap';
         pre.style.marginTop = '8px';
-        pre.textContent = toAscii(lastBootstrapError && lastBootstrapError.message ? lastBootstrapError.message : String(lastBootstrapError));
+        pre.textContent = toAscii(
+          lastBootstrapError && lastBootstrapError.message ? lastBootstrapError.message : String(lastBootstrapError)
+        );
         details.appendChild(summary);
         details.appendChild(pre);
         body.appendChild(details);
@@ -412,7 +421,6 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
             setInlineSuccess('Check your email to confirm your account, then come back and sign in.');
             mode = 'signin';
             render();
-            
           }
         } catch (err) {
           const mapped = mapAuthError(err, 'signup');
@@ -537,9 +545,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
 
         const target = ev.target;
         const isTyping =
-          target &&
-          target.matches &&
-          target.matches('input, textarea, select, [contenteditable="true"]');
+          target && target.matches && target.matches('input, textarea, select, [contenteditable="true"]');
 
         if (!isTyping && key !== 'tab') {
           ev.stopPropagation();
@@ -548,7 +554,6 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
 
         if (!isTyping && (ev.metaKey || ev.ctrlKey || ev.altKey)) {
           ev.stopPropagation();
-          
         }
       } catch {
         // ignore

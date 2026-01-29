@@ -14,10 +14,15 @@
 import * as StateStore from '../core/state-store.js';
 import * as Defaults from '../core/defaults.js';
 
-const normalizeKey = value => String(value || '').trim().toLowerCase();
+const normalizeKey = value =>
+  String(value || '')
+    .trim()
+    .toLowerCase();
 
 function normalizeHex(value) {
-  const s = String(value || '').trim().toLowerCase();
+  const s = String(value || '')
+    .trim()
+    .toLowerCase();
   const hexMatch = s.match(/^#?([0-9a-f]{6})$/);
   return hexMatch ? `#${hexMatch[1]}` : null;
 }
@@ -60,9 +65,7 @@ export function all() {
   const prefCats = Array.isArray(prefs && prefs.categories) ? prefs.categories : [];
   const seeded = prefCats.length
     ? prefCats
-    : (Defaults.categories || [])
-        .filter(c => c.key !== 'all')
-        .map(c => ({ key: c.key, name: c.name, color: c.color }));
+    : (Defaults.categories || []).filter(c => c.key !== 'all').map(c => ({ key: c.key, name: c.name, color: c.color }));
   const dedup = new Map();
   seeded.forEach(c => {
     const k = normalizeKey(c.key || c.name);
@@ -70,7 +73,7 @@ export function all() {
     const color = normalizeHex(c.color) || colorForKey(k);
     dedup.set(k, {
       key: k,
-      name: c.name || (k.charAt(0).toUpperCase() + k.slice(1)),
+      name: c.name || k.charAt(0).toUpperCase() + k.slice(1),
       color,
     });
   });
@@ -92,10 +95,11 @@ export function listWithCounts(cases) {
     counts[k] = (counts[k] || 0) + 1;
   });
   const known = all();
-  const ordered = known.map(c => c.key).filter(k => k).concat(Object.keys(counts).filter(k => !known.find(c => c.key === k)));
-  return ordered
-    .filter((k, idx, arr) => arr.indexOf(k) === idx)
-    .map(k => ({ ...meta(k), count: counts[k] || 0 }));
+  const ordered = known
+    .map(c => c.key)
+    .filter(k => k)
+    .concat(Object.keys(counts).filter(k => !known.find(c => c.key === k)));
+  return ordered.filter((k, idx, arr) => arr.indexOf(k) === idx).map(k => ({ ...meta(k), count: counts[k] || 0 }));
 }
 
 export function upsert({ key, name, color }) {
@@ -142,7 +146,8 @@ export function rename(oldKey, name, color) {
   const existingTo = list.find(c => c.key === to);
 
   const updatedList = list.filter(c => c.key !== from);
-  const colorHex = normalizeHex(color) || (existingTo && normalizeHex(existingTo.color)) || fromEntry.color || colorForKey(to);
+  const colorHex =
+    normalizeHex(color) || (existingTo && normalizeHex(existingTo.color)) || fromEntry.color || colorForKey(to);
   if (existingTo && to !== from) {
     // Merge into existing, update name/color if provided
     const merged = {

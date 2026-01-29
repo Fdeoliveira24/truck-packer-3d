@@ -89,7 +89,7 @@ export function createImportCasesDialog({
     drop.className = 'card';
     drop.classList.add('tp3d-import-drop');
     drop.innerHTML = `
-                <div class="tp3d-import-drop-icon"><i class="fa-solid fa-star"></i></div>
+                <div class="tp3d-import-drop-icon"><i class="fa-solid fa-file-import"></i></div>
                 <div class="tp3d-import-drop-title">Drag & Drop File Here</div>
                 <div class="muted tp3d-import-drop-sub">Supported: .csv, .xlsx</div>
                 <div class="tp3d-import-drop-spacer"></div>
@@ -104,7 +104,7 @@ export function createImportCasesDialog({
     hint.className = 'muted';
     hint.classList.add('tp3d-import-hint');
     hint.innerHTML =
-      'Required: <b>name</b>, <b>length</b>, <b>width</b>, <b>height</b><br>Optional: manufacturer, category, weight, canFlip, notes';
+      'Required: Name + length + width + height<br>Optional: Manufacturer, category, weight, flip, notes';
 
     const results = doc.createElement('div');
     results.classList.add('tp3d-import-results');

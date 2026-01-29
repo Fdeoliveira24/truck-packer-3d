@@ -8,18 +8,20 @@
 
 ## Summary
 
-| Metric | Count |
-|--------|-------|
-| **Inline styles in JS** | 0 |
-| **Duplicate CSS blocks** | 0 |
-| **Missing CSS rules** | 0 |
+| Metric                    | Count                    |
+| ------------------------- | ------------------------ |
+| **Inline styles in JS**   | 0                        |
+| **Duplicate CSS blocks**  | 0                        |
+| **Missing CSS rules**     | 0                        |
 | **CSS locations audited** | 2 (main.css, index.html) |
 
 ### Status: ✅ CLEAN
 
 Both components are properly structured:
+
 - **Table Footer**: All CSS lives in `styles/main.css`, no inline styles in JS
-- **System Overlay**: All CSS lives in `styles/main.css`, minimal inline styles in HTML (spacing only)
+- **System Overlay**: All CSS lives in `styles/main.css`, minimal inline styles in HTML (spacing
+  only)
 
 ---
 
@@ -30,16 +32,19 @@ Both components are properly structured:
 **Result:** ✅ No inline styles found
 
 **Analysis:**
+
 - Searched for: `.style.`, `cssText`, `setAttribute('style'`
 - Found: 0 matches
 - The file only creates DOM elements with class names
-- All styling delegated to CSS classes: `.table-footer`, `.tf-left`, `.tf-mid`, `.tf-right`, `.tf-btn`, `.tf-select`, `.tf-label`, `.tf-page`
+- All styling delegated to CSS classes: `.table-footer`, `.tf-left`, `.tf-mid`, `.tf-right`,
+  `.tf-btn`, `.tf-select`, `.tf-label`, `.tf-page`
 
 ### src/ui/system-overlay.js
 
 **Result:** ✅ No inline styles found
 
 **Analysis:**
+
 - Searched for: `.style.`, `cssText`, `setAttribute('style'`
 - Found: 0 matches
 - The file only toggles `.active` class on `#system-overlay`
@@ -175,7 +180,7 @@ Both components are properly structured:
   padding: var(--space-6);
   background:
     radial-gradient(circle at 20% 10%, rgba(255, 159, 28, 0.18), transparent 40%),
-    radial-gradient(circle at 80% 70%, rgba(59, 130, 246, 0.12), transparent 45%), 
+    radial-gradient(circle at 80% 70%, rgba(59, 130, 246, 0.12), transparent 45%),
     rgba(0, 0, 0, 0.65);
 }
 
@@ -214,14 +219,16 @@ Both components are properly structured:
 #### index.html (lines 924-935)
 
 **Inline styles found:**
+
 ```html
 <div style="height: 14px"></div>
-<div class="row" style="justify-content: flex-end">
+<div class="row" style="justify-content: flex-end"></div>
 ```
 
 **Status:** ⚠️ MINOR - Spacing utility inline styles (acceptable pattern for one-off spacing)
 
-**Analysis:** These are layout spacing utilities, not component styles. Common pattern in the project for spacers. Not worth extracting to CSS.
+**Analysis:** These are layout spacing utilities, not component styles. Common pattern in the
+project for spacers. Not worth extracting to CSS.
 
 ---
 
@@ -229,33 +236,33 @@ Both components are properly structured:
 
 ### Table Footer
 
-| Selector | main.css | index.html | Other Files | Status |
-|----------|----------|------------|-------------|--------|
-| `.table-footer` | ✅ Found | ❌ None | ❌ None | ✅ Single source |
-| `.tf-left` | ✅ Found | ❌ None | ❌ None | ✅ Single source |
-| `.tf-mid` | ✅ Found | ❌ None | ❌ None | ✅ Single source |
-| `.tf-right` | ✅ Found | ❌ None | ❌ None | ✅ Single source |
-| `.tf-label` | ✅ Found | ❌ None | ❌ None | ✅ Single source |
-| `.tf-select` | ✅ Found | ❌ None | ❌ None | ✅ Single source |
-| `.tf-page` | ✅ Found | ❌ None | ❌ None | ✅ Single source |
-| `.tf-btn` | ✅ Found | ❌ None | ❌ None | ✅ Single source |
+| Selector        | main.css | index.html | Other Files | Status           |
+| --------------- | -------- | ---------- | ----------- | ---------------- |
+| `.table-footer` | ✅ Found | ❌ None    | ❌ None     | ✅ Single source |
+| `.tf-left`      | ✅ Found | ❌ None    | ❌ None     | ✅ Single source |
+| `.tf-mid`       | ✅ Found | ❌ None    | ❌ None     | ✅ Single source |
+| `.tf-right`     | ✅ Found | ❌ None    | ❌ None     | ✅ Single source |
+| `.tf-label`     | ✅ Found | ❌ None    | ❌ None     | ✅ Single source |
+| `.tf-select`    | ✅ Found | ❌ None    | ❌ None     | ✅ Single source |
+| `.tf-page`      | ✅ Found | ❌ None    | ❌ None     | ✅ Single source |
+| `.tf-btn`       | ✅ Found | ❌ None    | ❌ None     | ✅ Single source |
 
 **Result:** ✅ No duplicates found
 
 ### System Overlay
 
-| Selector | main.css | index.html | Other Files | Status |
-|----------|----------|------------|-------------|--------|
-| `.system-overlay` | ✅ Found | ❌ None | ❌ None | ✅ Single source |
-| `.system-overlay.active` | ✅ Found | ❌ None | ❌ None | ✅ Single source |
-| `.system-card` | ✅ Found | ❌ None | ❌ None | ✅ Single source |
-| `.system-card h2` | ✅ Found | ❌ None | ❌ None | ✅ Single source |
-| `.system-card p` | ✅ Found | ❌ None | ❌ None | ✅ Single source |
-| `.system-list` | ✅ Found | ❌ None | ❌ None | ✅ Single source |
-| `#system-title` | ❌ N/A | ✅ Element | ❌ None | ✅ HTML ID only |
-| `#system-message` | ❌ N/A | ✅ Element | ❌ None | ✅ HTML ID only |
-| `#system-list` | ❌ N/A | ✅ Element | ❌ None | ✅ HTML ID only |
-| `#system-retry` | ❌ N/A | ✅ Element | ❌ None | ✅ HTML ID only |
+| Selector                 | main.css | index.html | Other Files | Status           |
+| ------------------------ | -------- | ---------- | ----------- | ---------------- |
+| `.system-overlay`        | ✅ Found | ❌ None    | ❌ None     | ✅ Single source |
+| `.system-overlay.active` | ✅ Found | ❌ None    | ❌ None     | ✅ Single source |
+| `.system-card`           | ✅ Found | ❌ None    | ❌ None     | ✅ Single source |
+| `.system-card h2`        | ✅ Found | ❌ None    | ❌ None     | ✅ Single source |
+| `.system-card p`         | ✅ Found | ❌ None    | ❌ None     | ✅ Single source |
+| `.system-list`           | ✅ Found | ❌ None    | ❌ None     | ✅ Single source |
+| `#system-title`          | ❌ N/A   | ✅ Element | ❌ None     | ✅ HTML ID only  |
+| `#system-message`        | ❌ N/A   | ✅ Element | ❌ None     | ✅ HTML ID only  |
+| `#system-list`           | ❌ N/A   | ✅ Element | ❌ None     | ✅ HTML ID only  |
+| `#system-retry`          | ❌ N/A   | ✅ Element | ❌ None     | ✅ HTML ID only  |
 
 **Result:** ✅ No duplicates found
 
@@ -290,6 +297,7 @@ Both components follow best practices:
 ### Future Maintenance
 
 If changes are needed:
+
 - **Table Footer**: Edit `styles/main.css` lines ~942-1025
 - **System Overlay**: Edit `styles/main.css` lines ~1562-1601
 - **Do NOT**: Add inline styles to `.js` files
@@ -301,4 +309,6 @@ If changes are needed:
 
 **Status:** ✅ AUDIT PASSED
 
-No cleanup required. Both components are properly architected with CSS fully migrated to `styles/main.css`. The JS files contain zero inline styles and delegate all presentation to CSS classes.
+No cleanup required. Both components are properly architected with CSS fully migrated to
+`styles/main.css`. The JS files contain zero inline styles and delegate all presentation to CSS
+classes.

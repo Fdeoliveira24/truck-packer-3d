@@ -21,9 +21,10 @@ function applyCaseDefaultColor(caseObj) {
   const next = { ...(caseObj || {}) };
   const existing = String(next.color || '').trim();
   if (existing) return next;
-  const key = String(next.category || 'default')
-    .trim()
-    .toLowerCase() || 'default';
+  const key =
+    String(next.category || 'default')
+      .trim()
+      .toLowerCase() || 'default';
   const cats = Defaults.categories || [];
   const found = cats.find(c => c.key === key) || cats.find(c => c.key === 'default');
   next.color = (found && found.color) || '#9ca3af';
@@ -141,9 +142,12 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
 
     const rowErrors = [];
     if (!record.name) rowErrors.push(`Row ${rowNum}: Missing required field 'name'`);
-    if (!Number.isFinite(record.length) || record.length <= 0) rowErrors.push(`Row ${rowNum}: Invalid number for 'length'`);
-    if (!Number.isFinite(record.width) || record.width <= 0) rowErrors.push(`Row ${rowNum}: Invalid number for 'width'`);
-    if (!Number.isFinite(record.height) || record.height <= 0) rowErrors.push(`Row ${rowNum}: Invalid number for 'height'`);
+    if (!Number.isFinite(record.length) || record.length <= 0)
+      rowErrors.push(`Row ${rowNum}: Invalid number for 'length'`);
+    if (!Number.isFinite(record.width) || record.width <= 0)
+      rowErrors.push(`Row ${rowNum}: Invalid number for 'width'`);
+    if (!Number.isFinite(record.height) || record.height <= 0)
+      rowErrors.push(`Row ${rowNum}: Invalid number for 'height'`);
 
     const nameKey = record.name.toLowerCase();
     if (record.name && existingNames.has(nameKey)) {
@@ -182,9 +186,10 @@ export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
       id: Utils.uuid(),
       name: String(r.name || '').trim(),
       manufacturer: String(r.manufacturer || '').trim(),
-      category: String(r.category || 'default')
-        .trim()
-        .toLowerCase() || 'default',
+      category:
+        String(r.category || 'default')
+          .trim()
+          .toLowerCase() || 'default',
       dimensions: { length: Number(r.length), width: Number(r.width), height: Number(r.height) },
       weight: Number(r.weight) || 0,
       volume: Utils.volumeInCubicInches({

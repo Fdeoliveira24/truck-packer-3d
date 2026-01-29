@@ -118,7 +118,16 @@ export function createTableFooter(options = {}) {
   };
 
   const render = () => {
-    const { selectedCount, totalCount, pageIndex, pageCount, rowsPerPage, selectAllVisible, selectAllChecked, selectAllIndeterminate } = state;
+    const {
+      selectedCount,
+      totalCount,
+      pageIndex,
+      pageCount,
+      rowsPerPage,
+      selectAllVisible,
+      selectAllChecked,
+      selectAllIndeterminate,
+    } = state;
     const showSummary = (selectedCount === totalCount || selectAllChecked) && totalCount > 0;
     leftText.textContent = `${selectedCount} of ${totalCount} row(s) selected.`;
     leftText.hidden = !showSummary;
@@ -198,7 +207,9 @@ export function createTableFooter(options = {}) {
       sanitized.pageIndex = Math.min(Math.max(0, sanitized.pageIndex), sanitized.pageCount - 1);
     }
     state = sanitized;
-    footerEl.classList.toggle('is-hidden', state.totalCount === 0);
+    // Hide footer when totalCount <= rowsPerPage OR pageCount <= 1
+    const shouldHide = state.totalCount === 0 || state.totalCount <= state.rowsPerPage || state.pageCount <= 1;
+    footerEl.classList.toggle('is-hidden', shouldHide);
     render();
   };
 

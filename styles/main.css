@@ -647,6 +647,7 @@ textarea {
   border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
+  font-family: var(--font-family);
   color: var(--text-primary);
   transition:
     border-color 0.15s ease,
@@ -811,7 +812,12 @@ textarea:focus {
 
 .pack-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+
+  /* Use a responsive grid that fits as many cards per row as will comfortably fit.
+     minmax(220px, 1fr) ensures cards won't grow beyond a readable width while
+     allowing up to 4 (or more) columns on wide screens. Adjust 220px to control
+     the minimum card width. */
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: var(--space-4);
 }
 
@@ -960,7 +966,7 @@ table {
   font-size: var(--text-sm);
 }
 
-input[type="checkbox"] {
+input[type='checkbox'] {
   width: 16px;
   height: 16px;
   margin: 0;
@@ -973,17 +979,20 @@ input[type="checkbox"] {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
 }
 
-input[type="checkbox"]:checked {
+input[type='checkbox']:checked {
   background: var(--accent-primary);
   border-color: var(--accent-primary);
 }
 
-input[type="checkbox"]::after {
-  content: "\f00c";
-  font-family: "Font Awesome 6 Free";
+input[type='checkbox']::after {
+  content: '\f00c';
+  font-family: 'Font Awesome 6 Free';
   font-weight: 900;
   font-size: 11px;
   color: var(--text-inverse);
@@ -991,7 +1000,7 @@ input[type="checkbox"]::after {
   transition: opacity 0.12s ease;
 }
 
-input[type="checkbox"]:checked::after {
+input[type='checkbox']:checked::after {
   opacity: 1;
 }
 
@@ -1090,16 +1099,31 @@ input[type="checkbox"]:checked::after {
   background: var(--bg-hover);
 }
 
-@media (max-width: 520px) {
+/* Footer mobile improvements */
+@media (max-width: 768px) {
   .table-footer {
-    gap: 8px;
-    border-radius: 0;
+    gap: 12px;
+    flex-direction: column;
+    align-items: stretch;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
   }
   .table-footer .tf-left,
   .table-footer .tf-mid,
   .table-footer .tf-right {
     width: 100%;
+    flex: 0 0 auto;
     justify-content: space-between;
+  }
+  .table-footer .tf-mid {
+    order: 1;
+  }
+  .table-footer .tf-left {
+    order: 2;
+  }
+  .table-footer .tf-right {
+    order: 3;
   }
 }
 
@@ -1170,7 +1194,9 @@ th {
   color: var(--text-muted);
   opacity: 0.25;
   visibility: visible;
-  transition: color 0.15s ease, opacity 0.15s ease;
+  transition:
+    color 0.15s ease,
+    opacity 0.15s ease;
 }
 
 .th-sort:hover .th-chevron,
@@ -1255,7 +1281,7 @@ tr:hover td {
   align-items: center;
   justify-content: center;
   padding: var(--space-5);
-  z-index: 10000;
+  z-index: 20000;
 }
 
 .modal {
@@ -1296,13 +1322,40 @@ tr:hover td {
   gap: var(--space-2);
 }
 
+/* Modal mobile improvements */
+@media (max-width: 768px) {
+  .modal {
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .modal-body {
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+  }
+  .modal-footer {
+    flex-direction: column-reverse;
+    gap: var(--space-3);
+    padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
+  }
+  .modal-footer .btn {
+    width: 100%;
+  }
+}
+
 /* ================================
   TP3D Settings Overlay
 ================================== */
+
 .tp3d-settings-account-btn {
   width: 100%;
-  justify-content: space-between;
+  justify-content: flex-start;
   padding: var(--space-2) var(--space-3);
+}
+
+.tp3d-settings-account-btn > i {
+  display: none;
 }
 
 .tp3d-settings-account-inner {
@@ -1344,6 +1397,11 @@ tr:hover td {
 .tp3d-settings-nav-wrap {
   display: grid;
   gap: 6px;
+}
+
+/* Fallback for environments without flex gap support: add explicit spacing */
+.tp3d-settings-left-pane > .tp3d-settings-account-btn {
+  margin-bottom: var(--space-5);
 }
 
 .tp3d-settings-nav-header {
@@ -1571,7 +1629,7 @@ tr:hover td {
   border-right: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-5);
 }
 
 .tp3d-settings-right-pane {
@@ -1579,6 +1637,48 @@ tr:hover td {
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
+}
+
+/* Settings modal mobile improvements */
+@media (max-width: 768px) {
+  .tp3d-settings-modal {
+    width: 100vw;
+    height: 100vh;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    max-height: 100vh;
+  }
+  .tp3d-settings-left-pane {
+    border-right: none;
+    border-bottom: 1px solid var(--border-subtle);
+    padding: var(--space-4);
+    overflow-x: auto;
+    overflow-y: visible;
+  }
+  .tp3d-settings-nav-wrap {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tp3d-settings-nav-header {
+    display: none;
+  }
+  .tp3d-settings-nav-item {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .tp3d-settings-right-pane {
+    overflow-y: auto;
+  }
+}
+
+/* Prevent sidebar from blocking modal on mobile */
+@media (max-width: 768px) {
+  body.modal-open .sidebar {
+    pointer-events: none;
+  }
 }
 
 /* TP3D Account Profile Edit */
@@ -1676,7 +1776,9 @@ tr:hover td {
   padding: 28px;
   border: 1px dashed var(--border-subtle);
   background: var(--bg-secondary);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .tp3d-import-drop.is-dragover {

@@ -89,7 +89,7 @@ export function createImportPackDialog({
     drop.className = 'card';
     drop.classList.add('tp3d-import-drop');
     drop.innerHTML = `
-      <div class="tp3d-import-drop-icon"><i class="fa-solid fa-star"></i></div>
+      <div class="tp3d-import-drop-icon"><i class="fa-solid fa-file-import"></i></div>
       <div class="tp3d-import-drop-title">Drag & Drop File Here</div>
       <div class="muted tp3d-import-drop-sub">Supported: .json</div>
       <div class="tp3d-import-drop-spacer"></div>
@@ -104,7 +104,7 @@ export function createImportPackDialog({
     hint.className = 'muted';
     hint.classList.add('tp3d-import-hint');
     hint.innerHTML =
-      'Required: <b>pack</b> object with <b>title</b>, <b>truck</b> { length, width, height, shapeMode }, <b>cases</b> (array)<br>Optional: client, projectName, drawnBy, notes, groups, stats, createdAt, lastEdited, thumbnail fields';
+      'Required: Title + truck size (L/W/H) + cases list<br>Optional: Client, project name, notes, thumbnail';
 
     const results = doc.createElement('div');
     results.classList.add('tp3d-import-results');

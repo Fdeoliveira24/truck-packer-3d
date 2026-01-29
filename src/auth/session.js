@@ -79,10 +79,7 @@ export function initSession() {
   if (!Array.isArray(_session.orgs) || !_session.orgs.length) _session.orgs = defaultSession().orgs;
   if (!_session.user.currentOrgId) _session.user.currentOrgId = _session.orgs[0].id;
   // Migrate legacy demo identity.
-  if (
-    _session.user &&
-    (_session.user.name === 'Agro Felix' || _session.user.email === 'agrofelixbraganca@gmail.com')
-  ) {
+  if (_session.user && (_session.user.name === 'Agro Felix' || _session.user.email === 'agrofelixbraganca@gmail.com')) {
     _session.user.name = 'Demo User';
     _session.user.email = 'info@pxl360.com';
   }

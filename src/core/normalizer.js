@@ -146,8 +146,10 @@ export function normalizeCase(c, now) {
 
 export function normalizeTruck(truck) {
   const t = truck && typeof truck === 'object' ? truck : {};
-  const mode = t.shapeMode === 'wheelWells' || t.shapeMode === 'frontBonus' || t.shapeMode === 'rect' ? t.shapeMode : 'rect';
-  const shapeConfig = t.shapeConfig && typeof t.shapeConfig === 'object' && !Array.isArray(t.shapeConfig) ? t.shapeConfig : {};
+  const mode =
+    t.shapeMode === 'wheelWells' || t.shapeMode === 'frontBonus' || t.shapeMode === 'rect' ? t.shapeMode : 'rect';
+  const shapeConfig =
+    t.shapeConfig && typeof t.shapeConfig === 'object' && !Array.isArray(t.shapeConfig) ? t.shapeConfig : {};
   return {
     length: positiveNumber(t.length, DEFAULT_TRUCK.length),
     width: positiveNumber(t.width, DEFAULT_TRUCK.width),
@@ -160,8 +162,7 @@ export function normalizeTruck(truck) {
 export function normalizeInstance(inst, caseMap) {
   const transform = inst && inst.transform && typeof inst.transform === 'object' ? inst.transform : {};
   const pos = transform.position && typeof transform.position === 'object' ? transform.position : {};
-  const rot =
-    transform.rotation && typeof transform.rotation === 'object' ? transform.rotation : { x: 0, y: 0, z: 0 };
+  const rot = transform.rotation && typeof transform.rotation === 'object' ? transform.rotation : { x: 0, y: 0, z: 0 };
   const scale = transform.scale && typeof transform.scale === 'object' ? transform.scale : { x: 1, y: 1, z: 1 };
   const caseId = safeString(inst && inst.caseId, '');
   const caseData = caseMap.get(caseId) || null;
@@ -198,7 +199,8 @@ export function normalizePack(p, caseMap, now) {
   const instances = rawCases.map(i => normalizeInstance(i, caseMap)).filter(i => Boolean(i.caseId));
   const thumbnail = typeof (p && p.thumbnail) === 'string' ? p.thumbnail : null;
   const thumbnailUpdatedAt = Number.isFinite(p && p.thumbnailUpdatedAt) ? p.thumbnailUpdatedAt : null;
-  const thumbnailSource = p && (p.thumbnailSource === 'auto' || p.thumbnailSource === 'manual') ? p.thumbnailSource : null;
+  const thumbnailSource =
+    p && (p.thumbnailSource === 'auto' || p.thumbnailSource === 'manual') ? p.thumbnailSource : null;
   return {
     id: safeString(p && p.id, uuid()),
     title: safeString(p && p.title, 'Untitled Pack'),

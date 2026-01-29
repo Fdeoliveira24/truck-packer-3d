@@ -5,7 +5,7 @@
  * @created Unknown
  * @updated 01/28/2026
  * @author Truck Packer 3D Team
- * 
+ *
  * CHANGES (01/28/2026):
  * - Added uploadAvatar() function for avatar image uploads to 'avatars' storage bucket
  * - Added deleteAvatar() function to remove user avatars from storage
@@ -74,8 +74,9 @@ export function init({ url, anonKey }) {
       if (debugEnabled()) console.info('[SupabaseClient] init success');
       return _client;
     } catch (err) {
-      if (debugEnabled())
-        {console.info('[SupabaseClient] init failed:', err && err.message ? String(err.message) : String(err));}
+      if (debugEnabled()) {
+        console.info('[SupabaseClient] init failed:', err && err.message ? String(err.message) : String(err));
+      }
       _initPromise = null;
       _client = null;
       _session = null;
@@ -169,11 +170,7 @@ export async function getProfile(userId = null) {
   const uid = userId || (getUser() && getUser().id ? getUser().id : null);
   if (!uid) return null;
 
-  const { data, error } = await client
-    .from('profiles')
-    .select('*')
-    .eq('id', uid)
-    .single();
+  const { data, error } = await client.from('profiles').select('*').eq('id', uid).single();
 
   if (error) return null;
   return data || null;
@@ -226,15 +223,11 @@ export async function uploadAvatar(file) {
 
   // Delete old avatar files first (to ensure clean replacement)
   try {
-    const { data: files } = await client.storage
-      .from('avatars')
-      .list(user.id);
-    
+    const { data: files } = await client.storage.from('avatars').list(user.id);
+
     if (files && files.length > 0) {
       const filePaths = files.map(f => `${user.id}/${f.name}`);
-      await client.storage
-        .from('avatars')
-        .remove(filePaths);
+      await client.storage.from('avatars').remove(filePaths);
     }
   } catch {
     // Ignore errors during cleanup
@@ -245,19 +238,15 @@ export async function uploadAvatar(file) {
   const filePath = `${user.id}/avatar.${ext}`;
 
   // Upload to storage
-  const { data, error } = await client.storage
-    .from('avatars')
-    .upload(filePath, file, {
-      cacheControl: '3600',
-      upsert: true,
-    });
+  const { data, error } = await client.storage.from('avatars').upload(filePath, file, {
+    cacheControl: '3600',
+    upsert: true,
+  });
 
   if (error) throw error;
 
   // Get public URL
-  const { data: urlData } = client.storage
-    .from('avatars')
-    .getPublicUrl(filePath);
+  const { data: urlData } = client.storage.from('avatars').getPublicUrl(filePath);
 
   return urlData.publicUrl;
 }
@@ -272,18 +261,14 @@ export async function deleteAvatar() {
   if (!user) throw new Error('Not authenticated');
 
   // List all files in user's folder
-  const { data: files, error: listError } = await client.storage
-    .from('avatars')
-    .list(user.id);
+  const { data: files, error: listError } = await client.storage.from('avatars').list(user.id);
 
   if (listError) throw listError;
 
   // Delete all avatar files
   if (files && files.length > 0) {
     const filePaths = files.map(f => `${user.id}/${f.name}`);
-    const { error: deleteError } = await client.storage
-      .from('avatars')
-      .remove(filePaths);
+    const { error: deleteError } = await client.storage.from('avatars').remove(filePaths);
 
     if (deleteError) throw deleteError;
   }

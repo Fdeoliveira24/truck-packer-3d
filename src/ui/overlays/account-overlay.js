@@ -163,10 +163,14 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
 
       try {
         avatarInput.disabled = true;
-        const ext = String(file.name || '').split('.').pop() || 'png';
+        const ext =
+          String(file.name || '')
+            .split('.')
+            .pop() || 'png';
         const safeExt = ext.toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
         const filePath = `${user.id}/avatar.${safeExt}`;
-        const client = SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
+        const client =
+          SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
         if (!client || !client.storage) throw new Error('Storage not available');
 
         const { error } = await client.storage.from('avatars').upload(filePath, file, { upsert: true });
@@ -213,7 +217,8 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
       if (!confirm('Are you sure? This action cannot be undone.')) return;
 
       try {
-        const session = SupabaseClient && typeof SupabaseClient.getSession === 'function' ? SupabaseClient.getSession() : null;
+        const session =
+          SupabaseClient && typeof SupabaseClient.getSession === 'function' ? SupabaseClient.getSession() : null;
         if (!session || !session.access_token) throw new Error('No active session');
 
         const cfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : {};
@@ -236,7 +241,8 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
 
         // Local-only sign out (no server call since user is already deleted)
         try {
-          const client = SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
+          const client =
+            SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
           if (client && client.auth) {
             await client.auth.signOut({ scope: 'local' });
           }

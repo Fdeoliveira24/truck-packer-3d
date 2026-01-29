@@ -57,7 +57,12 @@ export function createImportAppDialog({
       return;
     }
 
-    if (!imported || !Array.isArray(imported.packLibrary) || !Array.isArray(imported.caseLibrary) || !imported.preferences) {
+    if (
+      !imported ||
+      !Array.isArray(imported.packLibrary) ||
+      !Array.isArray(imported.caseLibrary) ||
+      !imported.preferences
+    ) {
       UIComponents.showToast('Invalid App JSON: missing required keys', 'error');
       return;
     }

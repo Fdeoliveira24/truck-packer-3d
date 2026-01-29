@@ -5,7 +5,7 @@
  * @created Unknown
  * @updated 01/28/2026
  * @author Truck Packer 3D Team
- * 
+ *
  * CHANGES (01/28/2026 - Account Settings Complete):
  * - Added profile state management (profileData, isEditingProfile, isLoadingProfile, isSavingProfile)
  * - Implemented loadProfile() to fetch user profile from Supabase on Account tab open
@@ -62,7 +62,7 @@ export function createSettingsOverlay({
   let lastFocusedEl = null;
   let trapKeydownHandler = null;
   let warnedMissingModalRoot = false;
-  
+
   // Profile editing state
   let profileData = null;
   let isEditingProfile = false;
@@ -193,10 +193,7 @@ export function createSettingsOverlay({
       return updated;
     } catch (err) {
       isSavingProfile = false;
-      UIComponents.showToast(
-        `Failed to save: ${err && err.message ? err.message : err}`,
-        'error'
-      );
+      UIComponents.showToast(`Failed to save: ${err && err.message ? err.message : err}`, 'error');
       throw err;
     }
   }
@@ -218,10 +215,7 @@ export function createSettingsOverlay({
         // ignore
       }
     } catch (err) {
-      UIComponents.showToast(
-        `Upload failed: ${err && err.message ? err.message : err}`,
-        'error'
-      );
+      UIComponents.showToast(`Upload failed: ${err && err.message ? err.message : err}`, 'error');
     }
   }
 
@@ -240,10 +234,7 @@ export function createSettingsOverlay({
         // ignore
       }
     } catch (err) {
-      UIComponents.showToast(
-        `Remove failed: ${err && err.message ? err.message : err}`,
-        'error'
-      );
+      UIComponents.showToast(`Remove failed: ${err && err.message ? err.message : err}`, 'error');
     }
   }
 
@@ -478,9 +469,10 @@ export function createSettingsOverlay({
     const next = { ...(caseObj || {}) };
     const existing = String(next.color || '').trim();
     if (existing) return next;
-    const key = String(next.category || 'default')
-      .trim()
-      .toLowerCase() || 'default';
+    const key =
+      String(next.category || 'default')
+        .trim()
+        .toLowerCase() || 'default';
     const cats = (_Defaults && _Defaults.categories) || [];
     const found = cats.find(c => c.key === key) || cats.find(c => c.key === 'default');
     next.color = (found && found.color) || '#9ca3af';
@@ -521,7 +513,12 @@ export function createSettingsOverlay({
       return;
     }
 
-    if (!imported || !Array.isArray(imported.packLibrary) || !Array.isArray(imported.caseLibrary) || !imported.preferences) {
+    if (
+      !imported ||
+      !Array.isArray(imported.packLibrary) ||
+      !Array.isArray(imported.caseLibrary) ||
+      !imported.preferences
+    ) {
       UIComponents.showToast('Invalid App JSON: missing required keys', 'error');
       return;
     }
@@ -648,7 +645,8 @@ export function createSettingsOverlay({
 
     const p1 = doc.createElement('div');
     p1.className = 'tp3d-resources-help-line';
-    p1.innerHTML = '<strong>App Export/Import:</strong> Use Export to download a full JSON backup. Use Import to restore from that backup.';
+    p1.innerHTML =
+      '<strong>App Export/Import:</strong> Use Export to download a full JSON backup. Use Import to restore from that backup.';
     const p2 = doc.createElement('div');
     p2.className = 'tp3d-resources-help-line';
     p2.innerHTML =
@@ -746,7 +744,9 @@ export function createSettingsOverlay({
     navWrap.appendChild(makeItem({ key: 'preferences', label: 'Preferences', icon: 'fa-solid fa-gear' }));
     navWrap.appendChild(makeItem({ key: 'resources', label: 'Resources', icon: 'fa-solid fa-life-ring' }));
     navWrap.appendChild(makeHeader('Organization'));
-    navWrap.appendChild(makeItem({ key: 'org-general', label: 'General', icon: 'fa-regular fa-building', indent: true }));
+    navWrap.appendChild(
+      makeItem({ key: 'org-general', label: 'General', icon: 'fa-regular fa-building', indent: true })
+    );
     navWrap.appendChild(
       makeItem({ key: 'org-billing', label: 'Billing', icon: 'fa-regular fa-credit-card', indent: true })
     );
@@ -1008,7 +1008,9 @@ export function createSettingsOverlay({
 
       // Load profile if not already loaded
       if (!profileData && !isLoadingProfile && userView.isAuthed) {
-        loadProfile().then(() => render()).catch(() => {});
+        loadProfile()
+          .then(() => render())
+          .catch(() => {});
       }
 
       // Avatar section
@@ -1019,12 +1021,13 @@ export function createSettingsOverlay({
 
       const avatarPreview = doc.createElement('div');
       avatarPreview.className = 'brand-mark tp3d-account-avatar-preview';
-      
+
       if (profileData && profileData.avatar_url) {
         avatarPreview.classList.add('has-image');
         const img = doc.createElement('img');
         // Add cache-busting to force reload after upload
-        const avatarUrl = profileData.avatar_url + (profileData.avatar_url.includes('?') ? '&' : '?') + 't=' + Date.now();
+        const avatarUrl =
+          profileData.avatar_url + (profileData.avatar_url.includes('?') ? '&' : '?') + 't=' + Date.now();
         img.src = avatarUrl;
         img.alt = 'Avatar';
         img.className = 'tp3d-account-avatar-img';
@@ -1041,15 +1044,15 @@ export function createSettingsOverlay({
       uploadBtn.className = 'btn btn-secondary';
       uploadBtn.textContent = profileData && profileData.avatar_url ? 'Change Avatar' : 'Upload Avatar';
       uploadBtn.disabled = !userView.isAuthed;
-      
+
       const fileInput = doc.createElement('input');
       fileInput.type = 'file';
       fileInput.accept = 'image/png,image/jpeg,image/jpg,image/webp';
       fileInput.setAttribute('aria-hidden', 'true');
       fileInput.classList.add('visually-hidden');
-      
+
       uploadBtn.addEventListener('click', () => fileInput.click());
-      fileInput.addEventListener('change', async (e) => {
+      fileInput.addEventListener('change', async e => {
         const file = e.target.files && e.target.files[0];
         if (file) {
           await handleAvatarUpload(file);
@@ -1083,7 +1086,7 @@ export function createSettingsOverlay({
         // Edit mode
         const form = doc.createElement('form');
         form.className = 'tp3d-account-profile-form';
-        form.addEventListener('submit', (e) => {
+        form.addEventListener('submit', e => {
           e.preventDefault();
           const formData = new FormData(form);
           const updates = {
@@ -1161,7 +1164,7 @@ export function createSettingsOverlay({
         // Actions
         const actions = doc.createElement('div');
         actions.className = 'tp3d-account-actions';
-        
+
         const cancelBtn = doc.createElement('button');
         cancelBtn.type = 'button';
         cancelBtn.className = 'btn btn-ghost';
@@ -1171,7 +1174,7 @@ export function createSettingsOverlay({
           isEditingProfile = false;
           render();
         });
-        
+
         const saveBtn = doc.createElement('button');
         saveBtn.type = 'submit';
         saveBtn.className = 'btn btn-primary';
@@ -1252,7 +1255,7 @@ export function createSettingsOverlay({
       dLeft.textContent = 'Delete Account';
       const dRight = doc.createElement('div');
       dRight.classList.add('tp3d-settings-danger-right');
-      
+
       const deleteBtn = doc.createElement('button');
       deleteBtn.type = 'button';
       deleteBtn.className = 'btn btn-danger';
@@ -1263,44 +1266,49 @@ export function createSettingsOverlay({
         const modalContent = doc.createElement('div');
         modalContent.className = 'grid';
         modalContent.style.gap = 'var(--space-4)';
-        
+
         const warningText = doc.createElement('div');
         warningText.className = 'muted';
-        warningText.textContent = 'Deleting your account will remove all of your information from our database. This cannot be undone.';
+        warningText.textContent =
+          'Deleting your account will remove all of your information from our database. This cannot be undone.';
         modalContent.appendChild(warningText);
-        
+
         const confirmLabel = doc.createElement('div');
         confirmLabel.className = 'muted';
         confirmLabel.style.fontSize = 'var(--text-sm)';
         confirmLabel.textContent = 'To confirm this, type "DELETE"';
         modalContent.appendChild(confirmLabel);
-        
+
         const confirmInput = doc.createElement('input');
         confirmInput.type = 'text';
         confirmInput.className = 'input';
         confirmInput.placeholder = 'Type DELETE';
         confirmInput.autocomplete = 'off';
         modalContent.appendChild(confirmInput);
-        
+
         // Show modal
         const modal = UIComponents.showModal({
           title: 'Delete Account',
           content: modalContent,
           actions: [
-            { 
-              label: 'Cancel', 
+            {
+              label: 'Cancel',
               variant: 'ghost',
-              onClick: () => modal.close()
+              onClick: () => modal.close(),
             },
-            { 
-              label: 'Delete Account', 
+            {
+              label: 'Delete Account',
               variant: 'danger',
               disabled: true,
               onClick: async () => {
                 try {
-                  const session = SupabaseClient && typeof SupabaseClient.getSession === 'function' ? SupabaseClient.getSession() : null;
+                  const session =
+                    SupabaseClient && typeof SupabaseClient.getSession === 'function'
+                      ? SupabaseClient.getSession()
+                      : null;
                   if (!session || !session.access_token) throw new Error('No active session');
-                  const cfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : {};
+                  const cfg =
+                    window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : {};
                   const baseUrl = cfg && cfg.url ? String(cfg.url) : '';
                   if (!baseUrl) throw new Error('Supabase URL missing');
                   const response = await fetch(`${baseUrl.replace(/\/$/, '')}/functions/v1/delete-account`, {
@@ -1321,7 +1329,10 @@ export function createSettingsOverlay({
                     // ignore
                   }
                   try {
-                    const client = SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
+                    const client =
+                      SupabaseClient && typeof SupabaseClient.getClient === 'function'
+                        ? SupabaseClient.getClient()
+                        : null;
                     if (client && client.auth) {
                       await client.auth.signOut({ scope: 'local' });
                     }
@@ -1333,17 +1344,15 @@ export function createSettingsOverlay({
                   window.location.reload();
                 } catch (err) {
                   modal.close();
-                  UIComponents.showToast(
-                    `Delete failed: ${err && err.message ? err.message : err}`,
-                    'error',
-                    { title: 'Account' }
-                  );
+                  UIComponents.showToast(`Delete failed: ${err && err.message ? err.message : err}`, 'error', {
+                    title: 'Account',
+                  });
                 }
-              }
-            }
-          ]
+              },
+            },
+          ],
         });
-        
+
         // Enable delete button only when "DELETE" is typed
         const deleteAction = modal.element && modal.element.querySelector('.btn-danger');
         if (deleteAction && confirmInput) {
@@ -1353,7 +1362,7 @@ export function createSettingsOverlay({
           });
         }
       });
-      
+
       dRight.appendChild(deleteBtn);
       dangerRow.appendChild(dLeft);
       dangerRow.appendChild(dRight);
@@ -1470,9 +1479,7 @@ export function createSettingsOverlay({
       if (ev.key !== 'Tab') return;
       if (!settingsModal) return;
       const focusables = Array.from(
-        settingsModal.querySelectorAll(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-        )
+        settingsModal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
       ).filter(el => !el.hasAttribute('disabled') && el.offsetParent !== null);
       if (!focusables.length) {
         ev.preventDefault();

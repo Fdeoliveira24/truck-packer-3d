@@ -19,9 +19,10 @@ function applyCaseDefaultColor(caseObj) {
   const next = { ...(caseObj || {}) };
   const existing = String(next.color || '').trim();
   if (existing) return next;
-  const key = String(next.category || 'default')
-    .trim()
-    .toLowerCase() || 'default';
+  const key =
+    String(next.category || 'default')
+      .trim()
+      .toLowerCase() || 'default';
   const cats = CoreDefaults.categories || [];
   const found = cats.find(c => c.key === key) || cats.find(c => c.key === 'default');
   next.color = (found && found.color) || '#9ca3af';
@@ -90,8 +91,7 @@ export function search(query, categoryKeys) {
     .toLowerCase();
   const cats = (categoryKeys || []).filter(k => k && k !== 'all');
   return getCases().filter(c => {
-    const matchesQ =
-      !q || (c.name || '').toLowerCase().includes(q) || (c.manufacturer || '').toLowerCase().includes(q);
+    const matchesQ = !q || (c.name || '').toLowerCase().includes(q) || (c.manufacturer || '').toLowerCase().includes(q);
     const matchesCat = !cats.length || cats.includes(c.category);
     return matchesQ && matchesCat;
   });

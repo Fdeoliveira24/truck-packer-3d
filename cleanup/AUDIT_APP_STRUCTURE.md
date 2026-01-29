@@ -1,7 +1,8 @@
 # Truck Packer 3D - Application Architecture Audit
 
 **Date:** 2025-01-17  
-**Purpose:** Comprehensive codebase structure documentation to support feature requests without sharing 30+ files  
+**Purpose:** Comprehensive codebase structure documentation to support feature requests without
+sharing 30+ files  
 **Version:** 1.0.0
 
 ---
@@ -74,9 +75,13 @@ Truck Packer 3D/
 ```
 
 **Key Observations:**
-- **Single-file app:** Entire application logic lives in `index.html` as inline JavaScript modules (IIFE pattern)
-- **Partial migration:** `/src` structure exists with core infrastructure (state, storage, auth) implemented, but screen UI logic still in `index.html`
-- **Empty feature folders:** `/src/features/*` are placeholders; actual screens (`PacksUI`, `CasesUI`, `EditorUI`, etc.) are in `index.html`
+
+- **Single-file app:** Entire application logic lives in `index.html` as inline JavaScript modules
+  (IIFE pattern)
+- **Partial migration:** `/src` structure exists with core infrastructure (state, storage, auth)
+  implemented, but screen UI logic still in `index.html`
+- **Empty feature folders:** `/src/features/*` are placeholders; actual screens (`PacksUI`,
+  `CasesUI`, `EditorUI`, etc.) are in `index.html`
 - **No bundler:** App loaded directly in browser; CDN libraries via `<script>` tags
 
 ---
@@ -99,11 +104,12 @@ Truck Packer 3D/
    - All modules defined as closures inside `window.TruckPackerApp` IIFE
 
 4. **Bootstrap IIFE** (lines 7880-7897):
+
    ```javascript
    (async function () {
      // Wait for Three.js to load
      await window.__TP3D_BOOT.threeReady;
-     
+
      // Initialize app
      window.TruckPackerApp.init(); // Line 7886
    })();
@@ -180,6 +186,7 @@ function init() {
 ```
 
 **Key modules (all in `index.html`):**
+
 - `Utils` (line ~1590): Helper functions (uuid, formatting, conversions, etc.)
 - `UIComponents` (line ~1830): Toast/modal/dropdown system
 - `SystemOverlay` (line ~2090): Full-screen error messages
@@ -261,10 +268,12 @@ function navigate(screenKey) {
   1. Reads `StateStore.get('currentScreen')`
   2. Toggles `.active` class on `.screen` elements
   3. Updates topbar title/subtitle
-  4. Adds `.editor-mode` class to `.content` if screen is `editor` (removes padding, hides grid pattern)
+  4. Adds `.editor-mode` class to `.content` if screen is `editor` (removes padding, hides grid
+     pattern)
   5. Re-renders nav buttons with `.active` state
 
 **Available screens:**
+
 - `packs`: Pack library grid (default)
 - `cases`: Case inventory table
 - `editor`: 3D workspace (Three.js)
@@ -276,15 +285,16 @@ function navigate(screenKey) {
 
 **Topbar updates dynamically** based on screen:
 
-| Screen    | Title             | Subtitle                                      |
-|-----------|-------------------|-----------------------------------------------|
-| packs     | "Packs"           | "Project library"                             |
-| cases     | "Cases"           | "Inventory management"                        |
-| editor    | `pack.title`      | `"Edited " + formatRelativeTime(lastEdited)`  |
-| updates   | "Updates"         | "Release notes"                               |
-| roadmap   | "Roadmap"         | "Product direction"                           |
+| Screen  | Title        | Subtitle                                     |
+| ------- | ------------ | -------------------------------------------- |
+| packs   | "Packs"      | "Project library"                            |
+| cases   | "Cases"      | "Inventory management"                       |
+| editor  | `pack.title` | `"Edited " + formatRelativeTime(lastEdited)` |
+| updates | "Updates"    | "Release notes"                              |
+| roadmap | "Roadmap"    | "Product direction"                          |
 
 **Buttons (always visible):**
+
 - Export App JSON
 - Import App JSON
 - Help
@@ -298,6 +308,7 @@ function navigate(screenKey) {
 **Key:** `truckPacker3d:v1`
 
 **Payload structure:**
+
 ```javascript
 {
   version: "1.0.0",
@@ -310,6 +321,7 @@ function navigate(screenKey) {
 ```
 
 **Session storage key:** `truckPacker3d:session:v1`
+
 ```javascript
 {
   user: { name: "Demo User", email: "info@pxl360.com" },
@@ -321,26 +333,27 @@ function navigate(screenKey) {
 
 ```typescript
 interface Case {
-  id: string;              // UUID
-  name: string;            // "Line Array Case"
-  manufacturer: string;    // "L-Acoustics"
-  category: string;        // "audio" (lowercase key)
+  id: string; // UUID
+  name: string; // "Line Array Case"
+  manufacturer: string; // "L-Acoustics"
+  category: string; // "audio" (lowercase key)
   dimensions: {
-    length: number;        // inches
-    width: number;         // inches
-    height: number;        // inches
+    length: number; // inches
+    width: number; // inches
+    height: number; // inches
   };
-  weight: number;          // pounds
-  volume: number;          // cubic inches (computed)
-  canFlip: boolean;        // Rotation allowed?
-  notes: string;           // User notes
-  color: string;           // Hex color: "#ff9f1c"
-  createdAt: number;       // timestamp
-  updatedAt: number;       // timestamp
+  weight: number; // pounds
+  volume: number; // cubic inches (computed)
+  canFlip: boolean; // Rotation allowed?
+  notes: string; // User notes
+  color: string; // Hex color: "#ff9f1c"
+  createdAt: number; // timestamp
+  updatedAt: number; // timestamp
 }
 ```
 
 **Operations (in `CaseLibrary`):**
+
 - `getCases()`: Returns all cases
 - `getById(caseId)`: Find one case
 - `upsert(caseData)`: Create or update (recalculates `volume`, sets `updatedAt`)
@@ -353,44 +366,45 @@ interface Case {
 
 ```typescript
 interface Pack {
-  id: string;              // UUID
-  title: string;           // "Demo Pack"
-  client: string;          // "Example Client"
-  projectName: string;     // "Envato Preview"
-  drawnBy: string;         // "Truck Packer 3D"
-  notes: string;           // User notes
+  id: string; // UUID
+  title: string; // "Demo Pack"
+  client: string; // "Example Client"
+  projectName: string; // "Envato Preview"
+  drawnBy: string; // "Truck Packer 3D"
+  notes: string; // User notes
   truck: {
-    length: number;        // inches (636 = 53ft trailer)
-    width: number;         // inches (102)
-    height: number;        // inches (98)
+    length: number; // inches (636 = 53ft trailer)
+    width: number; // inches (102)
+    height: number; // inches (98)
   };
-  cases: CaseInstance[];   // Array of placed instances
-  groups: Group[];         // Future: grouped instances
+  cases: CaseInstance[]; // Array of placed instances
+  groups: Group[]; // Future: grouped instances
   stats: {
-    totalCases: number;    // Total instances
-    packedCases: number;   // Instances inside truck bounds
-    volumeUsed: number;    // cubic inches used
+    totalCases: number; // Total instances
+    packedCases: number; // Instances inside truck bounds
+    volumeUsed: number; // cubic inches used
     volumePercent: number; // % of truck filled
-    totalWeight: number;   // pounds
+    totalWeight: number; // pounds
   };
-  createdAt: number;       // timestamp
-  lastEdited: number;      // timestamp
+  createdAt: number; // timestamp
+  lastEdited: number; // timestamp
 }
 
 interface CaseInstance {
-  id: string;              // UUID (unique per instance)
-  caseId: string;          // Reference to Case.id
+  id: string; // UUID (unique per instance)
+  caseId: string; // Reference to Case.id
   transform: {
-    position: { x: number, y: number, z: number }; // inches
-    rotation: { x: number, y: number, z: number }; // radians
-    scale: { x: number, y: number, z: number };    // 1 = normal
+    position: { x: number; y: number; z: number }; // inches
+    rotation: { x: number; y: number; z: number }; // radians
+    scale: { x: number; y: number; z: number }; // 1 = normal
   };
-  hidden: boolean;         // Visibility toggle
-  groupId: string | null;  // Future: group membership
+  hidden: boolean; // Visibility toggle
+  groupId: string | null; // Future: group membership
 }
 ```
 
 **Operations (in `PackLibrary`):**
+
 - `getPacks()`: Returns all packs
 - `getById(packId)`: Find one pack
 - `create(packData)`: New pack with empty case array
@@ -401,41 +415,43 @@ interface CaseInstance {
 - `addInstance(packId, caseId, position)`: Add case to pack
 - `updateInstance(packId, instanceId, patch)`: Update transform/hidden
 - `removeInstances(packId, instanceIds[])`: Delete instances
-- `computeStats(pack, caseLibraryOverride?)`: Recalculate volume/weight (counts only visible instances inside truck bounds)
+- `computeStats(pack, caseLibraryOverride?)`: Recalculate volume/weight (counts only visible
+  instances inside truck bounds)
 
 ### 4.4 Preferences Model (lines ~2500 in `Defaults`)
 
 ```typescript
 interface Preferences {
   units: {
-    length: "in" | "ft" | "mm" | "cm" | "m";
-    weight: "lb" | "kg";
+    length: 'in' | 'ft' | 'mm' | 'cm' | 'm';
+    weight: 'lb' | 'kg';
   };
-  theme: "light" | "dark";
-  labelFontSize: number;           // 8-24px
-  hiddenCaseOpacity: number;       // 0-1
+  theme: 'light' | 'dark';
+  labelFontSize: number; // 8-24px
+  hiddenCaseOpacity: number; // 0-1
   snapping: {
     enabled: boolean;
-    gridSize: number;              // inches
+    gridSize: number; // inches
   };
   camera: {
-    defaultView: "perspective" | "orthographic";
+    defaultView: 'perspective' | 'orthographic';
   };
   export: {
-    screenshotResolution: string;  // "1920x1080" | "2560x1440" | "3840x2160"
+    screenshotResolution: string; // "1920x1080" | "2560x1440" | "3840x2160"
     pdfIncludeStats: boolean;
   };
-  categories: Category[];          // User-defined categories
+  categories: Category[]; // User-defined categories
 }
 
 interface Category {
-  key: string;        // "audio" (lowercase, unique)
-  name: string;       // "Audio"
-  color: string;      // "#f59e0b"
+  key: string; // "audio" (lowercase, unique)
+  name: string; // "Audio"
+  color: string; // "#f59e0b"
 }
 ```
 
 **Default categories (line ~2510):**
+
 - `audio` (orange)
 - `lighting` (blue)
 - `stage` (green)
@@ -447,22 +463,24 @@ interface Category {
 **Reactive store** with history management:
 
 ```javascript
-StateStore.init(initialState);  // Set up state + history
-StateStore.get(key);            // Read state
-StateStore.set(patch);          // Merge patch → notify subscribers
-StateStore.replace(newState);   // Full replace
-StateStore.snapshot();          // Deep clone current state
-StateStore.undo();              // Restore previous history entry
-StateStore.redo();              // Restore next history entry
-StateStore.subscribe(fn);       // Listen to changes
+StateStore.init(initialState); // Set up state + history
+StateStore.get(key); // Read state
+StateStore.set(patch); // Merge patch → notify subscribers
+StateStore.replace(newState); // Full replace
+StateStore.snapshot(); // Deep clone current state
+StateStore.undo(); // Restore previous history entry
+StateStore.redo(); // Restore next history entry
+StateStore.subscribe(fn); // Listen to changes
 ```
 
 **History tracking:**
+
 - Max 50 snapshots
 - Only tracks "significant" changes: `caseLibrary`, `packLibrary`, `preferences`
 - Skip history for UI state changes (`currentScreen`, `selectedInstanceIds`, `cameraView`)
 
 **Global state shape:**
+
 ```typescript
 interface AppState {
   // Data
@@ -470,11 +488,11 @@ interface AppState {
   packLibrary: Pack[];
   preferences: Preferences;
   currentPackId: string | null;
-  
+
   // UI state (not persisted to localStorage)
-  currentScreen: "packs" | "cases" | "editor" | "updates" | "roadmap";
+  currentScreen: 'packs' | 'cases' | 'editor' | 'updates' | 'roadmap';
   selectedInstanceIds: string[];
-  cameraView: "perspective" | "orthographic";
+  cameraView: 'perspective' | 'orthographic';
 }
 ```
 
@@ -486,6 +504,7 @@ interface AppState {
 4. **After debounce** → `Storage.saveNow()` writes to `localStorage`
 
 **Export/Import:**
+
 - `Storage.exportAppJSON()`: Full app data as JSON string
 - `Storage.importAppJSON(text)`: Parse + validate + merge into state
 
@@ -496,14 +515,16 @@ interface AppState {
 ### 5.1 SceneManager Initialization (lines ~5800-6400)
 
 **Lifecycle:**
+
 ```javascript
 SceneManager.init(containerEl); // Called once on app bootstrap
-SceneManager.resize();           // Called on window resize
+SceneManager.resize(); // Called on window resize
 SceneManager.setTruck(truckDims); // Called when pack changes
-SceneManager.refreshTheme();     // Called when theme toggles
+SceneManager.refreshTheme(); // Called when theme toggles
 ```
 
 **Setup flow (line ~5850):**
+
 1. Create Three.js scene
 2. Create perspective camera (FOV 50°, near 0.01, far 5000)
 3. Create WebGL renderer (antialias, high-performance, shadows enabled)
@@ -514,11 +535,13 @@ SceneManager.refreshTheme();     // Called when theme toggles
 8. Start render loop (`requestAnimationFrame`)
 
 **Coordinate system:**
+
 - `1 world unit = 20 inches` (INCH_TO_WORLD = 0.05)
 - Truck positioned at origin: X+ = length, Y+ = height, Z+ = width
 - Truck bounds: `{ min: (0, 0, -width/2), max: (length, height, width/2) }`
 
 **Utilities:**
+
 - `toWorld(inches)`: Convert inches → world units
 - `toInches(worldUnits)`: Convert world units → inches
 - `vecInchesToWorld(pos)`: Convert position object → THREE.Vector3
@@ -542,11 +565,13 @@ function setTruck(truckInches) {
 ### 5.3 CaseScene Management (lines ~6400-6746)
 
 **Instance tracking:**
+
 ```javascript
 const instances = new Map(); // instanceId -> THREE.Group
 ```
 
 **Sync flow (line ~6430):**
+
 ```javascript
 function sync(pack) {
   // 1. Build signature for each instance (caseId + dimensions + color)
@@ -558,6 +583,7 @@ function sync(pack) {
 ```
 
 **Instance mesh structure:**
+
 ```
 THREE.Group (instance.id)
 ├── THREE.Mesh (main box)
@@ -566,21 +592,23 @@ THREE.Group (instance.id)
 ```
 
 **Materials:**
+
 - Main: `MeshStandardMaterial` (color from case.color, metalness 0.3, roughness 0.7)
 - Edges: `LineBasicMaterial` (darker shade of case.color)
 - Selection outline: `LineBasicMaterial` (accent color, thicker)
 - Hover: Brightness boost via `material.emissive`
 
 **Transform application (line ~6520):**
+
 ```javascript
 function applyTransform(group, instance) {
   const pos = instance.transform.position; // inches
   const posWorld = SceneManager.vecInchesToWorld(pos);
   group.position.copy(posWorld);
-  
+
   const rot = instance.transform.rotation; // radians
   group.rotation.set(rot.x, rot.y, rot.z);
-  
+
   const scale = instance.transform.scale;
   group.scale.set(scale.x, scale.y, scale.z);
 }
@@ -589,6 +617,7 @@ function applyTransform(group, instance) {
 ### 5.4 Editor Interaction (lines ~6746-7260 in `EditorUI`)
 
 **Mouse/touch handling:**
+
 - **Click:** Select instance
 - **Shift+Click:** Multi-select
 - **Drag:** Move selected instances (raycasting to ground plane)
@@ -599,6 +628,7 @@ function applyTransform(group, instance) {
 - **Ctrl/Cmd+P:** AutoPack (automatic placement algorithm)
 
 **AutoPack algorithm (line ~7100):**
+
 1. Sort cases by volume (largest first)
 2. Place each case at lowest available position
 3. Check collision with existing instances using AABB
@@ -606,11 +636,13 @@ function applyTransform(group, instance) {
 5. Skip if no valid position found
 
 **Camera controls:**
+
 - Orbit: Left mouse drag
 - Pan: Right mouse drag
 - Zoom: Scroll wheel
 
 **Viewport toolbar (line ~1430):**
+
 - Toggle case browser (left panel)
 - Toggle inspector (right panel)
 - AutoPack button
@@ -620,6 +652,7 @@ function applyTransform(group, instance) {
 ### 5.5 Performance Features (line ~6050)
 
 **DevOverlay (press P):**
+
 - FPS counter
 - Frame time
 - Memory usage (if available)
@@ -627,11 +660,13 @@ function applyTransform(group, instance) {
 - Console logging every 10s
 
 **Performance mode:**
+
 - Auto-enables if FPS < 30 for > 5 seconds
 - Disables shadows
 - Shows toast with "Restore" action
 
 **Optimizations:**
+
 - Pixel ratio capped at 2
 - Geometry/material disposal on mesh rebuild
 - Debounced resize handler (150ms)
@@ -666,22 +701,25 @@ AppShell.renderShell()
 ### 6.2 Screen Lifecycle
 
 **Initialization (once):**
+
 ```javascript
-PacksUI.init();   // Set up event listeners, search input
-CasesUI.init();   // Set up table sorting, category chips
-EditorUI.init();  // Initialize Three.js scene, raycaster, controls
+PacksUI.init(); // Set up event listeners, search input
+CasesUI.init(); // Set up table sorting, category chips
+EditorUI.init(); // Initialize Three.js scene, raycaster, controls
 // etc.
 ```
 
 **Rendering (on data change):**
+
 ```javascript
-PacksUI.render();   // Build pack grid from PackLibrary.getPacks()
-CasesUI.render();   // Build cases table from CaseLibrary.getCases()
-EditorUI.render();  // Sync 3D scene with current pack
+PacksUI.render(); // Build pack grid from PackLibrary.getPacks()
+CasesUI.render(); // Build cases table from CaseLibrary.getCases()
+EditorUI.render(); // Sync 3D scene with current pack
 // etc.
 ```
 
 **Screens subscribe to state changes:**
+
 ```javascript
 StateStore.subscribe((changes, nextState) => {
   if (changes.caseLibrary || changes.packLibrary) {
@@ -700,20 +738,24 @@ StateStore.subscribe((changes, nextState) => {
 ### 6.3 Modal / Overlay Navigation
 
 **Settings Overlay:**
+
 - `SettingsOverlay.open("preferences")` → Full-screen modal with left nav
 - Tabs: account, preferences, org-general, org-billing
 - Does NOT use screen system (z-index 17000, above main app)
 
 **UIComponents Modals:**
+
 - `UIComponents.showModal({ title, content, actions })` → Centered modal (z-index 10000)
 - Used for: New Pack, Edit Case, Rename Pack, Category Manager, Import CSV, etc.
 
 **Toast Notifications:**
+
 - `UIComponents.showToast(message, type, options)` → Bottom-right toasts (z-index 20000)
 - Auto-dismiss after 3.2s (configurable)
 - Max 3 toasts visible
 
 **System Overlay:**
+
 - `SystemOverlay.show({ title, message, items })` → Full-screen error (z-index 30000)
 - Used for: WebGL not available, critical boot failures
 
@@ -724,6 +766,7 @@ StateStore.subscribe((changes, nextState) => {
 ### 7.1 Current Implementation (line ~3850 in `PacksUI.buildPreview()`)
 
 **Placeholder blocks:**
+
 ```javascript
 function buildPreview(pack) {
   const preview = document.createElement('div');
@@ -749,6 +792,7 @@ function buildPreview(pack) {
 ```
 
 **CSS structure (lines ~980-1040):**
+
 ```css
 .pack-preview {
   height: 120px;
@@ -771,6 +815,7 @@ function buildPreview(pack) {
 ```
 
 **Current behavior:**
+
 - ✅ Shows up to 12 colored blocks (case colors)
 - ✅ Empty state for packs with no items
 - ❌ **TODO:** Replace with actual canvas snapshot rendering (see comment line ~3850)
@@ -787,6 +832,7 @@ function buildPreview(pack) {
 ```
 
 **Intended approach:**
+
 1. Create off-screen renderer (same aspect ratio as preview)
 2. Render pack contents (truck + instances) using `SceneManager` + `CaseScene.sync(pack)`
 3. Capture frame via `renderer.domElement.toDataURL('image/png')`
@@ -799,13 +845,13 @@ function buildPreview(pack) {
 packs.forEach(pack => {
   const card = document.createElement('div');
   card.className = 'card pack-card';
-  
+
   const preview = buildPreview(pack); // ← Current placeholder
   const title = document.createElement('h3');
   title.textContent = pack.title;
-  
+
   // ... metadata badges, kebab menu
-  
+
   card.appendChild(preview);
   card.appendChild(title);
   // ...
@@ -814,6 +860,7 @@ packs.forEach(pack => {
 ```
 
 **Preview placement:**
+
 - First child of `.pack-card`
 - Fixed height: 120px
 - Aspect ratio: ~2.5:1 (grid width varies)
@@ -829,15 +876,17 @@ packs.forEach(pack => {
 **File:** `index.html` (lines ~3680-3740 in `PackLibrary`)
 
 **Change pack model:**
+
 ```typescript
 interface Pack {
   // ... existing fields
-  thumbnail?: string;  // NEW: Data URL or null
+  thumbnail?: string; // NEW: Data URL or null
   thumbnailUpdatedAt?: number; // NEW: Timestamp for cache invalidation
 }
 ```
 
 **Update `PackLibrary.create()`:**
+
 ```javascript
 function create(packData) {
   const pack = {
@@ -850,6 +899,7 @@ function create(packData) {
 ```
 
 **Update `Normalizer.normalizePack()` (line ~2760):**
+
 ```javascript
 function normalizePack(p, caseMap, now) {
   const pack = {
@@ -874,7 +924,7 @@ const SceneManager = (() => {
 
     const width = options.width || 512;
     const height = options.height || 256;
-    
+
     // Save current viewport
     const prevWidth = viewSize.width;
     const prevHeight = viewSize.height;
@@ -894,11 +944,8 @@ const SceneManager = (() => {
         toWorld(pack.truck.height / 2),
         0
       );
-      const distance = Math.max(
-        toWorld(pack.truck.length),
-        toWorld(pack.truck.width)
-      ) * 1.2;
-      
+      const distance = Math.max(toWorld(pack.truck.length), toWorld(pack.truck.width)) * 1.2;
+
       camera.position.set(
         truckCenter.x + distance * 0.7,
         truckCenter.y + distance * 0.5,
@@ -917,7 +964,6 @@ const SceneManager = (() => {
       const dataUrl = renderer.domElement.toDataURL('image/png');
 
       return dataUrl;
-
     } finally {
       // Restore viewport
       renderer.setSize(prevWidth, prevHeight);
@@ -942,14 +988,14 @@ const SceneManager = (() => {
 ```javascript
 function autoPack() {
   // ... existing AutoPack logic
-  
+
   const packId = StateStore.get('currentPackId');
   const pack = PackLibrary.getById(packId);
   if (pack) {
     const thumbnail = SceneManager.captureThumbnail(pack);
     PackLibrary.update(packId, { thumbnail, thumbnailUpdatedAt: Date.now() });
   }
-  
+
   UIComponents.showToast('AutoPack complete', 'success');
 }
 ```
@@ -960,15 +1006,15 @@ function autoPack() {
 function exitEditor() {
   const packId = StateStore.get('currentPackId');
   const pack = PackLibrary.getById(packId);
-  
+
   // Ask user if they want to update thumbnail
   const shouldCapture = pack && (pack.cases || []).length > 0 && !pack.thumbnail;
-  
+
   if (shouldCapture) {
     const thumbnail = SceneManager.captureThumbnail(pack);
     PackLibrary.update(packId, { thumbnail, thumbnailUpdatedAt: Date.now() });
   }
-  
+
   AppShell.navigate('packs');
 }
 ```
@@ -989,7 +1035,7 @@ document.getElementById('btn-capture-thumbnail').addEventListener('click', () =>
   const packId = StateStore.get('currentPackId');
   const pack = PackLibrary.getById(packId);
   if (!pack) return;
-  
+
   const thumbnail = SceneManager.captureThumbnail(pack);
   PackLibrary.update(packId, { thumbnail, thumbnailUpdatedAt: Date.now() });
   UIComponents.showToast('Preview updated', 'success');
@@ -1003,7 +1049,7 @@ document.getElementById('btn-capture-thumbnail').addEventListener('click', () =>
 ```javascript
 function buildPreview(pack) {
   const preview = document.createElement('div');
-  
+
   // Use thumbnail if available
   if (pack.thumbnail) {
     preview.className = 'pack-preview pack-preview-image';
@@ -1015,7 +1061,7 @@ function buildPreview(pack) {
     img.style.objectFit = 'cover';
     img.style.borderRadius = 'var(--radius-md)';
     preview.appendChild(img);
-    
+
     // Add "Edit Preview" button overlay
     const editBtn = document.createElement('button');
     editBtn.className = 'btn btn-ghost';
@@ -1026,24 +1072,24 @@ function buildPreview(pack) {
     editBtn.style.fontSize = 'var(--text-xs)';
     editBtn.innerHTML = '<i class="fa-solid fa-camera"></i>';
     editBtn.title = 'Update preview';
-    editBtn.addEventListener('click', (ev) => {
+    editBtn.addEventListener('click', ev => {
       ev.stopPropagation();
       openThumbnailEditor(pack.id);
     });
     preview.appendChild(editBtn);
-    
+
     return preview;
   }
-  
+
   // Fallback to colored blocks if no thumbnail
   const items = (pack.cases || []).slice(0, 12);
-  
+
   if (!items.length) {
     preview.className = 'pack-preview empty';
     preview.textContent = 'No items yet';
     return preview;
   }
-  
+
   preview.className = 'pack-preview';
   items.forEach(inst => {
     const cell = document.createElement('div');
@@ -1053,12 +1099,13 @@ function buildPreview(pack) {
     cell.title = meta ? meta.name : 'Case';
     preview.appendChild(cell);
   });
-  
+
   return preview;
 }
 ```
 
 **Add CSS for image preview (line ~1040):**
+
 ```css
 .pack-preview-image {
   position: relative;
@@ -1079,11 +1126,11 @@ function buildPreview(pack) {
 function openThumbnailEditor(packId) {
   const pack = PackLibrary.getById(packId);
   if (!pack) return;
-  
+
   const content = document.createElement('div');
   content.style.display = 'grid';
   content.style.gap = '14px';
-  
+
   const previewWrap = document.createElement('div');
   previewWrap.style.width = '100%';
   previewWrap.style.height = '300px';
@@ -1093,15 +1140,15 @@ function openThumbnailEditor(packId) {
   previewWrap.style.display = 'flex';
   previewWrap.style.alignItems = 'center';
   previewWrap.style.justifyContent = 'center';
-  
+
   const img = document.createElement('img');
   img.style.maxWidth = '100%';
   img.style.maxHeight = '100%';
   img.src = pack.thumbnail || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>';
   previewWrap.appendChild(img);
-  
+
   content.appendChild(previewWrap);
-  
+
   UIComponents.showModal({
     title: 'Edit Pack Preview',
     content,
@@ -1120,16 +1167,16 @@ function openThumbnailEditor(packId) {
             UIComponents.showToast('Preview captured', 'success');
             AppShell.navigate('packs');
           }, 500); // Wait for editor to render
-        }
+        },
       },
       {
         label: 'Remove',
         onClick: () => {
           PackLibrary.update(packId, { thumbnail: null, thumbnailUpdatedAt: null });
           UIComponents.showToast('Preview removed', 'info');
-        }
-      }
-    ]
+        },
+      },
+    ],
   });
 }
 ```
@@ -1157,6 +1204,7 @@ function openThumbnailEditor(packId) {
 Use this to verify app functionality without running extensive tests:
 
 ### Core Features
+
 - [ ] **Packs Screen**
   - [ ] Grid loads with demo pack visible
   - [ ] Click "New Pack" → modal opens → create → redirects to editor
@@ -1198,6 +1246,7 @@ Use this to verify app functionality without running extensive tests:
   - [ ] Toggle theme → background/colors update immediately
 
 ### Data Persistence
+
 - [ ] **localStorage**
   - [ ] Create case → reload page → case still exists
   - [ ] Create pack → reload page → pack still exists
@@ -1209,6 +1258,7 @@ Use this to verify app functionality without running extensive tests:
   - [ ] Export pack JSON → download → import in fresh session → pack + bundled cases imported
 
 ### UI State
+
 - [ ] **Navigation**
   - [ ] Sidebar buttons highlight active screen
   - [ ] Topbar title/subtitle updates per screen
@@ -1222,6 +1272,7 @@ Use this to verify app functionality without running extensive tests:
   - [ ] Max 3 toasts visible at once
 
 ### Performance
+
 - [ ] **3D Rendering**
   - [ ] Scene renders at 55+ FPS (check DevOverlay: press P)
   - [ ] Dragging instances is smooth (no stuttering)
@@ -1229,6 +1280,7 @@ Use this to verify app functionality without running extensive tests:
   - [ ] Shadows disabled if FPS < 30 for >5s (performance mode)
 
 ### Edge Cases
+
 - [ ] **Empty states**
   - [ ] No packs → shows "No packs yet" card
   - [ ] No cases → shows "No cases found" card
@@ -1245,41 +1297,42 @@ Use this to verify app functionality without running extensive tests:
 
 ## 10. Feature Implementation Hook Map
 
-This table maps common feature requests to the exact file/function where implementation should occur.
+This table maps common feature requests to the exact file/function where implementation should
+occur.
 
-| Feature Area | File Path | Function/Module Name | Why This Is The Hook Point |
-|--------------|-----------|----------------------|----------------------------|
-| **Add Pack Thumbnail Field** | `index.html` | `PackLibrary` module (line ~3680) | Pack model definition + CRUD operations live here |
-| **Normalize Thumbnail on Load** | `index.html` | `Normalizer.normalizePack()` (line ~2760) | All imported/loaded pack data passes through this validator |
-| **Capture Thumbnail (New Function)** | `index.html` | `SceneManager` module (line ~5800) | SceneManager owns Three.js renderer; add `captureThumbnail()` here |
-| **Auto-Capture After AutoPack** | `index.html` | `EditorUI.autoPack()` (line ~7100) | Called after AutoPack algorithm completes; add capture + update here |
-| **Capture on Editor Exit** | `index.html` | `EditorUI` exit handler (line ~6900) | Fires when user navigates away from editor; check if thumbnail exists |
-| **Manual Thumbnail Capture Button** | `index.html` | Viewport toolbar (line ~1430) + `EditorUI.init()` (line ~6820) | Add button HTML in toolbar, bind click handler in EditorUI.init() |
-| **Render Thumbnail in Pack Card** | `index.html` | `PacksUI.buildPreview()` (line ~3850) | Generates preview HTML for each pack card; replace colored blocks with `<img>` |
-| **Thumbnail Editor Modal** | `index.html` | `PacksUI` module (add new function) | Add `openThumbnailEditor(packId)` modal function here |
-| **Pack Card "Edit Preview" Button** | `index.html` | `PacksUI.buildPreview()` (line ~3850) | Add overlay button when thumbnail exists |
-| **Add Case Color Picker** | `index.html` | `CasesUI.openCaseModal()` (line ~4450) | Modal form for case creation/editing; add color input field |
-| **Custom Category Colors** | `index.html` | `CategoryService.upsert()` (line ~3540) | Category CRUD; color already supported, just expose in UI |
-| **Category Manager UI** | `index.html` | `CasesUI.openCategoryManager()` (line ~4650) | Already exists! Modal with color pickers per category |
-| **Export Pack Thumbnail to JSON** | `index.html` | `PackLibrary.update()` (line ~3690) + `Storage.exportAppJSON()` (line ~2360) | Thumbnail auto-included in pack object; no extra work needed |
-| **Import Pack Thumbnail from JSON** | `index.html` | `PacksUI.importPackPayload()` (line ~4090) | Already handles full pack object; thumbnail preserved |
-| **Add Custom Truck Preset** | `index.html` | `PacksUI.openNewPackModal()` (line ~3900) | Modal has preset dropdown; add new option to `truckPresets` array |
-| **Add Unit Conversion for Metric** | `index.html` | `Utils` module (line ~1700) | Contains `inchesToUnit()`, `unitToInches()`, etc.; extend as needed |
-| **Add Weight Balance Visualization** | `index.html` | `EditorUI` module (add new panel) | Create new right-panel section showing center-of-gravity calculation |
-| **Add Instance Rotation UI** | `index.html` | `EditorUI` inspector panel (line ~7200) | Inspector shows transform inputs; add rotation X/Y/Z sliders |
-| **Add Pack Duplicate Shortcut** | `index.html` | `PacksUI` pack card click handler (line ~3800) | Add Ctrl/Cmd+Click detection → call `PackLibrary.duplicate()` |
-| **Add Case Quick-Add from Editor** | `index.html` | `EditorUI` left panel (line ~6850) | Case browser already exists; add "+" button next to search |
-| **Add Keyboard Shortcut Reference** | `index.html` | `EditorUI` help button (line ~1210) | Button already exists in topbar; add modal with shortcut table |
-| **Add Undo/Redo UI Indicators** | `index.html` | `EditorUI` toolbar (line ~1430) | Add undo/redo buttons; enable/disable based on `StateStore` history |
-| **Add Multi-Pack View** | `index.html` | New `PacksUI.openCompareModal()` function | Create modal with side-by-side pack comparison (stats, previews) |
-| **Add CSV Export for Packs** | `index.html` | `PacksUI` pack card kebab menu (line ~3900) | Add "Export CSV" option → generate CSV with case list |
-| **Add Dark Mode Auto-Detect** | `index.html` | `PreferencesManager.applyTheme()` (line ~2880) | Check `window.matchMedia('(prefers-color-scheme: dark)')` |
-| **Add Mobile Gestures** | `index.html` | `EditorUI` touch event handlers (line ~6950) | Already has basic touch; extend with pinch-zoom, two-finger rotate |
-| **Add Screenshot Auto-Save** | `index.html` | `EditorUI` screenshot button (line ~7160) | Modify to save to pack.thumbnail instead of downloading |
-| **Add Pack Search by Client** | `index.html` | `PacksUI.render()` search filter (line ~3790) | Already searches title/client; extend to search projectName, notes |
-| **Add Case Library Stats** | `index.html` | `CasesUI` screen header (line ~1322) | Add stats card: total cases, avg volume, total weight |
-| **Add Pack Timeline View** | `index.html` | New `PacksUI.renderTimeline()` function | Create vertical timeline sorted by `lastEdited` |
-| **Add AutoPack Settings** | `index.html` | `EditorUI.autoPack()` (line ~7100) + Settings modal | Add options: sort by volume/weight, fill strategy (tight/loose) |
+| Feature Area                         | File Path    | Function/Module Name                                                         | Why This Is The Hook Point                                                     |
+| ------------------------------------ | ------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| **Add Pack Thumbnail Field**         | `index.html` | `PackLibrary` module (line ~3680)                                            | Pack model definition + CRUD operations live here                              |
+| **Normalize Thumbnail on Load**      | `index.html` | `Normalizer.normalizePack()` (line ~2760)                                    | All imported/loaded pack data passes through this validator                    |
+| **Capture Thumbnail (New Function)** | `index.html` | `SceneManager` module (line ~5800)                                           | SceneManager owns Three.js renderer; add `captureThumbnail()` here             |
+| **Auto-Capture After AutoPack**      | `index.html` | `EditorUI.autoPack()` (line ~7100)                                           | Called after AutoPack algorithm completes; add capture + update here           |
+| **Capture on Editor Exit**           | `index.html` | `EditorUI` exit handler (line ~6900)                                         | Fires when user navigates away from editor; check if thumbnail exists          |
+| **Manual Thumbnail Capture Button**  | `index.html` | Viewport toolbar (line ~1430) + `EditorUI.init()` (line ~6820)               | Add button HTML in toolbar, bind click handler in EditorUI.init()              |
+| **Render Thumbnail in Pack Card**    | `index.html` | `PacksUI.buildPreview()` (line ~3850)                                        | Generates preview HTML for each pack card; replace colored blocks with `<img>` |
+| **Thumbnail Editor Modal**           | `index.html` | `PacksUI` module (add new function)                                          | Add `openThumbnailEditor(packId)` modal function here                          |
+| **Pack Card "Edit Preview" Button**  | `index.html` | `PacksUI.buildPreview()` (line ~3850)                                        | Add overlay button when thumbnail exists                                       |
+| **Add Case Color Picker**            | `index.html` | `CasesUI.openCaseModal()` (line ~4450)                                       | Modal form for case creation/editing; add color input field                    |
+| **Custom Category Colors**           | `index.html` | `CategoryService.upsert()` (line ~3540)                                      | Category CRUD; color already supported, just expose in UI                      |
+| **Category Manager UI**              | `index.html` | `CasesUI.openCategoryManager()` (line ~4650)                                 | Already exists! Modal with color pickers per category                          |
+| **Export Pack Thumbnail to JSON**    | `index.html` | `PackLibrary.update()` (line ~3690) + `Storage.exportAppJSON()` (line ~2360) | Thumbnail auto-included in pack object; no extra work needed                   |
+| **Import Pack Thumbnail from JSON**  | `index.html` | `PacksUI.importPackPayload()` (line ~4090)                                   | Already handles full pack object; thumbnail preserved                          |
+| **Add Custom Truck Preset**          | `index.html` | `PacksUI.openNewPackModal()` (line ~3900)                                    | Modal has preset dropdown; add new option to `truckPresets` array              |
+| **Add Unit Conversion for Metric**   | `index.html` | `Utils` module (line ~1700)                                                  | Contains `inchesToUnit()`, `unitToInches()`, etc.; extend as needed            |
+| **Add Weight Balance Visualization** | `index.html` | `EditorUI` module (add new panel)                                            | Create new right-panel section showing center-of-gravity calculation           |
+| **Add Instance Rotation UI**         | `index.html` | `EditorUI` inspector panel (line ~7200)                                      | Inspector shows transform inputs; add rotation X/Y/Z sliders                   |
+| **Add Pack Duplicate Shortcut**      | `index.html` | `PacksUI` pack card click handler (line ~3800)                               | Add Ctrl/Cmd+Click detection → call `PackLibrary.duplicate()`                  |
+| **Add Case Quick-Add from Editor**   | `index.html` | `EditorUI` left panel (line ~6850)                                           | Case browser already exists; add "+" button next to search                     |
+| **Add Keyboard Shortcut Reference**  | `index.html` | `EditorUI` help button (line ~1210)                                          | Button already exists in topbar; add modal with shortcut table                 |
+| **Add Undo/Redo UI Indicators**      | `index.html` | `EditorUI` toolbar (line ~1430)                                              | Add undo/redo buttons; enable/disable based on `StateStore` history            |
+| **Add Multi-Pack View**              | `index.html` | New `PacksUI.openCompareModal()` function                                    | Create modal with side-by-side pack comparison (stats, previews)               |
+| **Add CSV Export for Packs**         | `index.html` | `PacksUI` pack card kebab menu (line ~3900)                                  | Add "Export CSV" option → generate CSV with case list                          |
+| **Add Dark Mode Auto-Detect**        | `index.html` | `PreferencesManager.applyTheme()` (line ~2880)                               | Check `window.matchMedia('(prefers-color-scheme: dark)')`                      |
+| **Add Mobile Gestures**              | `index.html` | `EditorUI` touch event handlers (line ~6950)                                 | Already has basic touch; extend with pinch-zoom, two-finger rotate             |
+| **Add Screenshot Auto-Save**         | `index.html` | `EditorUI` screenshot button (line ~7160)                                    | Modify to save to pack.thumbnail instead of downloading                        |
+| **Add Pack Search by Client**        | `index.html` | `PacksUI.render()` search filter (line ~3790)                                | Already searches title/client; extend to search projectName, notes             |
+| **Add Case Library Stats**           | `index.html` | `CasesUI` screen header (line ~1322)                                         | Add stats card: total cases, avg volume, total weight                          |
+| **Add Pack Timeline View**           | `index.html` | New `PacksUI.renderTimeline()` function                                      | Create vertical timeline sorted by `lastEdited`                                |
+| **Add AutoPack Settings**            | `index.html` | `EditorUI.autoPack()` (line ~7100) + Settings modal                          | Add options: sort by volume/weight, fill strategy (tight/loose)                |
 
 ---
 
@@ -1290,7 +1343,8 @@ This table maps common feature requests to the exact file/function where impleme
 - **Future refactor:** Migrate screen modules (`PacksUI`, `CasesUI`, `EditorUI`) to `/src/features/`
 - **localStorage limits:** ~5-10MB depending on browser; large thumbnails may exceed quota
 - **Data URL size:** Base64-encoded PNG thumbnails ~50-200KB each; monitor total storage usage
-- **Migration strategy:** Add `version` field to localStorage schema; handle upgrades in `Normalizer`
+- **Migration strategy:** Add `version` field to localStorage schema; handle upgrades in
+  `Normalizer`
 
 ---
 

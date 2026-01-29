@@ -13,6 +13,7 @@
 **Primary entry file:** `index.html` (7898 lines)
 
 **Pre-DOMContentLoaded:**
+
 1. **CDN libraries load** (lines 18-42):
    - Three.js ESM via esm.sh with import map
    - OrbitControls module
@@ -35,6 +36,7 @@
    ```
 
 **DOMContentLoaded listener:** Line 7890
+
 - Ensures DOM is ready before calling `TruckPackerApp.init()`
 - Fallback in case async boot completes before DOM ready
 
@@ -52,6 +54,7 @@
 10. **Window resize handler** → Debounced `SceneManager.resize()`
 
 **Global object:** `window.TruckPackerApp`
+
 - All modules are properties of this IIFE closure
 - No module bundler; no import/export statements
 
@@ -61,15 +64,16 @@
 
 ### A) Pack Data Model + Migration/Normalizer
 
-| File | Module/Function | Purpose | Line # |
-|------|----------------|---------|--------|
-| `index.html` | `PackLibrary` module | Pack CRUD operations, instance management, stats computation | ~3680-3740 |
-| `index.html` | `PackLibrary.create()` | Creates new pack with default structure (including `createdAt`, `lastEdited`) | ~3474 |
-| `index.html` | `PackLibrary.update()` | Updates pack fields, recalculates stats, sets `lastEdited = Date.now()` | ~3494 |
-| `index.html` | `Normalizer.normalizePack()` | Validates + normalizes pack data on load/import; migration entry point | ~2650-2680 |
-| `index.html` | `Defaults.seedPack()` | Demo pack factory; shows required pack structure | ~2520-2527 |
+| File         | Module/Function              | Purpose                                                                       | Line #     |
+| ------------ | ---------------------------- | ----------------------------------------------------------------------------- | ---------- |
+| `index.html` | `PackLibrary` module         | Pack CRUD operations, instance management, stats computation                  | ~3680-3740 |
+| `index.html` | `PackLibrary.create()`       | Creates new pack with default structure (including `createdAt`, `lastEdited`) | ~3474      |
+| `index.html` | `PackLibrary.update()`       | Updates pack fields, recalculates stats, sets `lastEdited = Date.now()`       | ~3494      |
+| `index.html` | `Normalizer.normalizePack()` | Validates + normalizes pack data on load/import; migration entry point        | ~2650-2680 |
+| `index.html` | `Defaults.seedPack()`        | Demo pack factory; shows required pack structure                              | ~2520-2527 |
 
 **Pack model shape (actual structure from code):**
+
 ```javascript
 {
   id: string,              // UUID
@@ -98,28 +102,30 @@
 ```
 
 **Critical timestamps:**
+
 - `createdAt`: Set once on pack creation
 - `lastEdited`: Updated on every `PackLibrary.update()` call (line 3494)
 - **No separate `updatedAt` field** (uses `lastEdited` for all modifications)
 
 ### B) Packs List UI Rendering
 
-| File | Module/Function | Purpose | Line # |
-|------|----------------|---------|--------|
-| `index.html` | `PacksUI` module | Packs screen: grid rendering, search, CRUD modals | ~3768-4200 |
-| `index.html` | `PacksUI.render()` | Main render loop: filters packs, builds grid, handles empty state | ~3790-3860 |
-| `index.html` | `PacksUI.buildPreview(pack)` | **Preview generator** - currently renders colored blocks; **TODO: canvas snapshot** | ~3911-3940 |
-| `index.html` | `PacksUI.init()` | Sets up search input listener, button handlers | ~3775-3788 |
-| `index.html` | Pack card HTML generation | Creates `.pack-card` with preview, title, metadata, kebab menu | ~3800-3858 |
-| `index.html` | Search input `#packs-search` | Filters by `title` or `client` (lowercase includes) | ~3790 + listener ~3777 |
+| File         | Module/Function              | Purpose                                                                             | Line #                 |
+| ------------ | ---------------------------- | ----------------------------------------------------------------------------------- | ---------------------- |
+| `index.html` | `PacksUI` module             | Packs screen: grid rendering, search, CRUD modals                                   | ~3768-4200             |
+| `index.html` | `PacksUI.render()`           | Main render loop: filters packs, builds grid, handles empty state                   | ~3790-3860             |
+| `index.html` | `PacksUI.buildPreview(pack)` | **Preview generator** - currently renders colored blocks; **TODO: canvas snapshot** | ~3911-3940             |
+| `index.html` | `PacksUI.init()`             | Sets up search input listener, button handlers                                      | ~3775-3788             |
+| `index.html` | Pack card HTML generation    | Creates `.pack-card` with preview, title, metadata, kebab menu                      | ~3800-3858             |
+| `index.html` | Search input `#packs-search` | Filters by `title` or `client` (lowercase includes)                                 | ~3790 + listener ~3777 |
 
 **Current preview logic (line 3911-3940):**
+
 ```javascript
 function buildPreview(pack) {
   // TODO: Replace with actual canvas snapshot rendering
   // Should use SceneManager to render pack contents off-screen
   // and capture via canvas.toDataURL() for realistic preview
-  
+
   const preview = document.createElement('div');
   const items = (pack.cases || []).slice(0, 12); // Max 12 items
 
@@ -143,23 +149,25 @@ function buildPreview(pack) {
 ```
 
 **Preview CSS (lines ~980-1040):**
+
 - `.pack-preview`: 120px height, CSS grid (6 columns), 6px gap
 - `.pack-preview-cell`: Colored blocks, rounded corners, min-height 30px
 - `.pack-preview.empty`: Centers "No items yet" text
 
 ### C) Editor Save/Exit Flow
 
-| File | Module/Function | Purpose | Line # |
-|------|----------------|---------|--------|
-| `index.html` | `EditorUI` module | Editor screen: 3D workspace, case browser, inspector, toolbar | ~6746-7260 |
-| `index.html` | `EditorUI.init()` | Sets up Three.js scene, raycaster, drag handlers, keyboard shortcuts | ~6820-6900 |
-| `index.html` | `EditorUI.render()` | Syncs 3D scene with current pack, updates inspector | ~6797-6815 |
-| `index.html` | `EditorUI` AutoPack handler | Line ~7100-7140 - Auto-placement algorithm; **best hook for auto-thumbnail** | ~7522 |
-| `index.html` | Navigation to other screens | `AppShell.navigate()` called on sidebar button click - **implicit save** | ~3735 |
-| `index.html` | Screenshot button handler | Line ~7160 - Captures PNG via `renderer.domElement.toDataURL()` | ~7697-7714 |
-| `index.html` | PDF export handler | Line ~7176 - Captures canvas for jsPDF; already has capture logic | ~7716-7781 |
+| File         | Module/Function             | Purpose                                                                      | Line #     |
+| ------------ | --------------------------- | ---------------------------------------------------------------------------- | ---------- |
+| `index.html` | `EditorUI` module           | Editor screen: 3D workspace, case browser, inspector, toolbar                | ~6746-7260 |
+| `index.html` | `EditorUI.init()`           | Sets up Three.js scene, raycaster, drag handlers, keyboard shortcuts         | ~6820-6900 |
+| `index.html` | `EditorUI.render()`         | Syncs 3D scene with current pack, updates inspector                          | ~6797-6815 |
+| `index.html` | `EditorUI` AutoPack handler | Line ~7100-7140 - Auto-placement algorithm; **best hook for auto-thumbnail** | ~7522      |
+| `index.html` | Navigation to other screens | `AppShell.navigate()` called on sidebar button click - **implicit save**     | ~3735      |
+| `index.html` | Screenshot button handler   | Line ~7160 - Captures PNG via `renderer.domElement.toDataURL()`              | ~7697-7714 |
+| `index.html` | PDF export handler          | Line ~7176 - Captures canvas for jsPDF; already has capture logic            | ~7716-7781 |
 
 **Save triggers (where `PackLibrary.update()` is called):**
+
 - AutoPack completion (line 7522)
 - Truck dimensions change (line 7057)
 - Instance transform change (drag, nudge, rotate) (line 7178)
@@ -168,25 +176,28 @@ function buildPreview(pack) {
 - Undo/Redo (indirect via StateStore history replay)
 
 **No explicit "Save" or "Exit Editor" button exists**
+
 - Saves happen automatically on every pack modification via `PackLibrary.update()`
 - Navigation away from editor does NOT trigger any special save logic
 - StateStore subscriber auto-saves to localStorage on data changes
 
 ### D) SceneManager / Three.js Renderer Access
 
-| File | Module/Function | Purpose | Line # |
-|------|----------------|---------|--------|
-| `index.html` | `SceneManager` module | Three.js scene/camera/renderer/controls management | ~5800-6400 |
-| `index.html` | `SceneManager.init(containerEl)` | Creates scene, camera, renderer, controls; starts render loop | ~5850-5950 |
-| `index.html` | `SceneManager.getRenderer()` | **Returns THREE.WebGLRenderer instance** - needed for canvas capture | ~6395 (return statement) |
-| `index.html` | `SceneManager.getScene()` | Returns THREE.Scene for off-screen rendering | ~6391 (return statement) |
-| `index.html` | `SceneManager.getCamera()` | Returns THREE.PerspectiveCamera | ~6392 (return statement) |
-| `index.html` | `SceneManager.setTruck(truckDims)` | Rebuilds truck wireframe; resets camera target | ~6100-6140 |
-| `index.html` | `SceneManager.render()` | Renders frame to canvas; called every RAF tick | ~6070-6090 |
-| `index.html` | `CaseScene.sync(pack)` | Syncs 3D instances with pack data; disposes/rebuilds meshes | ~6430-6520 |
+| File         | Module/Function                    | Purpose                                                              | Line #                   |
+| ------------ | ---------------------------------- | -------------------------------------------------------------------- | ------------------------ |
+| `index.html` | `SceneManager` module              | Three.js scene/camera/renderer/controls management                   | ~5800-6400               |
+| `index.html` | `SceneManager.init(containerEl)`   | Creates scene, camera, renderer, controls; starts render loop        | ~5850-5950               |
+| `index.html` | `SceneManager.getRenderer()`       | **Returns THREE.WebGLRenderer instance** - needed for canvas capture | ~6395 (return statement) |
+| `index.html` | `SceneManager.getScene()`          | Returns THREE.Scene for off-screen rendering                         | ~6391 (return statement) |
+| `index.html` | `SceneManager.getCamera()`         | Returns THREE.PerspectiveCamera                                      | ~6392 (return statement) |
+| `index.html` | `SceneManager.setTruck(truckDims)` | Rebuilds truck wireframe; resets camera target                       | ~6100-6140               |
+| `index.html` | `SceneManager.render()`            | Renders frame to canvas; called every RAF tick                       | ~6070-6090               |
+| `index.html` | `CaseScene.sync(pack)`             | Syncs 3D instances with pack data; disposes/rebuilds meshes          | ~6430-6520               |
 
 **Existing canvas capture examples:**
+
 1. **Screenshot PNG** (line ~7697-7714):
+
    ```javascript
    const renderer = SceneManager.getRenderer();
    const dataUrl = renderer.domElement.toDataURL('image/png');
@@ -201,25 +212,27 @@ function buildPreview(pack) {
    ```
 
 **Coordinate system:**
+
 - `1 world unit = 20 inches` (INCH_TO_WORLD = 0.05)
 - Truck at origin: X+ = length, Y+ = height, Z+ = width
 - Camera uses OrbitControls; target auto-centers on truck
 
 ### E) Storage Read/Write and Save Triggers
 
-| File | Module/Function | Purpose | Line # |
-|------|----------------|---------|--------|
-| `index.html` | `Storage` module | localStorage read/write, export/import JSON | ~2280-2380 |
-| `index.html` | `Storage.load()` | Reads `localStorage['truckPacker3d:v1']`, parses JSON, sanitizes | ~2290-2300 |
-| `index.html` | `Storage.saveNow()` | Writes state to localStorage immediately; called after debounce | ~2330-2345 |
-| `index.html` | `Storage.saveSoon()` | Debounced save (250ms); prevents spam writes | ~2320-2325 |
-| `index.html` | `StateStore.subscribe()` | Triggers `Storage.saveSoon()` on state changes (except undo/redo) | ~7858 (subscriber setup) |
-| `index.html` | `Storage.exportAppJSON()` | Serializes full app state as JSON string | ~2350-2365 |
-| `index.html` | `Storage.importAppJSON(text)` | Parses + validates imported JSON | ~2370-2380 |
+| File         | Module/Function               | Purpose                                                           | Line #                   |
+| ------------ | ----------------------------- | ----------------------------------------------------------------- | ------------------------ |
+| `index.html` | `Storage` module              | localStorage read/write, export/import JSON                       | ~2280-2380               |
+| `index.html` | `Storage.load()`              | Reads `localStorage['truckPacker3d:v1']`, parses JSON, sanitizes  | ~2290-2300               |
+| `index.html` | `Storage.saveNow()`           | Writes state to localStorage immediately; called after debounce   | ~2330-2345               |
+| `index.html` | `Storage.saveSoon()`          | Debounced save (250ms); prevents spam writes                      | ~2320-2325               |
+| `index.html` | `StateStore.subscribe()`      | Triggers `Storage.saveSoon()` on state changes (except undo/redo) | ~7858 (subscriber setup) |
+| `index.html` | `Storage.exportAppJSON()`     | Serializes full app state as JSON string                          | ~2350-2365               |
+| `index.html` | `Storage.importAppJSON(text)` | Parses + validates imported JSON                                  | ~2370-2380               |
 
 **localStorage key:** `truckPacker3d:v1`
 
 **Payload structure (line 2333-2343):**
+
 ```javascript
 {
   version: "1.0.0",
@@ -232,6 +245,7 @@ function buildPreview(pack) {
 ```
 
 **Save flow:**
+
 ```
 User modifies pack → PackLibrary.update() → StateStore.set({ packLibrary: [...] })
   → StateStore subscribers notified → Storage.saveSoon() debounces
@@ -239,6 +253,7 @@ User modifies pack → PackLibrary.update() → StateStore.set({ packLibrary: [.
 ```
 
 **Storage limits:**
+
 - localStorage typically 5-10MB per origin
 - Data URL images (base64 PNG) are ~133% of binary size
 - 512x256 PNG thumbnail ≈ 30-80KB base64 (depends on complexity)
@@ -251,28 +266,30 @@ User modifies pack → PackLibrary.update() → StateStore.set({ packLibrary: [.
 ### Actual Pack Shape (from Normalizer + PackLibrary)
 
 **Current fields** (line 2660-2680 in `Normalizer.normalizePack()`):
+
 ```typescript
 interface Pack {
-  id: string;              // UUID (normalized, never null)
-  title: string;           // Normalized with fallback "Untitled Pack"
-  client: string;          // Normalized to empty string if missing
-  projectName: string;     // Normalized to empty string if missing
-  drawnBy: string;         // Normalized to empty string if missing
-  notes: string;           // Normalized to empty string if missing
+  id: string; // UUID (normalized, never null)
+  title: string; // Normalized with fallback "Untitled Pack"
+  client: string; // Normalized to empty string if missing
+  projectName: string; // Normalized to empty string if missing
+  drawnBy: string; // Normalized to empty string if missing
+  notes: string; // Normalized to empty string if missing
   truck: {
-    length: number;        // Positive number, default 636
-    width: number;         // Positive number, default 102
-    height: number;        // Positive number, default 98
+    length: number; // Positive number, default 636
+    width: number; // Positive number, default 102
+    height: number; // Positive number, default 98
   };
-  cases: CaseInstance[];   // Normalized instances with UUID regeneration
-  groups: Group[];         // Always array (empty if missing)
-  stats: PackStats;        // Computed, never saved (always recalculated)
-  createdAt: number;       // Timestamp, normalized with fallback to now
-  lastEdited: number;      // Timestamp, normalized with fallback to now
+  cases: CaseInstance[]; // Normalized instances with UUID regeneration
+  groups: Group[]; // Always array (empty if missing)
+  stats: PackStats; // Computed, never saved (always recalculated)
+  createdAt: number; // Timestamp, normalized with fallback to now
+  lastEdited: number; // Timestamp, normalized with fallback to now
 }
 ```
 
 **Timestamp usage:**
+
 - `createdAt`: Set once on pack creation (line 3483)
 - `lastEdited`: Updated on every `PackLibrary.update()` call (line 3494)
 - **Sorting/filtering will use `lastEdited` for "recently edited" sort**
@@ -280,24 +297,26 @@ interface Pack {
 ### Safe Fields to Add (Migration Strategy)
 
 **New fields for thumbnail feature:**
+
 ```typescript
 interface Pack {
   // ... existing fields
-  thumbnail?: string | null;      // Data URL or null
-  thumbnailUpdatedAt?: number;    // Timestamp when thumbnail was captured
-  thumbnailSource?: 'auto' | 'manual' | 'upload';  // How thumbnail was created
+  thumbnail?: string | null; // Data URL or null
+  thumbnailUpdatedAt?: number; // Timestamp when thumbnail was captured
+  thumbnailSource?: 'auto' | 'manual' | 'upload'; // How thumbnail was created
 }
 ```
 
 **Migration entry point:** `Normalizer.normalizePack()` (line ~2660)
+
 ```javascript
 function normalizePack(p, caseMap, now) {
   const pack = {
     // ... existing normalization
     thumbnail: typeof p.thumbnail === 'string' ? p.thumbnail : null,
     thumbnailUpdatedAt: finiteNumber(p && p.thumbnailUpdatedAt, null),
-    thumbnailSource: ['auto', 'manual', 'upload'].includes(p.thumbnailSource) 
-      ? p.thumbnailSource 
+    thumbnailSource: ['auto', 'manual', 'upload'].includes(p.thumbnailSource)
+      ? p.thumbnailSource
       : null,
   };
   // ...
@@ -305,6 +324,7 @@ function normalizePack(p, caseMap, now) {
 ```
 
 **Backward compatibility:**
+
 - Optional fields default to `null` if missing
 - Old exports without thumbnails will import cleanly
 - `Normalizer` ensures type safety (string or null, never undefined)
@@ -314,6 +334,7 @@ function normalizePack(p, caseMap, now) {
 **Key:** `truckPacker3d:v1`
 
 **Structure (line 2333):**
+
 ```javascript
 {
   version: APP_VERSION,        // "1.0.0"
@@ -326,10 +347,13 @@ function normalizePack(p, caseMap, now) {
 ```
 
 **Version handling:**
-- `version` field exists but not actively enforced (line 2296: "allow older versions if shape matches")
+
+- `version` field exists but not actively enforced (line 2296: "allow older versions if shape
+  matches")
 - Future: Use version for migration triggers if needed
 
 **Data URL size estimates:**
+
 - 512x256 PNG (basic): ~20-40KB base64
 - 512x256 PNG (complex scene): ~50-80KB base64
 - 1024x512 PNG: ~100-200KB base64
@@ -344,18 +368,20 @@ function normalizePack(p, caseMap, now) {
 **Location:** `index.html` → `PacksUI` module → `buildPreview(pack)` function
 
 **Current behavior:**
+
 1. **Empty state:** If `pack.cases.length === 0`, shows centered text "No items yet"
 2. **Colored blocks:** Slices first 12 instances, renders colored divs in 6-column grid
 3. **Color source:** Reads `CaseLibrary.getById(inst.caseId).color` for each instance
 4. **Fallback:** Gray background if case not found or color missing
 
 **Code snippet:**
+
 ```javascript
 function buildPreview(pack) {
   // TODO: Replace with actual canvas snapshot rendering
   // Should use SceneManager to render pack contents off-screen
   // and capture via canvas.toDataURL() for realistic preview
-  
+
   const preview = document.createElement('div');
   const items = (pack.cases || []).slice(0, 12);
 
@@ -381,16 +407,17 @@ function buildPreview(pack) {
 ### Preview Size/Aspect (CSS)
 
 **Container:** `.pack-preview` (lines ~980-1015 in `<style>`)
+
 ```css
 .pack-preview {
   position: relative;
-  height: 120px;                     /* Fixed height */
+  height: 120px; /* Fixed height */
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: linear-gradient(135deg, rgba(255, 159, 28, 0.06), rgba(59, 130, 246, 0.04));
   margin: 0 0 var(--space-3) 0;
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));  /* 6 columns */
+  grid-template-columns: repeat(6, minmax(0, 1fr)); /* 6 columns */
   gap: 6px;
   padding: 10px;
   overflow: hidden;
@@ -398,10 +425,12 @@ function buildPreview(pack) {
 ```
 
 **Aspect ratio:** ~2.5:1 (varies with pack card width)
+
 - Pack cards are in 3-column grid (2-column on tablet, 1-column on mobile)
 - Preview width adapts to container, height fixed at 120px
 
 **Cells:** `.pack-preview-cell`
+
 ```css
 .pack-preview-cell {
   border-radius: 10px;
@@ -414,7 +443,8 @@ function buildPreview(pack) {
 
 ### Existing TODO Comments
 
-**Line 3912:** 
+**Line 3912:**
+
 ```javascript
 // TODO: Replace with actual canvas snapshot rendering
 // Should use SceneManager to render pack contents off-screen
@@ -422,6 +452,7 @@ function buildPreview(pack) {
 ```
 
 **Intent:**
+
 - Use Three.js to render pack contents (truck + instances)
 - Capture frame as data URL
 - Store in pack model
@@ -434,52 +465,59 @@ function buildPreview(pack) {
 ### Ranking of Potential Save Flows
 
 #### 1. **BEST: AutoPack Completion** (Line ~7522)
+
 **Location:** `EditorUI` → AutoPack button click handler
 
 **Why best:**
+
 - User explicitly triggered layout operation (intent to finalize arrangement)
 - Pack is likely in "final" state after AutoPack
 - Single clear hook point
 - Already calls `PackLibrary.update()` to save new instance positions
 
 **Code context:**
+
 ```javascript
 // Line 7515-7525
 document.getElementById('btn-autopack').addEventListener('click', () => {
   const packId = StateStore.get('currentPackId');
   const pack = PackLibrary.getById(packId);
   if (!pack) return;
-  
+
   const nextCases = autoPack(pack);
-  PackLibrary.update(packId, { cases: nextCases });  // ← Hook here
+  PackLibrary.update(packId, { cases: nextCases }); // ← Hook here
   UIComponents.showToast('AutoPack complete', 'success');
 });
 ```
 
 **Implementation hook:**
+
 ```javascript
 PackLibrary.update(packId, { cases: nextCases });
 
 // Capture thumbnail after AutoPack
 const thumbnail = SceneManager.captureThumbnail(pack);
 if (thumbnail) {
-  PackLibrary.update(packId, { 
-    thumbnail, 
+  PackLibrary.update(packId, {
+    thumbnail,
     thumbnailUpdatedAt: Date.now(),
-    thumbnailSource: 'auto'
+    thumbnailSource: 'auto',
   });
 }
 ```
 
 #### 2. **Manual "Update Preview" Button** (New)
+
 **Location:** Add to viewport toolbar (line ~1430)
 
 **Why useful:**
+
 - User control over when thumbnail is captured
 - Avoids automatic captures on every edit
 - Clear user intent
 
 **Implementation:**
+
 ```html
 <!-- Add button to viewport toolbar -->
 <button class="toolbar-btn" id="btn-capture-thumbnail" type="button" title="Update preview">
@@ -494,59 +532,65 @@ document.getElementById('btn-capture-thumbnail').addEventListener('click', () =>
   const packId = StateStore.get('currentPackId');
   const pack = PackLibrary.getById(packId);
   if (!pack) return;
-  
+
   const thumbnail = SceneManager.captureThumbnail(pack);
-  PackLibrary.update(packId, { 
-    thumbnail, 
+  PackLibrary.update(packId, {
+    thumbnail,
     thumbnailUpdatedAt: Date.now(),
-    thumbnailSource: 'manual'
+    thumbnailSource: 'manual',
   });
   UIComponents.showToast('Preview updated', 'success');
 });
 ```
 
 #### 3. **Screenshot Button Repurpose** (Line ~7697)
+
 **Location:** `EditorUI` → Screenshot PNG button handler
 
 **Why viable:**
+
 - Already captures canvas as data URL
 - Natural user workflow (take screenshot → save as preview)
 - Minimal code duplication
 
-**Implementation:**
-Add checkbox or split button:
+**Implementation:** Add checkbox or split button:
+
 ```javascript
 // Line ~7697-7714
 document.getElementById('btn-screenshot').addEventListener('click', () => {
   const renderer = SceneManager.getRenderer();
   if (!renderer) return;
-  
+
   const dataUrl = renderer.domElement.toDataURL('image/png');
-  
+
   // Option 1: Always save as thumbnail
   const packId = StateStore.get('currentPackId');
   if (packId) {
-    PackLibrary.update(packId, { 
-      thumbnail: dataUrl, 
+    PackLibrary.update(packId, {
+      thumbnail: dataUrl,
       thumbnailUpdatedAt: Date.now(),
-      thumbnailSource: 'manual'
+      thumbnailSource: 'manual',
     });
   }
-  
+
   // Then download
   Utils.downloadText(filename, dataUrl, 'image/png');
 });
 ```
 
 #### 4. **NOT RECOMMENDED: On Every PackLibrary.update()**
+
 **Why avoid:**
+
 - Called on every drag, nudge, rotation, visibility toggle
 - Would capture thumbnails dozens of times per editing session
 - Performance impact (rendering off-screen + base64 encoding)
 - localStorage churn (250ms debounced saves × many captures)
 
 #### 5. **NOT RECOMMENDED: On Navigation Away from Editor**
+
 **Why avoid:**
+
 - No explicit "exit editor" handler exists
 - `AppShell.navigate()` is generic; adding pack-specific logic breaks separation
 - User may navigate accidentally (mis-click sidebar)
@@ -555,12 +599,14 @@ document.getElementById('btn-screenshot').addEventListener('click', () => {
 ### Recommended Primary Hook
 
 **Use AutoPack completion (#1) as default auto-capture point**
+
 - Captures final layout state
 - User-triggered operation (explicit intent)
 - Single, clear hook point
 - Minimal performance impact (only once per AutoPack)
 
 **Add manual "Update Preview" button (#2) for user control**
+
 - Allows refinement after manual edits
 - Gives users agency over thumbnail quality
 - Complements auto-capture
@@ -574,19 +620,24 @@ document.getElementById('btn-screenshot').addEventListener('click', () => {
 **Location:** `PacksUI.render()` → search input listener
 
 **Current behavior:**
+
 ```javascript
-const q = String(searchEl.value || '').trim().toLowerCase();
+const q = String(searchEl.value || '')
+  .trim()
+  .toLowerCase();
 const packs = allPacks.filter(
   p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q)
 );
 ```
 
 **Filtering:**
+
 - Searches `title` and `client` fields
 - Case-insensitive substring match
 - Updates grid on input (debounced 200ms)
 
 **Sorting:**
+
 - **Currently sorts by `lastEdited` descending** (line 3792):
   ```javascript
   const allPacks = PackLibrary.getPacks()
@@ -598,6 +649,7 @@ const packs = allPacks.filter(
 ### Proposed Sorting/Filtering UI
 
 **Match existing patterns from CasesUI** (line 4205-4650):
+
 - CasesUI uses filter chips for categories
 - CasesUI uses table headers for column sorting
 - Keep UI minimal; reuse chip/dropdown patterns
@@ -609,12 +661,13 @@ const packs = allPacks.filter(
 **Location:** Next to search input (line ~1280)
 
 **HTML:**
+
 ```html
 <div class="row">
   <div style="flex: 1; min-width: 220px; position: relative">
     <!-- Existing search input -->
   </div>
-  
+
   <!-- NEW: Sort dropdown -->
   <select class="select" id="packs-sort" style="width: 180px">
     <option value="lastEdited-desc">Recently Edited</option>
@@ -629,14 +682,15 @@ const packs = allPacks.filter(
 ```
 
 **JavaScript (in `PacksUI.init()` and `render()`):**
+
 ```javascript
 let sortBy = 'lastEdited';
 let sortDir = 'desc';
 
 function init() {
   // ... existing search listener
-  
-  document.getElementById('packs-sort').addEventListener('change', (ev) => {
+
+  document.getElementById('packs-sort').addEventListener('change', ev => {
     const [field, dir] = ev.target.value.split('-');
     sortBy = field;
     sortDir = dir;
@@ -645,21 +699,24 @@ function init() {
 }
 
 function render() {
-  const q = String(searchEl.value || '').trim().toLowerCase();
+  const q = String(searchEl.value || '')
+    .trim()
+    .toLowerCase();
   let packs = PackLibrary.getPacks().slice();
-  
+
   // Filter by search
   packs = packs.filter(
-    p => !q || 
-         (p.title || '').toLowerCase().includes(q) || 
-         (p.client || '').toLowerCase().includes(q) ||
-         (p.projectName || '').toLowerCase().includes(q)
+    p =>
+      !q ||
+      (p.title || '').toLowerCase().includes(q) ||
+      (p.client || '').toLowerCase().includes(q) ||
+      (p.projectName || '').toLowerCase().includes(q)
   );
-  
+
   // Sort
   packs.sort((a, b) => {
     let valA, valB;
-    
+
     switch (sortBy) {
       case 'title':
         valA = (a.title || '').toLowerCase();
@@ -681,16 +738,16 @@ function render() {
         valA = a.lastEdited || 0;
         valB = b.lastEdited || 0;
     }
-    
+
     if (typeof valA === 'number') {
       return sortDir === 'asc' ? valA - valB : valB - valA;
     }
-    
+
     if (valA < valB) return sortDir === 'asc' ? -1 : 1;
     if (valA > valB) return sortDir === 'asc' ? 1 : -1;
     return 0;
   });
-  
+
   // Render grid...
 }
 ```
@@ -702,6 +759,7 @@ function render() {
 **Purpose:** Filter by metadata attributes
 
 **HTML:**
+
 ```html
 <div class="row" id="packs-filters" style="gap: 8px; display: none">
   <!-- Dynamically generated chips -->
@@ -709,38 +767,55 @@ function render() {
 ```
 
 **Chips to add:**
+
 - "Has Thumbnail" / "No Thumbnail"
 - Client names (if multiple unique clients exist)
 - Date ranges (This Week, This Month, This Year)
 
 **Implementation (optional, low priority):**
+
 ```javascript
 function renderFilters() {
   const filtersEl = document.getElementById('packs-filters');
   filtersEl.innerHTML = '';
-  
+
   const packs = PackLibrary.getPacks();
   const hasThumbnails = packs.filter(p => p.thumbnail).length;
   const noThumbnails = packs.length - hasThumbnails;
-  
+
   if (hasThumbnails > 0) {
     filtersEl.appendChild(
-      chip('Has Preview', 'has-thumbnail', activeFilters.has('has-thumbnail'), toggleFilter, '#10b981', hasThumbnails)
+      chip(
+        'Has Preview',
+        'has-thumbnail',
+        activeFilters.has('has-thumbnail'),
+        toggleFilter,
+        '#10b981',
+        hasThumbnails
+      )
     );
   }
-  
+
   if (noThumbnails > 0) {
     filtersEl.appendChild(
-      chip('No Preview', 'no-thumbnail', activeFilters.has('no-thumbnail'), toggleFilter, '#6b7280', noThumbnails)
+      chip(
+        'No Preview',
+        'no-thumbnail',
+        activeFilters.has('no-thumbnail'),
+        toggleFilter,
+        '#6b7280',
+        noThumbnails
+      )
     );
   }
-  
+
   // Show/hide filters row
   filtersEl.style.display = filtersEl.children.length ? 'flex' : 'none';
 }
 ```
 
-**Keep UI minimal:** Only show filters if they add value (multiple clients, mix of thumbnail/no-thumbnail)
+**Keep UI minimal:** Only show filters if they add value (multiple clients, mix of
+thumbnail/no-thumbnail)
 
 ---
 
@@ -749,6 +824,7 @@ function renderFilters() {
 ### localStorage Size Risk with Data URLs
 
 **Problem:**
+
 - Base64-encoded PNG images are ~133% of binary size
 - 512x256 PNG ≈ 30-80KB per thumbnail
 - 100 packs × 60KB avg = 6MB
@@ -771,6 +847,7 @@ function renderFilters() {
    - Show colored blocks fallback if thumbnail missing
 
 3. **Quota monitoring:**
+
    ```javascript
    function checkStorageQuota() {
      try {
@@ -780,7 +857,10 @@ function renderFilters() {
        return true;
      } catch (e) {
        if (e.name === 'QuotaExceededError') {
-         UIComponents.showToast('Storage quota exceeded. Consider removing old pack thumbnails.', 'warning');
+         UIComponents.showToast(
+           'Storage quota exceeded. Consider removing old pack thumbnails.',
+           'warning'
+         );
          return false;
        }
      }
@@ -795,10 +875,12 @@ function renderFilters() {
 ### Cross-Browser Canvas Capture Pitfalls
 
 **Issue 1: WebGL context loss**
+
 - Problem: Rendering off-screen while main scene is animating
 - Solution: Capture during idle frame (after `requestAnimationFrame` cycle)
 
 **Issue 2: `preserveDrawingBuffer`**
+
 - Problem: Three.js default renderer has `preserveDrawingBuffer: false`
 - Effect: `toDataURL()` may return blank/black image after render cycle completes
 - Solution: **Do NOT modify global renderer settings**; instead:
@@ -807,37 +889,41 @@ function renderFilters() {
   3. Restore viewport/camera before next frame
 
 **Issue 3: Tainted canvas (CORS)**
+
 - Problem: External textures (images from other domains) taint canvas
 - Effect: `toDataURL()` throws SecurityError
-- Current codebase: No external textures used; all geometries are programmatic (BoxGeometry, LineSegments)
+- Current codebase: No external textures used; all geometries are programmatic (BoxGeometry,
+  LineSegments)
 - Risk: **Low** (no image textures currently)
 
 **Issue 4: Browser inconsistencies**
+
 - Safari: May require explicit `canvas.width` × `canvas.height` set before capture
 - Firefox: Sometimes needs `canvas.getContext('2d')` before WebGL `toDataURL()`
 - Chrome: Most reliable
 - Solution: Test across browsers; add fallback error handling
 
 **Implementation safeguards:**
+
 ```javascript
 function captureThumbnail(pack, options = {}) {
   const renderer = SceneManager.getRenderer();
   if (!renderer) return null;
-  
+
   try {
     // Render frame
     CaseScene.sync(pack);
     renderer.render(SceneManager.getScene(), SceneManager.getCamera());
-    
+
     // Capture immediately
     const dataUrl = renderer.domElement.toDataURL('image/jpeg', 0.75);
-    
+
     // Validate result
     if (!dataUrl || dataUrl === 'data:,') {
       console.error('Thumbnail capture failed: blank data URL');
       return null;
     }
-    
+
     return dataUrl;
   } catch (err) {
     console.error('Thumbnail capture error:', err);
@@ -850,16 +936,19 @@ function captureThumbnail(pack, options = {}) {
 ### Performance Risk (Capturing Too Often)
 
 **Problem:**
+
 - Off-screen rendering + base64 encoding is CPU-intensive
 - Capturing on every edit (drag, rotate, visibility toggle) causes lag
 - StateStore triggers debounced saves; thumbnail capture would add overhead
 
 **Impact analysis:**
+
 - Single capture: ~20-50ms (depends on scene complexity)
 - 10 captures/second (rapid editing): ~200-500ms overhead = noticeable lag
 - AutoPack captures once: negligible impact
 
 **Mitigation:**
+
 1. **Only capture on explicit triggers** (AutoPack, manual button)
 2. **Debounce captures** if adding auto-capture on editor changes:
    ```javascript
@@ -874,6 +963,7 @@ function captureThumbnail(pack, options = {}) {
    ```
 
 **Recommended approach:**
+
 - **Default:** Only capture on AutoPack (minimal performance impact)
 - **User control:** Add manual "Update Preview" button
 - **Avoid:** Auto-capture on every edit (too expensive)
@@ -885,6 +975,7 @@ function captureThumbnail(pack, options = {}) {
 ### Phase 1: Data Model + Migration (No UI Changes)
 
 **Step 1: Add thumbnail fields to Pack model**
+
 - File: `index.html` → `PackLibrary` module (line ~3474)
 - What: Extend `PackLibrary.create()` to initialize:
   ```javascript
@@ -894,6 +985,7 @@ function captureThumbnail(pack, options = {}) {
   ```
 
 **Step 2: Add thumbnail normalization**
+
 - File: `index.html` → `Normalizer.normalizePack()` (line ~2660)
 - What: Validate thumbnail fields on load/import:
   ```javascript
@@ -903,6 +995,7 @@ function captureThumbnail(pack, options = {}) {
   ```
 
 **Step 3: Test data persistence**
+
 - Action: Create pack, manually add thumbnail field via console
 - Verify: Reload page, check thumbnail field survives
 - Verify: Export/import JSON preserves thumbnail
@@ -912,70 +1005,67 @@ function captureThumbnail(pack, options = {}) {
 ### Phase 2: Thumbnail Capture Function
 
 **Step 4: Add `SceneManager.captureThumbnail(pack, options)`**
+
 - File: `index.html` → `SceneManager` module (line ~6395, add before return statement)
 - What: Render pack off-screen, capture as data URL, restore viewport
 - Reference: Use existing screenshot code (line ~7697-7714) as template
 - Options: `{ width: 512, height: 256, format: 'jpeg', quality: 0.75 }`
 
 **Code skeleton:**
+
 ```javascript
 function captureThumbnail(pack, options = {}) {
   if (!renderer || !scene || !camera) return null;
-  
+
   const width = options.width || 512;
   const height = options.height || 256;
   const format = options.format || 'image/jpeg';
   const quality = options.quality || 0.75;
-  
+
   // Save current state
   const prevWidth = viewSize.width;
   const prevHeight = viewSize.height;
   const prevAspect = camera.aspect;
   const prevPos = camera.position.clone();
   const prevTarget = controls.target.clone();
-  
+
   try {
     // Set up off-screen render
     renderer.setSize(width, height);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
-    
+
     // Position camera for optimal pack view
     const truckCenter = new THREE.Vector3(
       toWorld(pack.truck.length / 2),
       toWorld(pack.truck.height / 2),
       0
     );
-    const distance = Math.max(
-      toWorld(pack.truck.length),
-      toWorld(pack.truck.width)
-    ) * 1.4;
-    
+    const distance = Math.max(toWorld(pack.truck.length), toWorld(pack.truck.width)) * 1.4;
+
     camera.position.set(
       truckCenter.x + distance * 0.6,
       truckCenter.y + distance * 0.5,
       distance * 0.6
     );
     camera.lookAt(truckCenter);
-    
+
     // Sync scene
     CaseScene.sync(pack);
-    
+
     // Render + capture
     renderer.render(scene, camera);
     const dataUrl = renderer.domElement.toDataURL(format, quality);
-    
+
     // Validate
     if (!dataUrl || dataUrl === 'data:,') {
       throw new Error('Blank data URL');
     }
-    
+
     return dataUrl;
-    
   } catch (err) {
     console.error('Thumbnail capture failed:', err);
     return null;
-    
   } finally {
     // Restore viewport
     renderer.setSize(prevWidth, prevHeight);
@@ -988,6 +1078,7 @@ function captureThumbnail(pack, options = {}) {
 ```
 
 **Step 5: Test thumbnail capture**
+
 - Action: Call `SceneManager.captureThumbnail(pack)` from console
 - Verify: Returns valid data URL string
 - Verify: Pasting data URL in browser shows correct image
@@ -998,27 +1089,30 @@ function captureThumbnail(pack, options = {}) {
 ### Phase 3: Auto-Capture Hook
 
 **Step 6: Hook thumbnail capture to AutoPack**
+
 - File: `index.html` → `EditorUI` → AutoPack button handler (line ~7522)
 - What: After `PackLibrary.update()`, capture + save thumbnail
 - Code:
+
   ```javascript
   PackLibrary.update(packId, { cases: nextCases });
-  
+
   // Auto-capture thumbnail
   const pack = PackLibrary.getById(packId);
   const thumbnail = SceneManager.captureThumbnail(pack);
   if (thumbnail) {
-    PackLibrary.update(packId, { 
-      thumbnail, 
+    PackLibrary.update(packId, {
+      thumbnail,
       thumbnailUpdatedAt: Date.now(),
-      thumbnailSource: 'auto'
+      thumbnailSource: 'auto',
     });
   }
-  
+
   UIComponents.showToast('AutoPack complete', 'success');
   ```
 
 **Step 7: Add manual "Update Preview" button**
+
 - File: `index.html` → viewport toolbar HTML (line ~1430)
 - HTML: Add button before screenshot button
 - File: `index.html` → `EditorUI.init()` (line ~6820)
@@ -1029,13 +1123,13 @@ function captureThumbnail(pack, options = {}) {
     const packId = StateStore.get('currentPackId');
     const pack = PackLibrary.getById(packId);
     if (!pack) return;
-    
+
     const thumbnail = SceneManager.captureThumbnail(pack);
     if (thumbnail) {
-      PackLibrary.update(packId, { 
-        thumbnail, 
+      PackLibrary.update(packId, {
+        thumbnail,
         thumbnailUpdatedAt: Date.now(),
-        thumbnailSource: 'manual'
+        thumbnailSource: 'manual',
       });
       UIComponents.showToast('Preview updated', 'success');
     }
@@ -1047,18 +1141,19 @@ function captureThumbnail(pack, options = {}) {
 ### Phase 4: Pack Card Preview Rendering
 
 **Step 8: Update `PacksUI.buildPreview()` to render thumbnails**
+
 - File: `index.html` → `PacksUI.buildPreview()` (line ~3911)
 - What: Check if `pack.thumbnail` exists; render `<img>` instead of colored blocks
 - Code:
   ```javascript
   function buildPreview(pack) {
     const preview = document.createElement('div');
-    
+
     // Use thumbnail if available
     if (pack.thumbnail) {
       preview.className = 'pack-preview pack-preview-image';
       preview.style.padding = '0';
-      
+
       const img = document.createElement('img');
       img.src = pack.thumbnail;
       img.alt = `Preview of ${pack.title}`;
@@ -1067,19 +1162,19 @@ function captureThumbnail(pack, options = {}) {
       img.style.objectFit = 'cover';
       img.style.borderRadius = 'var(--radius-md)';
       preview.appendChild(img);
-      
+
       return preview;
     }
-    
+
     // Fallback to colored blocks
     const items = (pack.cases || []).slice(0, 12);
-    
+
     if (!items.length) {
       preview.className = 'pack-preview empty';
       preview.textContent = 'No items yet';
       return preview;
     }
-    
+
     preview.className = 'pack-preview';
     items.forEach(inst => {
       const cell = document.createElement('div');
@@ -1089,12 +1184,13 @@ function captureThumbnail(pack, options = {}) {
       cell.title = meta ? meta.name : 'Case';
       preview.appendChild(cell);
     });
-    
+
     return preview;
   }
   ```
 
 **Step 9: Test preview rendering**
+
 - Action: Create pack, run AutoPack, navigate to Packs screen
 - Verify: Pack card shows canvas thumbnail image
 - Verify: Packs without thumbnails still show colored blocks
@@ -1105,6 +1201,7 @@ function captureThumbnail(pack, options = {}) {
 ### Phase 5: Sorting + Filtering UI
 
 **Step 10: Add sort dropdown to Packs screen**
+
 - File: `index.html` → Packs screen HTML (line ~1280)
 - HTML: Add `<select id="packs-sort">` with options
 - File: `index.html` → `PacksUI.init()` (line ~3775)
@@ -1113,6 +1210,7 @@ function captureThumbnail(pack, options = {}) {
 - JavaScript: Replace hardcoded sort with dynamic sort logic
 
 **Step 11: (Optional) Add filter chips for thumbnail status**
+
 - File: `index.html` → Packs screen HTML (line ~1295)
 - HTML: Add `<div id="packs-filters">` below search row
 - File: `index.html` → `PacksUI.render()`
@@ -1126,6 +1224,7 @@ function captureThumbnail(pack, options = {}) {
 ### Phase 6: Polish + Extras
 
 **Step 12: Add "Clear Preview" option to pack kebab menu**
+
 - File: `index.html` → `PacksUI.render()` pack card dropdown (line ~3900)
 - What: Add menu item after "Duplicate":
   ```javascript
@@ -1134,8 +1233,8 @@ function captureThumbnail(pack, options = {}) {
     icon: 'fa-solid fa-trash',
     disabled: !pack.thumbnail,
     onClick: () => {
-      PackLibrary.update(pack.id, { 
-        thumbnail: null, 
+      PackLibrary.update(pack.id, {
+        thumbnail: null,
         thumbnailUpdatedAt: null,
         thumbnailSource: null
       });
@@ -1146,10 +1245,9 @@ function captureThumbnail(pack, options = {}) {
 
 ---
 
-**Total Steps:** 12
-**Estimated Effort:** 4-6 hours (experienced developer)
-**Critical Path:** Steps 1-9 (data model → capture → rendering)
-**Optional Enhancements:** Steps 11-12 (filters, clear preview)
+**Total Steps:** 12 **Estimated Effort:** 4-6 hours (experienced developer) **Critical Path:** Steps
+1-9 (data model → capture → rendering) **Optional Enhancements:** Steps 11-12 (filters, clear
+preview)
 
 ---
 

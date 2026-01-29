@@ -13,7 +13,11 @@
 
 import { uuid as uuidImpl } from '../../utils/uuid.js';
 import { debounce as debounceImpl } from '../../utils/debounce.js';
-import { deepClone as deepCloneImpl, sanitizeJSON as sanitizeJSONImpl, safeJsonParse as safeJsonParseImpl } from '../../utils/json.js';
+import {
+  deepClone as deepCloneImpl,
+  sanitizeJSON as sanitizeJSONImpl,
+  safeJsonParse as safeJsonParseImpl,
+} from '../../utils/json.js';
 import { downloadText, formatRelativeTime, getCssVar, hasWebGL } from '../browser.js';
 
 // ============================================================================
@@ -94,10 +98,7 @@ export function getUserAvatarView({ user, sessionUser, profile } = {}) {
 
   let initials = '';
   if (displayName && displayName !== 'Guest') {
-    const words = displayName
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
+    const words = displayName.trim().split(/\s+/).filter(Boolean);
 
     if (words.length >= 2) {
       initials = (words[0][0] + words[1][0]).toUpperCase();

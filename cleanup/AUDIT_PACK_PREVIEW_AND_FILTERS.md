@@ -1118,6 +1118,7 @@ function captureThumbnail(pack, options = {}) {
 - File: `index.html` → `EditorUI.init()` (line ~6820)
 - JavaScript: Bind click handler
 - Code:
+
   ```javascript
   document.getElementById('btn-capture-thumbnail').addEventListener('click', () => {
     const packId = StateStore.get('currentPackId');
@@ -1145,6 +1146,7 @@ function captureThumbnail(pack, options = {}) {
 - File: `index.html` → `PacksUI.buildPreview()` (line ~3911)
 - What: Check if `pack.thumbnail` exists; render `<img>` instead of colored blocks
 - Code:
+
   ```javascript
   function buildPreview(pack) {
     const preview = document.createElement('div');

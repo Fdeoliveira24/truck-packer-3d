@@ -275,3 +275,149 @@ export async function deleteAvatar() {
 
   return true;
 }
+
+/**
+ * Fetch organization by ID.
+ * @param {string} orgId - The organization ID
+ * @returns {Promise<Object|null>}
+ */
+export async function getOrganization(orgId) {
+  const client = requireClient();
+  if (!orgId) return null;
+
+  const { data, error } = await client.from('organizations').select('*').eq('id', orgId).single();
+
+  if (error) return null;
+  return data || null;
+}
+
+/**
+ * Update organization fields (name, slug, phone, address, etc.).
+ * @param {string} orgId - The organization ID
+ * @param {Object} patch - Fields to update
+ * @returns {Promise<Object>}
+ */
+export async function updateOrganization(orgId, patch) {
+  const client = requireClient();
+  if (!orgId) throw new Error('Organization ID required');
+
+  const updateData = { ...patch, updated_at: new Date().toISOString() };
+
+  const { data, error } = await client.from('organizations').update(updateData).eq('id', orgId).select().single();
+
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Request account deletion (soft delete with ban).
+ * Sets deletion_status='requested', deleted_at=now(), purge_after=now()+30 days.
+ * Calls Edge Function to ban user for 720h.
+ * @returns {Promise<Object>}
+ */
+export async function requestAccountDeletion() {
+  const client = requireClient();
+  const user = getUser();
+  const session = getSession();
+  if (!user || !session) throw new Error('Not authenticated');
+
+  const now = new Date().toISOString();
+  const purgeAfter = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+  // Update profile with deletion status
+  const { data: profile, error: profileError } = await client
+    .from('profiles')
+    .update({
+      deletion_status: 'requested',
+      deleted_at: now,
+      purge_after: purgeAfter,
+      updated_at: now,
+    })
+    .eq('id', user.id)
+    .select()
+    .single();
+
+  if (profileError) throw profileError;
+
+  // Call Edge Function to ban user
+  try {
+    const cfg = typeof window !== 'undefined' && window.__TP3D_SUPABASE ? window.__TP3D_SUPABASE : {};
+    const baseUrl = cfg && cfg.url ? String(cfg.url).replace(/\/$/, '') : '';
+    if (baseUrl) {
+      const response = await fetch(`${baseUrl}/functions/v1/ban-user`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          apikey: cfg.anonKey || '',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ban_duration: '720h' }),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        if (debugEnabled()) console.warn('Ban failed:', errText);
+      }
+    }
+  } catch (err) {
+    if (debugEnabled()) console.warn('Ban error:', err);
+  }
+
+  return profile;
+}
+
+/**
+ * Cancel account deletion.
+ * Sets deletion_status='canceled', clears deleted_at and purge_after.
+ * Calls Edge Function to unban user.
+ * @returns {Promise<Object>}
+ */
+export async function cancelAccountDeletion() {
+  const client = requireClient();
+  const user = getUser();
+  const session = getSession();
+  if (!user || !session) throw new Error('Not authenticated');
+
+  const now = new Date().toISOString();
+
+  // Update profile to cancel deletion
+  const { data: profile, error: profileError } = await client
+    .from('profiles')
+    .update({
+      deletion_status: 'canceled',
+      deleted_at: null,
+      purge_after: null,
+      updated_at: now,
+    })
+    .eq('id', user.id)
+    .select()
+    .single();
+
+  if (profileError) throw profileError;
+
+  // Call Edge Function to unban user
+  try {
+    const cfg = typeof window !== 'undefined' && window.__TP3D_SUPABASE ? window.__TP3D_SUPABASE : {};
+    const baseUrl = cfg && cfg.url ? String(cfg.url).replace(/\/$/, '') : '';
+    if (baseUrl) {
+      const response = await fetch(`${baseUrl}/functions/v1/unban-user`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          apikey: cfg.anonKey || '',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        if (debugEnabled()) console.warn('Unban failed:', errText);
+      }
+    }
+  } catch (err) {
+    if (debugEnabled()) console.warn('Unban error:', err);
+  }
+
+  return profile;
+}

@@ -207,8 +207,9 @@ export function createTableFooter(options = {}) {
       sanitized.pageIndex = Math.min(Math.max(0, sanitized.pageIndex), sanitized.pageCount - 1);
     }
     state = sanitized;
-    // Hide footer when totalCount <= rowsPerPage OR pageCount <= 1
-    const shouldHide = state.totalCount === 0 || state.totalCount <= state.rowsPerPage || state.pageCount <= 1;
+    // Hide footer ONLY when there are 0 or 1 items total
+    // Show for 2+ items even if it's a single page
+    const shouldHide = state.totalCount <= 1;
     footerEl.classList.toggle('is-hidden', shouldHide);
     render();
   };

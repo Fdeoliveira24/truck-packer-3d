@@ -166,6 +166,26 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     }, ms || 1);
   }
 
+  async function checkDeletionStatus() {
+    try {
+      const user = SupabaseClient && SupabaseClient.getUser ? SupabaseClient.getUser() : null;
+      if (!user) return null;
+
+      const profile = await SupabaseClient.getProfile(user.id);
+      if (!profile) return null;
+
+      const status = profile.deletion_status ? String(profile.deletion_status).toLowerCase() : null;
+      const purgeAfter = profile.purge_after ? new Date(profile.purge_after).toLocaleDateString() : null;
+
+      if (status === 'requested' && purgeAfter) {
+        return { status, purgeAfter };
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
   function render() {
     if (!modalEl) return;
 
@@ -272,6 +292,21 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       info.textContent = `Signed in as ${toAscii(signedInEmail)}`;
       body.appendChild(info);
     } else {
+      // Check for deletion status before showing form
+      const deletionCheck = (() => {
+        try {
+          const user = SupabaseClient && SupabaseClient.getUser ? SupabaseClient.getUser() : null;
+          if (user && SupabaseClient && typeof SupabaseClient.getProfile === 'function') {
+            // We can't use async here, so we'll show form and check in background
+            // But we can set a flag to block sign-in
+            return true; // Will be handled post-render
+          }
+        } catch {
+          // ignore
+        }
+        return false;
+      })();
+
       const hint = document.createElement('div');
       hint.className = 'muted';
       hint.style.marginBottom = '12px';
@@ -383,7 +418,34 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
           inFlight = true;
           setBusy(true);
           signInBtn.textContent = 'Signing in...';
-          await SupabaseClient.signIn(email, password);
+          const data = await SupabaseClient.signIn(email, password);
+
+          // Check deletion status after sign-in
+          try {
+            const user = data && data.user ? data.user : null;
+            if (user && SupabaseClient && typeof SupabaseClient.getProfile === 'function') {
+              const profile = await SupabaseClient.getProfile(user.id);
+              if (profile && profile.deletion_status === 'requested' && profile.purge_after) {
+                const purgeDate = new Date(profile.purge_after).toLocaleDateString();
+                setInlineError(`Account deletion requested. Sign-in disabled until ${purgeDate}.`);
+                // Sign out the user
+                try {
+                  const client =
+                    SupabaseClient && typeof SupabaseClient.getClient === 'function'
+                      ? SupabaseClient.getClient()
+                      : null;
+                  if (client && client.auth) {
+                    await client.auth.signOut({ scope: 'local' });
+                  }
+                } catch {
+                  // ignore
+                }
+                return;
+              }
+            }
+          } catch {
+            // If profile check fails, let sign-in succeed
+          }
         } catch (err) {
           const mapped = mapAuthError(err, 'signin');
           setInlineError(mapped.message);

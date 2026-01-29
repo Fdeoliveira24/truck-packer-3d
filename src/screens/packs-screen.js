@@ -253,10 +253,8 @@ export function createPacksScreen({
     }
 
     function getPacksFooterMountElForMode(mode) {
-      const viewMode = mode || PreferencesManager.get().packsViewMode || 'grid';
-      if (viewMode === 'list') return listEl;
-      if (viewMode === 'grid') return gridEl && gridEl.parentElement ? gridEl.parentElement : null;
-      return null;
+      // Footer must be appended directly to #screen-packs to match CSS selector
+      return document.getElementById('screen-packs');
     }
 
     function initFooter(mode) {

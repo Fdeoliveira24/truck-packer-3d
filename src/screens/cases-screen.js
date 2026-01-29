@@ -97,10 +97,8 @@ export function createCasesScreen({
     }
 
     function getCasesFooterMountElForMode(mode) {
-      const viewMode = mode || PreferencesManager.get().casesViewMode || 'list';
-      if (viewMode === 'list') return casesTableWrap;
-      if (viewMode === 'grid') return gridEl && gridEl.parentElement ? gridEl.parentElement : null;
-      return null;
+      // Footer must be appended directly to #screen-cases to match CSS selector
+      return document.getElementById('screen-cases');
     }
 
     function setViewMode(mode) {

@@ -302,3 +302,119 @@ again, please share:
 - [x] Old `handle_updated_at()` triggers removed
 - [x] `set_updated_at()` triggers exist for `profiles/packs/cases`
 - [ ] Decide whether `organizations` should also have a `set_updated_at()` trigger
+
+---
+
+## 7) Pending migration: organization contact fields (phone + address)
+
+If you want `organizations` to store contact info, add these nullable columns:
+
+- `phone` (text)
+- `address_line1` (text)
+- `address_line2` (text)
+- `city` (text)
+- `state` (text)
+- `postal_code` (text)
+- `country` (text)
+
+Recommended migration script (single run):
+
+```sql
+BEGIN;
+
+ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS address_line1 TEXT;
+ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS address_line2 TEXT;
+ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS city TEXT;
+ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS state TEXT;
+ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS postal_code TEXT;
+ALTER TABLE public.organizations ADD COLUMN IF NOT EXISTS country TEXT;
+
+COMMIT;
+
+-- Optional: verify
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND table_name = 'organizations'
+ORDER BY ordinal_position;
+```
+
+Notes:
+
+- Running the same `ADD COLUMN IF NOT EXISTS ...` statements twice is safe, but it is redundant.
+- Use either the plain script OR the BEGIN/COMMIT version (recommended). Do not paste both blocks
+  back-to-back.
+
+---
+
+## 8) Pending RLS change: allow owner/admin to update `organizations`
+
+Current:
+
+- `organizations` UPDATE policy allows only `owner_id = auth.uid()`.
+
+Requested:
+
+- Allow members with role `owner` OR `admin` in `organization_members` to UPDATE the org row.
+
+Suggested change (drop old policy, create role-based policy):
+
+```sql
+BEGIN;
+
+DROP POLICY IF EXISTS "Owners can update their organizations" ON public.organizations;
+
+CREATE POLICY organizations_update_owner_admin
+ON public.organizations
+FOR UPDATE
+USING (
+  EXISTS (
+    SELECT 1
+    FROM public.organization_members om
+    WHERE om.organization_id = organizations.id
+      AND om.user_id = auth.uid()
+      AND om.role IN ('owner','admin')
+  )
+)
+WITH CHECK (
+  EXISTS (
+    SELECT 1
+    FROM public.organization_members om
+    WHERE om.organization_id = organizations.id
+      AND om.user_id = auth.uid()
+      AND om.role IN ('owner','admin')
+  )
+);
+
+COMMIT;
+```
+
+---
+
+## 9) Pending decision: account deletion vs 30-day archive
+
+If you want a 30-day "archive" window:
+
+1. Add soft-delete columns on `profiles` (and optionally other tables):
+
+- `deleted_at timestamptz`
+- `purge_after timestamptz`
+
+2. On "Delete account" request:
+
+- Set `profiles.deleted_at = now()`
+- Set `profiles.purge_after = now() + interval '30 days'`
+- Remove org memberships (or mark them inactive) so the user loses access right away
+- Optionally block sign-in by setting `auth.users.banned_until` (requires server-side /
+  service-role)
+
+3. Daily purge job (server-side):
+
+- Find rows where `purge_after < now()`
+- Delete user data and then delete the auth user + avatar objects
+
+Important:
+
+- Client-side code cannot update `auth.users` fields; that needs a service-role action (Edge
+  Function or server).

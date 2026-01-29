@@ -69,6 +69,12 @@ export function createSettingsOverlay({
   let isLoadingProfile = false;
   let isSavingProfile = false;
 
+  // Organization editing state
+  let orgData = null;
+  let isEditingOrg = false;
+  let isLoadingOrg = false;
+  let isSavingOrg = false;
+
   // Static content for Updates and Roadmap (embedded to avoid external dependencies)
   const updatesData = [
     {
@@ -98,16 +104,16 @@ export function createSettingsOverlay({
         {
           title: 'Weight balance',
           status: 'Completed',
-          badge: 'âœ“',
+          badgeIcon: 'fa-solid fa-check',
           color: 'var(--success)',
           details: 'Add center-of-gravity and axle load estimates.',
         },
         {
           title: 'Rotation (MVP)',
           status: 'In Progress',
-          badge: 'â±',
+          badgeIcon: 'fa-solid fa-rotate',
           color: 'var(--warning)',
-          details: 'Allow 90Â° rotations and pack-time heuristics.',
+          details: 'Allow 90° rotations and pack-time heuristics.',
         },
       ],
     },
@@ -117,14 +123,14 @@ export function createSettingsOverlay({
         {
           title: 'Multi-user',
           status: 'Planned',
-          badge: 'ðŸ“‹',
+          badgeIcon: 'fa-solid fa-clipboard-list',
           color: 'var(--info)',
           details: 'Presence + change tracking (no real-time yet).',
         },
         {
           title: '3D export',
           status: 'Planned',
-          badge: 'ðŸ“‹',
+          badgeIcon: 'fa-solid fa-clipboard-list',
           color: 'var(--info)',
           details: 'GLB/GLTF export for downstream tools.',
         },
@@ -136,7 +142,7 @@ export function createSettingsOverlay({
         {
           title: 'AR view',
           status: 'Idea',
-          badge: 'ðŸ’¡',
+          badgeIcon: 'fa-regular fa-lightbulb',
           color: 'var(--text-muted)',
           details: 'Preview a load-out in real space on mobile.',
         },
@@ -193,6 +199,45 @@ export function createSettingsOverlay({
       return updated;
     } catch (err) {
       isSavingProfile = false;
+      UIComponents.showToast(`Failed to save: ${err && err.message ? err.message : err}`, 'error');
+      throw err;
+    }
+  }
+
+  async function loadOrganization(orgId = null) {
+    if (isLoadingOrg || !orgId) return;
+    isLoadingOrg = true;
+    try {
+      const org = await SupabaseClient.getOrganization(orgId);
+      orgData = org;
+      isLoadingOrg = false;
+      return org;
+    } catch (err) {
+      isLoadingOrg = false;
+      console.error('Failed to load organization:', err);
+      return null;
+    }
+  }
+
+  async function saveOrganization(updates, orgId = null) {
+    if (isSavingOrg || !orgId) return;
+    isSavingOrg = true;
+    try {
+      // Trim string values
+      const trimmed = {};
+      Object.entries(updates).forEach(([key, val]) => {
+        trimmed[key] = typeof val === 'string' ? String(val).trim() : val;
+      });
+
+      const updated = await SupabaseClient.updateOrganization(orgId, trimmed);
+      orgData = updated;
+      isSavingOrg = false;
+      isEditingOrg = false;
+      UIComponents.showToast('Organization updated', 'success');
+      render();
+      return updated;
+    } catch (err) {
+      isSavingOrg = false;
       UIComponents.showToast(`Failed to save: ${err && err.message ? err.message : err}`, 'error');
       throw err;
     }
@@ -397,7 +442,7 @@ export function createSettingsOverlay({
         card.innerHTML = `
           <div class="row space-between" style="gap:10px">
             <div style="font-weight:var(--font-semibold)">${item.title}</div>
-            <div class="badge" style="border-color:transparent;background:${item.color};color:white">${item.badge} ${item.status}</div>
+            <div class="badge" style="border-color:transparent;background:${item.color};color:white"><i class="${item.badgeIcon}"></i> ${item.status}</div>
           </div>
           <div class="muted" style="font-size:var(--text-sm);margin-top:8px">${item.details}</div>
         `;
@@ -1269,26 +1314,29 @@ export function createSettingsOverlay({
 
         const warningText = doc.createElement('div');
         warningText.className = 'muted';
-        warningText.textContent =
-          'Deleting your account will remove all of your information from our database. This cannot be undone.';
+        warningText.innerHTML =
+          '<strong>Your account will be deleted in 30 days.</strong><br/><br/>' +
+          'Your login will be blocked immediately. Your data will be kept for 30 days, after which it will be permanently deleted. ' +
+          'You can cancel this request within the 30-day window to restore access.';
         modalContent.appendChild(warningText);
 
         const confirmLabel = doc.createElement('div');
         confirmLabel.className = 'muted';
         confirmLabel.style.fontSize = 'var(--text-sm)';
-        confirmLabel.textContent = 'To confirm this, type "DELETE"';
+        confirmLabel.style.marginTop = 'var(--space-4)';
+        confirmLabel.textContent = 'To confirm this, type "REQUEST DELETION"';
         modalContent.appendChild(confirmLabel);
 
         const confirmInput = doc.createElement('input');
         confirmInput.type = 'text';
         confirmInput.className = 'input';
-        confirmInput.placeholder = 'Type DELETE';
+        confirmInput.placeholder = 'Type REQUEST DELETION';
         confirmInput.autocomplete = 'off';
         modalContent.appendChild(confirmInput);
 
         // Show modal
         const modal = UIComponents.showModal({
-          title: 'Delete Account',
+          title: 'Request Account Deletion',
           content: modalContent,
           actions: [
             {
@@ -1297,32 +1345,13 @@ export function createSettingsOverlay({
               onClick: () => modal.close(),
             },
             {
-              label: 'Delete Account',
+              label: 'Request Deletion',
               variant: 'danger',
               disabled: true,
               onClick: async () => {
                 try {
-                  const session =
-                    SupabaseClient && typeof SupabaseClient.getSession === 'function'
-                      ? SupabaseClient.getSession()
-                      : null;
-                  if (!session || !session.access_token) throw new Error('No active session');
-                  const cfg =
-                    window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : {};
-                  const baseUrl = cfg && cfg.url ? String(cfg.url) : '';
-                  if (!baseUrl) throw new Error('Supabase URL missing');
-                  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/functions/v1/delete-account`, {
-                    method: 'POST',
-                    headers: {
-                      Authorization: `Bearer ${session.access_token}`,
-                      apikey: cfg.anonKey || '',
-                      'Content-Type': 'application/json',
-                    },
-                  });
-                  if (!response.ok) {
-                    const errText = await response.text();
-                    throw new Error(errText || 'Delete failed');
-                  }
+                  await SupabaseClient.requestAccountDeletion();
+
                   try {
                     CoreStorage.clearAll();
                   } catch {
@@ -1341,10 +1370,11 @@ export function createSettingsOverlay({
                   }
                   modal.close();
                   close();
+                  UIComponents.showToast('Account deletion requested. You have been signed out.', 'success');
                   window.location.reload();
                 } catch (err) {
                   modal.close();
-                  UIComponents.showToast(`Delete failed: ${err && err.message ? err.message : err}`, 'error', {
+                  UIComponents.showToast(`Request failed: ${err && err.message ? err.message : err}`, 'error', {
                     title: 'Account',
                   });
                 }
@@ -1353,11 +1383,11 @@ export function createSettingsOverlay({
           ],
         });
 
-        // Enable delete button only when "DELETE" is typed
+        // Enable delete button only when "REQUEST DELETION" is typed
         const deleteAction = modal.element && modal.element.querySelector('.btn-danger');
         if (deleteAction && confirmInput) {
           confirmInput.addEventListener('input', () => {
-            const isValid = confirmInput.value === 'DELETE';
+            const isValid = confirmInput.value === 'REQUEST DELETION';
             deleteAction.disabled = !isValid;
           });
         }
@@ -1369,19 +1399,34 @@ export function createSettingsOverlay({
       danger.appendChild(dangerRow);
       body.appendChild(danger);
     } else if (settingsActiveTab === 'org-general') {
-      const userView = getCurrentUserView();
-      const orgName = 'Workspace';
-      const orgRole = userView.isAuthed ? 'Owner' : 'â€”';
+      const userView = getCurrentUserView(profileData);
+      let userOrgs = [];
+      let currentOrg = null;
 
+      try {
+        // Get user's organizations
+        if (SupabaseClient && typeof SupabaseClient.getUserOrganizations === 'function') {
+          const orgsResult = SupabaseClient.getUserOrganizations();
+          if (orgsResult && typeof orgsResult.then === 'function') {
+            // It's a promise, but we're in render, so we can't wait
+            // Instead, fetch on demand below
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      // Try to get current org from first organization or use default
+      const orgId = userView && userView.orgId ? userView.orgId : null;
+
+      // Render org card
       const orgCard = doc.createElement('div');
       orgCard.className = 'card';
       orgCard.classList.add('tp3d-settings-card-max');
-      const orgWrap = doc.createElement('div');
-      orgWrap.classList.add('tp3d-settings-org');
 
       const orgTitle = doc.createElement('div');
       orgTitle.classList.add('tp3d-settings-org-title');
-      orgTitle.textContent = 'Organization';
+      orgTitle.textContent = 'General';
 
       const orgDivider = doc.createElement('div');
       orgDivider.classList.add('tp3d-settings-org-divider');
@@ -1400,24 +1445,193 @@ export function createSettingsOverlay({
         return wrap;
       };
 
-      const logo = doc.createElement('span');
-      logo.className = 'brand-mark tp3d-settings-org-logo';
-      logo.setAttribute('aria-hidden', 'true');
-      logo.textContent = userView.initials || '';
-      orgRows.appendChild(orgRow('Logo', logo));
+      // Load org if not loaded and we have an orgId
+      if (!orgData && !isLoadingOrg && orgId && userView.isAuthed) {
+        loadOrganization(orgId)
+          .then(() => render())
+          .catch(() => {});
+      }
 
-      const orgNameEl = doc.createElement('div');
-      orgNameEl.textContent = orgName;
-      orgRows.appendChild(orgRow('Name', orgNameEl));
+      // Determine if user is owner/admin
+      const isOwnerOrAdmin =
+        userView.isAuthed &&
+        (userView.orgRole === 'owner' ||
+          userView.orgRole === 'admin' ||
+          userView.orgRole === 'Owner' ||
+          userView.orgRole === 'Admin');
 
-      const orgRoleEl = doc.createElement('div');
-      orgRoleEl.textContent = orgRole;
-      orgRows.appendChild(orgRow('Role', orgRoleEl));
+      if (isEditingOrg && orgData && isOwnerOrAdmin) {
+        // Edit mode
+        const form = doc.createElement('form');
+        form.className = 'tp3d-account-profile-form';
+        form.addEventListener('submit', e => {
+          e.preventDefault();
+          const formData = new FormData(form);
+          const updates = {
+            name: formData.get('name') || null,
+            phone: formData.get('phone') || null,
+            address_line1: formData.get('address_line1') || null,
+            address_line2: formData.get('address_line2') || null,
+            city: formData.get('city') || null,
+            state: formData.get('state') || null,
+            postal_code: formData.get('postal_code') || null,
+            country: formData.get('country') || null,
+          };
+          if (orgId) saveOrganization(updates, orgId);
+        });
 
-      orgWrap.appendChild(orgTitle);
-      orgWrap.appendChild(orgDivider);
-      orgWrap.appendChild(orgRows);
-      orgCard.appendChild(orgWrap);
+        const makeField = (label, name, value = '', placeholder = '') => {
+          const field = doc.createElement('div');
+          field.className = 'tp3d-account-field';
+          const lbl = doc.createElement('label');
+          lbl.className = 'tp3d-account-field-label';
+          lbl.textContent = label;
+          const inp = doc.createElement('input');
+          inp.type = 'text';
+          inp.name = name;
+          inp.className = 'input';
+          inp.value = value || '';
+          inp.placeholder = placeholder;
+          field.appendChild(lbl);
+          field.appendChild(inp);
+          return field;
+        };
+
+        form.appendChild(makeField('Name', 'name', orgData.name || '', 'Organization name'));
+        form.appendChild(makeField('Phone', 'phone', orgData.phone || '', '+1 (555) 000-0000'));
+        form.appendChild(makeField('Address Line 1', 'address_line1', orgData.address_line1 || '', 'Street address'));
+        form.appendChild(makeField('Address Line 2', 'address_line2', orgData.address_line2 || '', 'Apt, suite, etc'));
+        form.appendChild(makeField('City', 'city', orgData.city || '', 'City'));
+        form.appendChild(makeField('State', 'state', orgData.state || '', 'State / Province'));
+        form.appendChild(makeField('Postal Code', 'postal_code', orgData.postal_code || '', 'Postal code'));
+        form.appendChild(makeField('Country', 'country', orgData.country || '', 'Country'));
+
+        // Actions
+        const actions = doc.createElement('div');
+        actions.className = 'tp3d-account-actions';
+
+        const cancelBtn = doc.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'btn btn-ghost';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.disabled = isSavingOrg;
+        cancelBtn.addEventListener('click', () => {
+          isEditingOrg = false;
+          render();
+        });
+
+        const saveBtn = doc.createElement('button');
+        saveBtn.type = 'submit';
+        saveBtn.className = 'btn btn-primary';
+        saveBtn.textContent = isSavingOrg ? 'Saving...' : 'Save Changes';
+        saveBtn.disabled = isSavingOrg;
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(saveBtn);
+        form.appendChild(actions);
+
+        orgCard.appendChild(orgTitle);
+        orgCard.appendChild(orgDivider);
+        orgCard.appendChild(form);
+      } else {
+        // View mode
+        const viewContainer = doc.createElement('div');
+        viewContainer.className = 'grid';
+
+        if (orgData) {
+          viewContainer.appendChild(
+            orgRow(
+              'Name',
+              (() => {
+                const el = doc.createElement('div');
+                el.textContent = orgData.name || '—';
+                return el;
+              })()
+            )
+          );
+
+          viewContainer.appendChild(
+            orgRow(
+              'Slug',
+              (() => {
+                const el = doc.createElement('div');
+                el.textContent = orgData.slug || '—';
+                return el;
+              })()
+            )
+          );
+
+          viewContainer.appendChild(
+            orgRow(
+              'Phone',
+              (() => {
+                const el = doc.createElement('div');
+                el.textContent = orgData.phone || '—';
+                return el;
+              })()
+            )
+          );
+
+          if (orgData.address_line1) {
+            viewContainer.appendChild(
+              orgRow(
+                'Address',
+                (() => {
+                  const el = doc.createElement('div');
+                  const parts = [
+                    orgData.address_line1,
+                    orgData.address_line2,
+                    orgData.city,
+                    orgData.state,
+                    orgData.postal_code,
+                    orgData.country,
+                  ].filter(Boolean);
+                  el.textContent = parts.join(', ') || '—';
+                  return el;
+                })()
+              )
+            );
+          }
+        } else {
+          const loadingEl = doc.createElement('div');
+          loadingEl.className = 'muted';
+          loadingEl.textContent = 'Loading organization...';
+          viewContainer.appendChild(loadingEl);
+        }
+
+        // Role
+        const roleEl = doc.createElement('div');
+        roleEl.textContent = userView.orgRole || 'Member';
+        viewContainer.appendChild(orgRow('Role', roleEl));
+
+        // Edit button only for owner/admin
+        if (!isOwnerOrAdmin && orgData) {
+          const noteEl = doc.createElement('div');
+          noteEl.className = 'muted';
+          noteEl.style.fontSize = 'var(--text-sm)';
+          noteEl.style.marginTop = 'var(--space-3)';
+          noteEl.textContent = 'Only admins can edit organization details.';
+          viewContainer.appendChild(noteEl);
+        } else if (isOwnerOrAdmin && orgData) {
+          const editActions = doc.createElement('div');
+          editActions.className = 'tp3d-account-actions';
+          const editBtn = doc.createElement('button');
+          editBtn.type = 'button';
+          editBtn.className = 'btn btn-primary';
+          editBtn.textContent = 'Edit Organization';
+          editBtn.addEventListener('click', () => {
+            isEditingOrg = true;
+            render();
+          });
+          editActions.appendChild(editBtn);
+          viewContainer.appendChild(editActions);
+        }
+
+        orgCard.appendChild(orgTitle);
+        orgCard.appendChild(orgDivider);
+        orgCard.appendChild(viewContainer);
+      }
+
       body.appendChild(orgCard);
     } else {
       const billingCard = doc.createElement('div');

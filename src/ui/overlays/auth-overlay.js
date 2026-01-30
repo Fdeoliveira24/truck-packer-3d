@@ -26,7 +26,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
   let inFlight = false;
   let mode = 'signin'; // 'signin' | 'signup'
   let keydownHandler = null;
-  let phase = 'checking'; // 'checking' | 'form' | 'cantconnect' | 'disabled'
+  let phase = 'checking'; // 'checking' | 'form' | 'cantconnect'
   let lastBootstrapError = null;
   let retryHandler = null;
   let showPassword = false;
@@ -89,14 +89,9 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
 
   function setPhase(nextPhase, { error, onRetry } = {}) {
     const p = String(nextPhase || '').toLowerCase();
-    phase = p === 'cantconnect' || p === 'form' || p === 'disabled' ? p : 'checking';
+    phase = p === 'cantconnect' || p === 'form' ? p : 'checking';
     lastBootstrapError = error || null;
     retryHandler = typeof onRetry === 'function' ? onRetry : retryHandler;
-    render();
-  }
-
-  function showAccountDisabled() {
-    phase = 'disabled';
     render();
   }
 
@@ -290,38 +285,6 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       return;
     }
 
-    if (phase === 'disabled') {
-      const t = document.createElement('div');
-      t.style.fontWeight = 'var(--font-semibold)';
-      t.style.marginBottom = '6px';
-      t.textContent = 'Account Disabled';
-      body.appendChild(t);
-
-      const msg = document.createElement('div');
-      msg.className = 'muted';
-      msg.style.marginBottom = '12px';
-      msg.textContent = 'This account is disabled.';
-      body.appendChild(msg);
-
-      const closeBtn = document.createElement('button');
-      closeBtn.className = 'btn btn-primary';
-      closeBtn.type = 'button';
-      closeBtn.textContent = 'Close';
-      closeBtn.addEventListener('click', () => {
-        hide();
-      });
-
-      const row = document.createElement('div');
-      row.style.display = 'flex';
-      row.style.gap = '10px';
-      row.style.justifyContent = 'flex-end';
-      row.appendChild(closeBtn);
-      body.appendChild(row);
-
-      modalEl.appendChild(body);
-      return;
-    }
-
     if (signedInEmail) {
       const info = document.createElement('div');
       info.className = 'muted';
@@ -459,33 +422,33 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
 
           // Check deletion status after sign-in
           try {
-            const profileStatus = await SupabaseClient.getMyProfileStatus();
-            if (profileStatus && profileStatus.deletion_status === 'requested') {
-              // Sign out the user locally
-              try {
-                await SupabaseClient.signOut({ global: true });
-              } catch {
-                // ignore
+            const user = data && data.user ? data.user : null;
+            if (user && SupabaseClient && typeof SupabaseClient.getProfile === 'function') {
+              const profile = await SupabaseClient.getProfile(user.id);
+              if (profile && profile.deletion_status === 'requested' && profile.purge_after) {
+                const purgeDate = new Date(profile.purge_after).toLocaleDateString();
+                setInlineError(`Account deletion requested. Sign-in disabled until ${purgeDate}.`);
+                // Sign out the user
+                try {
+                  const client =
+                    SupabaseClient && typeof SupabaseClient.getClient === 'function'
+                      ? SupabaseClient.getClient()
+                      : null;
+                  if (client && client.auth) {
+                    await client.auth.signOut({ scope: 'local' });
+                  }
+                } catch {
+                  // ignore
+                }
+                return;
               }
-              // Show disabled message
-              phase = 'disabled';
-              render();
-              return;
             }
           } catch {
             // If profile check fails, let sign-in succeed
           }
         } catch (err) {
-          try {
-            console.error('Supabase auth error (sign in):', err);
-          } catch {
-            // ignore
-          }
-          const fe = SupabaseClient && typeof SupabaseClient.formatError === 'function'
-            ? SupabaseClient.formatError(err)
-            : { message: err && err.message ? String(err.message) : String(err), code: err && (err.status || err.code) ? (err.status || err.code) : null };
-          const shortMsg = fe.message || 'Sign in failed.';
-          setInlineError(fe.code ? `${shortMsg} (code: ${fe.code})` : shortMsg);
+          const mapped = mapAuthError(err, 'signin');
+          setInlineError(mapped.message);
         } finally {
           signInBtn.textContent = 'Sign In';
           setBusy(false);
@@ -522,16 +485,8 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
             render();
           }
         } catch (err) {
-          try {
-            console.error('Supabase auth error (sign up):', err);
-          } catch {
-            // ignore
-          }
-          const fe = SupabaseClient && typeof SupabaseClient.formatError === 'function'
-            ? SupabaseClient.formatError(err)
-            : { message: err && err.message ? String(err.message) : String(err), code: err && (err.status || err.code) ? (err.status || err.code) : null };
-          const shortMsg = fe.message || 'Sign up failed.';
-          setInlineError(fe.code ? `${shortMsg} (code: ${fe.code})` : shortMsg);
+          const mapped = mapAuthError(err, 'signup');
+          setInlineError(mapped.message);
         } finally {
           signUpBtn.textContent = 'Sign Up';
           setBusy(false);
@@ -609,16 +564,8 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
             resendDisabledUntil = Date.now() + 45 * 1000;
             scheduleResendCooldownRerender();
           } catch (err) {
-            try {
-              console.error('Supabase resend confirmation error:', err);
-            } catch {
-              // ignore
-            }
-            const fe = SupabaseClient && typeof SupabaseClient.formatError === 'function'
-              ? SupabaseClient.formatError(err)
-              : { message: err && err.message ? String(err.message) : String(err), code: err && (err.status || err.code) ? (err.status || err.code) : null };
-            const shortMsg = fe.message || 'Resend failed.';
-            setInlineError(fe.code ? `${shortMsg} (code: ${fe.code})` : shortMsg);
+            const mapped = mapAuthError(err, 'signin');
+            setInlineError(mapped.message);
           } finally {
             setBusy(false);
             inFlight = false;
@@ -708,18 +655,6 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     } catch {
       // ignore
     }
-    // Check if the signed-out or signing-in user has requested deletion and block access
-    (async () => {
-      try {
-        const ds = await checkDeletionStatus();
-        if (ds && ds.status === 'requested') {
-          phase = 'disabled';
-          render();
-        }
-      } catch {
-        // ignore
-      }
-    })();
   }
 
   function hide() {
@@ -752,6 +687,5 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     isOpen: isOpenFn,
     setStatus,
     setPhase,
-    showAccountDisabled,
   };
 }

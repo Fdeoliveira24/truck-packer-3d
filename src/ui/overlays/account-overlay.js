@@ -1,6 +1,5 @@
 /**
  * @file account-overlay.js
- * @updated 01/30/2026
  * @description Dedicated overlay for viewing account details outside of the Settings modal.
  * @module ui/overlays/account-overlay
  */
@@ -88,156 +87,6 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     return wrap;
   }
 
-  function showDeleteConfirmationModal(userEmail, onConfirm) {
-    const overlay = doc.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.style.zIndex = '10001';
-
-    const modal = doc.createElement('div');
-    modal.className = 'modal';
-    modal.style.maxWidth = '500px';
-    modal.setAttribute('role', 'dialog');
-    modal.setAttribute('aria-modal', 'true');
-
-    const header = doc.createElement('div');
-    header.className = 'modal-header';
-    const title = doc.createElement('h2');
-    title.textContent = 'Request Account Deletion';
-    header.appendChild(title);
-
-    const body = doc.createElement('div');
-    body.className = 'modal-body';
-    body.style.padding = '20px';
-
-    const msgBlock = doc.createElement('p');
-    msgBlock.textContent = 'User will no longer have access to the project.';
-    body.appendChild(msgBlock);
-
-    const p0 = doc.createElement('p');
-    p0.style.fontWeight = '600';
-    p0.textContent = 'Confirm to delete user';
-    body.appendChild(p0);
-
-    const p1 = doc.createElement('p');
-    p1.textContent = 'Deleting a user is irreversible.';
-    body.appendChild(p1);
-
-    const p2 = doc.createElement('p');
-    p2.textContent = 'This will remove the selected user from the project and all associated data.';
-    body.appendChild(p2);
-
-    const p3 = doc.createElement('p');
-    p3.style.marginTop = '12px';
-    p3.style.fontWeight = '600';
-    p3.innerHTML = `This is permanent! Are you sure you want to delete the user <strong>${userEmail || 'unknown'}</strong>?`;
-    body.appendChild(p3);
-
-    const p4 = doc.createElement('p');
-    p4.style.marginTop = '16px';
-    p4.textContent = 'Type DELETE.';
-    body.appendChild(p4);
-
-    const input = doc.createElement('input');
-    input.type = 'text';
-    input.className = 'input';
-    input.placeholder = 'DELETE';
-    input.style.marginTop = '8px';
-    body.appendChild(input);
-
-    const inlineErr = doc.createElement('div');
-    inlineErr.className = 'muted';
-    inlineErr.style.marginTop = '12px';
-    inlineErr.style.color = 'var(--error)';
-    inlineErr.style.display = 'none';
-    body.appendChild(inlineErr);
-
-    const footer = doc.createElement('div');
-    footer.className = 'modal-footer';
-    footer.style.display = 'flex';
-    footer.style.justifyContent = 'flex-end';
-    footer.style.gap = '8px';
-    footer.style.marginTop = '20px';
-
-    const cancelBtn = doc.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'btn btn-ghost';
-    cancelBtn.textContent = 'Cancel';
-
-    const deleteBtn = doc.createElement('button');
-    deleteBtn.type = 'button';
-    deleteBtn.className = 'btn btn-danger';
-    deleteBtn.textContent = 'Delete Account';
-    deleteBtn.disabled = true;
-
-    footer.appendChild(cancelBtn);
-    footer.appendChild(deleteBtn);
-
-    modal.appendChild(header);
-    modal.appendChild(body);
-    modal.appendChild(footer);
-    overlay.appendChild(modal);
-
-    input.addEventListener('input', () => {
-      inlineErr.style.display = 'none';
-      deleteBtn.disabled = input.value !== 'DELETE';
-    });
-
-    const cleanup = () => {
-      try {
-        if (overlay.parentElement) overlay.parentElement.removeChild(overlay);
-      } catch {
-        // ignore
-      }
-      try {
-        doc.body.classList.remove('modal-open');
-      } catch {
-        // ignore
-      }
-    };
-
-    cancelBtn.addEventListener('click', cleanup);
-
-    overlay.addEventListener('click', ev => {
-      if (ev.target === overlay) cleanup();
-    });
-
-    deleteBtn.addEventListener('click', () => {
-      // Offline guard: do not call Edge Function while offline — show friendly message
-      try {
-        if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) {
-          inlineErr.textContent = 'Unable to delete account while offline. Please reconnect and try again.';
-          inlineErr.style.display = 'block';
-          // Ensure button is enabled again for retry
-          deleteBtn.disabled = false;
-          return;
-        }
-      } catch (e) {
-        // If navigator check fails for some reason, proceed as normal
-      }
-
-      cleanup();
-      onConfirm();
-    });
-
-    const handleEscape = ev => {
-      if (ev.key === 'Escape') {
-        cleanup();
-        doc.removeEventListener('keydown', handleEscape, true);
-      }
-    };
-    doc.addEventListener('keydown', handleEscape, true);
-
-    const root = doc.getElementById('modal-root');
-    if (root) {
-      root.appendChild(overlay);
-    } else {
-      doc.body.appendChild(overlay);
-    }
-
-    doc.body.classList.add('modal-open');
-    input.focus();
-  }
-
   async function render() {
     if (!accountModal) return;
 
@@ -281,9 +130,8 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     const nameRow = doc.createElement('div');
     nameRow.className = 'row';
     nameRow.classList.add('tp3d-settings-account-row');
-    nameRow.innerHTML = `<span class="brand-mark tp3d-settings-account-avatar-lg" aria-hidden="true">${
-      userView.initials || ''
-    }</span><div class="tp3d-settings-account-display">${userView.displayName || '—'}</div>`;
+    nameRow.innerHTML = `<span class="brand-mark tp3d-settings-account-avatar-lg" aria-hidden="true">${userView.initials || ''
+      }</span><div class="tp3d-settings-account-display">${userView.displayName || '—'}</div>`;
     body.appendChild(nameRow);
 
     const emailEl = doc.createElement('div');
@@ -296,7 +144,9 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     avatarLabel.classList.add('tp3d-settings-row-label');
     avatarLabel.textContent = 'Avatar';
     const avatarRight = doc.createElement('div');
-    avatarRight.className = 'tp3d-account-avatar-right';
+    avatarRight.style.display = 'flex';
+    avatarRight.style.flexDirection = 'column';
+    avatarRight.style.gap = '6px';
     const avatarInput = doc.createElement('input');
     avatarInput.type = 'file';
     avatarInput.accept = 'image/jpeg,image/png,image/webp';
@@ -312,10 +162,14 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
 
       try {
         avatarInput.disabled = true;
-        const ext = String(file.name || '').split('.').pop() || 'png';
+        const ext =
+          String(file.name || '')
+            .split('.')
+            .pop() || 'png';
         const safeExt = ext.toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
         const filePath = `${user.id}/avatar.${safeExt}`;
-        const client = SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
+        const client =
+          SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
         if (!client || !client.storage) throw new Error('Storage not available');
 
         const { error } = await client.storage.from('avatars').upload(filePath, file, { upsert: true });
@@ -360,29 +214,47 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     delBtn.addEventListener('click', async () => {
       if (!userView.isAuthed) return;
 
-      showDeleteConfirmationModal(userView.email, async () => {
+      // Updated confirmation without "30 days" mention
+      if (
+        !confirm(
+          'You are requesting account deletion. You will be signed out and access will be disabled immediately.\n\nThis action cannot be undone.\n\nAre you sure?'
+        )
+      ) {
+        return;
+      }
+
+      try {
+        // Call Supabase helper to request deletion (sets status, bans user)
+        await SupabaseClient.requestAccountDeletion();
+
+        // Sign out globally and redirect to login/root so the auth overlay can show disabled state
         try {
-          await SupabaseClient.requestAccountDeletion();
-
-          try {
-            await SupabaseClient.signOut({ global: true, allowOffline: true });
-          } catch {
-            // Ignore - local state cleared anyway
-          }
-
-          close();
-
-          try {
-            window.location.reload();
-          } catch {
-            window.location.reload();
-          }
-        } catch (err) {
-          alert(`Delete request failed: ${err && err.message ? err.message : String(err)}`);
+          await SupabaseClient.signOut({ global: true });
+        } catch {
+          // ignore
         }
-      });
+        try {
+          window.location.href = '/';
+        } catch {
+          window.location.reload();
+        }
+      } catch (err) {
+        alert(`Delete request failed: ${err && err.message ? err.message : err}`);
+      }
     });
+    const dMsg = doc.createElement('div');
+    dMsg.className = 'muted';
+    dMsg.classList.add('tp3d-settings-danger-msg');
+    const warnIcon = doc.createElement('i');
+    warnIcon.className = 'fa-solid fa-triangle-exclamation';
+    warnIcon.setAttribute('aria-hidden', 'true');
+    warnIcon.classList.add('tp3d-settings-danger-warn-icon');
+    const warnText = doc.createElement('span');
+    warnText.textContent = 'This action is permanent and cannot be undone.';
+    dMsg.appendChild(warnIcon);
+    dMsg.appendChild(warnText);
     dRight.appendChild(delBtn);
+    dRight.appendChild(dMsg);
     dangerRow.appendChild(dLeft);
     dangerRow.appendChild(dRight);
     danger.appendChild(dangerRow);
@@ -401,7 +273,9 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     accountOverlay.className = 'modal-overlay';
 
     accountModal = doc.createElement('div');
-    accountModal.className = 'modal tp3d-settings-modal tp3d-account-overlay-modal';
+    accountModal.className = 'modal tp3d-settings-modal';
+    accountModal.style.display = 'flex';
+    accountModal.style.flexDirection = 'column';
     accountModal.setAttribute('role', 'dialog');
     accountModal.setAttribute('aria-modal', 'true');
     accountModal.setAttribute('tabindex', '-1');

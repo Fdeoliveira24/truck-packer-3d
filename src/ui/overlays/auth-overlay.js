@@ -3,7 +3,7 @@
  * @description Blocking authentication overlay (Supabase) that prevents app interaction until signed in.
  * @module ui/overlays/auth-overlay
  * @created Unknown
- * @updated 01/22/2026
+* @updated 01/30/2026
  * @author Truck Packer 3D Team
  */
 
@@ -68,6 +68,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     const raw = err && err.message ? String(err.message) : '';
     const msg = raw.toLowerCase();
     let friendly = '';
+    let hideDebugDetails = false;
 
     if (msg.includes('invalid login credentials')) {
       friendly = 'Incorrect email or password.';
@@ -75,6 +76,10 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       friendly = 'Please confirm your email, then sign in.';
     } else if (msg.includes('user already registered') || msg.includes('user already exists')) {
       friendly = 'Account already exists. Try Sign In.';
+    } else if (msg.includes('user is banned') || msg.includes('user banned') || msg.includes('banned')) {
+      // Replace raw Supabase banned messages with a friendly, non-technical message.
+      friendly = 'Account is no longer active. Please use another email, or contact support if you think this is a mistake.';
+      hideDebugDetails = true;
     } else if (msg.includes('password') && msg.includes('weak')) {
       friendly = 'Password is too weak.';
     } else if (msg.includes('password') && msg.includes('characters')) {
@@ -88,7 +93,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     const title = action === 'signup' ? 'Sign up failed' : 'Sign in failed';
     let full = `${title}: ${friendly}`;
 
-    if (isDebugEnabled() && raw && toAscii(raw) && toAscii(raw) !== friendly) {
+    if (isDebugEnabled() && !hideDebugDetails && raw && toAscii(raw) && toAscii(raw) !== friendly) {
       full = `${full} Details: ${toAscii(raw)}`;
     }
 

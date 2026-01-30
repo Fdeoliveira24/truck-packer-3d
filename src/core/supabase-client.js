@@ -2,8 +2,7 @@
  * @file supabase-client.js
  * @description UI-free Supabase client wrapper (init + auth helpers) for browser runtime.
  * @module core/supabase-client
- * @created Unknown
- * @updated 01/28/2026
+ * @updated 01/30/2026
  * @author Truck Packer 3D Team
  * 
  * CHANGES (01/28/2026):
@@ -13,6 +12,11 @@
  * - Implemented file size validation (2MB max)
  * - Avatar storage follows pattern: ${userId}/avatar.${ext}
  * - Both functions respect RLS policies based on storage.foldername(name)[1] == auth.uid()
+ * 
+ * CHANGES (01/30/2026):
+ * - Updated signOut() to call clearLocalAuthStorage() in both offline and online paths
+ * - Added support for { scope: 'local'|'global' } in addition to { global: boolean }
+ * - Added offline logout support with { allowOffline: boolean }
  */
 
 // ============================================================================
@@ -64,7 +68,7 @@ export function init({ url, anonKey }) {
         if (error) throw error;
         _session = data && data.session ? data.session : null;
       } catch {
-              _session = null;
+        _session = null;
       }
 
       _client.auth.onAuthStateChange((_event, nextSession) => {
@@ -74,8 +78,9 @@ export function init({ url, anonKey }) {
       if (debugEnabled()) console.info('[SupabaseClient] init success');
       return _client;
     } catch (err) {
-      if (debugEnabled())
-        {console.info('[SupabaseClient] init failed:', err && err.message ? String(err.message) : String(err));}
+      if (debugEnabled()) {
+        console.info('[SupabaseClient] init failed:', err && err.message ? String(err.message) : String(err));
+      }
       _initPromise = null;
       _client = null;
       _session = null;
@@ -198,7 +203,11 @@ function clearLocalAuthStorage() {
 export async function signOut(options = {}) {
   const client = requireClient();
 
-  const global = Boolean(options.global);
+  // Support both { global: true } and { scope: 'global' } formats
+  let global = Boolean(options.global);
+  if (options.scope === 'global') global = true;
+  if (options.scope === 'local') global = false;
+
   const allowOffline = options.allowOffline !== false; // default true
 
   const localFallback = () => {
@@ -213,6 +222,7 @@ export async function signOut(options = {}) {
     } catch (e) { void 0; }
 
     _session = null;
+    clearLocalAuthStorage();
 
     try {
       window.dispatchEvent(
@@ -235,6 +245,7 @@ export async function signOut(options = {}) {
     if (error) throw error;
 
     _session = null;
+    clearLocalAuthStorage();
 
     try {
       window.dispatchEvent(
@@ -246,18 +257,20 @@ export async function signOut(options = {}) {
 
     return { ok: true, offline: false };
   } catch (err) {
-    const msg = (err && err.message) ? String(err.message) : String(err);
+    // Ensure local session is cleared even if remote signOut fails
+    try {
+      _session = null;
+      clearLocalAuthStorage();
+      try {
+        window.dispatchEvent(
+          new CustomEvent("tp3d:auth-signed-out", {
+            detail: { offline: true, globalRequested: global },
+          })
+        );
+      } catch (_) { void 0; }
+    } catch (_) { void 0; }
 
-    if (
-      allowOffline &&
-      (msg.includes("Failed to fetch") ||
-        msg.includes("NetworkError") ||
-        msg.includes("ERR_INTERNET_DISCONNECTED"))
-    ) {
-      return localFallback();
-    }
-
-    throw err;
+    return { ok: true, forced: true };
   }
 }
 
@@ -476,7 +489,7 @@ export async function deleteAvatar() {
  * 3. Removes organization memberships
  * 4. Disables login
  * 
- * After this succeeds, the client should call signOut({ scope: 'local' })
+ * After this succeeds, the client should call signOut({ global: true, allowOffline: true })
  * and reload the page.
  * 
  * @returns {Promise<boolean>} - True on success
@@ -486,18 +499,26 @@ export async function requestAccountDeletion() {
   const user = getUser();
   if (!user) throw new Error('Not authenticated');
 
-  // Call Edge Function to handle deletion server-side
-  // The Edge Function should:
-  // 1. Read Authorization header JWT
-  // 2. Call serviceClient.auth.admin.signOut(jwt, 'global')
-  // 3. Set deletion_status='requested', purge_after
-  // 4. Remove organization memberships
-  // 5. Disable/ban user login
-  const { data, error } = await client.functions.invoke('request-account-deletion', {
-    method: 'POST',
-  });
+  // Always pull fresh session
+  const { data: sessData } = await client.auth.getSession();
+  const accessToken =
+    sessData?.session?.access_token || _session?.access_token;
+
+  if (!accessToken) {
+    throw new Error('No active session token');
+  }
+
+  const { data, error } = await client.functions.invoke(
+    'request-account-deletion',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
 
   if (error) throw error;
-  
-  return data && data.success ? true : false;
+
+  return data && data.success === true;
 }

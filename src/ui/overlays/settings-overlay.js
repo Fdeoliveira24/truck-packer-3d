@@ -71,8 +71,10 @@ export function createSettingsOverlay({
 
   // Organization editing state
   let orgData = null;
+  let membershipData = null;  // NEW: Store membership separately
   let isEditingOrg = false;
   let isLoadingOrg = false;
+  let isLoadingMembership = false;  // NEW: Track membership loading
   let isSavingOrg = false;
 
   // Static content for Updates and Roadmap (embedded to avoid external dependencies)
@@ -598,8 +600,7 @@ export function createSettingsOverlay({
       summary.className = 'card';
       summary.innerHTML = `
         <div class="tp3d-import-summary-title">Import Result</div>
-        <div class="muted tp3d-import-summary-meta">File: ${
-          Utils && Utils.escapeHtml ? Utils.escapeHtml(file.name) : file.name
+        <div class="muted tp3d-import-summary-meta">File: ${Utils && Utils.escapeHtml ? Utils.escapeHtml(file.name) : file.name
         }</div>
         <div class="tp3d-import-summary-spacer"></div>
         <div class="tp3d-import-badges">
@@ -1055,7 +1056,7 @@ export function createSettingsOverlay({
       if (!profileData && !isLoadingProfile && userView.isAuthed) {
         loadProfile()
           .then(() => render())
-          .catch(() => {});
+          .catch(() => { });
       }
 
       // Avatar section
@@ -1312,13 +1313,14 @@ export function createSettingsOverlay({
         modalContent.className = 'grid';
         modalContent.style.gap = 'var(--space-4)';
 
-        const warningText = doc.createElement('div');
-        warningText.className = 'muted';
-        warningText.innerHTML =
-          '<strong>Your account will be deleted in 30 days.</strong><br/><br/>' +
-          'Your login will be blocked immediately. Your data will be kept for 30 days, after which it will be permanently deleted. ' +
-          'You can cancel this request within the 30-day window to restore access.';
-        modalContent.appendChild(warningText);
+        const dangerMsg = doc.createElement('div');
+        dangerMsg.className = 'muted';
+        dangerMsg.style.fontSize = 'var(--text-sm)';
+        dangerMsg.innerHTML =
+          '<strong>Account deletion is permanent.</strong><br/><br/>' +
+          'Your login will be blocked immediately and your data will be permanently deleted. This action cannot be undone. ' +
+          '<a href="#" style="color:var(--color-link)" id="link-learn-more-deletion">Learn more in Account</a>.';
+        modalContent.appendChild(dangerMsg);
 
         const confirmLabel = doc.createElement('div');
         confirmLabel.className = 'muted';
@@ -1358,20 +1360,19 @@ export function createSettingsOverlay({
                     // ignore
                   }
                   try {
-                    const client =
-                      SupabaseClient && typeof SupabaseClient.getClient === 'function'
-                        ? SupabaseClient.getClient()
-                        : null;
-                    if (client && client.auth) {
-                      await client.auth.signOut({ scope: 'local' });
-                    }
+                    await SupabaseClient.signOut({ global: true });
                   } catch {
                     // ignore
                   }
                   modal.close();
                   close();
                   UIComponents.showToast('Account deletion requested. You have been signed out.', 'success');
-                  window.location.reload();
+                  // Redirect to the login/root screen so auth flow can display the blocked state
+                  try {
+                    window.location.href = '/';
+                  } catch {
+                    window.location.reload();
+                  }
                 } catch (err) {
                   modal.close();
                   UIComponents.showToast(`Request failed: ${err && err.message ? err.message : err}`, 'error', {
@@ -1400,24 +1401,28 @@ export function createSettingsOverlay({
       body.appendChild(danger);
     } else if (settingsActiveTab === 'org-general') {
       const userView = getCurrentUserView(profileData);
-      let userOrgs = [];
-      let currentOrg = null;
 
-      try {
-        // Get user's organizations
-        if (SupabaseClient && typeof SupabaseClient.getUserOrganizations === 'function') {
-          const orgsResult = SupabaseClient.getUserOrganizations();
-          if (orgsResult && typeof orgsResult.then === 'function') {
-            // It's a promise, but we're in render, so we can't wait
-            // Instead, fetch on demand below
-          }
-        }
-      } catch {
-        // ignore
+      // Load membership first if not already loaded
+      if (!membershipData && !isLoadingMembership && userView.isAuthed) {
+        isLoadingMembership = true;
+        SupabaseClient.getMyMembership()
+          .then(mem => {
+            membershipData = mem;
+            isLoadingMembership = false;
+            if (mem && mem.organization_id) {
+              // Now load the organization
+              return loadOrganization(mem.organization_id);
+            }
+            return null;
+          })
+          .then(() => {
+            render();
+          })
+          .catch(() => {
+            isLoadingMembership = false;
+            render();
+          });
       }
-
-      // Try to get current org from first organization or use default
-      const orgId = userView && userView.orgId ? userView.orgId : null;
 
       // Render org card
       const orgCard = doc.createElement('div');
@@ -1431,9 +1436,6 @@ export function createSettingsOverlay({
       const orgDivider = doc.createElement('div');
       orgDivider.classList.add('tp3d-settings-org-divider');
 
-      const orgRows = doc.createElement('div');
-      orgRows.classList.add('tp3d-settings-org-rows');
-
       const orgRow = (label, valueEl) => {
         const wrap = doc.createElement('div');
         wrap.classList.add('tp3d-settings-row');
@@ -1445,20 +1447,9 @@ export function createSettingsOverlay({
         return wrap;
       };
 
-      // Load org if not loaded and we have an orgId
-      if (!orgData && !isLoadingOrg && orgId && userView.isAuthed) {
-        loadOrganization(orgId)
-          .then(() => render())
-          .catch(() => {});
-      }
-
-      // Determine if user is owner/admin
+      // Determine if user is owner/admin using membership.role
       const isOwnerOrAdmin =
-        userView.isAuthed &&
-        (userView.orgRole === 'owner' ||
-          userView.orgRole === 'admin' ||
-          userView.orgRole === 'Owner' ||
-          userView.orgRole === 'Admin');
+        membershipData && (membershipData.role === 'owner' || membershipData.role === 'admin');
 
       if (isEditingOrg && orgData && isOwnerOrAdmin) {
         // Edit mode
@@ -1477,7 +1468,9 @@ export function createSettingsOverlay({
             postal_code: formData.get('postal_code') || null,
             country: formData.get('country') || null,
           };
-          if (orgId) saveOrganization(updates, orgId);
+          if (membershipData && membershipData.organization_id) {
+            saveOrganization(updates, membershipData.organization_id);
+          }
         });
 
         const makeField = (label, name, value = '', placeholder = '') => {
@@ -1538,7 +1531,53 @@ export function createSettingsOverlay({
         const viewContainer = doc.createElement('div');
         viewContainer.className = 'grid';
 
-        if (orgData) {
+        if (isLoadingMembership || isLoadingOrg) {
+          const loadingEl = doc.createElement('div');
+          loadingEl.className = 'muted';
+          loadingEl.textContent = 'Loading organization...';
+          viewContainer.appendChild(loadingEl);
+        } else if (!membershipData) {
+          const wrap = doc.createElement('div');
+          wrap.style.display = 'flex';
+          wrap.style.flexDirection = 'column';
+          wrap.style.gap = '8px';
+
+          const noOrgEl = doc.createElement('div');
+          noOrgEl.className = 'muted';
+          noOrgEl.textContent = 'No workspace found for this account.';
+          wrap.appendChild(noOrgEl);
+
+          const retryRow = doc.createElement('div');
+          retryRow.style.display = 'flex';
+          retryRow.style.justifyContent = 'flex-end';
+
+          const retryBtn = doc.createElement('button');
+          retryBtn.type = 'button';
+          retryBtn.className = 'btn btn-ghost';
+          retryBtn.textContent = 'Retry';
+          retryBtn.addEventListener('click', () => {
+            if (isLoadingMembership) return;
+            isLoadingMembership = true;
+            SupabaseClient.getMyMembership()
+              .then(mem => {
+                membershipData = mem;
+                isLoadingMembership = false;
+                if (mem && mem.organization_id) {
+                  return loadOrganization(mem.organization_id);
+                }
+                return null;
+              })
+              .then(() => render())
+              .catch(() => {
+                isLoadingMembership = false;
+                render();
+              });
+          });
+
+          retryRow.appendChild(retryBtn);
+          wrap.appendChild(retryRow);
+          viewContainer.appendChild(wrap);
+        } else if (orgData) {
           viewContainer.appendChild(
             orgRow(
               'Name',
@@ -1592,39 +1631,38 @@ export function createSettingsOverlay({
               )
             );
           }
-        } else {
-          const loadingEl = doc.createElement('div');
-          loadingEl.className = 'muted';
-          loadingEl.textContent = 'Loading organization...';
-          viewContainer.appendChild(loadingEl);
-        }
 
-        // Role
-        const roleEl = doc.createElement('div');
-        roleEl.textContent = userView.orgRole || 'Member';
-        viewContainer.appendChild(orgRow('Role', roleEl));
+          // Role display
+          const roleEl = doc.createElement('div');
+          const roleDisplay =
+            membershipData && membershipData.role
+              ? membershipData.role.charAt(0).toUpperCase() + membershipData.role.slice(1)
+              : 'Member';
+          roleEl.textContent = roleDisplay;
+          viewContainer.appendChild(orgRow('Role', roleEl));
 
-        // Edit button only for owner/admin
-        if (!isOwnerOrAdmin && orgData) {
-          const noteEl = doc.createElement('div');
-          noteEl.className = 'muted';
-          noteEl.style.fontSize = 'var(--text-sm)';
-          noteEl.style.marginTop = 'var(--space-3)';
-          noteEl.textContent = 'Only admins can edit organization details.';
-          viewContainer.appendChild(noteEl);
-        } else if (isOwnerOrAdmin && orgData) {
-          const editActions = doc.createElement('div');
-          editActions.className = 'tp3d-account-actions';
-          const editBtn = doc.createElement('button');
-          editBtn.type = 'button';
-          editBtn.className = 'btn btn-primary';
-          editBtn.textContent = 'Edit Organization';
-          editBtn.addEventListener('click', () => {
-            isEditingOrg = true;
-            render();
-          });
-          editActions.appendChild(editBtn);
-          viewContainer.appendChild(editActions);
+          // Edit button only for owner/admin
+          if (!isOwnerOrAdmin) {
+            const noteEl = doc.createElement('div');
+            noteEl.className = 'muted';
+            noteEl.style.fontSize = 'var(--text-sm)';
+            noteEl.style.marginTop = 'var(--space-3)';
+            noteEl.textContent = 'Only admins can edit organization details.';
+            viewContainer.appendChild(noteEl);
+          } else {
+            const editActions = doc.createElement('div');
+            editActions.className = 'tp3d-account-actions';
+            const editBtn = doc.createElement('button');
+            editBtn.type = 'button';
+            editBtn.className = 'btn btn-primary';
+            editBtn.textContent = 'Edit Organization';
+            editBtn.addEventListener('click', () => {
+              isEditingOrg = true;
+              render();
+            });
+            editActions.appendChild(editBtn);
+            viewContainer.appendChild(editActions);
+          }
         }
 
         orgCard.appendChild(orgTitle);

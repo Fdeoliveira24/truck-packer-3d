@@ -103,7 +103,7 @@ export function getUser() {
 
 export function onAuthStateChange(handler) {
   const client = requireClient();
-  const cb = typeof handler === 'function' ? handler : () => {};
+  const cb = typeof handler === 'function' ? handler : () => { };
   const { data } = client.auth.onAuthStateChange((event, session) => cb(event, session));
   const sub = data && data.subscription ? data.subscription : null;
   return () => {
@@ -139,7 +139,16 @@ export async function signUp(email, password) {
 
 export async function signOut() {
   const client = requireClient();
-  const { error } = await client.auth.signOut();
+  // support optional global sign-out: signOut({ global: true })
+  let global = false;
+  try {
+    const args = arguments && arguments[0] ? arguments[0] : {};
+    global = Boolean(args && args.global);
+  } catch {
+    global = false;
+  }
+
+  const { error } = await client.auth.signOut({ global });
   if (error) throw error;
   _session = null;
   return true;
@@ -421,3 +430,54 @@ export async function cancelAccountDeletion() {
 
   return profile;
 }
+
+/**
+ * Get current user's profile deletion status.
+ * Used to check if account is in deletion requested state.
+ * @returns {Promise<Object|null>} Object with deletion_status, deleted_at, purge_after or null
+ */
+export async function getMyProfileStatus() {
+  const client = requireClient();
+  const user = getUser();
+  if (!user) return null;
+
+  const { data, error } = await client
+    .from('profiles')
+    .select('deletion_status, deleted_at, purge_after')
+    .eq('id', user.id)
+    .maybeSingle();
+
+  if (error) return null;
+  return data;
+}
+
+/**
+ * Get current user's organization membership.
+ * @returns {Promise<Object|null>} Object with organization_id and role, or null
+ */
+export async function getMyMembership() {
+  const client = requireClient();
+  const user = getUser();
+  if (!user) return null;
+
+  const { data, error } = await client
+    .from('organization_memberships')
+    .select('organization_id, role')
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (error) return null;
+  return data;
+}
+
+/**
+ * Format a Supabase error object for UI consumption.
+ * Returns an object with `code`, `message`, and the raw `error`.
+ */
+export function formatError(err) {
+  if (!err) return { code: null, message: 'Unknown error', error: null };
+  const code = err && (err.status || err.statusCode || err.code) ? (err.status || err.statusCode || err.code) : null;
+  const message = err && (err.message || err.error_description) ? String(err.message || err.error_description) : String(err);
+  return { code, message, error: err };
+}
+

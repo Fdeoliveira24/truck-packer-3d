@@ -130,9 +130,8 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     const nameRow = doc.createElement('div');
     nameRow.className = 'row';
     nameRow.classList.add('tp3d-settings-account-row');
-    nameRow.innerHTML = `<span class="brand-mark tp3d-settings-account-avatar-lg" aria-hidden="true">${
-      userView.initials || ''
-    }</span><div class="tp3d-settings-account-display">${userView.displayName || '—'}</div>`;
+    nameRow.innerHTML = `<span class="brand-mark tp3d-settings-account-avatar-lg" aria-hidden="true">${userView.initials || ''
+      }</span><div class="tp3d-settings-account-display">${userView.displayName || '—'}</div>`;
     body.appendChild(nameRow);
 
     const emailEl = doc.createElement('div');
@@ -214,44 +213,33 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     delBtn.disabled = !userView.isAuthed;
     delBtn.addEventListener('click', async () => {
       if (!userView.isAuthed) return;
-      if (!confirm('Are you sure? This action cannot be undone.')) return;
+
+      // Updated confirmation without "30 days" mention
+      if (
+        !confirm(
+          'You are requesting account deletion. You will be signed out and access will be disabled immediately.\n\nThis action cannot be undone.\n\nAre you sure?'
+        )
+      ) {
+        return;
+      }
 
       try {
-        const session =
-          SupabaseClient && typeof SupabaseClient.getSession === 'function' ? SupabaseClient.getSession() : null;
-        if (!session || !session.access_token) throw new Error('No active session');
+        // Call Supabase helper to request deletion (sets status, bans user)
+        await SupabaseClient.requestAccountDeletion();
 
-        const cfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : {};
-        const baseUrl = cfg && cfg.url ? String(cfg.url) : '';
-        if (!baseUrl) throw new Error('Supabase URL missing');
-
-        const response = await fetch(`${baseUrl.replace(/\/$/, '')}/functions/v1/delete-account`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            apikey: cfg.anonKey || '',
-            'Content-Type': 'application/json',
-          },
-        });
-
-        if (!response.ok) {
-          const errText = await response.text();
-          throw new Error(errText || 'Delete failed');
-        }
-
-        // Local-only sign out (no server call since user is already deleted)
+        // Sign out globally and redirect to login/root so the auth overlay can show disabled state
         try {
-          const client =
-            SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
-          if (client && client.auth) {
-            await client.auth.signOut({ scope: 'local' });
-          }
+          await SupabaseClient.signOut({ global: true });
         } catch {
-          // Ignore errors - user already deleted on server
+          // ignore
         }
-        window.location.reload();
+        try {
+          window.location.href = '/';
+        } catch {
+          window.location.reload();
+        }
       } catch (err) {
-        alert(`Delete failed: ${err && err.message ? err.message : err}`);
+        alert(`Delete request failed: ${err && err.message ? err.message : err}`);
       }
     });
     const dMsg = doc.createElement('div');

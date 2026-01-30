@@ -433,7 +433,7 @@ import { APP_VERSION } from './core/version.js';
       }
 
       function bind(buttonEl, { align } = {}) {
-        if (!buttonEl) return () => {};
+        if (!buttonEl) return () => { };
         if (mounts.has(buttonEl)) return mounts.get(buttonEl);
 
         renderButton(buttonEl);
@@ -1694,7 +1694,7 @@ import { APP_VERSION } from './core/version.js';
     // ============================================================================
     const UpdatesUI = (() => {
       const listEl = document.getElementById('updates-list');
-      function initUpdatesUI() {}
+      function initUpdatesUI() { }
       function render() {
         listEl.innerHTML = '';
         Data.updates.forEach(u => {
@@ -1741,7 +1741,7 @@ import { APP_VERSION } from './core/version.js';
     // ============================================================================
     const RoadmapUI = (() => {
       const listEl = document.getElementById('roadmap-list');
-      function initRoadmapUI() {}
+      function initRoadmapUI() { }
       function render() {
         listEl.innerHTML = '';
         Data.roadmap.forEach(group => {
@@ -2273,6 +2273,30 @@ import { APP_VERSION } from './core/version.js';
       UIComponents.showToast('Ready', 'success', { title: 'Truck Packer 3D' });
     }
 
+    /**
+     * Check if current user's profile is in deletion requested state.
+     * If so, sign out and show disabled overlay.
+     * @returns {Promise<boolean>} true if OK to proceed, false if blocked
+     */
+    async function checkProfileStatus() {
+      try {
+        const profileStatus = await SupabaseClient.getMyProfileStatus();
+        if (profileStatus && profileStatus.deletion_status === 'requested') {
+          // User is banned, sign out and show disabled message
+          try {
+            await SupabaseClient.signOut();
+          } catch {
+            // ignore
+          }
+          AuthOverlay.showAccountDisabled();
+          return false; // Block app rendering
+        }
+        return true; // OK to proceed
+      } catch {
+        return true; // On error, let them through (fail open)
+      }
+    }
+
     async function init() {
       console.info('[TruckPackerApp] init start');
       if (!validateRuntime()) return;
@@ -2372,6 +2396,11 @@ import { APP_VERSION } from './core/version.js';
           ]);
           const user = session && session.user ? session.user : null;
           if (user) {
+            // Check profile status before allowing access
+            const canProceed = await checkProfileStatus();
+            if (!canProceed) {
+              return false; // Block app, auth overlay is already showing disabled state
+            }
             AuthOverlay.hide();
             showReadyOnce();
             return true;
@@ -2388,7 +2417,7 @@ import { APP_VERSION } from './core/version.js';
 
       if (!authListenerInstalled) {
         authListenerInstalled = true;
-        SupabaseClient.onAuthStateChange((event, _session) => {
+        SupabaseClient.onAuthStateChange(async (event, _session) => {
           const user = (() => {
             try {
               return SupabaseClient.getUser();
@@ -2403,6 +2432,11 @@ import { APP_VERSION } from './core/version.js';
           }
 
           if (user) {
+            // Check profile status when user signs in
+            const canProceed = await checkProfileStatus();
+            if (!canProceed) {
+              return; // Block, show disabled overlay
+            }
             AuthOverlay.hide();
             if (event === 'SIGNED_IN') {
               UIComponents.showToast('Signed in', 'success', { title: 'Auth' });

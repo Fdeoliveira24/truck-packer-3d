@@ -51,7 +51,7 @@
 import { createSystemOverlay } from './ui/system-overlay.js';
 import { createUIComponents } from './ui/ui-components.js';
 import { createTableFooter } from './ui/table-footer.js';
-import { TrailerPresets } from './trailer-presets.js';
+import { TrailerPresets } from './data/trailer-presets.js';
 import { createSceneRuntime } from './editor/scene-runtime.js';
 import { createCaseScene, createInteractionManager, createEditorScreen } from './screens/editor-screen.js';
 import { createPacksScreen } from './screens/packs-screen.js';

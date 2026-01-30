@@ -1360,6 +1360,7 @@ export function createSettingsOverlay({
                     // ignore
                   }
                   try {
+                    // Do a local-only sign out in the browser. Global sign-out is handled server-side by the Edge Function.
                     await SupabaseClient.signOut({ scope: 'local' });
                   } catch {
                     // ignore
@@ -1367,9 +1368,10 @@ export function createSettingsOverlay({
                   modal.close();
                   close();
                   UIComponents.showToast('Account deletion requested. You have been signed out.', 'success');
-                  // Redirect to the login/root screen so auth flow can display the blocked state
+                  // Redirect to the app entry page so auth flow can display the blocked state
                   try {
-                    window.location.href = '/';
+                    const entry = window.__TP3D_APP_ENTRY__ || (window && window.location ? window.location.href : '/');
+                    window.location.href = entry;
                   } catch {
                     window.location.reload();
                   }

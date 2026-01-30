@@ -5,7 +5,7 @@
  * @created Unknown
  * @updated 01/28/2026
  * @author Truck Packer 3D Team
- *
+ * 
  * CHANGES (01/28/2026):
  * - Added uploadAvatar() function for avatar image uploads to 'avatars' storage bucket
  * - Added deleteAvatar() function to remove user avatars from storage
@@ -22,6 +22,7 @@
 let _client = null;
 let _session = null;
 let _initPromise = null;
+let _supabaseUrl = null;
 
 function debugEnabled() {
   try {
@@ -58,6 +59,7 @@ export function init({ url, anonKey }) {
       }
 
       _client = globalSupabase.createClient(u, k);
+      _supabaseUrl = u;
 
       try {
         const { data, error } = await _client.auth.getSession();
@@ -74,9 +76,8 @@ export function init({ url, anonKey }) {
       if (debugEnabled()) console.info('[SupabaseClient] init success');
       return _client;
     } catch (err) {
-      if (debugEnabled()) {
-        console.info('[SupabaseClient] init failed:', err && err.message ? String(err.message) : String(err));
-      }
+      if (debugEnabled())
+        {console.info('[SupabaseClient] init failed:', err && err.message ? String(err.message) : String(err));}
       _initPromise = null;
       _client = null;
       _session = null;
@@ -103,7 +104,7 @@ export function getUser() {
 
 export function onAuthStateChange(handler) {
   const client = requireClient();
-  const cb = typeof handler === 'function' ? handler : () => { };
+  const cb = typeof handler === 'function' ? handler : () => {};
   const { data } = client.auth.onAuthStateChange((event, session) => cb(event, session));
   const sub = data && data.subscription ? data.subscription : null;
   return () => {
@@ -137,20 +138,124 @@ export async function signUp(email, password) {
   return data;
 }
 
-export async function signOut() {
-  const client = requireClient();
-  // support optional global sign-out: signOut({ global: true })
-  let global = false;
+/**
+ * Helper function to extract project ref from Supabase URL
+ * @param {string} url - Supabase URL
+ * @returns {string|null} - Project ref or null
+ */
+function getProjectRef(url) {
   try {
-    const args = arguments && arguments[0] ? arguments[0] : {};
-    global = Boolean(args && args.global);
+    const match = String(url || '').match(/https:\/\/([^.]+)\.supabase\.co/);
+    return match && match[1] ? match[1] : null;
   } catch {
-    global = false;
+    return null;
   }
+}
 
-  const { error } = await client.auth.signOut({ global });
-  if (error) throw error;
+/**
+ * Clear local auth storage (localStorage and sessionStorage)
+ * Removes all Supabase auth keys for this project
+ */
+function clearLocalAuthStorage() {
+  try {
+    const url = _supabaseUrl || (_client && (_client.supabaseUrl || _client.url || null));
+    if (!url) {
+      if (debugEnabled()) console.warn('[SupabaseClient] clearLocalAuthStorage: supabase url not available');
+    }
+
+    const projectRef = getProjectRef(url);
+
+    // Clear from localStorage
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const lsKeys = Object.keys(window.localStorage);
+      for (const key of lsKeys) {
+        if (!key) continue;
+        // Remove keys that start with sb- and either contain projectRef or when projectRef unavailable just remove sb- keys
+        if (key.startsWith('sb-') && (projectRef ? key.includes(projectRef) : true)) {
+          try {
+            window.localStorage.removeItem(key);
+            if (debugEnabled()) console.info(`[SupabaseClient] removed localStorage key: ${key}`);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+
+    // Clear from sessionStorage
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      const ssKeys = Object.keys(window.sessionStorage);
+      for (const key of ssKeys) {
+        if (!key) continue;
+        if (key.startsWith('sb-') && (projectRef ? key.includes(projectRef) : true)) {
+          try {
+            window.sessionStorage.removeItem(key);
+            if (debugEnabled()) console.info(`[SupabaseClient] removed sessionStorage key: ${key}`);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+  } catch (err) {
+    if (debugEnabled()) console.warn('[SupabaseClient] clearLocalAuthStorage error:', err);
+  }
+}
+
+/**
+ * Sign out the current user
+ * @param {Object} options - Sign out options
+ * @param {string} options.scope - 'local' (default), 'global', or 'others'
+ * @returns {Promise<boolean>} - True on success
+ */
+export async function signOut(options = {}) {
+  const client = requireClient();
+  const scope = options && options.scope ? String(options.scope) : 'local';
+  
+  try {
+    // Call Supabase signOut with scope
+    const { error } = await client.auth.signOut({ scope });
+    
+    if (error) {
+      // Check if it's a 403 Forbidden error
+      const is403 = 
+        error.status === 403 || 
+        error.code === '403' ||
+        (error.message && error.message.toLowerCase().includes('forbidden'));
+      
+      if (is403) {
+        // Log the 403 but don't fail - clear local state anyway
+        if (debugEnabled()) {
+          console.info('[SupabaseClient] signOut got 403 (forbidden), clearing local auth state anyway');
+        }
+        // Continue to clear local state below
+      } else {
+        // For non-403 errors, throw
+        throw error;
+      }
+    }
+  } catch (err) {
+    // Check if the caught error is a 403
+    const is403 = 
+      err.status === 403 || 
+      err.code === '403' ||
+      (err.message && err.message.toLowerCase().includes('forbidden'));
+    
+    if (is403) {
+      // Log and continue to clear local state
+      if (debugEnabled()) {
+        console.info('[SupabaseClient] signOut threw 403, clearing local auth state anyway');
+      }
+    } else {
+      // Re-throw non-403 errors
+      throw err;
+    }
+  }
+  
+  // Clear cached session and local storage
   _session = null;
+  clearLocalAuthStorage();
+  
   return true;
 }
 
@@ -179,7 +284,11 @@ export async function getProfile(userId = null) {
   const uid = userId || (getUser() && getUser().id ? getUser().id : null);
   if (!uid) return null;
 
-  const { data, error } = await client.from('profiles').select('*').eq('id', uid).single();
+  const { data, error } = await client
+    .from('profiles')
+    .select('*')
+    .eq('id', uid)
+    .single();
 
   if (error) return null;
   return data || null;
@@ -209,6 +318,68 @@ export async function getUserOrganizations() {
 }
 
 /**
+ * Get the current user's primary organization.
+ * Returns the first organization from getUserOrganizations().
+ * @returns {Promise<Object|null>} The organization object or null
+ */
+export async function getCurrentOrganization() {
+  const orgs = await getUserOrganizations();
+  if (!orgs || orgs.length === 0) return null;
+  return orgs[0];
+}
+
+/**
+ * Get the current user's role in a specific organization.
+ * @param {string} orgId - The organization ID
+ * @returns {Promise<string|null>} The role ('owner', 'admin', 'member') or null
+ */
+export async function getMyOrgRole(orgId) {
+  const client = requireClient();
+  const user = getUser();
+  if (!user) return null;
+  
+  const { data, error } = await client
+    .from('organization_members')
+    .select('role')
+    .eq('organization_id', orgId)
+    .eq('user_id', user.id)
+    .single();
+  
+  if (error) {
+    if (error.code === 'PGRST116') return null; // No rows returned
+    throw error;
+  }
+  
+  return data ? data.role : null;
+}
+
+/**
+ * Update organization details.
+ * Only owners/admins can update organizations (enforced by RLS).
+ * @param {string} orgId - The organization ID
+ * @param {Object} updates - Fields to update (name, phone, address fields, etc.)
+ * @returns {Promise<Object>} The updated organization
+ */
+export async function updateOrganization(orgId, updates) {
+  const client = requireClient();
+  const user = getUser();
+  if (!user) throw new Error('Not authenticated');
+  
+  const { data, error } = await client
+    .from('organizations')
+    .update({
+      ...updates,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', orgId)
+    .select()
+    .single();
+  
+  if (error) throw error;
+  return data;
+}
+
+/**
  * Upload a user avatar to storage bucket 'avatars'.
  * @param {File} file - The image file to upload
  * @returns {Promise<string>} The public URL of the uploaded avatar
@@ -232,11 +403,15 @@ export async function uploadAvatar(file) {
 
   // Delete old avatar files first (to ensure clean replacement)
   try {
-    const { data: files } = await client.storage.from('avatars').list(user.id);
-
+    const { data: files } = await client.storage
+      .from('avatars')
+      .list(user.id);
+    
     if (files && files.length > 0) {
       const filePaths = files.map(f => `${user.id}/${f.name}`);
-      await client.storage.from('avatars').remove(filePaths);
+      await client.storage
+        .from('avatars')
+        .remove(filePaths);
     }
   } catch {
     // Ignore errors during cleanup
@@ -247,15 +422,19 @@ export async function uploadAvatar(file) {
   const filePath = `${user.id}/avatar.${ext}`;
 
   // Upload to storage
-  const { data, error } = await client.storage.from('avatars').upload(filePath, file, {
-    cacheControl: '3600',
-    upsert: true,
-  });
+  const { data, error } = await client.storage
+    .from('avatars')
+    .upload(filePath, file, {
+      cacheControl: '3600',
+      upsert: true,
+    });
 
   if (error) throw error;
 
   // Get public URL
-  const { data: urlData } = client.storage.from('avatars').getPublicUrl(filePath);
+  const { data: urlData } = client.storage
+    .from('avatars')
+    .getPublicUrl(filePath);
 
   return urlData.publicUrl;
 }
@@ -270,14 +449,18 @@ export async function deleteAvatar() {
   if (!user) throw new Error('Not authenticated');
 
   // List all files in user's folder
-  const { data: files, error: listError } = await client.storage.from('avatars').list(user.id);
+  const { data: files, error: listError } = await client.storage
+    .from('avatars')
+    .list(user.id);
 
   if (listError) throw listError;
 
   // Delete all avatar files
   if (files && files.length > 0) {
     const filePaths = files.map(f => `${user.id}/${f.name}`);
-    const { error: deleteError } = await client.storage.from('avatars').remove(filePaths);
+    const { error: deleteError } = await client.storage
+      .from('avatars')
+      .remove(filePaths);
 
     if (deleteError) throw deleteError;
   }
@@ -286,198 +469,35 @@ export async function deleteAvatar() {
 }
 
 /**
- * Fetch organization by ID.
- * @param {string} orgId - The organization ID
- * @returns {Promise<Object|null>}
- */
-export async function getOrganization(orgId) {
-  const client = requireClient();
-  if (!orgId) return null;
-
-  const { data, error } = await client.from('organizations').select('*').eq('id', orgId).single();
-
-  if (error) return null;
-  return data || null;
-}
-
-/**
- * Update organization fields (name, slug, phone, address, etc.).
- * @param {string} orgId - The organization ID
- * @param {Object} patch - Fields to update
- * @returns {Promise<Object>}
- */
-export async function updateOrganization(orgId, patch) {
-  const client = requireClient();
-  if (!orgId) throw new Error('Organization ID required');
-
-  const updateData = { ...patch, updated_at: new Date().toISOString() };
-
-  const { data, error } = await client.from('organizations').update(updateData).eq('id', orgId).select().single();
-
-  if (error) throw error;
-  return data;
-}
-
-/**
- * Request account deletion (soft delete with ban).
- * Sets deletion_status='requested', deleted_at=now(), purge_after=now()+30 days.
- * Calls Edge Function to ban user for 720h.
- * @returns {Promise<Object>}
+ * Request account deletion
+ * This calls an Edge Function that:
+ * 1. Performs global signout server-side
+ * 2. Sets deletion_status='requested'
+ * 3. Removes organization memberships
+ * 4. Disables login
+ * 
+ * After this succeeds, the client should call signOut({ scope: 'local' })
+ * and reload the page.
+ * 
+ * @returns {Promise<boolean>} - True on success
  */
 export async function requestAccountDeletion() {
   const client = requireClient();
   const user = getUser();
-  const session = getSession();
-  if (!user || !session) throw new Error('Not authenticated');
+  if (!user) throw new Error('Not authenticated');
 
-  const now = new Date().toISOString();
-  const purgeAfter = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  // Call Edge Function to handle deletion server-side
+  // The Edge Function should:
+  // 1. Read Authorization header JWT
+  // 2. Call serviceClient.auth.admin.signOut(jwt, 'global')
+  // 3. Set deletion_status='requested', purge_after
+  // 4. Remove organization memberships
+  // 5. Disable/ban user login
+  const { data, error } = await client.functions.invoke('request-account-deletion', {
+    method: 'POST',
+  });
 
-  // Update profile with deletion status
-  const { data: profile, error: profileError } = await client
-    .from('profiles')
-    .update({
-      deletion_status: 'requested',
-      deleted_at: now,
-      purge_after: purgeAfter,
-      updated_at: now,
-    })
-    .eq('id', user.id)
-    .select()
-    .single();
-
-  if (profileError) throw profileError;
-
-  // Call Edge Function to ban user
-  try {
-    const cfg = typeof window !== 'undefined' && window.__TP3D_SUPABASE ? window.__TP3D_SUPABASE : {};
-    const baseUrl = cfg && cfg.url ? String(cfg.url).replace(/\/$/, '') : '';
-    if (baseUrl) {
-      const response = await fetch(`${baseUrl}/functions/v1/ban-user`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-          apikey: cfg.anonKey || '',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ ban_duration: '720h' }),
-      });
-
-      if (!response.ok) {
-        const errText = await response.text();
-        if (debugEnabled()) console.warn('Ban failed:', errText);
-      }
-    }
-  } catch (err) {
-    if (debugEnabled()) console.warn('Ban error:', err);
-  }
-
-  return profile;
+  if (error) throw error;
+  
+  return data && data.success ? true : false;
 }
-
-/**
- * Cancel account deletion.
- * Sets deletion_status='canceled', clears deleted_at and purge_after.
- * Calls Edge Function to unban user.
- * @returns {Promise<Object>}
- */
-export async function cancelAccountDeletion() {
-  const client = requireClient();
-  const user = getUser();
-  const session = getSession();
-  if (!user || !session) throw new Error('Not authenticated');
-
-  const now = new Date().toISOString();
-
-  // Update profile to cancel deletion
-  const { data: profile, error: profileError } = await client
-    .from('profiles')
-    .update({
-      deletion_status: 'canceled',
-      deleted_at: null,
-      purge_after: null,
-      updated_at: now,
-    })
-    .eq('id', user.id)
-    .select()
-    .single();
-
-  if (profileError) throw profileError;
-
-  // Call Edge Function to unban user
-  try {
-    const cfg = typeof window !== 'undefined' && window.__TP3D_SUPABASE ? window.__TP3D_SUPABASE : {};
-    const baseUrl = cfg && cfg.url ? String(cfg.url).replace(/\/$/, '') : '';
-    if (baseUrl) {
-      const response = await fetch(`${baseUrl}/functions/v1/unban-user`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-          apikey: cfg.anonKey || '',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({}),
-      });
-
-      if (!response.ok) {
-        const errText = await response.text();
-        if (debugEnabled()) console.warn('Unban failed:', errText);
-      }
-    }
-  } catch (err) {
-    if (debugEnabled()) console.warn('Unban error:', err);
-  }
-
-  return profile;
-}
-
-/**
- * Get current user's profile deletion status.
- * Used to check if account is in deletion requested state.
- * @returns {Promise<Object|null>} Object with deletion_status, deleted_at, purge_after or null
- */
-export async function getMyProfileStatus() {
-  const client = requireClient();
-  const user = getUser();
-  if (!user) return null;
-
-  const { data, error } = await client
-    .from('profiles')
-    .select('deletion_status, deleted_at, purge_after')
-    .eq('id', user.id)
-    .maybeSingle();
-
-  if (error) return null;
-  return data;
-}
-
-/**
- * Get current user's organization membership.
- * @returns {Promise<Object|null>} Object with organization_id and role, or null
- */
-export async function getMyMembership() {
-  const client = requireClient();
-  const user = getUser();
-  if (!user) return null;
-
-  const { data, error } = await client
-    .from('organization_memberships')
-    .select('organization_id, role')
-    .eq('user_id', user.id)
-    .maybeSingle();
-
-  if (error) return null;
-  return data;
-}
-
-/**
- * Format a Supabase error object for UI consumption.
- * Returns an object with `code`, `message`, and the raw `error`.
- */
-export function formatError(err) {
-  if (!err) return { code: null, message: 'Unknown error', error: null };
-  const code = err && (err.status || err.statusCode || err.code) ? (err.status || err.statusCode || err.code) : null;
-  const message = err && (err.message || err.error_description) ? String(err.message || err.error_description) : String(err);
-  return { code, message, error: err };
-}
-

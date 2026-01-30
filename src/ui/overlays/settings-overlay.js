@@ -1360,7 +1360,7 @@ export function createSettingsOverlay({
                     // ignore
                   }
                   try {
-                    await SupabaseClient.signOut({ global: true });
+                    await SupabaseClient.signOut({ scope: 'local' });
                   } catch {
                     // ignore
                   }

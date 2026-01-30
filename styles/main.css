@@ -398,6 +398,16 @@ a {
 .account-menu hr {
   margin: var(--space-2) 0;
   border: none;
+
+/* Auth overlay offline banner */
+.auth-offline-banner {
+  background: #fff4e5;
+  color: #8a5300;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
   border-top: 1px solid var(--border-subtle);
 }
 

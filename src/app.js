@@ -243,6 +243,41 @@ import { APP_VERSION } from './core/version.js';
     });
     const AuthOverlay = createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 'tp3dDebug' });
 
+    // Listen for auth signed-out events (including offline logout)
+    window.addEventListener('tp3d:auth-signed-out', () => {
+      // Force signed-out UI state
+      try {
+        if (AuthOverlay && typeof AuthOverlay.show === 'function') {
+          AuthOverlay.show();
+        } else {
+          window.location.reload();
+        }
+      } catch {
+        window.location.reload();
+      }
+    });
+
+    // Show small toasts on connectivity changes to improve UX
+    try {
+      window.addEventListener('online', () => {
+        try {
+          UIComponents.showToast('Back online', 'info');
+        } catch {
+          // ignore
+        }
+      }, { passive: true });
+
+      window.addEventListener('offline', () => {
+        try {
+          UIComponents.showToast('You are offline', 'warning');
+        } catch {
+          // ignore
+        }
+      }, { passive: true });
+    } catch {
+      // ignore
+    }
+
     const HelpModal = createHelpModal({ UIComponents });
     const ImportAppDialog = createImportAppDialog({
       documentRef: document,
@@ -365,10 +400,21 @@ import { APP_VERSION } from './core/version.js';
         // SessionManager.clear() only resets the local demo session.
         try {
           if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
-            await SupabaseClient.signOut();
+            const result = await SupabaseClient.signOut({ global: true, allowOffline: true });
+            
+            SessionManager.clear();
+            StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
+            
+            if (result && result.offline) {
+              UIComponents.showToast('Signed out. Full sign out will run when back online.', 'info');
+            } else {
+              UIComponents.showToast('Logged out', 'info');
+            }
+            return;
           }
-        } catch {
-          // ignore (e.g. Supabase not initialized in demo mode)
+        } catch (err) {
+          // Only ignore if it's not a critical error
+          console.warn('Logout error:', err);
         }
 
         SessionManager.clear();
@@ -2284,7 +2330,7 @@ import { APP_VERSION } from './core/version.js';
         if (profileStatus && profileStatus.deletion_status === 'requested') {
           // User is banned, sign out and show disabled message
           try {
-            await SupabaseClient.signOut();
+            await SupabaseClient.signOut({ global: false, allowOffline: true });
           } catch {
             // ignore
           }

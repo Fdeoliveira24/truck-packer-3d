@@ -22,7 +22,6 @@
 let _client = null;
 let _session = null;
 let _initPromise = null;
-let _supabaseUrl = null;
 
 function debugEnabled() {
   try {
@@ -59,14 +58,13 @@ export function init({ url, anonKey }) {
       }
 
       _client = globalSupabase.createClient(u, k);
-      _supabaseUrl = u;
 
       try {
         const { data, error } = await _client.auth.getSession();
         if (error) throw error;
         _session = data && data.session ? data.session : null;
       } catch {
-        _session = null;
+              _session = null;
       }
 
       _client.auth.onAuthStateChange((_event, nextSession) => {
@@ -110,8 +108,8 @@ export function onAuthStateChange(handler) {
   return () => {
     try {
       sub && sub.unsubscribe && sub.unsubscribe();
-    } catch {
-      // ignore
+    } catch (e) {
+      void 0;
     }
   };
 }
@@ -158,26 +156,26 @@ function getProjectRef(url) {
  */
 function clearLocalAuthStorage() {
   try {
-    const url = _supabaseUrl || (_client && (_client.supabaseUrl || _client.url || null));
-    if (!url) {
-      if (debugEnabled()) console.warn('[SupabaseClient] clearLocalAuthStorage: supabase url not available');
-    }
+    const client = _client;
+    if (!client) return;
 
-    const projectRef = getProjectRef(url);
+    // Try several possible url properties on the client object
+    const possibleUrl = client.supabaseUrl || client.url || client.supabaseUrl || (client && client._getUrl && typeof client._getUrl === 'function' ? client._getUrl() : null);
+    if (!possibleUrl) return;
+
+    const projectRef = getProjectRef(possibleUrl);
+    if (!projectRef) {
+      if (debugEnabled()) console.warn('[SupabaseClient] clearLocalAuthStorage: could not extract project ref');
+      return;
+    }
 
     // Clear from localStorage
     if (typeof window !== 'undefined' && window.localStorage) {
       const lsKeys = Object.keys(window.localStorage);
       for (const key of lsKeys) {
-        if (!key) continue;
-        // Remove keys that start with sb- and either contain projectRef or when projectRef unavailable just remove sb- keys
-        if (key.startsWith('sb-') && (projectRef ? key.includes(projectRef) : true)) {
-          try {
-            window.localStorage.removeItem(key);
-            if (debugEnabled()) console.info(`[SupabaseClient] removed localStorage key: ${key}`);
-          } catch {
-            // ignore
-          }
+        if (key.startsWith('sb-') && key.includes(projectRef)) {
+          window.localStorage.removeItem(key);
+          if (debugEnabled()) console.info(`[SupabaseClient] removed localStorage key: ${key}`);
         }
       }
     }
@@ -186,14 +184,9 @@ function clearLocalAuthStorage() {
     if (typeof window !== 'undefined' && window.sessionStorage) {
       const ssKeys = Object.keys(window.sessionStorage);
       for (const key of ssKeys) {
-        if (!key) continue;
-        if (key.startsWith('sb-') && (projectRef ? key.includes(projectRef) : true)) {
-          try {
-            window.sessionStorage.removeItem(key);
-            if (debugEnabled()) console.info(`[SupabaseClient] removed sessionStorage key: ${key}`);
-          } catch {
-            // ignore
-          }
+        if (key.startsWith('sb-') && key.includes(projectRef)) {
+          window.sessionStorage.removeItem(key);
+          if (debugEnabled()) console.info(`[SupabaseClient] removed sessionStorage key: ${key}`);
         }
       }
     }
@@ -202,61 +195,70 @@ function clearLocalAuthStorage() {
   }
 }
 
-/**
- * Sign out the current user
- * @param {Object} options - Sign out options
- * @param {string} options.scope - 'local' (default), 'global', or 'others'
- * @returns {Promise<boolean>} - True on success
- */
 export async function signOut(options = {}) {
   const client = requireClient();
-  const scope = options && options.scope ? String(options.scope) : 'local';
-  
-  try {
-    // Call Supabase signOut with scope
-    const { error } = await client.auth.signOut({ scope });
-    
-    if (error) {
-      // Check if it's a 403 Forbidden error
-      const is403 = 
-        error.status === 403 || 
-        error.code === '403' ||
-        (error.message && error.message.toLowerCase().includes('forbidden'));
-      
-      if (is403) {
-        // Log the 403 but don't fail - clear local state anyway
-        if (debugEnabled()) {
-          console.info('[SupabaseClient] signOut got 403 (forbidden), clearing local auth state anyway');
-        }
-        // Continue to clear local state below
-      } else {
-        // For non-403 errors, throw
-        throw error;
+
+  const global = Boolean(options.global);
+  const allowOffline = options.allowOffline !== false; // default true
+
+  const localFallback = () => {
+    try {
+      const key =
+        (client && client.auth && (client.auth.storageKey || client.auth._storageKey)) || null;
+
+      if (key) {
+        try { localStorage.removeItem(key); } catch (_) { void 0; }
+        try { sessionStorage.removeItem(key); } catch (_) { void 0; }
       }
-    }
-  } catch (err) {
-    // Check if the caught error is a 403
-    const is403 = 
-      err.status === 403 || 
-      err.code === '403' ||
-      (err.message && err.message.toLowerCase().includes('forbidden'));
-    
-    if (is403) {
-      // Log and continue to clear local state
-      if (debugEnabled()) {
-        console.info('[SupabaseClient] signOut threw 403, clearing local auth state anyway');
-      }
-    } else {
-      // Re-throw non-403 errors
-      throw err;
-    }
+    } catch (e) { void 0; }
+
+    _session = null;
+
+    try {
+      window.dispatchEvent(
+        new CustomEvent("tp3d:auth-signed-out", {
+          detail: { offline: true, globalRequested: global },
+        })
+      );
+    } catch (_) { void 0; }
+
+    return { ok: true, offline: true };
+  };
+
+  // Offline path
+  if (allowOffline && typeof navigator !== "undefined" && navigator && navigator.onLine === false) {
+    return localFallback();
   }
-  
-  // Clear cached session and local storage
-  _session = null;
-  clearLocalAuthStorage();
-  
-  return true;
+
+  try {
+    const { error } = await client.auth.signOut({ scope: global ? "global" : "local" });
+    if (error) throw error;
+
+    _session = null;
+
+    try {
+      window.dispatchEvent(
+        new CustomEvent("tp3d:auth-signed-out", {
+          detail: { offline: false, globalRequested: global },
+        })
+      );
+    } catch (_) { void 0; }
+
+    return { ok: true, offline: false };
+  } catch (err) {
+    const msg = (err && err.message) ? String(err.message) : String(err);
+
+    if (
+      allowOffline &&
+      (msg.includes("Failed to fetch") ||
+        msg.includes("NetworkError") ||
+        msg.includes("ERR_INTERNET_DISCONNECTED"))
+    ) {
+      return localFallback();
+    }
+
+    throw err;
+  }
 }
 
 export async function refreshSession() {
@@ -413,9 +415,7 @@ export async function uploadAvatar(file) {
         .from('avatars')
         .remove(filePaths);
     }
-  } catch {
-    // Ignore errors during cleanup
-  }
+  } catch (e) { void 0; }
 
   // Get file extension
   const ext = file.name.split('.').pop() || 'png';

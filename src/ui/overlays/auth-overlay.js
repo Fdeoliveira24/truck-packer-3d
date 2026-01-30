@@ -47,6 +47,14 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     }
   }
 
+  function isOffline() {
+    try {
+      return typeof navigator !== 'undefined' && navigator && navigator.onLine === false;
+    } catch {
+      return false;
+    }
+  }
+
   function validateEmail(email) {
     const s = String(email || '').trim();
     return s && s.includes('@');
@@ -138,6 +146,20 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
   }
 
   function setInlineError(text) {
+    // When offline we suppress inline auth errors (avoid confusing password errors)
+    if (isOffline()) {
+      try {
+        if (!modalEl) return;
+        const errEl = modalEl.querySelector('[data-auth-error]');
+        if (!errEl) return;
+        errEl.textContent = '';
+        errEl.style.display = 'none';
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
     if (!modalEl) return;
     const errEl = modalEl.querySelector('[data-auth-error]');
     if (!errEl) return;
@@ -189,6 +211,8 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
   function render() {
     if (!modalEl) return;
 
+    const offline = isOffline();
+
     const user = (() => {
       try {
         return SupabaseClient && SupabaseClient.getUser ? SupabaseClient.getUser() : null;
@@ -215,7 +239,36 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     const body = document.createElement('div');
     body.className = 'modal-body';
 
+    // Offline banner (toggled)
+    try {
+      const offBanner = document.createElement('div');
+      offBanner.className = 'auth-offline-banner';
+      offBanner.setAttribute('data-auth-offline', '');
+      offBanner.hidden = !offline;
+      offBanner.textContent = 'Offline mode. Reconnect to sign in.';
+      body.appendChild(offBanner);
+    } catch {
+      // ignore
+    }
+
     if (phase === 'checking') {
+      if (offline) {
+        const t = document.createElement('div');
+        t.style.fontWeight = 'var(--font-semibold)';
+        t.style.marginBottom = '6px';
+        t.textContent = 'You are offline';
+        body.appendChild(t);
+
+        const msg = document.createElement('div');
+        msg.className = 'muted';
+        msg.style.marginBottom = '12px';
+        msg.textContent = 'Sign in is not available without an internet connection.';
+        body.appendChild(msg);
+
+        modalEl.appendChild(body);
+        return;
+      }
+
       const hint = document.createElement('div');
       hint.className = 'muted';
       hint.style.marginBottom = '10px';
@@ -374,7 +427,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       errorBox.setAttribute('data-auth-error', '1');
       errorBox.style.marginTop = '10px';
       errorBox.style.color = 'var(--error)';
-      errorBox.style.display = 'none';
+      errorBox.style.display = offline ? 'none' : 'none';
       body.appendChild(errorBox);
 
       const successBox = document.createElement('div');
@@ -401,7 +454,13 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       signInBtn.className = mode === 'signin' ? 'btn btn-primary' : 'btn';
       signInBtn.type = 'button';
       signInBtn.textContent = 'Sign In';
+      if (offline) signInBtn.disabled = true;
       signInBtn.addEventListener('click', async () => {
+        if (isOffline()) {
+          // Guard: do not attempt auth while offline
+          try { setInlineError('Sign in not available offline.'); } catch (e) { void 0; }
+          return;
+        }
         if (inFlight) return;
         clearInlineMessages();
         const email = String(emailInput.value || '').trim();
@@ -679,6 +738,56 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     const statusEl = modalEl.querySelector('[data-auth-status]');
     if (!statusEl) return;
     statusEl.textContent = toAscii(text || '');
+  }
+
+  // Helper to expose a safe showStatus (used by online/offline listeners)
+  function showStatus(text) {
+    try {
+      setStatus(text);
+    } catch {
+      // ignore
+    }
+  }
+
+  // Safe retry hook - invokes internal retry handler if present
+  function retrySessionCheck() {
+    try {
+      if (typeof retryHandler === 'function') {
+        retryHandler();
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Register global online/offline handlers for the overlay (safe guards)
+  try {
+    window.addEventListener(
+      'online',
+      () => {
+        try {
+          showStatus('Connection restored. Checking session...');
+          retrySessionCheck();
+        } catch {
+          // ignore
+        }
+      },
+      { passive: true }
+    );
+
+    window.addEventListener(
+      'offline',
+      () => {
+        try {
+          showStatus('You are offline');
+        } catch {
+          // ignore
+        }
+      },
+      { passive: true }
+    );
+  } catch {
+    // ignore failures attaching listeners
   }
 
   return {

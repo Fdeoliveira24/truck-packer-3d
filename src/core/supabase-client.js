@@ -26,6 +26,9 @@
 let _client = null;
 let _session = null;
 let _initPromise = null;
+let _authGuardInstalled = false;
+let _authGuardTimer = null;
+let _authInvalidatedAt = 0;
 
 function debugEnabled() {
   try {
@@ -38,6 +41,180 @@ function debugEnabled() {
 function requireClient() {
   if (!_client) throw new Error('SupabaseClient not initialized. Call SupabaseClient.init({ url, anonKey }) first.');
   return _client;
+}
+
+function getErrorStatus(err) {
+  try {
+    const s = err && (err.status || err.statusCode);
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function isAuthRevokedError(err) {
+  const status = getErrorStatus(err);
+  if (status === 401 || status === 403) return true;
+
+  try {
+    const code = String(err && (err.code || err.error_code || err.errorCode) ? (err.code || err.error_code || err.errorCode) : '').toLowerCase();
+    if (code === 'user_not_found') return true;
+
+    const msg = String(err && err.message ? err.message : '').toLowerCase();
+    if (msg.includes('user_not_found') || msg.includes('user not found')) return true;
+    if (msg.includes('jwt')) return true;
+    if (msg.includes('token')) return true;
+    if (msg.includes('forbidden')) return true;
+    if (msg.includes('unauthorized')) return true;
+  } catch {
+    // ignore
+  }
+
+  return false;
+}
+
+function dispatchSignedOut(detail) {
+  try {
+    window.dispatchEvent(new CustomEvent('tp3d:auth-signed-out', { detail: detail || {} }));
+  } catch {
+    // ignore
+  }
+}
+
+function forceLocalSignedOut({ reason = 'auth-invalid', status = null } = {}) {
+  const now = Date.now();
+  if (_authInvalidatedAt && now - _authInvalidatedAt < 1500) return;
+  _authInvalidatedAt = now;
+
+  try {
+    _session = null;
+  } catch {
+    // ignore
+  }
+
+  // Best-effort local sign out (does not require network)
+  try {
+    const client = _client;
+    if (client && client.auth && typeof client.auth.signOut === 'function') {
+      // supabase-js v2 supports local scope
+      void client.auth.signOut({ scope: 'local' });
+    }
+  } catch {
+    // ignore
+  }
+
+  // Clear local auth keys even if signOut cannot run
+  try {
+    clearLocalAuthStorage();
+  } catch {
+    // ignore
+  }
+
+  if (debugEnabled()) {
+    try {
+      console.warn('[SupabaseClient] forceLocalSignedOut', { reason, status });
+    } catch {
+      // ignore
+    }
+  }
+
+  dispatchSignedOut({ offline: false, forced: true, reason, status });
+}
+
+async function validateSessionOrSignOut({ source = 'unknown', silent = true } = {}) {
+  const client = _client;
+  if (!client) return true;
+
+  // Offline should not force a sign-out
+  try {
+    if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) return true;
+  } catch {
+    // ignore
+  }
+
+  // Do not rely only on the wrapper’s `_session`.
+  // supabase-js may have a stored session even if `_session` is null.
+  try {
+    const { data: sData, error: sErr } = await client.auth.getSession();
+    if (!sErr && sData && sData.session) {
+      _session = sData.session;
+    }
+  } catch {
+    // ignore
+  }
+
+  // If there is still no session, nothing to validate.
+  if (!_session) return true;
+
+  try {
+    const { data, error } = await client.auth.getUser();
+    if (error) {
+      if (isAuthRevokedError(error)) {
+        forceLocalSignedOut({ reason: `auth-revoked:${source}`, status: getErrorStatus(error) });
+        return false;
+      }
+      if (!silent) throw error;
+      return true;
+    }
+
+    const u = data && data.user ? data.user : null;
+    if (!u || !u.id) {
+      forceLocalSignedOut({ reason: `no-user:${source}`, status: 401 });
+      return false;
+    }
+
+    return true;
+  } catch (err) {
+    if (isAuthRevokedError(err)) {
+      forceLocalSignedOut({ reason: `auth-revoked:${source}`, status: getErrorStatus(err) });
+      return false;
+    }
+    if (!silent) throw err;
+    return true;
+  }
+}
+
+function installAuthGuard() {
+  if (_authGuardInstalled) return;
+  _authGuardInstalled = true;
+
+  const onFocus = () => {
+    void validateSessionOrSignOut({ source: 'focus', silent: true });
+  };
+
+  const onVisibility = () => {
+    try {
+      if (document && document.visibilityState === 'visible') {
+        void validateSessionOrSignOut({ source: 'visibility', silent: true });
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  try {
+    window.addEventListener('focus', onFocus, { passive: true });
+  } catch {
+    // ignore
+  }
+
+  try {
+    document.addEventListener('visibilitychange', onVisibility, { passive: true });
+  } catch {
+    // ignore
+  }
+
+  // Poll to catch cases like: user deleted in dashboard while a cached session exists
+  try {
+    _authGuardTimer = window.setInterval(() => {
+      void validateSessionOrSignOut({ source: 'interval', silent: true });
+    }, 60 * 1000);
+  } catch {
+    _authGuardTimer = null;
+  }
+
+  void validateSessionOrSignOut({ source: 'install', silent: true });
 }
 
 // ============================================================================
@@ -70,10 +247,16 @@ export function init({ url, anonKey }) {
       } catch {
         _session = null;
       }
+      // If a cached session exists but the user was deleted/banned server-side,
+      // Supabase may still read it from storage. Validate it now.
+      if (_session) {
+        await validateSessionOrSignOut({ source: 'init', silent: true });
+      }
 
       _client.auth.onAuthStateChange((_event, nextSession) => {
         _session = nextSession || null;
       });
+      installAuthGuard();
 
       if (debugEnabled()) console.info('[SupabaseClient] init success');
       return _client;
@@ -223,6 +406,7 @@ export async function signOut(options = {}) {
 
     _session = null;
     clearLocalAuthStorage();
+    _authInvalidatedAt = Date.now();
 
     try {
       window.dispatchEvent(
@@ -246,6 +430,7 @@ export async function signOut(options = {}) {
 
     _session = null;
     clearLocalAuthStorage();
+    _authInvalidatedAt = Date.now();
 
     try {
       window.dispatchEvent(
@@ -261,6 +446,7 @@ export async function signOut(options = {}) {
     try {
       _session = null;
       clearLocalAuthStorage();
+      _authInvalidatedAt = Date.now();
       try {
         window.dispatchEvent(
           new CustomEvent("tp3d:auth-signed-out", {

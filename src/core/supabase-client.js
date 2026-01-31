@@ -399,6 +399,51 @@ export function getUser() {
   return s && s.user ? s.user : null;
 }
 
+// --------------------------------------------------------------------------
+// USER RESOLUTION HELPERS
+// --------------------------------------------------------------------------
+
+async function getAuthedUserId() {
+  const client = requireClient();
+
+  // 1) Fast path: wrapper session
+  try {
+    const s = _session;
+    const id = s && s.user && s.user.id ? s.user.id : null;
+    if (id) return id;
+  } catch {
+    // ignore
+  }
+
+  // 2) Pull from supabase-js session store
+  try {
+    const { data, error } = await client.auth.getSession();
+    if (!error && data && data.session) {
+      _session = data.session;
+      const id = data.session.user && data.session.user.id ? data.session.user.id : null;
+      if (id) return id;
+    }
+  } catch {
+    // ignore
+  }
+
+  // 3) Last resort: validate token with server
+  try {
+    const { data, error } = await client.auth.getUser();
+    if (!error && data && data.user && data.user.id) return data.user.id;
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+async function requireUserId() {
+  const uid = await getAuthedUserId();
+  if (!uid) throw new Error('Not authenticated');
+  return uid;
+}
+
 export function onAuthStateChange(handler) {
   const client = requireClient();
   const cb = typeof handler === 'function' ? handler : () => {};
@@ -407,8 +452,8 @@ export function onAuthStateChange(handler) {
   return () => {
     try {
       sub && sub.unsubscribe && sub.unsubscribe();
-    } catch (e) {
-      void 0;
+    } catch (_e) {
+      /* ignore unsubscribe errors */
     }
   };
 }
@@ -660,14 +705,14 @@ export async function getProfile(userId = null) {
  */
 export async function getMyProfileStatus() {
   const client = requireClient();
-  const user = getUser();
-  if (!user) return null;
+  const userId = await getAuthedUserId();
+  if (!userId) return null;
 
   try {
     const { data, error } = await client
       .from('profiles')
       .select('deletion_status, purge_after')
-      .eq('id', user.id)
+      .eq('id', userId)
       .single();
 
     if (error) {
@@ -679,7 +724,7 @@ export async function getMyProfileStatus() {
     }
 
     return data || null;
-  } catch (err) {
+  } catch (_) {
     // On error, return null (fail open)
     return null;
   }
@@ -687,13 +732,12 @@ export async function getMyProfileStatus() {
 
 export async function updateProfile(updates) {
   const client = requireClient();
-  const user = getUser();
-  if (!user) throw new Error('Not authenticated');
+  const userId = await requireUserId();
 
   const { data, error } = await client
     .from('profiles')
     .update({ ...updates, updated_at: new Date().toISOString() })
-    .eq('id', user.id)
+    .eq('id', userId)
     .select()
     .single();
 
@@ -703,9 +747,124 @@ export async function updateProfile(updates) {
 
 export async function getUserOrganizations() {
   const client = requireClient();
-  const { data, error } = await client.rpc('get_user_organizations');
-  if (error) throw error;
-  return data || [];
+  const userId = await getAuthedUserId();
+  if (!userId) return [];
+
+  // 1) Primary path: RPC (preferred when installed)
+  try {
+    const { data, error } = await client.rpc('get_user_organizations');
+    if (!error && Array.isArray(data)) return data;
+
+    // If the RPC exists but RLS blocks it, we still try fallback.
+    // If the function truly does not exist, Postgres will raise 42883.
+    const code = error && (error.code || error.error_code) ? String(error.code || error.error_code) : '';
+    const msg = error && error.message ? String(error.message).toLowerCase() : '';
+
+    const missingFn = code === '42883' || msg.includes('does not exist') || msg.includes('function');
+    if (!missingFn) {
+      // Still fall through to the fallback query below.
+      // Do not throw here; the UI needs orgs even if RPC fails.
+    }
+  } catch (_e) {
+    // Ignore and try fallback
+  }
+
+  // 2) Fallback path: query membership + related org row
+  // Requires a FK relationship from organization_members.organization_id -> organizations.id
+  const { data: rows, error: qErr } = await client
+    .from('organization_members')
+    .select(
+      [
+        'id',
+        'organization_id',
+        'role',
+        'joined_at',
+        'invited_by',
+        'organizations (\
+          id,\
+          name,\
+          slug,\
+          avatar_url,\
+          owner_id,\
+          created_at,\
+          updated_at,\
+          phone,\
+          address_line1,\
+          address_line2,\
+          city,\
+          state,\
+          postal_code,\
+          country\
+        )',
+      ].join(',')
+    )
+    .eq('user_id', userId);
+
+  if (qErr) {
+    // If RLS blocks or table not visible, treat as empty list.
+    return [];
+  }
+
+  const safe = Array.isArray(rows) ? rows : [];
+
+  // Shape the result to match the RPC output the UI expects:
+  // org fields + role + joined_at
+  return safe
+    .map(r => {
+      const orgRel = r.organizations;
+      const org = Array.isArray(orgRel) ? orgRel[0] : orgRel;
+      return {
+        ...(org || { id: r.organization_id }),
+        role: r.role || null,
+        joined_at: r.joined_at || null,
+      };
+    })
+    .filter(Boolean);
+}
+
+/**
+ * Get the current user's membership row.
+ * Returns null if not logged in or if user has no org membership.
+ */
+export async function getMyMembership() {
+  const client = requireClient();
+  const userId = await getAuthedUserId();
+  if (!userId) return null;
+
+  const { data, error } = await client
+    .from('organization_members')
+    .select('id, organization_id, role, joined_at, invited_by')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) return null;
+  return data || null;
+}
+
+/**
+ * Get a single organization by id.
+ * Returns null if not logged in, not found, or blocked by RLS.
+ * @param {string} orgId
+ * @returns {Promise<Object|null>}
+ */
+export async function getOrganization(orgId) {
+  const client = requireClient();
+  const userId = await getAuthedUserId();
+  if (!userId) return null;
+
+  const id = String(orgId || '').trim();
+  if (!id) return null;
+
+  const { data, error } = await client
+    .from('organizations')
+    .select(
+      'id, name, slug, avatar_url, owner_id, created_at, updated_at, phone, address_line1, address_line2, city, state, postal_code, country'
+    )
+    .eq('id', id)
+    .maybeSingle();
+
+  if (error) return null;
+  return data || null;
 }
 
 /**
@@ -726,14 +885,14 @@ export async function getCurrentOrganization() {
  */
 export async function getMyOrgRole(orgId) {
   const client = requireClient();
-  const user = getUser();
-  if (!user) return null;
+  const userId = await getAuthedUserId();
+  if (!userId) return null;
 
   const { data, error } = await client
     .from('organization_members')
     .select('role')
     .eq('organization_id', orgId)
-    .eq('user_id', user.id)
+    .eq('user_id', userId)
     .single();
 
   if (error) {
@@ -753,8 +912,7 @@ export async function getMyOrgRole(orgId) {
  */
 export async function updateOrganization(orgId, updates) {
   const client = requireClient();
-  const user = getUser();
-  if (!user) throw new Error('Not authenticated');
+  await requireUserId();
 
   const { data, error } = await client
     .from('organizations')
@@ -777,8 +935,7 @@ export async function updateOrganization(orgId, updates) {
  */
 export async function uploadAvatar(file) {
   const client = requireClient();
-  const user = getUser();
-  if (!user) throw new Error('Not authenticated');
+  const userId = await requireUserId();
 
   // Validate file type
   const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
@@ -794,22 +951,22 @@ export async function uploadAvatar(file) {
 
   // Delete old avatar files first (to ensure clean replacement)
   try {
-    const { data: files } = await client.storage.from('avatars').list(user.id);
+    const { data: files } = await client.storage.from('avatars').list(userId);
 
     if (files && files.length > 0) {
-      const filePaths = files.map(f => `${user.id}/${f.name}`);
+      const filePaths = files.map(f => `${userId}/${f.name}`);
       await client.storage.from('avatars').remove(filePaths);
     }
-  } catch (e) {
-    void 0;
+  } catch (_) {
+    /* ignore storage list/remove errors */
   }
 
   // Get file extension
   const ext = file.name.split('.').pop() || 'png';
-  const filePath = `${user.id}/avatar.${ext}`;
+  const filePath = `${userId}/avatar.${ext}`;
 
   // Upload to storage
-  const { data, error } = await client.storage.from('avatars').upload(filePath, file, {
+  const { error } = await client.storage.from('avatars').upload(filePath, file, {
     cacheControl: '3600',
     upsert: true,
   });
@@ -828,17 +985,16 @@ export async function uploadAvatar(file) {
  */
 export async function deleteAvatar() {
   const client = requireClient();
-  const user = getUser();
-  if (!user) throw new Error('Not authenticated');
+  const userId = await requireUserId();
 
   // List all files in user's folder
-  const { data: files, error: listError } = await client.storage.from('avatars').list(user.id);
+  const { data: files, error: listError } = await client.storage.from('avatars').list(userId);
 
   if (listError) throw listError;
 
   // Delete all avatar files
   if (files && files.length > 0) {
-    const filePaths = files.map(f => `${user.id}/${f.name}`);
+    const filePaths = files.map(f => `${userId}/${f.name}`);
     const { error: deleteError } = await client.storage.from('avatars').remove(filePaths);
 
     if (deleteError) throw deleteError;
@@ -952,4 +1108,54 @@ export async function requestAccountDeletion() {
   }
 
   throw error;
+}
+
+
+// ============================================================================
+// SECTION: DEV CONSOLE HOOKS (optional)
+// ============================================================================
+
+try {
+  // Expose a stable API for overlays and dev console.
+  // Some parts of the app reference a global `SupabaseClient` object.
+  const api = {
+    init,
+    getClient,
+    getSession,
+    getUser,
+    onAuthStateChange,
+    signIn,
+    signUp,
+    signOut,
+    refreshSession,
+    resendConfirmation,
+    getProfile,
+    getMyProfileStatus,
+    updateProfile,
+    getUserOrganizations,
+    getMyMembership,
+    getOrganization,
+    getCurrentOrganization,
+    getMyOrgRole,
+    updateOrganization,
+    uploadAvatar,
+    deleteAvatar,
+    requestAccountDeletion,
+  };
+
+  if (typeof window !== 'undefined') {
+    // 1) Canonical dev API
+    window.__TP3D_SUPABASE_API = window.__TP3D_SUPABASE_API || {};
+    Object.assign(window.__TP3D_SUPABASE_API, api);
+
+    // 2) Common alias used during debugging
+    window.__TP3D_SUPABASE = window.__TP3D_SUPABASE || {};
+    Object.assign(window.__TP3D_SUPABASE, api);
+
+    // 3) Backward-compatible global used by overlays
+    window.SupabaseClient = window.SupabaseClient || {};
+    Object.assign(window.SupabaseClient, api);
+  }
+} catch {
+  // ignore
 }

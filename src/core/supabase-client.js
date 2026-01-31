@@ -4,7 +4,7 @@
  * @module core/supabase-client
  * @updated 01/30/2026
  * @author Truck Packer 3D Team
- * 
+ *
  * CHANGES (01/28/2026):
  * - Added uploadAvatar() function for avatar image uploads to 'avatars' storage bucket
  * - Added deleteAvatar() function to remove user avatars from storage
@@ -12,7 +12,7 @@
  * - Implemented file size validation (2MB max)
  * - Avatar storage follows pattern: ${userId}/avatar.${ext}
  * - Both functions respect RLS policies based on storage.foldername(name)[1] == auth.uid()
- * 
+ *
  * CHANGES (01/30/2026):
  * - Updated signOut() to call clearLocalAuthStorage() in both offline and online paths
  * - Added support for { scope: 'local'|'global' } in addition to { global: boolean }
@@ -43,29 +43,29 @@ function initCrossTabLogout() {
   if (typeof BroadcastChannel !== 'undefined') {
     try {
       _logoutChannel = new BroadcastChannel('tp3d-auth');
-      
-      _logoutChannel.onmessage = (event) => {
+
+      _logoutChannel.onmessage = event => {
         if (event.data && event.data.type === 'LOGOUT') {
           if (debugEnabled()) console.log('[SupabaseClient] Cross-tab logout detected via BroadcastChannel');
           handleCrossTabLogout();
         }
       };
-      
+
       if (debugEnabled()) console.info('[SupabaseClient] BroadcastChannel initialized for cross-tab sync');
       return;
     } catch (err) {
       if (debugEnabled()) console.warn('[SupabaseClient] BroadcastChannel failed, falling back to localStorage:', err);
     }
   }
-  
+
   // Fallback: Use localStorage events
-  _storageLogoutListener = (event) => {
+  _storageLogoutListener = event => {
     if (event.key === 'tp3d-logout-trigger' && event.newValue) {
       if (debugEnabled()) console.log('[SupabaseClient] Cross-tab logout detected via localStorage');
       handleCrossTabLogout();
     }
   };
-  
+
   window.addEventListener('storage', _storageLogoutListener);
   if (debugEnabled()) console.info('[SupabaseClient] localStorage fallback initialized for cross-tab sync');
 }
@@ -80,7 +80,7 @@ function broadcastLogout() {
       if (debugEnabled()) console.warn('[SupabaseClient] BroadcastChannel postMessage failed:', err);
     }
   }
-  
+
   // localStorage fallback (triggers storage event in other tabs)
   try {
     const timestamp = Date.now();
@@ -89,7 +89,9 @@ function broadcastLogout() {
     setTimeout(() => {
       try {
         localStorage.removeItem('tp3d-logout-trigger');
-      } catch {}
+      } catch (_) {
+        /* ignore cleanup errors */
+      }
     }, 100);
     if (debugEnabled()) console.log('[SupabaseClient] Logout broadcast via localStorage');
   } catch (err) {
@@ -101,19 +103,21 @@ function handleCrossTabLogout() {
   // Prevent recursive signOut calls
   if (_handlingCrossTabLogout) return;
   _handlingCrossTabLogout = true;
-  
+
   try {
     // Clear local session immediately
     _session = null;
-    
+
     // Clear storage
     try {
       clearLocalAuthStorage();
-    } catch {}
-    
+    } catch (_) {
+      /* ignore */
+    }
+
     // Update invalidation timestamp
     _authInvalidatedAt = Date.now();
-    
+
     // Dispatch event to app
     try {
       window.dispatchEvent(
@@ -121,8 +125,9 @@ function handleCrossTabLogout() {
           detail: { crossTab: true, source: 'other-tab' },
         })
       );
-    } catch {}
-    
+    } catch (_) {
+      /* ignore dispatch errors */
+    }
   } finally {
     // Reset flag after a delay to allow re-triggering if needed
     setTimeout(() => {
@@ -159,7 +164,9 @@ function isAuthRevokedError(err) {
   if (status === 401 || status === 403) return true;
 
   try {
-    const code = String(err && (err.code || err.error_code || err.errorCode) ? (err.code || err.error_code || err.errorCode) : '').toLowerCase();
+    const code = String(
+      err && (err.code || err.error_code || err.errorCode) ? err.code || err.error_code || err.errorCode : ''
+    ).toLowerCase();
     if (code === 'user_not_found') return true;
 
     const msg = String(err && err.message ? err.message : '').toLowerCase();
@@ -358,7 +365,7 @@ export function init({ url, anonKey }) {
         _session = nextSession || null;
       });
       installAuthGuard();
-      
+
       // Initialize cross-tab logout synchronization
       initCrossTabLogout();
 
@@ -452,7 +459,11 @@ function clearLocalAuthStorage() {
     if (!client) return;
 
     // Try several possible url properties on the client object
-    const possibleUrl = client.supabaseUrl || client.url || client.supabaseUrl || (client && client._getUrl && typeof client._getUrl === 'function' ? client._getUrl() : null);
+    const possibleUrl =
+      client.supabaseUrl ||
+      client.url ||
+      client.supabaseUrl ||
+      (client && client._getUrl && typeof client._getUrl === 'function' ? client._getUrl() : null);
     if (!possibleUrl) return;
 
     const projectRef = getProjectRef(possibleUrl);
@@ -603,7 +614,7 @@ export async function signOut(options = {}) {
 
   // Now clear local state/storage and dispatch our own event.
   finalizeLocal(false);
-  
+
   // Broadcast logout to other tabs
   broadcastLogout();
 
@@ -635,11 +646,7 @@ export async function getProfile(userId = null) {
   const uid = userId || (getUser() && getUser().id ? getUser().id : null);
   if (!uid) return null;
 
-  const { data, error } = await client
-    .from('profiles')
-    .select('*')
-    .eq('id', uid)
-    .single();
+  const { data, error } = await client.from('profiles').select('*').eq('id', uid).single();
 
   if (error) return null;
   return data || null;
@@ -721,19 +728,19 @@ export async function getMyOrgRole(orgId) {
   const client = requireClient();
   const user = getUser();
   if (!user) return null;
-  
+
   const { data, error } = await client
     .from('organization_members')
     .select('role')
     .eq('organization_id', orgId)
     .eq('user_id', user.id)
     .single();
-  
+
   if (error) {
     if (error.code === 'PGRST116') return null; // No rows returned
     throw error;
   }
-  
+
   return data ? data.role : null;
 }
 
@@ -748,17 +755,17 @@ export async function updateOrganization(orgId, updates) {
   const client = requireClient();
   const user = getUser();
   if (!user) throw new Error('Not authenticated');
-  
+
   const { data, error } = await client
     .from('organizations')
     .update({
       ...updates,
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
     })
     .eq('id', orgId)
     .select()
     .single();
-  
+
   if (error) throw error;
   return data;
 }
@@ -787,36 +794,30 @@ export async function uploadAvatar(file) {
 
   // Delete old avatar files first (to ensure clean replacement)
   try {
-    const { data: files } = await client.storage
-      .from('avatars')
-      .list(user.id);
-    
+    const { data: files } = await client.storage.from('avatars').list(user.id);
+
     if (files && files.length > 0) {
       const filePaths = files.map(f => `${user.id}/${f.name}`);
-      await client.storage
-        .from('avatars')
-        .remove(filePaths);
+      await client.storage.from('avatars').remove(filePaths);
     }
-  } catch (e) { void 0; }
+  } catch (e) {
+    void 0;
+  }
 
   // Get file extension
   const ext = file.name.split('.').pop() || 'png';
   const filePath = `${user.id}/avatar.${ext}`;
 
   // Upload to storage
-  const { data, error } = await client.storage
-    .from('avatars')
-    .upload(filePath, file, {
-      cacheControl: '3600',
-      upsert: true,
-    });
+  const { data, error } = await client.storage.from('avatars').upload(filePath, file, {
+    cacheControl: '3600',
+    upsert: true,
+  });
 
   if (error) throw error;
 
   // Get public URL
-  const { data: urlData } = client.storage
-    .from('avatars')
-    .getPublicUrl(filePath);
+  const { data: urlData } = client.storage.from('avatars').getPublicUrl(filePath);
 
   return urlData.publicUrl;
 }
@@ -831,18 +832,14 @@ export async function deleteAvatar() {
   if (!user) throw new Error('Not authenticated');
 
   // List all files in user's folder
-  const { data: files, error: listError } = await client.storage
-    .from('avatars')
-    .list(user.id);
+  const { data: files, error: listError } = await client.storage.from('avatars').list(user.id);
 
   if (listError) throw listError;
 
   // Delete all avatar files
   if (files && files.length > 0) {
     const filePaths = files.map(f => `${user.id}/${f.name}`);
-    const { error: deleteError } = await client.storage
-      .from('avatars')
-      .remove(filePaths);
+    const { error: deleteError } = await client.storage.from('avatars').remove(filePaths);
 
     if (deleteError) throw deleteError;
   }
@@ -857,10 +854,10 @@ export async function deleteAvatar() {
  * 2. Sets deletion_status='requested'
  * 3. Removes organization memberships
  * 4. Disables login
- * 
+ *
  * After this succeeds, the client should call signOut({ global: true, allowOffline: true })
  * and reload the page.
- * 
+ *
  * @returns {Promise<boolean>} - True on success
  */
 export async function requestAccountDeletion() {

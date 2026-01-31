@@ -243,8 +243,19 @@ import { APP_VERSION } from './core/version.js';
     });
     const AuthOverlay = createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 'tp3dDebug' });
 
-    // Listen for auth signed-out events (including offline logout)
-    window.addEventListener('tp3d:auth-signed-out', () => {
+    // Listen for auth signed-out events (including offline logout and cross-tab)
+    window.addEventListener('tp3d:auth-signed-out', (event) => {
+      const detail = event.detail || {};
+      const isCrossTab = detail.crossTab === true;
+      
+      if (window.localStorage && window.localStorage.getItem('tp3dDebug') === '1') {
+        console.log('[TruckPackerApp] Auth signed out', {
+          crossTab: isCrossTab,
+          source: detail.source,
+          offline: detail.offline
+        });
+      }
+      
       // Force signed-out UI state
       try {
         if (AuthOverlay && typeof AuthOverlay.show === 'function') {

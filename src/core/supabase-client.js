@@ -30,6 +30,107 @@ let _authGuardInstalled = false;
 let _authGuardTimer = null;
 let _authInvalidatedAt = 0;
 
+// ============================================================================
+// CROSS-TAB LOGOUT SYNCHRONIZATION
+// ============================================================================
+
+let _logoutChannel = null;
+let _storageLogoutListener = null;
+let _handlingCrossTabLogout = false;
+
+function initCrossTabLogout() {
+  // Try BroadcastChannel first (modern browsers)
+  if (typeof BroadcastChannel !== 'undefined') {
+    try {
+      _logoutChannel = new BroadcastChannel('tp3d-auth');
+      
+      _logoutChannel.onmessage = (event) => {
+        if (event.data && event.data.type === 'LOGOUT') {
+          if (debugEnabled()) console.log('[SupabaseClient] Cross-tab logout detected via BroadcastChannel');
+          handleCrossTabLogout();
+        }
+      };
+      
+      if (debugEnabled()) console.info('[SupabaseClient] BroadcastChannel initialized for cross-tab sync');
+      return;
+    } catch (err) {
+      if (debugEnabled()) console.warn('[SupabaseClient] BroadcastChannel failed, falling back to localStorage:', err);
+    }
+  }
+  
+  // Fallback: Use localStorage events
+  _storageLogoutListener = (event) => {
+    if (event.key === 'tp3d-logout-trigger' && event.newValue) {
+      if (debugEnabled()) console.log('[SupabaseClient] Cross-tab logout detected via localStorage');
+      handleCrossTabLogout();
+    }
+  };
+  
+  window.addEventListener('storage', _storageLogoutListener);
+  if (debugEnabled()) console.info('[SupabaseClient] localStorage fallback initialized for cross-tab sync');
+}
+
+function broadcastLogout() {
+  // BroadcastChannel
+  if (_logoutChannel) {
+    try {
+      _logoutChannel.postMessage({ type: 'LOGOUT', timestamp: Date.now() });
+      if (debugEnabled()) console.log('[SupabaseClient] Logout broadcast via BroadcastChannel');
+    } catch (err) {
+      if (debugEnabled()) console.warn('[SupabaseClient] BroadcastChannel postMessage failed:', err);
+    }
+  }
+  
+  // localStorage fallback (triggers storage event in other tabs)
+  try {
+    const timestamp = Date.now();
+    localStorage.setItem('tp3d-logout-trigger', String(timestamp));
+    // Clean up immediately to avoid clutter
+    setTimeout(() => {
+      try {
+        localStorage.removeItem('tp3d-logout-trigger');
+      } catch {}
+    }, 100);
+    if (debugEnabled()) console.log('[SupabaseClient] Logout broadcast via localStorage');
+  } catch (err) {
+    if (debugEnabled()) console.warn('[SupabaseClient] localStorage broadcast failed:', err);
+  }
+}
+
+function handleCrossTabLogout() {
+  // Prevent recursive signOut calls
+  if (_handlingCrossTabLogout) return;
+  _handlingCrossTabLogout = true;
+  
+  try {
+    // Clear local session immediately
+    _session = null;
+    
+    // Clear storage
+    try {
+      clearLocalAuthStorage();
+    } catch {}
+    
+    // Update invalidation timestamp
+    _authInvalidatedAt = Date.now();
+    
+    // Dispatch event to app
+    try {
+      window.dispatchEvent(
+        new CustomEvent('tp3d:auth-signed-out', {
+          detail: { crossTab: true, source: 'other-tab' },
+        })
+      );
+    } catch {}
+    
+  } finally {
+    // Reset flag after a delay to allow re-triggering if needed
+    setTimeout(() => {
+      _handlingCrossTabLogout = false;
+    }, 1000);
+  }
+}
+
 function debugEnabled() {
   try {
     return window && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1';
@@ -257,6 +358,9 @@ export function init({ url, anonKey }) {
         _session = nextSession || null;
       });
       installAuthGuard();
+      
+      // Initialize cross-tab logout synchronization
+      initCrossTabLogout();
 
       if (debugEnabled()) console.info('[SupabaseClient] init success');
       return _client;
@@ -393,71 +497,117 @@ export async function signOut(options = {}) {
 
   const allowOffline = options.allowOffline !== false; // default true
 
-  const localFallback = () => {
+  const isOffline = (() => {
     try {
-      const key =
-        (client && client.auth && (client.auth.storageKey || client.auth._storageKey)) || null;
+      return typeof navigator !== 'undefined' && navigator && navigator.onLine === false;
+    } catch {
+      return false;
+    }
+  })();
 
-      if (key) {
-        try { localStorage.removeItem(key); } catch (_) { void 0; }
-        try { sessionStorage.removeItem(key); } catch (_) { void 0; }
+  const clearStorageKeyIfKnown = () => {
+    try {
+      const key = (client && client.auth && (client.auth.storageKey || client.auth._storageKey)) || null;
+      if (!key) return;
+      try {
+        localStorage.removeItem(key);
+      } catch (_) {
+        void 0;
       }
-    } catch (e) { void 0; }
-
-    _session = null;
-    clearLocalAuthStorage();
-    _authInvalidatedAt = Date.now();
-
-    try {
-      window.dispatchEvent(
-        new CustomEvent("tp3d:auth-signed-out", {
-          detail: { offline: true, globalRequested: global },
-        })
-      );
-    } catch (_) { void 0; }
-
-    return { ok: true, offline: true };
+      try {
+        sessionStorage.removeItem(key);
+      } catch (_) {
+        void 0;
+      }
+    } catch (_) {
+      void 0;
+    }
   };
 
-  // Offline path
-  if (allowOffline && typeof navigator !== "undefined" && navigator && navigator.onLine === false) {
-    return localFallback();
-  }
-
-  try {
-    const { error } = await client.auth.signOut({ scope: global ? "global" : "local" });
-    if (error) throw error;
-
-    _session = null;
-    clearLocalAuthStorage();
-    _authInvalidatedAt = Date.now();
-
-    try {
-      window.dispatchEvent(
-        new CustomEvent("tp3d:auth-signed-out", {
-          detail: { offline: false, globalRequested: global },
-        })
-      );
-    } catch (_) { void 0; }
-
-    return { ok: true, offline: false };
-  } catch (err) {
-    // Ensure local session is cleared even if remote signOut fails
+  const finalizeLocal = offlineFlag => {
     try {
       _session = null;
-      clearLocalAuthStorage();
-      _authInvalidatedAt = Date.now();
-      try {
-        window.dispatchEvent(
-          new CustomEvent("tp3d:auth-signed-out", {
-            detail: { offline: true, globalRequested: global },
-          })
-        );
-      } catch (_) { void 0; }
-    } catch (_) { void 0; }
+    } catch (_) {
+      void 0;
+    }
 
-    return { ok: true, forced: true };
+    // Clear any known supabase storage key (defensive)
+    clearStorageKeyIfKnown();
+
+    // Clear project sb-* keys
+    try {
+      clearLocalAuthStorage();
+    } catch (_) {
+      void 0;
+    }
+
+    _authInvalidatedAt = Date.now();
+
+    // Notify the app shell
+    try {
+      window.dispatchEvent(
+        new CustomEvent('tp3d:auth-signed-out', {
+          detail: { offline: Boolean(offlineFlag), globalRequested: global },
+        })
+      );
+    } catch (_) {
+      void 0;
+    }
+  };
+
+  const runWithTimeout = (p, timeoutMs) => {
+    if (!p || typeof p.then !== 'function') return Promise.resolve(false);
+    const ms = Number.isFinite(timeoutMs) ? Number(timeoutMs) : 800;
+    return Promise.race([
+      p.then(() => true).catch(() => false),
+      new Promise(resolve => {
+        window.setTimeout(() => resolve(false), ms);
+      }),
+    ]).catch(() => false);
+  };
+
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? Number(options.timeoutMs) : 800;
+
+  // OFFLINE: do not attempt global calls; best-effort local signOut, then finalize.
+  if (allowOffline && isOffline) {
+    try {
+      await runWithTimeout(client.auth.signOut({ scope: 'local' }), 500);
+    } catch {
+      // ignore
+    }
+
+    finalizeLocal(true);
+    return { ok: true, offline: true };
   }
+
+  // ONLINE MULTI-TAB SAFE PATH:
+  // Let supabase-js run its own signOut behavior first (includes storage/broadcast work),
+  // but never allow it to hang: we only wait up to timeoutMs.
+
+  try {
+    const attempts = [];
+
+    // Local sign out attempt (bounded)
+    attempts.push(runWithTimeout(client.auth.signOut({ scope: 'local' }), timeoutMs));
+
+    // Global sign out attempt (bounded)
+    if (global) {
+      attempts.push(runWithTimeout(client.auth.signOut({ scope: 'global' }), timeoutMs));
+    }
+
+    // Wait briefly for attempts to run/broadcast, but never hang.
+    await Promise.all(attempts);
+  } catch {
+    // ignore
+  }
+
+  // Now clear local state/storage and dispatch our own event.
+  finalizeLocal(false);
+  
+  // Broadcast logout to other tabs
+  broadcastLogout();
+
+  return { ok: true, offline: false };
 }
 
 export async function refreshSession() {

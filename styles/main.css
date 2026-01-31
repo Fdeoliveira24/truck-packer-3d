@@ -827,8 +827,9 @@ textarea:focus {
      minmax(220px, 1fr) ensures cards won't grow beyond a readable width while
      allowing up to 4 (or more) columns on wide screens. Adjust 220px to control
      the minimum card width. */
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 360px));
   gap: var(--space-4);
+  justify-content: start;
 }
 
 .pack-card {

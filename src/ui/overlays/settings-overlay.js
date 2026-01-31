@@ -1311,89 +1311,195 @@ export function createSettingsOverlay({
         // Create confirmation modal content
         const modalContent = doc.createElement('div');
         modalContent.className = 'grid';
-        modalContent.style.gap = 'var(--space-4)';
 
         const dangerMsg = doc.createElement('div');
-        dangerMsg.className = 'muted';
-        dangerMsg.style.fontSize = 'var(--text-sm)';
         dangerMsg.innerHTML =
-          '<strong>Account deletion is permanent.</strong><br/><br/>' +
-          'Your login will be blocked immediately and your data will be permanently deleted. This action cannot be undone. ' +
-          '<a href="#" style="color:var(--color-link)" id="link-learn-more-deletion">Learn more in Account</a>.';
-        modalContent.appendChild(dangerMsg);
+          '<strong>Account deletion is irreversible.</strong><br/><br/>' +
+          'This will remove the user from the project and all associated data. This action cannot be undone.';
+
+        const confirmWrap = doc.createElement('div');
+        confirmWrap.className = 'grid';
 
         const confirmLabel = doc.createElement('div');
         confirmLabel.className = 'muted';
-        confirmLabel.style.fontSize = 'var(--text-sm)';
-        confirmLabel.style.marginTop = 'var(--space-4)';
-        confirmLabel.textContent = 'To confirm this, type "REQUEST DELETION"';
-        modalContent.appendChild(confirmLabel);
+        confirmLabel.textContent = 'Type DELETE to confirm.';
 
         const confirmInput = doc.createElement('input');
         confirmInput.type = 'text';
         confirmInput.className = 'input';
-        confirmInput.placeholder = 'Type REQUEST DELETION';
+        confirmInput.placeholder = 'Type DELETE';
         confirmInput.autocomplete = 'off';
-        modalContent.appendChild(confirmInput);
+        confirmInput.autocapitalize = 'characters';
+        confirmInput.spellcheck = false;
+
+        const errorMsg = doc.createElement('div');
+        errorMsg.className = 'muted';
+        errorMsg.style.minHeight = '18px';
+        errorMsg.style.color = 'var(--danger, #dc2626)';
+        errorMsg.textContent = '';
+
+        confirmWrap.appendChild(confirmLabel);
+        confirmWrap.appendChild(confirmInput);
+        confirmWrap.appendChild(errorMsg);
+
+        modalContent.appendChild(dangerMsg);
+        modalContent.appendChild(confirmWrap);
+
+        const isValid = () => String(confirmInput.value || '').trim().toUpperCase() === 'DELETE';
 
         // Show modal
-        const modal = UIComponents.showModal({
+        const modalRef = UIComponents.showModal({
           title: 'Request Account Deletion',
+          subtitle: 'User will no longer have access to the project.',
           content: modalContent,
           actions: [
+            // Let UIComponents auto-close for Cancel
+            { label: 'Cancel', variant: 'ghost' },
             {
-              label: 'Cancel',
-              variant: 'ghost',
-              onClick: () => modal.close(),
-            },
-            {
-              label: 'Request Deletion',
+              label: 'Delete Account',
               variant: 'danger',
-              disabled: true,
-              onClick: async () => {
-                try {
-                  await SupabaseClient.requestAccountDeletion();
+              onClick: () => {
+                // Prevent double-submits
+                if (modalRef && modalRef._tp3dDeleteInFlight) return false;
+
+                // (A) Hard guard: must type DELETE
+                if (!isValid()) {
+                  errorMsg.textContent = 'Type DELETE to confirm.';
+                  return false; // keep modal open
+                }
+
+                // (B) Offline guard: do not call Edge Function
+                if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) {
+                  errorMsg.textContent = 'You are offline. Reconnect to delete your account.';
+                  return false; // keep modal open
+                }
+
+                modalRef._tp3dDeleteInFlight = true;
+
+                // Run async flow without auto-closing the modal
+                (async () => {
+                  const dangerBtn =
+                    modalRef && modalRef.overlay
+                      ? modalRef.overlay.querySelector('.modal-footer button.btn-danger')
+                      : null;
 
                   try {
-                    CoreStorage.clearAll();
-                  } catch {
-                    // ignore
-                  }
-                  try {
-                    // Do a local-only sign out in the browser. Global sign-out is handled server-side by the Edge Function.
-                    await SupabaseClient.signOut({ scope: 'local' });
-                  } catch {
-                    // ignore
-                  }
-                  modal.close();
-                  close();
-                  UIComponents.showToast('Account deletion requested. You have been signed out.', 'success');
-                  // Redirect to the app entry page so auth flow can display the blocked state
-                  try {
-                    const entry = window.__TP3D_APP_ENTRY__ || (window && window.location ? window.location.href : '/');
-                    window.location.href = entry;
-                  } catch {
+                    if (dangerBtn) dangerBtn.disabled = true;
+                    confirmInput.disabled = true;
+                    errorMsg.textContent = '';
+
+                    await SupabaseClient.requestAccountDeletion();
+
+                    try {
+                      UIComponents.showToast('Deletion requested. You will be signed out.', 'warning');
+                    } catch {
+                      // ignore
+                    }
+
+                    // Clear local app state + local session
+                    try {
+                      CoreStorage.clearAll();
+                    } catch {
+                      /* ignore */
+                    }
+                    try {
+                      _SessionManager && _SessionManager.clear && _SessionManager.clear();
+                    } catch {
+                      /* ignore */
+                    }
+
+                    // Sign out and reload (no redirect to "/")
+                    await SupabaseClient.signOut({ global: true, allowOffline: true });
+
+                    try {
+                      modalRef.close();
+                    } catch {
+                      /* ignore */
+                    }
                     window.location.reload();
+                  } catch (err) {
+                    const msg = err && err.message ? String(err.message) : '';
+
+                    // Friendly offline message (double-safe)
+                    if (
+                      msg.toLowerCase().includes('offline') ||
+                      (typeof navigator !== 'undefined' && navigator && navigator.onLine === false)
+                    ) {
+                      errorMsg.textContent = 'You are offline. Reconnect to delete your account.';
+                    } else {
+                      errorMsg.textContent = msg ? `Delete request failed: ${msg}` : 'Delete request failed.';
+                    }
+
+                    confirmInput.disabled = false;
+                    if (dangerBtn) dangerBtn.disabled = false;
+                    modalRef._tp3dDeleteInFlight = false;
                   }
-                } catch (err) {
-                  modal.close();
-                  UIComponents.showToast(`Request failed: ${err && err.message ? err.message : err}`, 'error', {
-                    title: 'Account',
-                  });
-                }
+                })();
+
+                return false; // keep modal open until we close it ourselves
               },
             },
           ],
         });
 
-        // Enable delete button only when "REQUEST DELETION" is typed
-        const deleteAction = modal.element && modal.element.querySelector('.btn-danger');
-        if (deleteAction && confirmInput) {
-          confirmInput.addEventListener('input', () => {
-            const isValid = confirmInput.value === 'REQUEST DELETION';
-            deleteAction.disabled = !isValid;
-          });
+        const dangerBtn =
+          modalRef && modalRef.overlay ? modalRef.overlay.querySelector('.modal-footer button.btn-danger') : null;
+
+        // showModal does not enforce action.disabled, so we force it here
+        if (dangerBtn) dangerBtn.disabled = true;
+
+        const sync = () => {
+          const ok = isValid();
+          if (dangerBtn) dangerBtn.disabled = !ok;
+          if (ok) errorMsg.textContent = '';
+        };
+
+        // (A) Enter must NOT confirm (prevents bypass)
+        const preventEnter = ev => {
+          if (!ev || ev.key !== 'Enter') return;
+          ev.preventDefault();
+          ev.stopPropagation();
+
+          if (!isValid()) {
+            errorMsg.textContent = 'Type DELETE to confirm.';
+            return;
+          }
+
+          // If valid, move focus to the button (but do not click it)
+          try {
+            dangerBtn && dangerBtn.focus && dangerBtn.focus();
+          } catch {
+            /* ignore */
+          }
+        };
+
+        // Block Enter anywhere inside the modal (not just the input)
+        try {
+          if (modalRef && modalRef.modal) {
+            modalRef.modal.addEventListener('keydown', preventEnter, true);
+          }
+        } catch {
+          // ignore
         }
+
+        confirmInput.addEventListener('input', sync);
+        confirmInput.addEventListener('keydown', preventEnter, true);
+
+        // Focus the confirmation input after the modal mounts
+        try {
+          setTimeout(() => {
+            try {
+              confirmInput.focus();
+              confirmInput.select && confirmInput.select();
+            } catch {
+              /* ignore */
+            }
+          }, 0);
+        } catch {
+          // ignore
+        }
+
+        sync();
       });
 
       dRight.appendChild(deleteBtn);

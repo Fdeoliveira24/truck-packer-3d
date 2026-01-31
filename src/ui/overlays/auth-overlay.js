@@ -32,6 +32,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
   let showPassword = false;
   let resendDisabledUntil = 0;
   let resendCooldownTimer = null;
+  let forcedDisabledMessage = '';
 
   function toAscii(msg) {
     return String(msg || '')
@@ -484,31 +485,31 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
           signInBtn.textContent = 'Signing in...';
           const data = await SupabaseClient.signIn(email, password);
 
-          // Check deletion status after sign-in
+          // Optional post-sign-in safety check: only block if the auth user is actually banned
           try {
-            const user = data && data.user ? data.user : null;
-            if (user && SupabaseClient && typeof SupabaseClient.getProfile === 'function') {
-              const profile = await SupabaseClient.getProfile(user.id);
-              if (profile && profile.deletion_status === 'requested' && profile.purge_after) {
-                const purgeDate = new Date(profile.purge_after).toLocaleDateString();
-                setInlineError(`Account deletion requested. Sign-in disabled until ${purgeDate}.`);
-                // Sign out the user
-                try {
-                  const client =
-                    SupabaseClient && typeof SupabaseClient.getClient === 'function'
-                      ? SupabaseClient.getClient()
-                      : null;
-                  if (client && client.auth) {
+            const client =
+              SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
+
+            if (client && client.auth && typeof client.auth.getUser === 'function') {
+              const { data: userData } = await client.auth.getUser();
+              const fullUser = userData && userData.user ? userData.user : null;
+              const bannedUntil = fullUser && fullUser.banned_until ? String(fullUser.banned_until) : '';
+
+              if (bannedUntil) {
+                const ts = new Date(bannedUntil).getTime();
+                if (!Number.isNaN(ts) && ts > Date.now()) {
+                  setInlineError('Account is no longer active. Please contact support if you think this is a mistake.');
+                  try {
                     await client.auth.signOut({ scope: 'local' });
+                  } catch {
+                    // ignore
                   }
-                } catch {
-                  // ignore
+                  return;
                 }
-                return;
               }
             }
           } catch {
-            // If profile check fails, let sign-in succeed
+            // If this check fails, let sign-in succeed
           }
         } catch (err) {
           const mapped = mapAuthError(err, 'signin');
@@ -557,6 +558,13 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
           inFlight = false;
         }
       });
+
+      // If app bootstrap marked the account as blocked, show message and disable auth actions
+      if (forcedDisabledMessage) {
+        try { setInlineError(forcedDisabledMessage); } catch { /* ignore */ }
+        try { signInBtn.disabled = true; } catch { /* ignore */ }
+        try { signUpBtn.disabled = true; } catch { /* ignore */ }
+      }
 
       btnRow.appendChild(signInBtn);
       btnRow.appendChild(signUpBtn);
@@ -722,10 +730,14 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
   }
 
   function hide() {
+    ensureMounted();
     if (!overlayEl) return;
-    if (!isOpen) return;
-    isOpen = false;
     overlayEl.style.display = 'none';
+    isOpen = false;
+
+    // Clear forced disabled message when overlay closes
+    forcedDisabledMessage = '';
+
     removeKeydownBlocker();
     try {
       document.body.style.overflow = '';
@@ -795,11 +807,19 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     // ignore failures attaching listeners
   }
 
+  function showAccountDisabled(message) {
+    forcedDisabledMessage = String(message || 'Account is no longer active. Please contact support.');
+    mode = 'signin';
+    setPhase('form');
+    show();
+  }
+
   return {
     show,
     hide,
     isOpen: isOpenFn,
     setStatus,
     setPhase,
+    showAccountDisabled,
   };
 }

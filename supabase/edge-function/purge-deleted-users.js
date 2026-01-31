@@ -1,51 +1,48 @@
-import { createClient } from 'npm:@supabase/supabase-js@2'
+ /**
+ * @file purge-deleted-users.js
+ * @description purge-deleted-users Edge Function for Supabase to permanently delete user accounts marked for deletion. Used in Supabase Edge Functions. 
+ * @updated 01/30/2026
+ */
 
-function json(status: number, payload: unknown) {
-  return new Response(JSON.stringify(payload), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  })
-}
+import { createClient } from "npm:@supabase/supabase-js@2";
+
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || '';
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+const CRON_KEY = Deno.env.get('CRON_KEY') || '';
+
+const serviceClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { global: { headers: { 'x-client-info': 'truck-packer-3d' } } });
 
 Deno.serve(async (req) => {
-  // Simple shared secret check for cron calls
-  const cronKey = Deno.env.get('CRON_KEY') ?? ''
-  const gotKey = req.headers.get('x-cron-key') ?? ''
-  if (!cronKey || gotKey !== cronKey) return json(401, { error: 'Unauthorized' })
+  if (req.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405 });
 
-  const url = Deno.env.get('SUPABASE_URL') ?? Deno.env.get('URL') ?? ''
-  const serviceRoleKey =
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SERVICE_ROLE_KEY') ?? ''
+  const cronKeyHeader = req.headers.get('x-cron-key') || '';
+  if (!cronKeyHeader || cronKeyHeader !== CRON_KEY) return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
 
-  if (!url || !serviceRoleKey) return json(500, { error: 'Missing required secrets' })
+  // select profiles to purge
+  const { data: profiles, error: selectErr } = await serviceClient.from('profiles').select('id').eq('deletion_status', 'requested').lte('purge_after', new Date().toISOString());
+  if (selectErr) return new Response(JSON.stringify({ error: 'Failed to select profiles', details: selectErr.message }), { status: 500 });
 
-  const supabaseAdmin = createClient(url, serviceRoleKey, { auth: { persistSession: false } })
+  const results = [];
 
-  // Find users ready to purge
-  const { data: rows, error: qErr } = await supabaseAdmin
-    .from('profiles')
-    .select('id, avatar_url, purge_after, deletion_status')
-    .eq('deletion_status', 'requested')
-    .not('purge_after', 'is', null)
-    .lte('purge_after', new Date().toISOString())
-    .limit(200)
+  for (const p of profiles || []) {
+    try {
+      // delete organization memberships
+      const delMem = await serviceClient.from('organization_memberships').delete().eq('user_id', p.id);
+      if (delMem.error) results.push({ user_id: p.id, error: 'failed_delete_members', details: delMem.error.message });
 
-  if (qErr) return json(500, { error: 'Query failed', details: qErr.message })
+      // delete profile
+      const delProf = await serviceClient.from('profiles').delete().eq('id', p.id);
+      if (delProf.error) results.push({ user_id: p.id, error: 'failed_delete_profile', details: delProf.error.message });
 
-  const results: any[] = []
-  for (const r of rows ?? []) {
-    const userId = r.id
+      // delete auth user
+      const delAuth = await serviceClient.auth.admin.deleteUser(p.id);
+      if (delAuth.error) results.push({ user_id: p.id, error: 'failed_delete_auth', details: delAuth.error.message });
 
-    // 1) Remove memberships (adjust table name if needed)
-    await supabaseAdmin.from('organization_memberships').delete().eq('user_id', userId)
-
-    // 2) Delete profile row
-    await supabaseAdmin.from('profiles').delete().eq('id', userId)
-
-    // 3) Delete auth user (this is the true “hard delete”)
-    const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(userId)
-    results.push({ userId, deleted: !delErr, error: delErr?.message ?? null })
+      results.push({ user_id: p.id, success: true });
+    } catch (e) {
+      results.push({ user_id: p.id, error: 'exception', details: e.message });
+    }
   }
 
-  return json(200, { ok: true, purged: results.length, results })
-})
+  return new Response(JSON.stringify({ results }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+});

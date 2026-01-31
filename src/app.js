@@ -403,6 +403,11 @@ import { APP_VERSION } from './core/version.js';
             const result = await SupabaseClient.signOut({ global: true, allowOffline: true });
             
             SessionManager.clear();
+            try {
+              Storage.clearAll();
+            } catch {
+              // ignore
+            }
             StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
             
             if (result && result.offline) {
@@ -418,6 +423,11 @@ import { APP_VERSION } from './core/version.js';
         }
 
         SessionManager.clear();
+        try {
+          Storage.clearAll();
+        } catch {
+          // ignore
+        }
         StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
         UIComponents.showToast('Logged out', 'info');
       }
@@ -2311,6 +2321,21 @@ import { APP_VERSION } from './core/version.js';
     // SECTION: APP INIT (ORDER CRITICAL)
     // ============================================================================
     let authListenerInstalled = false;
+    // Latch used to temporarily hold a forced account-disabled message so
+    // normal signed-out flows don't overwrite it while we show the disabled UI.
+    let authBlockState = null;
+
+    function setAuthBlocked(message) {
+      try {
+        authBlockState = { message: message || 'Your account has been disabled.', ts: Date.now() };
+      } catch {
+        authBlockState = { message: 'Your account has been disabled.', ts: Date.now() };
+      }
+    }
+
+    function clearAuthBlocked() {
+      authBlockState = null;
+    }
     let readyToastShown = false;
 
     function showReadyOnce() {
@@ -2326,19 +2351,81 @@ import { APP_VERSION } from './core/version.js';
      */
     async function checkProfileStatus() {
       try {
+        // First check if user is actually banned in Supabase auth
+        const user = SupabaseClient.getUser();
+        if (!user) return true; // Not logged in, let auth flow handle it
+
+        // Get the raw user data which includes ban info
+        const client = SupabaseClient.getClient();
+        const { data: { user: fullUser } = {}, error: userError } = await client.auth.getUser();
+        
+        if (userError) {
+          // If we can't get user data, might be banned or invalid session
+          if (userError.message && (
+            userError.message.includes('banned') ||
+            userError.message.includes('disabled') ||
+            userError.message.includes('Invalid') ||
+            userError.status === 401
+          )) {
+            try {
+              await SupabaseClient.signOut({ global: false, allowOffline: true });
+            } catch {
+              // ignore
+            }
+            const blockedMsg = userError && userError.message ? String(userError.message) : 'Your account has been disabled.';
+            setAuthBlocked(blockedMsg);
+            AuthOverlay.showAccountDisabled(blockedMsg);
+            return false;
+          }
+          return true; // Other errors, fail open
+        }
+
+        // Check if user is banned (Supabase sets user.banned_until)
+        if (fullUser && fullUser.banned_until) {
+          const bannedUntil = new Date(fullUser.banned_until);
+          const now = new Date();
+          
+          if (bannedUntil > now) {
+            // Still banned
+            try {
+              await SupabaseClient.signOut({ global: false, allowOffline: true });
+            } catch {
+              // ignore
+            }
+            const bannedMsg = bannedUntil ? `Your account has been disabled until ${bannedUntil.toLocaleString()}.` : 'Your account has been disabled.';
+            setAuthBlocked(bannedMsg);
+            AuthOverlay.showAccountDisabled(bannedMsg);
+            return false;
+          }
+        }
+
+        // User is not banned, check profile deletion status
         const profileStatus = await SupabaseClient.getMyProfileStatus();
         if (profileStatus && profileStatus.deletion_status === 'requested') {
-          // User is banned, sign out and show disabled message
-          try {
-            await SupabaseClient.signOut({ global: false, allowOffline: true });
-          } catch {
-            // ignore
+          // Profile marked for deletion but user might not be banned yet
+          // Only block if they're actually banned
+          if (fullUser && fullUser.banned_until) {
+            try {
+              await SupabaseClient.signOut({ global: false, allowOffline: true });
+            } catch {
+              // ignore
+            }
+            const delMsg = fullUser && fullUser.banned_until ? `Your account has been disabled until ${new Date(fullUser.banned_until).toLocaleString()}.` : 'Your account has been disabled.';
+            setAuthBlocked(delMsg);
+            AuthOverlay.showAccountDisabled(delMsg);
+            return false;
           }
-          AuthOverlay.showAccountDisabled();
-          return false; // Block app rendering
+        }
+
+        // Clear any previously set forced-disabled latch when user is allowed
+        try {
+          clearAuthBlocked();
+        } catch {
+          // ignore
         }
         return true; // OK to proceed
-      } catch {
+      } catch (err) {
+        console.warn('[checkProfileStatus] error:', err);
         return true; // On error, let them through (fail open)
       }
     }
@@ -2496,8 +2583,12 @@ import { APP_VERSION } from './core/version.js';
             return;
           }
 
-          AuthOverlay.setPhase('form', { onRetry: bootstrapAuthGate });
-          AuthOverlay.show();
+          if (authBlockState) {
+            AuthOverlay.showAccountDisabled(authBlockState.message);
+          } else {
+            AuthOverlay.setPhase('form', { onRetry: bootstrapAuthGate });
+            AuthOverlay.show();
+          }
           if (event === 'SIGNED_OUT') {
             UIComponents.showToast('Signed out', 'info', { title: 'Auth' });
           }

@@ -309,6 +309,39 @@ export async function getProfile(userId = null) {
   return data || null;
 }
 
+/**
+ * Get profile status (deletion_status, purge_after) for the current user.
+ * Used to check if user is scheduled for deletion or has been banned.
+ * Does NOT check actual Supabase auth ban status - only profile table flags.
+ * @returns {Promise<Object|null>} Profile status object or null
+ */
+export async function getMyProfileStatus() {
+  const client = requireClient();
+  const user = getUser();
+  if (!user) return null;
+
+  try {
+    const { data, error } = await client
+      .from('profiles')
+      .select('deletion_status, purge_after')
+      .eq('id', user.id)
+      .single();
+
+    if (error) {
+      // If profile doesn't exist (deleted user), return null
+      if (error.code === 'PGRST116' || error.status === 406) {
+        return null;
+      }
+      throw error;
+    }
+
+    return data || null;
+  } catch (err) {
+    // On error, return null (fail open)
+    return null;
+  }
+}
+
 export async function updateProfile(updates) {
   const client = requireClient();
   const user = getUser();
@@ -495,30 +528,95 @@ export async function deleteAvatar() {
  * @returns {Promise<boolean>} - True on success
  */
 export async function requestAccountDeletion() {
-  const client = requireClient();
-  const user = getUser();
-  if (!user) throw new Error('Not authenticated');
-
-  // Always pull fresh session
-  const { data: sessData } = await client.auth.getSession();
-  const accessToken =
-    sessData?.session?.access_token || _session?.access_token;
-
-  if (!accessToken) {
-    throw new Error('No active session token');
+  // Guard: do not attempt Edge Function calls while offline
+  if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) {
+    const e = new Error('You are offline. Reconnect to delete your account.');
+    e.code = 'OFFLINE';
+    throw e;
   }
 
-  const { data, error } = await client.functions.invoke(
-    'request-account-deletion',
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
+  const client = requireClient();
+  if (debugEnabled()) console.info('[SupabaseClient] requestAccountDeletion start');
+
+  // Helper: after a deletion request, auth may be revoked mid-flight.
+  // If we can no longer reach authed endpoints, we treat that as success.
+  async function authLooksRevoked() {
+    try {
+      // getUser() validates the access token with the server.
+      // After the Edge Function bans/signs-out the user, this will commonly return 401.
+      const { data, error } = await client.auth.getUser();
+      if (error) return true;
+      const u = data && data.user ? data.user : null;
+      if (!u || !u.id) return true;
+      return false;
+    } catch {
+      return true;
     }
-  );
+  }
 
-  if (error) throw error;
+  let data = null;
+  let error = null;
 
-  return data && data.success === true;
+  try {
+    const res = await client.functions.invoke('request-account-deletion', {
+      method: 'POST',
+      body: {},
+    });
+    data = res ? res.data : null;
+    error = res ? res.error : null;
+  } catch (err) {
+    // Supabase may throw in some environments; normalize to { error }
+    data = null;
+    error = err;
+  }
+
+  // Debug (only when tp3dDebug=1)
+  if (debugEnabled()) {
+    try {
+      const st = error && Number.isFinite(error.status) ? error.status : null;
+      const msg = error && error.message ? String(error.message) : '';
+      console.info('[SupabaseClient] requestAccountDeletion result', { status: st, msg, data });
+    } catch {
+      // ignore
+    }
+  }
+
+  // No error: treat as success.
+  // Some Edge Functions return an empty body even on success.
+  if (!error) {
+    if (data && typeof data === 'object') {
+      // Explicit success
+      if (data.ok === true || data.success === true) return data;
+
+      // Explicit failure (but may still have revoked auth already)
+      if (data.ok === false || data.success === false || data.error) {
+        const revoked = await authLooksRevoked();
+        if (revoked) return { ok: true, inferred: true, reason: 'auth-revoked', data };
+        throw new Error(data.error || data.message || 'Deletion request failed');
+      }
+
+      // Unknown payload shape -> assume success
+      return { ok: true };
+    }
+
+    // Empty payload -> assume success
+    return { ok: true };
+  }
+
+  // Error path: banning / global signout can revoke auth during the request.
+  const status = Number.isFinite(error.status) ? error.status : null;
+  const msg = String(error && error.message ? error.message : '');
+
+  // If we got 401/403, it often means the function ran and then auth got revoked.
+  if (status === 401 || status === 403) {
+    return { ok: true, inferred: true, reason: 'http-' + status };
+  }
+
+  // Some environments surface this as a generic "non-2xx" or network error.
+  if (msg.toLowerCase().includes('non-2xx')) {
+    const revoked = await authLooksRevoked();
+    if (revoked) return { ok: true, inferred: true, reason: 'non-2xx-auth-revoked' };
+  }
+
+  throw error;
 }

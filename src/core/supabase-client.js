@@ -896,7 +896,7 @@ export async function getMyOrgRole(orgId) {
     .single();
 
   if (error) {
-    if (error.code === 'PGRST116') return null; // No rows returned
+    if (error.code === 'PGRST116' || error.status === 406) return null; // No rows returned or Not Acceptable
     throw error;
   }
 

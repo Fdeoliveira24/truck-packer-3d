@@ -244,18 +244,18 @@ import { APP_VERSION } from './core/version.js';
     const AuthOverlay = createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 'tp3dDebug' });
 
     // Listen for auth signed-out events (including offline logout and cross-tab)
-    window.addEventListener('tp3d:auth-signed-out', (event) => {
+    window.addEventListener('tp3d:auth-signed-out', event => {
       const detail = event.detail || {};
       const isCrossTab = detail.crossTab === true;
-      
+
       if (window.localStorage && window.localStorage.getItem('tp3dDebug') === '1') {
         console.log('[TruckPackerApp] Auth signed out', {
           crossTab: isCrossTab,
           source: detail.source,
-          offline: detail.offline
+          offline: detail.offline,
         });
       }
-      
+
       // Force signed-out UI state
       try {
         if (AuthOverlay && typeof AuthOverlay.show === 'function') {
@@ -270,21 +270,29 @@ import { APP_VERSION } from './core/version.js';
 
     // Show small toasts on connectivity changes to improve UX
     try {
-      window.addEventListener('online', () => {
-        try {
-          UIComponents.showToast('Back online', 'info');
-        } catch {
-          // ignore
-        }
-      }, { passive: true });
+      window.addEventListener(
+        'online',
+        () => {
+          try {
+            UIComponents.showToast('Back online', 'info');
+          } catch {
+            // ignore
+          }
+        },
+        { passive: true }
+      );
 
-      window.addEventListener('offline', () => {
-        try {
-          UIComponents.showToast('You are offline', 'warning');
-        } catch {
-          // ignore
-        }
-      }, { passive: true });
+      window.addEventListener(
+        'offline',
+        () => {
+          try {
+            UIComponents.showToast('You are offline', 'warning');
+          } catch {
+            // ignore
+          }
+        },
+        { passive: true }
+      );
     } catch {
       // ignore
     }
@@ -412,7 +420,7 @@ import { APP_VERSION } from './core/version.js';
         try {
           if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
             const result = await SupabaseClient.signOut({ global: true, allowOffline: true });
-            
+
             SessionManager.clear();
             try {
               Storage.clearAll();
@@ -420,7 +428,7 @@ import { APP_VERSION } from './core/version.js';
               // ignore
             }
             StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
-            
+
             if (result && result.offline) {
               UIComponents.showToast('Signed out. Full sign out will run when back online.', 'info');
             } else {
@@ -500,7 +508,7 @@ import { APP_VERSION } from './core/version.js';
       }
 
       function bind(buttonEl, { align } = {}) {
-        if (!buttonEl) return () => { };
+        if (!buttonEl) return () => {};
         if (mounts.has(buttonEl)) return mounts.get(buttonEl);
 
         renderButton(buttonEl);
@@ -1761,7 +1769,7 @@ import { APP_VERSION } from './core/version.js';
     // ============================================================================
     const UpdatesUI = (() => {
       const listEl = document.getElementById('updates-list');
-      function initUpdatesUI() { }
+      function initUpdatesUI() {}
       function render() {
         listEl.innerHTML = '';
         Data.updates.forEach(u => {
@@ -1808,7 +1816,7 @@ import { APP_VERSION } from './core/version.js';
     // ============================================================================
     const RoadmapUI = (() => {
       const listEl = document.getElementById('roadmap-list');
-      function initRoadmapUI() { }
+      function initRoadmapUI() {}
       function render() {
         listEl.innerHTML = '';
         Data.roadmap.forEach(group => {
@@ -2369,21 +2377,23 @@ import { APP_VERSION } from './core/version.js';
         // Get the raw user data which includes ban info
         const client = SupabaseClient.getClient();
         const { data: { user: fullUser } = {}, error: userError } = await client.auth.getUser();
-        
+
         if (userError) {
           // If we can't get user data, might be banned or invalid session
-          if (userError.message && (
-            userError.message.includes('banned') ||
-            userError.message.includes('disabled') ||
-            userError.message.includes('Invalid') ||
-            userError.status === 401
-          )) {
+          if (
+            userError.message &&
+            (userError.message.includes('banned') ||
+              userError.message.includes('disabled') ||
+              userError.message.includes('Invalid') ||
+              userError.status === 401)
+          ) {
             try {
               await SupabaseClient.signOut({ global: false, allowOffline: true });
             } catch {
               // ignore
             }
-            const blockedMsg = userError && userError.message ? String(userError.message) : 'Your account has been disabled.';
+            const blockedMsg =
+              userError && userError.message ? String(userError.message) : 'Your account has been disabled.';
             setAuthBlocked(blockedMsg);
             AuthOverlay.showAccountDisabled(blockedMsg);
             return false;
@@ -2395,7 +2405,7 @@ import { APP_VERSION } from './core/version.js';
         if (fullUser && fullUser.banned_until) {
           const bannedUntil = new Date(fullUser.banned_until);
           const now = new Date();
-          
+
           if (bannedUntil > now) {
             // Still banned
             try {
@@ -2403,7 +2413,9 @@ import { APP_VERSION } from './core/version.js';
             } catch {
               // ignore
             }
-            const bannedMsg = bannedUntil ? `Your account has been disabled until ${bannedUntil.toLocaleString()}.` : 'Your account has been disabled.';
+            const bannedMsg = bannedUntil
+              ? `Your account has been disabled until ${bannedUntil.toLocaleString()}.`
+              : 'Your account has been disabled.';
             setAuthBlocked(bannedMsg);
             AuthOverlay.showAccountDisabled(bannedMsg);
             return false;
@@ -2421,7 +2433,10 @@ import { APP_VERSION } from './core/version.js';
             } catch {
               // ignore
             }
-            const delMsg = fullUser && fullUser.banned_until ? `Your account has been disabled until ${new Date(fullUser.banned_until).toLocaleString()}.` : 'Your account has been disabled.';
+            const delMsg =
+              fullUser && fullUser.banned_until
+                ? `Your account has been disabled until ${new Date(fullUser.banned_until).toLocaleString()}.`
+                : 'Your account has been disabled.';
             setAuthBlocked(delMsg);
             AuthOverlay.showAccountDisabled(delMsg);
             return false;
@@ -2499,11 +2514,12 @@ import { APP_VERSION } from './core/version.js';
             vendorReadyOk = true;
             if (debugEnabled()) console.info('[TruckPackerApp] Vendor ready resolved');
           } catch (vendorErr) {
-            if (debugEnabled())
+            if (debugEnabled()) {
               console.info(
                 '[TruckPackerApp] Vendor ready timed out or failed:',
                 vendorErr && vendorErr.message ? vendorErr.message : ''
               );
+            }
           }
         }
 
@@ -2513,11 +2529,12 @@ import { APP_VERSION } from './core/version.js';
             supabaseInitOk = true;
             if (debugEnabled()) console.info('[TruckPackerApp] Supabase init retry success');
           } catch (retryErr) {
-            if (debugEnabled())
+            if (debugEnabled()) {
               console.info(
                 '[TruckPackerApp] Supabase init retry failed:',
                 retryErr && retryErr.message ? retryErr.message : ''
               );
+            }
             AuthOverlay.setPhase('cantconnect', { error: retryErr, onRetry: () => window.location.reload() });
             AuthOverlay.show();
             return;
@@ -2575,6 +2592,20 @@ import { APP_VERSION } from './core/version.js';
             // ignore
           }
 
+          // 1) Close settings overlay on ANY auth change
+          try {
+            if (SettingsOverlay && typeof SettingsOverlay.close === 'function') SettingsOverlay.close();
+          } catch (_) {
+            // ignore
+          }
+
+          // 2) Optional: clear app caches / notify org change
+          try {
+            window.dispatchEvent(new CustomEvent('tp3d:org-changed', { detail: { orgId: null } }));
+          } catch (_) {
+            // ignore
+          }
+
           if (user) {
             // Check profile status when user signs in
             const canProceed = await checkProfileStatus();
@@ -2585,10 +2616,12 @@ import { APP_VERSION } from './core/version.js';
             if (event === 'SIGNED_IN') {
               UIComponents.showToast('Signed in', 'success', { title: 'Auth' });
             }
-            if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function')
+            if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') {
               SettingsOverlay.handleAuthChange(event);
-            if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function')
+            }
+            if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') {
               AccountOverlay.handleAuthChange(event);
+            }
             renderSidebarBrandMarks();
             showReadyOnce();
             return;
@@ -2603,10 +2636,12 @@ import { APP_VERSION } from './core/version.js';
           if (event === 'SIGNED_OUT') {
             UIComponents.showToast('Signed out', 'info', { title: 'Auth' });
           }
-          if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function')
+          if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') {
             SettingsOverlay.handleAuthChange(event);
-          if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function')
+          }
+          if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') {
             AccountOverlay.handleAuthChange(event);
+          }
           renderSidebarBrandMarks();
         });
       }

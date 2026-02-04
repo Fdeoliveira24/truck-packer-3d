@@ -250,6 +250,7 @@ import { APP_VERSION } from './core/version.js';
 
       if (window.localStorage && window.localStorage.getItem('tp3dDebug') === '1') {
         console.log('[TruckPackerApp] Auth signed out', {
+          tab: SupabaseClient && typeof SupabaseClient.getTabId === 'function' ? SupabaseClient.getTabId() : null,
           crossTab: isCrossTab,
           source: detail.source,
           offline: detail.offline,
@@ -329,6 +330,7 @@ import { APP_VERSION } from './core/version.js';
       } catch {
         // ignore
       }
+      void rehydrateAuthState({ reason: 'settings-open' });
     }
 
     function openAccountOverlay() {
@@ -343,6 +345,7 @@ import { APP_VERSION } from './core/version.js';
       } catch {
         // ignore
       }
+      void rehydrateAuthState({ reason: 'account-open' });
     }
 
     function getSidebarAvatarView() {
@@ -419,6 +422,7 @@ import { APP_VERSION } from './core/version.js';
         // SessionManager.clear() only resets the local demo session.
         try {
           if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
+            if (SupabaseClient.setAuthIntent) SupabaseClient.setAuthIntent('signOut');
             const result = await SupabaseClient.signOut({ global: true, allowOffline: true });
 
             SessionManager.clear();
@@ -428,12 +432,7 @@ import { APP_VERSION } from './core/version.js';
               // ignore
             }
             StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
-
-            if (result && result.offline) {
-              UIComponents.showToast('Signed out. Full sign out will run when back online.', 'info');
-            } else {
-              UIComponents.showToast('Logged out', 'info');
-            }
+            // Success toast is handled by the auth state listener (user-initiated only).
             return;
           }
         } catch (err) {
@@ -537,7 +536,13 @@ import { APP_VERSION } from './core/version.js';
         bind(sidebarBtn, { align: 'left' });
       }
 
-      return { init: initAccountSwitcher, bind };
+      function refreshAll() {
+        mounts.forEach((_, buttonEl) => {
+          renderButton(buttonEl);
+        });
+      }
+
+      return { init: initAccountSwitcher, bind, refresh: refreshAll };
     })();
 
     // CategoryService extracted to src/services/category-service.js
@@ -2340,6 +2345,11 @@ import { APP_VERSION } from './core/version.js';
     // SECTION: APP INIT (ORDER CRITICAL)
     // ============================================================================
     let authListenerInstalled = false;
+    let lastAuthUserId = null;
+    const toastDeduper = new Map();
+    let authRehydratePromise = null;
+    // Used to prevent mixed-user UI when another tab signs in as a different user.
+    const authReloadKey = 'tp3d:auth-user-switch-reload';
     // Latch used to temporarily hold a forced account-disabled message so
     // normal signed-out flows don't overwrite it while we show the disabled UI.
     let authBlockState = null;
@@ -2363,6 +2373,128 @@ import { APP_VERSION } from './core/version.js';
       UIComponents.showToast('Ready', 'success', { title: 'Truck Packer 3D' });
     }
 
+    function canShowToast(key) {
+      const now = Date.now();
+      const last = toastDeduper.get(key) || 0;
+      if (now - last < 2500) return false;
+      toastDeduper.set(key, now);
+      return true;
+    }
+
+    async function rehydrateAuthState({ reason = 'auth-change', force = false, forceBundle = false } = {}) {
+      // Single-flight rehydrate to avoid overlapping session/user reads.
+      if (authRehydratePromise) return authRehydratePromise;
+      try {
+        if (!force && typeof document !== 'undefined' && document.hidden) return null;
+      } catch {
+        // ignore
+      }
+
+      authRehydratePromise = (async () => {
+        const epochAtStart = SupabaseClient.getAuthEpoch ? SupabaseClient.getAuthEpoch() : null;
+        // Guard: only apply bundle-driven UI updates when the bundle matches current auth state.
+        let bundleOk = true;
+        let sessionData = null;
+        try {
+          sessionData = await SupabaseClient.getSessionSingleFlight();
+        } catch {
+          sessionData = null;
+        }
+
+        let user = sessionData && sessionData.user ? sessionData.user : null;
+        if (!user) {
+          try {
+            user = await SupabaseClient.getUserSingleFlight();
+          } catch {
+            user = null;
+          }
+        }
+
+        // Clear stale auth-block state when a valid user resolves.
+        if (user && user.id) {
+          try {
+            clearAuthBlocked();
+          } catch {
+            // ignore
+          }
+          if (lastAuthUserId && String(lastAuthUserId) !== String(user.id)) {
+            lastAuthUserId = null;
+          }
+        }
+
+        if (forceBundle && SupabaseClient.getAccountBundleSingleFlight) {
+          try {
+            const ready = SupabaseClient.awaitAuthReady
+              ? await SupabaseClient.awaitAuthReady({ timeoutMs: 5000 })
+              : { ok: true };
+            if (!ready.ok) {
+              bundleOk = false;
+            } else {
+              const bundle = await SupabaseClient.getAccountBundleSingleFlight({ force: true });
+              const currentEpoch = SupabaseClient.getAuthEpoch ? SupabaseClient.getAuthEpoch() : null;
+              const currentUserId = SupabaseClient.getCurrentUserId ? SupabaseClient.getCurrentUserId() : null;
+              // Guard: ignore canceled or mismatched bundles to avoid stale UI.
+              if (!bundle || bundle.canceled) {
+                bundleOk = false;
+              } else if (currentEpoch !== null && Number.isFinite(bundle.epoch) && bundle.epoch !== currentEpoch) {
+                bundleOk = false;
+              } else if (bundle.user && currentUserId && String(bundle.user.id) !== String(currentUserId)) {
+                bundleOk = false;
+              }
+            }
+          } catch {
+            bundleOk = false;
+          }
+        }
+
+        const epochNow = SupabaseClient.getAuthEpoch ? SupabaseClient.getAuthEpoch() : null;
+        if (epochAtStart !== null && epochNow !== null && epochNow !== epochAtStart) {
+          return user;
+        }
+        if (!bundleOk) return user;
+
+        try {
+          if (SettingsOverlay && typeof SettingsOverlay.refreshAccountUI === 'function') {
+            SettingsOverlay.refreshAccountUI();
+          }
+        } catch {
+          // ignore
+        }
+        try {
+          if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') {
+            SettingsOverlay.handleAuthChange(reason);
+          }
+        } catch {
+          // ignore
+        }
+        try {
+          if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') {
+            AccountOverlay.handleAuthChange(reason);
+          }
+        } catch {
+          // ignore
+        }
+        try {
+          renderSidebarBrandMarks();
+        } catch {
+          // ignore
+        }
+        try {
+          if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
+            AccountSwitcher.refresh();
+          }
+        } catch {
+          // ignore
+        }
+
+        return user;
+      })().finally(() => {
+        authRehydratePromise = null;
+      });
+
+      return authRehydratePromise;
+    }
+
     /**
      * Check if current user's profile is in deletion requested state.
      * If so, sign out and show disabled overlay.
@@ -2375,8 +2507,13 @@ import { APP_VERSION } from './core/version.js';
         if (!user) return true; // Not logged in, let auth flow handle it
 
         // Get the raw user data which includes ban info
-        const client = SupabaseClient.getClient();
-        const { data: { user: fullUser } = {}, error: userError } = await client.auth.getUser();
+        let fullUser = null;
+        let userError = null;
+        try {
+          fullUser = await window.SupabaseClient.getUserSingleFlight();
+        } catch (err) {
+          userError = err;
+        }
 
         if (userError) {
           // If we can't get user data, might be banned or invalid session
@@ -2461,6 +2598,12 @@ import { APP_VERSION } from './core/version.js';
       if (!validateRuntime()) return;
       installDevHelpers({ app: window.TruckPackerApp, stateStore: StateStore, Utils, documentRef: document });
       seedIfEmpty();
+      try {
+        // Clear any stale reload latches so the app can continue normally.
+        if (window && window.sessionStorage) window.sessionStorage.removeItem(authReloadKey);
+      } catch {
+        // ignore
+      }
 
       PreferencesManager.applyTheme(StateStore.get('preferences').theme);
 
@@ -2556,8 +2699,16 @@ import { APP_VERSION } from './core/version.js';
             new Promise((_, rej) => window.setTimeout(() => rej(new Error('Session check timed out')), timeoutMs)),
           ]);
           const user = session && session.user ? session.user : null;
+          const ready = SupabaseClient.awaitAuthReady
+            ? await SupabaseClient.awaitAuthReady({ timeoutMs: 5000 })
+            : { ok: !!user };
           if (user) {
             // Check profile status before allowing access
+            if (!ready.ok) {
+              AuthOverlay.setPhase('form', { onRetry: bootstrapAuthGate });
+              AuthOverlay.show();
+              return false;
+            }
             const canProceed = await checkProfileStatus();
             if (!canProceed) {
               return false; // Block app, auth overlay is already showing disabled state
@@ -2578,16 +2729,79 @@ import { APP_VERSION } from './core/version.js';
 
       if (!authListenerInstalled) {
         authListenerInstalled = true;
-        SupabaseClient.onAuthStateChange(async (event, _session) => {
+        SupabaseClient.onAuthStateChange(async (event, session) => {
+          const isSignedInEvent = event === 'SIGNED_IN';
+          const isSignedOutEvent = event === 'SIGNED_OUT';
+          const isTokenRefreshEvent = event === 'TOKEN_REFRESHED';
+          const isInitialSessionEvent = event === 'INITIAL_SESSION';
+          const isUserUpdatedEvent = event === 'USER_UPDATED';
+
+          const userFromSession = session && session.user ? session.user : null;
+          const newUserId = userFromSession && userFromSession.id ? String(userFromSession.id) : null;
+          const previousUserId = lastAuthUserId ? String(lastAuthUserId) : null;
+
+          // FIX: Detect cross-tab login with DIFFERENT user - this is the key bug fix.
+          // When a different user logs in on another tab, we receive SIGNED_IN but lastAuthUserId
+          // still holds the OLD user's ID. We must clear stale state BEFORE any re-hydration.
+          const isUserSwitch = isSignedInEvent && newUserId && previousUserId && newUserId !== previousUserId;
+
+          // Check if user initiated sign-in (consume intent ONCE and reuse the result)
+          // Note: consumeAuthIntent clears the intent, so we must call it only once per event
+          const userIntentConsumed = isSignedInEvent && SupabaseClient.consumeAuthIntent && SupabaseClient.consumeAuthIntent('signIn', 5000);
+          const isCrossTabLogin = isSignedInEvent && newUserId && !userIntentConsumed;
+
+          if (isUserSwitch && isCrossTabLogin) {
+            try {
+              // Guard: force a clean reload when another tab switches users.
+              if (window && window.sessionStorage) {
+                window.sessionStorage.setItem(authReloadKey, JSON.stringify({ ts: Date.now(), reason: 'user-switch' }));
+              }
+            } catch {
+              // ignore
+            }
+            window.location.reload();
+            return;
+          }
+
+          // If this is a user switch (different user signed in), clear stale state immediately
+          if (isUserSwitch) {
+            lastAuthUserId = null; // Clear old user ID to prevent stale state leakage
+            try {
+              // Notify app that org context has changed (forces UI to re-fetch)
+              window.dispatchEvent(new CustomEvent('tp3d:org-changed', { detail: { orgId: null, reason: 'user-switch' } }));
+            } catch (_) {
+              // ignore
+            }
+          }
+
+          // Rehydrate auth state for sign-in/session refresh events.
+          // FIX: Force rehydration for user switches to ensure fresh data
+          const shouldForceBundle = isSignedInEvent || isTokenRefreshEvent || isInitialSessionEvent || isUserUpdatedEvent;
+          if (shouldForceBundle) {
+            await rehydrateAuthState({ reason: event, force: isUserSwitch, forceBundle: shouldForceBundle || isUserSwitch });
+          }
+
+          // FIX: Get user from wrapper to ensure we have the latest data after rehydration
           const user = (() => {
             try {
               return SupabaseClient.getUser();
             } catch {
               return null;
             }
-          })();
+          })() || userFromSession;
+
+          // FIX: Reuse the already-consumed result instead of consuming again
+          const userInitiatedSignIn = userIntentConsumed;
+          const userInitiatedSignOut =
+            isSignedOutEvent && SupabaseClient.consumeAuthIntent && SupabaseClient.consumeAuthIntent('signOut', 2500);
+
+          // FIX: Recalculate isSameUser after potential lastAuthUserId clear
+          const currentLastAuthUserId = lastAuthUserId ? String(lastAuthUserId) : null;
+          const isSameUser =
+            user && currentLastAuthUserId && user.id && String(user.id) === currentLastAuthUserId;
+
           try {
-            emit('auth:changed', { event, userId: user && user.id ? String(user.id) : '' });
+            emit('auth:changed', { event, userId: user && user.id ? String(user.id) : '', isUserSwitch, isCrossTabLogin });
           } catch {
             // ignore
           }
@@ -2599,11 +2813,14 @@ import { APP_VERSION } from './core/version.js';
             // ignore
           }
 
-          // 2) Optional: clear app caches / notify org change
-          try {
-            window.dispatchEvent(new CustomEvent('tp3d:org-changed', { detail: { orgId: null } }));
-          } catch (_) {
-            // ignore
+          // 2) Notify org change for ALL auth changes (not just user switches)
+          // This ensures UI components always re-fetch on auth events
+          if (!isUserSwitch) { // Already dispatched above for user switches
+            try {
+              window.dispatchEvent(new CustomEvent('tp3d:org-changed', { detail: { orgId: null } }));
+            } catch (_) {
+              // ignore
+            }
           }
 
           if (user) {
@@ -2613,16 +2830,25 @@ import { APP_VERSION } from './core/version.js';
               return; // Block, show disabled overlay
             }
             AuthOverlay.hide();
-            if (event === 'SIGNED_IN') {
-              UIComponents.showToast('Signed in', 'success', { title: 'Auth' });
+
+            // FIX: Show toast for cross-tab login with different user too
+            const shouldShowSignInToast = isSignedInEvent && !isSameUser && (userInitiatedSignIn || isUserSwitch);
+            if (shouldShowSignInToast && canShowToast('auth-signed-in')) {
+              const toastMsg = isUserSwitch ? 'Switched user' : 'Signed in';
+              UIComponents.showToast(toastMsg, 'success', { title: 'Auth' });
             }
+
             if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') {
               SettingsOverlay.handleAuthChange(event);
             }
             if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') {
               AccountOverlay.handleAuthChange(event);
             }
+            lastAuthUserId = user && user.id ? String(user.id) : null;
             renderSidebarBrandMarks();
+            if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
+              AccountSwitcher.refresh();
+            }
             showReadyOnce();
             return;
           }
@@ -2633,7 +2859,12 @@ import { APP_VERSION } from './core/version.js';
             AuthOverlay.setPhase('form', { onRetry: bootstrapAuthGate });
             AuthOverlay.show();
           }
-          if (event === 'SIGNED_OUT') {
+          try {
+            SupabaseClient.resetAccountBundleCache && SupabaseClient.resetAccountBundleCache('SIGNED_OUT');
+          } catch {
+            // ignore
+          }
+          if (isSignedOutEvent && userInitiatedSignOut && canShowToast('auth-signed-out')) {
             UIComponents.showToast('Signed out', 'info', { title: 'Auth' });
           }
           if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') {
@@ -2642,7 +2873,11 @@ import { APP_VERSION } from './core/version.js';
           if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') {
             AccountOverlay.handleAuthChange(event);
           }
+          lastAuthUserId = null;
           renderSidebarBrandMarks();
+          if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
+            AccountSwitcher.refresh();
+          }
         });
       }
 

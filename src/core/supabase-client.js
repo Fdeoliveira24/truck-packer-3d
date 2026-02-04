@@ -32,6 +32,9 @@ let _authInvalidatedAt = 0;
 let _signOutPromise = null; // single-flight guard for signOut
 let _getUserPromise = null;
 let _getSessionPromise = null;
+let _sessionPromise = null;
+let _cachedSession = null;
+let _cachedAt = 0;
 let _authCooldownUntil = 0;
 let _authGetSession = null;
 let _authGetUser = null;
@@ -74,6 +77,8 @@ let _accountCache = { key: null, ts: 0, data: null };
 const ACCOUNT_TTL_MS = 60000;
 const ACCOUNT_FETCH_TIMEOUT_MS = 8000;
 const ACCOUNT_SESSION_TIMEOUT_MS = 2000;
+const SESSION_CACHE_MS = 1500;
+const GETSESSION_TIMEOUT_MS = 6000;
 
 /**
  * Generate a unique key for caching based on current session.
@@ -131,6 +136,13 @@ function initTabId() {
 
 // Initialize per-tab id as early as possible (before auth init / logs).
 initTabId();
+try {
+  if (typeof console !== 'undefined' && console && typeof console.info === 'function') {
+    console.info('[SupabaseClient] Tab id', { tab: getTabId() });
+  }
+} catch {
+  // ignore
+}
 
 /**
  * Get current auth epoch (for external use in UI guards).
@@ -296,6 +308,8 @@ function handleCrossTabLogout(payload = {}) {
 
     // Clear local session immediately
     _session = null;
+    _cachedSession = null;
+    _cachedAt = 0;
     updateAuthState({ status: 'signed_out', session: null, user: null });
 
     // Clear storage
@@ -349,6 +363,26 @@ function debugLog(level, message, ...args) {
     return;
   }
   logger(message, meta);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function withTimeoutReject(promise, ms, label = 'timeout') {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(label)), ms);
+    promise.then(
+      value => {
+        clearTimeout(t);
+        resolve(value);
+      },
+      err => {
+        clearTimeout(t);
+        reject(err);
+      }
+    );
+  });
 }
 
 function requireClient() {
@@ -412,6 +446,14 @@ function consumeAuthIntent(type, windowMs = 10000) {
   }
   if (!fresh) _authIntent = { type: null, ts: 0 };
   return false;
+}
+
+function isAuthIntentFresh(type, windowMs = 10000) {
+  const now = Date.now();
+  if (!_authIntent || !_authIntent.type) return false;
+  const matches = _authIntent.type === String(type || '');
+  const fresh = now - _authIntent.ts <= windowMs;
+  return matches && fresh;
 }
 
 function updateAuthState(update = {}) {
@@ -546,6 +588,48 @@ function getUserRawSingleFlight() {
   return p;
 }
 
+export async function getSessionSingleFlightSafe(client, { force = false } = {}) {
+  const now = Date.now();
+  const c = client || requireClient();
+
+  // 1) quick cache for UI
+  if (!force && _cachedSession && now - _cachedAt < SESSION_CACHE_MS) {
+    return _cachedSession;
+  }
+
+  // 2) if tab is hidden, avoid thundering herd
+  let hidden = false;
+  try {
+    hidden = typeof document !== 'undefined' && document.hidden === true;
+  } catch {
+    hidden = false;
+  }
+  if (hidden && _cachedSession && !force) {
+    return _cachedSession;
+  }
+
+  // 3) true single-flight
+  if (_sessionPromise) return _sessionPromise;
+
+  _sessionPromise = (async () => {
+    try {
+      const result = await withTimeoutReject(
+        c.auth.getSession(),
+        GETSESSION_TIMEOUT_MS,
+        'getSession timeout'
+      );
+      const session = (result && result.data && result.data.session) || null;
+      _cachedSession = session;
+      _cachedAt = Date.now();
+      return session;
+    } finally {
+      _sessionPromise = null;
+    }
+  })();
+
+  return _sessionPromise;
+}
+
 function getSessionSingleFlight() {
   if (_getSessionPromise) return _getSessionPromise;
   if (_signOutPromise) return Promise.resolve({ session: null, user: null });
@@ -553,24 +637,11 @@ function getSessionSingleFlight() {
     return Promise.resolve({ session: null, user: null });
   }
 
-  try {
-    if (typeof document !== 'undefined' && document.hidden) {
-      if (debugEnabled()) debugLog('warn', '[SupabaseClient] getSession skipped (tab hidden)');
-      const cachedSession = getSession();
-      const cachedUser = getUser();
-      return Promise.resolve({ session: cachedSession, user: cachedUser });
-    }
-  } catch {
-    // ignore
-  }
-
-  requireClient();
+  const client = requireClient();
 
   const p = (async () => {
     try {
-      const res = await getSessionRawSingleFlight();
-      if (res && res.error) throw res.error;
-      const session = res && res.data && res.data.session ? res.data.session : null;
+      const session = await getSessionSingleFlightSafe(client);
       const user = session && session.user ? session.user : null;
       updateAuthState({ status: session ? 'signed_in' : 'signed_out', session, user });
       return { session, user };
@@ -589,6 +660,30 @@ function getSessionSingleFlight() {
 
   _getSessionPromise = p;
   return p;
+}
+
+export async function validateSessionSoft(client) {
+  const c = client || requireClient();
+  // attempt 1
+  let session = await getSessionSingleFlightSafe(c);
+  if (session) return { ok: true, session };
+
+  // hidden tab? do not escalate
+  try {
+    if (typeof document !== 'undefined' && document.hidden) {
+      return { ok: false, session: null, reason: 'hidden-tab' };
+    }
+  } catch {
+    // ignore
+  }
+
+  // retry once (covers brief stalls / token refresh timing)
+  await sleep(350);
+  session = await getSessionSingleFlightSafe(c, { force: true });
+  if (session) return { ok: true, session };
+
+  // still null. do NOT sign out here.
+  return { ok: false, session: null, reason: 'no-session-after-retry' };
 }
 
 function getUserSingleFlight() {
@@ -641,6 +736,8 @@ function forceLocalSignedOut({ reason = 'auth-invalid', status = null } = {}) {
   } catch {
     // ignore
   }
+  _cachedSession = null;
+  _cachedAt = 0;
   updateAuthState({ status: 'signed_out', session: null, user: null });
 
   // Best-effort local sign out (does not require network)
@@ -694,28 +791,33 @@ async function validateSessionOrSignOut({ source = 'unknown', silent = true } = 
     // ignore
   }
 
-  // Do not rely only on the wrapper’s `_session`.
-  // supabase-js may have a stored session even if `_session` is null.
+  // Soft session validation: retry once and do not sign out on first null.
+  let soft = null;
   try {
-    const sData = await getSessionSingleFlight();
-    if (sData && sData.session) _session = sData.session;
+    soft = await validateSessionSoft(client);
   } catch {
-    // ignore
+    soft = { ok: false, session: null, reason: 'error' };
   }
 
-  // If there is still no session, nothing to validate.
-  if (!_session) return true;
+  if (!soft || !soft.ok) {
+    return true;
+  }
+
+  if (soft && soft.session) {
+    _session = soft.session;
+    updateAuthState({
+      status: 'signed_in',
+      session: soft.session,
+      user: soft.session && soft.session.user ? soft.session.user : null,
+    });
+  } else {
+    return true;
+  }
 
   try {
     const u = await getUserSingleFlight();
     if (!u || !u.id) {
-      try {
-        if (typeof document !== 'undefined' && document.hidden) return true;
-      } catch {
-        // ignore
-      }
-      forceLocalSignedOut({ reason: `no-user:${source}`, status: 401 });
-      return false;
+      return true;
     }
 
     return true;
@@ -1151,6 +1253,7 @@ export async function signOut(options = {}) {
   // Default to global scope unless explicitly forced local
   const scope = global ? 'global' : 'local';
   const skipBroadcast = Boolean(options.skipBroadcast);
+  const userInitiated = Boolean(options.userInitiated) || isAuthIntentFresh('signOut', 10000);
 
   const allowOffline = options.allowOffline !== false; // default true
 
@@ -1168,6 +1271,8 @@ export async function signOut(options = {}) {
     } catch (_) {
       void 0;
     }
+    _cachedSession = null;
+    _cachedAt = 0;
     updateAuthState({ status: 'signed_out', session: null, user: null });
 
     // Clear any known supabase storage key (defensive)
@@ -1218,7 +1323,7 @@ export async function signOut(options = {}) {
 
       finalizeLocal(true);
       // Broadcast logout to other tabs after local cleanup (even if offline)
-      if (!skipBroadcast) {
+      if (!skipBroadcast && userInitiated) {
         broadcastLogout();
       }
       return { ok: true, offline: true };
@@ -1236,7 +1341,7 @@ export async function signOut(options = {}) {
     finalizeLocal(false);
 
     // Broadcast logout to other tabs after local cleanup
-    if (!skipBroadcast) {
+    if (!skipBroadcast && userInitiated) {
       broadcastLogout();
     }
 
@@ -1962,8 +2067,10 @@ try {
     getTabId,
     awaitAuthReady,
     getSessionSingleFlight,
+    getSessionSingleFlightSafe,
     getUserSingleFlight,
     getAccountBundleSingleFlight,
+    validateSessionSoft,
     resetAccountBundleCache,
     invalidateAccountCache,
     debugAuthSnapshot,

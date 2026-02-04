@@ -382,6 +382,8 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       emailInput.type = 'email';
       emailInput.autocomplete = 'email';
       emailInput.placeholder = 'name@example.com';
+      // Temporary test helper: prefill email for quicker testing
+      emailInput.value = 'test2@test.com';
       emailInput.setAttribute('data-auth-email', '1');
       body.appendChild(emailInput);
 
@@ -396,6 +398,8 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       passInput.type = 'password';
       passInput.autocomplete = mode === 'signup' ? 'new-password' : 'current-password';
       passInput.placeholder = 'Password';
+      // Temporary test helper: prefill password for quicker testing
+      passInput.value = 'test2@test.com';
       passInput.setAttribute('data-auth-pass', '1');
       body.appendChild(passInput);
 
@@ -486,21 +490,22 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
           const data = await SupabaseClient.signIn(email, password);
 
           // Optional post-sign-in safety check: only block if the auth user is actually banned
+          // FIX: Use wrapper instead of direct client.auth.getUser() to avoid bypassing single-flight protection
           try {
-            const client =
-              SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
-
-            if (client && client.auth && typeof client.auth.getUser === 'function') {
-              const { data: userData } = await client.auth.getUser();
-              const fullUser = userData && userData.user ? userData.user : null;
-              const bannedUntil = fullUser && fullUser.banned_until ? String(fullUser.banned_until) : '';
+            let fullUser = null;
+            if (SupabaseClient && typeof SupabaseClient.getUserSingleFlight === 'function') {
+              fullUser = await SupabaseClient.getUserSingleFlight();
+            }
+            if (fullUser) {
+              const bannedUntil = fullUser.banned_until ? String(fullUser.banned_until) : '';
 
               if (bannedUntil) {
                 const ts = new Date(bannedUntil).getTime();
                 if (!Number.isNaN(ts) && ts > Date.now()) {
                   setInlineError('Account is no longer active. Please contact support if you think this is a mistake.');
                   try {
-                    await client.auth.signOut({ scope: 'local' });
+                    // FIX: Use wrapper instead of direct client.auth.signOut()
+                    await SupabaseClient.signOut({ scope: 'local' });
                   } catch {
                     // ignore
                   }

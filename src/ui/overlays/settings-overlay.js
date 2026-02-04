@@ -71,11 +71,15 @@ export function createSettingsOverlay({
 
   // Organization editing state
   let orgData = null;
-  let membershipData = null;  // NEW: Store membership separately
+  let membershipData = null;  // Store membership separately
   let isEditingOrg = false;
   let isLoadingOrg = false;
-  let isLoadingMembership = false;  // NEW: Track membership loading
+  let isLoadingMembership = false;  // Track membership loading
   let isSavingOrg = false;
+
+  // Account bundle loading state (single request for all account data)
+  let isLoadingAccountBundle = false;
+  let accountBundleRequestId = 0; // "Last request wins" guard
 
   // Static content for Updates and Roadmap (embedded to avoid external dependencies)
   const updatesData = [
@@ -173,14 +177,75 @@ export function createSettingsOverlay({
     return getUserAvatarView({ user, sessionUser, profile });
   }
 
+  /**
+   * Load all account data (profile, membership, org) in a single request.
+   * Uses the epoch-validated single-flight bundle to prevent stale data.
+   * @param {Object} options
+   * @param {boolean} options.force - Force refresh even if cached
+   * @returns {Promise<Object|null>} The account bundle or null
+   */
+  async function loadAccountBundle({ force = false } = {}) {
+    if (isLoadingAccountBundle) return null;
+
+    // Capture request ID for "last request wins" guard
+    const thisRequestId = ++accountBundleRequestId;
+    isLoadingAccountBundle = true;
+
+    try {
+      const bundle = await SupabaseClient.getAccountBundleSingleFlight({ force });
+
+      // Check if this is still the latest request
+      if (thisRequestId !== accountBundleRequestId) {
+        // A newer request was made, discard this result
+        return null;
+      }
+
+      // Check if bundle was canceled due to auth change
+      if (bundle && bundle.canceled) {
+        isLoadingAccountBundle = false;
+        return null;
+      }
+
+      // Populate all module-level caches from the bundle
+      if (bundle) {
+        profileData = bundle.profile || null;
+        membershipData = bundle.membership || null;
+        orgData = bundle.activeOrg || null;
+
+        // If we have membership but no org data yet, and membership has org_id, fetch org
+        if (membershipData && membershipData.organization_id && !orgData) {
+          // The bundle doesn't include full org details, load it separately
+          try {
+            orgData = await SupabaseClient.getOrganization(membershipData.organization_id);
+          } catch {
+            orgData = null;
+          }
+        }
+      }
+
+      isLoadingAccountBundle = false;
+      isLoadingProfile = false;
+      isLoadingMembership = false;
+      isLoadingOrg = false;
+
+      return bundle;
+    } catch (err) {
+      console.error('[SettingsOverlay] Failed to load account bundle:', err);
+      isLoadingAccountBundle = false;
+      return null;
+    }
+  }
+
   async function loadProfile() {
-    if (isLoadingProfile) return;
+    // Use the bundle loader instead of individual profile fetch
+    // This ensures epoch validation and prevents stale data
+    if (isLoadingProfile || isLoadingAccountBundle) return profileData;
+
     isLoadingProfile = true;
     try {
-      const profile = await SupabaseClient.getProfile();
-      profileData = profile;
+      const bundle = await loadAccountBundle();
       isLoadingProfile = false;
-      return profile;
+      return profileData; // Return from module-level cache
     } catch (err) {
       isLoadingProfile = false;
       console.error('Failed to load profile:', err);
@@ -196,6 +261,10 @@ export function createSettingsOverlay({
       profileData = updated;
       isSavingProfile = false;
       isEditingProfile = false;
+      // Invalidate account cache so next fetch gets fresh data
+      if (SupabaseClient.invalidateAccountCache) {
+        SupabaseClient.invalidateAccountCache();
+      }
       UIComponents.showToast('Profile saved', 'success');
       render();
       return updated;
@@ -235,6 +304,10 @@ export function createSettingsOverlay({
       orgData = updated;
       isSavingOrg = false;
       isEditingOrg = false;
+      // Invalidate account cache so next fetch gets fresh data
+      if (SupabaseClient.invalidateAccountCache) {
+        SupabaseClient.invalidateAccountCache();
+      }
       UIComponents.showToast('Organization updated', 'success');
       render();
       return updated;
@@ -1052,9 +1125,10 @@ export function createSettingsOverlay({
     } else if (settingsActiveTab === 'account') {
       const userView = getCurrentUserView(profileData);
 
-      // Load profile if not already loaded
-      if (!profileData && !isLoadingProfile && userView.isAuthed) {
-        loadProfile()
+      // Load all account data via bundle if profile not already loaded
+      // This uses the epoch-validated single-flight approach to prevent stale data
+      if (!profileData && !isLoadingProfile && !isLoadingAccountBundle && userView.isAuthed) {
+        loadAccountBundle()
           .then(() => render())
           .catch(() => { });
       }
@@ -1510,24 +1584,14 @@ export function createSettingsOverlay({
     } else if (settingsActiveTab === 'org-general') {
       const userView = getCurrentUserView(profileData);
 
-      // Load membership first if not already loaded
-      if (!membershipData && !isLoadingMembership && userView.isAuthed) {
-        isLoadingMembership = true;
-        SupabaseClient.getMyMembership()
-          .then(mem => {
-            membershipData = mem;
-            isLoadingMembership = false;
-            if (mem && mem.organization_id) {
-              // Now load the organization
-              return loadOrganization(mem.organization_id);
-            }
-            return null;
-          })
+      // Load all account data via bundle if not already loaded
+      // This uses the epoch-validated single-flight approach to prevent stale data
+      if (!membershipData && !orgData && !isLoadingAccountBundle && !isLoadingMembership && userView.isAuthed) {
+        loadAccountBundle()
           .then(() => {
             render();
           })
           .catch(() => {
-            isLoadingMembership = false;
             render();
           });
       }
@@ -1899,8 +1963,31 @@ export function createSettingsOverlay({
     if (isOpen()) render();
   }
 
+  /**
+   * Clear all cached user-specific data.
+   * MUST be called when auth state changes to prevent stale data from previous user.
+   */
+  function clearCachedUserData() {
+    // FIX: Clear profile cache to prevent showing old user's data after user switch
+    profileData = null;
+    isEditingProfile = false;
+    isLoadingProfile = false;
+    isSavingProfile = false;
+
+    // FIX: Clear organization cache to prevent showing old user's org data
+    orgData = null;
+    membershipData = null;
+    isEditingOrg = false;
+    isLoadingOrg = false;
+    isLoadingMembership = false;
+    isSavingOrg = false;
+  }
+
   function handleAuthChange(_event) {
     try {
+      // FIX: Always clear cached data on ANY auth change to prevent stale data
+      // This ensures when a different user logs in (even via cross-tab), we don't show old user's data
+      clearCachedUserData();
       refreshAccountUI();
     } catch {
       // ignore

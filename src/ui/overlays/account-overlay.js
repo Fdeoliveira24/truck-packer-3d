@@ -15,14 +15,27 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
   let lastFocusedEl = null;
   let warnedMissingModalRoot = false;
 
+  // Epoch guard for race condition protection
+  let renderRequestId = 0;
+
   async function getCurrentUserView() {
     let user = null;
     let profile = null;
 
     try {
-      user = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
-      if (user && SupabaseClient && typeof SupabaseClient.getProfile === 'function') {
-        profile = await SupabaseClient.getProfile(user.id);
+      // Use the single-flight bundle approach for consistent data
+      if (SupabaseClient && typeof SupabaseClient.getAccountBundleSingleFlight === 'function') {
+        const bundle = await SupabaseClient.getAccountBundleSingleFlight();
+        if (bundle && !bundle.canceled) {
+          user = bundle.user || null;
+          profile = bundle.profile || null;
+        }
+      } else {
+        // Fallback for older code paths
+        user = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
+        if (user && SupabaseClient && typeof SupabaseClient.getProfile === 'function') {
+          profile = await SupabaseClient.getProfile(user.id);
+        }
       }
     } catch {
       profile = null;
@@ -298,7 +311,13 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
   async function render() {
     if (!accountModal) return;
 
+    // Epoch guard: capture request ID before async work
+    const thisRequestId = ++renderRequestId;
+
     const userView = await getCurrentUserView();
+
+    // Stale check: if another render started, discard this result
+    if (thisRequestId !== renderRequestId) return;
 
     accountModal.innerHTML = '';
 
@@ -576,6 +595,9 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
   }
 
   function handleAuthChange() {
+    // Bump render request ID to invalidate any in-flight renders with stale data
+    renderRequestId++;
+
     if (isOpen()) {
       void render();
     }

@@ -1,0 +1,3 @@
+src/core/supabase-client.js:387:    _authGetSession || (client.auth && client.auth.getSession ? client.auth.getSession.bind(client.auth) : null);
+src/core/supabase-client.js:710:          _authGetSession = _client.auth.getSession ? _client.auth.getSession.bind(_client.auth) : null;
+src/core/supabase-client.js:716:          if (_authGetSession) _client.auth.getSession = () => getSessionRawSingleFlight();

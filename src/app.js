@@ -2345,6 +2345,7 @@ import { APP_VERSION } from './core/version.js';
     // SECTION: APP INIT (ORDER CRITICAL)
     // ============================================================================
     let authListenerInstalled = false;
+    let authUiBound = false;
     let lastAuthUserId = null;
     const toastDeduper = new Map();
     let authRehydratePromise = null;
@@ -2493,6 +2494,79 @@ import { APP_VERSION } from './core/version.js';
       });
 
       return authRehydratePromise;
+    }
+
+    async function renderAuthState({
+      event,
+      user,
+      userInitiatedSignIn = false,
+      userInitiatedSignOut = false,
+      isSameUser = false,
+      isUserSwitch = false,
+      onRetry = null,
+    } = {}) {
+      const isSignedInEvent = event === 'SIGNED_IN';
+      const isSignedOutEvent = event === 'SIGNED_OUT';
+      const isInitialSessionEvent = event === 'INITIAL_SESSION';
+      const treatAsSignedOut = isSignedOutEvent || (isInitialSessionEvent && !user);
+
+      if (user) {
+        const canProceed = await checkProfileStatus();
+        if (!canProceed) return;
+        AuthOverlay.hide();
+
+        const shouldShowSignInToast = isSignedInEvent && !isSameUser && (userInitiatedSignIn || isUserSwitch);
+        if (shouldShowSignInToast && canShowToast('auth-signed-in')) {
+          const toastMsg = isUserSwitch ? 'Switched user' : 'Signed in';
+          UIComponents.showToast(toastMsg, 'success', { title: 'Auth' });
+        }
+
+        if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') {
+          SettingsOverlay.handleAuthChange(event);
+        }
+        if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') {
+          AccountOverlay.handleAuthChange(event);
+        }
+        lastAuthUserId = user && user.id ? String(user.id) : null;
+        renderSidebarBrandMarks();
+        if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
+          AccountSwitcher.refresh();
+        }
+        showReadyOnce();
+        return;
+      }
+
+      if (authBlockState) {
+        AuthOverlay.showAccountDisabled(authBlockState.message);
+      } else if (treatAsSignedOut || userInitiatedSignOut) {
+        AuthOverlay.setPhase('form', { onRetry: onRetry || bootstrapAuthGate });
+        AuthOverlay.show();
+      } else {
+        AuthOverlay.setPhase('checking', { onRetry: onRetry || bootstrapAuthGate });
+        AuthOverlay.show();
+      }
+
+      try {
+        SupabaseClient.resetAccountBundleCache && SupabaseClient.resetAccountBundleCache('SIGNED_OUT');
+      } catch {
+        // ignore
+      }
+
+      if (isSignedOutEvent && userInitiatedSignOut && canShowToast('auth-signed-out')) {
+        UIComponents.showToast('Signed out', 'info', { title: 'Auth' });
+      }
+
+      if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') {
+        SettingsOverlay.handleAuthChange(event);
+      }
+      if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') {
+        AccountOverlay.handleAuthChange(event);
+      }
+      lastAuthUserId = null;
+      renderSidebarBrandMarks();
+      if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
+        AccountSwitcher.refresh();
+      }
     }
 
     /**
@@ -2750,18 +2824,7 @@ import { APP_VERSION } from './core/version.js';
           const userIntentConsumed = isSignedInEvent && SupabaseClient.consumeAuthIntent && SupabaseClient.consumeAuthIntent('signIn', 5000);
           const isCrossTabLogin = isSignedInEvent && newUserId && !userIntentConsumed;
 
-          if (isUserSwitch && isCrossTabLogin) {
-            try {
-              // Guard: force a clean reload when another tab switches users.
-              if (window && window.sessionStorage) {
-                window.sessionStorage.setItem(authReloadKey, JSON.stringify({ ts: Date.now(), reason: 'user-switch' }));
-              }
-            } catch {
-              // ignore
-            }
-            window.location.reload();
-            return;
-          }
+          // Cross-tab user switches are handled via auth events (no page reload).
 
           // If this is a user switch (different user signed in), clear stale state immediately
           if (isUserSwitch) {
@@ -2823,62 +2886,45 @@ import { APP_VERSION } from './core/version.js';
             }
           }
 
-          if (user) {
-            // Check profile status when user signs in
-            const canProceed = await checkProfileStatus();
-            if (!canProceed) {
-              return; // Block, show disabled overlay
-            }
-            AuthOverlay.hide();
-
-            // FIX: Show toast for cross-tab login with different user too
-            const shouldShowSignInToast = isSignedInEvent && !isSameUser && (userInitiatedSignIn || isUserSwitch);
-            if (shouldShowSignInToast && canShowToast('auth-signed-in')) {
-              const toastMsg = isUserSwitch ? 'Switched user' : 'Signed in';
-              UIComponents.showToast(toastMsg, 'success', { title: 'Auth' });
-            }
-
-            if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') {
-              SettingsOverlay.handleAuthChange(event);
-            }
-            if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') {
-              AccountOverlay.handleAuthChange(event);
-            }
-            lastAuthUserId = user && user.id ? String(user.id) : null;
-            renderSidebarBrandMarks();
-            if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
-              AccountSwitcher.refresh();
-            }
-            showReadyOnce();
-            return;
-          }
-
-          if (authBlockState) {
-            AuthOverlay.showAccountDisabled(authBlockState.message);
-          } else {
-            AuthOverlay.setPhase('form', { onRetry: bootstrapAuthGate });
-            AuthOverlay.show();
-          }
-          try {
-            SupabaseClient.resetAccountBundleCache && SupabaseClient.resetAccountBundleCache('SIGNED_OUT');
-          } catch {
-            // ignore
-          }
-          if (isSignedOutEvent && userInitiatedSignOut && canShowToast('auth-signed-out')) {
-            UIComponents.showToast('Signed out', 'info', { title: 'Auth' });
-          }
-          if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') {
-            SettingsOverlay.handleAuthChange(event);
-          }
-          if (AccountOverlay && typeof AccountOverlay.handleAuthChange === 'function') {
-            AccountOverlay.handleAuthChange(event);
-          }
-          lastAuthUserId = null;
-          renderSidebarBrandMarks();
-          if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
-            AccountSwitcher.refresh();
-          }
+          await renderAuthState({
+            event,
+            user,
+            userInitiatedSignIn,
+            userInitiatedSignOut,
+            isSameUser,
+            isUserSwitch,
+            onRetry: bootstrapAuthGate,
+          });
         });
+      }
+
+      if (!authUiBound) {
+        authUiBound = true;
+        try {
+          document.addEventListener('visibilitychange', async () => {
+            if (document.hidden) return;
+            if (!SupabaseClient.getSessionSingleFlightSafe) return;
+            try {
+              const s = await SupabaseClient.getSessionSingleFlightSafe();
+              if (s) {
+                await rehydrateAuthState({ reason: 'visibility', forceBundle: true });
+                await renderAuthState({
+                  event: 'VISIBLE',
+                  user: s && s.user ? s.user : null,
+                  userInitiatedSignIn: false,
+                  userInitiatedSignOut: false,
+                  isSameUser: true,
+                  isUserSwitch: false,
+                  onRetry: bootstrapAuthGate,
+                });
+              }
+            } catch {
+              // ignore
+            }
+          });
+        } catch {
+          // ignore
+        }
       }
 
       AppShell.init();

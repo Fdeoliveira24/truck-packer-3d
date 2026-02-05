@@ -625,24 +625,22 @@ export function createEditorScreen({
   InteractionManager,
 }) {
   const EditorUI = (() => {
-    const shellEl = /** @type {HTMLElement} */ (document.querySelector('.editor-shell'));
-    const leftEl = /** @type {HTMLElement} */ (document.getElementById('editor-left'));
-    const rightEl = /** @type {HTMLElement} */ (document.getElementById('editor-right'));
-    const btnLeft = /** @type {HTMLButtonElement} */ (document.getElementById('btn-editor-left'));
-    const btnRight = /** @type {HTMLButtonElement} */ (document.getElementById('btn-editor-right'));
-    const btnLeftClose = /** @type {HTMLButtonElement} */ (document.getElementById('btn-left-close'));
-    const btnRightClose = /** @type {HTMLButtonElement} */ (document.getElementById('btn-right-close'));
-    const viewportEl = /** @type {HTMLElement} */ (document.getElementById('viewport'));
-    const inspectorEl = /** @type {HTMLElement} */ (document.getElementById('inspector-body'));
-    const caseSearchEl = /** @type {HTMLInputElement} */ (document.getElementById('editor-case-search'));
-    const caseFilterToggleEl = /** @type {HTMLButtonElement} */ (
-      document.getElementById('editor-case-filters-toggle')
-    );
-    const caseChipsEl = /** @type {HTMLElement} */ (document.getElementById('editor-case-chips'));
-    const caseListEl = /** @type {HTMLElement} */ (document.getElementById('editor-case-list'));
-    const btnAutopack = /** @type {HTMLButtonElement} */ (document.getElementById('btn-autopack'));
-    const btnPng = /** @type {HTMLButtonElement} */ (document.getElementById('btn-screenshot'));
-    const btnPdf = /** @type {HTMLButtonElement} */ (document.getElementById('btn-pdf'));
+    const shellEl = document.querySelector('.editor-shell');
+    const leftEl = document.getElementById('editor-left');
+    const rightEl = document.getElementById('editor-right');
+    const btnLeft = document.getElementById('btn-editor-left');
+    const btnRight = document.getElementById('btn-editor-right');
+    const btnLeftClose = document.getElementById('btn-left-close');
+    const btnRightClose = document.getElementById('btn-right-close');
+    const viewportEl = document.getElementById('viewport');
+    const inspectorEl = document.getElementById('inspector-body');
+    const caseSearchEl = document.getElementById('editor-case-search');
+    const caseFilterToggleEl = document.getElementById('editor-case-filters-toggle');
+    const caseChipsEl = document.getElementById('editor-case-chips');
+    const caseListEl = document.getElementById('editor-case-list');
+    const btnAutopack = document.getElementById('btn-autopack');
+    const btnPng = document.getElementById('btn-screenshot');
+    const btnPdf = document.getElementById('btn-pdf');
 
     let initialized = false;
     const supportsWebGL = Utils.hasWebGL();

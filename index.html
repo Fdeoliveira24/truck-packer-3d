@@ -147,7 +147,7 @@
           window.THREE = { ...ThreeModule, OrbitControls: Orbit.OrbitControls };
           window.__tp3dVendorOk && window.__tp3dVendorOk('three');
           return true;
-        } catch (err) {
+        } catch (_err) {
           try {
             const ThreeModule = await import(fallbackBase);
             const Orbit = await import(`${fallbackBase}/examples/jsm/controls/OrbitControls.js`);
@@ -439,94 +439,94 @@
                       <input id="packs-select-all" type="checkbox" aria-label="Select all visible packs" />
                     </th>
                     <th scope="col" data-sort="title">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Title</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="cases">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Cases</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="length">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Length</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="width">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Width</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="height">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Height</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="mode">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">SHAPE</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="packed">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Packed</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="volume">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Volume</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="weight">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Weight</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="edited">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Edited</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th class="col-actions" scope="col"></th>
                   </tr>
@@ -635,76 +635,76 @@
                       <input id="cases-select-all" type="checkbox" aria-label="Select all visible cases" />
                     </th>
                     <th scope="col" data-sort="name">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Name</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="manufacturer">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Manufacturer</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="length">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Length</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="width">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Width</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="height">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Height</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="volume">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Volume</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="weight">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Weight</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col" data-sort="category">
-                      <span class="th-sort" role="button" tabindex="0">
+                      <button class="th-sort" type="button">
                         <span class="th-label">Category</span>
                         <span class="th-chevrons" aria-hidden="true">
                           <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
                           <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
                       </span>
+                      </button>
                     </th>
                     <th scope="col">Flip</th>
                     <th class="col-actions" scope="col"></th>
@@ -738,24 +738,37 @@
                 </div>
                 <div class="panel-body">
                   <div class="field">
-                    <div style="position: relative">
-                      <i
-                        class="fa-solid fa-magnifying-glass"
-                        style="
-                          position: absolute;
-                          left: 10px;
-                          top: 50%;
-                          transform: translateY(-50%);
-                          color: var(--text-muted);
-                        "
-                      ></i>
-                      <input
-                        class="input"
-                        id="editor-case-search"
-                        type="text"
-                        placeholder="Search cases..."
-                        style="padding-left: 30px"
-                      />
+                    <div class="row space-between">
+                      <div style="position: relative; flex: 1">
+                        <i
+                          class="fa-solid fa-magnifying-glass"
+                          style="
+                            position: absolute;
+                            left: 10px;
+                            top: 50%;
+                            transform: translateY(-50%);
+                            color: var(--text-muted);
+                          "
+                        ></i>
+                        <input
+                          class="input"
+                          id="editor-case-search"
+                          type="text"
+                          placeholder="Search cases..."
+                          style="padding-left: 30px"
+                        />
+                      </div>
+                      <button
+                        class="btn"
+                        id="editor-case-filters-toggle"
+                        type="button"
+                        title="Toggle filters"
+                        aria-label="Toggle filters"
+                        aria-pressed="true"
+                      >
+                        <i class="fa-solid fa-filter"></i>
+                        Filter
+                      </button>
                     </div>
                   </div>
                   <div style="height: 12px"></div>

@@ -625,26 +625,31 @@ export function createEditorScreen({
   InteractionManager,
 }) {
   const EditorUI = (() => {
-    const shellEl = document.querySelector('.editor-shell');
-    const leftEl = document.getElementById('editor-left');
-    const rightEl = document.getElementById('editor-right');
-    const btnLeft = document.getElementById('btn-editor-left');
-    const btnRight = document.getElementById('btn-editor-right');
-    const btnLeftClose = document.getElementById('btn-left-close');
-    const btnRightClose = document.getElementById('btn-right-close');
-    const viewportEl = document.getElementById('viewport');
-    const inspectorEl = document.getElementById('inspector-body');
-    const caseSearchEl = document.getElementById('editor-case-search');
-    const caseChipsEl = document.getElementById('editor-case-chips');
-    const caseListEl = document.getElementById('editor-case-list');
-    const btnAutopack = document.getElementById('btn-autopack');
-    const btnPng = document.getElementById('btn-screenshot');
-    const btnPdf = document.getElementById('btn-pdf');
+    const shellEl = /** @type {HTMLElement} */ (document.querySelector('.editor-shell'));
+    const leftEl = /** @type {HTMLElement} */ (document.getElementById('editor-left'));
+    const rightEl = /** @type {HTMLElement} */ (document.getElementById('editor-right'));
+    const btnLeft = /** @type {HTMLButtonElement} */ (document.getElementById('btn-editor-left'));
+    const btnRight = /** @type {HTMLButtonElement} */ (document.getElementById('btn-editor-right'));
+    const btnLeftClose = /** @type {HTMLButtonElement} */ (document.getElementById('btn-left-close'));
+    const btnRightClose = /** @type {HTMLButtonElement} */ (document.getElementById('btn-right-close'));
+    const viewportEl = /** @type {HTMLElement} */ (document.getElementById('viewport'));
+    const inspectorEl = /** @type {HTMLElement} */ (document.getElementById('inspector-body'));
+    const caseSearchEl = /** @type {HTMLInputElement} */ (document.getElementById('editor-case-search'));
+    const caseFilterToggleEl = /** @type {HTMLButtonElement} */ (
+      document.getElementById('editor-case-filters-toggle')
+    );
+    const caseChipsEl = /** @type {HTMLElement} */ (document.getElementById('editor-case-chips'));
+    const caseListEl = /** @type {HTMLElement} */ (document.getElementById('editor-case-list'));
+    const btnAutopack = /** @type {HTMLButtonElement} */ (document.getElementById('btn-autopack'));
+    const btnPng = /** @type {HTMLButtonElement} */ (document.getElementById('btn-screenshot'));
+    const btnPdf = /** @type {HTMLButtonElement} */ (document.getElementById('btn-pdf'));
 
     let initialized = false;
     const supportsWebGL = Utils.hasWebGL();
     const browserCats = new Set();
     let activationRaf = null;
+    const caseFiltersStorageKey = 'tp3d.editor.caseBrowser.showFilters';
+    let showCaseFilters = true;
 
     function initEditorUI() {
       if (!supportsWebGL) {
@@ -656,6 +661,18 @@ export function createEditorScreen({
       }
 
       caseSearchEl.addEventListener('input', Utils.debounce(renderCaseBrowser, 250));
+      if (caseFilterToggleEl) {
+        try {
+          const stored = window.localStorage.getItem(caseFiltersStorageKey);
+          if (stored === '0') showCaseFilters = false;
+        } catch {
+          // ignore
+        }
+        setCaseFiltersVisible(showCaseFilters, false);
+        caseFilterToggleEl.addEventListener('click', () => {
+          setCaseFiltersVisible(!showCaseFilters, true);
+        });
+      }
       btnLeft.addEventListener('click', () => togglePanel('left'));
       btnRight.addEventListener('click', () => togglePanel('right'));
       btnLeftClose.addEventListener('click', () => setPanelVisible('left', false));
@@ -784,6 +801,7 @@ export function createEditorScreen({
           )
         );
       });
+      setCaseFiltersVisible(showCaseFilters, false);
 
       caseListEl.innerHTML = '';
       cases.forEach(c => {
@@ -828,6 +846,21 @@ export function createEditorScreen({
         card.appendChild(metaRow);
         caseListEl.appendChild(card);
       });
+    }
+
+    function setCaseFiltersVisible(nextVisible, persist) {
+      showCaseFilters = Boolean(nextVisible);
+      if (caseChipsEl) caseChipsEl.hidden = !showCaseFilters;
+      if (caseFilterToggleEl) {
+        caseFilterToggleEl.setAttribute('aria-pressed', showCaseFilters ? 'true' : 'false');
+      }
+      if (persist) {
+        try {
+          window.localStorage.setItem(caseFiltersStorageKey, showCaseFilters ? '1' : '0');
+        } catch {
+          // ignore
+        }
+      }
     }
 
     function makeBrowserChip(label, key, active, onClick, color) {

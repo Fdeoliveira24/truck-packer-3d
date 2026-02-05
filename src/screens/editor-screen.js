@@ -848,7 +848,10 @@ export function createEditorScreen({
 
     function setCaseFiltersVisible(nextVisible, persist) {
       showCaseFilters = Boolean(nextVisible);
-      if (caseChipsEl) caseChipsEl.hidden = !showCaseFilters;
+      if (caseChipsEl) {
+        caseChipsEl.hidden = !showCaseFilters;
+        caseChipsEl.style.display = showCaseFilters ? '' : 'none';
+      }
       if (caseFilterToggleEl) {
         caseFilterToggleEl.setAttribute('aria-pressed', showCaseFilters ? 'true' : 'false');
         caseFilterToggleEl.classList.toggle('btn-primary', showCaseFilters);

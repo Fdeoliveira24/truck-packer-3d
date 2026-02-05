@@ -647,7 +647,7 @@ export function createEditorScreen({
     const browserCats = new Set();
     let activationRaf = null;
     const caseFiltersStorageKey = 'tp3d.editor.caseBrowser.showFilters';
-    let showCaseFilters = true;
+    let showCaseFilters = false;
 
     function initEditorUI() {
       if (!supportsWebGL) {

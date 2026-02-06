@@ -528,6 +528,15 @@ function installAppEvents() {
   } catch {
     // ignore
   }
+
+  try {
+    window.addEventListener('tp3d:auth-error', ev => {
+      recordEvent('TP3D AUTH ERROR', 'auth', { detail: ev && ev.detail ? ev.detail : null });
+      recordRuntimeSnapshot('app-auth-error');
+    });
+  } catch {
+    // ignore
+  }
 }
 
 function installLongTaskObserver() {

@@ -187,6 +187,8 @@ export function createSettingsOverlay({
   let isLoadingOrg = false;
   let isLoadingMembership = false; // Track membership loading
   let isSavingOrg = false;
+  let lastKnownUserId = null;
+  let lastBundleRefreshAt = 0;
 
   // Account bundle loading state (single request for all account data)
   let isLoadingAccountBundle = false;
@@ -344,6 +346,17 @@ export function createSettingsOverlay({
       isLoadingAccountBundle = false;
       return null;
     }
+  }
+
+  function queueAccountBundleRefresh({ force = true, source = 'account-bundle-refresh' } = {}) {
+    if (isLoadingAccountBundle) return;
+    const now = Date.now();
+    if (now - lastBundleRefreshAt < 500) return;
+    lastBundleRefreshAt = now;
+    const actionId = _tabState.lastActionId;
+    loadAccountBundle({ force })
+      .then(() => renderIfFresh(actionId, source))
+      .catch(() => {});
   }
 
   async function loadProfile() {
@@ -2130,6 +2143,9 @@ export function createSettingsOverlay({
       setActiveTab(nextTab, { source: 'open', actionId: _tabState.lastActionId });
       debugSettingsModalSnapshot('open:reuse');
       debugTabSnapshot('open:reuse');
+      if (profileData || membershipData || orgData) {
+        queueAccountBundleRefresh({ force: true, source: 'open:reuse-refresh' });
+      }
       return;
     }
     if (settingsOverlay && !settingsOverlay.isConnected) {
@@ -2225,6 +2241,9 @@ export function createSettingsOverlay({
     setActiveTab(nextTab, { source: 'open', actionId: _tabState.lastActionId });
     debugSettingsModalSnapshot('open:created');
     debugTabSnapshot('open:created');
+    if (profileData || membershipData || orgData) {
+      queueAccountBundleRefresh({ force: true, source: 'open:created-refresh' });
+    }
 
     const focusTarget = /** @type {HTMLElement|null} */ (
       settingsModal.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
@@ -2264,12 +2283,24 @@ export function createSettingsOverlay({
     try {
       if (_event === 'SIGNED_OUT') {
         clearCachedUserData();
+        lastKnownUserId = null;
         return;
       }
-      // FIX: Always clear cached data on ANY auth change to prevent stale data
-      // This ensures when a different user logs in (even via cross-tab), we don't show old user's data
-      clearCachedUserData();
+      let currentUserId = null;
+      try {
+        const u = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
+        currentUserId = u && u.id ? String(u.id) : null;
+      } catch {
+        currentUserId = null;
+      }
+      if (currentUserId && lastKnownUserId && currentUserId !== lastKnownUserId) {
+        clearCachedUserData();
+      }
+      if (currentUserId) lastKnownUserId = currentUserId;
       refreshAccountUI();
+      if (isOpen() && (profileData || membershipData || orgData)) {
+        queueAccountBundleRefresh({ force: true, source: 'auth-change-refresh' });
+      }
     } catch {
       // ignore
     }

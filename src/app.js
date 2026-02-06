@@ -452,7 +452,7 @@ initTP3DDebugger();
       } catch {
         // ignore
       }
-      void rehydrateAuthState({ reason: 'settings-open' });
+      requestAuthRefresh('settings-open');
     }
 
     function _openAccountOverlay() {
@@ -467,7 +467,7 @@ initTP3DDebugger();
       } catch {
         // ignore
       }
-      void rehydrateAuthState({ reason: 'account-open' });
+      requestAuthRefresh('account-open');
     }
 
     function getSidebarAvatarView() {
@@ -2485,10 +2485,22 @@ initTP3DDebugger();
     let authListenerInstalled = false;
     let authUiBound = false;
     let lastAuthUserId = null;
+    let lastOrgChangeAt = 0;
+    let lastOrgIdNotified = null;
     let lastAuthRehydrateAt = 0;
     const AUTH_REHYDRATE_COOLDOWN_MS = 750;
+    const AUTH_REFRESH_DEBOUNCE_MS = 350;
     const toastDeduper = new Map();
     let authRehydratePromise = null;
+    let authRefreshTimer = null;
+    let authRefreshInFlight = null;
+    let authRefreshQueued = false;
+    const authRefreshReasons = new Set();
+    let authRefreshPending = {
+      force: false,
+      forceBundle: false,
+      sessionHint: null,
+    };
     // Used to prevent mixed-user UI when another tab signs in as a different user.
     const authReloadKey = 'tp3d:auth-user-switch-reload';
     // Latch used to temporarily hold a forced account-disabled message so
@@ -2531,6 +2543,149 @@ initTP3DDebugger();
       if (now - lastAuthRehydrateAt < AUTH_REHYDRATE_COOLDOWN_MS) return false;
       lastAuthRehydrateAt = now;
       return true;
+    }
+
+    function getOverlayOpen() {
+      try {
+        if (window.SettingsOverlay?.isOpen?.() === true) return true;
+      } catch {
+        // ignore
+      }
+      try {
+        if (window.AccountOverlay?.isOpen?.() === true) return true;
+      } catch {
+        // ignore
+      }
+      try {
+        if (window.SettingsOverlay?.state?.isOpen === true) return true;
+      } catch {
+        // ignore
+      }
+      try {
+        if (window.AccountOverlay?.state?.isOpen === true) return true;
+      } catch {
+        // ignore
+      }
+      try {
+        if (SettingsOverlay && typeof SettingsOverlay.isOpen === 'function') {
+          return Boolean(SettingsOverlay.isOpen());
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        if (AccountOverlay && typeof AccountOverlay.isOpen === 'function') {
+          return Boolean(AccountOverlay.isOpen());
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        return Boolean(document.querySelector('[data-tp3d-settings-modal="1"]'));
+      } catch {
+        return false;
+      }
+    }
+
+    function requestAuthRefresh(reason, opts = {}) {
+      if (reason) authRefreshReasons.add(String(reason));
+      if (opts && opts.force) authRefreshPending.force = true;
+      if (opts && opts.forceBundle) authRefreshPending.forceBundle = true;
+      if (opts && opts.sessionHint) {
+        authRefreshPending.sessionHint = opts.sessionHint;
+      }
+
+      let hidden = false;
+      try {
+        hidden = typeof document !== 'undefined' && document.hidden === true;
+      } catch {
+        hidden = false;
+      }
+      if (hidden) {
+        authRefreshQueued = true;
+        return;
+      }
+
+      if (authRefreshTimer) return;
+      authRefreshTimer = setTimeout(() => {
+        authRefreshTimer = null;
+        void runAuthRefresh();
+      }, AUTH_REFRESH_DEBOUNCE_MS);
+    }
+
+    async function runAuthRefresh() {
+      if (authRefreshInFlight) {
+        authRefreshQueued = true;
+        return authRefreshInFlight;
+      }
+
+      let hidden = false;
+      try {
+        hidden = typeof document !== 'undefined' && document.hidden === true;
+      } catch {
+        hidden = false;
+      }
+      if (hidden) {
+        authRefreshQueued = true;
+        return null;
+      }
+
+      authRefreshQueued = false;
+      const reasons = Array.from(authRefreshReasons);
+      authRefreshReasons.clear();
+      const pending = authRefreshPending;
+      authRefreshPending = {
+        force: false,
+        forceBundle: false,
+        sessionHint: null,
+      };
+
+      authRefreshInFlight = (async () => {
+        const authState =
+          SupabaseClient && typeof SupabaseClient.getAuthState === 'function' ? SupabaseClient.getAuthState() : null;
+        const sessionHint = pending.sessionHint || (authState && authState.session ? authState.session : null);
+        const status = authState && authState.status ? authState.status : 'unknown';
+
+        if (!sessionHint && status === 'signed_out') {
+          await renderAuthState({
+            event: 'SIGNED_OUT',
+            user: null,
+            userInitiatedSignIn: false,
+            userInitiatedSignOut: false,
+            isSameUser: false,
+            isUserSwitch: false,
+            onRetry: bootstrapAuthGate,
+          });
+          return null;
+        }
+
+        const overlayOpen = getOverlayOpen();
+        const reasonLabel = reasons.length ? reasons.join('|') : 'refresh';
+        const forceBundle = pending.forceBundle || (overlayOpen && reasons.includes('tab-visible'));
+
+        await rehydrateAuthState({
+          reason: reasonLabel,
+          force: pending.force,
+          forceBundle,
+          sessionHint,
+          skipCooldown: true,
+        });
+
+        return null;
+      })().finally(() => {
+        authRefreshInFlight = null;
+        if (authRefreshQueued) {
+          authRefreshQueued = false;
+          if (!authRefreshTimer) {
+            authRefreshTimer = setTimeout(() => {
+              authRefreshTimer = null;
+              void runAuthRefresh();
+            }, AUTH_REFRESH_DEBOUNCE_MS);
+          }
+        }
+      });
+
+      return authRefreshInFlight;
     }
 
     async function rehydrateAuthState({
@@ -2995,28 +3150,17 @@ initTP3DDebugger();
           // If this is a user switch (different user signed in), clear stale state immediately
           if (isUserSwitch) {
             lastAuthUserId = null; // Clear old user ID to prevent stale state leakage
-            try {
-              // Notify app that org context has changed (forces UI to re-fetch)
-              window.dispatchEvent(
-                new CustomEvent('tp3d:org-changed', { detail: { orgId: null, reason: 'user-switch' } })
-              );
-            } catch (_) {
-              // ignore
-            }
           }
 
           // Rehydrate auth state for sign-in/session refresh events.
           // FIX: Force rehydration for user switches to ensure fresh data
           const shouldForceBundle =
             isSignedInEvent || isTokenRefreshEvent || isInitialSessionEvent || isUserUpdatedEvent;
-          if (shouldForceBundle) {
-            await rehydrateAuthState({
-              reason: event,
-              force: isUserSwitch,
-              forceBundle: shouldForceBundle || isUserSwitch,
-              sessionHint: session || null,
-            });
-          }
+          requestAuthRefresh(event || 'auth', {
+            force: isUserSwitch,
+            forceBundle: shouldForceBundle || isUserSwitch,
+            sessionHint: session || null,
+          });
 
           // FIX: Get user from wrapper to ensure we have the latest data after rehydration
           const user =
@@ -3064,15 +3208,40 @@ initTP3DDebugger();
             }
           }
 
-          // 2) Notify org change for ALL auth changes (not just user switches)
-          // This ensures UI components always re-fetch on auth events
-          if (!isUserSwitch) {
-            // Already dispatched above for user switches
-            try {
-              window.dispatchEvent(new CustomEvent('tp3d:org-changed', { detail: { orgId: null } }));
-            } catch (_) {
-              // ignore
+          // 2) Notify org change only when org id changes or on sign-in/sign-out (deduped)
+          try {
+            const getOrgId = u => {
+              if (!u) return null;
+              if (u.currentOrgId) return String(u.currentOrgId);
+              const meta = u.user_metadata || u.userMetadata || null;
+              if (meta && meta.currentOrgId) return String(meta.currentOrgId);
+              if (meta && meta.orgId) return String(meta.orgId);
+              const appMeta = u.app_metadata || u.appMetadata || null;
+              if (appMeta && appMeta.currentOrgId) return String(appMeta.currentOrgId);
+              return null;
+            };
+
+            const orgId = getOrgId(user) || getOrgId(userFromSession);
+            const now = Date.now();
+            const isAuthEdge = isSignedInEvent || isSignedOutEvent;
+            const orgChanged = orgId && orgId !== lastOrgIdNotified;
+            const sameOrgRecently = orgId && orgId === lastOrgIdNotified && now - lastOrgChangeAt < 500;
+
+            if (isAuthEdge || orgChanged) {
+              if (!isAuthEdge && sameOrgRecently) {
+                // Skip duplicate org-changed bursts for the same org within 500ms
+              } else {
+                window.dispatchEvent(
+                  new CustomEvent('tp3d:org-changed', {
+                    detail: { orgId: orgId || null, reason: event || null },
+                  })
+                );
+                lastOrgIdNotified = orgId || null;
+                lastOrgChangeAt = now;
+              }
             }
+          } catch (_) {
+            // ignore
           }
 
           await renderAuthState({
@@ -3090,83 +3259,15 @@ initTP3DDebugger();
       if (!authUiBound) {
         authUiBound = true;
         try {
-          document.addEventListener('visibilitychange', async () => {
+          document.addEventListener('visibilitychange', () => {
             if (document.hidden) return;
-            if (!SupabaseClient.getSessionSingleFlightSafe) return;
-            try {
-              const s = await SupabaseClient.getSessionSingleFlightSafe();
-              if (!s) {
-                await renderAuthState({
-                  event: 'SIGNED_OUT',
-                  user: null,
-                  userInitiatedSignIn: false,
-                  userInitiatedSignOut: false,
-                  isSameUser: false,
-                  isUserSwitch: false,
-                  onRetry: bootstrapAuthGate,
-                });
-                return;
-              }
-              if (!canStartAuthRehydrate({ force: false })) return;
-              const overlayOpen = (() => {
-                try {
-                  if (window.SettingsOverlay?.isOpen?.() === true) return true;
-                } catch {
-                  // ignore
-                }
-                try {
-                  if (window.AccountOverlay?.isOpen?.() === true) return true;
-                } catch {
-                  // ignore
-                }
-                try {
-                  if (window.SettingsOverlay?.state?.isOpen === true) return true;
-                } catch {
-                  // ignore
-                }
-                try {
-                  if (window.AccountOverlay?.state?.isOpen === true) return true;
-                } catch {
-                  // ignore
-                }
-                try {
-                  if (SettingsOverlay && typeof SettingsOverlay.isOpen === 'function') {
-                    return !!SettingsOverlay.isOpen();
-                  }
-                } catch {
-                  // ignore
-                }
-                try {
-                  if (AccountOverlay && typeof AccountOverlay.isOpen === 'function') {
-                    return !!AccountOverlay.isOpen();
-                  }
-                } catch {
-                  // ignore
-                }
-                try {
-                  return Boolean(document.querySelector('[data-tp3d-settings-modal="1"]'));
-                } catch {
-                  return false;
-                }
-              })();
-              await rehydrateAuthState({
-                reason: 'visibility',
-                forceBundle: overlayOpen,
-                sessionHint: s,
-                skipCooldown: true,
-              });
-              await renderAuthState({
-                event: 'VISIBLE',
-                user: s && s.user ? s.user : null,
-                userInitiatedSignIn: false,
-                userInitiatedSignOut: false,
-                isSameUser: true,
-                isUserSwitch: false,
-                onRetry: bootstrapAuthGate,
-              });
-            } catch {
-              // ignore
-            }
+            requestAuthRefresh('tab-visible');
+          });
+          window.addEventListener('storage', () => {
+            requestAuthRefresh('storage');
+          });
+          window.addEventListener('tp3d:org-changed', () => {
+            requestAuthRefresh('org-changed', { forceBundle: true });
           });
         } catch {
           // ignore

@@ -21,15 +21,20 @@ export function createAccountOverlay(opts = {}) {
 
   // Epoch guard for race condition protection
   let renderRequestId = 0;
+  let cachedUserView = null;
+  let cachedUserViewAt = 0;
+  let refreshUserViewPromise = null;
+  let lastRefreshAt = 0;
+  let lastKnownUserId = null;
 
-  async function getCurrentUserView() {
+  async function fetchUserView({ force = false } = {}) {
     let user = null;
     let profile = null;
 
     try {
       // Use the single-flight bundle approach for consistent data
       if (SupabaseClient && typeof SupabaseClient.getAccountBundleSingleFlight === 'function') {
-        const bundle = await SupabaseClient.getAccountBundleSingleFlight();
+        const bundle = await SupabaseClient.getAccountBundleSingleFlight({ force });
         if (bundle && !bundle.canceled) {
           user = bundle.user || null;
           profile = bundle.profile || null;
@@ -45,7 +50,37 @@ export function createAccountOverlay(opts = {}) {
       profile = null;
     }
 
-    return getUserAvatarView({ user, profile });
+    const view = getUserAvatarView({ user, profile });
+    cachedUserView = view;
+    cachedUserViewAt = Date.now();
+    lastKnownUserId = user && user.id ? String(user.id) : lastKnownUserId;
+    return view;
+  }
+
+  async function refreshUserViewAsync() {
+    if (refreshUserViewPromise) return refreshUserViewPromise;
+    refreshUserViewPromise = fetchUserView({ force: true })
+      .then(() => {
+        if (accountModal) void render();
+      })
+      .catch(() => {})
+      .finally(() => {
+        refreshUserViewPromise = null;
+      });
+    return refreshUserViewPromise;
+  }
+
+  async function getCurrentUserView() {
+    if (cachedUserView) {
+      const now = Date.now();
+      const ageMs = cachedUserViewAt ? now - cachedUserViewAt : Number.POSITIVE_INFINITY;
+      if (ageMs > 500 && now - lastRefreshAt > 500) {
+        lastRefreshAt = now;
+        void refreshUserViewAsync();
+      }
+      return cachedUserView;
+    }
+    return fetchUserView();
   }
 
   function isOpen() {
@@ -616,7 +651,23 @@ export function createAccountOverlay(opts = {}) {
   }
 
   function handleAuthChange(_event) {
-    if (_event === 'SIGNED_OUT') return;
+    if (_event === 'SIGNED_OUT') {
+      cachedUserView = null;
+      cachedUserViewAt = 0;
+      lastKnownUserId = null;
+      return;
+    }
+    try {
+      const u = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
+      const currentUserId = u && u.id ? String(u.id) : null;
+      if (currentUserId && lastKnownUserId && currentUserId !== lastKnownUserId) {
+        cachedUserView = null;
+        cachedUserViewAt = 0;
+      }
+      if (currentUserId) lastKnownUserId = currentUserId;
+    } catch {
+      // ignore
+    }
     // Bump render request ID to invalidate any in-flight renders with stale data
     renderRequestId++;
 

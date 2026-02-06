@@ -72,3 +72,12 @@ For two-tab test follow-up:
   - count of settings modals
   - active tab vs visible panel
 
+## Steps Taken (as of 02/05/2026)
+1. Added single-flight + cooldown wrappers for `auth.getSession` / `auth.getUser`, and patched Supabase auth methods to route through safe wrappers.
+1. Added session-hint usage after auth events to avoid extra `getSession` calls and reduce `AUTH EVENT → getSession` cascades.
+1. Added a shared auth rehydrate cooldown in `app.js` to prevent back-to-back rehydrate bursts.
+1. Updated visibility handling to avoid forcing account bundle refresh unless an overlay is open; added signed-out UI fallback on null session.
+1. Added diagnostics: `SUPABASE WRAP STATUS`, `TP3D AUTH ERROR`, `RUNTIME SNAPSHOT`, and persisted event capture for post-freeze inspection.
+1. Added cached-first + async refresh behavior in Account/Settings overlays to reduce blocking modal opens.
+1. Guarded `getAuthedUserId()` to skip `getUserSingleFlight()` when hidden or token missing, and emit serialized auth errors.
+1. Added a single refresh scheduler (`requestAuthRefresh`) with 350ms debounce and single in-flight refresh, using `getAuthState()` once and wiring auth/visibility/storage/org-changed/modal-open triggers to it.

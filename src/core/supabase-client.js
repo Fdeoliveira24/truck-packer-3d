@@ -382,6 +382,25 @@ function debugLog(level, message, ...args) {
   logger(message, meta);
 }
 
+function serializeError(err) {
+  if (!err || typeof err !== 'object') return { message: String(err) };
+  return {
+    name: err.name || null,
+    message: err.message || String(err),
+    stack: err.stack || null,
+    code: err.code || null,
+    status: getErrorStatus(err),
+  };
+}
+
+function emitAuthDiagError(detail) {
+  try {
+    window.dispatchEvent(new CustomEvent('tp3d:auth-error', { detail }));
+  } catch {
+    // ignore
+  }
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -1234,6 +1253,18 @@ export async function awaitAuthReady({ timeoutMs = 5000 } = {}) {
 async function getAuthedUserId() {
   requireClient();
 
+  let hidden = false;
+  try {
+    hidden = typeof document !== 'undefined' && document.hidden === true;
+  } catch {
+    hidden = false;
+  }
+
+  const hasToken = Boolean(
+    (_authState && _authState.session && _authState.session.access_token) ||
+      (_session && _session.access_token)
+  );
+
   const ready = await awaitAuthReady({ timeoutMs: 2000 });
   if (!ready.ok) return null;
 
@@ -1259,11 +1290,22 @@ async function getAuthedUserId() {
   }
 
   // 3) Last resort: validate token with server
-  try {
-    const u = await getUserSingleFlight();
-    if (u && u.id) return u.id;
-  } catch {
-    // ignore
+  if (!hidden && hasToken) {
+    try {
+      const u = await getUserSingleFlight();
+      if (u && u.id) return u.id;
+    } catch (err) {
+      const detail = {
+        source: 'getAuthedUserId',
+        status: _authState && _authState.status ? _authState.status : 'unknown',
+        hidden,
+        hasToken,
+        error: serializeError(err),
+      };
+      debugLog('error', '[SupabaseClient] getAuthedUserId: getUserSingleFlight failed', detail);
+      emitAuthDiagError(detail);
+      return null;
+    }
   }
 
   return null;

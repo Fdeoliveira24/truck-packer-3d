@@ -615,12 +615,12 @@ export function createPacksScreen({
         kebabBtn.addEventListener('click', ev => {
           ev.stopPropagation();
           UIComponents.openDropdown(kebabBtn, [
-            { label: 'Open', icon: 'fa-solid fa-folder-open', onClick: () => openPack(pack.id) },
-            { label: 'Edit', icon: 'fa-solid fa-pen-to-square', onClick: () => openEditPackModal(pack.id) },
-            { label: 'Rename', icon: 'fa-solid fa-pen', onClick: () => openRename(pack.id) },
+            { label: 'Open', icon: 'fa-regular fa-folder-open', onClick: () => openPack(pack.id) },
+            { label: 'Edit', icon: 'fa-regular fa-pen-to-square', onClick: () => openEditPackModal(pack.id) },
+            { label: 'Rename', icon: 'fa-regular fa-pen', onClick: () => openRename(pack.id) },
             {
               label: 'Duplicate',
-              icon: 'fa-solid fa-clone',
+              icon: 'fa-regular fa-clone',
               onClick: () => {
                 PackLibrary.duplicate(pack.id);
                 UIComponents.showToast('Pack duplicated', 'success');
@@ -628,7 +628,7 @@ export function createPacksScreen({
             },
             {
               label: 'Capture Preview',
-              icon: 'fa-solid fa-image',
+              icon: 'fa-regular fa-image',
               onClick: () => ExportService.capturePackPreview(pack.id, { source: 'manual' }),
             },
             {
@@ -637,10 +637,10 @@ export function createPacksScreen({
               disabled: !pack.thumbnail,
               onClick: () => ExportService.clearPackPreview(pack.id),
             },
-            { label: 'Export Pack', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+            { label: 'Export Pack', icon: 'fa-regular fa-file-export', onClick: () => exportPack(pack.id) },
             {
               label: 'Delete',
-              icon: 'fa-solid fa-trash',
+              icon: 'fa-regular fa-trash-can',
               variant: 'danger',
               dividerBefore: true,
               onClick: () => deletePack(pack.id),
@@ -797,12 +797,12 @@ export function createPacksScreen({
         kebabBtn.addEventListener('click', ev => {
           ev.stopPropagation();
           UIComponents.openDropdown(kebabBtn, [
-            { label: 'Open', icon: 'fa-solid fa-folder-open', onClick: () => openPack(pack.id) },
-            { label: 'Edit', icon: 'fa-solid fa-pen-to-square', onClick: () => openEditPackModal(pack.id) },
-            { label: 'Rename', icon: 'fa-solid fa-pen', onClick: () => openRename(pack.id) },
+            { label: 'Open', icon: 'fa-regular fa-folder-open', onClick: () => openPack(pack.id) },
+            { label: 'Edit', icon: 'fa-regular fa-pen-to-square', onClick: () => openEditPackModal(pack.id) },
+            { label: 'Rename', icon: 'fa-regular fa-pen', onClick: () => openRename(pack.id) },
             {
               label: 'Duplicate',
-              icon: 'fa-solid fa-clone',
+              icon: 'fa-regular fa-clone',
               onClick: () => {
                 PackLibrary.duplicate(pack.id);
                 UIComponents.showToast('Pack duplicated', 'success');
@@ -810,7 +810,7 @@ export function createPacksScreen({
             },
             {
               label: 'Capture Preview',
-              icon: 'fa-solid fa-image',
+              icon: 'fa-regular fa-image',
               onClick: () => ExportService.capturePackPreview(pack.id, { source: 'manual' }),
             },
             {
@@ -819,10 +819,10 @@ export function createPacksScreen({
               disabled: !pack.thumbnail,
               onClick: () => ExportService.clearPackPreview(pack.id),
             },
-            { label: 'Export Pack', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+            { label: 'Export Pack', icon: 'fa-regular fa-file-export', onClick: () => exportPack(pack.id) },
             {
               label: 'Delete',
-              icon: 'fa-solid fa-trash',
+              icon: 'fa-regular fa-trash-can',
               variant: 'danger',
               dividerBefore: true,
               onClick: () => deletePack(pack.id),

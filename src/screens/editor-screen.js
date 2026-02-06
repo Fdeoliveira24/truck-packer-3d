@@ -814,9 +814,7 @@ export function createEditorScreen({
         });
 
         const header = document.createElement('div');
-        header.className = 'row space-between';
-        const left = document.createElement('div');
-        left.classList.add('tp3d-editor-col-grid-gap-2');
+        header.className = 'tp3d-editor-card-header';
         const name = document.createElement('div');
         name.classList.add('tp3d-editor-fw-semibold');
         name.textContent = c.name;
@@ -826,14 +824,7 @@ export function createEditorScreen({
           Number.isFinite(c.dimensions.length) &&
           Number.isFinite(c.dimensions.width) &&
           Number.isFinite(c.dimensions.height);
-        const dims = document.createElement('div');
-        dims.className = 'muted';
-        dims.classList.add('tp3d-editor-fs-xs');
         const dimsValue = hasDims ? `${c.dimensions.length}×${c.dimensions.width}×${c.dimensions.height} in` : '—';
-        dims.innerHTML = `<span class="tp3d-label-strong">D:</span> ${dimsValue}`;
-        const vwf = document.createElement('div');
-        vwf.className = 'muted';
-        vwf.classList.add('tp3d-editor-fs-xs');
         const catMeta = CategoryService.meta(c.category || 'default');
         const volumeLabel = hasDims
           ? Utils.formatVolume(c.dimensions, (prefs.units && prefs.units.length) || 'in')
@@ -844,27 +835,29 @@ export function createEditorScreen({
           const weightUnit = (prefs.units && prefs.units.weight) || 'lb';
           weightLabel = weightUnit === 'kg' ? `${(weightNum * 0.453592).toFixed(2)} kg` : `${weightNum.toFixed(2)} lb`;
         }
-        const flipLabel = c.canFlip ? 'Y' : 'N';
-        vwf.innerHTML = `<span class="tp3d-label-strong">V:</span> ${volumeLabel} • <span class="tp3d-label-strong">W:</span> ${weightLabel} • <span class="tp3d-label-strong">C:</span> ${catMeta.name} • <span class="tp3d-label-strong">F:</span> ${flipLabel}`;
-        left.appendChild(name);
-        left.appendChild(dims);
-        left.appendChild(vwf);
-        header.appendChild(left);
-
-        const metaRow = document.createElement('div');
-        metaRow.className = 'row space-between tp3d-editor-card-meta';
-        metaRow.classList.add('tp3d-editor-card-grid-gap-8');
-
         const addBtn = document.createElement('button');
         addBtn.className = 'btn btn-primary';
         addBtn.type = 'button';
         addBtn.classList.add('tp3d-editor-btn-add');
         addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> Add';
         addBtn.addEventListener('click', () => addCaseToPack(c.id));
-        metaRow.appendChild(addBtn);
+        header.appendChild(name);
+        header.appendChild(addBtn);
+
+        const meta1 = document.createElement('div');
+        meta1.className = 'tp3d-editor-card-dims';
+        const parts = [dimsValue, volumeLabel, weightLabel].filter(v => v && v !== '—');
+        meta1.textContent = parts.join(' · ');
+
+        const meta2 = document.createElement('div');
+        meta2.className = 'tp3d-editor-card-dims';
+        const meta2Parts = [catMeta.name];
+        if (c.canFlip) meta2Parts.push('Flippable');
+        meta2.textContent = meta2Parts.join(' · ');
 
         card.appendChild(header);
-        card.appendChild(metaRow);
+        card.appendChild(meta1);
+        card.appendChild(meta2);
         caseListEl.appendChild(card);
       });
     }

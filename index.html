@@ -304,7 +304,7 @@
       <main class="main">
         <header class="topbar">
           <div class="topbar-left">
-            <button class="btn btn-ghost" id="btn-sidebar" type="button" title="Menu" aria-label="Menu">
+            <button class="btn btn-ghost" id="btn-sidebar" type="button" data-tooltip="Menu" aria-label="Menu">
               <i class="fa-solid fa-bars"></i>
             </button>
             <div class="topbar-title">
@@ -367,10 +367,10 @@
                 />
               </div>
               <div class="row" style="gap: 4px">
-                <button class="btn" id="packs-view-grid" type="button" title="Grid view" aria-label="Grid view">
+                <button class="btn" id="packs-view-grid" type="button" data-tooltip="Grid view" aria-label="Grid view">
                   <i class="fa-solid fa-grip"></i>
                 </button>
-                <button class="btn" id="packs-view-list" type="button" title="List view" aria-label="List view">
+                <button class="btn" id="packs-view-list" type="button" data-tooltip="List view" aria-label="List view">
                   <i class="fa-solid fa-list"></i>
                 </button>
 
@@ -378,7 +378,7 @@
                   class="btn"
                   id="packs-filters-toggle"
                   type="button"
-                  title="Toggle filters"
+                  data-tooltip="Toggle filters"
                   aria-label="Toggle filters"
                 >
                   <i class="fa-solid fa-filter"></i>
@@ -387,7 +387,7 @@
                   class="btn"
                   id="packs-card-display"
                   type="button"
-                  title="Card display"
+                  data-tooltip="Card display"
                   aria-label="Card display"
                 >
                   <i class="fa-solid fa-eye"></i>
@@ -396,7 +396,7 @@
                   class="btn"
                   id="packs-trailer-presets"
                   type="button"
-                  title="Trailer preset"
+                  data-tooltip="Trailer preset"
                   aria-label="Trailer preset"
                 >
                   <i class="fa-solid fa-truck"></i>
@@ -416,15 +416,15 @@
             </div>
             <div style="height: 10px"></div>
             <div class="row" style="gap: 8px; flex-wrap: wrap">
-              <button class="chip" id="packs-filter-chip-empty" type="button" title="Packs with 0 cases">
+              <button class="chip" id="packs-filter-chip-empty" type="button" data-tooltip="Packs with 0 cases">
                 <span class="chip-dot"></span>
                 Empty
               </button>
-              <button class="chip" id="packs-filter-chip-partial" type="button" title="Packs with some volume used">
+              <button class="chip" id="packs-filter-chip-partial" type="button" data-tooltip="Packs with some volume used">
                 <span class="chip-dot"></span>
                 Partial
               </button>
-              <button class="chip" id="packs-filter-chip-full" type="button" title="Packs at 100% volume">
+              <button class="chip" id="packs-filter-chip-full" type="button" data-tooltip="Packs at 100% volume">
                 <span class="chip-dot"></span>
                 Full
               </button>
@@ -596,17 +596,17 @@
                 />
               </div>
               <div class="row" style="gap: 4px">
-                <button class="btn" id="cases-view-grid" type="button" title="Grid view" aria-label="Grid view">
+                <button class="btn" id="cases-view-grid" type="button" data-tooltip="Grid view" aria-label="Grid view">
                   <i class="fa-solid fa-grip"></i>
                 </button>
-                <button class="btn" id="cases-view-list" type="button" title="List view" aria-label="List view">
+                <button class="btn" id="cases-view-list" type="button" data-tooltip="List view" aria-label="List view">
                   <i class="fa-solid fa-list"></i>
                 </button>
                 <button
                   class="btn"
                   id="cases-filters-toggle"
                   type="button"
-                  title="Toggle filters"
+                  data-tooltip="Toggle filters"
                   aria-label="Toggle filters"
                 >
                   <i class="fa-solid fa-filter"></i>
@@ -615,12 +615,12 @@
                   class="btn"
                   id="cases-card-display"
                   type="button"
-                  title="Card display"
+                  data-tooltip="Card display"
                   aria-label="Card display"
                 >
                   <i class="fa-solid fa-eye"></i>
                 </button>
-                <button class="btn" id="btn-manage-categories" type="button" title="Categories" aria-label="Categories">
+                <button class="btn" id="btn-manage-categories" type="button" data-tooltip="Categories" aria-label="Categories">
                   <i class="fa-solid fa-tags"></i>
                 </button>
               </div>
@@ -732,7 +732,7 @@
                     class="btn btn-ghost"
                     id="btn-left-close"
                     type="button"
-                    title="Hide"
+                    data-tooltip="Hide"
                     aria-label="Hide case browser"
                   >
                     <i class="fa-solid fa-xmark"></i>
@@ -764,7 +764,7 @@
                         class="btn"
                         id="editor-case-filters-toggle"
                         type="button"
-                        title="Toggle filters"
+                        data-tooltip="Toggle filters"
                         aria-label="Toggle filters"
                         aria-pressed="true"
                       >
@@ -782,23 +782,23 @@
               <div class="panel canvas-wrap">
                 <div id="viewport"></div>
                 <div class="viewport-toolbar" id="viewport-toolbar">
-                  <button class="toolbar-btn" id="btn-editor-left" type="button" title="Toggle case browser">
+                  <button class="toolbar-btn" id="btn-editor-left" type="button" data-tooltip="Toggle case browser">
                     <i class="fa-solid fa-boxes-stacked"></i>
                     Cases
                   </button>
-                  <button class="toolbar-btn" id="btn-editor-right" type="button" title="Toggle inspector">
+                  <button class="toolbar-btn" id="btn-editor-right" type="button" data-tooltip="Toggle inspector">
                     <i class="fa-solid fa-sliders"></i>
                     Inspector
                   </button>
-                  <button class="toolbar-btn" id="btn-autopack" type="button" title="AutoPack (Ctrl/Cmd+P)">
+                  <button class="toolbar-btn" id="btn-autopack" type="button" data-tooltip="AutoPack (Ctrl/Cmd+P)">
                     <i class="fa-solid fa-wand-magic-sparkles"></i>
                     AutoPack
                   </button>
-                  <button class="toolbar-btn" id="btn-screenshot" type="button" title="Screenshot PNG">
+                  <button class="toolbar-btn" id="btn-screenshot" type="button" data-tooltip="Screenshot PNG">
                     <i class="fa-solid fa-camera"></i>
                     Screenshot
                   </button>
-                  <button class="toolbar-btn" id="btn-pdf" type="button" title="PDF plan sheet">
+                  <button class="toolbar-btn" id="btn-pdf" type="button" data-tooltip="PDF plan sheet">
                     <i class="fa-solid fa-file-pdf"></i>
                     PDF
                   </button>
@@ -815,7 +815,7 @@
                     class="btn btn-ghost"
                     id="btn-right-close"
                     type="button"
-                    title="Hide"
+                    data-tooltip="Hide"
                     aria-label="Hide inspector"
                   >
                     <i class="fa-solid fa-xmark"></i>

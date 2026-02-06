@@ -26,6 +26,19 @@ export function createAccountOverlay(opts = {}) {
   let refreshUserViewPromise = null;
   let lastRefreshAt = 0;
   let lastKnownUserId = null;
+  let lastRenderedUserView = null;
+
+  function isSameUserView(a, b) {
+    if (!a || !b) return false;
+    return (
+      a.isAuthed === b.isAuthed &&
+      a.userId === b.userId &&
+      a.email === b.email &&
+      a.displayName === b.displayName &&
+      a.initials === b.initials &&
+      a.workspaceShareId === b.workspaceShareId
+    );
+  }
 
   async function fetchUserView({ force = false } = {}) {
     let user = null;
@@ -364,6 +377,10 @@ export function createAccountOverlay(opts = {}) {
     // Stale check: if another render started, discard this result
     if (thisRequestId !== renderRequestId) return;
 
+    if (lastRenderedUserView && isSameUserView(lastRenderedUserView, userView)) {
+      return;
+    }
+
     accountModal.innerHTML = '';
 
     const header = doc.createElement('div');
@@ -559,6 +576,8 @@ export function createAccountOverlay(opts = {}) {
 
     danger.appendChild(dangerRow);
     body.appendChild(danger);
+
+    lastRenderedUserView = userView;
   }
 
   function open() {
@@ -655,6 +674,7 @@ export function createAccountOverlay(opts = {}) {
       cachedUserView = null;
       cachedUserViewAt = 0;
       lastKnownUserId = null;
+      lastRenderedUserView = null;
       return;
     }
     try {

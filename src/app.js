@@ -508,10 +508,16 @@ initTP3DDebugger();
         const view = getSidebarAvatarView();
         const isAuthed = Boolean(view && view.isAuthed);
         const displayName = (view && view.displayName) || (isAuthed ? 'User' : 'Guest');
+        const activeOrg = orgContext && orgContext.activeOrg ? orgContext.activeOrg : null;
+        const accountName = activeOrg && activeOrg.name ? activeOrg.name : 'Workspace';
+        const role =
+          (orgContext && orgContext.role ? String(orgContext.role) : null) ||
+          (activeOrg && activeOrg.role ? String(activeOrg.role) : null) ||
+          (isAuthed ? 'Owner' : 'Guest');
 
         return {
-          accountName: 'Workspace',
-          role: isAuthed ? 'Owner' : 'Guest',
+          accountName,
+          role,
           userName: displayName || '—',
           initials: (view && view.initials) || '',
         };
@@ -2433,8 +2439,7 @@ initTP3DDebugger();
     // ============================================================================
     function validateRuntime() {
       /** @type {Array<{ name?: string }>} */
-      const failures =
-        window.__TP3D_BOOT && window.__TP3D_BOOT.cdnFailures ? window.__TP3D_BOOT.cdnFailures : [];
+      const failures = window.__TP3D_BOOT && window.__TP3D_BOOT.cdnFailures ? window.__TP3D_BOOT.cdnFailures : [];
       failures.forEach(f => {
         UIComponents.showToast(`${f.name} failed to load`, 'error', {
           title: 'CDN',
@@ -2487,14 +2492,32 @@ initTP3DDebugger();
     let lastAuthUserId = null;
     let lastOrgChangeAt = 0;
     let lastOrgIdNotified = null;
+    const ORG_CONTEXT_LS_KEY = 'tp3d:active-org-id';
+    const ORG_CONTEXT_DEDUP_MS = 500;
+    const ORG_PERSIST_COOLDOWN_MS = 2000;
+    let orgContext = {
+      activeOrgId: null,
+      activeOrg: null,
+      orgs: [],
+      role: null,
+      updatedAt: 0,
+    };
+    let lastOrgPersistAt = 0;
+    let orgContextInFlight = null;
+    let orgContextQueued = false;
     let lastAuthRehydrateAt = 0;
     const AUTH_REHYDRATE_COOLDOWN_MS = 750;
     const AUTH_REFRESH_DEBOUNCE_MS = 350;
+    const AUTH_REFRESH_MAX_ATTEMPTS = 3;
+    const AUTH_REFRESH_WINDOW_MS = 10000;
+    const AUTH_REFRESH_AUTO_REASONS = new Set(['tab-visible', 'storage', 'org-changed']);
     const toastDeduper = new Map();
     let authRehydratePromise = null;
     let authRefreshTimer = null;
     let authRefreshInFlight = null;
     let authRefreshQueued = false;
+    let authRefreshWindowStart = 0;
+    let authRefreshAttempts = 0;
     const authRefreshReasons = new Set();
     let authRefreshPending = {
       force: false,
@@ -2587,6 +2610,212 @@ initTP3DDebugger();
       }
     }
 
+    function getCurrentAuthSnapshot() {
+      const authState =
+        SupabaseClient && typeof SupabaseClient.getAuthState === 'function' ? SupabaseClient.getAuthState() : null;
+      const status = authState && authState.status ? authState.status : 'unknown';
+      const session = authState && authState.session ? authState.session : null;
+      const user = authState && authState.user ? authState.user : session && session.user ? session.user : null;
+      const userId = user && user.id ? String(user.id) : null;
+      const hasToken = Boolean(session && session.access_token);
+      return {
+        status,
+        userId,
+        hasToken,
+        session,
+        activeOrgId: orgContext.activeOrgId,
+        activeOrg: orgContext.activeOrg,
+        role: orgContext.role,
+      };
+    }
+
+    function readLocalOrgId() {
+      try {
+        const raw = window.localStorage.getItem(ORG_CONTEXT_LS_KEY);
+        return raw ? String(raw) : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function writeLocalOrgId(orgId) {
+      try {
+        if (!orgId) {
+          window.localStorage.removeItem(ORG_CONTEXT_LS_KEY);
+          return;
+        }
+        window.localStorage.setItem(ORG_CONTEXT_LS_KEY, String(orgId));
+      } catch {
+        // ignore
+      }
+    }
+
+    function resolveOrgContextFromBundle(bundle) {
+      const orgs = Array.isArray(bundle && bundle.orgs) ? bundle.orgs : [];
+      const profile = bundle && bundle.profile ? bundle.profile : null;
+      const membership = bundle && bundle.membership ? bundle.membership : null;
+      const normalizeOrgId = value => {
+        if (value === null || typeof value === 'undefined') return null;
+        const str = String(value).trim();
+        return str ? str : null;
+      };
+
+      const profileOrgId = normalizeOrgId(
+        profile && (profile.current_org_id || profile.currentOrgId || profile.currentOrgID)
+      );
+      const localOrgId = normalizeOrgId(readLocalOrgId());
+      const membershipOrgId = normalizeOrgId(
+        membership && membership.organization_id ? membership.organization_id : null
+      );
+      const activeOrgHint = normalizeOrgId(bundle && bundle.activeOrgId ? bundle.activeOrgId : null);
+      const hasOrg = id => id && orgs.some(o => o && String(o.id) === String(id));
+
+      let orgId = null;
+      if (profileOrgId && hasOrg(profileOrgId)) orgId = profileOrgId;
+      else if (localOrgId && hasOrg(localOrgId)) orgId = localOrgId;
+      else if (activeOrgHint && hasOrg(activeOrgHint)) orgId = activeOrgHint;
+      else if (membershipOrgId && hasOrg(membershipOrgId)) orgId = membershipOrgId;
+      else if (orgs.length > 0) orgId = String(orgs[0].id);
+      else if (profileOrgId) orgId = profileOrgId;
+      else if (membershipOrgId) orgId = membershipOrgId;
+
+      const activeOrg = orgId ? orgs.find(o => o && String(o.id) === String(orgId)) || null : null;
+      let role = null;
+      if (membership && orgId && membership.organization_id && String(membership.organization_id) === String(orgId)) {
+        role = membership.role || null;
+      } else if (activeOrg && activeOrg.role) {
+        role = activeOrg.role;
+      }
+
+      return { orgId, activeOrg, orgs, role, profileOrgId, profile };
+    }
+
+    function clearOrgContext() {
+      orgContext = {
+        activeOrgId: null,
+        activeOrg: null,
+        orgs: [],
+        role: null,
+        updatedAt: Date.now(),
+      };
+      lastOrgIdNotified = null;
+      lastOrgChangeAt = 0;
+      writeLocalOrgId(null);
+    }
+
+    async function applyOrgContextFromBundle(bundle, { reason = 'org-context', forceEmit = false } = {}) {
+      if (!bundle || !bundle.session || !bundle.user) {
+        clearOrgContext();
+        return null;
+      }
+
+      const resolved = resolveOrgContextFromBundle(bundle);
+      const nextOrgId = resolved.orgId;
+      const now = Date.now();
+
+      if (!nextOrgId) {
+        clearOrgContext();
+        return null;
+      }
+
+      const prevOrgId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
+      const nextOrgIdStr = String(nextOrgId);
+      const changed = !prevOrgId || prevOrgId !== nextOrgIdStr;
+
+      orgContext = {
+        activeOrgId: nextOrgIdStr,
+        activeOrg: resolved.activeOrg || null,
+        orgs: resolved.orgs || [],
+        role: resolved.role || null,
+        updatedAt: now,
+      };
+      writeLocalOrgId(nextOrgIdStr);
+
+      // Best-effort: persist current org to profile when we have a real profile row.
+      if (resolved.profile && !resolved.profile._isDefault) {
+        const profileOrgId = resolved.profileOrgId ? String(resolved.profileOrgId) : null;
+        if (profileOrgId !== nextOrgIdStr && now - lastOrgPersistAt > ORG_PERSIST_COOLDOWN_MS) {
+          lastOrgPersistAt = now;
+          try {
+            if (SupabaseClient && typeof SupabaseClient.updateProfile === 'function') {
+              SupabaseClient.updateProfile({ current_org_id: nextOrgIdStr }).catch(() => {});
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      let hidden = false;
+      try {
+        hidden = typeof document !== 'undefined' && document.hidden === true;
+      } catch {
+        hidden = false;
+      }
+      if (hidden) {
+        orgContextQueued = true;
+        return nextOrgIdStr;
+      }
+
+      if (changed || forceEmit) {
+        const sameOrgRecently =
+          nextOrgIdStr === lastOrgIdNotified && now - lastOrgChangeAt < ORG_CONTEXT_DEDUP_MS;
+        if (!forceEmit && sameOrgRecently) {
+          // Skip duplicate org-changed bursts for the same org within 500ms
+        } else {
+          window.dispatchEvent(
+            new CustomEvent('tp3d:org-changed', {
+              detail: { orgId: nextOrgIdStr, reason: reason || null },
+            })
+          );
+          lastOrgIdNotified = nextOrgIdStr;
+          lastOrgChangeAt = now;
+        }
+      }
+
+      return nextOrgIdStr;
+    }
+
+    async function refreshOrgContext(reason, { force = false, forceEmit = false } = {}) {
+      let hidden = false;
+      try {
+        hidden = typeof document !== 'undefined' && document.hidden === true;
+      } catch {
+        hidden = false;
+      }
+      if (hidden) {
+        orgContextQueued = true;
+        return null;
+      }
+
+      const snapshot = getCurrentAuthSnapshot();
+      if (snapshot.status !== 'signed_in' || !snapshot.hasToken) {
+        if (snapshot.status === 'signed_out') clearOrgContext();
+        return null;
+      }
+
+      if (orgContextInFlight) {
+        orgContextQueued = true;
+        return orgContextInFlight;
+      }
+
+      orgContextInFlight = (async () => {
+        const bundle = await SupabaseClient.getAccountBundleSingleFlight({ force });
+        await applyOrgContextFromBundle(bundle, { reason, forceEmit });
+        return null;
+      })().finally(() => {
+        orgContextInFlight = null;
+        if (orgContextQueued) {
+          orgContextQueued = false;
+          window.setTimeout(() => {
+            void refreshOrgContext('org-queued');
+          }, AUTH_REFRESH_DEBOUNCE_MS);
+        }
+      });
+
+      return orgContextInFlight;
+    }
+
     function requestAuthRefresh(reason, opts = {}) {
       if (reason) authRefreshReasons.add(String(reason));
       if (opts && opts.force) authRefreshPending.force = true;
@@ -2602,6 +2831,16 @@ initTP3DDebugger();
         hidden = false;
       }
       if (hidden) {
+        authRefreshQueued = true;
+        return;
+      }
+      let online = true;
+      try {
+        online = typeof navigator === 'undefined' || navigator.onLine !== false;
+      } catch {
+        online = true;
+      }
+      if (!online) {
         authRefreshQueued = true;
         return;
       }
@@ -2629,6 +2868,16 @@ initTP3DDebugger();
         authRefreshQueued = true;
         return null;
       }
+      let online = true;
+      try {
+        online = typeof navigator === 'undefined' || navigator.onLine !== false;
+      } catch {
+        online = true;
+      }
+      if (!online) {
+        authRefreshQueued = true;
+        return null;
+      }
 
       authRefreshQueued = false;
       const reasons = Array.from(authRefreshReasons);
@@ -2639,6 +2888,18 @@ initTP3DDebugger();
         forceBundle: false,
         sessionHint: null,
       };
+
+      const now = Date.now();
+      if (!authRefreshWindowStart || now - authRefreshWindowStart > AUTH_REFRESH_WINDOW_MS) {
+        authRefreshWindowStart = now;
+        authRefreshAttempts = 0;
+      }
+      authRefreshAttempts += 1;
+      const autoOnly =
+        reasons.length > 0 && reasons.every(r => AUTH_REFRESH_AUTO_REASONS.has(String(r || '').trim()));
+      if (authRefreshAttempts > AUTH_REFRESH_MAX_ATTEMPTS && autoOnly && !pending.force) {
+        return null;
+      }
 
       authRefreshInFlight = (async () => {
         const authState =
@@ -2670,6 +2931,8 @@ initTP3DDebugger();
           sessionHint,
           skipCooldown: true,
         });
+
+        await refreshOrgContext(reasonLabel, { force: forceBundle });
 
         return null;
       })().finally(() => {
@@ -2871,6 +3134,11 @@ initTP3DDebugger();
       } catch {
         // ignore
       }
+      try {
+        clearOrgContext();
+      } catch {
+        // ignore
+      }
 
       if (isSignedOutEvent && userInitiatedSignOut && canShowToast('auth-signed-out')) {
         UIComponents.showToast('Signed out', 'info', { title: 'Auth' });
@@ -2889,6 +3157,10 @@ initTP3DDebugger();
       }
     }
 
+    const PROFILE_CHECK_TTL_MS = 15000;
+    let lastProfileCheckUserId = null;
+    let lastProfileCheckAt = 0;
+
     /**
      * Check if current user's profile is in deletion requested state.
      * If so, sign out and show disabled overlay.
@@ -2900,13 +3172,39 @@ initTP3DDebugger();
         const user = SupabaseClient.getUser();
         if (!user) return true; // Not logged in, let auth flow handle it
 
-        // Get the raw user data which includes ban info
-        let fullUser = null;
-        let userError = null;
+        // Avoid profile checks when tab is hidden or auth/session is not valid.
         try {
-          fullUser = await window.SupabaseClient.getUserSingleFlight();
-        } catch (err) {
-          userError = err;
+          if (typeof document !== 'undefined' && document.hidden === true) return true;
+        } catch {
+          // ignore
+        }
+
+        const authState =
+          SupabaseClient && typeof SupabaseClient.getAuthState === 'function' ? SupabaseClient.getAuthState() : null;
+        const status = authState && authState.status ? authState.status : 'unknown';
+        const session = authState && authState.session ? authState.session : null;
+        const tokenOk = Boolean(session && session.access_token);
+        if (status !== 'signed_in' || !tokenOk) return true;
+
+        const userId = user && user.id ? String(user.id) : null;
+        const now = Date.now();
+        if (userId && userId === lastProfileCheckUserId && now - lastProfileCheckAt < PROFILE_CHECK_TTL_MS) {
+          return true;
+        }
+        lastProfileCheckUserId = userId;
+        lastProfileCheckAt = now;
+
+        // Get the raw user data which includes ban info (only if session user lacks it)
+        let fullUser = session && session.user ? session.user : user || null;
+        let userError = null;
+        const hasBannedInfo = Boolean(fullUser) && Object.prototype.hasOwnProperty.call(fullUser, 'banned_until');
+
+        if (!hasBannedInfo) {
+          try {
+            fullUser = await window.SupabaseClient.getUserSingleFlight();
+          } catch (err) {
+            userError = err;
+          }
         }
 
         if (userError) {
@@ -3208,41 +3506,7 @@ initTP3DDebugger();
             }
           }
 
-          // 2) Notify org change only when org id changes or on sign-in/sign-out (deduped)
-          try {
-            const getOrgId = u => {
-              if (!u) return null;
-              if (u.currentOrgId) return String(u.currentOrgId);
-              const meta = u.user_metadata || u.userMetadata || null;
-              if (meta && meta.currentOrgId) return String(meta.currentOrgId);
-              if (meta && meta.orgId) return String(meta.orgId);
-              const appMeta = u.app_metadata || u.appMetadata || null;
-              if (appMeta && appMeta.currentOrgId) return String(appMeta.currentOrgId);
-              return null;
-            };
-
-            const orgId = getOrgId(user) || getOrgId(userFromSession);
-            const now = Date.now();
-            const isAuthEdge = isSignedInEvent || isSignedOutEvent;
-            const orgChanged = orgId && orgId !== lastOrgIdNotified;
-            const sameOrgRecently = orgId && orgId === lastOrgIdNotified && now - lastOrgChangeAt < 500;
-
-            if (isAuthEdge || orgChanged) {
-              if (!isAuthEdge && sameOrgRecently) {
-                // Skip duplicate org-changed bursts for the same org within 500ms
-              } else {
-                window.dispatchEvent(
-                  new CustomEvent('tp3d:org-changed', {
-                    detail: { orgId: orgId || null, reason: event || null },
-                  })
-                );
-                lastOrgIdNotified = orgId || null;
-                lastOrgChangeAt = now;
-              }
-            }
-          } catch (_) {
-            // ignore
-          }
+          // 2) Org context changes are handled via refreshOrgContext to keep a single source of truth.
 
           await renderAuthState({
             event,
@@ -3263,11 +3527,37 @@ initTP3DDebugger();
             if (document.hidden) return;
             requestAuthRefresh('tab-visible');
           });
-          window.addEventListener('storage', () => {
+          window.addEventListener('storage', ev => {
+            const key = ev && ev.key ? String(ev.key) : '';
+            if (!key) return;
+            const isAuthKey =
+              key === 'tp3d-logout-trigger' ||
+              (key.startsWith('sb-') && (key.endsWith('-auth-token') || key.endsWith('-auth-token-code-verifier')));
+            if (!isAuthKey) return;
             requestAuthRefresh('storage');
           });
           window.addEventListener('tp3d:org-changed', () => {
-            requestAuthRefresh('org-changed', { forceBundle: true });
+            // If tab is hidden, don’t do anything (avoid queued churn)
+            try {
+              if (document.hidden) return;
+            } catch {
+              // ignore
+            }
+
+            // Only refresh if signed in with a token
+            const snapshot = getCurrentAuthSnapshot();
+            if (snapshot.status !== 'signed_in' || !snapshot.hasToken) return;
+
+            const overlayOpen = getOverlayOpen();
+            requestAuthRefresh('org-changed', { forceBundle: overlayOpen });
+
+            try {
+              if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
+                AccountSwitcher.refresh();
+              }
+            } catch {
+              // ignore
+            }
           });
         } catch {
           // ignore

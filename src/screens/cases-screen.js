@@ -372,9 +372,12 @@ export function createCasesScreen({
           }
           openCaseModal(c);
         });
-        card.addEventListener('keydown', /** @param {KeyboardEvent} ev */ ev => {
-          if (ev.key === 'Enter') openCaseModal(c);
-        });
+        card.addEventListener(
+          'keydown',
+          /** @param {KeyboardEvent} ev */ ev => {
+            if (ev.key === 'Enter') openCaseModal(c);
+          }
+        );
 
         const title = document.createElement('h3');
         title.textContent = c.name || '—';
@@ -775,9 +778,12 @@ export function createCasesScreen({
         onClick();
       };
       el.addEventListener('click', activate);
-      el.addEventListener('keydown', /** @param {KeyboardEvent} ev */ ev => {
-        if (ev.key === 'Enter') activate();
-      });
+      el.addEventListener(
+        'keydown',
+        /** @param {KeyboardEvent} ev */ ev => {
+          if (ev.key === 'Enter') activate();
+        }
+      );
       return el;
     }
 
@@ -954,7 +960,9 @@ export function createCasesScreen({
 
     function toggleCategoriesPopover(anchorEl) {
       if (!anchorEl) return;
-      const open = /** @type {HTMLElement|null} */ (document.querySelector('[data-dropdown="1"][data-role="categories"]'));
+      const open = /** @type {HTMLElement|null} */ (
+        document.querySelector('[data-dropdown="1"][data-role="categories"]')
+      );
       if (open && open.dataset.anchorId === anchorEl.id) {
         UIComponents.closeAllDropdowns();
         return;

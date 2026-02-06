@@ -35,3 +35,46 @@
 4. **Legacy migration**
    - If `truckPacker3d:v1` exists, first load migrates it into `truckPacker3d:v2:data` under org
      `personal`.
+
+## 2026-02-05 — Auth Stabilization + Diagnostics
+
+### Summary
+
+- Added a debugger-level single-flight wrapper for `auth.getSession` to prevent re-entrant calls
+  from Supabase internals causing `inflight=2` races during modal opens and token refresh.
+- Reduced profile lookup noise by fetching profile status via `.limit(1)` instead of `.single()`.
+- `checkProfileStatus()` now uses `session.user` fast path and only calls `getUserSingleFlight()`
+  when the session user lacks `banned_until`.
+
+### Observed Before / After (from logs)
+
+- **Before**: `TP3D AUTH ERROR` appeared frequently during modal open and cross-tab activity;
+  `RACE: getSession` bursts occurred during `_getAccessToken` and modal open flows.
+- **After**: `TP3D AUTH ERROR` reduced to **0–1 per tab per run**; `RACE: getSession` reduced to
+  **0–1 per run** and no longer cascaded into freezes.
+
+### Notes
+
+- Auth logic was not changed; only scheduling/deduping and diagnostics were tightened.
+- Remaining `getSession` calls on modal open are expected (Supabase internal token access), but now
+  share a single in-flight promise.
+
+## 2026-02-05 — Org Context Foundation (Phase 1)
+
+### Summary
+
+- Added an in-app Org Context state (no new files) to track `activeOrgId`, active org, org list, and
+  role across auth refreshes.
+- Active org resolution now prefers `profiles.current_org_id`, then localStorage, then membership,
+  then first org (safe fallback).
+- Best-effort persistence of `current_org_id` back to the profile row (rate-limited).
+- `tp3d:org-changed` emits only on real org changes, with 500ms dedupe and hidden-tab suppression.
+- Auth refresh scheduler now triggers Org Context refresh once per pass (single-flight).
+
+### Steps Taken (High-Level)
+
+1. Added Org Context state + resolver in `src/app.js`.
+1. Wired Org Context refresh into the existing auth refresh scheduler.
+1. Stored the active org in localStorage for cross-tab continuity.
+1. Updated the account switcher label to reflect the active org and role.
+1. Added a diagnostic warning severity for `getUserSingleFlight` timeouts.

@@ -13,7 +13,13 @@
 
 // Editor scene runtime (extracted from src/app.js; behavior preserved)
 
-export function createSceneRuntime({ Utils, UIComponents, PreferencesManager: _PreferencesManager, TrailerGeometry, StateStore }) {
+export function createSceneRuntime({
+  Utils,
+  UIComponents,
+  PreferencesManager: _PreferencesManager,
+  TrailerGeometry,
+  StateStore,
+}) {
   const SceneManager = (() => {
     const INCH_TO_WORLD = 0.05;
     const WORLD_TO_INCH = 1 / INCH_TO_WORLD;

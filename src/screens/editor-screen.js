@@ -829,9 +829,7 @@ export function createEditorScreen({
         const dims = document.createElement('div');
         dims.className = 'muted';
         dims.classList.add('tp3d-editor-fs-xs');
-        const dimsValue = hasDims
-          ? `${c.dimensions.length}×${c.dimensions.width}×${c.dimensions.height} in`
-          : '—';
+        const dimsValue = hasDims ? `${c.dimensions.length}×${c.dimensions.width}×${c.dimensions.height} in` : '—';
         dims.innerHTML = `<span class="tp3d-label-strong">D:</span> ${dimsValue}`;
         const vwf = document.createElement('div');
         vwf.className = 'muted';

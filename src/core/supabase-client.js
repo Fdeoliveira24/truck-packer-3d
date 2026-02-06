@@ -616,7 +616,10 @@ function getSessionRawSingleFlight() {
         timeoutId = window.setTimeout(() => reject(new Error('getSession timeout')), TIMEOUT_MS);
       });
       const res = await Promise.race([authGetSession(), timeoutPromise]);
-      const out = res && res.error ? { data: res.data || null, error: res.error } : res || { data: { session: null }, error: null };
+      const out =
+        res && res.error
+          ? { data: res.data || null, error: res.error }
+          : res || { data: { session: null }, error: null };
       if (startEpoch !== _authEpoch || (_authState && _authState.status === 'signed_out')) {
         if (debugEnabled()) {
           debugLog('warn', '[SupabaseClient] Ignoring getSession(raw) result due to epoch/status change', {
@@ -671,6 +674,15 @@ function getUserRawSingleFlight() {
     _getUserRawLastAt = now;
     return Promise.resolve(out);
   }
+  if (_authCooldownUntil && now < _authCooldownUntil) {
+    const cachedUser = (_authState && _authState.user) || (_session && _session.user) || null;
+    if (debugEnabled())
+      debugLog('warn', '[SupabaseClient] getUser skipped (auth cooldown)', { cachedUser: Boolean(cachedUser) });
+    const out = { data: { user: cachedUser }, error: null };
+    _getUserRawLastResult = out;
+    _getUserRawLastAt = now;
+    return Promise.resolve(out);
+  }
   if (_getUserRawPromise) return _getUserRawPromise;
   if (_signOutPromise) return Promise.resolve({ data: { user: null }, error: null });
   if (_getUserRawLastResult && Date.now() - _getUserRawLastAt < RAW_SESSION_COOLDOWN_MS) {
@@ -691,7 +703,7 @@ function getUserRawSingleFlight() {
     _authGetUser || (client.auth && client.auth.getUser ? client.auth.getUser.bind(client.auth) : null);
   if (!authGetUser) return Promise.resolve({ data: { user: null }, error: new Error('getUser unavailable') });
 
-  const TIMEOUT_MS = 10000;
+  const TIMEOUT_MS = 3000;
   const p = (async () => {
     let timeoutId = null;
     try {
@@ -839,11 +851,26 @@ export function getUserSingleFlight() {
       updateAuthState({ user });
       return user;
     } catch (err) {
+      const msg = String(err && err.message ? err.message : '');
       if (debugEnabled()) {
         debugLog('error', '[SupabaseClient] getUser failed:', err && err.message ? err.message : err);
       }
-      if (String(err && err.message ? err.message : '').includes('timeout')) {
+      if (msg.includes('timeout')) {
         _authCooldownUntil = Date.now() + 2000;
+        const cachedUser = getUser() || (_authState && _authState.user) || (_session && _session.user) || null;
+        emitAuthDiagError({
+          source: 'getUserSingleFlight',
+          type: 'timeout',
+          severity: 'warn',
+          error: serializeError(err),
+          cachedUser: Boolean(cachedUser),
+        });
+        if (debugEnabled()) {
+          debugLog('warn', '[SupabaseClient] getUser timeout; returning cached user', {
+            cachedUser: Boolean(cachedUser),
+          });
+        }
+        return cachedUser;
       }
       throw err;
     } finally {
@@ -1029,9 +1056,9 @@ function patchAuthGetSessionSingleFlight(client) {
     _authGetSession = _authGetSession || (client.auth.getSession ? client.auth.getSession.bind(client.auth) : null);
     _authGetUser = _authGetUser || (client.auth.getUser ? client.auth.getUser.bind(client.auth) : null);
     _authSignOut = _authSignOut || (client.auth.signOut ? client.auth.signOut.bind(client.auth) : null);
-    _authSignInWithPassword = _authSignInWithPassword || (client.auth.signInWithPassword
-      ? client.auth.signInWithPassword.bind(client.auth)
-      : null);
+    _authSignInWithPassword =
+      _authSignInWithPassword ||
+      (client.auth.signInWithPassword ? client.auth.signInWithPassword.bind(client.auth) : null);
 
     if (_authGetSession) {
       // Expose originals for debugging / diagnostics
@@ -1261,8 +1288,7 @@ async function getAuthedUserId() {
   }
 
   const hasToken = Boolean(
-    (_authState && _authState.session && _authState.session.access_token) ||
-      (_session && _session.access_token)
+    (_authState && _authState.session && _authState.session.access_token) || (_session && _session.access_token)
   );
 
   const ready = await awaitAuthReady({ timeoutMs: 2000 });
@@ -1610,7 +1636,7 @@ export async function getMyProfileStatus() {
       .from('profiles')
       .select('deletion_status, purge_after')
       .eq('id', userId)
-      .single();
+      .limit(1);
 
     if (error) {
       // If profile doesn't exist (deleted user), return null
@@ -1620,7 +1646,8 @@ export async function getMyProfileStatus() {
       throw error;
     }
 
-    return data || null;
+    const row = Array.isArray(data) ? data[0] : null;
+    return row || null;
   } catch (_) {
     // On error, return null (fail open)
     return null;
@@ -1883,11 +1910,35 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
 
       // Build safe bundle with defaults for missing data
       const orgsSafe = Array.isArray(orgsResult) ? orgsResult : [];
-      const activeOrgSafe = usedCachedOrgs
+      const normalizeOrgId = value => {
+        if (value === null || typeof value === 'undefined') return null;
+        const str = String(value).trim();
+        return str ? str : null;
+      };
+      const profileOrgId = normalizeOrgId(
+        profileResult && (profileResult.current_org_id || profileResult.currentOrgId || profileResult.currentOrgID)
+      );
+      const membershipOrgId = normalizeOrgId(
+        membershipResult && membershipResult.organization_id ? membershipResult.organization_id : null
+      );
+      const hasOrg = id => id && orgsSafe.some(o => o && String(o.id) === String(id));
+
+      let activeOrgSafe = usedCachedOrgs
         ? cachedActiveOrg || (orgsSafe.length > 0 ? orgsSafe[0] : null)
         : orgsSafe.length > 0
           ? orgsSafe[0]
           : null;
+
+      if (profileOrgId && hasOrg(profileOrgId)) {
+        activeOrgSafe = orgsSafe.find(o => o && String(o.id) === String(profileOrgId)) || activeOrgSafe;
+      } else if (!activeOrgSafe && membershipOrgId && hasOrg(membershipOrgId)) {
+        activeOrgSafe = orgsSafe.find(o => o && String(o.id) === String(membershipOrgId)) || activeOrgSafe;
+      }
+
+      const activeOrgId =
+        activeOrgSafe && activeOrgSafe.id
+          ? String(activeOrgSafe.id)
+          : profileOrgId || membershipOrgId || null;
       const partial = Boolean(hadTimeout || reasonParts.length > 0);
       const bundle = {
         key: authKey,
@@ -1900,7 +1951,7 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
         membership: membershipResult || null,
         activeOrg: activeOrgSafe,
         orgCount: orgsSafe.length,
-        activeOrgId: activeOrgSafe && activeOrgSafe.id ? activeOrgSafe.id : null,
+        activeOrgId,
         partial,
         reason: reasonParts.join('; '),
         fetchedAt: Date.now(),

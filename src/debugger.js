@@ -18,6 +18,7 @@ let _sessionId = null;
 let _eventId = 0;
 const _events = [];
 const _inflight = new Map();
+const _singleFlightPromises = new Map();
 let _pollTimer = null;
 let _modalObserver = null;
 let _wrappedFetch = false;
@@ -53,7 +54,11 @@ function getAuthStateSnapshot(api) {
     const state = api.getAuthState();
     if (!state) return null;
     const userId =
-      state.user && state.user.id ? String(state.user.id) : state.session && state.session.user ? state.session.user.id : null;
+      state.user && state.user.id
+        ? String(state.user.id)
+        : state.session && state.session.user
+          ? state.session.user.id
+          : null;
     const hasToken = Boolean(state.session && state.session.access_token);
     return {
       status: state.status || 'unknown',
@@ -143,13 +148,7 @@ function isSupabaseNotInitializedError(err) {
 function describeNode(node) {
   if (!node || !(node instanceof Element)) return null;
   const cls = typeof node.className === 'string' ? node.className : '';
-  const classPreview = cls
-    ? cls
-        .split(/\s+/)
-        .filter(Boolean)
-        .slice(0, 4)
-        .join(' ')
-    : '';
+  const classPreview = cls ? cls.split(/\s+/).filter(Boolean).slice(0, 4).join(' ') : '';
 
   const attrs = {};
   const role = node.getAttribute('role');
@@ -227,23 +226,21 @@ function recordEvent(type, category, data = {}) {
   _events.push(evt);
   if (_events.length > CONFIG.maxEvents) _events.shift();
   if (CONFIG.consoleOutput) {
-    const color = {
-      auth: '#00bcd4',
-      fetch: '#8bc34a',
-      race: '#f44336',
-      dom: '#9c27b0',
-      storage: '#795548',
-      nav: '#3f51b5',
-      user: '#4caf50',
-      edge: '#ff9800',
-      debug: '#607d8b',
-      perf: '#9e9e9e',
-    }[category] || '#666';
+    const color =
+      {
+        auth: '#00bcd4',
+        fetch: '#8bc34a',
+        race: '#f44336',
+        dom: '#9c27b0',
+        storage: '#795548',
+        nav: '#3f51b5',
+        user: '#4caf50',
+        edge: '#ff9800',
+        debug: '#607d8b',
+        perf: '#9e9e9e',
+      }[category] || '#666';
 
-    console.groupCollapsed(
-      `%c[${evt.t}ms] ${type}`,
-      `color:${color};font-weight:bold;`
-    );
+    console.groupCollapsed(`%c[${evt.t}ms] ${type}`, `color:${color};font-weight:bold;`);
     console.log(evt.data);
     console.groupEnd();
   }
@@ -257,6 +254,7 @@ function shouldPersistEvent(evt) {
   if (evt.type === 'RUNTIME SNAPSHOT') return true;
   if (evt.type === 'SUPABASE WRAP STATUS') return true;
   if (evt.type === 'TP3D AUTH SIGNED OUT') return true;
+  if (evt.type === 'TP3D AUTH WARN') return true;
   if (evt.type === 'AUTH EVENT') return true;
   if (evt.type.startsWith('RACE:')) return true;
   if (evt.type === 'STORAGE EVENT') {
@@ -322,24 +320,33 @@ function wrapFunction(obj, fnName, category) {
   if (!obj || !obj[fnName] || obj[fnName].__tp3dWrapped) return;
   const original = obj[fnName].bind(obj);
   obj[fnName] = async (...args) => {
+    if (fnName === 'getSession') {
+      const existing = _singleFlightPromises.get(fnName);
+      if (existing) return existing;
+    }
     const callId = Math.random().toString(16).slice(2, 10);
     const cleanup = trackInflight(fnName, callId);
     const startTime = performance.now();
     recordEvent(`CALL ${fnName}`, category, { callId, args: args[0] });
-    try {
-      const res = await original(...args);
-      recordEvent(`OK ${fnName}`, category, { callId, ms: Math.round(performance.now() - startTime) });
-      return res;
-    } catch (err) {
-      recordEvent(`ERR ${fnName}`, category, {
-        callId,
-        ms: Math.round(performance.now() - startTime),
-        msg: err && err.message ? err.message : String(err),
-      });
-      throw err;
-    } finally {
-      cleanup();
-    }
+    const p = (async () => {
+      try {
+        const res = await original(...args);
+        recordEvent(`OK ${fnName}`, category, { callId, ms: Math.round(performance.now() - startTime) });
+        return res;
+      } catch (err) {
+        recordEvent(`ERR ${fnName}`, category, {
+          callId,
+          ms: Math.round(performance.now() - startTime),
+          msg: err && err.message ? err.message : String(err),
+        });
+        throw err;
+      } finally {
+        cleanup();
+        if (fnName === 'getSession') _singleFlightPromises.delete(fnName);
+      }
+    })();
+    if (fnName === 'getSession') _singleFlightPromises.set(fnName, p);
+    return p;
   };
   obj[fnName].__tp3dWrapped = true;
 }
@@ -356,7 +363,8 @@ function wrapFetch() {
         const req = args[0];
         const init = args[1];
         const url = req && typeof req === 'object' && 'url' in req ? req.url : safeString(req);
-        const method = (init && init.method) || (req && typeof req === 'object' && 'method' in req ? req.method : undefined);
+        const method =
+          (init && init.method) || (req && typeof req === 'object' && 'method' in req ? req.method : undefined);
         recordEvent('SLOW FETCH', 'fetch', {
           ms,
           url,
@@ -369,7 +377,8 @@ function wrapFetch() {
       const req = args[0];
       const init = args[1];
       const url = req && typeof req === 'object' && 'url' in req ? req.url : safeString(req);
-      const method = (init && init.method) || (req && typeof req === 'object' && 'method' in req ? req.method : undefined);
+      const method =
+        (init && init.method) || (req && typeof req === 'object' && 'method' in req ? req.method : undefined);
       recordEvent('FETCH ERROR', 'fetch', {
         url,
         method: method || 'GET',
@@ -531,8 +540,11 @@ function installAppEvents() {
 
   try {
     window.addEventListener('tp3d:auth-error', ev => {
-      recordEvent('TP3D AUTH ERROR', 'auth', { detail: ev && ev.detail ? ev.detail : null });
-      recordRuntimeSnapshot('app-auth-error');
+      const detail = ev && ev.detail ? ev.detail : null;
+      const severity = detail && detail.severity ? String(detail.severity) : 'error';
+      const label = severity === 'warn' ? 'TP3D AUTH WARN' : 'TP3D AUTH ERROR';
+      recordEvent(label, 'auth', { detail });
+      recordRuntimeSnapshot(severity === 'warn' ? 'app-auth-warn' : 'app-auth-error');
     });
   } catch {
     // ignore
@@ -700,8 +712,7 @@ function start() {
         },
         pre: preWrapStatus,
         post: postWrapStatus,
-        note:
-          'pre=before debugger wraps auth methods; post=after. If tp3dAuthWrappedFlag is true, TP3D supabase-client patched auth.getSession/getUser.',
+        note: 'pre=before debugger wraps auth methods; post=after. If tp3dAuthWrappedFlag is true, TP3D supabase-client patched auth.getSession/getUser.',
       });
     }
 

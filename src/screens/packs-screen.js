@@ -217,12 +217,15 @@ export function createPacksScreen({
           updateListHeaderIcons();
         };
         button.addEventListener('click', toggleSort);
-        button.addEventListener('keydown', /** @param {KeyboardEvent} ev */ ev => {
-          if (ev.key === 'Enter' || ev.key === ' ') {
-            ev.preventDefault();
-            toggleSort();
+        button.addEventListener(
+          'keydown',
+          /** @param {KeyboardEvent} ev */ ev => {
+            if (ev.key === 'Enter' || ev.key === ' ') {
+              ev.preventDefault();
+              toggleSort();
+            }
           }
-        });
+        );
       });
       updateListHeaderIcons();
     }
@@ -336,9 +339,12 @@ export function createPacksScreen({
         render();
       };
       el.addEventListener('click', toggle);
-      el.addEventListener('keydown', /** @param {KeyboardEvent} ev */ ev => {
-        if (ev.key === 'Enter' || ev.key === ' ') toggle();
-      });
+      el.addEventListener(
+        'keydown',
+        /** @param {KeyboardEvent} ev */ ev => {
+          if (ev.key === 'Enter' || ev.key === ' ') toggle();
+        }
+      );
     }
 
     function handleSelectAll() {
@@ -675,9 +681,7 @@ export function createPacksScreen({
         edited: badgePrefs.showEditedTime !== false,
       };
       Object.keys(show).forEach(key => {
-        const th = /** @type {HTMLElement|null} */ (
-          document.querySelector(`#packs-list thead th[data-sort="${key}"]`)
-        );
+        const th = /** @type {HTMLElement|null} */ (document.querySelector(`#packs-list thead th[data-sort="${key}"]`));
         if (th) th.style.display = show[key] ? '' : 'none';
       });
     }
@@ -697,9 +701,12 @@ export function createPacksScreen({
           }
           openPack(pack.id);
         });
-        card.addEventListener('keydown', /** @param {KeyboardEvent} ev */ ev => {
-          if (ev.key === 'Enter') openPack(pack.id);
-        });
+        card.addEventListener(
+          'keydown',
+          /** @param {KeyboardEvent} ev */ ev => {
+            if (ev.key === 'Enter') openPack(pack.id);
+          }
+        );
 
         const preview = buildPreview(pack);
 

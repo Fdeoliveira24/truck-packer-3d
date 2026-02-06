@@ -1,6 +1,7 @@
 # Browser Diagnostics — Truck Packer 3D
 
 These snippets are **copy/paste** friendly and are designed to help trace:
+
 - auth state transitions (login/logout/user changes)
 - race conditions (multiple in-flight calls)
 - tab/overlay binding issues
@@ -14,12 +15,15 @@ They do **not** change app state unless you intentionally do so (e.g., sign in/o
 ## 0) Quick toggles (optional)
 
 Enable app debug logs (only if code respects it):
+
 ```js
-localStorage.tp3dDebug = "1";
+localStorage.tp3dDebug = '1';
 ```
+
 Disable:
+
 ```js
-localStorage.removeItem("tp3dDebug");
+localStorage.removeItem('tp3dDebug');
 ```
 
 ---
@@ -31,19 +35,19 @@ Use when you suspect tab desync or duplicate settings modals.
 ```js
 (() => {
   const roots = [...document.querySelectorAll('[data-tp3d-settings-modal="1"]')];
-  console.log("settings roots:", roots.length, roots);
+  console.log('settings roots:', roots.length, roots);
   const root = roots[0];
   if (!root) return;
 
-  console.log("instance:", root.getAttribute("data-tp3d-settings-instance"));
-  console.log("tab buttons:", root.querySelectorAll("[data-tab]").length);
-  console.log("tab panels:", root.querySelectorAll("[data-tab-panel]").length);
+  console.log('instance:', root.getAttribute('data-tp3d-settings-instance'));
+  console.log('tab buttons:', root.querySelectorAll('[data-tab]').length);
+  console.log('tab panels:', root.querySelectorAll('[data-tab-panel]').length);
 
   const activeBtn = root.querySelector('[data-tab].active');
   const activePanel = root.querySelector('[data-tab-panel]:not([hidden])');
 
-  console.log("active button:", activeBtn?.getAttribute("data-tab"));
-  console.log("active panel:", activePanel?.getAttribute("data-tab-panel"));
+  console.log('active button:', activeBtn?.getAttribute('data-tab'));
+  console.log('active panel:', activePanel?.getAttribute('data-tab-panel'));
 })();
 ```
 
@@ -55,11 +59,11 @@ Logs any modal/dialog added to the DOM and prints a stack trace.
 
 ```js
 (() => {
-  const isModal = (el) =>
+  const isModal = el =>
     el?.matches?.('.modal, [role="dialog"], [data-tp3d-settings-modal="1"]') ||
     el?.querySelector?.('.modal, [role="dialog"], [data-tp3d-settings-modal="1"]');
 
-  const obs = new MutationObserver((muts) => {
+  const obs = new MutationObserver(muts => {
     for (const m of muts) {
       for (const n of m.addedNodes) {
         if (n.nodeType === 1 && isModal(n)) {
@@ -87,6 +91,7 @@ Logs any modal/dialog added to the DOM and prints a stack trace.
 ## 3) MASTER DIAGNOSTIC SNIPPET (recommended)
 
 This logs:
+
 - Auth events (SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED)
 - Visibility changes (tab switches)
 - Slow fetch calls
@@ -120,15 +125,16 @@ This logs:
     const evt = { id: ++eventId, t, type, category, data };
     events.push(evt);
     if (CONFIG.debug) {
-      const color = {
-        auth: '#00bcd4',
-        fetch: '#8bc34a',
-        race: '#f44336',
-        dom: '#9c27b0',
-        storage: '#795548',
-        user: '#4caf50',
-        nav: '#3f51b5',
-      }[category] || '#666';
+      const color =
+        {
+          auth: '#00bcd4',
+          fetch: '#8bc34a',
+          race: '#f44336',
+          dom: '#9c27b0',
+          storage: '#795548',
+          user: '#4caf50',
+          nav: '#3f51b5',
+        }[category] || '#666';
       console.log(`%c[${t}ms] ${type}`, `color:${color};font-weight:bold;`, data);
     }
     return evt;
@@ -163,7 +169,11 @@ This logs:
         log(`OK ${fnName}`, category, { id, ms: Math.round(performance.now() - start) });
         return res;
       } catch (e) {
-        log(`ERR ${fnName}`, category, { id, ms: Math.round(performance.now() - start), msg: e?.message });
+        log(`ERR ${fnName}`, category, {
+          id,
+          ms: Math.round(performance.now() - start),
+          msg: e?.message,
+        });
         throw e;
       } finally {
         stop();
@@ -215,13 +225,13 @@ This logs:
 
   // Storage changes (cross-tab)
   const bindStorage = () => {
-    window.addEventListener('storage', (e) => {
+    window.addEventListener('storage', e => {
       log('STORAGE EVENT', 'storage', { key: e.key, newValue: e.newValue });
     });
   };
 
   // Settings overlay snapshot helper
-  const snapshotSettings = (source) => {
+  const snapshotSettings = source => {
     const roots = [...document.querySelectorAll('[data-tp3d-settings-modal="1"]')];
     const root = roots[0];
     const activeBtn = root?.querySelector?.('[data-tab].active');
@@ -331,6 +341,7 @@ This logs:
 ---
 
 ### Notes
+
 - The diagnostic snippet is safe to run multiple times; it will refuse to install twice.
 - It only wraps auth and fetch when those exist, and logs are toggleable.
 - If things get too noisy, set `window.__TP3D_DIAG__.config.debug = false`.

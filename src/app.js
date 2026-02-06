@@ -2733,8 +2733,12 @@ initTP3DDebugger();
 
       // Best-effort: persist current org to profile when we have a real profile row.
       if (resolved.profile && !resolved.profile._isDefault) {
+        const hasProfileOrgField =
+          Object.prototype.hasOwnProperty.call(resolved.profile, 'current_org_id') ||
+          Object.prototype.hasOwnProperty.call(resolved.profile, 'currentOrgId') ||
+          Object.prototype.hasOwnProperty.call(resolved.profile, 'currentOrgID');
         const profileOrgId = resolved.profileOrgId ? String(resolved.profileOrgId) : null;
-        if (profileOrgId !== nextOrgIdStr && now - lastOrgPersistAt > ORG_PERSIST_COOLDOWN_MS) {
+        if (hasProfileOrgField && profileOrgId !== nextOrgIdStr && now - lastOrgPersistAt > ORG_PERSIST_COOLDOWN_MS) {
           lastOrgPersistAt = now;
           try {
             if (SupabaseClient && typeof SupabaseClient.updateProfile === 'function') {

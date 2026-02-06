@@ -11,6 +11,9 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
+/**
+ * @param {{ UIComponents?: any }} [opts]
+ */
 export function createHelpModal({ UIComponents } = {}) {
   let modal = null;
 

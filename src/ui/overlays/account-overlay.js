@@ -6,7 +6,11 @@
 
 import { getUserAvatarView } from '../../core/utils/index.js';
 
-export function createAccountOverlay({ documentRef = document, SupabaseClient }) {
+/**
+ * @param {{ documentRef?: Document, SupabaseClient?: any, UIComponents?: any }} [opts]
+ */
+export function createAccountOverlay(opts = {}) {
+  const { documentRef = document, SupabaseClient, UIComponents } = opts;
   const doc = documentRef;
 
   let accountOverlay = null;
@@ -151,9 +155,12 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     const p2 = doc.createElement('div');
     p2.className = 'muted';
     p2.style.marginTop = '6px';
-    p2.textContent = 'Deleting a user is irreversible. This will remove the selected user from the project and all associated data.';
+    p2.textContent =
+      'Deleting a user is irreversible. This will remove the selected user from the project and all associated data.';
 
-    const safeEmail = String(email || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const safeEmail = String(email || '')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
 
     const p3 = doc.createElement('div');
     p3.style.marginTop = '12px';
@@ -229,7 +236,10 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
       }
     };
 
-    const isValid = () => String(input.value || '').trim().toUpperCase() === 'DELETE';
+    const isValid = () =>
+      String(input.value || '')
+        .trim()
+        .toUpperCase() === 'DELETE';
 
     const sync = () => {
       const ok = isValid();
@@ -240,7 +250,7 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     input.addEventListener('input', sync);
 
     // Prevent Enter from acting like "confirm"; Enter focuses the delete button
-    input.addEventListener('keydown', (ev) => {
+    input.addEventListener('keydown', ev => {
       if (ev.key !== 'Enter') return;
       ev.preventDefault();
       ev.stopPropagation();
@@ -282,11 +292,11 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     cancelBtn.addEventListener('click', cleanup);
     deleteBtn.addEventListener('click', runConfirm);
 
-    overlay.addEventListener('click', (ev) => {
+    overlay.addEventListener('click', ev => {
       if (ev.target === overlay) cleanup();
     });
 
-    escapeHandler = (ev) => {
+    escapeHandler = ev => {
       if (ev.key === 'Escape') {
         ev.preventDefault();
         cleanup();
@@ -386,8 +396,9 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     avatarHint.className = 'muted';
     avatarHint.textContent = userView.isAuthed ? 'Upload a JPG, PNG, or WebP.' : 'Sign in to upload an avatar.';
 
-    avatarInput.addEventListener('change', async (e) => {
-      const file = e && e.target && e.target.files ? e.target.files[0] : null;
+    avatarInput.addEventListener('change', async e => {
+      const inputEl = /** @type {HTMLInputElement|null} */ (e && e.target ? e.target : null);
+      const file = inputEl && inputEl.files ? inputEl.files[0] : null;
       if (!file) return;
       const user = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
       if (!user) return;
@@ -395,11 +406,15 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
       try {
         avatarInput.disabled = true;
 
-        const ext = String(file.name || '').split('.').pop() || 'png';
+        const ext =
+          String(file.name || '')
+            .split('.')
+            .pop() || 'png';
         const safeExt = ext.toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
         const filePath = `${user.id}/avatar.${safeExt}`;
 
-        const client = SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
+        const client =
+          SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
         if (!client || !client.storage) throw new Error('Storage not available');
 
         const { error: uploadErr } = await client.storage.from('avatars').upload(filePath, file, { upsert: true });
@@ -475,7 +490,12 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
             }
             window.location.reload();
           } catch (err) {
-            alert(`Delete request failed: ${err && err.message ? err.message : err}`);
+            const msg = err && err.message ? err.message : String(err);
+            if (UIComponents && typeof UIComponents.showToast === 'function') {
+              UIComponents.showToast(`Delete request failed: ${msg}`, 'error');
+            } else {
+              console.error('[AccountOverlay] Delete request failed:', msg);
+            }
           }
         },
       });
@@ -512,7 +532,8 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
       return;
     }
 
-    lastFocusedEl = doc.activeElement && typeof doc.activeElement.focus === 'function' ? doc.activeElement : null;
+    const activeEl = doc.activeElement instanceof HTMLElement ? doc.activeElement : null;
+    lastFocusedEl = activeEl && typeof activeEl.focus === 'function' ? activeEl : null;
 
     accountOverlay = doc.createElement('div');
     accountOverlay.className = 'modal-overlay';
@@ -527,11 +548,11 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
 
     accountOverlay.appendChild(accountModal);
 
-    accountOverlay.addEventListener('click', (ev) => {
+    accountOverlay.addEventListener('click', ev => {
       if (ev.target === accountOverlay) close();
     });
 
-    trapKeydownHandler = (ev) => {
+    trapKeydownHandler = ev => {
       if (ev.key === 'Escape') {
         close();
         return;
@@ -542,7 +563,7 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
 
       const focusables = Array.from(
         accountModal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
-      ).filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null);
+      ).filter(el => !el.hasAttribute('disabled') && el.offsetParent !== null);
 
       if (!focusables.length) {
         ev.preventDefault();
@@ -588,13 +609,14 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
 
     void render();
 
-    const focusTarget = accountModal.querySelector(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    const focusTarget = /** @type {HTMLElement|null} */ (
+      accountModal.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
     );
     (focusTarget || accountModal).focus();
   }
 
-  function handleAuthChange() {
+  function handleAuthChange(_event) {
+    if (_event === 'SIGNED_OUT') return;
     // Bump render request ID to invalidate any in-flight renders with stale data
     renderRequestId++;
 

@@ -11,6 +11,15 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
+/**
+ * @param {{
+ *  documentRef?: Document,
+ *  UIComponents?: any,
+ *  ImportExport?: any,
+ *  PackLibrary?: any,
+ *  Utils?: any
+ * }} [opts]
+ */
 export function createImportPackDialog({
   documentRef = document,
   UIComponents,

@@ -11,6 +11,17 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
+/**
+ * @param {{
+ *  documentRef?: Document,
+ *  UIComponents?: any,
+ *  PreferencesManager?: any,
+ *  Defaults?: any,
+ *  Utils?: any,
+ *  getCasesUI?: Function,
+ *  getPacksUI?: Function
+ * }} [opts]
+ */
 export function createCardDisplayOverlay({
   documentRef = document,
   UIComponents,
@@ -19,7 +30,7 @@ export function createCardDisplayOverlay({
   Utils,
   getCasesUI,
   getPacksUI,
-}) {
+} = {}) {
   const doc = documentRef;
 
   function isOpen() {
@@ -34,6 +45,9 @@ export function createCardDisplayOverlay({
     }
   }
 
+  /**
+   * @param {{ screen?: string, force?: boolean }} [opts]
+   */
   function open({ screen, force } = {}) {
     const anchorEl =
       screen === 'cases' ? doc.getElementById('cases-card-display') : doc.getElementById('packs-card-display');

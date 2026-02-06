@@ -399,15 +399,15 @@ a {
   margin: var(--space-2) 0;
   border: none;
 
-/* Auth overlay offline banner */
-.auth-offline-banner {
-  background: #fff4e5;
-  color: #8a5300;
-  padding: 8px 12px;
-  border-radius: 8px;
-  font-size: 13px;
-  margin-bottom: 12px;
-}
+  /* Auth overlay offline banner */
+  .auth-offline-banner {
+    background: #fff4e5;
+    color: #8a5300;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
   border-top: 1px solid var(--border-subtle);
 }
 
@@ -2452,6 +2452,42 @@ body.modal-open {
   gap: 8px;
 }
 
+.tp3d-editor-card-meta {
+  align-items: center;
+  flex-wrap: nowrap;
+  justify-content: space-between;
+}
+
+.tp3d-label-strong {
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-editor-cat-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  line-height: 1.2;
+}
+
+.tp3d-editor-cat-dot {
+  display: none;
+}
+
+.tp3d-editor-case-search {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-secondary);
+}
+
+.tp3d-editor-case-search-row {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-secondary);
+}
+
 /* Text column layout */
 .tp3d-editor-col-grid-gap-2 {
   display: grid;
@@ -2483,6 +2519,7 @@ body.modal-open {
 .tp3d-editor-btn-add {
   padding: 6px 10px;
   box-shadow: none;
+  margin-left: auto;
 }
 
 /* Chip styles */
@@ -2505,6 +2542,29 @@ body.modal-open {
    TP3D Cases Screen (Phase 1.1)
    Category Manager modal
 ================================== */
+
+.tp3d-cases-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.tp3d-cases-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 240px;
+}
+
+.tp3d-cases-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 
 .tp3d-cases-catmgr-content {
   display: grid;

@@ -44,11 +44,11 @@ export function createSettingsOverlay({
   Utils,
   getAccountSwitcher,
   SupabaseClient,
-  onExportApp,
-  onImportApp,
-  onHelp,
-  onUpdates,
-  onRoadmap,
+  onExportApp: _onExportApp,
+  onImportApp: _onImportApp,
+  onHelp: _onHelp,
+  onUpdates: _onUpdates,
+  onRoadmap: _onRoadmap,
 }) {
   const doc = documentRef;
 
@@ -56,12 +56,123 @@ export function createSettingsOverlay({
   let settingsModal = null;
   let settingsLeftPane = null;
   let settingsRightPane = null;
-  let settingsActiveTab = 'preferences';
+  const _tabState = { activeTabId: 'preferences', didBind: false, lastActionId: 0 };
+  let settingsInstanceId = 0;
+  let settingsInstanceCounter = 0;
   let resourcesSubView = 'root'; // 'root' | 'updates' | 'roadmap' | 'export' | 'import' | 'help'
   let unmountAccountButton = null;
   let lastFocusedEl = null;
   let trapKeydownHandler = null;
   let warnedMissingModalRoot = false;
+  let tabClickHandler = null;
+
+  const SETTINGS_TABS = new Set(['account', 'preferences', 'resources', 'org-general', 'org-billing']);
+  const TAB_STORAGE_KEY = 'tp3d:settings:activeTab';
+  const SETTINGS_MODAL_ATTR = 'data-tp3d-settings-modal';
+  const SETTINGS_INSTANCE_ATTR = 'data-tp3d-settings-instance';
+
+  function debugEnabled() {
+    try {
+      return window.localStorage && window.localStorage.getItem('tp3dDebug') === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  function debug(message, data) {
+    if (!debugEnabled()) return;
+    try {
+      console.log('[SettingsOverlay]', message, data || {});
+    } catch {
+      // ignore
+    }
+  }
+
+  function nextSettingsInstanceId() {
+    settingsInstanceCounter += 1;
+    settingsInstanceId = settingsInstanceCounter;
+    return settingsInstanceId;
+  }
+
+  function getSettingsModalRoots() {
+    return Array.from(doc.querySelectorAll(`[${SETTINGS_MODAL_ATTR}="1"]`));
+  }
+
+  function debugSettingsModalSnapshot(source, root = settingsOverlay) {
+    if (!debugEnabled()) return;
+    const dialogs = doc.querySelectorAll('[role="dialog"], .modal');
+    const settingsRoots = getSettingsModalRoots();
+    const buttons = root ? root.querySelectorAll('[data-tab]') : [];
+    const panels = root ? root.querySelectorAll('[data-tab-panel]') : [];
+    const payload = {
+      source,
+      instanceId: settingsInstanceId,
+      dialogCount: dialogs.length,
+      settingsModalCount: settingsRoots.length,
+      buttonCount: buttons.length,
+      panelCount: panels.length,
+    };
+    debug('modalSnapshot', payload);
+    if (settingsRoots.length > 1) {
+      console.warn('[SettingsOverlay] Multiple settings modals detected', payload);
+      console.trace();
+    }
+  }
+
+  function debugTabSnapshot(source, root = settingsOverlay) {
+    if (!debugEnabled() || !root) return;
+    const activeBtn = root.querySelector('[data-tab].active');
+    const activePanel = root.querySelector('[data-tab-panel]:not([hidden])');
+    const domTabId = activeBtn ? activeBtn.getAttribute('data-tab') : null;
+    const domPanelId = activePanel ? activePanel.getAttribute('data-tab-panel') : null;
+    const payload = {
+      source,
+      instanceId: settingsInstanceId,
+      stateTabId: _tabState.activeTabId,
+      domTabId,
+      domPanelId,
+    };
+    if (domTabId !== _tabState.activeTabId || domPanelId !== _tabState.activeTabId) {
+      console.warn('[SettingsOverlay] Tab desync detected', payload);
+      console.trace();
+      return;
+    }
+    debug('tabSnapshot', payload);
+  }
+
+  function cleanupStaleSettingsModals(source) {
+    const roots = getSettingsModalRoots();
+    if (!roots.length) return;
+    let removed = 0;
+    roots.forEach(root => {
+      if (settingsModal && root === settingsModal) return;
+      const overlay = /** @type {HTMLElement & { _tp3dCleanup?: () => void }} */ (
+        root.closest('.modal-overlay') || root
+      );
+      try {
+        overlay && overlay._tp3dCleanup && overlay._tp3dCleanup();
+      } catch {
+        // ignore
+      }
+      try {
+        if (overlay && overlay.parentElement) {
+          overlay.parentElement.removeChild(overlay);
+          removed += 1;
+        }
+      } catch {
+        // ignore
+      }
+    });
+    if (removed) debug('cleanupStaleSettingsModals', { source, removed });
+  }
+
+  function renderIfFresh(actionId, source) {
+    if (typeof actionId === 'number' && actionId < _tabState.lastActionId) {
+      debug('render skipped (stale)', { source, actionId, lastActionId: _tabState.lastActionId });
+      return null;
+    }
+    return render();
+  }
 
   // Profile editing state
   let profileData = null;
@@ -71,10 +182,10 @@ export function createSettingsOverlay({
 
   // Organization editing state
   let orgData = null;
-  let membershipData = null;  // Store membership separately
+  let membershipData = null; // Store membership separately
   let isEditingOrg = false;
   let isLoadingOrg = false;
-  let isLoadingMembership = false;  // Track membership loading
+  let isLoadingMembership = false; // Track membership loading
   let isSavingOrg = false;
 
   // Account bundle loading state (single request for all account data)
@@ -180,8 +291,7 @@ export function createSettingsOverlay({
   /**
    * Load all account data (profile, membership, org) in a single request.
    * Uses the epoch-validated single-flight bundle to prevent stale data.
-   * @param {Object} options
-   * @param {boolean} options.force - Force refresh even if cached
+   * @param {{ force?: boolean }} [options]
    * @returns {Promise<Object|null>} The account bundle or null
    */
   async function loadAccountBundle({ force = false } = {}) {
@@ -243,7 +353,7 @@ export function createSettingsOverlay({
 
     isLoadingProfile = true;
     try {
-      const bundle = await loadAccountBundle();
+      await loadAccountBundle();
       isLoadingProfile = false;
       return profileData; // Return from module-level cache
     } catch (err) {
@@ -254,8 +364,9 @@ export function createSettingsOverlay({
   }
 
   async function saveProfile(updates) {
-    if (isSavingProfile) return;
+    if (isSavingProfile) return null;
     isSavingProfile = true;
+    const actionId = _tabState.lastActionId;
     try {
       const updated = await SupabaseClient.updateProfile(updates);
       profileData = updated;
@@ -266,7 +377,7 @@ export function createSettingsOverlay({
         SupabaseClient.invalidateAccountCache();
       }
       UIComponents.showToast('Profile saved', 'success');
-      render();
+      renderIfFresh(actionId, 'saveProfile');
       return updated;
     } catch (err) {
       isSavingProfile = false;
@@ -276,7 +387,7 @@ export function createSettingsOverlay({
   }
 
   async function loadOrganization(orgId = null) {
-    if (isLoadingOrg || !orgId) return;
+    if (isLoadingOrg || !orgId) return null;
     isLoadingOrg = true;
     try {
       const org = await SupabaseClient.getOrganization(orgId);
@@ -291,8 +402,9 @@ export function createSettingsOverlay({
   }
 
   async function saveOrganization(updates, orgId = null) {
-    if (isSavingOrg || !orgId) return;
+    if (isSavingOrg || !orgId) return null;
     isSavingOrg = true;
+    const actionId = _tabState.lastActionId;
     try {
       // Trim string values
       const trimmed = {};
@@ -309,7 +421,7 @@ export function createSettingsOverlay({
         SupabaseClient.invalidateAccountCache();
       }
       UIComponents.showToast('Organization updated', 'success');
-      render();
+      renderIfFresh(actionId, 'saveOrganization');
       return updated;
     } catch (err) {
       isSavingOrg = false;
@@ -319,6 +431,7 @@ export function createSettingsOverlay({
   }
 
   async function handleAvatarUpload(file) {
+    const actionId = _tabState.lastActionId;
     try {
       const publicUrl = await SupabaseClient.uploadAvatar(file);
       // Add cache-busting timestamp to force browser to reload image
@@ -326,7 +439,7 @@ export function createSettingsOverlay({
       await SupabaseClient.updateProfile({ avatar_url: publicUrl });
       UIComponents.showToast('Avatar uploaded', 'success');
       await loadProfile();
-      render();
+      renderIfFresh(actionId, 'avatarUpload');
       // Notify app to refresh sidebar avatar
       try {
         const event = new CustomEvent('tp3d:profile-updated', { detail: { avatar_url: cacheBustedUrl } });
@@ -340,12 +453,13 @@ export function createSettingsOverlay({
   }
 
   async function handleAvatarRemove() {
+    const actionId = _tabState.lastActionId;
     try {
       await SupabaseClient.deleteAvatar();
       await SupabaseClient.updateProfile({ avatar_url: null });
       UIComponents.showToast('Avatar removed', 'success');
       await loadProfile();
-      render();
+      renderIfFresh(actionId, 'avatarRemove');
       // Notify app to refresh sidebar avatar
       try {
         const event = new CustomEvent('tp3d:profile-updated', { detail: { avatar_url: null } });
@@ -391,15 +505,27 @@ export function createSettingsOverlay({
     trapKeydownHandler = null;
 
     try {
+      if (tabClickHandler && settingsOverlay) {
+        if (settingsLeftPane) settingsLeftPane.removeEventListener('click', tabClickHandler);
+      }
+    } catch {
+      // ignore
+    }
+    tabClickHandler = null;
+    _tabState.didBind = false;
+
+    try {
       if (settingsOverlay.parentElement) settingsOverlay.parentElement.removeChild(settingsOverlay);
     } catch {
       // ignore
     }
 
+    debugSettingsModalSnapshot('close');
     settingsOverlay = null;
     settingsModal = null;
     settingsLeftPane = null;
     settingsRightPane = null;
+    settingsInstanceId = 0;
     resourcesSubView = 'root'; // Reset sub-view on close
 
     try {
@@ -412,13 +538,118 @@ export function createSettingsOverlay({
     lastFocusedEl = null;
   }
 
-  function setActive(tab) {
-    settingsActiveTab = String(tab || 'preferences');
-    // Reset sub-view when switching tabs
-    if (tab !== 'resources') {
+  function normalizeTab(tab) {
+    const key = typeof tab === 'string' ? tab : '';
+    return SETTINGS_TABS.has(key) ? key : 'preferences';
+  }
+
+  function readSavedTab() {
+    try {
+      if (window && window.sessionStorage) {
+        const saved = window.sessionStorage.getItem(TAB_STORAGE_KEY);
+        return saved && SETTINGS_TABS.has(saved) ? saved : null;
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  function persistTab(tab) {
+    try {
+      if (window && window.sessionStorage) {
+        window.sessionStorage.setItem(TAB_STORAGE_KEY, tab);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  function resolveInitialTab(tab) {
+    const requested = typeof tab === 'string' && tab ? tab : null;
+    const saved = readSavedTab();
+    return normalizeTab(requested || saved || _tabState.activeTabId);
+  }
+
+  /**
+   * Repro steps:
+   * 1) open settings
+   * 2) click tabs fast
+   * 3) close + reopen
+   * 4) apply + reset
+   * 5) confirm button highlight always matches visible panel
+   */
+  function setActiveTab(tabId, meta = {}) {
+    const nextTab = normalizeTab(tabId);
+    const actionId = typeof meta.actionId === 'number' ? meta.actionId : null;
+    if (actionId != null && actionId < _tabState.lastActionId) {
+      debug('setActiveTab skipped (stale)', { tabId: nextTab, actionId, lastActionId: _tabState.lastActionId });
+      return;
+    }
+    _tabState.activeTabId = nextTab;
+    if (nextTab !== 'resources') {
       resourcesSubView = 'root';
     }
-    render();
+    persistTab(nextTab);
+    const counts = render();
+    debug('setActiveTab', {
+      tabId: nextTab,
+      source: meta.source,
+      actionId,
+      lastActionId: _tabState.lastActionId,
+      instanceId: settingsInstanceId,
+      buttonCount: counts ? counts.buttonCount : 0,
+      panelCount: counts ? counts.panelCount : 0,
+    });
+    debugTabSnapshot('setActiveTab');
+  }
+
+  function setActive(tab) {
+    setActiveTab(tab, { source: 'api' });
+  }
+
+  function bindTabsOnce() {
+    if (_tabState.didBind || !settingsLeftPane) {
+      debug('bindTabsOnce skipped', { didBind: _tabState.didBind, instanceId: settingsInstanceId });
+      return;
+    }
+    tabClickHandler = ev => {
+      const target = ev.target instanceof Element ? ev.target.closest('[data-tab]') : null;
+      if (!target) return;
+      const key = target.getAttribute('data-tab') || (target.dataset ? target.dataset.tab : null);
+      if (!key) return;
+      ev.preventDefault();
+      _tabState.lastActionId += 1;
+      setActiveTab(key, { source: 'click', actionId: _tabState.lastActionId });
+    };
+    settingsLeftPane.addEventListener('click', tabClickHandler);
+    _tabState.didBind = true;
+    const buttons = settingsOverlay ? settingsOverlay.querySelectorAll('[data-tab]') : [];
+    const panels = settingsOverlay ? settingsOverlay.querySelectorAll('[data-tab-panel]') : [];
+    debug('bindTabsOnce bound', {
+      didBind: _tabState.didBind,
+      instanceId: settingsInstanceId,
+      buttonCount: buttons.length,
+      panelCount: panels.length,
+    });
+    debugSettingsModalSnapshot('bindTabsOnce');
+  }
+
+  function applyTabStateToDOM() {
+    const buttons = settingsOverlay ? settingsOverlay.querySelectorAll('[data-tab]') : [];
+    const panels = settingsOverlay ? settingsOverlay.querySelectorAll('[data-tab-panel]') : [];
+    buttons.forEach(btn => {
+      const key = btn.getAttribute('data-tab');
+      const isActive = key === _tabState.activeTabId;
+      btn.classList.toggle('active', isActive);
+      btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      btn.setAttribute('tabindex', isActive ? '0' : '-1');
+    });
+    panels.forEach(panel => {
+      const key = panel.getAttribute('data-tab-panel');
+      panel.hidden = key !== _tabState.activeTabId;
+    });
+    return { buttonCount: buttons.length, panelCount: panels.length };
   }
 
   function setResourcesSubView(subView) {
@@ -673,7 +904,8 @@ export function createSettingsOverlay({
       summary.className = 'card';
       summary.innerHTML = `
         <div class="tp3d-import-summary-title">Import Result</div>
-        <div class="muted tp3d-import-summary-meta">File: ${Utils && Utils.escapeHtml ? Utils.escapeHtml(file.name) : file.name
+        <div class="muted tp3d-import-summary-meta">File: ${
+          Utils && Utils.escapeHtml ? Utils.escapeHtml(file.name) : file.name
         }</div>
         <div class="tp3d-import-summary-spacer"></div>
         <div class="tp3d-import-badges">
@@ -793,7 +1025,9 @@ export function createSettingsOverlay({
   }
 
   function render() {
-    if (!settingsOverlay) return;
+    if (!settingsOverlay) {
+      return null;
+    }
     const prefs = PreferencesManager.get();
 
     settingsLeftPane.innerHTML = '';
@@ -823,6 +1057,8 @@ export function createSettingsOverlay({
     // Left: settings navigation
     const navWrap = doc.createElement('div');
     navWrap.classList.add('tp3d-settings-nav-wrap');
+    navWrap.dataset.settingsTabs = '1';
+    navWrap.setAttribute('role', 'tablist');
 
     const makeHeader = text => {
       const h = doc.createElement('div');
@@ -832,12 +1068,16 @@ export function createSettingsOverlay({
       return h;
     };
 
-    const makeItem = ({ key, label, icon, indent }) => {
+    /**
+     * @param {{ key: string, label: string, icon?: string, indent?: boolean }} opts
+     */
+    const makeItem = ({ key, label, icon, indent = false }) => {
       const btn = doc.createElement('button');
       btn.type = 'button';
       btn.className = 'nav-btn';
       btn.classList.add('tp3d-settings-nav-item');
       btn.dataset.settingsTab = key;
+      btn.setAttribute('role', 'tab');
 
       if (icon) {
         const i = doc.createElement('i');
@@ -852,8 +1092,12 @@ export function createSettingsOverlay({
       text.classList.add('tp3d-settings-nav-label');
       btn.appendChild(text);
 
-      btn.classList.toggle('active', settingsActiveTab === key);
-      btn.addEventListener('click', () => setActive(key));
+      const isActive = _tabState.activeTabId === key;
+      btn.classList.toggle('active', isActive);
+      btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      btn.setAttribute('tabindex', isActive ? '0' : '-1');
+      btn.dataset.tab = key;
+      btn.dataset.settingsTab = key;
       return btn;
     };
 
@@ -877,7 +1121,7 @@ export function createSettingsOverlay({
     header.classList.add('tp3d-settings-right-header');
 
     const meta = (() => {
-      switch (settingsActiveTab) {
+      switch (_tabState.activeTabId) {
         case 'preferences':
           return {
             title: 'Preferences',
@@ -991,6 +1235,8 @@ export function createSettingsOverlay({
 
     const body = doc.createElement('div');
     body.classList.add('tp3d-settings-right-body');
+    body.setAttribute('data-tab-panel', _tabState.activeTabId);
+    body.hidden = false;
     settingsRightPane.appendChild(body);
 
     function row(label, valueEl) {
@@ -1004,7 +1250,7 @@ export function createSettingsOverlay({
       return wrap;
     }
 
-    if (settingsActiveTab === 'preferences') {
+    if (_tabState.activeTabId === 'preferences') {
       const length = doc.createElement('select');
       length.className = 'select';
       length.innerHTML = `
@@ -1072,7 +1318,7 @@ export function createSettingsOverlay({
       );
       actions.appendChild(saveBtn);
       body.appendChild(actions);
-    } else if (settingsActiveTab === 'resources') {
+    } else if (_tabState.activeTabId === 'resources') {
       // Handle sub-views within Resources
       if (resourcesSubView === 'updates') {
         // Render embedded Updates content
@@ -1090,12 +1336,6 @@ export function createSettingsOverlay({
         // Root view: show buttons
         const container = doc.createElement('div');
         container.className = 'grid';
-
-        const runResourceAction = (cb, { closeFirst = true } = {}) => {
-          if (typeof cb !== 'function') return;
-          if (closeFirst) close();
-          cb();
-        };
 
         const makeBtn = (label, variant, onClick) => {
           const btn = doc.createElement('button');
@@ -1122,15 +1362,16 @@ export function createSettingsOverlay({
         container.appendChild(helpBtn);
         body.appendChild(container);
       }
-    } else if (settingsActiveTab === 'account') {
-      const userView = getCurrentUserView(profileData);
+    } else if (_tabState.activeTabId === 'account') {
+      const accountUserView = getCurrentUserView(profileData);
 
       // Load all account data via bundle if profile not already loaded
       // This uses the epoch-validated single-flight approach to prevent stale data
-      if (!profileData && !isLoadingProfile && !isLoadingAccountBundle && userView.isAuthed) {
+      if (!profileData && !isLoadingProfile && !isLoadingAccountBundle && accountUserView.isAuthed) {
+        const actionId = _tabState.lastActionId;
         loadAccountBundle()
-          .then(() => render())
-          .catch(() => { });
+          .then(() => renderIfFresh(actionId, 'account-bundle'))
+          .catch(() => {});
       }
 
       // Avatar section
@@ -1153,7 +1394,7 @@ export function createSettingsOverlay({
         img.className = 'tp3d-account-avatar-img';
         avatarPreview.appendChild(img);
       } else {
-        avatarPreview.textContent = userView.initials || '';
+        avatarPreview.textContent = accountUserView.initials || '';
       }
 
       const avatarButtons = doc.createElement('div');
@@ -1163,7 +1404,7 @@ export function createSettingsOverlay({
       uploadBtn.type = 'button';
       uploadBtn.className = 'btn btn-secondary';
       uploadBtn.textContent = profileData && profileData.avatar_url ? 'Change Avatar' : 'Upload Avatar';
-      uploadBtn.disabled = !userView.isAuthed;
+      uploadBtn.disabled = !accountUserView.isAuthed;
 
       const fileInput = doc.createElement('input');
       fileInput.type = 'file';
@@ -1173,7 +1414,8 @@ export function createSettingsOverlay({
 
       uploadBtn.addEventListener('click', () => fileInput.click());
       fileInput.addEventListener('change', async e => {
-        const file = e.target.files && e.target.files[0];
+        const inputEl = /** @type {HTMLInputElement|null} */ (e.target);
+        const file = inputEl && inputEl.files ? inputEl.files[0] : null;
         if (file) {
           await handleAvatarUpload(file);
           fileInput.value = '';
@@ -1187,7 +1429,7 @@ export function createSettingsOverlay({
         removeBtn.type = 'button';
         removeBtn.className = 'btn btn-ghost';
         removeBtn.textContent = 'Remove';
-        removeBtn.disabled = !userView.isAuthed;
+        removeBtn.disabled = !accountUserView.isAuthed;
         removeBtn.addEventListener('click', () => handleAvatarRemove());
         avatarButtons.appendChild(removeBtn);
       }
@@ -1313,7 +1555,8 @@ export function createSettingsOverlay({
 
         // Display name
         const displayNameEl = doc.createElement('div');
-        displayNameEl.textContent = (profileData && profileData.display_name) || userView.displayName || '\u2014';
+        displayNameEl.textContent =
+          (profileData && profileData.display_name) || accountUserView.displayName || '\u2014';
         viewContainer.appendChild(row('Display Name', displayNameEl));
 
         // First name
@@ -1337,11 +1580,12 @@ export function createSettingsOverlay({
 
         // Email
         const emailEl = doc.createElement('div');
-        emailEl.textContent = userView.isAuthed && userView.email ? userView.email : 'Not signed in';
+        emailEl.textContent =
+          accountUserView.isAuthed && accountUserView.email ? accountUserView.email : 'Not signed in';
         viewContainer.appendChild(row('Email', emailEl));
 
         // Edit button
-        if (userView.isAuthed && profileData) {
+        if (accountUserView.isAuthed && profileData) {
           const editActions = doc.createElement('div');
           editActions.className = 'tp3d-account-actions';
           const editBtn = doc.createElement('button');
@@ -1380,7 +1624,7 @@ export function createSettingsOverlay({
       deleteBtn.type = 'button';
       deleteBtn.className = 'btn btn-danger';
       deleteBtn.textContent = 'Delete Account';
-      deleteBtn.disabled = !userView.isAuthed;
+      deleteBtn.disabled = !accountUserView.isAuthed;
       deleteBtn.addEventListener('click', () => {
         // Create confirmation modal content
         const modalContent = doc.createElement('div');
@@ -1419,7 +1663,10 @@ export function createSettingsOverlay({
         modalContent.appendChild(dangerMsg);
         modalContent.appendChild(confirmWrap);
 
-        const isValid = () => String(confirmInput.value || '').trim().toUpperCase() === 'DELETE';
+        const isValid = () =>
+          String(confirmInput.value || '')
+            .trim()
+            .toUpperCase() === 'DELETE';
 
         // Show modal
         const modalRef = UIComponents.showModal({
@@ -1581,18 +1828,19 @@ export function createSettingsOverlay({
       dangerRow.appendChild(dRight);
       danger.appendChild(dangerRow);
       body.appendChild(danger);
-    } else if (settingsActiveTab === 'org-general') {
-      const userView = getCurrentUserView(profileData);
+    } else if (_tabState.activeTabId === 'org-general') {
+      const orgUserView = getCurrentUserView(profileData);
 
       // Load all account data via bundle if not already loaded
       // This uses the epoch-validated single-flight approach to prevent stale data
-      if (!membershipData && !orgData && !isLoadingAccountBundle && !isLoadingMembership && userView.isAuthed) {
+      if (!membershipData && !orgData && !isLoadingAccountBundle && !isLoadingMembership && orgUserView.isAuthed) {
+        const actionId = _tabState.lastActionId;
         loadAccountBundle()
           .then(() => {
-            render();
+            renderIfFresh(actionId, 'org-bundle');
           })
           .catch(() => {
-            render();
+            renderIfFresh(actionId, 'org-bundle-error');
           });
       }
 
@@ -1620,8 +1868,7 @@ export function createSettingsOverlay({
       };
 
       // Determine if user is owner/admin using membership.role
-      const isOwnerOrAdmin =
-        membershipData && (membershipData.role === 'owner' || membershipData.role === 'admin');
+      const isOwnerOrAdmin = membershipData && (membershipData.role === 'owner' || membershipData.role === 'admin');
 
       if (isEditingOrg && orgData && isOwnerOrAdmin) {
         // Edit mode
@@ -1863,12 +2110,39 @@ export function createSettingsOverlay({
       billingCard.appendChild(billingWrap);
       body.appendChild(billingCard);
     }
+    const counts = applyTabStateToDOM();
+    debug('render', {
+      tabId: _tabState.activeTabId,
+      actionId: _tabState.lastActionId,
+      instanceId: settingsInstanceId,
+      buttonCount: counts.buttonCount,
+      panelCount: counts.panelCount,
+    });
+    debugTabSnapshot('render');
+    debugSettingsModalSnapshot('render');
+    return counts;
   }
 
   function open(tab) {
-    if (settingsOverlay) return setActive(tab || settingsActiveTab);
+    cleanupStaleSettingsModals('open');
+    const nextTab = resolveInitialTab(tab);
+    if (settingsOverlay && settingsOverlay.isConnected) {
+      setActiveTab(nextTab, { source: 'open', actionId: _tabState.lastActionId });
+      debugSettingsModalSnapshot('open:reuse');
+      debugTabSnapshot('open:reuse');
+      return;
+    }
+    if (settingsOverlay && !settingsOverlay.isConnected) {
+      settingsOverlay = null;
+      settingsModal = null;
+      settingsLeftPane = null;
+      settingsRightPane = null;
+      tabClickHandler = null;
+      _tabState.didBind = false;
+    }
 
-    lastFocusedEl = doc.activeElement && typeof doc.activeElement.focus === 'function' ? doc.activeElement : null;
+    const activeEl = doc.activeElement instanceof HTMLElement ? doc.activeElement : null;
+    lastFocusedEl = activeEl && typeof activeEl.focus === 'function' ? activeEl : null;
 
     settingsOverlay = doc.createElement('div');
     settingsOverlay.className = 'modal-overlay';
@@ -1876,6 +2150,9 @@ export function createSettingsOverlay({
     settingsModal = doc.createElement('div');
     settingsModal.className = 'modal';
     settingsModal.classList.add('tp3d-settings-modal');
+    const instanceId = nextSettingsInstanceId();
+    settingsModal.setAttribute(SETTINGS_MODAL_ATTR, '1');
+    settingsModal.setAttribute(SETTINGS_INSTANCE_ATTR, String(instanceId));
     settingsModal.setAttribute('role', 'dialog');
     settingsModal.setAttribute('aria-modal', 'true');
     settingsModal.setAttribute('tabindex', '-1');
@@ -1944,13 +2221,13 @@ export function createSettingsOverlay({
       }
     };
 
-    if (tab) {
-      settingsActiveTab = String(tab);
-    }
-    render();
+    bindTabsOnce();
+    setActiveTab(nextTab, { source: 'open', actionId: _tabState.lastActionId });
+    debugSettingsModalSnapshot('open:created');
+    debugTabSnapshot('open:created');
 
-    const focusTarget = settingsModal.querySelector(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    const focusTarget = /** @type {HTMLElement|null} */ (
+      settingsModal.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
     );
     (focusTarget || settingsModal).focus();
   }
@@ -1985,6 +2262,10 @@ export function createSettingsOverlay({
 
   function handleAuthChange(_event) {
     try {
+      if (_event === 'SIGNED_OUT') {
+        clearCachedUserData();
+        return;
+      }
       // FIX: Always clear cached data on ANY auth change to prevent stale data
       // This ensures when a different user logs in (even via cross-tab), we don't show old user's data
       clearCachedUserData();

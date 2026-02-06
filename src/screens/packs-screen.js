@@ -29,16 +29,16 @@ export function createPacksScreen({
   CardDisplayOverlay,
   featureFlags,
   toast,
-  toAscii,
+  toAscii: _toAscii,
 }) {
   const PacksUI = (() => {
-    const searchEl = document.getElementById('packs-search');
-    const gridEl = document.getElementById('packs-grid');
-    const listEl = document.getElementById('packs-list');
-    const tbodyEl = document.getElementById('packs-tbody');
-    const emptyEl = document.getElementById('packs-empty');
-    const filterEmptyEl = document.getElementById('packs-filter-empty');
-    const filterEmptyMsg = document.getElementById('packs-filter-empty-msg');
+    const searchEl = /** @type {HTMLInputElement} */ (document.getElementById('packs-search'));
+    const gridEl = /** @type {HTMLElement} */ (document.getElementById('packs-grid'));
+    const listEl = /** @type {HTMLElement} */ (document.getElementById('packs-list'));
+    const tbodyEl = /** @type {HTMLElement} */ (document.getElementById('packs-tbody'));
+    const emptyEl = /** @type {HTMLElement} */ (document.getElementById('packs-empty'));
+    const filterEmptyEl = /** @type {HTMLElement} */ (document.getElementById('packs-filter-empty'));
+    const filterEmptyMsg = /** @type {HTMLElement} */ (document.getElementById('packs-filter-empty-msg'));
     const btnNew = document.getElementById('btn-new-pack');
     const btnImport = document.getElementById('btn-import-pack');
     const chipEmpty = document.getElementById('packs-filter-chip-empty');
@@ -49,11 +49,10 @@ export function createPacksScreen({
     const btnTrailerPresets = document.getElementById('packs-trailer-presets');
     const btnFiltersToggle = document.getElementById('packs-filters-toggle');
     const btnCardDisplay = document.getElementById('packs-card-display');
-    const selectAllEl = document.getElementById('packs-select-all');
-    const titleHeaderButton = document.querySelector('#packs-list thead th[data-sort="title"] .th-sort');
-    const defaultActionsEl = document.getElementById('packs-actions-default');
-    const bulkActionsEl = document.getElementById('packs-actions-bulk');
-    const bulkCountEl = document.getElementById('packs-selected-count');
+    const selectAllEl = /** @type {HTMLInputElement} */ (document.getElementById('packs-select-all'));
+    const defaultActionsEl = /** @type {HTMLElement} */ (document.getElementById('packs-actions-default'));
+    const bulkActionsEl = /** @type {HTMLElement} */ (document.getElementById('packs-actions-bulk'));
+    const bulkCountEl = /** @type {HTMLElement} */ (document.getElementById('packs-selected-count'));
     const btnBulkDelete = document.getElementById('btn-packs-bulk-delete');
 
     const filters = { empty: false, partial: false, full: false };
@@ -160,7 +159,7 @@ export function createPacksScreen({
         return;
       }
 
-      const items = [{ type: 'header', label: 'Trailer Presets' }];
+      const items = /** @type {any[]} */ ([{ type: 'header', label: 'Trailer Presets' }]);
       TrailerPresets.getAll().forEach(p => {
         items.push({
           label: p.label,
@@ -199,7 +198,8 @@ export function createPacksScreen({
     function initListHeaderSort() {
       const headers = document.querySelectorAll('#packs-list thead th[data-sort]');
       headers.forEach(th => {
-        const sortField = th.dataset.sort;
+        const thEl = /** @type {HTMLElement} */ (th);
+        const sortField = thEl.dataset.sort;
         const button = th.querySelector('.th-sort');
         if (!button) return;
         const toggleSort = () => {
@@ -217,7 +217,7 @@ export function createPacksScreen({
           updateListHeaderIcons();
         };
         button.addEventListener('click', toggleSort);
-        button.addEventListener('keydown', ev => {
+        button.addEventListener('keydown', /** @param {KeyboardEvent} ev */ ev => {
           if (ev.key === 'Enter' || ev.key === ' ') {
             ev.preventDefault();
             toggleSort();
@@ -230,7 +230,8 @@ export function createPacksScreen({
     function updateListHeaderIcons() {
       const headers = document.querySelectorAll('#packs-list thead th[data-sort]');
       headers.forEach(th => {
-        const sortField = th.dataset.sort;
+        const thEl = /** @type {HTMLElement} */ (th);
+        const sortField = thEl.dataset.sort;
         const button = th.querySelector('.th-sort');
         if (!button) return;
         button.classList.toggle('is-asc', sortKey === `${sortField}-asc`);
@@ -252,7 +253,7 @@ export function createPacksScreen({
       btnViewList.classList.toggle('btn-primary', mode === 'list');
     }
 
-    function getPacksFooterMountElForMode(mode) {
+    function getPacksFooterMountElForMode(_mode) {
       // Footer must be appended directly to #screen-packs to match CSS selector
       return document.getElementById('screen-packs');
     }
@@ -335,7 +336,7 @@ export function createPacksScreen({
         render();
       };
       el.addEventListener('click', toggle);
-      el.addEventListener('keydown', ev => {
+      el.addEventListener('keydown', /** @param {KeyboardEvent} ev */ ev => {
         if (ev.key === 'Enter' || ev.key === ' ') toggle();
       });
     }
@@ -674,7 +675,9 @@ export function createPacksScreen({
         edited: badgePrefs.showEditedTime !== false,
       };
       Object.keys(show).forEach(key => {
-        const th = document.querySelector(`#packs-list thead th[data-sort="${key}"]`);
+        const th = /** @type {HTMLElement|null} */ (
+          document.querySelector(`#packs-list thead th[data-sort="${key}"]`)
+        );
         if (th) th.style.display = show[key] ? '' : 'none';
       });
     }
@@ -688,16 +691,13 @@ export function createPacksScreen({
         card.classList.toggle('selected', selectedIds.has(pack.id));
         card.tabIndex = 0;
         card.addEventListener('click', ev => {
-          if (
-            ev.target &&
-            ev.target.closest &&
-            (ev.target.closest('[data-pack-menu]') || ev.target.closest('[data-pack-select]'))
-          ) {
+          const targetEl = ev.target instanceof Element ? ev.target : null;
+          if (targetEl && (targetEl.closest('[data-pack-menu]') || targetEl.closest('[data-pack-select]'))) {
             return;
           }
           openPack(pack.id);
         });
-        card.addEventListener('keydown', ev => {
+        card.addEventListener('keydown', /** @param {KeyboardEvent} ev */ ev => {
           if (ev.key === 'Enter') openPack(pack.id);
         });
 
@@ -1198,6 +1198,7 @@ export function createPacksScreen({
                 truck: nextTruck,
               });
               UIComponents.showToast('Pack updated', 'success');
+              return true;
             },
           },
         ],

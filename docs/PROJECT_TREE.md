@@ -126,4 +126,5 @@ Truck Packer 3D/
 └── MIGRATION_PHASE1.md
 ```
 
-Omitted directories: `.git/` (repo metadata) and `node_modules/` (external packages). If you want those included too I can generate a full listing, but it will be very large.
+Omitted directories: `.git/` (repo metadata) and `node_modules/` (external packages). If you want
+those included too I can generate a full listing, but it will be very large.

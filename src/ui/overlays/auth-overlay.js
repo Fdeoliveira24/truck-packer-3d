@@ -3,7 +3,7 @@
  * @description Blocking authentication overlay (Supabase) that prevents app interaction until signed in.
  * @module ui/overlays/auth-overlay
  * @created Unknown
-* @updated 01/30/2026
+ * @updated 01/30/2026
  * @author Truck Packer 3D Team
  */
 
@@ -18,7 +18,10 @@
 // SECTION: FACTORY
 // ============================================================================
 
-export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey } = {}) {
+/**
+ * @param {{ UIComponents?: any, SupabaseClient?: any, tp3dDebugKey?: string }} [opts]
+ */
+export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient, tp3dDebugKey } = {}) {
   let overlayEl = null;
   let modalEl = null;
   let isOpen = false;
@@ -79,7 +82,8 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       friendly = 'Account already exists. Try Sign In.';
     } else if (msg.includes('user is banned') || msg.includes('user banned') || msg.includes('banned')) {
       // Replace raw Supabase banned messages with a friendly, non-technical message.
-      friendly = 'Account is no longer active. Please use another email, or contact support if you think this is a mistake.';
+      friendly =
+        'Account is no longer active. Please use another email, or contact support if you think this is a mistake.';
       hideDebugDetails = true;
     } else if (msg.includes('password') && msg.includes('weak')) {
       friendly = 'Password is too weak.';
@@ -101,6 +105,10 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     return { title, message: full, code: msg };
   }
 
+  /**
+   * @param {string} nextPhase
+   * @param {{ error?: any, onRetry?: Function | null }} [opts]
+   */
   function setPhase(nextPhase, { error, onRetry } = {}) {
     const p = String(nextPhase || '').toLowerCase();
     phase = p === 'cantconnect' || p === 'form' ? p : 'checking';
@@ -192,26 +200,6 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
     resendCooldownTimer = window.setTimeout(() => {
       if (isOpen) render();
     }, ms || 1);
-  }
-
-  async function checkDeletionStatus() {
-    try {
-      const user = SupabaseClient && SupabaseClient.getUser ? SupabaseClient.getUser() : null;
-      if (!user) return null;
-
-      const profile = await SupabaseClient.getProfile(user.id);
-      if (!profile) return null;
-
-      const status = profile.deletion_status ? String(profile.deletion_status).toLowerCase() : null;
-      const purgeAfter = profile.purge_after ? new Date(profile.purge_after).toLocaleDateString() : null;
-
-      if (status === 'requested' && purgeAfter) {
-        return { status, purgeAfter };
-      }
-    } catch {
-      // ignore
-    }
-    return null;
   }
 
   function render() {
@@ -351,21 +339,6 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       info.textContent = `Signed in as ${toAscii(signedInEmail)}`;
       body.appendChild(info);
     } else {
-      // Check for deletion status before showing form
-      const deletionCheck = (() => {
-        try {
-          const user = SupabaseClient && SupabaseClient.getUser ? SupabaseClient.getUser() : null;
-          if (user && SupabaseClient && typeof SupabaseClient.getProfile === 'function') {
-            // We can't use async here, so we'll show form and check in background
-            // But we can set a flag to block sign-in
-            return true; // Will be handled post-render
-          }
-        } catch {
-          // ignore
-        }
-        return false;
-      })();
-
       const hint = document.createElement('div');
       hint.className = 'muted';
       hint.style.marginBottom = '12px';
@@ -468,7 +441,11 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
       signInBtn.addEventListener('click', async () => {
         if (isOffline()) {
           // Guard: do not attempt auth while offline
-          try { setInlineError('Sign in not available offline.'); } catch (e) { void 0; }
+          try {
+            setInlineError('Sign in not available offline.');
+          } catch {
+            void 0;
+          }
           return;
         }
         if (inFlight) return;
@@ -487,7 +464,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
           inFlight = true;
           setBusy(true);
           signInBtn.textContent = 'Signing in...';
-          const data = await SupabaseClient.signIn(email, password);
+          await SupabaseClient.signIn(email, password);
 
           // Optional post-sign-in safety check: only block if the auth user is actually banned
           // FIX: Use wrapper instead of direct client.auth.getUser() to avoid bypassing single-flight protection
@@ -509,7 +486,6 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
                   } catch {
                     // ignore
                   }
-                  return;
                 }
               }
             }
@@ -566,9 +542,21 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey }
 
       // If app bootstrap marked the account as blocked, show message and disable auth actions
       if (forcedDisabledMessage) {
-        try { setInlineError(forcedDisabledMessage); } catch { /* ignore */ }
-        try { signInBtn.disabled = true; } catch { /* ignore */ }
-        try { signUpBtn.disabled = true; } catch { /* ignore */ }
+        try {
+          setInlineError(forcedDisabledMessage);
+        } catch {
+          /* ignore */
+        }
+        try {
+          signInBtn.disabled = true;
+        } catch {
+          /* ignore */
+        }
+        try {
+          signUpBtn.disabled = true;
+        } catch {
+          /* ignore */
+        }
       }
 
       btnRow.appendChild(signInBtn);

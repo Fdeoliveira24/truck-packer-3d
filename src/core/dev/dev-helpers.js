@@ -22,6 +22,9 @@ export function isDebugEnabled() {
   }
 }
 
+/**
+ * @param {{ app?: any, stateStore?: any, Utils?: any, documentRef?: Document }} [opts]
+ */
 export function installDevHelpers({ app, stateStore, Utils, documentRef } = {}) {
   if (!isDebugEnabled()) return { enabled: false };
 

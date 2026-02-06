@@ -30,6 +30,9 @@ export const Router = {
     return true;
   },
 
+  /**
+   * @param {{ onScreen?: (screen: string) => void, defaultScreen?: string }} [opts]
+   */
   init({ onScreen, defaultScreen = 'packs' } = {}) {
     const handler = () => {
       const screen = Router.getScreenFromHash(defaultScreen);

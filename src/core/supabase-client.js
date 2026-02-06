@@ -29,6 +29,7 @@ let _initPromise = null;
 let _authGuardInstalled = false;
 let _authGuardTimer = null;
 let _authInvalidatedAt = 0;
+let _signedOutCooldownUntil = 0;
 let _signOutPromise = null; // single-flight guard for signOut
 let _getUserPromise = null;
 let _getSessionPromise = null;
@@ -41,12 +42,18 @@ let _authGetUser = null;
 let _authSignOut = null;
 let _authSignInWithPassword = null;
 let _getSessionRawPromise = null;
+let _getSessionRawStartedAt = 0;
+let _getSessionRawEpoch = 0;
 let _getUserRawPromise = null;
+let _getSessionRawLastAt = 0;
+let _getSessionRawLastResult = null;
+let _getUserRawLastAt = 0;
+let _getUserRawLastResult = null;
 let _visibilityValidateTimer = null;
 let _authIntent = { type: null, ts: 0 };
 let _tabId = null;
 let _lastLogoutSignalAt = 0;
-let _authState = { status: 'loading', session: null, user: null, updatedAt: 0 };
+const _authState = { status: 'loading', session: null, user: null, updatedAt: 0 };
 
 // ============================================================================
 // AUTH EPOCH & ACCOUNT BUNDLE (prevents stale data from showing wrong user)
@@ -79,6 +86,9 @@ const ACCOUNT_FETCH_TIMEOUT_MS = 8000;
 const ACCOUNT_SESSION_TIMEOUT_MS = 2000;
 const SESSION_CACHE_MS = 1500;
 const GETSESSION_TIMEOUT_MS = 6000;
+const RAW_SESSION_COOLDOWN_MS = 750;
+const AUTH_GUARD_FOCUS_ENABLED = false;
+const AUTH_GUARD_VISIBILITY_ENABLED = false;
 
 /**
  * Generate a unique key for caching based on current session.
@@ -310,6 +320,12 @@ function handleCrossTabLogout(payload = {}) {
     _session = null;
     _cachedSession = null;
     _cachedAt = 0;
+    _getSessionRawPromise = null;
+    _getSessionRawStartedAt = 0;
+    _getSessionPromise = null;
+    _getUserPromise = null;
+    _getUserRawPromise = null;
+    _sessionPromise = null;
     updateAuthState({ status: 'signed_out', session: null, user: null });
 
     // Clear storage
@@ -322,6 +338,7 @@ function handleCrossTabLogout(payload = {}) {
 
     // Update invalidation timestamp
     _authInvalidatedAt = Date.now();
+    bumpAuthEpoch('cross-tab-logout');
 
     // Dispatch event to app
     try {
@@ -431,11 +448,11 @@ function dispatchSignedOut(detail) {
   }
 }
 
-function setAuthIntent(type) {
+export function setAuthIntent(type) {
   _authIntent = { type: String(type || ''), ts: Date.now() };
 }
 
-function consumeAuthIntent(type, windowMs = 10000) {
+export function consumeAuthIntent(type, windowMs = 10000) {
   const now = Date.now();
   if (!_authIntent || !_authIntent.type) return false;
   const matches = _authIntent.type === String(type || '');
@@ -462,9 +479,18 @@ function updateAuthState(update = {}) {
 
   // Track if user/session actually changed to decide if epoch bump is needed
   const prevUserId = _authState.user && _authState.user.id ? _authState.user.id : null;
-  const prevSessionToken = _authState.session && _authState.session.access_token ? _authState.session.access_token : null;
+  const prevSessionToken =
+    _authState.session && _authState.session.access_token ? _authState.session.access_token : null;
 
-  if (update.status) _authState.status = update.status;
+  if (update.status) {
+    _authState.status = update.status;
+    if (update.status === 'signed_out') {
+      _authInvalidatedAt = Date.now();
+      _signedOutCooldownUntil = _authInvalidatedAt + 1500;
+    } else if (update.status === 'signed_in') {
+      _signedOutCooldownUntil = 0;
+    }
+  }
 
   if (hasSession) {
     _authState.session = update.session || null;
@@ -482,7 +508,8 @@ function updateAuthState(update = {}) {
 
   // Bump epoch if user or session token changed (invalidates all cached/inflight data)
   const newUserId = _authState.user && _authState.user.id ? _authState.user.id : null;
-  const newSessionToken = _authState.session && _authState.session.access_token ? _authState.session.access_token : null;
+  const newSessionToken =
+    _authState.session && _authState.session.access_token ? _authState.session.access_token : null;
   const userChanged = prevUserId !== newUserId;
   const tokenChanged = prevSessionToken !== newSessionToken;
 
@@ -511,8 +538,39 @@ function clearStorageKeyIfKnown(client) {
 }
 
 function getSessionRawSingleFlight() {
-  if (_getSessionRawPromise) return _getSessionRawPromise;
+  const now = Date.now();
+  if (_authState && _authState.status === 'signed_out') {
+    const out = { data: { session: null }, error: null };
+    _getSessionRawLastResult = out;
+    _getSessionRawLastAt = now;
+    return Promise.resolve(out);
+  }
+  if (_signedOutCooldownUntil && now < _signedOutCooldownUntil) {
+    const out = { data: { session: null }, error: null };
+    _getSessionRawLastResult = out;
+    _getSessionRawLastAt = now;
+    return Promise.resolve(out);
+  }
+  if (_authInvalidatedAt && now - _authInvalidatedAt < 1500) {
+    const out = { data: { session: null }, error: null };
+    _getSessionRawLastResult = out;
+    _getSessionRawLastAt = now;
+    return Promise.resolve(out);
+  }
+  if (_getSessionRawPromise) {
+    const age = now - (_getSessionRawStartedAt || 0);
+    if (age > 4000) {
+      if (debugEnabled()) debugLog('warn', '[SupabaseClient] Breaking stale getSession(raw) promise', { age });
+      _getSessionRawPromise = null;
+      _getSessionRawStartedAt = 0;
+    } else {
+      return _getSessionRawPromise;
+    }
+  }
   if (_signOutPromise) return Promise.resolve({ data: { session: null }, error: null });
+  if (_getSessionRawLastResult && Date.now() - _getSessionRawLastAt < RAW_SESSION_COOLDOWN_MS) {
+    return Promise.resolve(_getSessionRawLastResult);
+  }
   try {
     if (typeof document !== 'undefined' && document.hidden) {
       if (debugEnabled()) debugLog('warn', '[SupabaseClient] getSession skipped (tab hidden)');
@@ -529,6 +587,9 @@ function getSessionRawSingleFlight() {
   if (!authGetSession) return Promise.resolve({ data: { session: null }, error: new Error('getSession unavailable') });
 
   const TIMEOUT_MS = 10000;
+  const startEpoch = _authEpoch;
+  _getSessionRawStartedAt = now;
+  _getSessionRawEpoch = startEpoch;
   const p = (async () => {
     let timeoutId = null;
     try {
@@ -536,13 +597,35 @@ function getSessionRawSingleFlight() {
         timeoutId = window.setTimeout(() => reject(new Error('getSession timeout')), TIMEOUT_MS);
       });
       const res = await Promise.race([authGetSession(), timeoutPromise]);
-      if (res && res.error) return { data: res.data || null, error: res.error };
-      return res || { data: { session: null }, error: null };
+      const out = res && res.error ? { data: res.data || null, error: res.error } : res || { data: { session: null }, error: null };
+      if (startEpoch !== _authEpoch || (_authState && _authState.status === 'signed_out')) {
+        if (debugEnabled()) {
+          debugLog('warn', '[SupabaseClient] Ignoring getSession(raw) result due to epoch/status change', {
+            startedEpoch: startEpoch,
+            currentEpoch: _authEpoch,
+            status: _authState && _authState.status ? _authState.status : 'unknown',
+          });
+        }
+        const empty = { data: { session: null }, error: null };
+        _getSessionRawLastResult = empty;
+        _getSessionRawLastAt = Date.now();
+        return empty;
+      }
+      _getSessionRawLastResult = out;
+      _getSessionRawLastAt = Date.now();
+      return out;
     } catch (err) {
+      if (_authState && _authState.status === 'signed_out') {
+        const empty = { data: { session: null }, error: null };
+        _getSessionRawLastResult = empty;
+        _getSessionRawLastAt = Date.now();
+        return empty;
+      }
       return { data: null, error: err };
     } finally {
       if (timeoutId) window.clearTimeout(timeoutId);
       _getSessionRawPromise = null;
+      _getSessionRawStartedAt = 0;
     }
   })();
   _getSessionRawPromise = p;
@@ -550,8 +633,30 @@ function getSessionRawSingleFlight() {
 }
 
 function getUserRawSingleFlight() {
+  const now = Date.now();
+  if (_authState && _authState.status === 'signed_out') {
+    const out = { data: { user: null }, error: null };
+    _getUserRawLastResult = out;
+    _getUserRawLastAt = now;
+    return Promise.resolve(out);
+  }
+  if (_signedOutCooldownUntil && now < _signedOutCooldownUntil) {
+    const out = { data: { user: null }, error: null };
+    _getUserRawLastResult = out;
+    _getUserRawLastAt = now;
+    return Promise.resolve(out);
+  }
+  if (_authInvalidatedAt && now - _authInvalidatedAt < 1500) {
+    const out = { data: { user: null }, error: null };
+    _getUserRawLastResult = out;
+    _getUserRawLastAt = now;
+    return Promise.resolve(out);
+  }
   if (_getUserRawPromise) return _getUserRawPromise;
   if (_signOutPromise) return Promise.resolve({ data: { user: null }, error: null });
+  if (_getUserRawLastResult && Date.now() - _getUserRawLastAt < RAW_SESSION_COOLDOWN_MS) {
+    return Promise.resolve(_getUserRawLastResult);
+  }
   try {
     if (typeof document !== 'undefined' && document.hidden) {
       if (debugEnabled()) debugLog('warn', '[SupabaseClient] getUser skipped (tab hidden)');
@@ -576,7 +681,10 @@ function getUserRawSingleFlight() {
       });
       const res = await Promise.race([authGetUser(), timeoutPromise]);
       if (res && res.error) return { data: res.data || null, error: res.error };
-      return res || { data: { user: null }, error: null };
+      const out = res || { data: { user: null }, error: null };
+      _getUserRawLastResult = out;
+      _getUserRawLastAt = Date.now();
+      return out;
     } catch (err) {
       return { data: null, error: err };
     } finally {
@@ -590,6 +698,10 @@ function getUserRawSingleFlight() {
 
 export async function getSessionSingleFlightSafe(client, { force = false } = {}) {
   const now = Date.now();
+  if (!force && _authState && _authState.status === 'signed_out') return null;
+  if (!force && _signedOutCooldownUntil && now < _signedOutCooldownUntil) return null;
+  if (!force && _authInvalidatedAt && now - _authInvalidatedAt < 1500) return null;
+
   const c = client || requireClient();
 
   // 1) quick cache for UI
@@ -613,11 +725,9 @@ export async function getSessionSingleFlightSafe(client, { force = false } = {})
 
   _sessionPromise = (async () => {
     try {
-      const result = await withTimeoutReject(
-        c.auth.getSession(),
-        GETSESSION_TIMEOUT_MS,
-        'getSession timeout'
-      );
+      const raw = _authGetSession || (c.auth && c.auth.__tp3dOriginalGetSession) || null;
+      if (!raw) return null;
+      const result = await withTimeoutReject(raw(), GETSESSION_TIMEOUT_MS, 'getSession timeout');
       const session = (result && result.data && result.data.session) || null;
       _cachedSession = session;
       _cachedAt = Date.now();
@@ -630,7 +740,7 @@ export async function getSessionSingleFlightSafe(client, { force = false } = {})
   return _sessionPromise;
 }
 
-function getSessionSingleFlight() {
+export function getSessionSingleFlight() {
   if (_getSessionPromise) return _getSessionPromise;
   if (_signOutPromise) return Promise.resolve({ session: null, user: null });
   if (_authState && _authState.status === 'signed_out' && !_session) {
@@ -686,7 +796,7 @@ export async function validateSessionSoft(client) {
   return { ok: false, session: null, reason: 'no-session-after-retry' };
 }
 
-function getUserSingleFlight() {
+export function getUserSingleFlight() {
   if (_getUserPromise) return _getUserPromise;
   if (_signOutPromise) return Promise.resolve(null);
 
@@ -858,16 +968,20 @@ function installAuthGuard() {
     }
   };
 
-  try {
-    window.addEventListener('focus', onFocus, { passive: true });
-  } catch {
-    // ignore
+  if (AUTH_GUARD_FOCUS_ENABLED) {
+    try {
+      window.addEventListener('focus', onFocus, { passive: true });
+    } catch {
+      // ignore
+    }
   }
 
-  try {
-    document.addEventListener('visibilitychange', onVisibility, { passive: true });
-  } catch {
-    // ignore
+  if (AUTH_GUARD_VISIBILITY_ENABLED) {
+    try {
+      document.addEventListener('visibilitychange', onVisibility, { passive: true });
+    } catch {
+      // ignore
+    }
   }
 
   // Poll to catch cases like: user deleted in dashboard while a cached session exists
@@ -886,6 +1000,40 @@ function installAuthGuard() {
   }
 
   void validateSessionOrSignOut({ source: 'install', silent: true });
+}
+
+function patchAuthGetSessionSingleFlight(client) {
+  try {
+    if (!client || !client.auth) return;
+    if (client.auth.__tp3dGetSessionPatched) return;
+
+    _authGetSession = _authGetSession || (client.auth.getSession ? client.auth.getSession.bind(client.auth) : null);
+    _authGetUser = _authGetUser || (client.auth.getUser ? client.auth.getUser.bind(client.auth) : null);
+    _authSignOut = _authSignOut || (client.auth.signOut ? client.auth.signOut.bind(client.auth) : null);
+    _authSignInWithPassword = _authSignInWithPassword || (client.auth.signInWithPassword
+      ? client.auth.signInWithPassword.bind(client.auth)
+      : null);
+
+    if (_authGetSession) {
+      // Expose originals for debugging / diagnostics
+      client.auth.__tp3dOriginalGetSession = _authGetSession;
+      client.auth.__tp3dRawGetSession = _authGetSession;
+
+      // Patch getSession so ALL callers share the same single-flight gate
+      client.auth.getSession = async () => {
+        try {
+          const session = await getSessionSingleFlightSafe(client, { force: false });
+          return { data: { session }, error: null };
+        } catch (err) {
+          return { data: { session: null }, error: err };
+        }
+      };
+    }
+
+    client.auth.__tp3dGetSessionPatched = true;
+  } catch {
+    // ignore
+  }
 }
 
 // ============================================================================
@@ -924,7 +1072,7 @@ export function init({ url, anonKey }) {
           _authSignInWithPassword = _client.auth.signInWithPassword
             ? _client.auth.signInWithPassword.bind(_client.auth)
             : null;
-          if (_authGetSession) _client.auth.getSession = () => getSessionRawSingleFlight();
+          patchAuthGetSessionSingleFlight(_client);
           if (_authGetUser) _client.auth.getUser = () => getUserRawSingleFlight();
           if (_authSignOut) {
             _client.auth.signOut = options => signOut(options || {});
@@ -967,7 +1115,8 @@ export function init({ url, anonKey }) {
           user: nextSession && nextSession.user ? nextSession.user : null,
         });
         if (debugEnabled()) {
-          const nextUserId = nextSession && nextSession.user && nextSession.user.id ? String(nextSession.user.id) : null;
+          const nextUserId =
+            nextSession && nextSession.user && nextSession.user.id ? String(nextSession.user.id) : null;
           const hasToken = Boolean(nextSession && nextSession.access_token);
           debugLog('info', '[SupabaseClient] Auth event', {
             tab: getTabId(),
@@ -977,7 +1126,12 @@ export function init({ url, anonKey }) {
             hasToken,
           });
         }
-        if (event === 'SIGNED_IN' || event === 'SIGNED_OUT' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+        if (
+          event === 'SIGNED_IN' ||
+          event === 'SIGNED_OUT' ||
+          event === 'TOKEN_REFRESHED' ||
+          event === 'USER_UPDATED'
+        ) {
           resetAccountBundleCache(event);
         }
       });
@@ -1027,7 +1181,8 @@ export async function awaitAuthReady({ timeoutMs = 5000 } = {}) {
   const snapshot = () => {
     const status = _authState && _authState.status ? _authState.status : 'unknown';
     const userId = _authState && _authState.user && _authState.user.id ? String(_authState.user.id) : null;
-    const token = _authState && _authState.session && _authState.session.access_token ? _authState.session.access_token : null;
+    const token =
+      _authState && _authState.session && _authState.session.access_token ? _authState.session.access_token : null;
     return { status, userId, token };
   };
 
@@ -1138,7 +1293,8 @@ export async function signIn(email, password) {
   const client = requireClient();
   setAuthIntent('signIn');
   const authSignIn =
-    _authSignInWithPassword || (client.auth && client.auth.signInWithPassword ? client.auth.signInWithPassword.bind(client.auth) : null);
+    _authSignInWithPassword ||
+    (client.auth && client.auth.signInWithPassword ? client.auth.signInWithPassword.bind(client.auth) : null);
   if (!authSignIn) throw new Error('signInWithPassword unavailable');
   const { data, error } = await authSignIn({
     email: String(email || '').trim(),
@@ -1273,6 +1429,12 @@ export async function signOut(options = {}) {
     }
     _cachedSession = null;
     _cachedAt = 0;
+    _getSessionRawPromise = null;
+    _getSessionRawStartedAt = 0;
+    _getSessionPromise = null;
+    _getUserPromise = null;
+    _getUserRawPromise = null;
+    _sessionPromise = null;
     updateAuthState({ status: 'signed_out', session: null, user: null });
 
     // Clear any known supabase storage key (defensive)
@@ -1286,6 +1448,7 @@ export async function signOut(options = {}) {
     }
 
     _authInvalidatedAt = Date.now();
+    bumpAuthEpoch('local-logout');
 
     // Notify the app shell
     try {
@@ -1472,22 +1635,22 @@ export async function getUserOrganizations() {
         'role',
         'joined_at',
         'invited_by',
-        'organizations (\
-          id,\
-          name,\
-          slug,\
-          avatar_url,\
-          owner_id,\
-          created_at,\
-          updated_at,\
-          phone,\
-          address_line1,\
-          address_line2,\
-          city,\
-          state,\
-          postal_code,\
-          country\
-        )',
+        `organizations (
+          id,
+          name,
+          slug,
+          avatar_url,
+          owner_id,
+          created_at,
+          updated_at,
+          phone,
+          address_line1,
+          address_line2,
+          city,
+          state,
+          postal_code,
+          country
+        )`,
       ].join(',')
     )
     .eq('user_id', userId);
@@ -1540,12 +1703,13 @@ export async function getMyMembership() {
  * - Stale data from showing wrong user after auth change
  * - Crashes when new users have no profile/org
  *
- * @param {Object} options
- * @param {boolean} options.force - Force refresh even if cached
+ * @param {{ force?: boolean }} [options]
  * @returns {Promise<Object>} Account bundle with safe defaults
  */
 export async function getAccountBundleSingleFlight({ force = false } = {}) {
   const startEpoch = _authEpoch;
+  if (_authState && _authState.status === 'signed_out') return null;
+  if (_signedOutCooldownUntil && Date.now() < _signedOutCooldownUntil) return null;
 
   const authReady = await awaitAuthReady({ timeoutMs: 5000 });
   if (!authReady.ok) {
@@ -1614,12 +1778,32 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
       const cachedMembership = cachedBundle && cachedBundle.membership ? cachedBundle.membership : null;
       const cachedActiveOrg = cachedBundle && cachedBundle.activeOrg ? cachedBundle.activeOrg : null;
 
-      // Parallel fetch profile and orgs (both are safe to fail)
-      const [profileWrap, orgsWrap, membershipWrap] = await Promise.all([
-        withTimeout(getProfile(userId).catch(() => null), ACCOUNT_FETCH_TIMEOUT_MS, null),
-        withTimeout(getUserOrganizations().catch(() => []), ACCOUNT_FETCH_TIMEOUT_MS, []),
-        withTimeout(getMyMembership().catch(() => null), ACCOUNT_FETCH_TIMEOUT_MS, null),
-      ]);
+      const profileWrap = await withTimeout(
+        getProfile(userId).catch(() => null),
+        ACCOUNT_FETCH_TIMEOUT_MS,
+        null
+      );
+      if (_authEpoch !== startEpoch) {
+        return _buildEmptyAccountBundle('Auth changed during account fetch', true, authKey, startEpoch);
+      }
+
+      const orgsWrap = await withTimeout(
+        getUserOrganizations().catch(() => []),
+        ACCOUNT_FETCH_TIMEOUT_MS,
+        []
+      );
+      if (_authEpoch !== startEpoch) {
+        return _buildEmptyAccountBundle('Auth changed during account fetch', true, authKey, startEpoch);
+      }
+
+      const membershipWrap = await withTimeout(
+        getMyMembership().catch(() => null),
+        ACCOUNT_FETCH_TIMEOUT_MS,
+        null
+      );
+      if (_authEpoch !== startEpoch) {
+        return _buildEmptyAccountBundle('Auth changed during account fetch', true, authKey, startEpoch);
+      }
 
       let profileResult = profileWrap.value;
       let orgsResult = orgsWrap.value;
@@ -1953,13 +2137,13 @@ export async function deleteAvatar() {
  * After this succeeds, the client should call signOut({ global: true, allowOffline: true })
  * and reload the page.
  *
- * @returns {Promise<boolean>} - True on success
+ * @returns {Promise<{ ok: boolean, inferred?: boolean, reason?: string, data?: any }>} - Result payload
  */
 export async function requestAccountDeletion() {
   // Guard: do not attempt Edge Function calls while offline
   if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) {
     const e = new Error('You are offline. Reconnect to delete your account.');
-    e.code = 'OFFLINE';
+    /** @type {any} */ (e).code = 'OFFLINE';
     throw e;
   }
 
@@ -2046,7 +2230,6 @@ export async function requestAccountDeletion() {
 
   throw error;
 }
-
 
 // ============================================================================
 // SECTION: DEV CONSOLE HOOKS (optional)

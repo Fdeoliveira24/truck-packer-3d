@@ -60,6 +60,9 @@ export function parseResolution(res) {
   return { width: Number(m[1]), height: Number(m[2]) };
 }
 
+/**
+ * @param {{ user?: any, sessionUser?: any, profile?: any }} [opts]
+ */
 export function getUserAvatarView({ user, sessionUser, profile } = {}) {
   const u = user && typeof user === 'object' ? user : null;
   const su = sessionUser && typeof sessionUser === 'object' ? sessionUser : null;

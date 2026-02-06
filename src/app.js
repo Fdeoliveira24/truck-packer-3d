@@ -48,6 +48,7 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
+import { initTP3DDebugger } from './debugger.js';
 import { createSystemOverlay } from './ui/system-overlay.js';
 import { createUIComponents } from './ui/ui-components.js';
 import { createTableFooter } from './ui/table-footer.js';
@@ -60,7 +61,6 @@ import * as CoreUtils from './core/utils/index.js';
 import * as BrowserUtils from './core/browser.js';
 import * as CoreDefaults from './core/defaults.js';
 import * as CoreStateStore from './core/state-store.js';
-import * as CoreNormalizer from './core/normalizer.js';
 import * as CoreStorage from './core/storage.js';
 import * as CoreSession from './core/session.js';
 import * as CategoryService from './services/category-service.js';
@@ -86,6 +86,8 @@ import { APP_VERSION } from './core/version.js';
 // SECTION: INITIALIZATION
 // ============================================================================
 
+initTP3DDebugger();
+
 (async function () {
   try {
     if (window.__TP3D_BOOT && window.__TP3D_BOOT.threeReady) {
@@ -107,6 +109,13 @@ import { APP_VERSION } from './core/version.js';
     'use strict';
 
     const featureFlags = { trailerPresetsEnabled: true };
+    let AccountSwitcher = null;
+    let CasesUI = null;
+    let PacksUI = null;
+    let SceneManager = null;
+    let ExportService = null;
+    let shortcuts = {};
+    let bootstrapAuthGate = null;
 
     // ============================================================================
     // SECTION: FOUNDATION / UTILS
@@ -211,6 +220,118 @@ import { APP_VERSION } from './core/version.js';
     Helpers.installGlobals();
 
     // ============================================================================
+    // SECTION: DEBUG GLOBALS (opt-in via localStorage.tp3dDebug = "1")
+    // ============================================================================
+
+    (function installWrapperDetective() {
+      let enabled = false;
+      try {
+        enabled = Boolean(window && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1');
+      } catch {
+        enabled = false;
+      }
+      if (!enabled) return;
+
+      // Avoid re-installing
+      if (
+        globalThis.__TP3D_WRAPPER_DETECTIVE__ &&
+        typeof globalThis.__TP3D_WRAPPER_DETECTIVE__.getWrapperUsage === 'function'
+      ) {
+        return;
+      }
+
+      function safeFnInfo(fn) {
+        if (typeof fn !== 'function') return null;
+        const name = fn.name || '(anonymous)';
+        const src = Function.prototype.toString.call(fn);
+        return {
+          name,
+          length: fn.length,
+          // Keep this short to avoid dumping large source into the console
+          snippet: String(src).slice(0, 180),
+          looksWrapped:
+            String(src).includes('getSessionRawSingleFlight') ||
+            String(src).includes('getUserRawSingleFlight') ||
+            String(src).includes('signOut(options') ||
+            String(src).includes('getSession timeout') ||
+            String(src).includes('[SupabaseClient]'),
+        };
+      }
+
+      function getSupabaseClient() {
+        try {
+          if (globalThis.__TP3D_SUPABASE_CLIENT) return globalThis.__TP3D_SUPABASE_CLIENT;
+        } catch {
+          // ignore
+        }
+        try {
+          if (SupabaseClient && typeof SupabaseClient.getClient === 'function') return SupabaseClient.getClient();
+        } catch {
+          // ignore
+        }
+        return null;
+      }
+
+      globalThis.__TP3D_WRAPPER_DETECTIVE__ = {
+        getWrapperUsage() {
+          const client = getSupabaseClient();
+          const auth = client && client.auth ? client.auth : null;
+
+          const out = {
+            hasClient: Boolean(client),
+            hasAuth: Boolean(auth),
+            authWrappedFlag: Boolean(client && client.__tp3dAuthWrapped),
+            clientKeys: client ? Object.keys(client).slice(0, 30) : [],
+            authKeys: auth ? Object.keys(auth).slice(0, 30) : [],
+            getSession: auth ? safeFnInfo(auth.getSession) : null,
+            getUser: auth ? safeFnInfo(auth.getUser) : null,
+            signOut: auth ? safeFnInfo(auth.signOut) : null,
+            signInWithPassword: auth ? safeFnInfo(auth.signInWithPassword) : null,
+          };
+
+          try {
+            console.groupCollapsed('[TP3D] Wrapper detective');
+            console.log(out);
+            console.groupEnd();
+          } catch {
+            // ignore
+          }
+
+          return out;
+        },
+
+        // Quick health check for auth wrapper wiring
+        async smokeTest({ timeoutMs = 2500 } = {}) {
+          const client = getSupabaseClient();
+          if (!client || !client.auth) return { ok: false, reason: 'no-client' };
+
+          const startedAt = Date.now();
+          const withTimeout = (p, ms) =>
+            Promise.race([p, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
+
+          try {
+            const r1 = await withTimeout(client.auth.getSession(), timeoutMs);
+            const r2 = await withTimeout(client.auth.getUser(), timeoutMs);
+            return {
+              ok: true,
+              ms: Date.now() - startedAt,
+              hasSession: Boolean(r1 && r1.data && r1.data.session),
+              hasUser: Boolean(r2 && r2.data && r2.data.user),
+            };
+          } catch (err) {
+            return { ok: false, ms: Date.now() - startedAt, error: String(err && err.message ? err.message : err) };
+          }
+        },
+      };
+
+      try {
+        console.info('[TP3D] __TP3D_WRAPPER_DETECTIVE__ installed (tp3dDebug=1)');
+      } catch {
+        // ignore
+      }
+    })();
+
+    // ============================================================================
     // SECTION: OVERLAYS (SETTINGS + CARD DISPLAY)
     // ============================================================================
     const SettingsOverlay = createSettingsOverlay({
@@ -231,6 +352,7 @@ import { APP_VERSION } from './core/version.js';
     const AccountOverlay = createAccountOverlay({
       documentRef: document,
       SupabaseClient,
+      UIComponents,
     });
     const CardDisplayOverlay = createCardDisplayOverlay({
       documentRef: document,
@@ -245,7 +367,7 @@ import { APP_VERSION } from './core/version.js';
 
     // Listen for auth signed-out events (including offline logout and cross-tab)
     window.addEventListener('tp3d:auth-signed-out', event => {
-      const detail = event.detail || {};
+      const detail = /** @type {CustomEvent} */ (event).detail || {};
       const isCrossTab = detail.crossTab === true;
 
       if (window.localStorage && window.localStorage.getItem('tp3dDebug') === '1') {
@@ -318,7 +440,7 @@ import { APP_VERSION } from './core/version.js';
       }
     }
 
-    function openSettingsOverlay(tab = 'preferences') {
+    function openSettingsOverlay(tab) {
       closeDropdowns();
       try {
         if (AccountOverlay && typeof AccountOverlay.close === 'function') AccountOverlay.close();
@@ -333,7 +455,7 @@ import { APP_VERSION } from './core/version.js';
       void rehydrateAuthState({ reason: 'settings-open' });
     }
 
-    function openAccountOverlay() {
+    function _openAccountOverlay() {
       closeDropdowns();
       try {
         if (SettingsOverlay && typeof SettingsOverlay.close === 'function') SettingsOverlay.close();
@@ -378,7 +500,7 @@ import { APP_VERSION } from './core/version.js';
     // ============================================================================
     // SECTION: UI WIDGET (ACCOUNT SWITCHER)
     // ============================================================================
-    const AccountSwitcher = (() => {
+    AccountSwitcher = (() => {
       let anchorKeyCounter = 0;
       const mounts = new Map();
 
@@ -423,7 +545,7 @@ import { APP_VERSION } from './core/version.js';
         try {
           if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
             if (SupabaseClient.setAuthIntent) SupabaseClient.setAuthIntent('signOut');
-            const result = await SupabaseClient.signOut({ global: true, allowOffline: true });
+            await SupabaseClient.signOut({ global: true, allowOffline: true });
 
             SessionManager.clear();
             try {
@@ -458,10 +580,16 @@ import { APP_VERSION } from './core/version.js';
         return anchorEl.dataset.accountSwitcherKey;
       }
 
+      /**
+       * @param {HTMLElement} anchorEl
+       * @param {{ align?: string }} [opts]
+       */
       function openMenu(anchorEl, { align } = {}) {
         const display = getDisplay();
         const anchorKey = getAnchorKey(anchorEl);
-        const existingDropdown = document.querySelector('[data-dropdown="1"][data-role="account-switcher"]');
+        const existingDropdown = /** @type {HTMLElement|null} */ (
+          document.querySelector('[data-dropdown="1"][data-role="account-switcher"]')
+        );
         if (existingDropdown && existingDropdown.dataset.anchorId === anchorKey) {
           closeDropdowns();
           return;
@@ -488,7 +616,7 @@ import { APP_VERSION } from './core/version.js';
           {
             label: 'Settings',
             icon: 'fa-solid fa-gear',
-            onClick: () => openSettingsOverlay('preferences'),
+            onClick: () => openSettingsOverlay(),
           },
           {
             label: 'Log out',
@@ -506,6 +634,10 @@ import { APP_VERSION } from './core/version.js';
         });
       }
 
+      /**
+       * @param {HTMLElement} buttonEl
+       * @param {{ align?: string }} [opts]
+       */
       function bind(buttonEl, { align } = {}) {
         if (!buttonEl) return () => {};
         if (mounts.has(buttonEl)) return mounts.get(buttonEl);
@@ -980,7 +1112,7 @@ import { APP_VERSION } from './core/version.js';
     // ============================================================================
     // SECTION: 3D ENGINE (SCENE)
     // ============================================================================
-    const SceneManager = createSceneRuntime({ Utils, UIComponents, PreferencesManager, TrailerGeometry, StateStore });
+    SceneManager = createSceneRuntime({ Utils, UIComponents, PreferencesManager, TrailerGeometry, StateStore });
 
     // ============================================================================
     // SECTION: 3D SCENE (INSTANCES)
@@ -1227,7 +1359,10 @@ import { APP_VERSION } from './core/version.js';
 
       async function animatePlacements(placements) {
         for (const [id, pos] of placements.entries()) {
+          // Sequential animation avoids overlapping tweens on the same instances.
+          // eslint-disable-next-line no-await-in-loop
           await tweenInstanceToPosition(id, pos, 240);
+          // eslint-disable-next-line no-await-in-loop
           await sleep(35);
         }
       }
@@ -1260,7 +1395,7 @@ import { APP_VERSION } from './core/version.js';
     // ============================================================================
     // SECTION: EXPORT (PNG/PDF)
     // ============================================================================
-    const ExportService = (() => {
+    ExportService = (() => {
       function estimateDataUrlBytes(dataUrl) {
         const str = String(dataUrl || '');
         const comma = str.indexOf(',');
@@ -1711,7 +1846,7 @@ import { APP_VERSION } from './core/version.js';
       StateStore,
       Utils,
     });
-    const PacksUI = createPacksScreen({
+    PacksUI = createPacksScreen({
       Utils,
       UIComponents,
       PreferencesManager,
@@ -1733,7 +1868,7 @@ import { APP_VERSION } from './core/version.js';
     // ============================================================================
     // SECTION: SCREEN UI (CASES)
     // ============================================================================
-    const CasesUI = createCasesScreen({
+    CasesUI = createCasesScreen({
       Utils,
       UIComponents,
       PreferencesManager,
@@ -1867,17 +2002,17 @@ import { APP_VERSION } from './core/version.js';
     // SECTION: SCREEN UI (SETTINGS)
     // ============================================================================
     const SettingsUI = (() => {
-      const elLength = document.getElementById('pref-length');
-      const elWeight = document.getElementById('pref-weight');
-      const elTheme = document.getElementById('pref-theme');
-      const elLabel = document.getElementById('pref-label-size');
-      const elHidden = document.getElementById('pref-hidden-opacity');
-      const elSnap = document.getElementById('pref-snapping-enabled');
-      const elGrid = document.getElementById('pref-grid-size');
-      const elShot = document.getElementById('pref-shot-res');
-      const elPdfStats = document.getElementById('pref-pdf-stats');
-      const btnSave = document.getElementById('btn-save-prefs');
-      const btnReset = document.getElementById('btn-reset-demo');
+      const elLength = /** @type {HTMLSelectElement} */ (document.getElementById('pref-length'));
+      const elWeight = /** @type {HTMLSelectElement} */ (document.getElementById('pref-weight'));
+      const elTheme = /** @type {HTMLSelectElement} */ (document.getElementById('pref-theme'));
+      const elLabel = /** @type {HTMLInputElement} */ (document.getElementById('pref-label-size'));
+      const elHidden = /** @type {HTMLInputElement} */ (document.getElementById('pref-hidden-opacity'));
+      const elSnap = /** @type {HTMLSelectElement} */ (document.getElementById('pref-snapping-enabled'));
+      const elGrid = /** @type {HTMLInputElement} */ (document.getElementById('pref-grid-size'));
+      const elShot = /** @type {HTMLSelectElement} */ (document.getElementById('pref-shot-res'));
+      const elPdfStats = /** @type {HTMLSelectElement} */ (document.getElementById('pref-pdf-stats'));
+      const btnSave = /** @type {HTMLButtonElement} */ (document.getElementById('btn-save-prefs'));
+      const btnReset = /** @type {HTMLButtonElement} */ (document.getElementById('btn-reset-demo'));
 
       function initSettingsUI() {
         btnSave.addEventListener('click', () => save());
@@ -2101,6 +2236,7 @@ import { APP_VERSION } from './core/version.js';
         const content = document.createElement('div');
         content.className = 'grid';
         content.style.gap = '10px';
+        let modal = null;
         if (!packs.length) {
           const empty = document.createElement('div');
           empty.className = 'muted';
@@ -2126,20 +2262,20 @@ import { APP_VERSION } from './core/version.js';
             row.addEventListener('click', () => {
               PackLibrary.open(p.id);
               AppShell.navigate('editor');
-              modal.close();
+              if (modal) modal.close();
             });
             content.appendChild(row);
           });
         }
 
-        const modal = UIComponents.showModal({
+        modal = UIComponents.showModal({
           title: 'Open Pack',
           content,
           actions: [{ label: 'Close', variant: 'primary' }],
         });
       }
 
-      const shortcuts = {
+      shortcuts = {
         'meta+s': save,
         'ctrl+s': save,
         'meta+z': undo,
@@ -2296,7 +2432,9 @@ import { APP_VERSION } from './core/version.js';
     // SECTION: BOOT HELPERS (RUNTIME VALIDATION)
     // ============================================================================
     function validateRuntime() {
-      const failures = window.__TP3D_BOOT && window.__TP3D_BOOT.cdnFailures ? window.__TP3D_BOOT.cdnFailures : [];
+      /** @type {Array<{ name?: string }>} */
+      const failures =
+        window.__TP3D_BOOT && window.__TP3D_BOOT.cdnFailures ? window.__TP3D_BOOT.cdnFailures : [];
       failures.forEach(f => {
         UIComponents.showToast(`${f.name} failed to load`, 'error', {
           title: 'CDN',
@@ -2347,6 +2485,8 @@ import { APP_VERSION } from './core/version.js';
     let authListenerInstalled = false;
     let authUiBound = false;
     let lastAuthUserId = null;
+    let lastAuthRehydrateAt = 0;
+    const AUTH_REHYDRATE_COOLDOWN_MS = 750;
     const toastDeduper = new Map();
     let authRehydratePromise = null;
     // Used to prevent mixed-user UI when another tab signs in as a different user.
@@ -2382,7 +2522,24 @@ import { APP_VERSION } from './core/version.js';
       return true;
     }
 
-    async function rehydrateAuthState({ reason = 'auth-change', force = false, forceBundle = false } = {}) {
+    function canStartAuthRehydrate({ force = false } = {}) {
+      if (force) {
+        lastAuthRehydrateAt = Date.now();
+        return true;
+      }
+      const now = Date.now();
+      if (now - lastAuthRehydrateAt < AUTH_REHYDRATE_COOLDOWN_MS) return false;
+      lastAuthRehydrateAt = now;
+      return true;
+    }
+
+    async function rehydrateAuthState({
+      reason = 'auth-change',
+      force = false,
+      forceBundle = false,
+      sessionHint = null,
+      skipCooldown = false,
+    } = {}) {
       // Single-flight rehydrate to avoid overlapping session/user reads.
       if (authRehydratePromise) return authRehydratePromise;
       try {
@@ -2390,16 +2547,21 @@ import { APP_VERSION } from './core/version.js';
       } catch {
         // ignore
       }
+      if (!skipCooldown && !canStartAuthRehydrate({ force })) return null;
 
       authRehydratePromise = (async () => {
         const epochAtStart = SupabaseClient.getAuthEpoch ? SupabaseClient.getAuthEpoch() : null;
         // Guard: only apply bundle-driven UI updates when the bundle matches current auth state.
         let bundleOk = true;
-        let sessionData = null;
-        try {
-          sessionData = await SupabaseClient.getSessionSingleFlight();
-        } catch {
-          sessionData = null;
+        let sessionData = sessionHint
+          ? { session: sessionHint, user: sessionHint && sessionHint.user ? sessionHint.user : null }
+          : null;
+        if (!sessionData) {
+          try {
+            sessionData = await SupabaseClient.getSessionSingleFlight();
+          } catch {
+            sessionData = null;
+          }
         }
 
         let user = sessionData && sessionData.user ? sessionData.user : null;
@@ -2496,6 +2658,9 @@ import { APP_VERSION } from './core/version.js';
       return authRehydratePromise;
     }
 
+    /**
+     * @param {{ event?: string, user?: any, userInitiatedSignIn?: boolean, userInitiatedSignOut?: boolean, isSameUser?: boolean, isUserSwitch?: boolean, onRetry?: any }} [opts]
+     */
     async function renderAuthState({
       event,
       user,
@@ -2763,7 +2928,7 @@ import { APP_VERSION } from './core/version.js';
         }
       }
 
-      const bootstrapAuthGate = async () => {
+      bootstrapAuthGate = async () => {
         AuthOverlay.setPhase('checking', { onRetry: bootstrapAuthGate });
         AuthOverlay.show();
         try {
@@ -2775,7 +2940,7 @@ import { APP_VERSION } from './core/version.js';
           const user = session && session.user ? session.user : null;
           const ready = SupabaseClient.awaitAuthReady
             ? await SupabaseClient.awaitAuthReady({ timeoutMs: 5000 })
-            : { ok: !!user };
+            : { ok: Boolean(user) };
           if (user) {
             // Check profile status before allowing access
             if (!ready.ok) {
@@ -2821,7 +2986,8 @@ import { APP_VERSION } from './core/version.js';
 
           // Check if user initiated sign-in (consume intent ONCE and reuse the result)
           // Note: consumeAuthIntent clears the intent, so we must call it only once per event
-          const userIntentConsumed = isSignedInEvent && SupabaseClient.consumeAuthIntent && SupabaseClient.consumeAuthIntent('signIn', 5000);
+          const userIntentConsumed =
+            isSignedInEvent && SupabaseClient.consumeAuthIntent && SupabaseClient.consumeAuthIntent('signIn', 5000);
           const isCrossTabLogin = isSignedInEvent && newUserId && !userIntentConsumed;
 
           // Cross-tab user switches are handled via auth events (no page reload).
@@ -2831,7 +2997,9 @@ import { APP_VERSION } from './core/version.js';
             lastAuthUserId = null; // Clear old user ID to prevent stale state leakage
             try {
               // Notify app that org context has changed (forces UI to re-fetch)
-              window.dispatchEvent(new CustomEvent('tp3d:org-changed', { detail: { orgId: null, reason: 'user-switch' } }));
+              window.dispatchEvent(
+                new CustomEvent('tp3d:org-changed', { detail: { orgId: null, reason: 'user-switch' } })
+              );
             } catch (_) {
               // ignore
             }
@@ -2839,19 +3007,26 @@ import { APP_VERSION } from './core/version.js';
 
           // Rehydrate auth state for sign-in/session refresh events.
           // FIX: Force rehydration for user switches to ensure fresh data
-          const shouldForceBundle = isSignedInEvent || isTokenRefreshEvent || isInitialSessionEvent || isUserUpdatedEvent;
+          const shouldForceBundle =
+            isSignedInEvent || isTokenRefreshEvent || isInitialSessionEvent || isUserUpdatedEvent;
           if (shouldForceBundle) {
-            await rehydrateAuthState({ reason: event, force: isUserSwitch, forceBundle: shouldForceBundle || isUserSwitch });
+            await rehydrateAuthState({
+              reason: event,
+              force: isUserSwitch,
+              forceBundle: shouldForceBundle || isUserSwitch,
+              sessionHint: session || null,
+            });
           }
 
           // FIX: Get user from wrapper to ensure we have the latest data after rehydration
-          const user = (() => {
-            try {
-              return SupabaseClient.getUser();
-            } catch {
-              return null;
-            }
-          })() || userFromSession;
+          const user =
+            (() => {
+              try {
+                return SupabaseClient.getUser();
+              } catch {
+                return null;
+              }
+            })() || userFromSession;
 
           // FIX: Reuse the already-consumed result instead of consuming again
           const userInitiatedSignIn = userIntentConsumed;
@@ -2860,25 +3035,39 @@ import { APP_VERSION } from './core/version.js';
 
           // FIX: Recalculate isSameUser after potential lastAuthUserId clear
           const currentLastAuthUserId = lastAuthUserId ? String(lastAuthUserId) : null;
-          const isSameUser =
-            user && currentLastAuthUserId && user.id && String(user.id) === currentLastAuthUserId;
+          const isSameUser = user && currentLastAuthUserId && user.id && String(user.id) === currentLastAuthUserId;
 
           try {
-            emit('auth:changed', { event, userId: user && user.id ? String(user.id) : '', isUserSwitch, isCrossTabLogin });
+            emit('auth:changed', {
+              event,
+              userId: user && user.id ? String(user.id) : '',
+              isUserSwitch,
+              isCrossTabLogin,
+            });
           } catch {
             // ignore
           }
 
-          // 1) Close settings overlay on ANY auth change
-          try {
-            if (SettingsOverlay && typeof SettingsOverlay.close === 'function') SettingsOverlay.close();
-          } catch (_) {
-            // ignore
+          // 1) Close settings overlay only when auth really changes user context.
+          // Avoid closing on TOKEN_REFRESHED / INITIAL_SESSION to prevent tab desync.
+          const shouldCloseSettings = isUserSwitch || isSignedOutEvent;
+          if (shouldCloseSettings) {
+            try {
+              if (SettingsOverlay && typeof SettingsOverlay.close === 'function') SettingsOverlay.close();
+            } catch (_) {
+              // ignore
+            }
+            try {
+              if (AccountOverlay && typeof AccountOverlay.close === 'function') AccountOverlay.close();
+            } catch (_) {
+              // ignore
+            }
           }
 
           // 2) Notify org change for ALL auth changes (not just user switches)
           // This ensures UI components always re-fetch on auth events
-          if (!isUserSwitch) { // Already dispatched above for user switches
+          if (!isUserSwitch) {
+            // Already dispatched above for user switches
             try {
               window.dispatchEvent(new CustomEvent('tp3d:org-changed', { detail: { orgId: null } }));
             } catch (_) {
@@ -2906,18 +3095,75 @@ import { APP_VERSION } from './core/version.js';
             if (!SupabaseClient.getSessionSingleFlightSafe) return;
             try {
               const s = await SupabaseClient.getSessionSingleFlightSafe();
-              if (s) {
-                await rehydrateAuthState({ reason: 'visibility', forceBundle: true });
+              if (!s) {
                 await renderAuthState({
-                  event: 'VISIBLE',
-                  user: s && s.user ? s.user : null,
+                  event: 'SIGNED_OUT',
+                  user: null,
                   userInitiatedSignIn: false,
                   userInitiatedSignOut: false,
-                  isSameUser: true,
+                  isSameUser: false,
                   isUserSwitch: false,
                   onRetry: bootstrapAuthGate,
                 });
+                return;
               }
+              if (!canStartAuthRehydrate({ force: false })) return;
+              const overlayOpen = (() => {
+                try {
+                  if (window.SettingsOverlay?.isOpen?.() === true) return true;
+                } catch {
+                  // ignore
+                }
+                try {
+                  if (window.AccountOverlay?.isOpen?.() === true) return true;
+                } catch {
+                  // ignore
+                }
+                try {
+                  if (window.SettingsOverlay?.state?.isOpen === true) return true;
+                } catch {
+                  // ignore
+                }
+                try {
+                  if (window.AccountOverlay?.state?.isOpen === true) return true;
+                } catch {
+                  // ignore
+                }
+                try {
+                  if (SettingsOverlay && typeof SettingsOverlay.isOpen === 'function') {
+                    return !!SettingsOverlay.isOpen();
+                  }
+                } catch {
+                  // ignore
+                }
+                try {
+                  if (AccountOverlay && typeof AccountOverlay.isOpen === 'function') {
+                    return !!AccountOverlay.isOpen();
+                  }
+                } catch {
+                  // ignore
+                }
+                try {
+                  return Boolean(document.querySelector('[data-tp3d-settings-modal="1"]'));
+                } catch {
+                  return false;
+                }
+              })();
+              await rehydrateAuthState({
+                reason: 'visibility',
+                forceBundle: overlayOpen,
+                sessionHint: s,
+                skipCooldown: true,
+              });
+              await renderAuthState({
+                event: 'VISIBLE',
+                user: s && s.user ? s.user : null,
+                userInitiatedSignIn: false,
+                userInitiatedSignOut: false,
+                isSameUser: true,
+                isUserSwitch: false,
+                onRetry: bootstrapAuthGate,
+              });
             } catch {
               // ignore
             }

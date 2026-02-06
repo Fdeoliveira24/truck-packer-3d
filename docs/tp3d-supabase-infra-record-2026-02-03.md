@@ -1,4 +1,5 @@
 # Truck Packer 3D — Supabase Implementation Record
+
 **Date:** 2026-02-03  
 **Project:** Truck Packer 3D  
 **Scope:** Auth → Profiles → Orgs/Memberships + RLS + “stale user/org after login” debugging context
@@ -6,13 +7,19 @@
 ---
 
 ## 1) Problem we were chasing (app side)
+
 ### Symptoms
-- After signing in (especially with multiple tabs), UI could show **stale user/org** data (previous account) until refresh.
+
+- After signing in (especially with multiple tabs), UI could show **stale user/org** data (previous
+  account) until refresh.
 - Some debug noise appeared around session/user reads and single-flight calls.
-- In dev console, `getAccountBundleSingleFlight({ force:true })` sometimes looked “pending” or mismatched with `getAuthState()`.
+- In dev console, `getAccountBundleSingleFlight({ force:true })` sometimes looked “pending” or
+  mismatched with `getAuthState()`.
 
 ### Working theory
+
 This was likely caused by some mix of:
+
 - account/org bundle caching not being reset on auth events,
 - async requests finishing after auth changes (race),
 - multiple session/user reads in parallel,
@@ -22,7 +29,9 @@ This was likely caused by some mix of:
 ---
 
 ## 2) What we verified in the app (from console + repo scan)
+
 ### Confirmed in browser console
+
 - Supabase wrapper exists globally: `window.SupabaseClient` / `window.__TP3D_SUPABASE_API`
 - Wrapper exposes these key functions:
   - `getClient`, `getAuthState`, `getAuthEpoch`
@@ -32,16 +41,21 @@ This was likely caused by some mix of:
 - Client wrapper patching is active (`auth.getSession` patched).
 
 ### Important code note spotted in `src/core/supabase-client.js`
+
 Inside `updateAuthState()`, there was an editor snippet showing a typo like:
-- `_a uthState.user = ...`
-If that typo exists in your real runtime file, it can break auth state updates.
-**Action:** confirm the current file has no stray `_a` typo and your build is using the updated file.
+
+- `_a uthState.user = ...` If that typo exists in your real runtime file, it can break auth state
+  updates. **Action:** confirm the current file has no stray `_a` typo and your build is using the
+  updated file.
 
 ---
 
 ## 3) Supabase database work done on 2026-02-03
+
 ### 3.1 Profiles table shape (confirmed)
+
 `public.profiles` columns (no `email` column):
+
 - `id uuid`
 - `full_name text`
 - `first_name text`
@@ -59,15 +73,20 @@ If that typo exists in your real runtime file, it can break auth state updates.
 This is why earlier SQL using `profiles(email)` failed.
 
 ### 3.2 Profiles: auto-create on signup
+
 #### Function updated (final)
+
 `public.handle_new_user()` now inserts a profile with:
+
 - `id = new.id`
 - `display_name` and `full_name` derived from email prefix
 - timestamps
 - **On conflict:** only updates `updated_at`
 
 #### Triggers discovered (problem)
+
 Two triggers exist on `auth.users`, both calling `handle_new_user()`:
+
 - `handle_new_user_trigger`
 - `on_auth_user_created`
 
@@ -76,7 +95,9 @@ Two triggers exist on `auth.users`, both calling `handle_new_user()`:
 ✅ **Recommendation:** keep ONE and drop the other.
 
 ### 3.3 Backfill profiles (for existing users)
+
 A backfill insert was run to create profiles for auth users missing them:
+
 ```sql
 insert into public.profiles (id, display_name, full_name, created_at, updated_at)
 select
@@ -89,9 +110,11 @@ from auth.users u
 left join public.profiles p on p.id = u.id
 where p.id is null;
 ```
+
 Result: **Success. No rows returned** (no missing profile rows at that time).
 
 ### 3.4 Default org + membership on signup (Option A)
+
 A new trigger function was created and installed:
 
 - Function: `public.create_default_org_for_new_user()`
@@ -105,45 +128,60 @@ A new trigger function was created and installed:
   - `on_auth_user_create_default_org` (AFTER INSERT on `auth.users`)
 
 #### Important risk: trigger order / profile row existence
-Both profile-creation and org-creation triggers are **AFTER INSERT on auth.users**.
-Trigger execution order is not guaranteed.
+
+Both profile-creation and org-creation triggers are **AFTER INSERT on auth.users**. Trigger
+execution order is not guaranteed.
 
 If `create_default_org_for_new_user()` runs before the profile insert:
+
 - `update public.profiles ... where id = new.id` affects 0 rows
 - user ends up with org + membership, but **profile.current_organization_id stays null**
 
-✅ **Recommendation:** make `create_default_org_for_new_user()` upsert the profile row (or move current-org set into a trigger on `public.profiles`).
+✅ **Recommendation:** make `create_default_org_for_new_user()` upsert the profile row (or move
+current-org set into a trigger on `public.profiles`).
 
 ### 3.5 RLS status and policies
+
 RLS status (confirmed):
+
 - `profiles`: ON
 - `organization_members`: ON
 - `organizations`: ON
 
 Policies added (select-only baseline):
-1) `org_members_select_own` on `public.organization_members`
+
+1. `org_members_select_own` on `public.organization_members`
+
 - allows authenticated users to select rows where `auth.uid() = user_id`
 
-2) `orgs_select_if_member` on `public.organizations`
+2. `orgs_select_if_member` on `public.organizations`
+
 - allows authenticated users to select orgs where a membership exists for `auth.uid()`
 
 Profiles policies already exist:
+
 - select/update own (`auth.uid() = id`)
 
 ---
 
 ## 4) Current issues / risks remaining
+
 ### A) Duplicate profile triggers (must fix)
+
 You currently have **two** triggers creating a profile:
+
 - `handle_new_user_trigger`
 - `on_auth_user_created`
 
 ### B) Org trigger may not set `current_organization_id`
+
 Because trigger order is not guaranteed, the profile row might not exist when org trigger runs.
 
 ### C) Existing users still have no orgs
-Most test users show `organization_members = null`.
-Unless you backfill org/membership for existing accounts, the app will keep showing:
+
+Most test users show `organization_members = null`. Unless you backfill org/membership for existing
+accounts, the app will keep showing:
+
 - no workspace
 - empty org list
 - null `current_organization_id`
@@ -153,20 +191,25 @@ This is not a frontend bug—just missing data.
 ---
 
 ## 5) Fixes to apply (recommended)
+
 ### 5.1 Remove the duplicate profile trigger (pick ONE)
+
 Keep whichever name you prefer, but keep only one.
 
 Example (keep `on_auth_user_created`, drop the other):
+
 ```sql
 drop trigger if exists handle_new_user_trigger on auth.users;
 ```
 
 Or (keep `handle_new_user_trigger`, drop the other):
+
 ```sql
 drop trigger if exists on_auth_user_created on auth.users;
 ```
 
 ### 5.2 Make org creation trigger safe if profile row isn’t there yet
+
 Update `public.create_default_org_for_new_user()` to upsert a profile before updating it:
 
 ```sql
@@ -216,17 +259,22 @@ $$;
 No trigger change needed after this—your existing trigger will use the new function body.
 
 ### 5.3 Backfill org + membership for existing users (optional but likely needed)
+
 If you want every user to have a workspace, run a backfill that:
+
 - creates a workspace for users with no membership
 - inserts membership
 - sets `profiles.current_organization_id` if null
 
-(We can generate this SQL once you confirm whether you want “one org per user” or an invite-based flow.)
+(We can generate this SQL once you confirm whether you want “one org per user” or an invite-based
+flow.)
 
 ---
 
 ## 6) Verification checklist (run after fixes)
+
 ### 6.1 Confirm triggers on auth.users
+
 ```sql
 select t.tgname, pg_get_triggerdef(t.oid)
 from pg_trigger t
@@ -236,12 +284,16 @@ where n.nspname = 'auth'
   and c.relname = 'users'
   and not t.tgisinternal;
 ```
+
 Expected:
+
 - exactly one trigger calling `handle_new_user()`
 - one trigger calling `create_default_org_for_new_user()`
 
 ### 6.2 Create a brand new test user and verify
+
 After signup, verify:
+
 ```sql
 -- profile exists
 select * from public.profiles where id = '<new_user_uuid>';
@@ -254,6 +306,7 @@ where m.user_id = '<new_user_uuid>';
 ```
 
 Verify `current_organization_id` is set:
+
 ```sql
 select id, current_organization_id
 from public.profiles
@@ -261,6 +314,7 @@ where id = '<new_user_uuid>';
 ```
 
 ### 6.3 Verify RPC returns orgs for authenticated user
+
 ```sql
 select * from public.get_user_organizations();
 ```
@@ -268,16 +322,19 @@ select * from public.get_user_organizations();
 ---
 
 ## 7) Notes for future debugging (if this happens again)
+
 If UI shows wrong user/org:
-1) Confirm auth state: `SupabaseClient.getAuthState()`
-2) Force bundle refresh: `SupabaseClient.getAccountBundleSingleFlight({ force:true })`
-3) Confirm org membership exists in DB (most common “empty workspace” cause)
-4) Confirm RLS allows selects
-5) Confirm epoch bumps on auth events: `SupabaseClient.getAuthEpoch()`
+
+1. Confirm auth state: `SupabaseClient.getAuthState()`
+2. Force bundle refresh: `SupabaseClient.getAccountBundleSingleFlight({ force:true })`
+3. Confirm org membership exists in DB (most common “empty workspace” cause)
+4. Confirm RLS allows selects
+5. Confirm epoch bumps on auth events: `SupabaseClient.getAuthEpoch()`
 
 ---
 
 ## 8) What changed today (quick summary)
+
 - Confirmed `profiles` has no `email` column (fixed trigger function accordingly)
 - Installed/updated:
   - `public.handle_new_user()` (profile auto-create)

@@ -11,6 +11,18 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
+/**
+ * @param {{
+ *  documentRef?: Document,
+ *  UIComponents?: any,
+ *  ImportExport?: any,
+ *  StateStore?: any,
+ *  Storage?: any,
+ *  PreferencesManager?: any,
+ *  applyCaseDefaultColor?: Function,
+ *  Utils?: any
+ * }} [opts]
+ */
 export function createImportAppDialog({
   documentRef = document,
   UIComponents,

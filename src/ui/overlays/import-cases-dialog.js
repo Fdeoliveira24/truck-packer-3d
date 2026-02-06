@@ -11,6 +11,15 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
+/**
+ * @param {{
+ *  documentRef?: Document,
+ *  UIComponents?: any,
+ *  ImportExport?: any,
+ *  StateStore?: any,
+ *  Utils?: any
+ * }} [opts]
+ */
 export function createImportCasesDialog({
   documentRef = document,
   UIComponents,

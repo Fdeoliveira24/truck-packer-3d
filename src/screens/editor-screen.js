@@ -765,6 +765,7 @@ export function createEditorScreen({
 
     function renderCaseBrowser() {
       const q = String(caseSearchEl.value || '').trim();
+      const prefs = PreferencesManager.get ? PreferencesManager.get() : { units: { length: 'in', weight: 'lb' } };
       const cases = CaseLibrary.search(q, Array.from(browserCats)).sort((a, b) =>
         (a.name || '').localeCompare(b.name || '')
       );
@@ -819,18 +820,42 @@ export function createEditorScreen({
         const name = document.createElement('div');
         name.classList.add('tp3d-editor-fw-semibold');
         name.textContent = c.name;
+        const hasDims =
+          c &&
+          c.dimensions &&
+          Number.isFinite(c.dimensions.length) &&
+          Number.isFinite(c.dimensions.width) &&
+          Number.isFinite(c.dimensions.height);
         const dims = document.createElement('div');
         dims.className = 'muted';
         dims.classList.add('tp3d-editor-fs-xs');
-        dims.textContent = `${c.dimensions.length}×${c.dimensions.width}×${c.dimensions.height} in`;
+        const dimsValue = hasDims
+          ? `${c.dimensions.length}×${c.dimensions.width}×${c.dimensions.height} in`
+          : '—';
+        dims.innerHTML = `<span class="tp3d-label-strong">D:</span> ${dimsValue}`;
+        const vwf = document.createElement('div');
+        vwf.className = 'muted';
+        vwf.classList.add('tp3d-editor-fs-xs');
+        const catMeta = CategoryService.meta(c.category || 'default');
+        const volumeLabel = hasDims
+          ? Utils.formatVolume(c.dimensions, (prefs.units && prefs.units.length) || 'in')
+          : '—';
+        const weightNum = Number(c.weight);
+        let weightLabel = '—';
+        if (Number.isFinite(weightNum)) {
+          const weightUnit = (prefs.units && prefs.units.weight) || 'lb';
+          weightLabel = weightUnit === 'kg' ? `${(weightNum * 0.453592).toFixed(2)} kg` : `${weightNum.toFixed(2)} lb`;
+        }
+        const flipLabel = c.canFlip ? 'Y' : 'N';
+        vwf.innerHTML = `<span class="tp3d-label-strong">V:</span> ${volumeLabel} • <span class="tp3d-label-strong">W:</span> ${weightLabel} • <span class="tp3d-label-strong">C:</span> ${catMeta.name} • <span class="tp3d-label-strong">F:</span> ${flipLabel}`;
         left.appendChild(name);
         left.appendChild(dims);
+        left.appendChild(vwf);
         header.appendChild(left);
 
         const metaRow = document.createElement('div');
-        metaRow.className = 'row space-between';
+        metaRow.className = 'row space-between tp3d-editor-card-meta';
         metaRow.classList.add('tp3d-editor-card-grid-gap-8');
-        metaRow.appendChild(makeMiniCategoryChip(c.category));
 
         const addBtn = document.createElement('button');
         addBtn.className = 'btn btn-primary';

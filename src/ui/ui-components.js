@@ -134,7 +134,10 @@ export function createUIComponents() {
     footer.className = 'modal-footer';
     (config.actions || [{ label: 'Close' }]).forEach(action => {
       const btn = document.createElement('button');
-      btn.className = `btn ${action.variant === 'primary' ? 'btn-primary' : ''} ${action.variant === 'danger' ? 'btn-danger' : ''} ${action.variant === 'ghost' ? 'btn-ghost' : ''}`.trim().replace(/\s+/g, ' ');
+      btn.className =
+        `btn ${action.variant === 'primary' ? 'btn-primary' : ''} ${action.variant === 'danger' ? 'btn-danger' : ''} ${action.variant === 'ghost' ? 'btn-ghost' : ''}`
+          .trim()
+          .replace(/\s+/g, ' ');
       btn.type = 'button';
       btn.textContent = action.label || 'OK';
       btn.addEventListener('click', () => {
@@ -271,7 +274,8 @@ export function createUIComponents() {
           if (btn.disabled) return;
           try {
             const handler = item.onCheckboxChange || item.onClick;
-            if (handler) handler(ev.target.checked);
+            const target = /** @type {HTMLInputElement|null} */ (ev.target);
+            if (handler) handler(Boolean(target && target.checked));
           } finally {
             if (options.closeOnCheckboxChange !== false) closeAllDropdowns();
           }

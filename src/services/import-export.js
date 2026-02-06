@@ -142,12 +142,15 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
 
     const rowErrors = [];
     if (!record.name) rowErrors.push(`Row ${rowNum}: Missing required field 'name'`);
-    if (!Number.isFinite(record.length) || record.length <= 0)
+    if (!Number.isFinite(record.length) || record.length <= 0) {
       rowErrors.push(`Row ${rowNum}: Invalid number for 'length'`);
-    if (!Number.isFinite(record.width) || record.width <= 0)
+    }
+    if (!Number.isFinite(record.width) || record.width <= 0) {
       rowErrors.push(`Row ${rowNum}: Invalid number for 'width'`);
-    if (!Number.isFinite(record.height) || record.height <= 0)
+    }
+    if (!Number.isFinite(record.height) || record.height <= 0) {
       rowErrors.push(`Row ${rowNum}: Invalid number for 'height'`);
+    }
 
     const nameKey = record.name.toLowerCase();
     if (record.name && existingNames.has(nameKey)) {

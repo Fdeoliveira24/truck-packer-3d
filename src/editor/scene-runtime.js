@@ -13,7 +13,7 @@
 
 // Editor scene runtime (extracted from src/app.js; behavior preserved)
 
-export function createSceneRuntime({ Utils, UIComponents, PreferencesManager, TrailerGeometry, StateStore }) {
+export function createSceneRuntime({ Utils, UIComponents, PreferencesManager: _PreferencesManager, TrailerGeometry, StateStore }) {
   const SceneManager = (() => {
     const INCH_TO_WORLD = 0.05;
     const WORLD_TO_INCH = 1 / INCH_TO_WORLD;
@@ -87,8 +87,9 @@ export function createSceneRuntime({ Utils, UIComponents, PreferencesManager, Tr
           stats.textures = rendererInfo.memory.textures;
         }
 
-        if (performance.memory) {
-          stats.memory = Math.round(performance.memory.usedJSHeapSize / 1048576);
+        const perfAny = /** @type {any} */ (performance);
+        if (perfAny.memory) {
+          stats.memory = Math.round(perfAny.memory.usedJSHeapSize / 1048576);
         }
 
         const fpsColor = stats.fps >= 55 ? '#0f0' : stats.fps >= 30 ? '#ff0' : '#f00';

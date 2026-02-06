@@ -463,7 +463,7 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
         try {
           inFlight = true;
           setBusy(true);
-          signInBtn.textContent = 'Signing in...';
+          signInBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Signing in\u2026';
           await SupabaseClient.signIn(email, password);
 
           // Optional post-sign-in safety check: only block if the auth user is actually banned
@@ -522,7 +522,7 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
         try {
           inFlight = true;
           setBusy(true);
-          signUpBtn.textContent = 'Signing up...';
+          signUpBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Signing up\u2026';
           const data = await SupabaseClient.signUp(email, password);
           const sess = data && data.session ? data.session : null;
           if (!sess) {

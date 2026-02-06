@@ -661,6 +661,17 @@ export function createAccountOverlay(opts = {}) {
       }
     };
 
+    const tempSkeleton = doc.createElement('div');
+    tempSkeleton.className = 'tp3d-settings-right-body';
+    tempSkeleton.innerHTML = `
+      <div class="tp3d-skeleton-group">
+        <div class="tp3d-skeleton tp3d-skeleton-w40 tp3d-skeleton-title"></div>
+        <div class="tp3d-skeleton tp3d-skeleton-w70"></div>
+        <div class="tp3d-skeleton tp3d-skeleton-short"></div>
+        <div class="tp3d-skeleton tp3d-skeleton-short"></div>
+      </div>`;
+    accountModal.appendChild(tempSkeleton);
+
     void render();
 
     const focusTarget = /** @type {HTMLElement|null} */ (

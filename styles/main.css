@@ -2656,3 +2656,78 @@ body.modal-open {
   color: var(--text-secondary);
   line-height: 1.5;
 }
+
+/* ================================
+  Skeletons & Spinners
+================================== */
+
+@keyframes tp3d-pulse {
+  0% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.55;
+  }
+}
+
+.tp3d-skeleton {
+  background: var(--border-subtle);
+  border-radius: var(--radius-sm);
+  animation: tp3d-pulse 1.5s ease-in-out infinite;
+  height: 1em;
+  width: 100%;
+}
+
+.tp3d-skeleton-short {
+  width: 60%;
+}
+
+.tp3d-skeleton-circle {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+}
+
+.btn .fa-spinner {
+  margin-right: 0.35em;
+}
+
+.tp3d-account-avatar-preview.is-uploading {
+  position: relative;
+  opacity: 0.6;
+}
+
+.tp3d-account-avatar-preview.is-uploading::after {
+  content: '\f110';
+  font-family: 'Font Awesome 6 Free';
+  font-weight: 900;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fa-spin 1s linear infinite;
+  color: var(--text-primary);
+}
+
+.tp3d-skeleton-group {
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.tp3d-skeleton-w40 {
+  width: 40%;
+}
+
+.tp3d-skeleton-w70 {
+  width: 70%;
+}
+
+.tp3d-skeleton-title {
+  height: 1.5em;
+}

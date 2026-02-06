@@ -179,6 +179,7 @@ export function createSettingsOverlay({
   let isEditingProfile = false;
   let isLoadingProfile = false;
   let isSavingProfile = false;
+  let isUploadingAvatar = false;
 
   // Organization editing state
   let orgData = null;
@@ -445,6 +446,8 @@ export function createSettingsOverlay({
 
   async function handleAvatarUpload(file) {
     const actionId = _tabState.lastActionId;
+    isUploadingAvatar = true;
+    renderIfFresh(actionId, 'avatarUpload:begin');
     try {
       const publicUrl = await SupabaseClient.uploadAvatar(file);
       // Add cache-busting timestamp to force browser to reload image
@@ -462,11 +465,16 @@ export function createSettingsOverlay({
       }
     } catch (err) {
       UIComponents.showToast(`Upload failed: ${err && err.message ? err.message : err}`, 'error');
+    } finally {
+      isUploadingAvatar = false;
+      renderIfFresh(actionId, 'avatarUpload:done');
     }
   }
 
   async function handleAvatarRemove() {
     const actionId = _tabState.lastActionId;
+    isUploadingAvatar = true;
+    renderIfFresh(actionId, 'avatarRemove:begin');
     try {
       await SupabaseClient.deleteAvatar();
       await SupabaseClient.updateProfile({ avatar_url: null });
@@ -482,6 +490,9 @@ export function createSettingsOverlay({
       }
     } catch (err) {
       UIComponents.showToast(`Remove failed: ${err && err.message ? err.message : err}`, 'error');
+    } finally {
+      isUploadingAvatar = false;
+      renderIfFresh(actionId, 'avatarRemove:done');
     }
   }
 
@@ -491,6 +502,7 @@ export function createSettingsOverlay({
 
   function close() {
     if (!settingsOverlay) return;
+    isUploadingAvatar = false;
     try {
       if (typeof unmountAccountButton === 'function') unmountAccountButton();
     } catch {
@@ -1395,6 +1407,9 @@ export function createSettingsOverlay({
 
       const avatarPreview = doc.createElement('div');
       avatarPreview.className = 'brand-mark tp3d-account-avatar-preview';
+      if (isUploadingAvatar) {
+        avatarPreview.classList.add('is-uploading');
+      }
 
       if (profileData && profileData.avatar_url) {
         avatarPreview.classList.add('has-image');
@@ -1417,7 +1432,7 @@ export function createSettingsOverlay({
       uploadBtn.type = 'button';
       uploadBtn.className = 'btn btn-secondary';
       uploadBtn.textContent = profileData && profileData.avatar_url ? 'Change Avatar' : 'Upload Avatar';
-      uploadBtn.disabled = !accountUserView.isAuthed;
+      uploadBtn.disabled = !accountUserView.isAuthed || isUploadingAvatar;
 
       const fileInput = doc.createElement('input');
       fileInput.type = 'file';
@@ -1442,7 +1457,7 @@ export function createSettingsOverlay({
         removeBtn.type = 'button';
         removeBtn.className = 'btn btn-ghost';
         removeBtn.textContent = 'Remove';
-        removeBtn.disabled = !accountUserView.isAuthed;
+        removeBtn.disabled = !accountUserView.isAuthed || isUploadingAvatar;
         removeBtn.addEventListener('click', () => handleAvatarRemove());
         avatarButtons.appendChild(removeBtn);
       }
@@ -1553,7 +1568,11 @@ export function createSettingsOverlay({
         const saveBtn = doc.createElement('button');
         saveBtn.type = 'submit';
         saveBtn.className = 'btn btn-primary';
-        saveBtn.textContent = isSavingProfile ? 'Saving...' : 'Save Changes';
+        if (isSavingProfile) {
+          saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving…';
+        } else {
+          saveBtn.textContent = 'Save Changes';
+        }
         saveBtn.disabled = isSavingProfile;
 
         actions.appendChild(cancelBtn);
@@ -1566,51 +1585,64 @@ export function createSettingsOverlay({
         const viewContainer = doc.createElement('div');
         viewContainer.className = 'grid';
 
-        // Display name
-        const displayNameEl = doc.createElement('div');
-        displayNameEl.textContent =
-          (profileData && profileData.display_name) || accountUserView.displayName || '\u2014';
-        viewContainer.appendChild(row('Display Name', displayNameEl));
+        if (!profileData && (isLoadingProfile || isLoadingAccountBundle)) {
+          const makeSkeleton = () => {
+            const el = doc.createElement('div');
+            el.className = 'tp3d-skeleton tp3d-skeleton-short';
+            return el;
+          };
+          viewContainer.appendChild(row('Display Name', makeSkeleton()));
+          viewContainer.appendChild(row('First Name', makeSkeleton()));
+          viewContainer.appendChild(row('Last Name', makeSkeleton()));
+          viewContainer.appendChild(row('Bio', makeSkeleton()));
+          viewContainer.appendChild(row('Email', makeSkeleton()));
+        } else {
+          // Display name
+          const displayNameEl = doc.createElement('div');
+          displayNameEl.textContent =
+            (profileData && profileData.display_name) || accountUserView.displayName || '\u2014';
+          viewContainer.appendChild(row('Display Name', displayNameEl));
 
-        // First name
-        if (profileData) {
-          const firstNameEl = doc.createElement('div');
-          firstNameEl.textContent = profileData.first_name || '\u2014';
-          viewContainer.appendChild(row('First Name', firstNameEl));
+          // First name
+          if (profileData) {
+            const firstNameEl = doc.createElement('div');
+            firstNameEl.textContent = profileData.first_name || '\u2014';
+            viewContainer.appendChild(row('First Name', firstNameEl));
 
-          // Last name
-          const lastNameEl = doc.createElement('div');
-          lastNameEl.textContent = profileData.last_name || '\u2014';
-          viewContainer.appendChild(row('Last Name', lastNameEl));
+            // Last name
+            const lastNameEl = doc.createElement('div');
+            lastNameEl.textContent = profileData.last_name || '\u2014';
+            viewContainer.appendChild(row('Last Name', lastNameEl));
 
-          // Bio
-          if (profileData.bio) {
-            const bioEl = doc.createElement('div');
-            bioEl.textContent = profileData.bio;
-            viewContainer.appendChild(row('Bio', bioEl));
+            // Bio
+            if (profileData.bio) {
+              const bioEl = doc.createElement('div');
+              bioEl.textContent = profileData.bio;
+              viewContainer.appendChild(row('Bio', bioEl));
+            }
           }
-        }
 
-        // Email
-        const emailEl = doc.createElement('div');
-        emailEl.textContent =
-          accountUserView.isAuthed && accountUserView.email ? accountUserView.email : 'Not signed in';
-        viewContainer.appendChild(row('Email', emailEl));
+          // Email
+          const emailEl = doc.createElement('div');
+          emailEl.textContent =
+            accountUserView.isAuthed && accountUserView.email ? accountUserView.email : 'Not signed in';
+          viewContainer.appendChild(row('Email', emailEl));
 
-        // Edit button
-        if (accountUserView.isAuthed && profileData) {
-          const editActions = doc.createElement('div');
-          editActions.className = 'tp3d-account-actions';
-          const editBtn = doc.createElement('button');
-          editBtn.type = 'button';
-          editBtn.className = 'btn btn-primary';
-          editBtn.textContent = 'Edit Profile';
-          editBtn.addEventListener('click', () => {
-            isEditingProfile = true;
-            render();
-          });
-          editActions.appendChild(editBtn);
-          viewContainer.appendChild(editActions);
+          // Edit button
+          if (accountUserView.isAuthed && profileData) {
+            const editActions = doc.createElement('div');
+            editActions.className = 'tp3d-account-actions';
+            const editBtn = doc.createElement('button');
+            editBtn.type = 'button';
+            editBtn.className = 'btn btn-primary';
+            editBtn.textContent = 'Edit Profile';
+            editBtn.addEventListener('click', () => {
+              isEditingProfile = true;
+              render();
+            });
+            editActions.appendChild(editBtn);
+            viewContainer.appendChild(editActions);
+          }
         }
 
         profileSection.appendChild(viewContainer);
@@ -1948,7 +1980,11 @@ export function createSettingsOverlay({
         const saveBtn = doc.createElement('button');
         saveBtn.type = 'submit';
         saveBtn.className = 'btn btn-primary';
-        saveBtn.textContent = isSavingOrg ? 'Saving...' : 'Save Changes';
+        if (isSavingOrg) {
+          saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving…';
+        } else {
+          saveBtn.textContent = 'Save Changes';
+        }
         saveBtn.disabled = isSavingOrg;
 
         actions.appendChild(cancelBtn);
@@ -1963,11 +1999,17 @@ export function createSettingsOverlay({
         const viewContainer = doc.createElement('div');
         viewContainer.className = 'grid';
 
-        if (isLoadingMembership || isLoadingOrg) {
-          const loadingEl = doc.createElement('div');
-          loadingEl.className = 'muted';
-          loadingEl.textContent = 'Loading organization...';
-          viewContainer.appendChild(loadingEl);
+        if (isLoadingMembership || isLoadingOrg || isLoadingAccountBundle) {
+          const makeSkeleton = () => {
+            const el = doc.createElement('div');
+            el.className = 'tp3d-skeleton tp3d-skeleton-short';
+            return el;
+          };
+          viewContainer.appendChild(orgRow('Name', makeSkeleton()));
+          viewContainer.appendChild(orgRow('Slug', makeSkeleton()));
+          viewContainer.appendChild(orgRow('Phone', makeSkeleton()));
+          viewContainer.appendChild(orgRow('Address', makeSkeleton()));
+          viewContainer.appendChild(orgRow('Role', makeSkeleton()));
         } else if (!membershipData) {
           const wrap = doc.createElement('div');
           wrap.style.display = 'flex';
@@ -2269,6 +2311,7 @@ export function createSettingsOverlay({
     isEditingProfile = false;
     isLoadingProfile = false;
     isSavingProfile = false;
+    isUploadingAvatar = false;
 
     // FIX: Clear organization cache to prevent showing old user's org data
     orgData = null;

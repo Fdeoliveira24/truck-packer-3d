@@ -10,7 +10,9 @@ Deno.serve(async (req) => {
     if (req.method !== "GET") return json({ error: "Method not allowed" }, { status: 405, origin });
     if (!origin) return json({ error: "Origin not allowed" }, { status: 403, origin: null });
 
-    const { user } = await requireUser(req);
+    const auth = await requireUser(req);
+    if (!auth.ok) return new Response(JSON.stringify({ code: auth.status, message: auth.error }), { status: auth.status });
+    const { user } = auth;
     const sb = serviceClient();
 
     const { data, error } = await sb

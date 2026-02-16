@@ -463,13 +463,6 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
           email.input.focus();
           return;
         }
-        const pwCheck = validatePassword(pwVal);
-        if (!pwCheck.ok) {
-          showMessage(msgBox, pwCheck.msg, 'error');
-          pw.input.focus();
-          return;
-        }
-
         try {
           inFlight = true;
           submitBtn.disabled = true;

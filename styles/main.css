@@ -966,8 +966,7 @@ textarea:focus {
 
 /* Sidebar upgrade notice */
 .tp3d-sidebar-upgrade-wrap {
-  margin: var(--space-3);
-  margin-top: auto;
+  margin: 0 var(--space-3) var(--space-3);
   display: flex;
   flex-direction: column;
 }
@@ -1312,7 +1311,8 @@ tr:hover td {
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 10px;
+  min-height: 36px;
   font-size: var(--text-sm);
 }
 
@@ -1790,6 +1790,20 @@ tr:hover td {
   max-width: 600px;
 }
 
+.tp3d-account-field-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.tp3d-account-field-row .tp3d-account-field {
+  min-width: 0;
+}
+
+.tp3d-org-field-row {
+  max-width: 100%;
+}
+
 .tp3d-account-field {
   display: grid;
   gap: 8px;
@@ -1806,6 +1820,16 @@ tr:hover td {
   gap: 12px;
   justify-content: flex-end;
   margin-top: 8px;
+}
+
+.tp3d-settings-right-body[data-tab-panel='account'] {
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+}
+
+.tp3d-settings-right-body[data-tab-panel='account'] .tp3d-settings-danger {
+  margin-top: 0;
 }
 
 .tp3d-account-delete-form {
@@ -2092,46 +2116,61 @@ body.modal-open {
   inset: 0;
 }
 
-.viewport-hint-toggle {
+.viewport-hint-icon {
   position: absolute;
-  left: 12px;
-  bottom: 12px;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  border: none;
-  background: rgba(0, 0, 0, 0.4);
-  color: rgba(255, 255, 255, 0.8);
-  font-size: 15px;
+  left: 14px;
+  bottom: 14px;
+  top: auto;
+  right: auto;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 18px;
+  line-height: 1;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.15s, color 0.15s;
-  z-index: 2;
+  transition: color 0.15s;
+  z-index: 5;
   padding: 0;
 }
-.viewport-hint-toggle:hover {
-  background: rgba(0, 0, 0, 0.65);
-  color: #fff;
-}
-.viewport-hint-toggle.active {
-  background: var(--accent-primary, #ff9f1c);
-  color: #fff;
+.viewport-hint-icon:hover {
+  color: var(--text-primary);
 }
 
-.viewport-overlay {
-  position: absolute;
-  left: 50px;
-  bottom: 12px;
-  background: rgba(0, 0, 0, 0.55);
-  color: white;
-  padding: 6px 10px;
-  border-radius: 8px;
-  font-size: var(--text-xs);
-  max-width: 320px;
-  pointer-events: none;
-  z-index: 2;
+.viewport-hint-icon:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+.viewport-hint-icon[data-tooltip]::after {
+  top: auto;
+  bottom: calc(100% + 8px);
+  left: 0;
+  transform: none;
+  width: min(300px, calc(100vw - 36px));
+  white-space: normal;
+  text-align: left;
+  line-height: 1.35;
+}
+
+.viewport-hint-icon[data-tooltip]::before {
+  top: auto;
+  bottom: calc(100% + 3px);
+  left: 9px;
+  transform: none;
+  border: 5px solid transparent;
+  border-top-color: var(--text-primary);
+  border-bottom: 0;
+}
+
+.viewport-hint-icon.is-open::before,
+.viewport-hint-icon.is-open::after {
+  opacity: 1;
 }
 
 .viewport-toolbar {
@@ -2182,6 +2221,15 @@ body.modal-open {
 .toolbar-btn.active {
   border-color: rgba(255, 159, 28, 0.32);
   background: rgba(255, 159, 28, 0.14);
+}
+
+.toolbar-btn .tp3d-toolbar-caret {
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+.tp3d-toolbar-hidden-action {
+  display: none !important;
 }
 
 /* ================================
@@ -2462,6 +2510,16 @@ body.modal-open {
   gap: 12px;
 }
 
+#inspector-body {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+#inspector-body .card {
+  padding: 12px;
+}
+
 .tp3d-editor-preset-row {
   display: grid;
   grid-template-columns: 1fr;
@@ -2534,6 +2592,22 @@ body.modal-open {
   gap: 8px;
 }
 
+.tp3d-editor-case-browser-card {
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.tp3d-editor-card-dims.tp3d-editor-case-meta-primary,
+.tp3d-editor-card-dims.tp3d-editor-case-meta-secondary {
+  font-size: var(--text-sm);
+  line-height: 1.35;
+}
+
+.tp3d-editor-case-meta-secondary .chip-dot {
+  width: 7px;
+  height: 7px;
+}
+
 .tp3d-editor-card-meta {
   align-items: center;
   flex-wrap: nowrap;
@@ -2587,6 +2661,97 @@ body.modal-open {
 
 .tp3d-editor-fs-sm {
   font-size: var(--text-sm);
+}
+
+.tp3d-editor-transform-card {
+  position: relative;
+  gap: 10px;
+}
+
+.tp3d-editor-info-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: help;
+}
+
+.tp3d-editor-info-icon[data-tooltip]::after {
+  top: calc(100% + 10px);
+  bottom: auto;
+  left: auto;
+  right: 0;
+  transform: none;
+  max-width: min(240px, calc(100vw - 24px));
+  white-space: pre-line;
+  text-align: left;
+}
+
+.tp3d-editor-info-icon[data-tooltip]::before {
+  top: calc(100% + 4px);
+  bottom: auto;
+  left: auto;
+  right: 8px;
+  transform: none;
+  border: 5px solid transparent;
+  border-bottom-color: var(--text-primary);
+  border-top: 0;
+}
+
+#inspector-body .card > .row.space-between {
+  align-items: center;
+}
+
+#inspector-body .card > .row.space-between .tp3d-editor-info-icon {
+  margin-left: auto;
+}
+
+.tp3d-editor-transform-card > .row.space-between .tp3d-editor-info-icon {
+  position: absolute;
+  right: 0;
+  top: calc(100% - 102px);
+  z-index: 2;
+}
+
+.tp3d-editor-transform-card > .row.space-between .tp3d-editor-info-icon[data-tooltip]::after {
+  top: auto;
+  bottom: calc(100% + 10px);
+}
+
+.tp3d-editor-transform-card > .row.space-between .tp3d-editor-info-icon[data-tooltip]::before {
+  top: auto;
+  bottom: calc(100% + 5px);
+  right: 8px;
+  left: auto;
+  border: 5px solid transparent;
+  border-top-color: var(--text-primary);
+  border-bottom: 0;
+}
+
+.tp3d-editor-transform-divider {
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.tp3d-editor-rot-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tp3d-editor-rot-btn {
+  justify-content: flex-start;
+  padding: 6px 10px;
+}
+
+.tp3d-editor-rot-btn[data-tooltip]::before,
+.tp3d-editor-rot-btn[data-tooltip]::after {
+  display: none !important;
 }
 
 .tp3d-editor-mb-6 {
@@ -2876,7 +3041,21 @@ body.modal-open {
   min-width: 0;
 }
 
+.tp3d-org-member-name-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
 .tp3d-org-member-name {
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-org-member-you-badge {
+  background: rgba(255, 159, 28, 0.18);
+  border: 1px solid rgba(255, 159, 28, 0.42);
+  color: #7a4b00;
   font-weight: var(--font-semibold);
 }
 
@@ -2888,9 +3067,17 @@ body.modal-open {
 .tp3d-org-member-actions {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 10px;
   justify-content: flex-end;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+}
+
+.tp3d-org-member-role-select {
+  min-width: 170px;
+}
+
+.tp3d-org-member-remove-btn {
+  white-space: nowrap;
 }
 
 .tp3d-org-member-actions .btn-danger {
@@ -2932,9 +3119,13 @@ body.modal-open {
 /* Dropdown menu icons: muted, consistent weight */
 .dropdown-item i {
   color: var(--text-secondary);
-  width: 16px;
+  width: 18px;
+  min-width: 18px;
   text-align: center;
   font-size: var(--text-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* ================================
@@ -2958,13 +3149,15 @@ body.modal-open {
   content: attr(data-tooltip);
   top: calc(100% + 8px);
   transform: translateX(-50%);
-  padding: var(--space-2) var(--space-4);
+  padding: 10px 12px;
   background: var(--text-primary);
   color: var(--text-inverse);
   font-size: var(--text-xs);
   font-weight: var(--font-medium);
+  line-height: 1.45;
   border-radius: var(--radius-md);
-  white-space: nowrap;
+  max-width: min(240px, calc(100vw - 24px));
+  white-space: pre-line;
   box-shadow: var(--shadow-lg);
 }
 
@@ -2987,6 +3180,11 @@ body.modal-open {
   display: none;
 }
 
+/* Keep viewport hint icon anchored in the canvas (generic tooltip rule sets relative). */
+.viewport-hint-icon[data-tooltip] {
+  position: absolute;
+}
+
 /* ================================
    Org Context UI
 ================================== */
@@ -3003,13 +3201,28 @@ body.modal-open {
   }
 
   .tp3d-org-member-row {
+    grid-template-columns: minmax(0, 1fr);
     align-items: flex-start;
-    flex-direction: column;
   }
 
   .tp3d-org-member-actions {
     width: 100%;
     justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .tp3d-org-member-role-select {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .tp3d-org-member-remove-btn {
+    margin-left: auto;
+  }
+
+  .tp3d-account-field-row {
+    grid-template-columns: 1fr;
   }
 }
 

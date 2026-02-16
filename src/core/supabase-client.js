@@ -56,6 +56,9 @@ let _lastLogoutSignalAt = 0;
 let _profileAuthLogOnce = false;
 const _authState = { status: 'loading', session: null, user: null, updatedAt: 0 };
 
+/** In-memory cache for org logo signed URLs. Cleared on signOut and uploadOrgLogo. */
+const _orgLogoCache = new Map(); // key: logoPath|updatedAt, value: { url, expiresAt }
+
 // ============================================================================
 // AUTH EPOCH & ACCOUNT BUNDLE (prevents stale data from showing wrong user)
 // ============================================================================
@@ -1706,6 +1709,7 @@ export async function signOut(options = {}) {
     }
 
     _authInvalidatedAt = Date.now();
+    _orgLogoCache.clear(); // Prevent stale org logo URLs leaking across sessions
     bumpAuthEpoch('local-logout');
 
     // Notify the app shell
@@ -2658,6 +2662,8 @@ export async function uploadOrgLogo(orgId, file) {
   if (typeof invalidateAccountCache === 'function') {
     invalidateAccountCache();
   }
+  // Clear signed-URL cache so next render fetches a fresh URL for the new logo
+  _orgLogoCache.clear();
 
   return logoPath;
 }
@@ -2819,8 +2825,6 @@ export async function requestAccountDeletion() {
 // ============================================================================
 // SECTION: ORG LOGO HELPER
 // ============================================================================
-
-const _orgLogoCache = new Map(); // key: logo_path, value: { url, expiresAt }
 
 /**
  * Get a displayable URL for an org logo stored in Supabase Storage.

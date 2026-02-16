@@ -2,6 +2,51 @@ import { getAllowedOrigin, json } from "../_shared/cors.ts";
 import { requireUser, serviceClient } from "../_shared/auth.ts";
 import { stripeClient, assertAllowedPrice, buildReturnUrls } from "../_shared/stripe.ts";
 
+const STRIPE_BLOCKING_STATUSES = new Set(["active", "trialing", "past_due", "unpaid"]);
+
+function utcMinuteBucket(date = new Date()): string {
+  const y = date.getUTCFullYear();
+  const mo = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
+  const h = String(date.getUTCHours()).padStart(2, "0");
+  const m = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${y}${mo}${d}${h}${m}`;
+}
+
+function checkoutIdempotencyKey(userId: string, priceId: string): string {
+  return `checkout:${userId}:${priceId}:${utcMinuteBucket()}`;
+}
+
+async function createPortalUrl(
+  stripe: ReturnType<typeof stripeClient>,
+  stripeCustomerId: string,
+  origin: string,
+): Promise<string> {
+  const return_url = new URL(origin);
+  return_url.pathname = "/index.html";
+  return_url.searchParams.set("billing", "portal_return");
+
+  const session = await stripe.billingPortal.sessions.create({
+    customer: stripeCustomerId,
+    return_url: return_url.toString(),
+  });
+
+  return session.url;
+}
+
+async function hasBlockingStripeSubscription(
+  stripe: ReturnType<typeof stripeClient>,
+  stripeCustomerId: string,
+): Promise<boolean> {
+  const list = await stripe.subscriptions.list({
+    customer: stripeCustomerId,
+    status: "all",
+    limit: 100,
+  });
+  const subs = Array.isArray(list.data) ? list.data : [];
+  return subs.some(s => STRIPE_BLOCKING_STATUSES.has(String(s.status || "")));
+}
+
 Deno.serve(async (req) => {
   const origin = getAllowedOrigin(req);
 
@@ -18,7 +63,7 @@ Deno.serve(async (req) => {
       console.log("jwt len:", raw.length);
     }
     if (req.method !== "POST") return json({ error: "Method not allowed" }, { status: 405, origin });
-    if (!origin) return json({ error: "Origin not allowed" }, { status: 403, origin: null });
+    if (!origin || origin === "*") return json({ error: "Origin not allowed" }, { status: 403, origin: null });
 
     const auth = await requireUser(req);
     if (!auth.ok || !auth.user) {
@@ -64,16 +109,17 @@ Deno.serve(async (req) => {
       if (!stripeCustomerId) {
         return json({ error: "Existing subscription found but no Stripe customer" }, { status: 409, origin });
       }
-      const return_url = new URL(origin);
-      return_url.pathname = "/index.html";
-      return_url.searchParams.set("billing", "portal_return");
+      const url = await createPortalUrl(stripe, stripeCustomerId, origin);
+      return json({ url }, { status: 200, origin });
+    }
 
-      const session = await stripe.billingPortal.sessions.create({
-        customer: stripeCustomerId,
-        return_url: return_url.toString(),
-      });
-
-      return json({ url: session.url }, { status: 200, origin });
+    // Race guard: DB projection can lag webhooks. Query Stripe directly before creating checkout.
+    if (stripeCustomerId) {
+      const hasBlocking = await hasBlockingStripeSubscription(stripe, stripeCustomerId);
+      if (hasBlocking) {
+        const url = await createPortalUrl(stripe, stripeCustomerId, origin);
+        return json({ url }, { status: 200, origin });
+      }
     }
 
     if (!stripeCustomerId) {
@@ -108,7 +154,7 @@ Deno.serve(async (req) => {
         client_reference_id: user.id,
         metadata: { supabase_user_id: user.id, price_id },
       },
-      { idempotencyKey: crypto.randomUUID() },
+      { idempotencyKey: checkoutIdempotencyKey(user.id, price_id) },
     );
 
     return json({ url: session.url }, { status: 200, origin });

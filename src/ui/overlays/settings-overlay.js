@@ -1289,6 +1289,10 @@ export function createSettingsOverlay({
     const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
       ? lastOrgLogoUrl
       : null;
+    // Hide initials while async logo loads to prevent flicker
+    if (!cachedLogoSrc && (orgLogoPath || orgAvatarSafe)) {
+      orgAvatarEl.style.visibility = 'hidden';
+    }
     let avatarNode = orgAvatarEl;
     if (cachedLogoSrc) {
       const cachedImg = doc.createElement('img');
@@ -1337,11 +1341,12 @@ export function createSettingsOverlay({
           }
         };
         orgImg.onerror = function () {
+          orgAvatarEl.style.visibility = '';
           if (orgImg.parentNode) orgImg.parentNode.replaceChild(orgAvatarEl, orgImg);
           avatarNode = orgAvatarEl;
         };
       };
-      loadLogo().catch(() => { /* keep initials */ });
+      loadLogo().catch(() => { orgAvatarEl.style.visibility = ''; });
     }
     const orgNameSpan = doc.createElement('span');
     orgNameSpan.textContent = orgName;
@@ -1437,7 +1442,7 @@ export function createSettingsOverlay({
         const endValue = cancelAt || state.currentPeriodEnd;
         if (endValue) {
           const endDate = new Date(endValue);
-          statusLine.textContent = 'Pro ends on ' + (isNaN(endDate.getTime()) ? endValue : endDate.toLocaleDateString());
+          statusLine.textContent = 'Ends on ' + (isNaN(endDate.getTime()) ? endValue : endDate.toLocaleDateString());
         }
       } else if (!isProOrTrial && status) {
         statusLine.textContent = 'Status: ' + status.replace(/_/g, ' ');
@@ -1702,7 +1707,7 @@ export function createSettingsOverlay({
     );
     if (hasOrg) {
       navWrap.appendChild(
-        makeItem({ key: 'org-members', label: 'Members', icon: 'fa-regular fa-users', indent: true })
+        makeItem({ key: 'org-members', label: 'Members', icon: 'fa-solid fa-users', indent: true })
       );
       navWrap.appendChild(
         makeItem({ key: 'org-billing', label: 'Billing', icon: 'fa-regular fa-credit-card', indent: true })
@@ -2142,7 +2147,6 @@ export function createSettingsOverlay({
         firstNameInput.placeholder = 'Your first name';
         firstNameField.appendChild(firstNameLabel);
         firstNameField.appendChild(firstNameInput);
-        form.appendChild(firstNameField);
 
         // Last Name field
         const lastNameField = doc.createElement('div');
@@ -2158,7 +2162,12 @@ export function createSettingsOverlay({
         lastNameInput.placeholder = 'Your last name';
         lastNameField.appendChild(lastNameLabel);
         lastNameField.appendChild(lastNameInput);
-        form.appendChild(lastNameField);
+
+        const nameRow = doc.createElement('div');
+        nameRow.className = 'tp3d-account-field-row';
+        nameRow.appendChild(firstNameField);
+        nameRow.appendChild(lastNameField);
+        form.appendChild(nameRow);
 
         // Bio field
         const bioField = doc.createElement('div');
@@ -2578,6 +2587,14 @@ export function createSettingsOverlay({
           return field;
         };
 
+        const makeFieldRow = (leftField, rightField) => {
+          const fieldRow = doc.createElement('div');
+          fieldRow.className = 'tp3d-account-field-row tp3d-org-field-row';
+          if (leftField) fieldRow.appendChild(leftField);
+          if (rightField) fieldRow.appendChild(rightField);
+          return fieldRow;
+        };
+
         const logoCell = doc.createElement('div');
         logoCell.className = 'row';
 
@@ -2592,6 +2609,10 @@ export function createSettingsOverlay({
         const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
           ? lastOrgLogoUrl
           : null;
+        // Hide initials while async logo loads to prevent flicker
+        if (!cachedLogoSrc && (orgLogoPath2 || orgAvatarUrl2)) {
+          logoPreview.style.visibility = 'hidden';
+        }
         let logoNode = logoPreview;
         if (cachedLogoSrc) {
           const cachedImg = doc.createElement('img');
@@ -2635,11 +2656,12 @@ export function createSettingsOverlay({
               }
             };
             img.onerror = () => {
+              logoPreview.style.visibility = '';
               if (img.parentNode) img.parentNode.replaceChild(logoPreview, img);
               logoNode = logoPreview;
             };
           };
-          loadLogo2().catch(() => {});
+          loadLogo2().catch(() => { logoPreview.style.visibility = ''; });
         }
 
         const logoInput = doc.createElement('input');
@@ -2654,6 +2676,10 @@ export function createSettingsOverlay({
           SupabaseClient.uploadOrgLogo(orgIdLocal, f)
             .then(() => {
               UIComponents.showToast('Logo updated', 'success');
+              // Clear overlay logo cache so re-render fetches the new logo
+              lastOrgLogoKey = null;
+              lastOrgLogoUrl = null;
+              lastOrgLogoExpiresAt = 0;
               return loadOrganization(orgIdLocal);
             })
             .then(() => render())
@@ -2672,12 +2698,24 @@ export function createSettingsOverlay({
 
         form.appendChild(orgRow('Logo', logoCell));
         form.appendChild(makeField('Name', 'name', orgData.name || '', 'Organization name'));
-        form.appendChild(makeField('Phone', 'phone', orgData.phone || '', '+1 (555) 000-0000'));
-        form.appendChild(makeField('Address Line 1', 'address_line1', orgData.address_line1 || '', 'Street address'));
-        form.appendChild(makeField('Address Line 2', 'address_line2', orgData.address_line2 || '', 'Apt, suite, etc'));
-        form.appendChild(makeField('City', 'city', orgData.city || '', 'City'));
-        form.appendChild(makeField('State', 'state', orgData.state || '', 'State / Province'));
-        form.appendChild(makeField('Postal Code', 'postal_code', orgData.postal_code || '', 'Postal code'));
+        form.appendChild(
+          makeFieldRow(
+            makeField('Phone', 'phone', orgData.phone || '', '+1 (555) 000-0000'),
+            makeField('Address Line 1', 'address_line1', orgData.address_line1 || '', 'Street address')
+          )
+        );
+        form.appendChild(
+          makeFieldRow(
+            makeField('City', 'city', orgData.city || '', 'City'),
+            makeField('State', 'state', orgData.state || '', 'State / Province')
+          )
+        );
+        form.appendChild(
+          makeFieldRow(
+            makeField('Address Line 2', 'address_line2', orgData.address_line2 || '', 'Apt, suite, etc'),
+            makeField('Postal Code', 'postal_code', orgData.postal_code || '', 'Postal code')
+          )
+        );
         form.appendChild(makeField('Country', 'country', orgData.country || '', 'Country'));
 
         // Actions
@@ -2809,6 +2847,10 @@ export function createSettingsOverlay({
           const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
             ? lastOrgLogoUrl
             : null;
+          // Hide initials while async logo loads to prevent flicker
+          if (!cachedLogoSrc && (orgLogoPath2 || orgAvatarUrl2)) {
+            logoPreview.style.visibility = 'hidden';
+          }
           let logoNode = logoPreview;
           if (cachedLogoSrc) {
             const cachedImg = doc.createElement('img');
@@ -2853,11 +2895,12 @@ export function createSettingsOverlay({
                 }
               };
               img.onerror = () => {
+                logoPreview.style.visibility = '';
                 if (img.parentNode) img.parentNode.replaceChild(logoPreview, img);
                 logoNode = logoPreview;
               };
             };
-            loadLogo2().catch(() => {});
+            loadLogo2().catch(() => { logoPreview.style.visibility = ''; });
           }
 
           viewContainer.appendChild(orgRow('Logo', logoCell));
@@ -2989,7 +3032,7 @@ export function createSettingsOverlay({
         const rolesHelp = doc.createElement('div');
         rolesHelp.className = 'muted tp3d-role-help';
         rolesHelp.textContent =
-          'Workspace Owners and Workspace Admins can assign and update roles. Roles available in a workspace depend on the plan and enabled features.';
+          'Workspace Owners and Workspace Admins can assign and update roles, as well as set default roles. Roles available in a workspace are based on the solution set.';
         membersCard.appendChild(rolesHelp);
 
         if (!orgMembersData && !isLoadingOrgMembers) {
@@ -3090,14 +3133,14 @@ export function createSettingsOverlay({
               const meta = doc.createElement('div');
               meta.className = 'tp3d-org-member-meta';
               const nameRow = doc.createElement('div');
-              nameRow.className = 'row';
+              nameRow.className = 'tp3d-org-member-name-row';
               const name = doc.createElement('div');
               name.className = 'tp3d-org-member-name';
               name.textContent = getMemberDisplayName(member);
               nameRow.appendChild(name);
               if (isSelf) {
                 const badge = doc.createElement('span');
-                badge.className = 'badge';
+                badge.className = 'badge tp3d-org-member-you-badge';
                 badge.textContent = 'You';
                 nameRow.appendChild(badge);
               }
@@ -3115,7 +3158,7 @@ export function createSettingsOverlay({
               actions.className = 'tp3d-org-member-actions';
 
               const roleSelect = doc.createElement('select');
-              roleSelect.className = 'select';
+              roleSelect.className = 'select tp3d-org-member-role-select';
               roleSelect.setAttribute('aria-label', 'Member role');
               const roles = ['owner', 'admin', 'member', 'viewer'];
               roles.forEach(r => {
@@ -3150,7 +3193,7 @@ export function createSettingsOverlay({
 
               const removeBtn = doc.createElement('button');
               removeBtn.type = 'button';
-              removeBtn.className = 'btn btn-danger';
+              removeBtn.className = 'btn btn-danger tp3d-org-member-remove-btn';
               removeBtn.textContent = 'Remove';
               removeBtn.disabled = !canRemove;
               if (removeDisableReason) removeBtn.setAttribute('data-tooltip', removeDisableReason);
@@ -3357,6 +3400,11 @@ export function createSettingsOverlay({
     orgMembersRequestId = 0;
     lastOrgMembersOrgId = null;
     orgMemberActions.clear();
+
+    // FIX: Clear org logo overlay cache to prevent stale logo across user switches
+    lastOrgLogoKey = null;
+    lastOrgLogoUrl = null;
+    lastOrgLogoExpiresAt = 0;
   }
 
   function handleAuthChange(_event) {

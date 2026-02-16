@@ -402,3 +402,9 @@ verify_jwt = false
 
 [functions.stripe-create-portal-session]
 verify_jwt = false
+
+[functions.stripe-webhook]
+verify_jwt = false
+
+[functions.request-account-deletion]
+verify_jwt = false

@@ -1269,10 +1269,10 @@ export function createEditorScreen({
     const caseListEl = document.getElementById('editor-case-list');
     const btnAutopack = document.getElementById('btn-autopack');
     const btnUnpack = document.getElementById('btn-unpack');
+    const btnShare = document.getElementById('btn-share');
     const btnPng = document.getElementById('btn-screenshot');
     const btnPdf = document.getElementById('btn-pdf');
-    const hintToggleEl = document.getElementById('viewport-hint-toggle');
-    const hintEl = document.getElementById('viewport-hint');
+    const viewportHintBtn = document.getElementById('viewport-hint-icon');
 
     let initialized = false;
     const supportsWebGL = Utils.hasWebGL();
@@ -1280,6 +1280,14 @@ export function createEditorScreen({
     let activationRaf = null;
     const caseFiltersStorageKey = 'tp3d.editor.caseBrowser.showFilters';
     let showCaseFilters = false;
+    let viewportHintOpen = false;
+
+    function setViewportHintOpen(open) {
+      if (!viewportHintBtn) return;
+      viewportHintOpen = Boolean(open);
+      viewportHintBtn.classList.toggle('is-open', viewportHintOpen);
+      viewportHintBtn.setAttribute('aria-expanded', viewportHintOpen ? 'true' : 'false');
+    }
 
     function initEditorUI() {
       if (!supportsWebGL) {
@@ -1319,13 +1327,40 @@ export function createEditorScreen({
       }
       btnPng.addEventListener('click', () => ExportService.captureScreenshot());
       btnPdf.addEventListener('click', () => ExportService.generatePDF());
-
-      // Tip hint toggle
-      if (hintToggleEl && hintEl) {
-        hintToggleEl.addEventListener('click', () => {
-          const show = hintEl.style.display === 'none';
-          hintEl.style.display = show ? '' : 'none';
-          hintToggleEl.classList.toggle('active', show);
+      if (btnShare) {
+        btnShare.addEventListener('click', ev => {
+          ev.stopPropagation();
+          UIComponents.openDropdown(
+            btnShare,
+            [
+              { label: 'Screenshot', icon: 'fa-solid fa-camera', onClick: () => btnPng.click() },
+              { label: 'Export PDF', icon: 'fa-solid fa-file-pdf', onClick: () => btnPdf.click() },
+            ],
+            { width: 200, align: 'left', role: 'editor-share' }
+          );
+        });
+      }
+      if (viewportHintBtn) {
+        viewportHintBtn.addEventListener('click', ev => {
+          ev.stopPropagation();
+          setViewportHintOpen(!viewportHintOpen);
+        });
+        viewportHintBtn.addEventListener('keydown', ev => {
+          if (ev.key === 'Escape') {
+            setViewportHintOpen(false);
+            ev.stopPropagation();
+            return;
+          }
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault();
+            setViewportHintOpen(!viewportHintOpen);
+          }
+        });
+        document.addEventListener('click', ev => {
+          if (!viewportHintOpen) return;
+          if (!(ev.target instanceof Node)) return;
+          if (viewportHintBtn.contains(ev.target)) return;
+          setViewportHintOpen(false);
         });
       }
 
@@ -1357,6 +1392,7 @@ export function createEditorScreen({
 
       btnAutopack.disabled = !pack || AutoPackEngine.running;
       if (btnUnpack) btnUnpack.disabled = !pack || !(pack && (pack.cases || []).length);
+      if (btnShare) btnShare.disabled = !pack;
       btnPng.disabled = !pack;
       btnPdf.disabled = !pack;
 
@@ -1453,7 +1489,7 @@ export function createEditorScreen({
       cases.forEach(c => {
         const card = document.createElement('div');
         card.className = 'card';
-        card.classList.add('tp3d-editor-card-padding-12', 'tp3d-editor-card-grid-gap-8');
+        card.classList.add('tp3d-editor-card-padding-12', 'tp3d-editor-card-grid-gap-8', 'tp3d-editor-case-browser-card');
         card.draggable = true;
         card.addEventListener('dragstart', ev => {
           ev.dataTransfer.setData('text/plain', c.id);
@@ -1492,12 +1528,12 @@ export function createEditorScreen({
         header.appendChild(addBtn);
 
         const meta1 = document.createElement('div');
-        meta1.className = 'tp3d-editor-card-dims';
+        meta1.className = 'tp3d-editor-card-dims tp3d-editor-case-meta-primary';
         const parts = [dimsValue, volumeLabel, weightLabel].filter(v => v && v !== '—');
         meta1.textContent = parts.join(' · ');
 
         const meta2 = document.createElement('div');
-        meta2.className = 'tp3d-editor-card-dims';
+        meta2.className = 'tp3d-editor-card-dims tp3d-editor-case-meta-secondary';
         const catDot = document.createElement('span');
         catDot.className = 'chip-dot';
         catDot.style.background = catMeta.color;
@@ -2132,14 +2168,11 @@ export function createEditorScreen({
       const rotCard = document.createElement('div');
       rotCard.className = 'card';
       rotCard.classList.add('tp3d-editor-card-grid-gap-12');
-      const rotTitle = document.createElement('div');
-      rotTitle.classList.add('tp3d-editor-fw-semibold');
-      rotTitle.textContent = 'Rotate All';
-      rotCard.appendChild(rotTitle);
+      rotCard.appendChild(cardHeaderWithInfo('Rotate All', 'Keys: R=Y90° T=X90° E=Z90° F=Flip'));
 
       const halfPI = Math.PI / 2;
       const rotRow = document.createElement('div');
-      rotRow.className = 'row';
+      rotRow.className = 'tp3d-editor-rot-grid';
       [
         { label: 'Y 90°', axis: 'y', delta: halfPI },
         { label: 'X 90°', axis: 'x', delta: halfPI },
@@ -2147,7 +2180,7 @@ export function createEditorScreen({
         { label: 'Flip', axis: 'x', delta: Math.PI },
       ].forEach(({ label, axis, delta }) => {
         const btn = document.createElement('button');
-        btn.className = 'btn';
+        btn.className = 'btn tp3d-editor-rot-btn';
         btn.type = 'button';
         btn.innerHTML = `<i class="fa-solid fa-rotate-right"></i> ${label}`;
         btn.addEventListener('click', () => {
@@ -2162,10 +2195,6 @@ export function createEditorScreen({
         rotRow.appendChild(btn);
       });
       rotCard.appendChild(rotRow);
-      const rotHint = document.createElement('div');
-      rotHint.className = 'muted tp3d-editor-fs-sm';
-      rotHint.textContent = 'Keys: R=Y90° T=X90° E=Z90° F=Flip';
-      rotCard.appendChild(rotHint);
       inspectorEl.appendChild(rotCard);
 
       // === Actions Card ===
@@ -2365,14 +2394,16 @@ export function createEditorScreen({
 
       inspectorEl.appendChild(card);
 
-      // === Position Card ===
-      const posCard = document.createElement('div');
-      posCard.className = 'card';
-      posCard.classList.add('tp3d-editor-card-grid-gap-12');
+      // === Transform Card (Position + Rotate / Flip) ===
+      const transformCard = document.createElement('div');
+      transformCard.className = 'card';
+      transformCard.classList.add('tp3d-editor-card-grid-gap-12', 'tp3d-editor-transform-card');
+      transformCard.appendChild(cardHeaderWithInfo('Transform', 'Keys: R=Y90° T=X90° E=Z90° F=Flip'));
+
       const posTitle = document.createElement('div');
-      posTitle.classList.add('tp3d-editor-fw-semibold');
+      posTitle.className = 'label';
       posTitle.textContent = 'Position';
-      posCard.appendChild(posTitle);
+      transformCard.appendChild(posTitle);
 
       const posRow = document.createElement('div');
       posRow.className = 'tp3d-editor-dims-row';
@@ -2384,7 +2415,7 @@ export function createEditorScreen({
       posRow.appendChild(fX.wrap);
       posRow.appendChild(fY.wrap);
       posRow.appendChild(fZ.wrap);
-      posCard.appendChild(posRow);
+      transformCard.appendChild(posRow);
 
       const savePos = document.createElement('button');
       savePos.className = 'btn btn-primary';
@@ -2410,33 +2441,31 @@ export function createEditorScreen({
         SceneManager.focusOnWorldPoint(SceneManager.vecInchesToWorld(nextPos), { duration: 420 });
         UIComponents.showToast('Position updated', 'success');
       });
-      posCard.appendChild(savePos);
-      inspectorEl.appendChild(posCard);
+      transformCard.appendChild(savePos);
 
-      // === Rotate / Flip Card ===
-      const rotCard = document.createElement('div');
-      rotCard.className = 'card';
-      rotCard.classList.add('tp3d-editor-card-grid-gap-12');
+      const divider = document.createElement('div');
+      divider.className = 'tp3d-editor-transform-divider';
+      transformCard.appendChild(divider);
+
       const rotTitle = document.createElement('div');
-      rotTitle.classList.add('tp3d-editor-fw-semibold');
+      rotTitle.className = 'label';
       rotTitle.textContent = 'Rotate / Flip';
-      rotCard.appendChild(rotTitle);
+      transformCard.appendChild(rotTitle);
 
       const rot = inst.transform.rotation || { x: 0, y: 0, z: 0 };
       const halfPI = Math.PI / 2;
       const rotRow = document.createElement('div');
-      rotRow.className = 'row';
+      rotRow.className = 'tp3d-editor-rot-grid';
       [
-        { label: 'Y 90°', icon: 'fa-rotate-right', axis: 'y', delta: halfPI, tooltip: 'Rotate 90° (R)' },
-        { label: 'X 90°', icon: 'fa-rotate-right', axis: 'x', delta: halfPI, tooltip: 'Tip forward (T)' },
-        { label: 'Z 90°', icon: 'fa-rotate-right', axis: 'z', delta: halfPI, tooltip: 'Roll (E)' },
-        { label: 'Flip', icon: 'fa-arrows-up-down', axis: 'x', delta: Math.PI, tooltip: 'Flip upside down (F)' },
-      ].forEach(({ label, icon, axis, delta, tooltip }) => {
+        { label: 'Y 90°', icon: 'fa-rotate-right', axis: 'y', delta: halfPI },
+        { label: 'X 90°', icon: 'fa-rotate-right', axis: 'x', delta: halfPI },
+        { label: 'Z 90°', icon: 'fa-rotate-right', axis: 'z', delta: halfPI },
+        { label: 'Flip', icon: 'fa-arrows-up-down', axis: 'x', delta: Math.PI },
+      ].forEach(({ label, icon, axis, delta }) => {
         const btn = document.createElement('button');
-        btn.className = 'btn';
+        btn.className = 'btn tp3d-editor-rot-btn';
         btn.type = 'button';
         btn.innerHTML = `<i class="fa-solid ${icon}"></i> ${label}`;
-        btn.setAttribute('data-tooltip', tooltip);
         btn.addEventListener('click', () => {
           const curRot = { ...rot };
           curRot[axis] = ((Number(curRot[axis]) || 0) + delta) % (2 * Math.PI);
@@ -2458,13 +2487,8 @@ export function createEditorScreen({
         });
         rotRow.appendChild(btn);
       });
-      rotCard.appendChild(rotRow);
-
-      const rotHint = document.createElement('div');
-      rotHint.className = 'muted tp3d-editor-fs-sm';
-      rotHint.textContent = 'Keys: R=Y90° T=X90° E=Z90° F=Flip';
-      rotCard.appendChild(rotHint);
-      inspectorEl.appendChild(rotCard);
+      transformCard.appendChild(rotRow);
+      inspectorEl.appendChild(transformCard);
 
       // === Actions Card ===
       const actCard = document.createElement('div');
@@ -2500,8 +2524,7 @@ export function createEditorScreen({
     }
 
     /**
-     * Creates a card header row with a title and an info 'i' icon.
-     * The icon uses data-tooltip attribute for styled hover tooltip.
+     * Creates a card header row with a title and a compact help icon.
      */
     function cardHeaderWithInfo(titleText, tooltipText) {
       const header = document.createElement('div');
@@ -2512,10 +2535,12 @@ export function createEditorScreen({
       header.appendChild(title);
 
       if (tooltipText) {
-        const infoIcon = document.createElement('span');
-        infoIcon.className = 'muted';
+        const infoIcon = document.createElement('button');
+        infoIcon.type = 'button';
+        infoIcon.className = 'muted tp3d-editor-info-icon';
         infoIcon.setAttribute('data-tooltip', tooltipText);
-        infoIcon.innerHTML = '<i class="fa-solid fa-circle-info"></i>';
+        infoIcon.setAttribute('aria-label', tooltipText);
+        infoIcon.innerHTML = '<i class="fa-solid fa-circle-question"></i>';
         header.appendChild(infoIcon);
       }
 

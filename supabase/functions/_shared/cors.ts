@@ -17,16 +17,16 @@ const DEV_ORIGINS = new Set([
 
 function parseAllowedOrigins() {
   const raw = getEnv("ALLOWED_ORIGINS");
-  const allowAll = !raw;
   const list = raw
     ? raw
         .split(",")
         .map(s => s.trim())
         .filter(Boolean)
     : [];
+  const allowWildcard = list.includes("*");
 
   const allowed = new Set<string>([...list, ...DEV_ORIGINS]);
-  return { allowAll, allowed };
+  return { allowWildcard, allowed };
 }
 
 function getRequestOrigin(req: Request): string | null {
@@ -38,10 +38,11 @@ function getRequestOrigin(req: Request): string | null {
 
 export function getAllowedOrigin(req: Request): string | null {
   const origin = getRequestOrigin(req);
-  const { allowAll, allowed } = parseAllowedOrigins();
+  const { allowWildcard, allowed } = parseAllowedOrigins();
 
   if (!origin) return "*"; // non-browser callers
-  if (allowAll) return origin;
+  // Explicit wildcard can be used, but missing ALLOWED_ORIGINS should not mean allow-all.
+  if (allowWildcard) return origin;
   return allowed.has(origin) ? origin : null;
 }
 

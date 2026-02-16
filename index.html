@@ -293,7 +293,7 @@
           <div id="tp3d-sidebar-upgrade" class="tp3d-sidebar-upgrade"></div>
         </div>
 
-        <div style="padding: var(--space-3)">
+        <div style="margin-top: auto; padding: var(--space-3)">
           <button class="btn" id="btn-account-switcher" type="button">
             <span style="display: flex; align-items: center; gap: var(--space-3); min-width: 0">
               <span
@@ -806,21 +806,30 @@
                     <i class="fa-solid fa-box-open"></i>
                     Unpack
                   </button>
-                  <button class="toolbar-btn" id="btn-screenshot" type="button" data-tooltip="Screenshot PNG">
+                  <button class="toolbar-btn" id="btn-share" type="button" data-tooltip="Screenshot + PDF">
+                    <i class="fa-solid fa-share-nodes"></i>
+                    Share
+                    <i class="fa-solid fa-chevron-down tp3d-toolbar-caret"></i>
+                  </button>
+                  <button class="toolbar-btn tp3d-toolbar-hidden-action" id="btn-screenshot" type="button" aria-hidden="true" tabindex="-1">
                     <i class="fa-solid fa-camera"></i>
                     Screenshot
                   </button>
-                  <button class="toolbar-btn" id="btn-pdf" type="button" data-tooltip="PDF plan sheet">
+                  <button class="toolbar-btn tp3d-toolbar-hidden-action" id="btn-pdf" type="button" aria-hidden="true" tabindex="-1">
                     <i class="fa-solid fa-file-pdf"></i>
                     PDF
                   </button>
                 </div>
-                <button class="viewport-hint-toggle" id="viewport-hint-toggle" type="button" aria-label="Show tips" title="Tips">
+                <button
+                  class="viewport-hint-icon"
+                  id="viewport-hint-icon"
+                  type="button"
+                  aria-label="Editor tips"
+                  aria-expanded="false"
+                  data-tooltip="Click to select. Drag to move. Shift+Click for multi-select. Scroll to zoom."
+                >
                   <i class="fa-solid fa-circle-info"></i>
                 </button>
-                <div class="viewport-overlay" id="viewport-hint" style="display:none;">
-                  Click to select. Drag to move. Shift+Click for multi-select. Scroll to zoom.
-                </div>
               </div>
 
               <div class="panel right" id="editor-right">

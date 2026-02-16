@@ -462,10 +462,10 @@ export function createCasesScreen({
         kebabBtn.addEventListener('click', ev => {
           ev.stopPropagation();
           UIComponents.openDropdown(kebabBtn, [
-            { label: 'Edit', icon: 'fa-regular fa-pen', onClick: () => openCaseModal(c) },
+            { label: 'Edit', icon: 'fa-solid fa-pen-to-square', onClick: () => openCaseModal(c) },
             {
               label: 'Duplicate',
-              icon: 'fa-regular fa-clone',
+              icon: 'fa-solid fa-clone',
               onClick: () => {
                 CaseLibrary.duplicate(c.id);
                 UIComponents.showToast('Case duplicated', 'success');
@@ -473,7 +473,7 @@ export function createCasesScreen({
             },
             {
               label: 'Delete',
-              icon: 'fa-regular fa-trash-can',
+              icon: 'fa-solid fa-trash-can',
               variant: 'danger',
               dividerBefore: true,
               onClick: () => deleteCase(c.id),
@@ -711,10 +711,10 @@ export function createCasesScreen({
         btn.addEventListener('click', ev => {
           ev.stopPropagation();
           UIComponents.openDropdown(btn, [
-            { label: 'Edit', icon: 'fa-regular fa-pen', onClick: () => openCaseModal(c) },
+            { label: 'Edit', icon: 'fa-solid fa-pen-to-square', onClick: () => openCaseModal(c) },
             {
               label: 'Duplicate',
-              icon: 'fa-regular fa-clone',
+              icon: 'fa-solid fa-clone',
               onClick: () => {
                 CaseLibrary.duplicate(c.id);
                 UIComponents.showToast('Case duplicated', 'success');
@@ -722,7 +722,7 @@ export function createCasesScreen({
             },
             {
               label: 'Delete',
-              icon: 'fa-regular fa-trash-can',
+              icon: 'fa-solid fa-trash-can',
               variant: 'danger',
               dividerBefore: true,
               onClick: () => deleteCase(c.id),

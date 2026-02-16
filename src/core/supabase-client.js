@@ -1796,6 +1796,53 @@ export async function resendConfirmation(email) {
   return true;
 }
 
+/**
+ * Send a password-reset email via Supabase.
+ * The email contains a link that redirects back to the app with a PASSWORD_RECOVERY event.
+ * @param {string} email
+ * @param {string} [redirectTo] - Optional redirect URL after reset (defaults to current origin)
+ */
+export async function resetPasswordForEmail(email, redirectTo) {
+  const client = requireClient();
+  const e = String(email || '').trim();
+  if (!e) throw new Error('Email is required.');
+  const opts = {};
+  if (redirectTo) opts.redirectTo = redirectTo;
+  const { error } = await client.auth.resetPasswordForEmail(e, opts);
+  if (error) throw error;
+  return true;
+}
+
+/**
+ * Update the current user's password (used after PASSWORD_RECOVERY flow).
+ * Requires an active session (the recovery link sets one automatically).
+ * @param {string} newPassword
+ */
+export async function updateUserPassword(newPassword) {
+  const client = requireClient();
+  const pw = String(newPassword || '');
+  if (!pw || pw.length < 8) throw new Error('Password must be at least 8 characters.');
+  const { data, error } = await client.auth.updateUser({ password: pw });
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Sign in with an OAuth provider (e.g. 'google').
+ * @param {'google'|string} provider
+ * @param {{ redirectTo?: string }} [opts]
+ */
+export async function signInWithOAuth(provider, opts = {}) {
+  const client = requireClient();
+  setAuthIntent('signIn');
+  const { data, error } = await client.auth.signInWithOAuth({
+    provider: String(provider || 'google'),
+    options: opts.redirectTo ? { redirectTo: opts.redirectTo } : undefined,
+  });
+  if (error) throw error;
+  return data;
+}
+
 export async function getProfile(userId = null) {
   const client = requireClient();
   const uid = normalizeUserId(userId) || normalizeUserId(getCurrentUserId());
@@ -2839,6 +2886,9 @@ try {
     signOut,
     refreshSession,
     resendConfirmation,
+    resetPasswordForEmail,
+    updateUserPassword,
+    signInWithOAuth,
     getProfile,
     getMyProfileStatus,
     updateProfile,

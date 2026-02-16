@@ -4416,6 +4416,14 @@ try {
           const isTokenRefreshEvent = event === 'TOKEN_REFRESHED';
           const isInitialSessionEvent = event === 'INITIAL_SESSION';
           const isUserUpdatedEvent = event === 'USER_UPDATED';
+          const isPasswordRecoveryEvent = event === 'PASSWORD_RECOVERY';
+
+          // PASSWORD_RECOVERY: Supabase fires this when user clicks the reset link in email.
+          // Show the reset-password page in the auth overlay so they can set a new password.
+          if (isPasswordRecoveryEvent) {
+            try { AuthOverlay.showResetPassword(); } catch { /* ignore */ }
+            return;
+          }
 
           const userFromSession = session && session.user ? session.user : null;
           const newUserId = userFromSession && userFromSession.id ? String(userFromSession.id) : null;

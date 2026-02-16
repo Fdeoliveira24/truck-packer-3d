@@ -3012,3 +3012,330 @@ body.modal-open {
     justify-content: flex-end;
   }
 }
+
+/* ================================
+  Auth Overlay - Enterprise Sign In / Sign Up
+================================== */
+
+.auth-overlay {
+  background: rgba(15, 15, 20, 0.6);
+  backdrop-filter: blur(4px);
+}
+
+.auth-modal {
+  max-width: 420px;
+  width: calc(100% - 32px);
+  padding: 0;
+  border-radius: var(--radius-lg);
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.2),
+    0 0 0 1px var(--border-subtle);
+  overflow: visible;
+}
+
+.auth-page {
+  padding: var(--space-6) var(--space-6) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Brand / logo area */
+.auth-brand {
+  text-align: center;
+  margin-bottom: var(--space-2);
+}
+
+.auth-logo {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--space-3);
+}
+
+.auth-logo-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-md);
+  background: var(--accent-primary);
+  color: var(--text-inverse);
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 1px;
+  box-shadow: 0 2px 8px rgba(255, 159, 28, 0.3);
+}
+
+.auth-title {
+  font-size: var(--text-xl);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  margin: 0 0 var(--space-1);
+}
+
+.auth-subtitle {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* Form */
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.auth-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+}
+
+.auth-input {
+  height: 40px;
+  font-size: var(--text-sm);
+}
+
+.auth-password-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.auth-password-wrapper .auth-input {
+  padding-right: 40px;
+}
+
+.auth-pw-toggle {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  padding: var(--space-2);
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: 1;
+  border-radius: var(--radius-sm);
+  transition: color 0.15s ease;
+}
+
+.auth-pw-toggle:hover {
+  color: var(--text-secondary);
+}
+
+.auth-pw-toggle:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 1px;
+}
+
+.auth-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* Full-width button */
+.auth-btn-full {
+  width: 100%;
+  justify-content: center;
+  height: 40px;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+}
+
+/* Messages (inline error / success) */
+.auth-message {
+  font-size: var(--text-sm);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  line-height: 1.5;
+}
+
+.auth-message--error {
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--error);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.auth-message--success {
+  background: rgba(16, 185, 129, 0.08);
+  color: var(--success);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+/* Offline / warning banner */
+.auth-banner {
+  font-size: var(--text-sm);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+
+.auth-banner--warning {
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--warning);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+/* Footer links */
+.auth-footer-links {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.auth-link {
+  background: none;
+  border: none;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s ease;
+  font-family: var(--font-family);
+}
+
+.auth-link:hover {
+  color: var(--accent-primary);
+}
+
+.auth-link:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.auth-footer-sep {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  user-select: none;
+}
+
+/* Spinner row (checking phase) */
+.auth-spinner-row {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-4) 0;
+  color: var(--text-muted);
+  font-size: var(--text-lg);
+}
+
+/* Email confirmation notice */
+.auth-confirmation-notice {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.auth-confirmation-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(59, 130, 246, 0.08);
+  color: var(--info);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-2xl);
+  margin-bottom: var(--space-2);
+}
+
+.auth-email-display {
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+/* Google OAuth button */
+.auth-btn-google {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-weight: var(--font-medium);
+}
+
+.auth-btn-google:hover {
+  background: var(--bg-hover);
+}
+
+/* Divider ("or") */
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-1) 0;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.auth-divider span {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Debug details */
+.auth-debug {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.auth-debug pre {
+  white-space: pre-wrap;
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+}
+
+/* Actions row for cant-connect */
+.auth-actions {
+  display: flex;
+  justify-content: center;
+}
+
+/* Mobile adjustments */
+@media (max-width: 480px) {
+  .auth-modal {
+    max-width: 100%;
+    width: calc(100% - 24px);
+    border-radius: var(--radius-md);
+  }
+
+  .auth-page {
+    padding: var(--space-5) var(--space-4) var(--space-4);
+  }
+
+  .auth-footer-links {
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .auth-footer-sep {
+    display: none;
+  }
+}

@@ -81,12 +81,233 @@ import * as SupabaseClient from './core/supabase-client.js';
 import { createAuthOverlay } from './ui/overlays/auth-overlay.js';
 import { on, emit } from './core/events.js';
 import { APP_VERSION } from './core/version.js';
+import { fetchBillingStatus, createCheckoutSession, createPortalSession } from './data/services/billing.service.js';
 
 // ============================================================================
 // SECTION: INITIALIZATION
 // ============================================================================
 
 initTP3DDebugger();
+
+// ============================================================================
+// SECTION: BILLING STATE (edge function)
+// ============================================================================
+
+const _billingState = {
+  loading: false,
+  ok: false,
+  plan: null,
+  status: null,
+  isPro: false,
+  isActive: false,
+  interval: null,
+  trialEndsAt: null,
+  currentPeriodEnd: null,
+  cancelAtPeriodEnd: false,
+  cancelAt: null,
+  data: null,
+  error: null,
+  lastFetchedAt: 0,
+};
+const _billingSubscribers = new Set();
+const BILLING_THROTTLE_MS = 30000;
+
+function _notifyBilling() {
+  const snapshot = getBillingState();
+  _billingSubscribers.forEach(fn => { try { fn(snapshot); } catch (_) { /* ignore */ } });
+}
+
+function getBillingState() {
+  return {
+    loading: _billingState.loading,
+    ok: _billingState.ok,
+    plan: _billingState.plan,
+    status: _billingState.status,
+    isPro: _billingState.isPro,
+    isActive: _billingState.isActive,
+    interval: _billingState.interval,
+    trialEndsAt: _billingState.trialEndsAt,
+    currentPeriodEnd: _billingState.currentPeriodEnd,
+    cancelAtPeriodEnd: _billingState.cancelAtPeriodEnd,
+    cancelAt: _billingState.cancelAt,
+    data: _billingState.data,
+    error: _billingState.error,
+    lastFetchedAt: _billingState.lastFetchedAt,
+  };
+}
+
+function subscribeBilling(fn) {
+  if (typeof fn === 'function') _billingSubscribers.add(fn);
+  return () => _billingSubscribers.delete(fn);
+}
+
+function clearBillingState() {
+  _billingState.loading = false;
+  _billingState.ok = false;
+  _billingState.plan = null;
+  _billingState.status = null;
+  _billingState.isPro = false;
+  _billingState.isActive = false;
+  _billingState.interval = null;
+  _billingState.trialEndsAt = null;
+  _billingState.currentPeriodEnd = null;
+  _billingState.cancelAtPeriodEnd = false;
+  _billingState.cancelAt = null;
+  _billingState.data = null;
+  _billingState.error = null;
+  _billingState.lastFetchedAt = 0;
+  _notifyBilling();
+}
+
+async function refreshBilling({ force = false } = {}) {
+  if (_billingState.loading) return;
+  const now = Date.now();
+  if (!force && _billingState.lastFetchedAt && (now - _billingState.lastFetchedAt) < BILLING_THROTTLE_MS) return;
+
+  _billingState.loading = true;
+  _billingState.error = null;
+  _notifyBilling();
+
+  let result;
+  try {
+    result = await fetchBillingStatus();
+  } catch (err) {
+    result = { ok: false, status: null, data: null, error: { message: err && err.message ? err.message : 'Unknown error', status: null } };
+  }
+
+  _billingState.loading = false;
+  _billingState.lastFetchedAt = Date.now();
+  _billingState.ok = Boolean(result && result.ok);
+
+  if (result && result.ok && result.data) {
+    // Edge function now returns a flat payload: { ok, userId, plan, status, isActive, trialEndsAt, currentPeriodEnd, ... }
+    const p = result.data;
+    _billingState.data = p;
+    const planRaw = p.plan ? String(p.plan) : 'free';
+    let isActive = Boolean(p.isActive);
+    let isPro = planRaw === 'pro' && isActive;
+    let plan = planRaw === 'pro' ? 'Pro' : 'Free';
+
+    // Dev-only per-user plan override (localhost/127.0.0.1 + debug only)
+    try {
+      const _ls = typeof window !== 'undefined' && window.localStorage ? window.localStorage : null;
+      const _loc = typeof window !== 'undefined' ? window.location : null;
+      const _isLocal = _loc && (_loc.hostname === 'localhost' || _loc.hostname === '127.0.0.1');
+      const _isDebug = _ls && _ls.getItem('tp3dDebug') === '1';
+      if (_isLocal && _isDebug && _ls) {
+        // Legacy tp3dForceTrial support
+        if (_ls.getItem('tp3dForceTrial') === '1' && !isActive) {
+          plan = 'Pro'; isActive = true; isPro = true;
+        }
+        // Per-user override: tp3dDevUserPlanOverride = JSON { "<userId>": { plan, status } }
+        const overrideRaw = _ls.getItem('tp3dDevUserPlanOverride');
+        if (overrideRaw && p.userId) {
+          const overrides = JSON.parse(overrideRaw);
+          const userOv = overrides[String(p.userId)];
+          if (userOv && userOv.plan) {
+            const ovPlan = String(userOv.plan);
+            plan = ovPlan === 'pro' || ovPlan === 'trial' ? 'Pro' : 'Free';
+            isActive = userOv.status === 'active' || userOv.status === 'trialing';
+            isPro = isActive && (plan === 'Pro');
+            console.info('[Billing][DEV] Per-user override applied:', { userId: p.userId, plan, isActive, isPro });
+          }
+        }
+      }
+    } catch (_) { /* ignore */ }
+
+    _billingState.plan = plan;
+    _billingState.status = p.status ? String(p.status) : null;
+    _billingState.isPro = isPro;
+    _billingState.isActive = isActive;
+    _billingState.interval = p.interval ? String(p.interval) : null;
+    _billingState.trialEndsAt = p.trialEndsAt ? String(p.trialEndsAt) : null;
+    _billingState.currentPeriodEnd = p.currentPeriodEnd ? String(p.currentPeriodEnd) : null;
+    _billingState.cancelAtPeriodEnd = Boolean(p.cancelAtPeriodEnd);
+    _billingState.cancelAt = p.cancelAt ? String(p.cancelAt) : null;
+    _billingState.error = null;
+  } else {
+    _billingState.data = result ? result.data : null;
+    _billingState.plan = null;
+    _billingState.status = null;
+    _billingState.isPro = false;
+    _billingState.isActive = false;
+    _billingState.interval = null;
+    _billingState.trialEndsAt = null;
+    _billingState.currentPeriodEnd = null;
+    _billingState.cancelAtPeriodEnd = false;
+    _billingState.cancelAt = null;
+    _billingState.error = result && result.error ? result.error : { message: 'Unknown error', status: null };
+  }
+
+  _notifyBilling();
+
+  // Trial enforcement: if trial expired and not active, show upgrade notice
+  try {
+    const _bs = getBillingState();
+    if (_bs.ok && !_bs.isActive && _bs.trialEndsAt) {
+      const endMs = new Date(_bs.trialEndsAt).getTime();
+      if (Number.isFinite(endMs) && endMs < Date.now()) {
+        // Trial has expired — show persistent upgrade notice (use global ref since refreshBilling is outside IIFE)
+        const _uic = typeof window !== 'undefined' && window.__TP3D_UI ? window.__TP3D_UI : null;
+        if (_uic && typeof _uic.showToast === 'function') {
+          _uic.showToast(
+            'Your free trial has ended. Upgrade to Pro to continue using premium features.',
+            'warning',
+            { title: 'Trial Expired', duration: 10000 },
+          );
+        }
+      }
+    }
+  } catch (_) { /* ignore */ }
+
+  try {
+    if (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1') {
+      const _dbgState = getBillingState();
+      const _dbgData = _dbgState.data || {};
+      console.info('[Billing] refreshed', _dbgState);
+      console.info('[Billing][DEV] userId:', _dbgData.userId || 'unknown', '| orgId:', _dbgData.orgId || 'none');
+      console.info('[Billing][DEV] To override, set: localStorage.tp3dDevUserPlanOverride = \'{"' + (_dbgData.userId || '<userId>') + '": {"plan":"pro","status":"active"}}\'');
+    }
+  } catch (_) { /* ignore */ }
+}
+
+/** @param {object} billingSnapshot – from getBillingState() */
+function canUseProFeatures(billingSnapshot) {
+  const s = billingSnapshot || getBillingState();
+  return Boolean(s.ok && s.isPro && s.isActive);
+}
+
+/**
+ * Start Stripe Checkout for a given price ID.
+ * @param {string} priceId – Stripe price ID
+ * @returns {Promise<{ok:boolean, error:string|null}>}
+ */
+async function startCheckout(priceId) {
+  const result = await createCheckoutSession(priceId);
+  if (result.ok && result.url) {
+    window.location.href = result.url;
+    return { ok: true, error: null };
+  }
+  return { ok: false, error: result.error || 'Checkout failed' };
+}
+
+/**
+ * Open Stripe Billing Portal for managing subscription.
+ * @returns {Promise<{ok:boolean, error:string|null}>}
+ */
+async function openPortal() {
+  const result = await createPortalSession();
+  if (result.ok && result.url) {
+    window.location.href = result.url;
+    return { ok: true, error: null };
+  }
+  return { ok: false, error: result.error || 'Portal session failed' };
+}
+
+// Expose for settings overlay and dev console
+try {
+  window.__TP3D_BILLING = { getBillingState, subscribeBilling, refreshBilling, clearBillingState, canUseProFeatures, startCheckout, openPortal };
+} catch (_) { /* ignore */ }
 
 (async function () {
   try {
@@ -98,6 +319,7 @@ initTP3DDebugger();
   }
 
   const UIComponents = createUIComponents();
+  try { window.__TP3D_UI = UIComponents; } catch (_) { /* ignore */ }
   const SystemOverlay = createSystemOverlay();
 
   // ============================================================================
@@ -341,6 +563,7 @@ initTP3DDebugger();
       PreferencesManager,
       Defaults,
       Utils,
+      getSceneManager: () => SceneManager,
       getAccountSwitcher: () => AccountSwitcher,
       SupabaseClient,
       onExportApp: openExportAppModal,
@@ -533,8 +756,30 @@ initTP3DDebugger();
         renderSidebarBrandMarks();
       }
 
-      function showComingSoon() {
+      function _showComingSoon() {
         UIComponents.showToast('Coming soon', 'info');
+      }
+
+      async function createWorkspacePrompt() {
+        const name = window.prompt('Workspace name:');
+        if (!name || !name.trim()) return;
+        try {
+          UIComponents.showToast('Creating workspace\u2026', 'info');
+          const { org, membership } = await SupabaseClient.createOrganization({ name: name.trim() });
+          if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
+          UIComponents.showToast('Workspace "' + (org.name || name.trim()) + '" created!', 'success');
+          // Refresh org context to reflect new workspace
+          orgContext = {
+            activeOrgId: org.id,
+            activeOrg: { ...org, role: membership.role },
+            orgs: orgContext && orgContext.orgs ? [...orgContext.orgs, { ...org, role: membership.role }] : [{ ...org, role: membership.role }],
+            role: membership.role,
+            updatedAt: Date.now(),
+          };
+          renderButton(document.getElementById('btn-account-switcher'));
+        } catch (err) {
+          UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
+        }
       }
 
       async function logout() {
@@ -609,9 +854,9 @@ initTP3DDebugger();
             disabled: true,
           },
           {
-            label: 'Create Organization',
+            label: 'New Workspace',
             icon: 'fa-solid fa-plus',
-            onClick: () => showComingSoon(),
+            onClick: () => createWorkspacePrompt(),
           },
           { type: 'divider' },
           {
@@ -814,14 +1059,15 @@ initTP3DDebugger();
       }
 
       function isAabbContainedInAnyZone(aabb, zones) {
+        const EPS = 0.01; // small tolerance for floating point
         for (const z of zones || []) {
           if (
-            aabb.min.x >= z.min.x &&
-            aabb.max.x <= z.max.x &&
-            aabb.min.y >= z.min.y &&
-            aabb.max.y <= z.max.y &&
-            aabb.min.z >= z.min.z &&
-            aabb.max.z <= z.max.z
+            aabb.min.x >= z.min.x - EPS &&
+            aabb.max.x <= z.max.x + EPS &&
+            aabb.min.y >= z.min.y - EPS &&
+            aabb.max.y <= z.max.y + EPS &&
+            aabb.min.z >= z.min.z - EPS &&
+            aabb.max.z <= z.max.z + EPS
           ) {
             return true;
           }
@@ -1152,14 +1398,161 @@ initTP3DDebugger();
     const AutoPackEngine = (() => {
       let isRunning = false;
 
+      // ── Helpers ──────────────────────────────────────────────────────────
+
+      function cancelAllTweens() {
+        const T = window.TWEEN || null;
+        if (T && typeof T.removeAll === 'function') { T.removeAll(); }
+      }
+
+      function stageInstant(stagingMap) {
+        for (const [id, pos] of stagingMap.entries()) {
+          const obj = CaseScene.getObject(id);
+          if (!obj) { continue; }
+          const t = SceneManager.vecInchesToWorld(pos);
+          obj.position.set(t.x, t.y, t.z);
+        }
+      }
+
       /**
-       * MVP AutoPack: First-Fit Decreasing in 3D (no rotation).
-       * - Sort by volume (largest first)
-       * - Place into the first available space
-       * - Subdivide remaining space into candidate regions
+       * Build valid orientations for an item.
+       * Each orientation = { l (X-depth), w (Z-width), h (Y-height), rotY }.
+       *
+       * PHYSICS: only Y-axis rotation is used.  BoxGeometry is (L,H,W), a
+       * Y-rotation of 90° visually swaps L↔W while H stays vertical.
+       * canFlip allows the original height to become depth or width.
        */
+      function buildOrientations(dims, caseData) {
+        const lock = (caseData.orientationLock || 'any').toLowerCase();
+        const canFlip = Boolean(caseData.canFlip);
+        const L = dims.length, W = dims.width, H = dims.height;
+        const PI2 = Math.PI / 2;
+        const seen = new Set();
+        const oris = [];
+
+        function tryOri(l, w, h, ry) {
+          const key = `${l}|${w}|${h}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            oris.push({ l, w, h, rotY: ry });
+          }
+        }
+
+        if (lock === 'upright' || lock === 'any') {
+          tryOri(L, W, H, 0);
+          tryOri(W, L, H, PI2);
+        }
+
+        if (lock === 'onside') {
+          tryOri(H, W, L, 0);
+          tryOri(W, H, L, PI2);
+        }
+
+        if (canFlip && lock !== 'onside') {
+          tryOri(H, W, L, 0);
+          tryOri(W, H, L, PI2);
+          tryOri(L, H, W, 0);
+          tryOri(H, L, W, PI2);
+        }
+
+        return oris;
+      }
+
+      // ── Core: gravity-based free-space packing ──────────────────────────
+
+      /**
+       * Gravity: find the Y where a box rests, supported by floor (y=0) or
+       * the top of a packed box BELOW the candidate.  Only considers boxes
+       * whose top is at or below the candidate bottom (prevents "resting"
+       * on boxes that are beside or above).
+       */
+      function findRestingY(cx, cz, halfL, halfW, packed) {
+        const EPS = 0.01;
+        const bMinX = cx - halfL;
+        const bMaxX = cx + halfL;
+        const bMinZ = cz - halfW;
+        const bMaxZ = cz + halfW;
+
+        let floor = 0;
+        for (const p of packed) {
+          const pHL = p.dims.l / 2;
+          const pHW = p.dims.w / 2;
+          if (bMinX < p.pos.x + pHL - EPS && bMaxX > p.pos.x - pHL + EPS &&
+              bMinZ < p.pos.z + pHW - EPS && bMaxZ > p.pos.z - pHW + EPS) {
+            const top = p.pos.y + p.dims.h / 2;
+            if (top > floor) { floor = top; }
+          }
+        }
+        return floor;
+      }
+
+      /**
+       * Check AABB collision against all packed items.
+       */
+      function collides(pos, dims, packed) {
+        const EPS = 0.001;
+        const aMin = { x: pos.x - dims.l / 2, y: pos.y - dims.h / 2, z: pos.z - dims.w / 2 };
+        const aMax = { x: pos.x + dims.l / 2, y: pos.y + dims.h / 2, z: pos.z + dims.w / 2 };
+        for (const p of packed) {
+          const bMin = { x: p.pos.x - p.dims.l / 2, y: p.pos.y - p.dims.h / 2, z: p.pos.z - p.dims.w / 2 };
+          const bMax = { x: p.pos.x + p.dims.l / 2, y: p.pos.y + p.dims.h / 2, z: p.pos.z + p.dims.w / 2 };
+          if (aMin.x < bMax.x - EPS && aMax.x > bMin.x + EPS &&
+              aMin.y < bMax.y - EPS && aMax.y > bMin.y + EPS &&
+              aMin.z < bMax.z - EPS && aMax.z > bMin.z + EPS) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      /**
+       * Try placing one item at a specific (x, z) with gravity, checking
+       * zone containment and collision.  Returns placement info or null.
+       */
+      function tryPlace(cx, cz, ori, truckH, zones, packed) {
+        const halfL = ori.l / 2;
+        const halfW = ori.w / 2;
+        const restY = findRestingY(cx, cz, halfL, halfW, packed);
+        const cy = restY + ori.h / 2;
+
+        // Fits under ceiling?
+        if (cy + ori.h / 2 > truckH + 0.01) { return null; }
+
+        // Zone containment
+        const aabb = {
+          min: { x: cx - halfL, y: cy - ori.h / 2, z: cz - halfW },
+          max: { x: cx + halfL, y: cy + ori.h / 2, z: cz + halfW },
+        };
+        if (!TrailerGeometry.isAabbContainedInAnyZone(aabb, zones)) { return null; }
+
+        // Collision
+        const dims = { l: ori.l, w: ori.w, h: ori.h };
+        const pos = { x: cx, y: cy, z: cz };
+        if (collides(pos, dims, packed)) { return null; }
+
+        return { pos, dims, restY };
+      }
+
+      // ── Main packing algorithm ──────────────────────────────────────────
+      //
+      // Strategy: Greedy placement with position scanning.
+      //
+      // For each remaining item (largest-volume first), scan a grid of
+      // candidate (x, z) positions across the usable zones.  At each
+      // position, gravity drops the box to its resting Y.  Pick the
+      // placement that scores best (lowest Y, tightest fit, best zone
+      // utilisation).
+      //
+      // This is fundamentally different from the old wall-building approach:
+      // - No wall slabs — items can be placed at ANY valid x position
+      // - No single-x pinning — smaller items fill gaps behind larger ones
+      // - Full floor-to-ceiling stacking via gravity on every placement
+      // - Respects all trailer shape modes (rect, wheelWells, frontBonus)
+      //
+
       async function pack() {
-        if (isRunning) return;
+        if (isRunning) { return; }
+
         const packId = StateStore.get('currentPackId');
         const packData = PackLibrary.getById(packId);
         if (!packData) {
@@ -1172,215 +1565,543 @@ initTP3DDebugger();
         }
 
         isRunning = true;
-        toast('AutoPack starting...', 'info', { title: 'AutoPack', duration: 1800 });
+        cancelAllTweens();
 
-        const truck = packData.truck;
-        const packItems = (packData.cases || [])
-          .filter(inst => !inst.hidden)
-          .map(inst => {
-            const c = CaseLibrary.getById(inst.caseId);
-            if (!c) return null;
-            const vol = c.volume || Utils.volumeInCubicInches(c.dimensions);
-            return { inst, caseData: c, volume: vol };
-          })
-          .filter(Boolean)
-          .sort((a, b) => b.volume - a.volume);
+        const diag =
+          (typeof window !== 'undefined' &&
+            window.__TP3D_DIAG__ &&
+            typeof window.__TP3D_DIAG__.isActive === 'function' &&
+            window.__TP3D_DIAG__.isActive())
+            ? window.__TP3D_DIAG__
+            : null;
 
-        // Step 1: move to staging (visual clarity)
-        const stagingMap = buildStagingMap(packItems, truck);
-        await stage(stagingMap);
+        try {
+          toast('AutoPack starting...', 'info', { title: 'AutoPack', duration: 1800 });
 
-        // Step 2: compute packing
-        const zonesInches = TrailerGeometry.getTrailerUsableZones(truck);
-        const spaces = TrailerGeometry.zonesToSpacesInches(zonesInches);
-        spaces.sort((a, b) => b.length * b.width * b.height - a.length * a.width * a.height);
+          const truck = packData.truck;
+          const mode = (truck && truck.shapeMode) ? truck.shapeMode : 'rect';
+          const truckL = truck.length || 636;
+          const truckW = truck.width || 102;
+          const truckH = truck.height || 110;
+          const zones = TrailerGeometry.getTrailerUsableZones(truck);
 
-        const placements = new Map(); // instanceId -> position inches
-        const packed = [];
-        const unpacked = [];
+          // For frontBonus, pack front-to-rear (high X first)
+          // For everything else, pack rear-to-front (low X first)
+          const loadFrontFirst = mode === 'frontBonus';
 
-        for (const item of packItems) {
-          const dims = item.caseData.dimensions;
-          let placed = false;
-          for (let i = 0; i < spaces.length; i++) {
-            const s = spaces[i];
-            if (dims.length <= s.length && dims.width <= s.width && dims.height <= s.height) {
-              const pos = {
-                x: s.x + dims.length / 2,
-                y: s.y + dims.height / 2,
-                z: s.z + dims.width / 2,
-              };
-              if (!hasPackingCollision(pos, dims, packed)) {
-                placements.set(item.inst.id, pos);
-                packed.push({ position: pos, dimensions: dims });
-                const nextSpaces = subdivideSpace(s, dims);
-                spaces.splice(i, 1, ...nextSpaces);
-                spaces.sort((a, b) => b.length * b.width * b.height - a.length * a.width * a.height);
-                placed = true;
-                break;
+          // Build item list sorted by volume descending (FFD)
+          const packItems = (packData.cases || [])
+            .filter(inst => !inst.hidden)
+            .map(inst => {
+              const c = CaseLibrary.getById(inst.caseId);
+              if (!c) { return null; }
+              const d = c.dimensions || { length: 0, width: 0, height: 0 };
+              const shape = (c.shape || 'box').toLowerCase();
+              let vol;
+              if (shape === 'cylinder' || shape === 'drum') {
+                const r = Math.min(d.width, d.height) / 2;
+                vol = Math.PI * r * r * d.length;
+              } else {
+                vol = c.volume || Utils.volumeInCubicInches(d);
+              }
+              // Pre-compute orientations once per item
+              const orientations = buildOrientations(d, c);
+              return { inst, caseData: c, volume: vol, orientations };
+            })
+            .filter(Boolean)
+            .sort((a, b) => b.volume - a.volume);
+
+          // Stage all items outside the truck instantly
+          const stagingMap = buildStagingMap(packItems, truck);
+          stageInstant(stagingMap);
+
+          // ── Build candidate X positions from zone boundaries ──
+          // Scan a set of X positions derived from zone edges + a regular
+          // grid.  This ensures items can be placed anywhere inside the
+          // truck, not just at wall-slab boundaries.
+          const xSet = new Set();
+          for (const z of zones) {
+            xSet.add(z.min.x);
+            xSet.add(z.max.x);
+          }
+          // Add a regular grid along X for fine placement
+          const xStep = Math.max(2, Math.min(12, truckL / 60));
+          for (let x = 0; x <= truckL; x += xStep) { xSet.add(x); }
+          const xPositions = Array.from(xSet).filter(x => x >= 0 && x <= truckL);
+          // Sort: front-first → descending, else ascending
+          xPositions.sort((a, b) => loadFrontFirst ? b - a : a - b);
+
+          // ── Build candidate Z positions from zone boundaries + grid ──
+          const zSet = new Set();
+          for (const z of zones) {
+            zSet.add(z.min.z);
+            zSet.add(z.max.z);
+          }
+          const zStep = Math.max(2, Math.min(12, truckW / 20));
+          for (let z = -truckW / 2; z <= truckW / 2; z += zStep) { zSet.add(z); }
+          const zPositions = Array.from(zSet).sort((a, b) => a - b);
+
+          try {
+            if (diag && typeof diag.autopackStart === 'function') {
+              diag.autopackStart({
+                packId,
+                mode,
+                loadFrontFirst,
+                truck: { length: truckL, width: truckW, height: truckH },
+                zones: zones && zones.length ? zones.length : 0,
+                xStep,
+                zStep,
+                items: (packData.cases || []).filter(i => !i.hidden).length,
+              });
+            }
+          } catch {
+            // ignore
+          }
+
+          // ── Greedy placement loop ──
+          const remaining = [...packItems];
+          const packed = []; // { pos:{x,y,z}, dims:{l,w,h}, instanceId }
+          const placements = new Map(); // instanceId → {x,y,z}
+          const rotations = new Map();  // instanceId → {x,y,z}
+
+          // Also collect X anchors from packed items (edges of placed boxes)
+          // so subsequent items can nestle tightly against already-placed ones.
+          const packedXEdges = new Set();
+
+          // Prevent runaway loops without prematurely stopping as `remaining.length` shrinks.
+          const maxIterations = Math.max(1, packItems.length * 2);
+
+          // Scoring weights (inches-based). Lower gravity weight encourages stacking.
+          const GRAVITY_WEIGHT = 15;
+          const X_TIGHTNESS_WEIGHT = 10;
+          const STACKING_BONUS = 1200;
+
+          function capXAnchorsSorted(arr, maxCount) {
+            // X anchors are already sorted toward the loading end. Sampling evenly can
+            // drop the exact packed edges we need for flush placement, causing gaps.
+            if (!Array.isArray(arr) || arr.length <= maxCount) return arr;
+            return arr.slice(0, maxCount);
+          }
+
+          function capZAnchorsSorted(arr, maxCount) {
+            // Z anchors must include both walls AND the center area.
+            // Keeping only extremes causes "two-wall" packing with a big center gap.
+            if (!Array.isArray(arr) || arr.length <= maxCount) return arr;
+
+            const headCount = Math.max(1, Math.floor(maxCount * 0.35));
+            const midCount = Math.max(1, Math.floor(maxCount * 0.30));
+            const tailCount = Math.max(1, maxCount - headCount - midCount);
+
+            const head = arr.slice(0, headCount);
+            const tail = arr.slice(Math.max(headCount, arr.length - tailCount));
+
+            // Find index closest to Z=0 and take a window around it.
+            let bestIdx = 0;
+            let bestAbs = Infinity;
+            for (let i = 0; i < arr.length; i++) {
+              const a = Math.abs(arr[i]);
+              if (a < bestAbs) {
+                bestAbs = a;
+                bestIdx = i;
               }
             }
+            const midStart = Math.max(0, Math.min(arr.length - midCount, bestIdx - Math.floor(midCount / 2)));
+            const mid = arr.slice(midStart, midStart + midCount);
+
+            const seen = new Set();
+            const out = [];
+            for (const v of [...head, ...mid, ...tail]) {
+              const k = String(v);
+              if (seen.has(k)) continue;
+              seen.add(k);
+              out.push(v);
+            }
+            return out;
           }
-          if (!placed) unpacked.push(item.inst.id);
+
+          let placementsSinceYield = 0;
+          for (let sweep = 0; remaining.length > 0 && sweep < maxIterations; sweep++) {
+            let placedAny = false;
+
+            function computeLiveXFaces() {
+              // IMPORTANT: include exact edges from placements made so far,
+              // otherwise we quantize to xStep and create visible gaps.
+              const set = new Set(xPositions);
+              for (const p of packed) {
+                set.add(p.pos.x - p.dims.l / 2);
+                set.add(p.pos.x + p.dims.l / 2);
+              }
+              for (const e of packedXEdges) { set.add(e); }
+              const arr = Array.from(set)
+                .filter(x => x >= -0.01 && x <= truckL + 0.01)
+                .sort((a, b) => loadFrontFirst ? b - a : a - b);
+              return capXAnchorsSorted(arr, 120);
+            }
+
+            function computeLiveZFaces() {
+              // IMPORTANT: include exact edges from placements made so far in this sweep,
+              // otherwise we quantize to zStep and create visible gaps.
+              const set = new Set(zPositions);
+              for (const p of packed) {
+                set.add(p.pos.z - p.dims.w / 2);
+                set.add(p.pos.z + p.dims.w / 2);
+              }
+              const arr = Array.from(set)
+                .filter(z => z >= -truckW / 2 - 0.01 && z <= truckW / 2 + 0.01)
+                .sort((a, b) => a - b);
+              return capZAnchorsSorted(arr, 220);
+            }
+
+            let liveX = computeLiveXFaces();
+            let xi = 0;
+            while (xi < liveX.length) {
+              const xFace = liveX[xi];
+              let liveZ = computeLiveZFaces();
+              let zi = 0;
+              let placedOnThisX = false;
+
+              while (zi < liveZ.length) {
+                const zFace = liveZ[zi];
+                if (remaining.length === 0) break;
+
+                const slotStats = {
+                  sweep,
+                  remaining: remaining.length,
+                  packed: packed.length,
+                  testedItems: 0,
+                  testedOris: 0,
+                  oobX: 0,
+                  oobZ: 0,
+                  triedPlace: 0,
+                  okPlace: 0,
+                };
+
+                let chosenIndex = -1;
+                let chosenOri = null;
+                let chosenPos = null;
+                let chosenDims = null;
+                let chosenScore = -Infinity;
+                let chosenRestY = null;
+
+                // At this slot, pick the best-fitting remaining item.
+                // Remaining is already sorted by volume (FFD).
+                for (let i = 0; i < remaining.length; i++) {
+                  const item = remaining[i];
+                  slotStats.testedItems++;
+                  let bestOri = null;
+                  let bestPos = null;
+                  let bestDims = null;
+                  let bestScore = -Infinity;
+                  let bestRestY = null;
+
+                  for (const ori of item.orientations) {
+                    slotStats.testedOris++;
+                    const halfL = ori.l / 2;
+                    const halfW = ori.w / 2;
+
+                    const cx = loadFrontFirst ? xFace - halfL : xFace + halfL;
+                    const cz = zFace + halfW; // fill left-to-right by aligning minZ
+
+                    if (cx - halfL < -0.01 || cx + halfL > truckL + 0.01) {
+                      slotStats.oobX++;
+                      continue;
+                    }
+                    if (cz - halfW < -truckW / 2 - 0.01 || cz + halfW > truckW / 2 + 0.01) {
+                      slotStats.oobZ++;
+                      continue;
+                    }
+
+                    slotStats.triedPlace++;
+                    const result = tryPlace(cx, cz, ori, truckH, zones, packed);
+                    if (!result) continue;
+
+                    slotStats.okPlace++;
+
+                    // Prefer width-filling placements first, then stacking, then volume.
+                    const zFill = ori.w;
+                    const xDist = loadFrontFirst ? (truckL - cx) : cx;
+                    const score =
+                      zFill * 1000 +
+                      (result.restY > 0.1 ? STACKING_BONUS : 0) +
+                      -result.restY * GRAVITY_WEIGHT +
+                      -xDist * X_TIGHTNESS_WEIGHT +
+                      ori.l * ori.w * ori.h * 0.001 +
+                      item.volume * 0.0001;
+
+                    if (score > bestScore) {
+                      bestScore = score;
+                      bestOri = ori;
+                      bestPos = result.pos;
+                      bestDims = result.dims;
+                      bestRestY = result.restY;
+                    }
+                  }
+
+                  if (!bestPos) continue;
+
+                  // Choose the best item for this slot.
+                  if (bestScore > chosenScore) {
+                    chosenScore = bestScore;
+                    chosenIndex = i;
+                    chosenOri = bestOri;
+                    chosenPos = bestPos;
+                    chosenDims = bestDims;
+                    chosenRestY = bestRestY;
+
+                    // If this is a very good fit, stop searching to keep perf stable.
+                    if (chosenDims && chosenDims.w >= truckW * 0.95) break;
+                  }
+                }
+
+                if (chosenIndex === -1) {
+                  try {
+                    if (diag && typeof diag.autopackSlot === 'function') {
+                      diag.autopackSlot({
+                        placed: false,
+                        xFace,
+                        zFace,
+                        ...slotStats,
+                      });
+                    }
+                  } catch {
+                    // ignore
+                  }
+                  zi++;
+                  continue;
+                }
+
+                const item = remaining[chosenIndex];
+                placements.set(item.inst.id, chosenPos);
+                rotations.set(item.inst.id, { x: 0, y: chosenOri.rotY, z: 0 });
+                packed.push({ instanceId: item.inst.id, pos: chosenPos, dims: chosenDims });
+
+                try {
+                  if (diag && typeof diag.autopackSlot === 'function') {
+                    diag.autopackSlot({
+                      placed: true,
+                      xFace,
+                      zFace,
+                      chosenScore,
+                      chosenRestY,
+                      chosen: {
+                        instanceId: item.inst.id,
+                        caseId: item.inst.caseId,
+                        dims: chosenDims,
+                        rotY: chosenOri && typeof chosenOri.rotY === 'number' ? chosenOri.rotY : null,
+                        pos: chosenPos,
+                      },
+                      ...slotStats,
+                    });
+                  }
+                  if (diag && typeof diag.autopackPlace === 'function') {
+                    diag.autopackPlace({
+                      sweep,
+                      xFace,
+                      zFace,
+                      score: chosenScore,
+                      restY: chosenRestY,
+                      instanceId: item.inst.id,
+                      caseId: item.inst.caseId,
+                      dims: chosenDims,
+                      pos: chosenPos,
+                      rotY: chosenOri && typeof chosenOri.rotY === 'number' ? chosenOri.rotY : null,
+                      remainingAfter: remaining.length - 1,
+                      packedAfter: packed.length,
+                    });
+                  }
+                } catch {
+                  // ignore
+                }
+
+                packedXEdges.add(chosenPos.x - chosenDims.l / 2);
+                packedXEdges.add(chosenPos.x + chosenDims.l / 2);
+
+                remaining.splice(chosenIndex, 1);
+                placedAny = true;
+                placedOnThisX = true;
+
+                placementsSinceYield++;
+                if (placementsSinceYield % 4 === 0) {
+                  // eslint-disable-next-line no-await-in-loop
+                  await sleep(0);
+                }
+
+                // Recompute Z faces to include the new exact edge anchors, then restart
+                // from the left wall for this same xFace.
+                liveZ = computeLiveZFaces();
+                zi = 0;
+                continue;
+              }
+
+              if (remaining.length === 0) break;
+              if (placedOnThisX) {
+                liveX = computeLiveXFaces();
+                xi = 0;
+              } else {
+                xi++;
+              }
+            }
+
+            if (!placedAny) break;
+          }
+
+          const unpacked = remaining.map(item => item.inst.id);
+
+          // Build oriented dims map for renderer halfWorld fix
+          const orientedDimsMap = new Map();
+          for (const p of packed) {
+            orientedDimsMap.set(p.instanceId, {
+              length: p.dims.l,
+              width: p.dims.w,
+              height: p.dims.h,
+            });
+          }
+
+          // ── Animate to final positions ──
+          cancelAllTweens();
+          await animatePlacements(placements, rotations, orientedDimsMap);
+
+          // Persist with position + rotation + orientedDims
+          const nextCases = (packData.cases || []).map(inst => {
+            if (inst.hidden) { return inst; }
+            const pos = placements.get(inst.id) || stagingMap.get(inst.id);
+            if (!pos) { return inst; }
+            const rot = rotations.get(inst.id) || { x: 0, y: 0, z: 0 };
+            const od = orientedDimsMap.get(inst.id) || null;
+            const next = {
+              ...inst,
+              transform: {
+                ...inst.transform,
+                position: pos,
+                rotation: rot,
+              },
+              hidden: false,
+            };
+            if (od) { next.orientedDims = od; }
+            return next;
+          });
+          PackLibrary.update(packId, { cases: nextCases });
+
+          // Stats + toast
+          const stats = PackLibrary.computeStats(PackLibrary.getById(packId));
+          const totalPackable = (packData.cases || []).filter(i => !i.hidden).length;
+          UIComponents.showToast(
+            `Packed ${stats.packedCases} of ${totalPackable} (${stats.volumePercent.toFixed(1)}%)`,
+            stats.packedCases === totalPackable ? 'success' : 'warning',
+            { title: 'AutoPack' }
+          );
+          if (unpacked.length) {
+            UIComponents.showToast(
+              `${unpacked.length} case(s) could not fit`, 'warning', { title: 'AutoPack' }
+            );
+          }
+
+          try {
+            if (diag && typeof diag.autopackEnd === 'function') {
+              diag.autopackEnd({
+                status: 'ok',
+                packed: packed.length,
+                unpacked: unpacked.length,
+                packedCases: stats && typeof stats.packedCases === 'number' ? stats.packedCases : null,
+                volumePercent: stats && typeof stats.volumePercent === 'number' ? stats.volumePercent : null,
+              });
+            }
+          } catch {
+            // ignore
+          }
+
+          window.setTimeout(() => {
+            ExportService.capturePackPreview(packId, { source: 'auto' });
+          }, 60);
+
+        } catch (err) {
+          console.error('[AutoPack] Error:', err);
+          try {
+            if (diag && typeof diag.autopackEnd === 'function') {
+              diag.autopackEnd({ status: 'error', message: err && err.message ? String(err.message) : String(err) });
+            }
+          } catch {
+            // ignore
+          }
+          toast('AutoPack failed', 'error', { title: 'AutoPack' });
+        } finally {
+          isRunning = false;
         }
-
-        // Step 3: animate to placements
-        await animatePlacements(placements);
-
-        // Step 4: persist to state (single update)
-        const nextCases = (packData.cases || []).map(inst => {
-          if (inst.hidden) return inst;
-          const p = placements.get(inst.id) || stagingMap.get(inst.id);
-          if (!p) return inst;
-          return { ...inst, transform: { ...inst.transform, position: p }, hidden: false };
-        });
-        PackLibrary.update(packId, { cases: nextCases });
-
-        const stats = PackLibrary.computeStats(PackLibrary.getById(packId));
-        const totalPackable = (packData.cases || []).filter(i => !i.hidden).length;
-        UIComponents.showToast(
-          `Packed ${stats.packedCases} of ${totalPackable} (${stats.volumePercent.toFixed(1)}%)`,
-          stats.packedCases === totalPackable ? 'success' : 'warning',
-          { title: 'AutoPack' }
-        );
-        if (unpacked.length) {
-          UIComponents.showToast(`${unpacked.length} case(s) could not fit`, 'warning', { title: 'AutoPack' });
-        }
-
-        isRunning = false;
-
-        // Auto-capture a pack preview thumbnail after AutoPack completes.
-        window.setTimeout(() => {
-          ExportService.capturePackPreview(packId, { source: 'auto' });
-        }, 60);
       }
 
+      // ── Staging ─────────────────────────────────────────────────────────
+
       function buildStagingMap(packItems, truck) {
-        const baseX = -Math.max(60, truck.length * 0.12);
-        const spacing = 28;
+        const gap = 4;
+        const truckW = truck.width || 102;
+        const truckL = truck.length || 636;
+        const stageZStart = (truckW / 2) + 10;
         const map = new Map();
-        packItems.forEach((item, idx) => {
-          const row = Math.floor(idx / 5);
-          const col = idx % 5;
-          const y = Math.max(
-            1,
-            item.caseData.dimensions && item.caseData.dimensions.height ? item.caseData.dimensions.height / 2 : 1
-          );
-          map.set(item.inst.id, { x: baseX - col * spacing, y, z: (row - 2) * spacing });
+        let curX = 0;
+        let curZ = stageZStart;
+        let rowMaxWidth = 0;
+        packItems.forEach((item) => {
+          const dims = item.caseData.dimensions || { length: 24, width: 24, height: 24 };
+          if (curX + dims.length > truckL && curX > 0) {
+            curZ += rowMaxWidth + gap;
+            curX = 0;
+            rowMaxWidth = 0;
+          }
+          const y = Math.max(1, dims.height / 2);
+          map.set(item.inst.id, { x: curX + dims.length / 2, y, z: curZ + dims.width / 2 });
+          curX += dims.length + gap;
+          rowMaxWidth = Math.max(rowMaxWidth, dims.width);
         });
         return map;
       }
 
-      async function stage(stagingMap) {
-        const targets = Array.from(stagingMap.entries()).map(([id, pos]) => ({ id, pos }));
-        await Promise.all(targets.map(t => tweenInstanceToPosition(t.id, t.pos, 260)));
-      }
+      // ── Animation ───────────────────────────────────────────────────────
 
-      function hasPackingCollision(position, dims, packed) {
-        const EPS = 1e-6;
-        const box = {
-          min: {
-            x: position.x - dims.length / 2,
-            y: position.y - dims.height / 2,
-            z: position.z - dims.width / 2,
-          },
-          max: {
-            x: position.x + dims.length / 2,
-            y: position.y + dims.height / 2,
-            z: position.z + dims.width / 2,
-          },
-        };
-        for (const p of packed) {
-          const other = {
-            min: {
-              x: p.position.x - p.dimensions.length / 2,
-              y: p.position.y - p.dimensions.height / 2,
-              z: p.position.z - p.dimensions.width / 2,
-            },
-            max: {
-              x: p.position.x + p.dimensions.length / 2,
-              y: p.position.y + p.dimensions.height / 2,
-              z: p.position.z + p.dimensions.width / 2,
-            },
-          };
-          if (
-            box.min.x < other.max.x - EPS &&
-            box.max.x > other.min.x + EPS &&
-            box.min.y < other.max.y - EPS &&
-            box.max.y > other.min.y + EPS &&
-            box.min.z < other.max.z - EPS &&
-            box.max.z > other.min.z + EPS
-          ) {
-            return true;
-          }
-        }
-        return false;
-      }
-
-      function subdivideSpace(space, dims) {
-        const out = [];
-        const minVol = 10;
-
-        // Right (X+)
-        const rightLen = space.length - dims.length;
-        if (rightLen > 0) {
-          out.push({
-            x: space.x + dims.length,
-            y: space.y,
-            z: space.z,
-            length: rightLen,
-            width: space.width,
-            height: space.height,
-          });
-        }
-
-        // Top (Y+)
-        const topH = space.height - dims.height;
-        if (topH > 0) {
-          out.push({
-            x: space.x,
-            y: space.y + dims.height,
-            z: space.z,
-            length: dims.length,
-            width: dims.width,
-            height: topH,
-          });
-        }
-
-        // Back (Z+)
-        const backW = space.width - dims.width;
-        if (backW > 0) {
-          out.push({
-            x: space.x,
-            y: space.y,
-            z: space.z + dims.width,
-            length: dims.length,
-            width: backW,
-            height: dims.height,
-          });
-        }
-
-        return out.filter(s => s.length * s.width * s.height > minVol);
-      }
-
-      async function animatePlacements(placements) {
+      async function animatePlacements(placements, rotations, orientedDimsMap) {
+        cancelAllTweens();
         for (const [id, pos] of placements.entries()) {
-          // Sequential animation avoids overlapping tweens on the same instances.
+          const obj = CaseScene.getObject(id);
+          if (!obj) { continue; }
+
+          const rot = rotations ? rotations.get(id) : null;
+          if (rot) {
+            obj.rotation.set(rot.x || 0, rot.y || 0, rot.z || 0);
+          }
+
+          // Update halfWorld so renderer floor-clamp + drag + snap all use
+          // correct oriented dimensions
+          if (orientedDimsMap) {
+            const od = orientedDimsMap.get(id);
+            if (od) {
+              obj.userData.halfWorld = {
+                x: SceneManager.toWorld(od.length) / 2,
+                y: SceneManager.toWorld(od.height) / 2,
+                z: SceneManager.toWorld(od.width) / 2,
+              };
+            }
+          }
+
           // eslint-disable-next-line no-await-in-loop
-          await tweenInstanceToPosition(id, pos, 240);
+          await tweenInstanceToPosition(id, pos, 200);
           // eslint-disable-next-line no-await-in-loop
-          await sleep(35);
+          await sleep(25);
         }
       }
 
       function tweenInstanceToPosition(instanceId, positionInches, duration) {
         const obj = CaseScene.getObject(instanceId);
-        if (!obj) return Promise.resolve();
+        if (!obj) { return Promise.resolve(); }
         const target = SceneManager.vecInchesToWorld(positionInches);
         return new Promise(resolve => {
-          new TWEEN.Tween(obj.position)
+          const Tween = window.TWEEN || null;
+          if (!Tween) {
+            obj.position.set(target.x, target.y, target.z);
+            resolve();
+            return;
+          }
+          new Tween.Tween(obj.position)
             .to({ x: target.x, y: target.y, z: target.z }, duration)
-            .easing(TWEEN.Easing.Cubic.InOut)
+            .easing(Tween.Easing.Cubic.InOut)
             .onComplete(resolve)
             .start();
         });
@@ -1480,6 +2201,24 @@ initTP3DDebugger();
       }
 
       function generatePDF() {
+        // Billing gate: PDF export requires active Pro subscription
+        try {
+          const _bs = window.__TP3D_BILLING && typeof window.__TP3D_BILLING.getBillingState === 'function'
+            ? window.__TP3D_BILLING.getBillingState() : null;
+          const _dbg = typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1';
+          if (!_bs || !_bs.ok) {
+            if (_dbg) console.log('[Billing] PDF blocked: billing unavailable', _bs);
+            UIComponents.showToast('Billing unavailable. Please try again.', 'warning', { title: 'Export' });
+            return;
+          }
+          if (!_bs.isActive || !_bs.isPro) {
+            if (_dbg) console.log('[Billing] PDF blocked: not Pro/active', _bs);
+            UIComponents.showToast('PDF export is a Pro feature. Please upgrade to continue.', 'info', { title: 'Export' });
+            return;
+          }
+          if (_dbg) console.log('[Billing] PDF allowed', _bs);
+        } catch (_) { /* billing gate must never break PDF flow */ }
+
         try {
           if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF not available');
           const pack = getCurrentPack();
@@ -2437,16 +3176,7 @@ initTP3DDebugger();
     // ============================================================================
     // SECTION: BOOT HELPERS (RUNTIME VALIDATION)
     // ============================================================================
-    function validateRuntime() {
-      /** @type {Array<{ name?: string }>} */
-      const failures = window.__TP3D_BOOT && window.__TP3D_BOOT.cdnFailures ? window.__TP3D_BOOT.cdnFailures : [];
-      failures.forEach(f => {
-        UIComponents.showToast(`${f.name} failed to load`, 'error', {
-          title: 'CDN',
-          actions: [{ label: 'Retry', onClick: () => window.location.reload() }],
-        });
-      });
-
+    async function validateRuntime() {
       if (!Utils.hasWebGL()) {
         SystemOverlay.show({
           title: 'WebGL required',
@@ -2456,17 +3186,46 @@ initTP3DDebugger();
         return false;
       }
 
+      // Wait for vendor scripts (CDN → fallback CDN → local) to finish loading.
+      // This handles slow/offline connections where fallback scripts need time.
+      if (typeof window.__tp3dVendorAllReady === 'function') {
+        try {
+          await Promise.race([
+            window.__tp3dVendorAllReady(),
+            new Promise(r => setTimeout(r, 12000)), // 12s max wait
+          ]);
+        } catch {
+          // continue — we'll check globals below
+        }
+      }
+
+      // Log any CDN failures to console for developers
+      const failures = window.__TP3D_BOOT && window.__TP3D_BOOT.cdnFailures ? window.__TP3D_BOOT.cdnFailures : [];
+      if (failures.length) {
+        console.warn('[TruckPackerApp] CDN failures:', failures.map(f => `${f.name} (${f.url})`).join(', '));
+      }
+
+      // Check if critical libraries are available
       const missing = [];
-      if (!window.THREE) missing.push('three@0.160.0');
-      if (!window.THREE || !window.THREE.OrbitControls) missing.push('OrbitControls');
-      if (!window.TWEEN) missing.push('@tweenjs/tween.js');
-      if (!window.XLSX) missing.push('xlsx');
-      if (!window.jspdf) missing.push('jsPDF');
+      if (!window.THREE) missing.push('3D rendering engine');
+      if (!window.THREE || !window.THREE.OrbitControls) missing.push('Camera controls');
+      if (!window.TWEEN) missing.push('Animation library');
+      if (!window.XLSX) missing.push('Spreadsheet support');
+      if (!window.jspdf) missing.push('PDF generation');
+
       if (missing.length) {
+        // Log technical details to console
+        console.error('[TruckPackerApp] Missing libraries:', missing);
+
+        // Show user-friendly message — no technical jargon
         SystemOverlay.show({
-          title: 'Missing dependencies',
-          message: 'Some required CDN libraries did not load. Check your connection or allowlisted CDNs.',
-          items: missing.map(m => `Missing: ${m}`),
+          title: 'Unable to load',
+          message: 'Some features could not be loaded. Please check your internet connection and try again.',
+          items: [
+            'Make sure you are connected to the internet',
+            'Try refreshing the page',
+            'If the problem persists, try a different browser',
+          ],
         });
         return false;
       }
@@ -2495,6 +3254,13 @@ initTP3DDebugger();
     const ORG_CONTEXT_LS_KEY = 'tp3d:active-org-id';
     const ORG_CONTEXT_DEDUP_MS = 500;
     const ORG_PERSIST_COOLDOWN_MS = 2000;
+    const orgContextMetrics = {
+      orgChangedEmitted: 0,
+      orgChangedHandled: 0,
+      orgChangedIgnoredSameId: 0,
+      orgChangedIgnoredSignedOut: 0,
+      orgChangedQueuedWhileHidden: 0,
+    };
     let orgContext = {
       activeOrgId: null,
       activeOrg: null,
@@ -2518,6 +3284,7 @@ initTP3DDebugger();
     let authRefreshQueued = false;
     let authRefreshWindowStart = 0;
     let authRefreshAttempts = 0;
+    let authMissingSessionShown = false;
     const authRefreshReasons = new Set();
     let authRefreshPending = {
       force: false,
@@ -2542,6 +3309,12 @@ initTP3DDebugger();
       authBlockState = null;
     }
     let readyToastShown = false;
+
+    try {
+      window.__TP3D_ORG_METRICS__ = orgContextMetrics;
+    } catch {
+      // ignore
+    }
 
     function showReadyOnce() {
       if (readyToastShown) return;
@@ -2629,6 +3402,73 @@ initTP3DDebugger();
       };
     }
 
+    function getActiveOrgId() {
+      return orgContext.activeOrgId;
+    }
+
+    async function hydrateActiveOrgId() {
+      return refreshOrgContext('org-hydrate', { force: true, forceEmit: true });
+    }
+
+    async function setActiveOrgId(nextOrgId, { source = 'org-switch' } = {}) {
+      const nextId = nextOrgId ? String(nextOrgId).trim() : '';
+      if (!nextId) return null;
+
+      const snapshot = getCurrentAuthSnapshot();
+      if (snapshot.status !== 'signed_in' || !snapshot.hasToken) return null;
+
+      const prevId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
+      if (prevId && prevId === nextId) return prevId;
+
+      const orgs = Array.isArray(orgContext.orgs) ? orgContext.orgs : [];
+      const activeOrg = orgs.find(o => o && String(o.id) === nextId) || null;
+
+      if (!activeOrg) {
+        writeLocalOrgId(nextId);
+        await refreshOrgContext(source, { force: true, forceEmit: true });
+        return nextId;
+      }
+
+      orgContext = {
+        ...orgContext,
+        activeOrgId: nextId,
+        activeOrg,
+        role: activeOrg.role || orgContext.role || null,
+        updatedAt: Date.now(),
+      };
+      writeLocalOrgId(nextId);
+
+      try {
+        if (SupabaseClient && typeof SupabaseClient.updateProfile === 'function') {
+          SupabaseClient.updateProfile({ current_organization_id: nextId }).catch(() => {});
+        }
+      } catch {
+        // ignore
+      }
+
+      try {
+        window.dispatchEvent(new CustomEvent('tp3d:org-changed', { detail: { orgId: nextId, reason: source } }));
+        orgContextMetrics.orgChangedEmitted += 1;
+      } catch {
+        // ignore
+      }
+
+      queueOrgScopedRender('org-set');
+      return nextId;
+    }
+
+    const OrgContext = {
+      getActiveOrgId,
+      setActiveOrgId,
+      hydrateActiveOrgId,
+    };
+
+    try {
+      window.OrgContext = OrgContext;
+    } catch {
+      // ignore
+    }
+
     function readLocalOrgId() {
       try {
         const raw = window.localStorage.getItem(ORG_CONTEXT_LS_KEY);
@@ -2661,7 +3501,11 @@ initTP3DDebugger();
       };
 
       const profileOrgId = normalizeOrgId(
-        profile && (profile.current_org_id || profile.currentOrgId || profile.currentOrgID)
+        profile &&
+          (profile.current_organization_id ||
+            profile.current_org_id ||
+            profile.currentOrgId ||
+            profile.currentOrgID)
       );
       const localOrgId = normalizeOrgId(readLocalOrgId());
       const membershipOrgId = normalizeOrgId(
@@ -2701,6 +3545,105 @@ initTP3DDebugger();
       lastOrgIdNotified = null;
       lastOrgChangeAt = 0;
       writeLocalOrgId(null);
+      applyOrgRequiredUi(false);
+    }
+
+    let orgScopedRenderTimer = null;
+    function queueOrgScopedRender(_reason) {
+      if (orgScopedRenderTimer) return;
+      orgScopedRenderTimer = setTimeout(() => {
+        orgScopedRenderTimer = null;
+        try {
+          PacksUI.render();
+        } catch {
+          // ignore
+        }
+        try {
+          CasesUI.render();
+        } catch {
+          // ignore
+        }
+        try {
+          EditorUI.render();
+        } catch {
+          // ignore
+        }
+      }, 0);
+    }
+
+    const ORG_REQUIRED_BANNER_ID = 'tp3d-org-required-banner';
+    let orgBannerRetryTimer = null;
+    function ensureOrgRequiredBanner() {
+      const container = document && document.querySelector ? document.querySelector('.content') : null;
+      if (!container) return null;
+      let banner = document.getElementById(ORG_REQUIRED_BANNER_ID);
+      if (banner) return banner;
+
+      banner = document.createElement('div');
+      banner.id = ORG_REQUIRED_BANNER_ID;
+      banner.className = 'card tp3d-org-required-banner';
+      banner.innerHTML = `
+        <div class="tp3d-org-required-content">
+          <div class="tp3d-org-required-title">Create or join a workspace</div>
+          <div class="tp3d-org-required-sub muted">
+            You need a workspace to manage packs, cases, and editor data.
+          </div>
+        </div>
+        <div class="tp3d-org-required-actions">
+          <button class="btn btn-primary" type="button" data-action="org-settings">Open Settings</button>
+        </div>
+      `;
+
+      const actionBtn = banner.querySelector('[data-action="org-settings"]');
+      if (actionBtn) {
+        actionBtn.addEventListener('click', () => {
+          try {
+            openSettingsOverlay('org-general');
+          } catch {
+            // ignore
+          }
+        });
+      }
+
+      container.prepend(banner);
+      return banner;
+    }
+
+    function setDisabled(el, disabled) {
+      if (!el) return;
+      el.disabled = Boolean(disabled);
+      el.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+    }
+
+    function applyOrgRequiredUi(hasOrg) {
+      const banner = ensureOrgRequiredBanner();
+      if (!banner) {
+        if (!orgBannerRetryTimer) {
+          orgBannerRetryTimer = window.setTimeout(() => {
+            orgBannerRetryTimer = null;
+            applyOrgRequiredUi(hasOrg);
+          }, 0);
+        }
+        return;
+      }
+
+      if (orgBannerRetryTimer) {
+        window.clearTimeout(orgBannerRetryTimer);
+        orgBannerRetryTimer = null;
+      }
+
+      banner.hidden = Boolean(hasOrg);
+
+      const disable = !hasOrg;
+      setDisabled(document.getElementById('btn-new-pack'), disable);
+      setDisabled(document.getElementById('btn-import-pack'), disable);
+      setDisabled(document.getElementById('btn-packs-bulk-delete'), disable);
+      setDisabled(document.getElementById('btn-new-case'), disable);
+      setDisabled(document.getElementById('btn-cases-import'), disable);
+      setDisabled(document.getElementById('btn-cases-bulk-delete'), disable);
+      setDisabled(document.getElementById('btn-autopack'), disable);
+      setDisabled(document.getElementById('btn-screenshot'), disable);
+      setDisabled(document.getElementById('btn-pdf'), disable);
     }
 
     async function applyOrgContextFromBundle(bundle, { reason = 'org-context', forceEmit = false } = {}) {
@@ -2734,6 +3677,7 @@ initTP3DDebugger();
       // Best-effort: persist current org to profile when we have a real profile row.
       if (resolved.profile && !resolved.profile._isDefault) {
         const hasProfileOrgField =
+          Object.prototype.hasOwnProperty.call(resolved.profile, 'current_organization_id') ||
           Object.prototype.hasOwnProperty.call(resolved.profile, 'current_org_id') ||
           Object.prototype.hasOwnProperty.call(resolved.profile, 'currentOrgId') ||
           Object.prototype.hasOwnProperty.call(resolved.profile, 'currentOrgID');
@@ -2742,7 +3686,7 @@ initTP3DDebugger();
           lastOrgPersistAt = now;
           try {
             if (SupabaseClient && typeof SupabaseClient.updateProfile === 'function') {
-              SupabaseClient.updateProfile({ current_org_id: nextOrgIdStr }).catch(() => {});
+              SupabaseClient.updateProfile({ current_organization_id: nextOrgIdStr }).catch(() => {});
             }
           } catch {
             // ignore
@@ -2758,6 +3702,7 @@ initTP3DDebugger();
       }
       if (hidden) {
         orgContextQueued = true;
+        orgContextMetrics.orgChangedQueuedWhileHidden += 1;
         return nextOrgIdStr;
       }
 
@@ -2766,6 +3711,7 @@ initTP3DDebugger();
           nextOrgIdStr === lastOrgIdNotified && now - lastOrgChangeAt < ORG_CONTEXT_DEDUP_MS;
         if (!forceEmit && sameOrgRecently) {
           // Skip duplicate org-changed bursts for the same org within 500ms
+          orgContextMetrics.orgChangedIgnoredSameId += 1;
         } else {
           window.dispatchEvent(
             new CustomEvent('tp3d:org-changed', {
@@ -2774,9 +3720,16 @@ initTP3DDebugger();
           );
           lastOrgIdNotified = nextOrgIdStr;
           lastOrgChangeAt = now;
+          orgContextMetrics.orgChangedEmitted += 1;
         }
+      } else {
+        orgContextMetrics.orgChangedIgnoredSameId += 1;
       }
 
+      applyOrgRequiredUi(true);
+      if (changed || forceEmit) {
+        queueOrgScopedRender(reason);
+      }
       return nextOrgIdStr;
     }
 
@@ -2909,20 +3862,24 @@ initTP3DDebugger();
         const authState =
           SupabaseClient && typeof SupabaseClient.getAuthState === 'function' ? SupabaseClient.getAuthState() : null;
         const sessionHint = pending.sessionHint || (authState && authState.session ? authState.session : null);
-        const status = authState && authState.status ? authState.status : 'unknown';
 
-        if (!sessionHint && status === 'signed_out') {
-          await renderAuthState({
-            event: 'SIGNED_OUT',
-            user: null,
-            userInitiatedSignIn: false,
-            userInitiatedSignOut: false,
-            isSameUser: false,
-            isUserSwitch: false,
-            onRetry: bootstrapAuthGate,
-          });
+        const hasTokens = Boolean(sessionHint && sessionHint.access_token && sessionHint.refresh_token);
+        if (!hasTokens) {
+          if (!authMissingSessionShown) {
+            authMissingSessionShown = true;
+            await renderAuthState({
+              event: 'SIGNED_OUT',
+              user: null,
+              userInitiatedSignIn: false,
+              userInitiatedSignOut: false,
+              isSameUser: false,
+              isUserSwitch: false,
+              onRetry: bootstrapAuthGate,
+            });
+          }
           return null;
         }
+        authMissingSessionShown = false;
 
         const overlayOpen = getOverlayOpen();
         const reasonLabel = reasons.length ? reasons.join('|') : 'refresh';
@@ -3119,6 +4076,7 @@ initTP3DDebugger();
         if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
           AccountSwitcher.refresh();
         }
+        refreshBilling({ force: isSignedInEvent || isUserSwitch }).catch(() => {});
         showReadyOnce();
         return;
       }
@@ -3143,6 +4101,7 @@ initTP3DDebugger();
       } catch {
         // ignore
       }
+      try { clearBillingState(); } catch (_) { /* ignore */ }
 
       if (isSignedOutEvent && userInitiatedSignOut && canShowToast('auth-signed-out')) {
         UIComponents.showToast('Signed out', 'info', { title: 'Auth' });
@@ -3291,7 +4250,7 @@ initTP3DDebugger();
 
     async function init() {
       console.info('[TruckPackerApp] init start');
-      if (!validateRuntime()) return;
+      if (!(await validateRuntime())) return;
       installDevHelpers({ app: window.TruckPackerApp, stateStore: StateStore, Utils, documentRef: document });
       seedIfEmpty();
       try {
@@ -3314,18 +4273,44 @@ initTP3DDebugger();
       let supabaseInitOk = false;
       const cfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : null;
       const url = cfg ? cfg.url : '';
-      const anonKey = cfg ? cfg.anonKey : '';
+      const anonKey = cfg ? String(cfg.anonKey || '') : '';
+      const anonLooksLikeJwt = anonKey.startsWith('eyJ');
+      const anonLooksPublishable = anonKey.startsWith('sb_publishable_');
 
-      if (!url || !anonKey) {
+      if (anonLooksPublishable) {
+        if (cfg && !cfg.publishableKey) cfg.publishableKey = anonKey;
+        const msg =
+          'Supabase anon key is misconfigured. Use the public anon key (starts with "eyJ"), not the Stripe publishable key.';
+        console.error('[TruckPackerApp] ' + msg);
+        if (debugEnabled()) {
+          try {
+            if (UIComponents && typeof UIComponents.showToast === 'function') {
+              UIComponents.showToast(msg, 'error', { title: 'Supabase Config' });
+            }
+          } catch {
+            // ignore
+          }
+        }
         AuthOverlay.setPhase('cantconnect', {
-          error: new Error('Supabase config missing'),
+          error: new Error(msg),
+          onRetry: () => window.location.reload(),
+        });
+        AuthOverlay.show();
+        return;
+      }
+
+      if (!url || !anonKey || !anonLooksLikeJwt) {
+        AuthOverlay.setPhase('cantconnect', {
+          error: new Error('Supabase config missing or invalid'),
           onRetry: async () => {
             const retryBootstrap = async () => {
               const retryCfg =
                 window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : null;
               const retryUrl = retryCfg ? retryCfg.url : '';
-              const retryKey = retryCfg ? retryCfg.anonKey : '';
-              if (!retryUrl || !retryKey) throw new Error('Supabase config still missing');
+              const retryKey = retryCfg ? String(retryCfg.anonKey || '') : '';
+              if (!retryUrl || !retryKey || !String(retryKey).startsWith('eyJ')) {
+                throw new Error('Supabase config still missing or invalid');
+              }
               await SupabaseClient.init({ url: retryUrl, anonKey: retryKey });
             };
             await retryBootstrap();
@@ -3464,6 +4449,15 @@ initTP3DDebugger();
             sessionHint: session || null,
           });
 
+          // Sync billing state on auth changes
+          if (isSignedOutEvent) {
+            clearBillingState();
+          } else if (isSignedInEvent || isTokenRefreshEvent || isInitialSessionEvent || isUserUpdatedEvent) {
+            if (userFromSession && userFromSession.id) {
+              refreshBilling({ force: true }).catch(() => {});
+            }
+          }
+
           // FIX: Get user from wrapper to ensure we have the latest data after rehydration
           const user =
             (() => {
@@ -3540,27 +4534,42 @@ initTP3DDebugger();
             if (!isAuthKey) return;
             requestAuthRefresh('storage');
           });
-          window.addEventListener('tp3d:org-changed', () => {
-            // If tab is hidden, don’t do anything (avoid queued churn)
-            try {
-              if (document.hidden) return;
-            } catch {
-              // ignore
+          window.addEventListener('tp3d:org-changed', ev => {
+            const snapshot = getCurrentAuthSnapshot();
+            if (snapshot.status !== 'signed_in' || !snapshot.hasToken) {
+              orgContextMetrics.orgChangedIgnoredSignedOut += 1;
+              return;
             }
 
-            // Only refresh if signed in with a token
-            const snapshot = getCurrentAuthSnapshot();
-            if (snapshot.status !== 'signed_in' || !snapshot.hasToken) return;
+            const detailOrgId = ev && ev.detail && ev.detail.orgId ? String(ev.detail.orgId) : null;
+            if (detailOrgId && snapshot.activeOrgId && String(snapshot.activeOrgId) === detailOrgId) {
+              orgContextMetrics.orgChangedIgnoredSameId += 1;
+            }
+
+            let hidden = false;
+            try {
+              hidden = typeof document !== 'undefined' && document.hidden === true;
+            } catch {
+              hidden = false;
+            }
+            if (hidden) {
+              orgContextMetrics.orgChangedQueuedWhileHidden += 1;
+              orgContextQueued = true;
+            }
 
             const overlayOpen = getOverlayOpen();
             requestAuthRefresh('org-changed', { forceBundle: overlayOpen });
 
-            try {
-              if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
-                AccountSwitcher.refresh();
+            if (!hidden) {
+              orgContextMetrics.orgChangedHandled += 1;
+              queueOrgScopedRender('org-changed');
+              try {
+                if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
+                  AccountSwitcher.refresh();
+                }
+              } catch {
+                // ignore
               }
-            } catch {
-              // ignore
             }
           });
         } catch {
@@ -3578,6 +4587,114 @@ initTP3DDebugger();
       AccountSwitcher.init();
       wireGlobalButtons();
       KeyboardManager.init();
+
+      // Sidebar upgrade notice subscriber
+      try {
+        const upgradeEl = document.getElementById('tp3d-sidebar-upgrade');
+        const upgradeWrap = document.getElementById('upgradeCardWrap');
+        if (upgradeEl) {
+          const updateSidebarNotice = (s) => {
+            if (s.loading || !s.ok) {
+              if (upgradeWrap) upgradeWrap.hidden = true;
+              else upgradeEl.hidden = true;
+              return;
+            }
+            const status = s.status || '';
+            const isTrial = status === 'trialing';
+            const needsUpgrade = !s.isActive || !s.isPro;
+            if (!isTrial && !needsUpgrade) {
+              if (upgradeWrap) upgradeWrap.hidden = true;
+              else upgradeEl.hidden = true;
+              return;
+            }
+            if (upgradeWrap) upgradeWrap.hidden = false;
+            else upgradeEl.hidden = false;
+
+            let trialDays = null;
+            if (isTrial && s.trialEndsAt) {
+              try {
+                const endMs = new Date(s.trialEndsAt).getTime();
+                if (Number.isFinite(endMs)) trialDays = Math.max(0, Math.ceil((endMs - Date.now()) / 86400000));
+              } catch (_) { /* ignore */ }
+            }
+
+            const msg = isTrial && trialDays !== null
+              ? 'Trial ends in ' + trialDays + ' day' + (trialDays !== 1 ? 's' : '')
+              : 'Upgrade to Pro to export PDFs';
+
+            upgradeEl.innerHTML = '';
+            const txt = document.createElement('div');
+            txt.className = 'tp3d-sidebar-upgrade-text';
+            txt.textContent = msg;
+            upgradeEl.appendChild(txt);
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-primary';
+            btn.textContent = 'Upgrade Plan';
+            btn.addEventListener('click', () => {
+              const priceId = typeof window !== 'undefined' && window.__TP3D_STRIPE_PRICE_MONTHLY
+                ? String(window.__TP3D_STRIPE_PRICE_MONTHLY) : '';
+              if (!priceId) {
+                UIComponents.showToast('Checkout coming soon. Contact sales.', 'info', { title: 'Billing' });
+                return;
+              }
+              btn.disabled = true;
+              btn.textContent = 'Redirecting\u2026';
+              startCheckout(priceId).then((r) => {
+                if (!r.ok) {
+                  UIComponents.showToast(r.error || 'Checkout failed', 'error', { title: 'Billing' });
+                  btn.disabled = false;
+                  btn.textContent = 'Upgrade Plan';
+                }
+              }).catch(() => { btn.disabled = false; btn.textContent = 'Upgrade Plan'; });
+            });
+            upgradeEl.appendChild(btn);
+          };
+          subscribeBilling(updateSidebarNotice);
+          updateSidebarNotice(getBillingState());
+        }
+      } catch (_) { /* ignore */ }
+
+      // Initial billing fetch (if session exists)
+      try {
+        const initSession = SupabaseClient.getSession();
+        if (initSession && initSession.access_token) {
+          refreshBilling({ force: false }).catch(() => {});
+        }
+      } catch (_) { /* ignore */ }
+
+      // Refresh billing on focus (throttled inside refreshBilling)
+      try {
+        window.addEventListener('focus', () => {
+          const s = SupabaseClient.getSession && SupabaseClient.getSession();
+          if (s && s.access_token) refreshBilling({ force: false }).catch(() => {});
+        });
+      } catch (_) { /* ignore */ }
+
+      // Handle Stripe return URL (?billing=success|cancel|portal_return)
+      try {
+        const billingParam = new URLSearchParams(window.location.search).get('billing');
+        if (billingParam) {
+          // Clean URL (remove billing param without reload)
+          const cleanUrl = new URL(window.location.href);
+          cleanUrl.searchParams.delete('billing');
+          window.history.replaceState({}, '', cleanUrl.toString());
+
+          if (billingParam === 'success') {
+            UIComponents.showToast('Payment successful! Your plan is being activated.', 'success', { title: 'Billing', duration: 8000 });
+            // Force refresh billing after a short delay (webhook may take a moment)
+            setTimeout(() => { refreshBilling({ force: true }).catch(() => {}); }, 2000);
+            setTimeout(() => { refreshBilling({ force: true }).catch(() => {}); }, 6000);
+          } else if (billingParam === 'cancel') {
+            UIComponents.showToast('Checkout was cancelled.', 'info', { title: 'Billing' });
+            refreshBilling({ force: true }).catch(() => {});
+          } else if (billingParam === 'portal_return') {
+            UIComponents.showToast('Billing updated. Syncing status\u2026', 'info', { title: 'Billing', duration: 6000 });
+            refreshBilling({ force: true }).catch(() => {});
+            setTimeout(() => { refreshBilling({ force: true }).catch(() => {}); }, 4000);
+          }
+        }
+      } catch (_) { /* ignore */ }
 
       let prevScreen = StateStore.get('currentScreen');
 

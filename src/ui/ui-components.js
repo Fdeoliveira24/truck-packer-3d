@@ -196,12 +196,11 @@ export function createUIComponents() {
     const wrap = document.createElement('div');
     wrap.className = 'dropdown-menu';
     // The stylesheet defines `.dropdown-menu` as `position:absolute` for inline dropdowns.
-    // For floating viewport-clamped dropdowns we make it participate in layout so the
-    // wrapper element has a measurable width/height.
-    wrap.style.position = 'static';
-    wrap.style.top = 'auto';
-    wrap.style.left = 'auto';
+    // For floating viewport-clamped dropdowns we keep it absolute but hide it while measuring.
+    wrap.style.top = '0';
+    wrap.style.left = '0';
     wrap.style.right = 'auto';
+    wrap.style.visibility = 'hidden';
 
     items.forEach(item => {
       if (item && item.type === 'header') {
@@ -288,7 +287,7 @@ export function createUIComponents() {
         iconRight.style.color = item.rightIconColor || 'var(--accent-primary)';
         if (item.rightOnClick) {
           iconRight.style.cursor = 'pointer';
-          iconRight.title = item.rightTitle ? String(item.rightTitle) : '';
+          iconRight.setAttribute('data-tooltip', item.rightTitle ? String(item.rightTitle) : '');
           iconRight.addEventListener('click', ev => {
             ev.stopPropagation();
             if (btn.disabled) return;
@@ -337,9 +336,11 @@ export function createUIComponents() {
       dropdown.style.overflowY = 'auto';
 
       // Measure after maxWidth/minWidth are applied.
-      const menuRect = dropdown.getBoundingClientRect();
-      const menuW = menuRect.width || preferredWidth;
-      const menuH = menuRect.height || 0;
+      const menuRect = wrap.getBoundingClientRect();
+      const menuW = Math.max(menuRect.width, wrap.scrollWidth || 0, preferredWidth);
+      const menuH = Math.max(menuRect.height, wrap.scrollHeight || 0, 0);
+      dropdown.style.width = `${Math.ceil(menuW)}px`;
+      dropdown.style.height = `${Math.ceil(menuH)}px`;
 
       // Default: open below the trigger.
       let top = rect.bottom + gap;
@@ -356,6 +357,7 @@ export function createUIComponents() {
     };
 
     positionDropdown();
+    wrap.style.visibility = 'visible';
     dropdown.style.visibility = 'visible';
     if (dropdownDocClickTimer) {
       window.clearTimeout(dropdownDocClickTimer);

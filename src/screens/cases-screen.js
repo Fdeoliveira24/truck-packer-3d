@@ -1146,7 +1146,7 @@ export function createCasesScreen({
           saveBtn.className = 'btn btn-ghost';
           saveBtn.classList.add('tp3d-cases-catmgr-btn-pad');
           saveBtn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i>';
-          saveBtn.title = 'Save changes';
+          saveBtn.setAttribute('data-tooltip', 'Save changes');
           saveBtn.addEventListener('click', () => {
             const renamed = CategoryService.rename(cat.key, name.value, color.value);
             renderList();
@@ -1160,7 +1160,7 @@ export function createCasesScreen({
             delBtn.className = 'btn btn-ghost';
             delBtn.classList.add('tp3d-cases-catmgr-btn-pad', 'tp3d-cases-catmgr-del-color');
             delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
-            delBtn.title = 'Delete category';
+            delBtn.setAttribute('data-tooltip', 'Delete category');
             delBtn.addEventListener('click', async () => {
               const ok = await UIComponents.confirm({
                 title: `Delete "${cat.name}"?`,

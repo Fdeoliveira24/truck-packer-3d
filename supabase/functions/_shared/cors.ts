@@ -1,36 +1,108 @@
-export const corsHeaders = (origin: string | null) => ({
-  "Access-Control-Allow-Origin": origin ?? "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, stripe-signature",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-  "Access-Control-Max-Age": "86400",
-});
+// supabase/functions/_shared/cors.ts
 
-export function getAllowedOrigin(req: Request): string | null {
-  const origin = req.headers.get("origin");
-  const allowed = (Deno.env.get("ALLOWED_ORIGINS") ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  if (!origin) return null;
-  if (allowed.length === 0) return origin; // dev fallback
-  return allowed.includes(origin) ? origin : null;
+function getEnv(name: string): string | null {
+  try {
+    return Deno.env.get(name) ?? null;
+  } catch {
+    return null;
+  }
 }
 
+const DEV_ORIGINS = new Set([
+  "http://127.0.0.1:5500",
+  "http://localhost:5500",
+  "http://127.0.0.1:3000",
+  "http://localhost:3000",
+]);
+
+function parseAllowedOrigins() {
+  const raw = getEnv("ALLOWED_ORIGINS");
+  const allowAll = !raw;
+  const list = raw
+    ? raw
+        .split(",")
+        .map(s => s.trim())
+        .filter(Boolean)
+    : [];
+
+  const allowed = new Set<string>([...list, ...DEV_ORIGINS]);
+  return { allowAll, allowed };
+}
+
+function getRequestOrigin(req: Request): string | null {
+  const origin = req.headers.get("origin");
+  if (!origin) return null;
+  const trimmed = origin.trim();
+  return trimmed || null;
+}
+
+export function getAllowedOrigin(req: Request): string | null {
+  const origin = getRequestOrigin(req);
+  const { allowAll, allowed } = parseAllowedOrigins();
+
+  if (!origin) return "*"; // non-browser callers
+  if (allowAll) return origin;
+  return allowed.has(origin) ? origin : null;
+}
+
+export function corsHeaders(req: Request): Record<string, string> {
+  const origin = getAllowedOrigin(req);
+  const allowOrigin = origin ?? "null";
+
+  return {
+    "Access-Control-Allow-Origin": allowOrigin,
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type, stripe-signature, x-user-jwt",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Max-Age": "86400",
+  };
+}
+
+/**
+ * Convenience JSON response builder used by checkout/portal/webhook functions.
+ * Usage: json({ ok: true }, { status: 200, origin })
+ */
 export function json(
   data: unknown,
-  init: ResponseInit & { origin?: string | null } = {},
-) {
-  const headers = new Headers(init.headers);
-  headers.set("content-type", "application/json; charset=utf-8");
-
-  const origin = init.origin ?? null;
-  const cors = corsHeaders(origin);
-  for (const [k, v] of Object.entries(cors)) headers.set(k, v);
-
-  return new Response(JSON.stringify(data, null, 2), {
-    ...init,
-    headers,
+  opts: { status?: number; origin?: string | null } = {},
+): Response {
+  const status = opts.status ?? 200;
+  const allowOrigin = opts.origin ?? "*";
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": allowOrigin ?? "null",
+      "Access-Control-Allow-Headers":
+        "authorization, x-client-info, apikey, content-type, stripe-signature, x-user-jwt",
+      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    },
   });
+}
+
+export function handleCors(req: Request): Response | null {
+  const origin = getAllowedOrigin(req);
+
+  if (req.method === "OPTIONS") {
+    if (origin === null) {
+      return new Response(JSON.stringify({ error: "Origin not allowed" }), {
+        status: 403,
+        headers: { ...corsHeaders(req), "content-type": "application/json" },
+      });
+    }
+
+    return new Response(null, {
+      status: 204,
+      headers: corsHeaders(req),
+    });
+  }
+
+  if (origin === null) {
+    return new Response(JSON.stringify({ error: "Origin not allowed" }), {
+      status: 403,
+      headers: { ...corsHeaders(req), "content-type": "application/json" },
+    });
+  }
+
+  return null;
 }

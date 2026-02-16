@@ -563,7 +563,7 @@ export function createPacksScreen({
         const truckLabel = formatTruckDims(pack.truck || {}, prefs.units.length);
         const statsLabel = formatPackStats(stats, prefs);
 
-        tdTitle.title = `${truckLabel}\n${statsLabel}`;
+        tdTitle.setAttribute('data-tooltip', `${truckLabel} · ${statsLabel}`);
         tdTitle.appendChild(titleWrap);
 
         const tdCases = document.createElement('td');
@@ -712,7 +712,7 @@ export function createPacksScreen({
 
         const title = document.createElement('h3');
         title.textContent = pack.title || 'Untitled Pack';
-        title.title = pack.title || 'Untitled Pack';
+        title.setAttribute('data-tooltip', pack.title || 'Untitled Pack');
         title.classList.add('tp3d-packs-card-title-truncate');
 
         const head = document.createElement('div');
@@ -879,7 +879,7 @@ export function createPacksScreen({
         cell.className = 'pack-preview-cell';
         const meta = CaseLibrary.getById(inst.caseId);
         if (meta && meta.color) cell.style.background = meta.color;
-        cell.title = meta ? meta.name : 'Case';
+        cell.setAttribute('data-tooltip', meta ? meta.name : 'Case');
         preview.appendChild(cell);
       });
       return preview;

@@ -38,6 +38,9 @@ export function createSceneRuntime({
     let axisScene = null;
     let axisCamera = null;
     let axisHelper = null;
+    let dirLight = null;
+    let cogMarker = null;
+    let environmentSize = 0;
     const perf = { lastTime: 0, lowMs: 0, perfMode: false, fps: 60 };
     let viewSize = { width: 1, height: 1 };
 
@@ -160,12 +163,14 @@ export function createSceneRuntime({
       refreshTheme();
 
       const { width, height } = getContainerSize();
-      camera = new THREE.PerspectiveCamera(50, width / height, 0.01, 5000);
-      camera.position.set(22, 16, 22);
+      camera = new THREE.PerspectiveCamera(40, width / height, 0.01, 5000);
+      camera.position.set(28, 18, 20);
 
       renderer = new THREE.WebGLRenderer({
         antialias: true,
-        alpha: false,
+        // Make the canvas alpha-enabled so we can render transparent overlay
+        // viewports (axis widget) without a solid background color.
+        alpha: true,
         powerPreference: 'high-performance',
       });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -173,6 +178,9 @@ export function createSceneRuntime({
       viewSize = { width, height };
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.15;
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
       containerEl.appendChild(renderer.domElement);
 
       controls = new THREE.OrbitControls(camera, renderer.domElement);
@@ -184,6 +192,7 @@ export function createSceneRuntime({
       controls.target.set(14, 2, 0);
 
       addLighting();
+      generateEnvironmentMap();
       addEnvironment();
       addAxisWidget();
 
@@ -201,42 +210,201 @@ export function createSceneRuntime({
     }
 
     function addLighting() {
-      const ambient = new THREE.AmbientLight(0xffffff, 0.62);
+      // Soft ambient base (lower intensity so directional lights define the form)
+      const ambient = new THREE.AmbientLight(0xf5f0eb, 0.45);
       scene.add(ambient);
 
-      const dir = new THREE.DirectionalLight(0xffffff, 0.9);
-      dir.position.set(30, 60, 25);
-      dir.castShadow = true;
-      dir.shadow.mapSize.width = 1024;
-      dir.shadow.mapSize.height = 1024;
-      dir.shadow.camera.left = -80;
-      dir.shadow.camera.right = 80;
-      dir.shadow.camera.top = 80;
-      dir.shadow.camera.bottom = -80;
-      scene.add(dir);
+      // Main key light (warm sunlight from upper-right-front)
+      dirLight = new THREE.DirectionalLight(0xfff4e0, 1.05);
+      dirLight.position.set(35, 55, 30);
+      dirLight.castShadow = true;
+      dirLight.shadow.mapSize.width = 2048;
+      dirLight.shadow.mapSize.height = 2048;
+      dirLight.shadow.bias = -0.00015;
+      dirLight.shadow.normalBias = 0.025;
+      dirLight.shadow.camera.left = -80;
+      dirLight.shadow.camera.right = 80;
+      dirLight.shadow.camera.top = 80;
+      dirLight.shadow.camera.bottom = -80;
+      dirLight.shadow.radius = 3;
+      scene.add(dirLight);
+      scene.add(dirLight.target);
 
-      const hemi = new THREE.HemisphereLight(0x87ceeb, 0x2d2d2d, 0.25);
+      // Fill light (cool blue-ish from opposite side, softer)
+      const fill = new THREE.DirectionalLight(0xc8d8f0, 0.35);
+      fill.position.set(-25, 20, -18);
+      scene.add(fill);
+
+      // Hemisphere sky/ground light for soft ambient bounce
+      const hemi = new THREE.HemisphereLight(0x9ec5e8, 0x5c4a32, 0.3);
       scene.add(hemi);
+
+      // Subtle back-rim light to separate objects from background
+      const rim = new THREE.DirectionalLight(0xffffff, 0.18);
+      rim.position.set(-15, 40, -30);
+      scene.add(rim);
     }
 
-    function addEnvironment() {
-      const groundGeo = new THREE.PlaneGeometry(260, 260);
-      const groundMat = new THREE.ShadowMaterial({ opacity: 0.18 });
+    function generateEnvironmentMap() {
+      // Create a simple procedural environment for subtle reflections on materials
+      if (!renderer || !scene) return;
+      try {
+        const pmremGen = new THREE.PMREMGenerator(renderer);
+        pmremGen.compileEquirectangularShader();
+        // Use a simple lit scene as environment
+        const envScene = new THREE.Scene();
+        envScene.background = new THREE.Color(0xe8e4df);
+        const envLight1 = new THREE.DirectionalLight(0xfff8f0, 0.8);
+        envLight1.position.set(1, 2, 1);
+        envScene.add(envLight1);
+        const envLight2 = new THREE.HemisphereLight(0x87ceeb, 0x3d3d2d, 0.6);
+        envScene.add(envLight2);
+        const envRT = pmremGen.fromScene(envScene, 0.04);
+        scene.environment = envRT.texture;
+        pmremGen.dispose();
+      } catch {
+        // Environment map is optional; ignore errors on weak hardware
+      }
+    }
+
+    function calcEnvironmentSize(lengthW, widthW) {
+      const base = Math.max(lengthW * 2.2, widthW * 6);
+      return Math.max(40, Math.ceil(base));
+    }
+
+    function rebuildEnvironment(size) {
+      if (!scene) return;
+      const prevGridVisible = grid ? grid.visible : true;
+      if (ground) {
+        scene.remove(ground);
+        disposeObject3D(ground);
+        ground = null;
+      }
+      if (grid) {
+        scene.remove(grid);
+        disposeObject3D(grid);
+        grid = null;
+      }
+      const groundGeo = new THREE.PlaneGeometry(size * 1.3, size * 1.3);
+      const groundMat = new THREE.ShadowMaterial({ opacity: 0.22 });
       ground = new THREE.Mesh(groundGeo, groundMat);
       ground.rotation.x = -Math.PI / 2;
       ground.receiveShadow = true;
       scene.add(ground);
 
-      grid = new THREE.GridHelper(220, 110);
+      const divisions = Math.max(10, Math.round(size / 5));
+      grid = new THREE.GridHelper(size, divisions);
       grid.name = 'grid';
+      grid.visible = prevGridVisible;
+      if (Array.isArray(grid.material)) {
+        grid.material.forEach(m => { m.transparent = true; m.opacity = 0.15; });
+      } else {
+        grid.material.transparent = true;
+        grid.material.opacity = 0.15;
+      }
       scene.add(grid);
+      environmentSize = size;
       refreshTheme();
+    }
+
+    function updateEnvironmentForTruck(truckInches) {
+      if (!truckInches) return;
+      const lengthW = toWorld(truckInches.length || 0);
+      const widthW = toWorld(truckInches.width || 0);
+      const nextSize = calcEnvironmentSize(lengthW, widthW);
+      if (!environmentSize || Math.abs(nextSize - environmentSize) > 0.5) {
+        rebuildEnvironment(nextSize);
+      }
+    }
+
+    function updateShadowBounds(lengthW, widthW, heightW) {
+      if (!dirLight) return;
+      const halfL = Math.max(0.1, lengthW / 2);
+      const halfW = Math.max(0.1, widthW / 2);
+      const halfH = Math.max(0.1, heightW / 2);
+      const radius = Math.sqrt(halfL * halfL + halfW * halfW + halfH * halfH);
+      const margin = Math.max(6, radius * 0.35);
+      const extent = radius + margin;
+      const cam = dirLight.shadow.camera;
+      cam.left = -extent;
+      cam.right = extent;
+      cam.top = extent;
+      cam.bottom = -extent;
+      cam.near = Math.max(1, extent * 0.1);
+      cam.far = Math.max(60, extent * 6);
+      cam.updateProjectionMatrix();
+      dirLight.target.position.set(lengthW / 2, Math.max(1, heightW / 2), 0);
+      dirLight.target.updateMatrixWorld();
+    }
+
+    function addEnvironment() {
+      const defaultSize = calcEnvironmentSize(toWorld(636), toWorld(102));
+      rebuildEnvironment(defaultSize);
     }
 
     function addAxisWidget() {
       axisScene = new THREE.Scene();
       axisCamera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
-      axisHelper = new THREE.AxesHelper(3.2);
+
+      // Build a richer axis gizmo: shaft lines + cone tips + text labels
+      axisHelper = new THREE.Group();
+      const shaftLen = 2.6;
+      const coneH = 0.6;
+      const coneR = 0.22;
+      const labelOffset = shaftLen + coneH + 0.45;
+
+      const axes = [
+        { dir: new THREE.Vector3(1, 0, 0), color: 0xf73b5c, label: 'x' }, // red-pink
+        { dir: new THREE.Vector3(0, 1, 0), color: 0x26c97a, label: 'y' }, // green
+        { dir: new THREE.Vector3(0, 0, 1), color: 0x3b9ef7, label: 'z' }, // blue
+      ];
+
+      for (const ax of axes) {
+        // Shaft line
+        const lineGeo = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(0, 0, 0),
+          ax.dir.clone().multiplyScalar(shaftLen),
+        ]);
+        const lineMat = new THREE.LineBasicMaterial({ color: ax.color, linewidth: 2 });
+        axisHelper.add(new THREE.Line(lineGeo, lineMat));
+
+        // Cone tip
+        const coneGeo = new THREE.ConeGeometry(coneR, coneH, 12);
+        const coneMat = new THREE.MeshBasicMaterial({ color: ax.color });
+        const cone = new THREE.Mesh(coneGeo, coneMat);
+        // Position cone at end of shaft; rotate so it points along the axis
+        const tipPos = ax.dir.clone().multiplyScalar(shaftLen + coneH / 2);
+        cone.position.copy(tipPos);
+        if (ax.label === 'x') cone.rotation.z = -Math.PI / 2;
+        if (ax.label === 'z') cone.rotation.x = Math.PI / 2;
+        // y-axis cone already points up by default
+        axisHelper.add(cone);
+
+        // Text label (canvas-based sprite)
+        const canvas = document.createElement('canvas');
+        canvas.width = 64;
+        canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, 64, 64);
+        ctx.font = 'bold 48px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#' + ax.color.toString(16).padStart(6, '0');
+        ctx.fillText(ax.label, 32, 32);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.minFilter = THREE.LinearFilter;
+        const spriteMat = new THREE.SpriteMaterial({ map: tex, depthTest: false, sizeAttenuation: false });
+        const sprite = new THREE.Sprite(spriteMat);
+        sprite.scale.set(0.12, 0.12, 1);
+        sprite.position.copy(ax.dir.clone().multiplyScalar(labelOffset));
+        axisHelper.add(sprite);
+      }
+
+      // Small central cube
+      const cubeGeo = new THREE.BoxGeometry(0.35, 0.35, 0.35);
+      const cubeMat = new THREE.MeshBasicMaterial({ color: 0xcccccc, transparent: true, opacity: 0.7 });
+      axisHelper.add(new THREE.Mesh(cubeGeo, cubeMat));
+
       axisScene.add(axisHelper);
     }
 
@@ -291,17 +459,42 @@ export function createSceneRuntime({
       renderer.setScissorTest(false);
       renderer.render(scene, camera);
 
-      // Axis widget render (top-right)
-      renderer.clearDepth();
-      const size = Math.max(90, Math.floor(Math.min(width, height) * 0.2));
-      const pad = 12;
+      // Axis widget render (bottom-right). Use a slightly larger square
+      // with a transparent clear so the axis gizmo never gets its corners
+      // clipped by the canvas edge.
+      const base = Math.max(80, Math.floor(Math.min(width, height) * 0.12));
+      const margin = 36; // extra pixels around the widget to avoid cropping
+      const size = base + margin;
+      const pad = 10;
       renderer.setScissorTest(true);
       renderer.setViewport(width - size - pad, pad, size, size);
       renderer.setScissor(width - size - pad, pad, size, size);
-      axisCamera.position.copy(camera.position).sub(controls.target).setLength(8);
+
+      // Prevent auto-clearing color in the axis viewport (which created the
+      // white box). Preserve main scene color; clear only depth manually.
+      const prevAutoClear = renderer.autoClear;
+      const prevAutoClearColor = renderer.autoClearColor;
+      const prevAutoClearDepth = renderer.autoClearDepth;
+      renderer.autoClear = false;
+      renderer.autoClearColor = false;
+      renderer.autoClearDepth = false;
+
+      renderer.clearDepth();
+      axisScene.background = null;
+      if (axisCamera && camera && axisCamera.fov !== camera.fov) {
+        axisCamera.fov = camera.fov;
+        axisCamera.updateProjectionMatrix();
+      }
+      // Move the axis camera further back to ensure tips/labels stay inside
+      axisCamera.position.copy(camera.position).sub(controls.target).setLength(12);
       axisCamera.lookAt(axisScene.position);
       renderer.render(axisScene, axisCamera);
+
+      renderer.autoClear = prevAutoClear;
+      renderer.autoClearColor = prevAutoClearColor;
+      renderer.autoClearDepth = prevAutoClearDepth;
       renderer.setScissorTest(false);
+      renderer.setViewport(0, 0, width, height);
     }
 
     function resize() {
@@ -317,29 +510,36 @@ export function createSceneRuntime({
 
     function refreshTheme() {
       if (!scene) return;
-      const bgHex = Utils.getCssVar('--bg-primary');
-      scene.background = new THREE.Color(Utils.cssHexToInt(bgHex));
+      const bg = Utils.getCssVar('--bg-primary') || '#0f0f10';
+      scene.background = new THREE.Color(bg);
       if (grid && grid.material) {
         const gridMat = grid.material;
-        const mainColor = new THREE.Color(Utils.cssHexToInt(Utils.getCssVar('--accent-primary')));
-        const subColor = new THREE.Color(Utils.cssHexToInt(Utils.getCssVar('--border-strong')));
+        const mainColor = new THREE.Color(Utils.getCssVar('--accent-primary') || '#ff9f1c');
+        const subColor = new THREE.Color(Utils.getCssVar('--border-strong') || '#2b2b2b');
         if (Array.isArray(gridMat)) {
-          if (gridMat[0]) gridMat[0].color = mainColor;
-          if (gridMat[1]) gridMat[1].color = subColor;
+          if (gridMat[0]) gridMat[0].color.set(mainColor);
+          if (gridMat[1]) gridMat[1].color.set(subColor);
         } else {
-          gridMat.color = subColor;
+          gridMat.color.set(subColor);
         }
       }
+    }
+
+    function disposeMaterial(mat) {
+      if (!mat) return;
+      const mats = Array.isArray(mat) ? mat : [mat];
+      mats.forEach(m => {
+        if (!m) return;
+        if (m.map && m.map.dispose) m.map.dispose();
+        if (m.dispose) m.dispose();
+      });
     }
 
     function disposeObject3D(root) {
       if (!root) return;
       root.traverse(obj => {
         if (obj.geometry) obj.geometry.dispose();
-        if (obj.material) {
-          if (Array.isArray(obj.material)) obj.material.forEach(m => m && m.dispose && m.dispose());
-          else obj.material.dispose();
-        }
+        if (obj.material) disposeMaterial(obj.material);
       });
     }
 
@@ -456,6 +656,8 @@ export function createSceneRuntime({
           new THREE.Vector3(lengthW, heightW, widthW / 2)
         );
         controls.target.set(lengthW / 2, Math.min(6, heightW / 2), 0);
+        updateShadowBounds(lengthW, widthW, heightW);
+        updateEnvironmentForTruck(truckInches);
         updateTrailerShapeGuides(truckInches);
         return;
       }
@@ -464,10 +666,7 @@ export function createSceneRuntime({
       if (truck) {
         clearTrailerShapeGuides();
         scene.remove(truck);
-        truck.traverse(obj => {
-          if (obj.geometry) obj.geometry.dispose();
-          if (obj.material) obj.material.dispose();
-        });
+        disposeObject3D(truck);
         truck = null;
       }
 
@@ -475,24 +674,48 @@ export function createSceneRuntime({
       truck.name = 'truck';
 
       const geo = new THREE.BoxGeometry(lengthW, heightW, widthW);
+      const accent = Utils.getCssVar('--accent-primary') || '#ff9f1c';
+
+      // Semi-transparent container walls with slight blue tint
       const mat = new THREE.MeshStandardMaterial({
-        color: new THREE.Color(Utils.cssHexToInt(Utils.getCssVar('--accent-primary'))),
+        color: new THREE.Color(0xd0dce6),
         transparent: true,
-        opacity: 0.09,
+        opacity: 0.08,
         side: THREE.DoubleSide,
+        roughness: 0.6,
+        metalness: 0.15,
+        depthWrite: false,
       });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set(lengthW / 2, heightW / 2, 0);
       mesh.receiveShadow = false;
       truck.add(mesh);
 
+      // Thicker, more visible container wireframe edges
       const edges = new THREE.EdgesGeometry(geo);
       const lineMat = new THREE.LineBasicMaterial({
-        color: new THREE.Color(Utils.cssHexToInt(Utils.getCssVar('--accent-primary'))),
+        color: new THREE.Color(accent),
+        transparent: true,
+        opacity: 0.92,
+        linewidth: 2,
       });
       const wire = new THREE.LineSegments(edges, lineMat);
       wire.position.copy(mesh.position);
       truck.add(wire);
+
+      // Plywood-colored floor with subtle ridged appearance
+      const floorGeo = new THREE.PlaneGeometry(lengthW, widthW);
+      const floorMat = new THREE.MeshStandardMaterial({
+        color: 0xa89070,
+        roughness: 0.92,
+        metalness: 0.0,
+        side: THREE.FrontSide,
+      });
+      const floor = new THREE.Mesh(floorGeo, floorMat);
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.set(lengthW / 2, 0.001, 0);
+      floor.receiveShadow = true;
+      truck.add(floor);
 
       scene.add(truck);
 
@@ -503,6 +726,8 @@ export function createSceneRuntime({
 
       // Move camera target near the center of the truck
       controls.target.set(lengthW / 2, Math.min(6, heightW / 2), 0);
+      updateShadowBounds(lengthW, widthW, heightW);
+      updateEnvironmentForTruck(truckInches);
       updateTrailerShapeGuides(truckInches);
     }
 
@@ -512,13 +737,19 @@ export function createSceneRuntime({
       const nextTarget = targetWorld.clone();
       const dir = camera.position.clone().sub(controls.target);
       const nextPos = nextTarget.clone().add(dir);
-      new TWEEN.Tween(controls.target)
+      const Tween = window.TWEEN || null;
+      if (!Tween) {
+        controls.target.copy(nextTarget);
+        camera.position.copy(nextPos);
+        return;
+      }
+      new Tween.Tween(controls.target)
         .to({ x: nextTarget.x, y: nextTarget.y, z: nextTarget.z }, duration)
-        .easing(TWEEN.Easing.Cubic.InOut)
+        .easing(Tween.Easing.Cubic.InOut)
         .start();
-      new TWEEN.Tween(camera.position)
+      new Tween.Tween(camera.position)
         .to({ x: nextPos.x, y: nextPos.y, z: nextPos.z }, duration)
-        .easing(TWEEN.Easing.Cubic.InOut)
+        .easing(Tween.Easing.Cubic.InOut)
         .start();
     }
 
@@ -534,8 +765,62 @@ export function createSceneRuntime({
 
     function toggleShadows() {
       if (!renderer) return false;
-      renderer.shadowMap.enabled = !renderer.shadowMap.enabled;
-      return renderer.shadowMap.enabled;
+      const enabled = !renderer.shadowMap.enabled;
+      renderer.shadowMap.enabled = enabled;
+      if (enabled) {
+        perf.perfMode = false;
+        perf.lowMs = 0;
+      }
+      return enabled;
+    }
+
+    function restoreShadows() {
+      if (!renderer) return false;
+      perf.perfMode = false;
+      perf.lowMs = 0;
+      renderer.shadowMap.enabled = true;
+      return true;
+    }
+
+    function updateCoG(cogData) {
+      if (!scene) return;
+      if (!cogData) {
+        if (cogMarker) {
+          scene.remove(cogMarker);
+          cogMarker.traverse(obj => {
+            if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) obj.material.dispose();
+          });
+          cogMarker = null;
+        }
+        return;
+      }
+      const pos = cogData.position;
+      const worldX = toWorld(pos.x);
+      const worldY = toWorld(pos.y);
+      const worldZ = toWorld(pos.z);
+      const color = cogData.status === 'ok' ? 0x00ff00 :
+        cogData.status === 'warning' ? 0xffaa00 : 0xff0000;
+      if (!cogMarker) {
+        cogMarker = new THREE.Group();
+        cogMarker.name = 'cog-marker';
+        const sphereGeo = new THREE.SphereGeometry(0.3, 16, 16);
+        const sphereMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8 });
+        const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+        const lineGeo = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(0, -50, 0),
+          new THREE.Vector3(0, 50, 0),
+        ]);
+        const lineMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.5 });
+        const line = new THREE.LineSegments(lineGeo, lineMat);
+        cogMarker.add(sphere);
+        cogMarker.add(line);
+        scene.add(cogMarker);
+      }
+      cogMarker.position.set(worldX, worldY, worldZ);
+      cogMarker.children.forEach(child => {
+        if (child.material) child.material.color.setHex(color);
+      });
     }
 
     return {
@@ -544,9 +829,11 @@ export function createSceneRuntime({
       refreshTheme,
       setTruck,
       updateTrailerShapeGuides,
+      updateCoG,
       focusOnWorldPoint,
       toggleGrid,
       toggleShadows,
+      restoreShadows,
       toggleDevOverlay: () => DevOverlay.toggle(),
       getScene: () => scene,
       getCamera: () => camera,

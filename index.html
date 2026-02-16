@@ -289,6 +289,10 @@
           </button>
         </nav>
 
+        <div id="upgradeCardWrap" class="tp3d-sidebar-upgrade-wrap" hidden>
+          <div id="tp3d-sidebar-upgrade" class="tp3d-sidebar-upgrade"></div>
+        </div>
+
         <div style="padding: var(--space-3)">
           <button class="btn" id="btn-account-switcher" type="button">
             <span style="display: flex; align-items: center; gap: var(--space-3); min-width: 0">
@@ -988,8 +992,14 @@
     <script>
       window.__TP3D_SUPABASE = {
         url: 'https://yduzbvijzwczjapanxbd.supabase.co',
-        anonKey: 'sb_publishable_pZ8LBlPGe8N_Ny_jp3CV1Q_s7D48jTC',
+        // IMPORTANT: Supabase anon public key (JWT string starting with "eyJ")
+        anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlkdXpidmlqendjemphcGFueGJkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg3ODMyMDQsImV4cCI6MjA4NDM1OTIwNH0.bbUvCW-UsT0pfSX1z2SUN6MIs4LO3tO87wuCZtdlOhg',
+        // Stripe publishable key (do NOT use as Supabase anon key)
+        publishableKey: 'sb_publishable_pZ8LBlPGe8N_Ny_jp3CV1Q_s7D48jTC',
       };
+      // Stripe price IDs (set these to your real Stripe test/live price IDs)
+      window.__TP3D_STRIPE_PRICE_MONTHLY = 'price_1Sz4prG4h8YnGsk4KLgYPRKD'; // e.g. 'price_xxxx'
+      window.__TP3D_STRIPE_PRICE_YEARLY = 'price_1Sz5GfG4h8YnGsk4sqWGQtAs';  // e.g. 'price_yyyy'
     </script>
 
     <script

@@ -42,6 +42,7 @@ export function createSettingsOverlay({
   PreferencesManager,
   Defaults: _Defaults,
   Utils,
+  getSceneManager,
   getAccountSwitcher,
   SupabaseClient,
   onExportApp: _onExportApp,
@@ -66,7 +67,7 @@ export function createSettingsOverlay({
   let warnedMissingModalRoot = false;
   let tabClickHandler = null;
 
-  const SETTINGS_TABS = new Set(['account', 'preferences', 'resources', 'org-general', 'org-billing']);
+  const SETTINGS_TABS = new Set(['account', 'preferences', 'resources', 'org-general', 'org-members', 'org-billing']);
   const TAB_STORAGE_KEY = 'tp3d:settings:activeTab';
   const SETTINGS_MODAL_ATTR = 'data-tp3d-settings-modal';
   const SETTINGS_INSTANCE_ATTR = 'data-tp3d-settings-instance';
@@ -86,6 +87,15 @@ export function createSettingsOverlay({
     } catch {
       // ignore
     }
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   function nextSettingsInstanceId() {
@@ -188,8 +198,19 @@ export function createSettingsOverlay({
   let isLoadingOrg = false;
   let isLoadingMembership = false; // Track membership loading
   let isSavingOrg = false;
+  let orgMembersData = null;
+  let isLoadingOrgMembers = false;
+  let orgMembersError = null;
+  let orgMembersRequestId = 0;
+  const orgMemberActions = new Set();
+  let lastOrgMembersOrgId = null;
   let lastKnownUserId = null;
   let lastBundleRefreshAt = 0;
+  let billingUnsubscribe = null;
+  let billingSubscriptionToken = 0;
+  let lastOrgLogoKey = null;
+  let lastOrgLogoUrl = null;
+  let lastOrgLogoExpiresAt = 0;
 
   // Account bundle loading state (single request for all account data)
   let isLoadingAccountBundle = false;
@@ -444,6 +465,110 @@ export function createSettingsOverlay({
     }
   }
 
+  async function loadOrgMembers(orgId) {
+    try {
+      if (typeof document !== 'undefined' && document.hidden === true) return null;
+    } catch {
+      // ignore
+    }
+    if (isLoadingOrgMembers || !orgId) return null;
+    const thisRequestId = ++orgMembersRequestId;
+    isLoadingOrgMembers = true;
+    orgMembersError = null;
+    try {
+      const members = await SupabaseClient.getOrganizationMembers(orgId);
+      if (thisRequestId !== orgMembersRequestId) return null;
+      orgMembersData = Array.isArray(members) ? members : [];
+      lastOrgMembersOrgId = String(orgId);
+      return orgMembersData;
+    } catch (err) {
+      if (thisRequestId !== orgMembersRequestId) return null;
+      orgMembersError = err;
+      orgMembersData = Array.isArray(orgMembersData) ? orgMembersData : [];
+      return null;
+    } finally {
+      if (thisRequestId === orgMembersRequestId) {
+        isLoadingOrgMembers = false;
+      }
+    }
+  }
+
+  function getMemberDisplayName(member) {
+    const profile = member && member.profile ? member.profile : null;
+    const displayName = profile && profile.display_name ? String(profile.display_name) : '';
+    const fullNameFromProfile = profile && profile.full_name ? String(profile.full_name) : '';
+    const firstName = profile && profile.first_name ? String(profile.first_name) : '';
+    const lastName = profile && profile.last_name ? String(profile.last_name) : '';
+    const fullName = `${firstName} ${lastName}`.trim();
+    if (displayName) return displayName;
+    if (fullNameFromProfile) return fullNameFromProfile;
+    if (fullName) return fullName;
+    if (profile && profile.email) return String(profile.email);
+    return member && member.user_id ? String(member.user_id) : 'Member';
+  }
+
+  function getMemberEmail(member) {
+    const profile = member && member.profile ? member.profile : null;
+    return profile && profile.email ? String(profile.email) : '';
+  }
+
+  async function updateMemberRole(orgId, member, nextRole, currentUserId, currentRole) {
+    if (!member || !member.user_id || !orgId) return null;
+    const userId = String(member.user_id);
+    if (orgMemberActions.has(userId)) return null;
+
+    orgMemberActions.add(userId);
+    const actionId = _tabState.lastActionId;
+    renderIfFresh(actionId, 'memberRole:update:begin');
+    try {
+      const updated = await SupabaseClient.updateOrganizationMemberRole(orgId, userId, nextRole);
+      if (updated && orgMembersData) {
+        orgMembersData = orgMembersData.map(m =>
+          m && m.user_id && String(m.user_id) === userId ? { ...m, role: updated.role } : m
+        );
+      }
+      if (currentUserId && currentUserId === userId && membershipData) {
+        membershipData = { ...membershipData, role: updated ? updated.role : membershipData.role };
+      }
+      UIComponents.showToast('Role updated', 'success');
+      renderIfFresh(actionId, 'memberRole:update');
+      return updated;
+    } catch (err) {
+      UIComponents.showToast(`Failed to update role: ${err && err.message ? err.message : err}`, 'error');
+      renderIfFresh(actionId, 'memberRole:update:error');
+      return null;
+    } finally {
+      orgMemberActions.delete(userId);
+      renderIfFresh(actionId, 'memberRole:update:done');
+    }
+  }
+
+  async function removeMember(orgId, member) {
+    if (!member || !member.user_id || !orgId) return false;
+    const userId = String(member.user_id);
+    if (orgMemberActions.has(userId)) return false;
+
+    orgMemberActions.add(userId);
+    const actionId = _tabState.lastActionId;
+    renderIfFresh(actionId, 'memberRemove:begin');
+    try {
+      await SupabaseClient.removeOrganizationMember(orgId, userId);
+      if (orgMembersData) {
+        orgMembersData = orgMembersData.filter(m => !(m && m.user_id && String(m.user_id) === userId));
+      }
+      UIComponents.showToast('Member removed', 'success');
+      renderIfFresh(actionId, 'memberRemove');
+      return true;
+    } catch (err) {
+      UIComponents.showToast(`Failed to remove member: ${err && err.message ? err.message : err}`, 'error');
+      renderIfFresh(actionId, 'memberRemove:error');
+      return false;
+    } finally {
+      orgMemberActions.delete(userId);
+      renderIfFresh(actionId, 'memberRemove:done');
+    }
+  }
+
   async function handleAvatarUpload(file) {
     const actionId = _tabState.lastActionId;
     isUploadingAvatar = true;
@@ -503,6 +628,14 @@ export function createSettingsOverlay({
   function close() {
     if (!settingsOverlay) return;
     isUploadingAvatar = false;
+    if (billingUnsubscribe) {
+      try {
+        billingUnsubscribe();
+      } catch {
+        // ignore
+      }
+      billingUnsubscribe = null;
+    }
     try {
       if (typeof unmountAccountButton === 'function') unmountAccountButton();
     } catch {
@@ -627,6 +760,14 @@ export function createSettingsOverlay({
       panelCount: counts ? counts.panelCount : 0,
     });
     debugTabSnapshot('setActiveTab');
+
+    // Billing tab should always refresh latest state
+    if (nextTab === 'org-billing') {
+      const api = getBillingApiSafely();
+      if (api && typeof api.refreshBilling === 'function') {
+        api.refreshBilling({ force: true }).catch(() => {});
+      }
+    }
   }
 
   function setActive(tab) {
@@ -1049,6 +1190,426 @@ export function createSettingsOverlay({
     container.appendChild(wrap);
   }
 
+  function getBillingApiSafely() {
+    try {
+      return typeof window !== 'undefined' ? window.__TP3D_BILLING || null : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function renderBillingInto(targetEl) {
+    if (!targetEl) return;
+    const api = getBillingApiSafely();
+    const fallbackState = {
+      ok: false,
+      loading: false,
+      plan: null,
+      status: null,
+      isActive: false,
+      isPro: false,
+      interval: null,
+      trialEndsAt: null,
+      currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
+      cancelAt: null,
+      error: null,
+      data: null,
+      lastFetchedAt: 0,
+    };
+
+    const state = (api && typeof api.getBillingState === 'function' ? api.getBillingState() : null) || fallbackState;
+    const loading = Boolean(state.loading);
+    const showSkeleton = loading && !state.lastFetchedAt;
+    const planText = loading ? 'Checking\u2026' : state.plan || 'Free';
+    const status = state.status ? String(state.status) : '';
+    const isTrial = status === 'trialing';
+    const isProOrTrial = state.isPro;
+    const interval = state.interval ? String(state.interval) : '';
+    const intervalLabel = interval === 'month' ? 'Monthly' : interval === 'year' ? 'Yearly' : null;
+    const cancelAtPeriodEnd = Boolean(state.cancelAtPeriodEnd);
+    const cancelAt = state.cancelAt ? String(state.cancelAt) : null;
+
+    // Compute trial days left
+    let trialDaysLeft = null;
+    if (state.trialEndsAt) {
+      try {
+        const endMs = new Date(state.trialEndsAt).getTime();
+        if (Number.isFinite(endMs)) {
+          trialDaysLeft = Math.max(0, Math.ceil((endMs - Date.now()) / (24 * 60 * 60 * 1000)));
+        }
+      } catch (_) { /* ignore */ }
+    }
+
+    const isDebug = (() => {
+      try {
+        return typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1';
+      } catch {
+        return false;
+      }
+    })();
+
+    // Build DOM
+    targetEl.textContent = '';
+
+    // --- Organization section ---
+    const orgName = orgData && orgData.name ? String(orgData.name) : 'Personal Workspace';
+
+    const orgSection = doc.createElement('div');
+    orgSection.className = 'tp3d-settings-billing';
+
+    const orgHeading = doc.createElement('div');
+    orgHeading.className = 'tp3d-settings-billing-title';
+    orgHeading.textContent = 'Organization';
+    orgSection.appendChild(orgHeading);
+
+    const orgRow = doc.createElement('div');
+    orgRow.className = 'tp3d-settings-row';
+
+    const orgLabel = doc.createElement('div');
+    orgLabel.className = 'tp3d-settings-row-label';
+    orgLabel.textContent = 'Organization';
+    orgRow.appendChild(orgLabel);
+
+    const orgValue = doc.createElement('div');
+    orgValue.className = 'row';
+
+    // Org logo: prefer logo_path (Supabase Storage signed URL), fallback avatar_url, else initials
+    const orgLogoPath = orgData && orgData.logo_path ? String(orgData.logo_path) : null;
+    const orgAvatarUrl = orgData && orgData.avatar_url ? String(orgData.avatar_url) : null;
+    const orgAvatarSafe = orgAvatarUrl && /^https?:\/\//i.test(orgAvatarUrl) ? orgAvatarUrl : null;
+
+    // Create initials avatar as default (may be replaced by img)
+    const orgAvatarEl = doc.createElement('span');
+    orgAvatarEl.className = 'tp3d-settings-account-avatar';
+    orgAvatarEl.style.cssText = 'background: var(--accent-primary); display: inline-flex; width: 28px; height: 28px; font-size: 12px;';
+    orgAvatarEl.textContent = orgName.charAt(0).toUpperCase();
+    const orgId = orgData && orgData.id ? String(orgData.id) : '';
+    const logoKey = orgId + '|' + (orgLogoPath || orgAvatarSafe || '');
+    const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
+      ? lastOrgLogoUrl
+      : null;
+    let avatarNode = orgAvatarEl;
+    if (cachedLogoSrc) {
+      const cachedImg = doc.createElement('img');
+      cachedImg.src = cachedLogoSrc;
+      cachedImg.alt = orgName;
+      cachedImg.width = 28;
+      cachedImg.height = 28;
+      cachedImg.style.cssText = 'border-radius: 50%; object-fit: cover;';
+      cachedImg.onerror = () => {
+        if (cachedImg.parentNode) cachedImg.parentNode.replaceChild(orgAvatarEl, cachedImg);
+        avatarNode = orgAvatarEl;
+      };
+      avatarNode = cachedImg;
+    }
+    orgValue.appendChild(avatarNode);
+
+    // Async: try to load logo image (signed URL or avatar_url)
+    if (orgLogoPath || orgAvatarSafe) {
+      const loadLogo = async () => {
+        let logoSrc = null;
+        if (orgLogoPath && SupabaseClient && typeof SupabaseClient.getOrgLogoUrl === 'function') {
+          logoSrc = await SupabaseClient.getOrgLogoUrl(orgLogoPath, orgData.updated_at || '');
+        }
+        if (!logoSrc && orgAvatarSafe) {
+          logoSrc = orgAvatarSafe;
+        }
+        if (!logoSrc) return;
+        if (logoKey) {
+          lastOrgLogoKey = logoKey;
+          lastOrgLogoUrl = logoSrc;
+          lastOrgLogoExpiresAt = Date.now() + 50000;
+        }
+
+        if (avatarNode && avatarNode.tagName === 'IMG' && avatarNode.src === logoSrc) return;
+
+        const orgImg = doc.createElement('img');
+        orgImg.src = logoSrc;
+        orgImg.alt = orgName;
+        orgImg.width = 28;
+        orgImg.height = 28;
+        orgImg.style.cssText = 'border-radius: 50%; object-fit: cover;';
+        orgImg.onload = function () {
+          if (avatarNode && avatarNode.parentNode) {
+            avatarNode.parentNode.replaceChild(orgImg, avatarNode);
+            avatarNode = orgImg;
+          }
+        };
+        orgImg.onerror = function () {
+          if (orgImg.parentNode) orgImg.parentNode.replaceChild(orgAvatarEl, orgImg);
+          avatarNode = orgAvatarEl;
+        };
+      };
+      loadLogo().catch(() => { /* keep initials */ });
+    }
+    const orgNameSpan = doc.createElement('span');
+    orgNameSpan.textContent = orgName;
+    orgValue.appendChild(orgNameSpan);
+    orgRow.appendChild(orgValue);
+
+    orgSection.appendChild(orgRow);
+
+    const orgDivider = doc.createElement('div');
+    orgDivider.className = 'tp3d-settings-org-divider';
+    orgSection.appendChild(orgDivider);
+
+    targetEl.appendChild(orgSection);
+
+    // --- Subscription section ---
+    const subSection = doc.createElement('div');
+    subSection.className = 'tp3d-settings-billing';
+
+    const subHeading = doc.createElement('div');
+    subHeading.className = 'tp3d-settings-billing-title';
+    subHeading.textContent = 'Subscription';
+    subSection.appendChild(subHeading);
+
+    // Current plan card
+    const planCard = doc.createElement('div');
+    planCard.className = 'card';
+
+    if (showSkeleton) {
+      const skeletonGroup = doc.createElement('div');
+      skeletonGroup.className = 'tp3d-skeleton-group';
+      skeletonGroup.innerHTML = `
+        <div class="tp3d-skeleton tp3d-skeleton-title"></div>
+        <div class="tp3d-skeleton tp3d-skeleton-short"></div>
+        <div class="tp3d-skeleton tp3d-skeleton-short"></div>
+      `;
+      planCard.appendChild(skeletonGroup);
+    } else if (state.error && !state.ok) {
+      const errMsg = doc.createElement('div');
+      errMsg.className = 'muted';
+      errMsg.textContent = 'Billing unavailable. The app continues to work normally.';
+      planCard.appendChild(errMsg);
+
+      const retryBtn = doc.createElement('button');
+      retryBtn.type = 'button';
+      retryBtn.className = 'btn';
+      retryBtn.textContent = 'Retry';
+      retryBtn.style.marginTop = 'var(--space-2)';
+      retryBtn.addEventListener('click', () => {
+        if (api && typeof api.refreshBilling === 'function') {
+          api.refreshBilling({ force: true }).catch(() => {});
+        }
+      });
+      planCard.appendChild(retryBtn);
+    } else {
+      // Plan header row
+      const planHeader = doc.createElement('div');
+      planHeader.className = 'row';
+
+      const planName = doc.createElement('div');
+      planName.className = 'tp3d-settings-billing-title';
+      if (isTrial) {
+        planName.textContent = 'Pro (Trial)';
+      } else if (isProOrTrial) {
+        planName.textContent = intervalLabel ? `Pro (${intervalLabel})` : 'Pro';
+      } else {
+        planName.textContent = 'Free';
+      }
+      planHeader.appendChild(planName);
+
+      const planBadge = doc.createElement('span');
+      planBadge.className = 'badge' + (isTrial ? ' badge--trial' : isProOrTrial ? ' badge--active' : ' badge--free');
+      planBadge.textContent = 'Current Plan';
+      planHeader.appendChild(planBadge);
+
+      if (trialDaysLeft !== null) {
+        const daysEl = doc.createElement('span');
+        daysEl.className = 'muted';
+        daysEl.textContent = trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '') + ' left';
+        planHeader.appendChild(daysEl);
+      }
+
+      planCard.appendChild(planHeader);
+
+      // Status / cancellation info
+      const statusLine = doc.createElement('div');
+      statusLine.className = 'muted';
+      statusLine.style.marginTop = 'var(--space-1)';
+
+      if (isTrial && state.trialEndsAt) {
+        const endDate = new Date(state.trialEndsAt);
+        statusLine.textContent = 'Trial ends on ' + (isNaN(endDate.getTime()) ? state.trialEndsAt : endDate.toLocaleDateString());
+      } else if (isProOrTrial && cancelAtPeriodEnd) {
+        const endValue = cancelAt || state.currentPeriodEnd;
+        if (endValue) {
+          const endDate = new Date(endValue);
+          statusLine.textContent = 'Pro ends on ' + (isNaN(endDate.getTime()) ? endValue : endDate.toLocaleDateString());
+        }
+      } else if (!isProOrTrial && status) {
+        statusLine.textContent = 'Status: ' + status.replace(/_/g, ' ');
+      }
+
+      if (statusLine.textContent) {
+        planCard.appendChild(statusLine);
+      }
+    }
+
+    subSection.appendChild(planCard);
+
+    // Upgrade CTA card (only if not pro/active)
+    if (!loading && !isProOrTrial) {
+      const ctaCard = doc.createElement('div');
+      ctaCard.className = 'card';
+
+      const ctaInfo = doc.createElement('div');
+      const ctaTitle = doc.createElement('div');
+      ctaTitle.className = 'tp3d-settings-billing-title';
+      ctaTitle.textContent = '\u26A1 Truck Packer Pro';
+      ctaInfo.appendChild(ctaTitle);
+      const ctaDesc = doc.createElement('div');
+      ctaDesc.className = 'muted';
+      ctaDesc.textContent = 'Subscribe to keep using truck packer after your free trial ends, cancel anytime.';
+      ctaInfo.appendChild(ctaDesc);
+      ctaCard.appendChild(ctaInfo);
+
+      const subBtn = doc.createElement('button');
+      subBtn.type = 'button';
+      subBtn.className = 'btn btn-primary';
+      subBtn.textContent = 'Subscribe';
+      subBtn.style.marginTop = 'var(--space-2)';
+      subBtn.addEventListener('click', () => {
+        if (!api || typeof api.startCheckout !== 'function') {
+          if (UIComponents) UIComponents.showToast('Checkout coming soon. Contact sales.', 'info', { title: 'Billing' });
+          return;
+        }
+        subBtn.disabled = true;
+        subBtn.textContent = 'Redirecting\u2026';
+        // Use monthly price by default; env var STRIPE_PRICE_PRO_MONTHLY must be set on server
+        const priceId = typeof window !== 'undefined' && window.__TP3D_STRIPE_PRICE_MONTHLY
+          ? String(window.__TP3D_STRIPE_PRICE_MONTHLY) : '';
+        if (!priceId) {
+          if (UIComponents) UIComponents.showToast('Stripe price not configured. Contact support.', 'warning', { title: 'Billing' });
+          subBtn.disabled = false;
+          subBtn.textContent = 'Subscribe';
+          return;
+        }
+        api.startCheckout(priceId).then((r) => {
+          if (!r.ok) {
+            if (UIComponents) UIComponents.showToast(r.error || 'Checkout failed', 'error', { title: 'Billing' });
+            subBtn.disabled = false;
+            subBtn.textContent = 'Subscribe';
+          }
+        }).catch(() => {
+          subBtn.disabled = false;
+          subBtn.textContent = 'Subscribe';
+        });
+      });
+      ctaCard.appendChild(subBtn);
+
+      subSection.appendChild(ctaCard);
+    }
+
+    // Manage subscription (for active paid users)
+    // Action buttons row
+    const actionsRow = doc.createElement('div');
+    actionsRow.className = 'row tp3d-billing-actions';
+
+    if (!showSkeleton && isProOrTrial && !isTrial && api && typeof api.openPortal === 'function') {
+      const manageBtn = doc.createElement('button');
+      manageBtn.type = 'button';
+      manageBtn.className = 'btn btn-secondary';
+      manageBtn.textContent = 'Manage';
+      manageBtn.disabled = loading;
+      manageBtn.addEventListener('click', () => {
+        manageBtn.disabled = true;
+        manageBtn.textContent = 'Redirecting\u2026';
+        api.openPortal().then((r) => {
+          if (!r.ok) {
+            if (UIComponents) UIComponents.showToast(r.error || 'Portal session failed', 'error', { title: 'Billing' });
+            manageBtn.disabled = false;
+            manageBtn.textContent = 'Manage';
+          }
+        }).catch(() => {
+          manageBtn.disabled = false;
+          manageBtn.textContent = 'Manage';
+        });
+      });
+      actionsRow.appendChild(manageBtn);
+    }
+
+    const refreshBtn = doc.createElement('button');
+    refreshBtn.type = 'button';
+    refreshBtn.className = 'btn btn-secondary';
+    refreshBtn.textContent = 'Refresh';
+    refreshBtn.disabled = loading;
+    refreshBtn.addEventListener('click', () => {
+      if (api && typeof api.refreshBilling === 'function') {
+        api.refreshBilling({ force: true }).catch(() => {});
+      }
+    });
+    actionsRow.appendChild(refreshBtn);
+    subSection.appendChild(actionsRow);
+
+    targetEl.appendChild(subSection);
+
+    // --- Debug diagnostics (dev only, inside <details>) ---
+    if (isDebug) {
+      const details = doc.createElement('details');
+      details.className = 'tp3d-settings-billing';
+
+      const summary = doc.createElement('summary');
+      summary.className = 'muted';
+      summary.textContent = 'Diagnostics';
+      summary.style.cssText = 'cursor: pointer; font-size: var(--text-sm);';
+      details.appendChild(summary);
+
+      const lastEl = doc.createElement('div');
+      lastEl.className = 'muted';
+      lastEl.textContent = 'Last fetched: ' + (state.lastFetchedAt ? new Date(state.lastFetchedAt).toLocaleString() : 'never');
+      details.appendChild(lastEl);
+
+      if (state.error) {
+        const errEl = doc.createElement('div');
+        errEl.className = 'muted';
+        errEl.textContent = 'Error: ' + (typeof state.error === 'string' ? state.error : state.error.message || String(state.error));
+        details.appendChild(errEl);
+      }
+
+      const pre = doc.createElement('pre');
+      pre.style.cssText = 'max-height: 220px; overflow: auto; background: var(--bg-hover); padding: 8px; border-radius: 8px; font-size: 11px; margin-top: var(--space-2);';
+      pre.textContent = JSON.stringify(state, null, 2);
+      details.appendChild(pre);
+
+      targetEl.appendChild(details);
+    }
+  }
+
+  function ensureBillingSubscription() {
+    const api = getBillingApiSafely();
+    if (!api || typeof api.subscribeBilling !== 'function') return;
+    if (billingUnsubscribe) return;
+
+    billingSubscriptionToken += 1;
+    const currentToken = billingSubscriptionToken;
+    const maybeUnsub = api.subscribeBilling(() => {
+      // Always target the latest wrap if the DOM was re-rendered
+      const wrap = doc.getElementById('tp3d-billing-wrap');
+      if (!wrap) return;
+      try {
+        renderBillingInto(wrap);
+      } catch (err) {
+        debug('billing render failed', { err, token: currentToken });
+      }
+    });
+
+    billingUnsubscribe = typeof maybeUnsub === 'function'
+      ? () => {
+          try {
+            maybeUnsub();
+          } catch {
+            // ignore
+          }
+          billingUnsubscribe = null;
+        }
+      : () => {
+          billingUnsubscribe = null;
+        };
+  }
+
   function render() {
     if (!settingsOverlay) {
       return null;
@@ -1060,6 +1621,10 @@ export function createSettingsOverlay({
 
     // Left: account switcher button
     const userView = getCurrentUserView();
+    const hasOrg = Boolean(membershipData && membershipData.organization_id);
+    if (!hasOrg && (_tabState.activeTabId === 'org-members' || _tabState.activeTabId === 'org-billing')) {
+      _tabState.activeTabId = 'org-general';
+    }
     const accountBtn = doc.createElement('button');
     accountBtn.type = 'button';
     accountBtn.className = 'btn';
@@ -1135,9 +1700,14 @@ export function createSettingsOverlay({
     navWrap.appendChild(
       makeItem({ key: 'org-general', label: 'General', icon: 'fa-regular fa-building', indent: true })
     );
-    navWrap.appendChild(
-      makeItem({ key: 'org-billing', label: 'Billing', icon: 'fa-regular fa-credit-card', indent: true })
-    );
+    if (hasOrg) {
+      navWrap.appendChild(
+        makeItem({ key: 'org-members', label: 'Members', icon: 'fa-regular fa-users', indent: true })
+      );
+      navWrap.appendChild(
+        makeItem({ key: 'org-billing', label: 'Billing', icon: 'fa-regular fa-credit-card', indent: true })
+      );
+    }
     settingsLeftPane.appendChild(navWrap);
 
     // Right: header
@@ -1203,6 +1773,11 @@ export function createSettingsOverlay({
             title: 'Organization',
             helper: 'View workspace details and role.',
           };
+        case 'org-members':
+          return {
+            title: 'Members',
+            helper: 'Manage workspace members and roles.',
+          };
         case 'org-billing':
           return {
             title: 'Billing',
@@ -1227,7 +1802,7 @@ export function createSettingsOverlay({
       backBtn.type = 'button';
       backBtn.className = 'btn btn-ghost';
       backBtn.innerHTML = '<i class="fa-solid fa-arrow-left"></i>';
-      backBtn.title = 'Back to Resources';
+      backBtn.setAttribute('data-tooltip', 'Back to Resources');
       backBtn.addEventListener('click', () => setResourcesSubView('root'));
       headerLeft.appendChild(backBtn);
     }
@@ -1324,6 +1899,53 @@ export function createSettingsOverlay({
       body.appendChild(row('Hidden Case Opacity', hiddenOpacity));
       body.appendChild(row('Label Font Size', labelSize));
       body.appendChild(row('Theme', theme));
+
+      const showShadowControls = false;
+      if (showShadowControls) {
+        const sceneManager = typeof getSceneManager === 'function' ? getSceneManager() : null;
+        const renderer = sceneManager && typeof sceneManager.getRenderer === 'function' ? sceneManager.getRenderer() : null;
+        const perf = sceneManager && typeof sceneManager.getPerf === 'function' ? sceneManager.getPerf() : null;
+        const hasRenderer = Boolean(renderer && renderer.shadowMap);
+        const shadowsEnabled = hasRenderer && renderer.shadowMap.enabled;
+        const perfMode = Boolean(perf && perf.perfMode);
+
+        const shadowRow = doc.createElement('div');
+        shadowRow.className = 'row';
+        shadowRow.style.gap = 'var(--space-2)';
+        shadowRow.style.alignItems = 'center';
+
+        const shadowStatus = doc.createElement('div');
+        shadowStatus.className = 'muted';
+        shadowStatus.style.fontSize = 'var(--text-sm)';
+        shadowStatus.textContent = !hasRenderer
+          ? 'Unavailable'
+          : shadowsEnabled
+            ? 'Enabled'
+            : perfMode
+              ? 'Disabled (performance mode)'
+              : 'Disabled';
+
+        const restoreBtn = doc.createElement('button');
+        restoreBtn.type = 'button';
+        restoreBtn.className = 'btn btn-ghost';
+        restoreBtn.textContent = 'Restore shadows';
+        restoreBtn.disabled = !sceneManager || !hasRenderer || shadowsEnabled === true;
+        restoreBtn.addEventListener('click', () => {
+          if (!sceneManager || typeof sceneManager.restoreShadows !== 'function') return;
+          const ok = sceneManager.restoreShadows();
+          if (ok) {
+            shadowStatus.textContent = 'Enabled';
+            restoreBtn.disabled = true;
+            UIComponents.showToast('Shadows restored', 'success', { title: 'View', duration: 1600 });
+          } else {
+            UIComponents.showToast('Shadows unavailable', 'warning', { title: 'View', duration: 1600 });
+          }
+        });
+
+        shadowRow.appendChild(shadowStatus);
+        shadowRow.appendChild(restoreBtn);
+        body.appendChild(row('Shadows', shadowRow));
+      }
 
       const actions = doc.createElement('div');
       actions.className = 'row';
@@ -1425,46 +2047,48 @@ export function createSettingsOverlay({
         avatarPreview.textContent = accountUserView.initials || '';
       }
 
-      const avatarButtons = doc.createElement('div');
-      avatarButtons.className = 'tp3d-account-avatar-buttons';
-
-      const uploadBtn = doc.createElement('button');
-      uploadBtn.type = 'button';
-      uploadBtn.className = 'btn btn-secondary';
-      uploadBtn.textContent = profileData && profileData.avatar_url ? 'Change Avatar' : 'Upload Avatar';
-      uploadBtn.disabled = !accountUserView.isAuthed || isUploadingAvatar;
-
-      const fileInput = doc.createElement('input');
-      fileInput.type = 'file';
-      fileInput.accept = 'image/png,image/jpeg,image/jpg,image/webp';
-      fileInput.setAttribute('aria-hidden', 'true');
-      fileInput.classList.add('visually-hidden');
-
-      uploadBtn.addEventListener('click', () => fileInput.click());
-      fileInput.addEventListener('change', async e => {
-        const inputEl = /** @type {HTMLInputElement|null} */ (e.target);
-        const file = inputEl && inputEl.files ? inputEl.files[0] : null;
-        if (file) {
-          await handleAvatarUpload(file);
-          fileInput.value = '';
-        }
-      });
-
-      avatarButtons.appendChild(uploadBtn);
-
-      if (profileData && profileData.avatar_url) {
-        const removeBtn = doc.createElement('button');
-        removeBtn.type = 'button';
-        removeBtn.className = 'btn btn-ghost';
-        removeBtn.textContent = 'Remove';
-        removeBtn.disabled = !accountUserView.isAuthed || isUploadingAvatar;
-        removeBtn.addEventListener('click', () => handleAvatarRemove());
-        avatarButtons.appendChild(removeBtn);
-      }
-
       avatarContainer.appendChild(avatarPreview);
-      avatarContainer.appendChild(avatarButtons);
-      avatarContainer.appendChild(fileInput);
+      if (isEditingProfile) {
+        const avatarButtons = doc.createElement('div');
+        avatarButtons.className = 'tp3d-account-avatar-buttons';
+
+        const uploadBtn = doc.createElement('button');
+        uploadBtn.type = 'button';
+        uploadBtn.className = 'btn btn-secondary';
+        uploadBtn.textContent = profileData && profileData.avatar_url ? 'Change Avatar' : 'Upload Avatar';
+        uploadBtn.disabled = !accountUserView.isAuthed || isUploadingAvatar;
+
+        const fileInput = doc.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = 'image/png,image/jpeg,image/jpg,image/webp';
+        fileInput.setAttribute('aria-hidden', 'true');
+        fileInput.classList.add('visually-hidden');
+
+        uploadBtn.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', async e => {
+          const inputEl = /** @type {HTMLInputElement|null} */ (e.target);
+          const file = inputEl && inputEl.files ? inputEl.files[0] : null;
+          if (file) {
+            await handleAvatarUpload(file);
+            fileInput.value = '';
+          }
+        });
+
+        avatarButtons.appendChild(uploadBtn);
+
+        if (profileData && profileData.avatar_url) {
+          const removeBtn = doc.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.className = 'btn btn-ghost';
+          removeBtn.textContent = 'Remove';
+          removeBtn.disabled = !accountUserView.isAuthed || isUploadingAvatar;
+          removeBtn.addEventListener('click', () => handleAvatarRemove());
+          avatarButtons.appendChild(removeBtn);
+        }
+
+        avatarContainer.appendChild(avatarButtons);
+        avatarContainer.appendChild(fileInput);
+      }
       avatarSection.appendChild(avatarContainer);
       body.appendChild(avatarSection);
 
@@ -1954,6 +2578,99 @@ export function createSettingsOverlay({
           return field;
         };
 
+        const logoCell = doc.createElement('div');
+        logoCell.className = 'row';
+
+        const logoPreview = doc.createElement('span');
+        logoPreview.className = 'tp3d-settings-account-avatar';
+        logoPreview.style.cssText = 'background: var(--accent-primary); display: inline-flex; width: 40px; height: 40px; font-size: 16px;';
+        logoPreview.textContent = (orgData.name || 'W').charAt(0).toUpperCase();
+        const orgId = orgData && orgData.id ? String(orgData.id) : '';
+        const orgLogoPath2 = orgData.logo_path ? String(orgData.logo_path) : null;
+        const orgAvatarUrl2 = orgData.avatar_url ? String(orgData.avatar_url) : null;
+        const logoKey = orgId + '|' + (orgLogoPath2 || orgAvatarUrl2 || '');
+        const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
+          ? lastOrgLogoUrl
+          : null;
+        let logoNode = logoPreview;
+        if (cachedLogoSrc) {
+          const cachedImg = doc.createElement('img');
+          cachedImg.src = cachedLogoSrc;
+          cachedImg.alt = orgData.name || 'Logo';
+          cachedImg.width = 40;
+          cachedImg.height = 40;
+          cachedImg.style.cssText = 'border-radius: 50%; object-fit: cover;';
+          cachedImg.onerror = () => {
+            if (cachedImg.parentNode) cachedImg.parentNode.replaceChild(logoPreview, cachedImg);
+            logoNode = logoPreview;
+          };
+          logoNode = cachedImg;
+        }
+        logoCell.appendChild(logoNode);
+
+        if (orgLogoPath2 || orgAvatarUrl2) {
+          const loadLogo2 = async () => {
+            let src = null;
+            if (orgLogoPath2 && SupabaseClient && typeof SupabaseClient.getOrgLogoUrl === 'function') {
+              src = await SupabaseClient.getOrgLogoUrl(orgLogoPath2, orgData.updated_at || '');
+            }
+            if (!src && orgAvatarUrl2 && /^https?:\/\//i.test(orgAvatarUrl2)) src = orgAvatarUrl2;
+            if (!src) return;
+            if (logoKey) {
+              lastOrgLogoKey = logoKey;
+              lastOrgLogoUrl = src;
+              lastOrgLogoExpiresAt = Date.now() + 50000;
+            }
+            if (logoNode && logoNode.tagName === 'IMG' && logoNode.src === src) return;
+            const img = doc.createElement('img');
+            img.src = src;
+            img.alt = orgData.name || 'Logo';
+            img.width = 40;
+            img.height = 40;
+            img.style.cssText = 'border-radius: 50%; object-fit: cover;';
+            img.onload = () => {
+              if (logoNode && logoNode.parentNode) {
+                logoNode.parentNode.replaceChild(img, logoNode);
+                logoNode = img;
+              }
+            };
+            img.onerror = () => {
+              if (img.parentNode) img.parentNode.replaceChild(logoPreview, img);
+              logoNode = logoPreview;
+            };
+          };
+          loadLogo2().catch(() => {});
+        }
+
+        const logoInput = doc.createElement('input');
+        logoInput.type = 'file';
+        logoInput.accept = 'image/png,image/jpeg,image/webp';
+        logoInput.style.display = 'none';
+        logoInput.addEventListener('change', () => {
+          const f = logoInput.files && logoInput.files[0];
+          if (!f || !membershipData || !membershipData.organization_id) return;
+          const orgIdLocal = membershipData.organization_id;
+          UIComponents.showToast('Uploading logo…', 'info', { title: 'Organization' });
+          SupabaseClient.uploadOrgLogo(orgIdLocal, f)
+            .then(() => {
+              UIComponents.showToast('Logo updated', 'success');
+              return loadOrganization(orgIdLocal);
+            })
+            .then(() => render())
+            .catch(err => {
+              UIComponents.showToast('Upload failed: ' + (err && err.message ? err.message : err), 'error');
+            });
+        });
+        logoCell.appendChild(logoInput);
+
+        const changeBtn = doc.createElement('button');
+        changeBtn.type = 'button';
+        changeBtn.className = 'btn';
+        changeBtn.textContent = 'Change Logo';
+        changeBtn.addEventListener('click', () => logoInput.click());
+        logoCell.appendChild(changeBtn);
+
+        form.appendChild(orgRow('Logo', logoCell));
         form.appendChild(makeField('Name', 'name', orgData.name || '', 'Organization name'));
         form.appendChild(makeField('Phone', 'phone', orgData.phone || '', '+1 (555) 000-0000'));
         form.appendChild(makeField('Address Line 1', 'address_line1', orgData.address_line1 || '', 'Street address'));
@@ -2018,8 +2735,33 @@ export function createSettingsOverlay({
 
           const noOrgEl = doc.createElement('div');
           noOrgEl.className = 'muted';
-          noOrgEl.textContent = 'No workspace found for this account.';
+          noOrgEl.textContent = 'Create a workspace to manage organization details.';
           wrap.appendChild(noOrgEl);
+
+          const createBtn = doc.createElement('button');
+          createBtn.type = 'button';
+          createBtn.className = 'btn btn-primary';
+          createBtn.textContent = '+ New Workspace';
+          createBtn.addEventListener('click', () => {
+            const name = window.prompt('Workspace name:');
+            if (!name || !name.trim()) return;
+            createBtn.disabled = true;
+            createBtn.textContent = 'Creating\u2026';
+            SupabaseClient.createOrganization({ name: name.trim() })
+              .then(({ org, membership }) => {
+                membershipData = membership;
+                orgData = org;
+                if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
+                UIComponents.showToast('Workspace created!', 'success');
+                render();
+              })
+              .catch(err => {
+                UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
+                createBtn.disabled = false;
+                createBtn.textContent = '+ New Workspace';
+              });
+          });
+          wrap.appendChild(createBtn);
 
           const retryRow = doc.createElement('div');
           retryRow.style.display = 'flex';
@@ -2052,6 +2794,74 @@ export function createSettingsOverlay({
           wrap.appendChild(retryRow);
           viewContainer.appendChild(wrap);
         } else if (orgData) {
+          // Org logo row (display only)
+          const logoCell = doc.createElement('div');
+          logoCell.className = 'row';
+
+          const logoPreview = doc.createElement('span');
+          logoPreview.className = 'tp3d-settings-account-avatar';
+          logoPreview.style.cssText = 'background: var(--accent-primary); display: inline-flex; width: 40px; height: 40px; font-size: 16px;';
+          logoPreview.textContent = (orgData.name || 'W').charAt(0).toUpperCase();
+          const orgId = orgData && orgData.id ? String(orgData.id) : '';
+          const orgLogoPath2 = orgData.logo_path ? String(orgData.logo_path) : null;
+          const orgAvatarUrl2 = orgData.avatar_url ? String(orgData.avatar_url) : null;
+          const logoKey = orgId + '|' + (orgLogoPath2 || orgAvatarUrl2 || '');
+          const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
+            ? lastOrgLogoUrl
+            : null;
+          let logoNode = logoPreview;
+          if (cachedLogoSrc) {
+            const cachedImg = doc.createElement('img');
+            cachedImg.src = cachedLogoSrc;
+            cachedImg.alt = orgData.name || 'Logo';
+            cachedImg.width = 40;
+            cachedImg.height = 40;
+            cachedImg.style.cssText = 'border-radius: 50%; object-fit: cover;';
+            cachedImg.onerror = () => {
+              if (cachedImg.parentNode) cachedImg.parentNode.replaceChild(logoPreview, cachedImg);
+              logoNode = logoPreview;
+            };
+            logoNode = cachedImg;
+          }
+          logoCell.appendChild(logoNode);
+
+          // Async load logo image if available
+          if (orgLogoPath2 || orgAvatarUrl2) {
+            const loadLogo2 = async () => {
+              let src = null;
+              if (orgLogoPath2 && SupabaseClient && typeof SupabaseClient.getOrgLogoUrl === 'function') {
+                src = await SupabaseClient.getOrgLogoUrl(orgLogoPath2, orgData.updated_at || '');
+              }
+              if (!src && orgAvatarUrl2 && /^https?:\/\//i.test(orgAvatarUrl2)) src = orgAvatarUrl2;
+              if (!src) return;
+              if (logoKey) {
+                lastOrgLogoKey = logoKey;
+                lastOrgLogoUrl = src;
+                lastOrgLogoExpiresAt = Date.now() + 50000;
+              }
+              if (logoNode && logoNode.tagName === 'IMG' && logoNode.src === src) return;
+              const img = doc.createElement('img');
+              img.src = src;
+              img.alt = orgData.name || 'Logo';
+              img.width = 40;
+              img.height = 40;
+              img.style.cssText = 'border-radius: 50%; object-fit: cover;';
+              img.onload = () => {
+                if (logoNode && logoNode.parentNode) {
+                  logoNode.parentNode.replaceChild(img, logoNode);
+                  logoNode = img;
+                }
+              };
+              img.onerror = () => {
+                if (img.parentNode) img.parentNode.replaceChild(logoPreview, img);
+                logoNode = logoPreview;
+              };
+            };
+            loadLogo2().catch(() => {});
+          }
+
+          viewContainer.appendChild(orgRow('Logo', logoCell));
+
           viewContainer.appendChild(
             orgRow(
               'Name',
@@ -2145,25 +2955,245 @@ export function createSettingsOverlay({
       }
 
       body.appendChild(orgCard);
+    } else if (_tabState.activeTabId === 'org-members') {
+      const orgUserView = getCurrentUserView(profileData);
+      const orgId = membershipData && membershipData.organization_id ? String(membershipData.organization_id) : null;
+      const currentUserId = orgUserView && orgUserView.userId ? String(orgUserView.userId) : null;
+      const currentRole = membershipData && membershipData.role ? String(membershipData.role) : null;
+      const isOwner = currentRole === 'owner';
+      const isAdmin = currentRole === 'admin';
+      const canManage = isOwner || isAdmin;
+      const canManageAdmins = isOwner;
+
+      const membersCard = doc.createElement('div');
+      membersCard.className = 'card tp3d-settings-card-max';
+
+      if (!orgUserView.isAuthed) {
+        const msg = doc.createElement('div');
+        msg.className = 'muted';
+        msg.textContent = 'Sign in to manage workspace members.';
+        membersCard.appendChild(msg);
+        body.appendChild(membersCard);
+      } else if (!orgId) {
+        const msg = doc.createElement('div');
+        msg.className = 'muted';
+        msg.textContent = 'Create or join a workspace to manage members.';
+        membersCard.appendChild(msg);
+        body.appendChild(membersCard);
+      } else {
+        if (lastOrgMembersOrgId && String(lastOrgMembersOrgId) !== String(orgId)) {
+          orgMembersData = null;
+          orgMembersError = null;
+        }
+
+        const rolesHelp = doc.createElement('div');
+        rolesHelp.className = 'muted tp3d-role-help';
+        rolesHelp.textContent =
+          'Workspace Owners and Workspace Admins can assign and update roles. Roles available in a workspace depend on the plan and enabled features.';
+        membersCard.appendChild(rolesHelp);
+
+        if (!orgMembersData && !isLoadingOrgMembers) {
+          const actionId = _tabState.lastActionId;
+          loadOrgMembers(orgId)
+            .then(() => renderIfFresh(actionId, 'org-members'))
+            .catch(() => {});
+        }
+
+        if (isLoadingOrgMembers && !orgMembersData) {
+          const skeletonGroup = doc.createElement('div');
+          skeletonGroup.className = 'tp3d-skeleton-group';
+          skeletonGroup.innerHTML = `
+            <div class="tp3d-skeleton tp3d-skeleton-short"></div>
+            <div class="tp3d-skeleton tp3d-skeleton-short"></div>
+            <div class="tp3d-skeleton tp3d-skeleton-short"></div>
+          `;
+          membersCard.appendChild(skeletonGroup);
+          body.appendChild(membersCard);
+        } else if (orgMembersError) {
+          const msg = doc.createElement('div');
+          msg.className = 'muted';
+          msg.textContent = 'Failed to load members. Please try again.';
+
+          const retryRow = doc.createElement('div');
+          retryRow.className = 'row';
+
+          const retryBtn = doc.createElement('button');
+          retryBtn.type = 'button';
+          retryBtn.className = 'btn btn-ghost';
+          retryBtn.textContent = 'Retry';
+          retryBtn.addEventListener('click', () => {
+            if (isLoadingOrgMembers) return;
+            const actionId = _tabState.lastActionId;
+            loadOrgMembers(orgId)
+              .then(() => renderIfFresh(actionId, 'org-members'))
+              .catch(() => {});
+          });
+
+          retryRow.appendChild(retryBtn);
+          membersCard.appendChild(msg);
+          membersCard.appendChild(retryRow);
+          body.appendChild(membersCard);
+        } else {
+          const members = Array.isArray(orgMembersData) ? orgMembersData : [];
+          const ownersCount = members.filter(m => m && m.role === 'owner').length;
+
+          if (members.length === 0) {
+            const msg = doc.createElement('div');
+            msg.className = 'muted';
+            msg.textContent = 'No members found for this workspace.';
+            membersCard.appendChild(msg);
+            body.appendChild(membersCard);
+          } else {
+            const list = doc.createElement('div');
+            list.className = 'tp3d-org-members-list';
+
+            members.forEach(member => {
+              if (!member || !member.user_id) return;
+              const userId = String(member.user_id);
+              const role = member.role ? String(member.role) : 'member';
+              const isSelf = currentUserId && currentUserId === userId;
+              const isOwnerMember = role === 'owner';
+              const isAdminMember = role === 'admin';
+              const isLastOwner = isOwnerMember && ownersCount <= 1;
+              const isBusy = orgMemberActions.has(userId);
+
+              let canEditRole = canManage && !isBusy;
+              if (!canManageAdmins && (isOwnerMember || isAdminMember)) canEditRole = false;
+              if (isSelf && isLastOwner) canEditRole = false;
+
+              let canRemove = canManage && !isBusy;
+              if (isSelf) canRemove = false;
+              if (isOwnerMember && ownersCount <= 1) canRemove = false;
+              if (!canManageAdmins && (isOwnerMember || isAdminMember)) canRemove = false;
+
+              let roleDisableReason = '';
+              if (!canEditRole) {
+                if (!canManage) {roleDisableReason = 'Only owners and admins can change roles.';}
+                else if (!canManageAdmins && (isOwnerMember || isAdminMember))
+                  {roleDisableReason = 'Only owners can change admin/owner roles.';}
+                else if (isSelf && isLastOwner) {roleDisableReason = 'You cannot change the last owner role.';}
+                else if (isSelf) {roleDisableReason = 'You cannot change your own role.';}
+              }
+
+              let removeDisableReason = '';
+              if (!canRemove) {
+                if (isSelf) {removeDisableReason = 'You cannot remove yourself.';}
+                else if (isOwnerMember && ownersCount <= 1) {removeDisableReason = 'You cannot remove the last owner.';}
+                else if (!canManage) {removeDisableReason = 'Only owners and admins can remove members.';}
+                else if (!canManageAdmins && (isOwnerMember || isAdminMember))
+                  {removeDisableReason = 'Only owners can remove admins/owners.';}
+              }
+
+              const rowEl = doc.createElement('div');
+              rowEl.className = 'tp3d-org-member-row';
+
+              const meta = doc.createElement('div');
+              meta.className = 'tp3d-org-member-meta';
+              const nameRow = doc.createElement('div');
+              nameRow.className = 'row';
+              const name = doc.createElement('div');
+              name.className = 'tp3d-org-member-name';
+              name.textContent = getMemberDisplayName(member);
+              nameRow.appendChild(name);
+              if (isSelf) {
+                const badge = doc.createElement('span');
+                badge.className = 'badge';
+                badge.textContent = 'You';
+                nameRow.appendChild(badge);
+              }
+              meta.appendChild(nameRow);
+
+              const email = getMemberEmail(member);
+              if (email) {
+                const emailEl = doc.createElement('div');
+                emailEl.className = 'tp3d-org-member-email';
+                emailEl.textContent = email;
+                meta.appendChild(emailEl);
+              }
+
+              const actions = doc.createElement('div');
+              actions.className = 'tp3d-org-member-actions';
+
+              const roleSelect = doc.createElement('select');
+              roleSelect.className = 'select';
+              roleSelect.setAttribute('aria-label', 'Member role');
+              const roles = ['owner', 'admin', 'member', 'viewer'];
+              roles.forEach(r => {
+                const opt = doc.createElement('option');
+                opt.value = r;
+                opt.textContent = r.charAt(0).toUpperCase() + r.slice(1);
+                if (!canManageAdmins && (r === 'owner' || r === 'admin')) opt.disabled = true;
+                roleSelect.appendChild(opt);
+              });
+              if (!roles.includes(role)) {
+                const opt = doc.createElement('option');
+                opt.value = role;
+                opt.textContent = role;
+                roleSelect.appendChild(opt);
+              }
+              roleSelect.value = role;
+              roleSelect.disabled = !canEditRole;
+              if (roleDisableReason) roleSelect.setAttribute('data-tooltip', roleDisableReason);
+              roleSelect.addEventListener('change', ev => {
+                const nextRole = ev && ev.target ? String(ev.target.value) : role;
+                if (nextRole === role) return;
+                if (!canEditRole) {
+                  roleSelect.value = role;
+                  return;
+                }
+                updateMemberRole(orgId, member, nextRole, currentUserId, currentRole).catch(() => {
+                  roleSelect.value = role;
+                });
+              });
+
+              actions.appendChild(roleSelect);
+
+              const removeBtn = doc.createElement('button');
+              removeBtn.type = 'button';
+              removeBtn.className = 'btn btn-danger';
+              removeBtn.textContent = 'Remove';
+              removeBtn.disabled = !canRemove;
+              if (removeDisableReason) removeBtn.setAttribute('data-tooltip', removeDisableReason);
+              removeBtn.addEventListener('click', () => {
+                if (!canRemove) return;
+                const memberName = getMemberDisplayName(member);
+                UIComponents.confirm({
+                  title: 'Remove member',
+                  message: `Remove ${memberName} from this workspace?`,
+                  okLabel: 'Remove',
+                  cancelLabel: 'Cancel',
+                  danger: true,
+                }).then(ok => {
+                  if (ok) removeMember(orgId, member);
+                });
+              });
+              actions.appendChild(removeBtn);
+
+              rowEl.appendChild(meta);
+              rowEl.appendChild(actions);
+              list.appendChild(rowEl);
+            });
+
+            membersCard.appendChild(list);
+            body.appendChild(membersCard);
+          }
+        }
+      }
     } else {
       const billingCard = doc.createElement('div');
       billingCard.className = 'card';
       billingCard.classList.add('tp3d-settings-card-max');
+
       const billingWrap = doc.createElement('div');
       billingWrap.classList.add('tp3d-settings-billing');
+      billingWrap.id = 'tp3d-billing-wrap';
+      billingWrap.textContent = 'Checking billing...';
 
-      const billingTitle = doc.createElement('div');
-      billingTitle.classList.add('tp3d-settings-billing-title');
-      billingTitle.textContent = 'Billing';
-
-      const billingMsg = doc.createElement('div');
-      billingMsg.className = 'muted tp3d-settings-billing-msg';
-      billingMsg.textContent = 'Billing is not set up yet.';
-
-      billingWrap.appendChild(billingTitle);
-      billingWrap.appendChild(billingMsg);
       billingCard.appendChild(billingWrap);
       body.appendChild(billingCard);
+
+      renderBillingInto(billingWrap);
+      ensureBillingSubscription();
     }
     const counts = applyTabStateToDOM();
     debug('render', {
@@ -2320,6 +3350,13 @@ export function createSettingsOverlay({
     isLoadingOrg = false;
     isLoadingMembership = false;
     isSavingOrg = false;
+
+    orgMembersData = null;
+    isLoadingOrgMembers = false;
+    orgMembersError = null;
+    orgMembersRequestId = 0;
+    lastOrgMembersOrgId = null;
+    orgMemberActions.clear();
   }
 
   function handleAuthChange(_event) {

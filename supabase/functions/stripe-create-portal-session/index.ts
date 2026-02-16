@@ -11,7 +11,11 @@ Deno.serve(async (req) => {
     if (req.method !== "POST") return json({ error: "Method not allowed" }, { status: 405, origin });
     if (!origin) return json({ error: "Origin not allowed" }, { status: 403, origin: null });
 
-    const { user } = await requireUser(req);
+    const auth = await requireUser(req);
+    if (!auth.ok || !auth.user) {
+      return json({ error: auth.error || "Unauthorized" }, { status: 401, origin });
+    }
+    const user = auth.user;
 
     const sb = serviceClient();
     const stripe = stripeClient();

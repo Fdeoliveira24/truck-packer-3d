@@ -53,6 +53,7 @@ let _visibilityValidateTimer = null;
 let _authIntent = { type: null, ts: 0 };
 let _tabId = null;
 let _lastLogoutSignalAt = 0;
+let _profileAuthLogOnce = false;
 const _authState = { status: 'loading', session: null, user: null, updatedAt: 0 };
 
 // ============================================================================
@@ -86,6 +87,7 @@ const ACCOUNT_FETCH_TIMEOUT_MS = 8000;
 const ACCOUNT_SESSION_TIMEOUT_MS = 2000;
 const SESSION_CACHE_MS = 1500;
 const GETSESSION_TIMEOUT_MS = 6000;
+const SESSION_EXPIRY_SKEW_SEC = 30;
 const RAW_SESSION_COOLDOWN_MS = 750;
 const AUTH_GUARD_FOCUS_ENABLED = false;
 const AUTH_GUARD_VISIBILITY_ENABLED = false;
@@ -98,6 +100,19 @@ function getAuthKey(session) {
   if (!session || !session.user || !session.user.id) return 'anon';
   const tokenSuffix = session.access_token ? session.access_token.slice(-12) : '';
   return `${session.user.id}:${tokenSuffix}`;
+}
+
+function isSessionExpired(session, skewSec = SESSION_EXPIRY_SKEW_SEC) {
+  if (!session) return true;
+  const exp = Number(session.expires_at);
+  if (!Number.isFinite(exp) || exp <= 0) return false;
+  const nowSec = Date.now() / 1000;
+  return exp <= nowSec + skewSec;
+}
+
+function isSessionUsable(session) {
+  if (!session || !session.access_token) return false;
+  return !isSessionExpired(session);
 }
 
 function normalizeUserId(id) {
@@ -421,6 +436,17 @@ function withTimeoutReject(promise, ms, label = 'timeout') {
   });
 }
 
+async function ensureClientSession() {
+  const client = _client;
+  if (!client) return false;
+  try {
+    const session = await getSessionSingleFlightSafe(client, { force: true });
+    return Boolean(session && session.access_token);
+  } catch {
+    return false;
+  }
+}
+
 function requireClient() {
   if (!_client) throw new Error('SupabaseClient not initialized. Call SupabaseClient.init({ url, anonKey }) first.');
   return _client;
@@ -456,6 +482,20 @@ function isAuthRevokedError(err) {
     // ignore
   }
 
+  return false;
+}
+
+function isNetworkFetchError(err) {
+  try {
+    const msg = String(err && err.message ? err.message : '').toLowerCase();
+    if (!msg) return false;
+    if (msg.includes('failed to fetch')) return true;
+    if (msg.includes('networkerror')) return true;
+    if (msg.includes('err_timed_out')) return true;
+    if (msg.includes('timeout')) return true;
+  } catch {
+    // ignore
+  }
   return false;
 }
 
@@ -677,7 +717,7 @@ function getUserRawSingleFlight() {
   if (_authCooldownUntil && now < _authCooldownUntil) {
     const cachedUser = (_authState && _authState.user) || (_session && _session.user) || null;
     if (debugEnabled())
-      debugLog('warn', '[SupabaseClient] getUser skipped (auth cooldown)', { cachedUser: Boolean(cachedUser) });
+      {debugLog('warn', '[SupabaseClient] getUser skipped (auth cooldown)', { cachedUser: Boolean(cachedUser) });}
     const out = { data: { user: cachedUser }, error: null };
     _getUserRawLastResult = out;
     _getUserRawLastAt = now;
@@ -702,6 +742,27 @@ function getUserRawSingleFlight() {
   const authGetUser =
     _authGetUser || (client.auth && client.auth.getUser ? client.auth.getUser.bind(client.auth) : null);
   if (!authGetUser) return Promise.resolve({ data: { user: null }, error: new Error('getUser unavailable') });
+
+  try {
+    if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) {
+      const cachedUser = (_authState && _authState.user) || (_session && _session.user) || null;
+      const out = { data: { user: cachedUser }, error: null };
+      _getUserRawLastResult = out;
+      _getUserRawLastAt = now;
+      return Promise.resolve(out);
+    }
+  } catch {
+    // ignore
+  }
+
+  const sessionHint = (_authState && _authState.session) || _session || _cachedSession || null;
+  if (!isSessionUsable(sessionHint)) {
+    const cachedUser = (_authState && _authState.user) || (_session && _session.user) || null;
+    const out = { data: { user: cachedUser }, error: null };
+    _getUserRawLastResult = out;
+    _getUserRawLastAt = now;
+    return Promise.resolve(out);
+  }
 
   const TIMEOUT_MS = 3000;
   const p = (async () => {
@@ -737,7 +798,9 @@ export async function getSessionSingleFlightSafe(client, { force = false } = {})
 
   // 1) quick cache for UI
   if (!force && _cachedSession && now - _cachedAt < SESSION_CACHE_MS) {
-    return _cachedSession;
+    if (isSessionUsable(_cachedSession)) return _cachedSession;
+    _cachedSession = null;
+    _cachedAt = 0;
   }
 
   // 2) if tab is hidden, avoid thundering herd
@@ -748,7 +811,9 @@ export async function getSessionSingleFlightSafe(client, { force = false } = {})
     hidden = false;
   }
   if (hidden && _cachedSession && !force) {
-    return _cachedSession;
+    if (isSessionUsable(_cachedSession)) return _cachedSession;
+    _cachedSession = null;
+    _cachedAt = 0;
   }
 
   // 3) true single-flight
@@ -758,8 +823,103 @@ export async function getSessionSingleFlightSafe(client, { force = false } = {})
     try {
       const raw = _authGetSession || (c.auth && c.auth.__tp3dOriginalGetSession) || null;
       if (!raw) return null;
-      const result = await withTimeoutReject(raw(), GETSESSION_TIMEOUT_MS, 'getSession timeout');
-      const session = (result && result.data && result.data.session) || null;
+      let result;
+      try {
+        result = await withTimeoutReject(raw(), GETSESSION_TIMEOUT_MS, 'getSession timeout');
+      } catch (err) {
+        const fallback = (_authState && _authState.session) || _session || _cachedSession || null;
+        const accessToken = fallback && fallback.access_token ? String(fallback.access_token) : '';
+        const refreshToken = fallback && fallback.refresh_token ? String(fallback.refresh_token) : '';
+        if (accessToken && refreshToken && c.auth && typeof c.auth.setSession === 'function') {
+          try {
+            const res = await withTimeoutReject(
+              c.auth.setSession({ access_token: accessToken, refresh_token: refreshToken }),
+              ACCOUNT_SESSION_TIMEOUT_MS,
+              'setSession timeout'
+            );
+            const nextSession = (res && res.data && res.data.session) || null;
+            if (isSessionUsable(nextSession)) {
+              if (debugEnabled()) {
+                debugLog('info', '[SupabaseClient] hydrated auth session after timeout');
+              }
+              _cachedSession = nextSession;
+              _cachedAt = Date.now();
+              return nextSession;
+            }
+          } catch (setErr) {
+            if (debugEnabled()) {
+              debugLog(
+                'warn',
+                '[SupabaseClient] auth session hydrate failed after timeout',
+                setErr && setErr.message ? setErr.message : setErr
+              );
+            }
+          }
+        }
+        if (!force && isSessionUsable(fallback)) {
+          if (debugEnabled()) {
+            debugLog('warn', '[SupabaseClient] getSession timeout; using cached session');
+          }
+          _cachedSession = fallback;
+          _cachedAt = Date.now();
+          return fallback;
+        }
+        if (force) {
+          if (debugEnabled()) {
+            debugLog('warn', '[SupabaseClient] getSession timeout (force); returning null');
+          }
+          return null;
+        }
+        throw err;
+      }
+      let session = (result && result.data && result.data.session) || null;
+      if (session && isSessionExpired(session)) {
+        const accessToken = session && session.access_token ? String(session.access_token) : '';
+        const refreshToken = session && session.refresh_token ? String(session.refresh_token) : '';
+        if (accessToken && refreshToken && c.auth && typeof c.auth.setSession === 'function') {
+          try {
+            const res = await withTimeoutReject(
+              c.auth.setSession({ access_token: accessToken, refresh_token: refreshToken }),
+              ACCOUNT_SESSION_TIMEOUT_MS,
+              'setSession timeout'
+            );
+            session = (res && res.data && res.data.session) || null;
+          } catch {
+            session = null;
+          }
+        } else {
+          session = null;
+        }
+      }
+      let hydrated = Boolean(session);
+      if (!session) {
+        const fallback = (_authState && _authState.session) || _session;
+        const accessToken = fallback && fallback.access_token ? String(fallback.access_token) : '';
+        const refreshToken = fallback && fallback.refresh_token ? String(fallback.refresh_token) : '';
+        if (accessToken && refreshToken && c.auth && typeof c.auth.setSession === 'function') {
+          try {
+            const res = await c.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
+            session = (res && res.data && res.data.session) || null;
+            hydrated = Boolean(session);
+            if (session && debugEnabled()) {
+              debugLog('info', '[SupabaseClient] hydrated auth session from cache');
+            }
+          } catch (err) {
+            if (debugEnabled()) {
+              debugLog('warn', '[SupabaseClient] auth session hydrate failed', err && err.message ? err.message : err);
+            }
+          }
+        }
+        if (!hydrated && !force && accessToken && isSessionUsable(fallback)) {
+          session = fallback;
+          if (debugEnabled()) {
+            debugLog('warn', '[SupabaseClient] getSession fallback (using cached session)');
+          }
+        }
+      }
+      if (session && !isSessionUsable(session)) {
+        session = null;
+      }
       _cachedSession = session;
       _cachedAt = Date.now();
       return session;
@@ -787,11 +947,20 @@ export function getSessionSingleFlight() {
       updateAuthState({ status: session ? 'signed_in' : 'signed_out', session, user });
       return { session, user };
     } catch (err) {
-      if (debugEnabled()) {
-        debugLog('error', '[SupabaseClient] getSession failed:', err && err.message ? err.message : err);
-      }
       if (String(err && err.message ? err.message : '').includes('timeout')) {
         _authCooldownUntil = Date.now() + 2000;
+        const session = (_authState && _authState.session) || _session || _cachedSession || null;
+        const safeSession = isSessionUsable(session) ? session : null;
+        const user = safeSession && safeSession.user ? safeSession.user : (_authState && _authState.user) || null;
+        if (debugEnabled()) {
+          debugLog('warn', '[SupabaseClient] getSession timeout; returning cached session', {
+            hasSession: Boolean(safeSession),
+          });
+        }
+        return { session: safeSession, user };
+      }
+      if (debugEnabled()) {
+        debugLog('error', '[SupabaseClient] getSession failed:', err && err.message ? err.message : err);
       }
       throw err;
     } finally {
@@ -855,18 +1024,18 @@ export function getUserSingleFlight() {
       if (debugEnabled()) {
         debugLog('error', '[SupabaseClient] getUser failed:', err && err.message ? err.message : err);
       }
-      if (msg.includes('timeout')) {
+      if (msg.includes('timeout') || isNetworkFetchError(err)) {
         _authCooldownUntil = Date.now() + 2000;
         const cachedUser = getUser() || (_authState && _authState.user) || (_session && _session.user) || null;
         emitAuthDiagError({
           source: 'getUserSingleFlight',
-          type: 'timeout',
+          type: msg.includes('timeout') ? 'timeout' : 'network',
           severity: 'warn',
           error: serializeError(err),
           cachedUser: Boolean(cachedUser),
         });
         if (debugEnabled()) {
-          debugLog('warn', '[SupabaseClient] getUser timeout; returning cached user', {
+          debugLog('warn', '[SupabaseClient] getUser failed; returning cached user', {
             cachedUser: Boolean(cachedUser),
           });
         }
@@ -1104,7 +1273,22 @@ export function init({ url, anonKey }) {
       }
 
       if (_client) return _client;
-      _client = globalSupabase.createClient(u, k);
+      const projectRef = getProjectRef(u);
+      const storage = typeof window !== 'undefined' && window.localStorage ? window.localStorage : null;
+      const authOptions = {
+        persistSession: true,
+        autoRefreshToken: true,
+      };
+      if (storage) authOptions.storage = storage;
+      if (projectRef) authOptions.storageKey = `sb-${projectRef}-auth-token`;
+      _client = globalSupabase.createClient(u, k, { auth: authOptions });
+      if (debugEnabled()) {
+        const storageKey =
+          (_client.auth && (_client.auth.storageKey || _client.auth._storageKey)) ||
+          (projectRef ? `sb-${projectRef}-auth-token` : null);
+        const hasStored = storageKey && storage ? Boolean(storage.getItem(storageKey)) : false;
+        debugLog('info', '[SupabaseClient] auth storage', { storageKey, hasStored });
+      }
       try {
         if (typeof window !== 'undefined') window.__TP3D_SUPABASE_CLIENT = _client;
       } catch {
@@ -1143,6 +1327,12 @@ export function init({ url, anonKey }) {
           session: _session,
           user: _session && _session.user ? _session.user : null,
         });
+        if (debugEnabled()) {
+          debugLog('info', '[SupabaseClient] session init', {
+            hasSession: Boolean(_session),
+            hasAccessToken: Boolean(_session && _session.access_token),
+          });
+        }
       } catch {
         _session = null;
         updateAuthState({ status: 'signed_out', session: null, user: null });
@@ -1611,9 +1801,28 @@ export async function getProfile(userId = null) {
   const uid = normalizeUserId(userId) || normalizeUserId(getCurrentUserId());
   if (!uid) return null;
 
+  const clientSessionOk = await ensureClientSession();
+  if (!clientSessionOk) {
+    return _buildEmptyAccountBundle('No active session');
+  }
+
+  if (debugEnabled() && !_profileAuthLogOnce) {
+    _profileAuthLogOnce = true;
+    const s = (_authState && _authState.session) || _session;
+    debugLog('info', '[SupabaseClient] profiles auth snapshot', {
+      hasSession: Boolean(s),
+      hasAccessToken: Boolean(s && s.access_token),
+      hasRefreshToken: Boolean(s && s.refresh_token),
+    });
+  }
+
   const { data, error } = await client.from('profiles').select('*').eq('id', uid).maybeSingle();
 
   if (error) {
+    if (error.status === 401 && debugEnabled()) {
+      const s = (_authState && _authState.session) || _session;
+      debugLog('warn', '[SupabaseClient] profiles 401', { hasAccessToken: Boolean(s && s.access_token) });
+    }
     if (error.code === 'PGRST116' || error.status === 406) return null;
     return null;
   }
@@ -1630,6 +1839,9 @@ export async function getMyProfileStatus() {
   const client = requireClient();
   const userId = await getAuthedUserId();
   if (!userId) return null;
+
+  const clientSessionOk = await ensureClientSession();
+  if (!clientSessionOk) return null;
 
   try {
     const { data, error } = await client
@@ -1671,6 +1883,8 @@ export async function updateProfile(updates) {
 
 export async function getUserOrganizations() {
   const client = requireClient();
+  const clientSessionOk = await ensureClientSession();
+  if (!clientSessionOk) return [];
   const userId = await getAuthedUserId();
   if (!userId) return [];
 
@@ -1709,6 +1923,7 @@ export async function getUserOrganizations() {
           name,
           slug,
           avatar_url,
+          logo_path,
           owner_id,
           created_at,
           updated_at,
@@ -1752,6 +1967,8 @@ export async function getUserOrganizations() {
  */
 export async function getMyMembership() {
   const client = requireClient();
+  const clientSessionOk = await ensureClientSession();
+  if (!clientSessionOk) return null;
   const userId = await getAuthedUserId();
   if (!userId) return null;
 
@@ -1787,6 +2004,9 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
     }
     return _buildEmptyAccountBundle(`Auth not ready: ${authReady.reason || 'unknown'}`, true);
   }
+
+  const clientSessionOk = await ensureClientSession();
+  if (!clientSessionOk) return null;
 
   // Get current session from memory first (already validated by Supabase)
   let session = _authState.session || _session || null;
@@ -1916,7 +2136,11 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
         return str ? str : null;
       };
       const profileOrgId = normalizeOrgId(
-        profileResult && (profileResult.current_org_id || profileResult.currentOrgId || profileResult.currentOrgID)
+        profileResult &&
+          (profileResult.current_organization_id ||
+            profileResult.current_org_id ||
+            profileResult.currentOrgId ||
+            profileResult.currentOrgID)
       );
       const membershipOrgId = normalizeOrgId(
         membershipResult && membershipResult.organization_id ? membershipResult.organization_id : null
@@ -2065,6 +2289,8 @@ export function invalidateAccountCache() {
  */
 export async function getOrganization(orgId) {
   const client = requireClient();
+  const clientSessionOk = await ensureClientSession();
+  if (!clientSessionOk) return null;
   const userId = await getAuthedUserId();
   if (!userId) return null;
 
@@ -2074,7 +2300,7 @@ export async function getOrganization(orgId) {
   const { data, error } = await client
     .from('organizations')
     .select(
-      'id, name, slug, avatar_url, owner_id, created_at, updated_at, phone, address_line1, address_line2, city, state, postal_code, country'
+      'id, name, slug, avatar_url, logo_path, owner_id, created_at, updated_at, phone, address_line1, address_line2, city, state, postal_code, country'
     )
     .eq('id', id)
     .maybeSingle();
@@ -2101,6 +2327,8 @@ export async function getCurrentOrganization() {
  */
 export async function getMyOrgRole(orgId) {
   const client = requireClient();
+  const clientSessionOk = await ensureClientSession();
+  if (!clientSessionOk) return null;
   const userId = await getAuthedUserId();
   if (!userId) return null;
 
@@ -2120,6 +2348,118 @@ export async function getMyOrgRole(orgId) {
 }
 
 /**
+ * List organization members with basic profile data.
+ * @param {string} orgId - The organization ID
+ * @returns {Promise<Array>} Array of members with profile info
+ */
+export async function getOrganizationMembers(orgId) {
+  const client = requireClient();
+  const clientSessionOk = await ensureClientSession();
+  if (!clientSessionOk) {
+    throw new Error('Not authenticated');
+  }
+  const userId = await getAuthedUserId();
+  if (!userId) return [];
+
+  const id = String(orgId || '').trim();
+  if (!id) return [];
+
+  const { data, error } = await client
+    .from('organization_members')
+    .select('id, organization_id, user_id, role, joined_at')
+    .eq('organization_id', id)
+    .order('joined_at', { ascending: true });
+
+  if (error) throw error;
+  const rows = Array.isArray(data) ? data : [];
+  const userIds = [...new Set(rows.map(r => r && r.user_id).filter(Boolean))];
+
+  let profiles = [];
+  if (userIds.length > 0) {
+    if (
+      !getOrganizationMembers._profileSelect ||
+      getOrganizationMembers._profileSelect.includes('email')
+    ) {
+      getOrganizationMembers._profileSelect =
+        'id, display_name, first_name, last_name, full_name, avatar_url';
+    }
+    let profileRows = null;
+    let profileError = null;
+    const primarySelect = getOrganizationMembers._profileSelect;
+    const primaryRes = await client.from('profiles').select(primarySelect).in('id', userIds);
+    profileRows = primaryRes.data;
+    profileError = primaryRes.error;
+
+    if (profileError) {
+      const fallbackSelect = 'id, display_name, full_name';
+      const fallbackRes = await client.from('profiles').select(fallbackSelect).in('id', userIds);
+      if (!fallbackRes.error) {
+        getOrganizationMembers._profileSelect = fallbackSelect;
+        profileRows = fallbackRes.data;
+        profileError = null;
+      }
+    }
+
+    profiles = Array.isArray(profileRows) ? profileRows : [];
+  }
+
+  const profileById = new Map(profiles.map(p => [String(p.id), p]));
+  return rows.map(row => ({
+    ...row,
+    profile: profileById.get(String(row.user_id)) || null,
+  }));
+}
+
+/**
+ * Update a member role within an organization.
+ * Only owners/admins can update roles (enforced by RLS).
+ * @param {string} orgId
+ * @param {string} userId
+ * @param {string} role
+ * @returns {Promise<Object|null>}
+ */
+export async function updateOrganizationMemberRole(orgId, userId, role) {
+  const client = requireClient();
+  const clientSessionOk = await ensureClientSession();
+  if (!clientSessionOk) throw new Error('Not authenticated');
+  await requireUserId();
+  const org = String(orgId || '').trim();
+  const user = String(userId || '').trim();
+  if (!org || !user) return null;
+
+  const { data, error } = await client
+    .from('organization_members')
+    .update({ role })
+    .eq('organization_id', org)
+    .eq('user_id', user)
+    .select('id, organization_id, user_id, role, joined_at')
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
+/**
+ * Remove a member from an organization.
+ * @param {string} orgId
+ * @param {string} userId
+ * @returns {Promise<boolean>}
+ */
+export async function removeOrganizationMember(orgId, userId) {
+  const client = requireClient();
+  const clientSessionOk = await ensureClientSession();
+  if (!clientSessionOk) throw new Error('Not authenticated');
+  await requireUserId();
+  const org = String(orgId || '').trim();
+  const user = String(userId || '').trim();
+  if (!org || !user) return false;
+
+  const { error } = await client.from('organization_members').delete().eq('organization_id', org).eq('user_id', user);
+  if (error) throw error;
+  return true;
+}
+
+/**
  * Update organization details.
  * Only owners/admins can update organizations (enforced by RLS).
  * @param {string} orgId - The organization ID
@@ -2128,6 +2468,8 @@ export async function getMyOrgRole(orgId) {
  */
 export async function updateOrganization(orgId, updates) {
   const client = requireClient();
+  const clientSessionOk = await ensureClientSession();
+  if (!clientSessionOk) throw new Error('Not authenticated');
   await requireUserId();
 
   const { data, error } = await client
@@ -2217,6 +2559,109 @@ export async function deleteAvatar() {
   }
 
   return true;
+}
+
+/**
+ * Upload an organization logo to the "org-logos" bucket.
+ * Path format: orgs/<orgId>/logo.<ext>
+ * @param {string} orgId - The organization ID
+ * @param {File} file - The image file to upload
+ * @returns {Promise<string>} The storage object key (logo_path)
+ */
+export async function uploadOrgLogo(orgId, file) {
+  const client = requireClient();
+  await ensureClientSession();
+  await requireUserId();
+
+  if (!orgId) throw new Error('Missing organization ID');
+
+  const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+  if (!validTypes.includes(file.type)) {
+    throw new Error('Invalid file type. Please use PNG, JPG, or WEBP.');
+  }
+
+  const maxSize = 2 * 1024 * 1024;
+  if (file.size > maxSize) {
+    throw new Error('File size must be less than 2MB.');
+  }
+
+  // Delete old logo files
+  try {
+    const folderPath = `orgs/${orgId}`;
+    const { data: files } = await client.storage.from('org-logos').list(folderPath);
+    if (files && files.length > 0) {
+      const filePaths = files.map(f => `${folderPath}/${f.name}`);
+      await client.storage.from('org-logos').remove(filePaths);
+    }
+  } catch (_) { /* ignore */ }
+
+  const ext = file.name.split('.').pop() || 'png';
+  const logoPath = `orgs/${orgId}/logo.${ext}`;
+
+  const { error } = await client.storage.from('org-logos').upload(logoPath, file, {
+    cacheControl: '3600',
+    upsert: true,
+  });
+
+  if (error) throw error;
+
+  // Update org record with logo_path
+  await updateOrganization(orgId, { logo_path: logoPath });
+  // Invalidate cached account/org data so UI refreshes
+  if (typeof invalidateAccountCache === 'function') {
+    invalidateAccountCache();
+  }
+
+  return logoPath;
+}
+
+/**
+ * Create a new organization + owner membership.
+ * @param {{ name: string, slug?: string }} params
+ * @returns {Promise<{ org: object, membership: object }>}
+ */
+export async function createOrganization({ name, slug }) {
+  const client = requireClient();
+  await ensureClientSession();
+  const userId = await getAuthedUserId();
+  if (!userId) throw new Error('Not authenticated');
+
+  // Generate slug from name if not provided
+  const orgSlug = slug
+    ? String(slug).trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+    : String(name).trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') + '-' + Date.now().toString(36);
+
+  // Create organization
+  const { data: org, error: orgErr } = await client
+    .from('organizations')
+    .insert({
+      name: String(name).trim(),
+      slug: orgSlug,
+      owner_id: userId,
+    })
+    .select()
+    .single();
+
+  if (orgErr) throw orgErr;
+
+  // Create owner membership
+  const { data: membership, error: memErr } = await client
+    .from('organization_members')
+    .insert({
+      organization_id: org.id,
+      user_id: userId,
+      role: 'owner',
+    })
+    .select()
+    .single();
+
+  if (memErr) {
+    // Rollback org if membership fails
+    try { await client.from('organizations').delete().eq('id', org.id); } catch (_) { /* ignore */ }
+    throw memErr;
+  }
+
+  return { org, membership };
 }
 
 /**
@@ -2325,6 +2770,42 @@ export async function requestAccountDeletion() {
 }
 
 // ============================================================================
+// SECTION: ORG LOGO HELPER
+// ============================================================================
+
+const _orgLogoCache = new Map(); // key: logo_path, value: { url, expiresAt }
+
+/**
+ * Get a displayable URL for an org logo stored in Supabase Storage.
+ * Uses signed URLs (private bucket "org-logos") with a short TTL, cached in memory.
+ * @param {string} logoPath - The storage object path (e.g. "orgs/<orgId>/logo.png")
+ * @param {string} [updatedAt] - Cache-bust key (org's updated_at timestamp)
+ * @returns {Promise<string|null>} Signed URL or null
+ */
+export async function getOrgLogoUrl(logoPath, updatedAt) {
+  if (!logoPath || typeof logoPath !== 'string') return null;
+
+  const cacheKey = logoPath + '|' + (updatedAt || '');
+  const cached = _orgLogoCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.url;
+
+  try {
+    const client = requireClient();
+    const { data, error } = await client.storage
+      .from('org-logos')
+      .createSignedUrl(logoPath, 60); // 60 second TTL
+
+    if (error || !data || !data.signedUrl) return null;
+
+    // Cache for 50s (leave 10s buffer before expiry)
+    _orgLogoCache.set(cacheKey, { url: data.signedUrl, expiresAt: Date.now() + 50000 });
+    return data.signedUrl;
+  } catch {
+    return null;
+  }
+}
+
+// ============================================================================
 // SECTION: DEV CONSOLE HOOKS (optional)
 // ============================================================================
 
@@ -2366,10 +2847,16 @@ try {
     getOrganization,
     getCurrentOrganization,
     getMyOrgRole,
+    getOrganizationMembers,
+    updateOrganizationMemberRole,
+    removeOrganizationMember,
     updateOrganization,
     uploadAvatar,
     deleteAvatar,
     requestAccountDeletion,
+    getOrgLogoUrl,
+    uploadOrgLogo,
+    createOrganization,
   };
 
   if (typeof window !== 'undefined') {

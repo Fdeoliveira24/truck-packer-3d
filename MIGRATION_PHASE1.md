@@ -65,9 +65,9 @@
 
 - Added an in-app Org Context state (no new files) to track `activeOrgId`, active org, org list, and
   role across auth refreshes.
-- Active org resolution now prefers `profiles.current_org_id`, then localStorage, then membership,
+- Active org resolution now prefers `profiles.current_organization_id`, then localStorage, then membership,
   then first org (safe fallback).
-- Best-effort persistence of `current_org_id` back to the profile row (rate-limited).
+- Best-effort persistence of `current_organization_id` back to the profile row (rate-limited).
 - `tp3d:org-changed` emits only on real org changes, with 500ms dedupe and hidden-tab suppression.
 - Auth refresh scheduler now triggers Org Context refresh once per pass (single-flight).
 
@@ -78,3 +78,80 @@
 1. Stored the active org in localStorage for cross-tab continuity.
 1. Updated the account switcher label to reflect the active org and role.
 1. Added a diagnostic warning severity for `getUserSingleFlight` timeouts.
+
+## 2026-02-06 — Org Context (DB + RLS) + Roles UI (Phase 1–2)
+
+### DB Schema (Profiles)
+
+Add a current org pointer to profiles so the app can persist active workspace.
+
+```sql
+alter table public.profiles
+  add column if not exists current_organization_id uuid;
+```
+
+### RLS (Profiles)
+
+Ensure users can read and update only their own profile row:
+
+```sql
+-- Read own profile
+create policy "profiles_select_own"
+on public.profiles for select
+using (auth.uid() = id);
+
+-- Update own profile (includes current_organization_id)
+create policy "profiles_update_own"
+on public.profiles for update
+using (auth.uid() = id)
+with check (auth.uid() = id);
+```
+
+### RLS (Organization Members)
+
+Roles UI expects these rules to hold:
+
+- Members can **read** membership list for their org.
+- Only **owner/admin** can update roles.
+- Only **owner/admin** can remove members.
+- Prevent removing the last owner (enforced in UI + DB recommended).
+
+Example policy outline (adjust to your schema helpers):
+
+```sql
+-- Members can read their org members
+create policy "org_members_read"
+on public.organization_members for select
+using (exists (
+  select 1 from public.organization_members m
+  where m.organization_id = organization_members.organization_id
+    and m.user_id = auth.uid()
+));
+
+-- Owners/admins can update roles
+create policy "org_members_update_role"
+on public.organization_members for update
+using (exists (
+  select 1 from public.organization_members m
+  where m.organization_id = organization_members.organization_id
+    and m.user_id = auth.uid()
+    and m.role in ('owner','admin')
+))
+with check (true);
+
+-- Owners/admins can remove members
+create policy "org_members_delete"
+on public.organization_members for delete
+using (exists (
+  select 1 from public.organization_members m
+  where m.organization_id = organization_members.organization_id
+    and m.user_id = auth.uid()
+    and m.role in ('owner','admin')
+));
+```
+
+### App Notes
+
+- Active org is resolved from `profiles.current_organization_id`, localStorage, membership, or first org.
+- Active org persists back to profiles (best-effort).
+- Members UI shows list, role editing (owner/admin only), and remove (owner/admin only).

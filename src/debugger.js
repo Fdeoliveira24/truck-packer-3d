@@ -6,11 +6,15 @@
 */
 
 const DEBUG_VERSION = '2.0.0';
-const DEFAULT_MAX_EVENTS = 8000;
+const DEFAULT_MAX_EVENTS = 25000;
 const DEFAULT_SLOW_FETCH_MS = 2000;
 const PERSIST_KEY = 'tp3dDiagPersist';
 const PERSIST_MAX_EVENTS = 400;
 const PERSIST_MIN_INTERVAL_MS = 1500;
+
+const AUTOPACK_MAX_SLOT_EVENTS = 4000;
+const AUTOPACK_MAX_PLACE_EVENTS = 1500;
+const AUTOPACK_SUMMARY_EVERY_SLOTS = 60;
 
 let _active = false;
 let _startTime = 0;
@@ -26,6 +30,21 @@ let _wrappedStorage = false;
 let _wrappedHistory = false;
 let _longTaskObserver = null;
 let _lastPersistAt = 0;
+
+let _wrappedConsole = false;
+let _consoleOriginal = null;
+
+const _autopack = {
+  runId: null,
+  startedAtPerf: 0,
+  startedAtIso: null,
+  slots: 0,
+  placements: 0,
+  noFitSlots: 0,
+  last: null,
+  slotEvents: 0,
+  placeEvents: 0,
+};
 
 let _supabaseInitWarned = false;
 let _supabaseAttachWarned = false;
@@ -184,7 +203,22 @@ const CONFIG = {
   slowFetchMs: DEFAULT_SLOW_FETCH_MS,
   consoleOutput: true,
   includeStack: true,
+  captureWindowErrors: true,
+  captureUnhandledRejections: true,
+  captureConsoleErrors: true,
+  autopackTelemetry: true,
+  autopackMaxSlotEvents: AUTOPACK_MAX_SLOT_EVENTS,
+  autopackMaxPlaceEvents: AUTOPACK_MAX_PLACE_EVENTS,
+  autopackSummaryEverySlots: AUTOPACK_SUMMARY_EVERY_SLOTS,
 };
+
+function updateConfig(partial = {}) {
+  if (!partial || typeof partial !== 'object') return;
+  for (const [k, v] of Object.entries(partial)) {
+    if (!(k in CONFIG)) continue;
+    CONFIG[k] = v;
+  }
+}
 
 function isEnabled() {
   try {
@@ -236,13 +270,15 @@ function recordEvent(type, category, data = {}) {
         nav: '#3f51b5',
         user: '#4caf50',
         edge: '#ff9800',
+        autopack: '#e91e63',
         debug: '#607d8b',
         perf: '#9e9e9e',
       }[category] || '#666';
 
-    console.groupCollapsed(`%c[${evt.t}ms] ${type}`, `color:${color};font-weight:bold;`);
-    console.log(evt.data);
-    console.groupEnd();
+    const c = _consoleOriginal || console;
+    c.groupCollapsed(`%c[${evt.t}ms] ${type}`, `color:${color};font-weight:bold;`);
+    c.log(evt.data);
+    c.groupEnd();
   }
   maybePersistEvent(evt);
   return evt;
@@ -256,6 +292,11 @@ function shouldPersistEvent(evt) {
   if (evt.type === 'TP3D AUTH SIGNED OUT') return true;
   if (evt.type === 'TP3D AUTH WARN') return true;
   if (evt.type === 'AUTH EVENT') return true;
+  if (evt.type === 'AUTOPACK START') return true;
+  if (evt.type === 'AUTOPACK SUMMARY') return true;
+  if (evt.type === 'AUTOPACK END') return true;
+  if (evt.type === 'WINDOW ERROR') return true;
+  if (evt.type === 'UNHANDLED REJECTION') return true;
   if (evt.type.startsWith('RACE:')) return true;
   if (evt.type === 'STORAGE EVENT') {
     const key = evt.data && evt.data.key ? String(evt.data.key) : '';
@@ -288,6 +329,158 @@ function maybePersistEvent(evt) {
   } catch {
     // ignore
   }
+}
+
+function installWindowErrorHandlers() {
+  if (typeof window === 'undefined') return;
+
+  if (CONFIG.captureWindowErrors) {
+    window.addEventListener(
+      'error',
+      ev => {
+        if (!_active) return;
+        try {
+          recordEvent('WINDOW ERROR', 'perf', {
+            message: ev && ev.message ? String(ev.message) : 'unknown',
+            filename: ev && ev.filename ? String(ev.filename) : null,
+            lineno: ev && typeof ev.lineno === 'number' ? ev.lineno : null,
+            colno: ev && typeof ev.colno === 'number' ? ev.colno : null,
+            error: ev && ev.error && ev.error.stack ? String(ev.error.stack) : null,
+          });
+        } catch {
+          // ignore
+        }
+      },
+      true
+    );
+  }
+
+  if (CONFIG.captureUnhandledRejections) {
+    window.addEventListener(
+      'unhandledrejection',
+      ev => {
+        if (!_active) return;
+        try {
+          const reason = ev && ev.reason;
+          recordEvent('UNHANDLED REJECTION', 'perf', {
+            reason: reason && reason.stack ? String(reason.stack) : safeString(reason),
+          });
+        } catch {
+          // ignore
+        }
+      },
+      true
+    );
+  }
+}
+
+function wrapConsole() {
+  if (_wrappedConsole) return;
+  if (typeof console === 'undefined') return;
+  if (!CONFIG.captureConsoleErrors) return;
+
+  _consoleOriginal = {
+    log: console.log.bind(console),
+    info: console.info ? console.info.bind(console) : console.log.bind(console),
+    warn: console.warn ? console.warn.bind(console) : console.log.bind(console),
+    error: console.error ? console.error.bind(console) : console.log.bind(console),
+    groupCollapsed: console.groupCollapsed ? console.groupCollapsed.bind(console) : console.log.bind(console),
+    groupEnd: console.groupEnd ? console.groupEnd.bind(console) : (() => {}),
+  };
+
+  console.error = (...args) => {
+    try {
+      if (_active) recordEvent('CONSOLE ERROR', 'perf', { args: args.map(a => safeString(a)).slice(0, 8) });
+    } catch {
+      // ignore
+    }
+    _consoleOriginal.error(...args);
+  };
+
+  console.warn = (...args) => {
+    try {
+      if (_active) recordEvent('CONSOLE WARN', 'perf', { args: args.map(a => safeString(a)).slice(0, 8) });
+    } catch {
+      // ignore
+    }
+    _consoleOriginal.warn(...args);
+  };
+
+  _wrappedConsole = true;
+}
+
+function autopackReset() {
+  _autopack.runId = null;
+  _autopack.startedAtPerf = 0;
+  _autopack.startedAtIso = null;
+  _autopack.slots = 0;
+  _autopack.placements = 0;
+  _autopack.noFitSlots = 0;
+  _autopack.last = null;
+  _autopack.slotEvents = 0;
+  _autopack.placeEvents = 0;
+}
+
+function autopackStart(meta = {}) {
+  if (!_active) return;
+  if (!CONFIG.autopackTelemetry) return;
+  autopackReset();
+  _autopack.runId = `ap-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  _autopack.startedAtPerf = performance.now();
+  _autopack.startedAtIso = new Date().toISOString();
+  recordEvent('AUTOPACK START', 'autopack', { runId: _autopack.runId, ...meta });
+}
+
+function autopackSlot(meta = {}) {
+  if (!_active) return;
+  if (!CONFIG.autopackTelemetry) return;
+  _autopack.slots++;
+  if (meta && meta.placed === false) _autopack.noFitSlots++;
+  _autopack.last = meta;
+
+  if (_autopack.slotEvents < CONFIG.autopackMaxSlotEvents) {
+    recordEvent('AUTOPACK SLOT', 'autopack', {
+      runId: _autopack.runId,
+      slot: _autopack.slots,
+      ...meta,
+    });
+    _autopack.slotEvents++;
+  }
+
+  if (_autopack.slots % CONFIG.autopackSummaryEverySlots === 0) {
+    recordEvent('AUTOPACK SUMMARY', 'autopack', {
+      runId: _autopack.runId,
+      slots: _autopack.slots,
+      placements: _autopack.placements,
+      noFitSlots: _autopack.noFitSlots,
+      last: _autopack.last,
+    });
+  }
+}
+
+function autopackPlace(meta = {}) {
+  if (!_active) return;
+  if (!CONFIG.autopackTelemetry) return;
+  _autopack.placements++;
+  _autopack.last = meta;
+  if (_autopack.placeEvents < CONFIG.autopackMaxPlaceEvents) {
+    recordEvent('AUTOPACK PLACE', 'autopack', { runId: _autopack.runId, placement: _autopack.placements, ...meta });
+    _autopack.placeEvents++;
+  }
+}
+
+function autopackEnd(meta = {}) {
+  if (!_active) return;
+  if (!CONFIG.autopackTelemetry) return;
+  const elapsedMs = _autopack.startedAtPerf ? Math.round(performance.now() - _autopack.startedAtPerf) : null;
+  recordEvent('AUTOPACK END', 'autopack', {
+    runId: _autopack.runId,
+    elapsedMs,
+    slots: _autopack.slots,
+    placements: _autopack.placements,
+    noFitSlots: _autopack.noFitSlots,
+    ...meta,
+  });
 }
 
 function trackInflight(fnName, id) {
@@ -639,6 +832,9 @@ function start() {
   _startTime = performance.now();
   ensureSession();
   recordEvent('DIAG START', 'debug', { version: DEBUG_VERSION, sessionId: _sessionId });
+
+  wrapConsole();
+  installWindowErrorHandlers();
   try {
     window.__TP3D_DIAG_PERSIST_KEY__ = PERSIST_KEY;
   } catch {
@@ -749,8 +945,12 @@ export function initTP3DDebugger() {
     __tp3dInstalled: true,
     version: DEBUG_VERSION,
     isEnabled,
+    isActive: () => _active,
     enable,
     disable,
+    configure: updateConfig,
+    recordEvent: (type, category, data) => recordEvent(type, category, data),
+    record: (type, category, data) => recordEvent(type, category, data),
     getEvents: () => _events.slice(),
     getEventsByType: type => _events.filter(e => e.type === type),
     getPersisted: () => {
@@ -778,6 +978,13 @@ export function initTP3DDebugger() {
         sessionId: _sessionId,
         total: _events.length,
         counts,
+        autopack: {
+          runId: _autopack.runId,
+          slots: _autopack.slots,
+          placements: _autopack.placements,
+          noFitSlots: _autopack.noFitSlots,
+          last: _autopack.last,
+        },
       };
       if (_active) console.log('TP3D_DIAG SUMMARY', summary);
       return summary;
@@ -800,6 +1007,12 @@ export function initTP3DDebugger() {
       URL.revokeObjectURL(url);
     },
     snapshotSettings,
+
+    // AutoPack telemetry (called from packer when debug is enabled)
+    autopackStart,
+    autopackSlot,
+    autopackPlace,
+    autopackEnd,
   };
 
   if (isEnabled()) start();

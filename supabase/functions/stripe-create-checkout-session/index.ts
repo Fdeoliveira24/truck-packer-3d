@@ -8,10 +8,23 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return json({ ok: true }, { origin });
 
   try {
+    const debug = Deno.env.get("SUPABASE_DEBUG") === "1";
+    if (debug) {
+      const authHeader = req.headers.get("authorization") || req.headers.get("Authorization") || "";
+      const raw = authHeader.replace(/^bearer\\s+/i, "").trim();
+      console.log("auth header present:", !!authHeader);
+      console.log("auth header starts with Bearer:", authHeader.toLowerCase().startsWith("bearer "));
+      console.log("jwt segments:", raw ? raw.split(".").length : 0);
+      console.log("jwt len:", raw.length);
+    }
     if (req.method !== "POST") return json({ error: "Method not allowed" }, { status: 405, origin });
     if (!origin) return json({ error: "Origin not allowed" }, { status: 403, origin: null });
 
-    const { user } = await requireUser(req);
+    const auth = await requireUser(req);
+    if (!auth.ok || !auth.user) {
+      return json({ error: auth.error || "Unauthorized" }, { status: 401, origin });
+    }
+    const user = auth.user;
 
     const body = await req.json().catch(() => ({}));
     const price_id = String(body.price_id ?? "");
@@ -22,6 +35,21 @@ Deno.serve(async (req) => {
     const sb = serviceClient();
     const stripe = stripeClient();
 
+    // If user already has an active/trialing subscription, send them to the portal
+    const { data: existingSub, error: subErr } = await sb
+      .from("subscriptions")
+      .select("status, stripe_subscription_id, stripe_customer_id, current_period_end, cancel_at_period_end, created_at")
+      .eq("user_id", user.id)
+      .or("status.in.(active,trialing,past_due,unpaid),cancel_at_period_end.eq.true")
+      .order("current_period_end", { ascending: false, nullsFirst: false })
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (subErr) {
+      console.error("stripe-create-checkout-session: subscription lookup error", subErr);
+    }
+
     const { data: existing, error: mapErr } = await sb
       .from("stripe_customers")
       .select("stripe_customer_id")
@@ -30,7 +58,23 @@ Deno.serve(async (req) => {
 
     if (mapErr) throw mapErr;
 
-    let stripeCustomerId = existing?.stripe_customer_id ?? null;
+    let stripeCustomerId = existingSub?.stripe_customer_id ?? existing?.stripe_customer_id ?? null;
+
+    if (existingSub && existingSub.status) {
+      if (!stripeCustomerId) {
+        return json({ error: "Existing subscription found but no Stripe customer" }, { status: 409, origin });
+      }
+      const return_url = new URL(origin);
+      return_url.pathname = "/index.html";
+      return_url.searchParams.set("billing", "portal_return");
+
+      const session = await stripe.billingPortal.sessions.create({
+        customer: stripeCustomerId,
+        return_url: return_url.toString(),
+      });
+
+      return json({ url: session.url }, { status: 200, origin });
+    }
 
     if (!stripeCustomerId) {
       const customer = await stripe.customers.create({

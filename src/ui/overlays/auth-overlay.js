@@ -202,6 +202,10 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
     }
   }
 
+  /**
+   * @param {string} nextPhase
+   * @param {{ error?: any, onRetry?: (() => void) | null }} [opts]
+   */
   function setPhase(nextPhase, { error, onRetry } = {}) {
     const p = String(nextPhase || '').toLowerCase();
     phase = p === 'cantconnect' || p === 'form' ? p : 'checking';
@@ -257,7 +261,7 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
   function renderOfflineBanner() {
     if (!isOffline()) return null;
     return el('div', { className: 'auth-banner auth-banner--warning', role: 'alert' },
-      'You are offline. Connect to the internet to continue.');
+      ['You are offline. Connect to the internet to continue.']);
   }
 
   // ---- Checking phase ----

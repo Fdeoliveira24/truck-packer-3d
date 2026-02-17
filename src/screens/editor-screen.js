@@ -1254,25 +1254,25 @@ export function createEditorScreen({
   InteractionManager,
 }) {
   const EditorUI = (() => {
-    const shellEl = document.querySelector('.editor-shell');
-    const leftEl = document.getElementById('editor-left');
-    const rightEl = document.getElementById('editor-right');
-    const btnLeft = document.getElementById('btn-editor-left');
-    const btnRight = document.getElementById('btn-editor-right');
-    const btnLeftClose = document.getElementById('btn-left-close');
-    const btnRightClose = document.getElementById('btn-right-close');
-    const viewportEl = document.getElementById('viewport');
-    const inspectorEl = document.getElementById('inspector-body');
-    const caseSearchEl = document.getElementById('editor-case-search');
-    const caseFilterToggleEl = document.getElementById('editor-case-filters-toggle');
-    const caseChipsEl = document.getElementById('editor-case-chips');
-    const caseListEl = document.getElementById('editor-case-list');
-    const btnAutopack = document.getElementById('btn-autopack');
-    const btnUnpack = document.getElementById('btn-unpack');
-    const btnShare = document.getElementById('btn-share');
-    const btnPng = document.getElementById('btn-screenshot');
-    const btnPdf = document.getElementById('btn-pdf');
-    const viewportHintBtn = document.getElementById('viewport-hint-icon');
+    const shellEl = /** @type {HTMLElement|null} */ (document.querySelector('.editor-shell'));
+    const leftEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-left'));
+    const rightEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-right'));
+    const btnLeft = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-editor-left'));
+    const btnRight = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-editor-right'));
+    const btnLeftClose = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-left-close'));
+    const btnRightClose = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-right-close'));
+    const viewportEl = /** @type {HTMLElement|null} */ (document.getElementById('viewport'));
+    const inspectorEl = /** @type {HTMLElement|null} */ (document.getElementById('inspector-body'));
+    const caseSearchEl = /** @type {HTMLInputElement|null} */ (document.getElementById('editor-case-search'));
+    const caseFilterToggleEl = /** @type {HTMLButtonElement|null} */ (document.getElementById('editor-case-filters-toggle'));
+    const caseChipsEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-case-chips'));
+    const caseListEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-case-list'));
+    const btnAutopack = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-autopack'));
+    const btnUnpack = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-unpack'));
+    const btnShare = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-share'));
+    const btnPng = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-screenshot'));
+    const btnPdf = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-pdf'));
+    const viewportHintBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('viewport-hint-icon'));
 
     let initialized = false;
     const supportsWebGL = Utils.hasWebGL();

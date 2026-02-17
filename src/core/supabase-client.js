@@ -2404,6 +2404,8 @@ export async function getMyOrgRole(orgId) {
  * @returns {Promise<Array>} Array of members with profile info
  */
 export async function getOrganizationMembers(orgId) {
+  /** @type {any} */
+  const getOrganizationMembersFn = getOrganizationMembers;
   const client = requireClient();
   const clientSessionOk = await ensureClientSession();
   if (!clientSessionOk) {
@@ -2428,15 +2430,15 @@ export async function getOrganizationMembers(orgId) {
   let profiles = [];
   if (userIds.length > 0) {
     if (
-      !getOrganizationMembers._profileSelect ||
-      getOrganizationMembers._profileSelect.includes('email')
+      !getOrganizationMembersFn._profileSelect ||
+      getOrganizationMembersFn._profileSelect.includes('email')
     ) {
-      getOrganizationMembers._profileSelect =
+      getOrganizationMembersFn._profileSelect =
         'id, display_name, first_name, last_name, full_name, avatar_url';
     }
     let profileRows = null;
     let profileError = null;
-    const primarySelect = getOrganizationMembers._profileSelect;
+    const primarySelect = getOrganizationMembersFn._profileSelect;
     const primaryRes = await client.from('profiles').select(primarySelect).in('id', userIds);
     profileRows = primaryRes.data;
     profileError = primaryRes.error;
@@ -2445,7 +2447,7 @@ export async function getOrganizationMembers(orgId) {
       const fallbackSelect = 'id, display_name, full_name';
       const fallbackRes = await client.from('profiles').select(fallbackSelect).in('id', userIds);
       if (!fallbackRes.error) {
-        getOrganizationMembers._profileSelect = fallbackSelect;
+        getOrganizationMembersFn._profileSelect = fallbackSelect;
         profileRows = fallbackRes.data;
         profileError = null;
       }

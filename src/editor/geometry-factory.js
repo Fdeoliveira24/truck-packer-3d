@@ -10,7 +10,7 @@
  * Creates a THREE.js geometry based on case shape.
  * @param {object} caseData - Case data with shape and dimensions
  * @param {function} toWorld - Function to convert inches to world units
- * @returns {THREE.BufferGeometry} The geometry for the case
+ * @returns {any} The geometry for the case
  */
 export function createCaseGeometry(caseData, toWorld) {
     const dims = caseData.dimensions || { length: 1, width: 1, height: 1 };

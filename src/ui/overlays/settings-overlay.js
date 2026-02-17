@@ -202,6 +202,8 @@ export function createSettingsOverlay({
   let isLoadingOrgMembers = false;
   let orgMembersError = null;
   let orgMembersRequestId = 0;
+  let orgMembersSearchQuery = '';
+  let orgMembersRoleFilter = 'all';
   const orgMemberActions = new Set();
   let lastOrgMembersOrgId = null;
   let lastKnownUserId = null;
@@ -509,7 +511,31 @@ export function createSettingsOverlay({
 
   function getMemberEmail(member) {
     const profile = member && member.profile ? member.profile : null;
-    return profile && profile.email ? String(profile.email) : '';
+    const profileEmail = profile && profile.email ? String(profile.email) : '';
+    if (profileEmail) return profileEmail;
+    if (member && member.email) return String(member.email);
+    if (member && member.user_email) return String(member.user_email);
+    return '';
+  }
+
+  function getRoleLabel(roleValue) {
+    const role = String(roleValue || 'member').toLowerCase();
+    if (role === 'owner') return 'Owner';
+    if (role === 'admin') return 'Admin';
+    if (role === 'member') return 'Member';
+    return role ? role.charAt(0).toUpperCase() + role.slice(1) : 'Member';
+  }
+
+  function formatMemberJoined(member) {
+    const joined = member && member.joined_at ? String(member.joined_at) : '';
+    if (!joined) return '—';
+    try {
+      const parsed = new Date(joined);
+      if (Number.isNaN(parsed.getTime())) return '—';
+      return parsed.toLocaleDateString();
+    } catch {
+      return '—';
+    }
   }
 
   async function updateMemberRole(orgId, member, nextRole, currentUserId, currentRole) {
@@ -839,8 +865,7 @@ export function createSettingsOverlay({
   // Render Updates content inside the modal
   function renderUpdatesContent(container) {
     const wrap = doc.createElement('div');
-    wrap.className = 'grid';
-    wrap.style.gap = 'var(--space-4)';
+    wrap.className = 'tp3d-settings-stack';
 
     updatesData.forEach(u => {
       const card = doc.createElement('div');
@@ -848,10 +873,9 @@ export function createSettingsOverlay({
 
       const header = doc.createElement('div');
       header.className = 'row space-between';
-      header.style.alignItems = 'flex-start';
 
       const left = doc.createElement('div');
-      left.innerHTML = `<div style="font-weight:var(--font-semibold);font-size:var(--text-lg)">Version ${u.version}</div><div class="muted" style="font-size:var(--text-xs)">${new Date(u.date).toLocaleDateString()}</div>`;
+      left.innerHTML = `<div class="tp3d-settings-card-title">Version ${u.version}</div><div class="muted tp3d-settings-meta">${new Date(u.date).toLocaleDateString()}</div>`;
       header.appendChild(left);
       card.appendChild(header);
 
@@ -863,15 +887,12 @@ export function createSettingsOverlay({
 
       sections.forEach(s => {
         const t = doc.createElement('div');
-        t.style.marginTop = '12px';
-        t.style.fontWeight = 'var(--font-semibold)';
+        t.className = 'tp3d-settings-section-heading';
         t.textContent = s.title;
         card.appendChild(t);
 
         const ul = doc.createElement('ul');
-        ul.style.margin = '8px 0 0 16px';
-        ul.style.color = 'var(--text-secondary)';
-        ul.style.fontSize = 'var(--text-sm)';
+        ul.className = 'tp3d-settings-list';
         s.items.forEach(it => {
           const li = doc.createElement('li');
           li.textContent = it;
@@ -889,39 +910,34 @@ export function createSettingsOverlay({
   // Render Roadmap content inside the modal
   function renderRoadmapContent(container) {
     const wrap = doc.createElement('div');
-    wrap.className = 'grid';
-    wrap.style.gap = 'var(--space-5)';
+    wrap.className = 'tp3d-settings-stack--loose';
 
     roadmapData.forEach(group => {
       const groupWrap = doc.createElement('div');
-      groupWrap.className = 'grid';
-      groupWrap.style.gap = '10px';
+      groupWrap.className = 'tp3d-settings-stack--tight';
 
       const h = doc.createElement('div');
-      h.style.fontSize = 'var(--text-lg)';
-      h.style.fontWeight = 'var(--font-semibold)';
+      h.className = 'tp3d-settings-card-title';
       h.textContent = group.quarter;
       groupWrap.appendChild(h);
 
       const grid = doc.createElement('div');
-      grid.className = 'grid';
-      grid.style.gap = 'var(--space-3)';
+      grid.className = 'tp3d-settings-stack--tight';
 
       group.items.forEach(item => {
         const card = doc.createElement('div');
-        card.className = 'card';
-        card.style.cursor = 'pointer';
+        card.className = 'card tp3d-settings-card--clickable';
         card.innerHTML = `
-          <div class="row space-between" style="gap:10px">
+          <div class="row space-between">
             <div style="font-weight:var(--font-semibold)">${item.title}</div>
-            <div class="badge" style="border-color:transparent;background:${item.color};color:white"><i class="${item.badgeIcon}"></i> ${item.status}</div>
+            <div class="badge tp3d-settings-roadmap-badge" style="background:${item.color}"><i class="${item.badgeIcon}"></i> ${item.status}</div>
           </div>
-          <div class="muted" style="font-size:var(--text-sm);margin-top:8px">${item.details}</div>
+          <div class="muted tp3d-settings-meta tp3d-settings-mt-sm">${item.details}</div>
         `;
         card.addEventListener('click', () => {
           UIComponents.showModal({
             title: item.title,
-            content: `<div class="muted" style="font-size:var(--text-sm)">${item.details}</div>`,
+            content: `<div class="muted tp3d-settings-meta">${item.details}</div>`,
             actions: [{ label: 'Close', variant: 'primary' }],
           });
         });
@@ -1281,8 +1297,8 @@ export function createSettingsOverlay({
 
     // Create initials avatar as default (may be replaced by img)
     const orgAvatarEl = doc.createElement('span');
-    orgAvatarEl.className = 'tp3d-settings-account-avatar';
-    orgAvatarEl.style.cssText = 'background: var(--accent-primary); display: inline-flex; width: 28px; height: 28px; font-size: 12px;';
+    orgAvatarEl.className = 'tp3d-settings-account-avatar tp3d-settings-avatar--sm';
+    orgAvatarEl.style.background = 'var(--accent-primary)';
     orgAvatarEl.textContent = orgName.charAt(0).toUpperCase();
     const orgId = orgData && orgData.id ? String(orgData.id) : '';
     const logoKey = orgId + '|' + (orgLogoPath || orgAvatarSafe || '');
@@ -1293,6 +1309,7 @@ export function createSettingsOverlay({
     if (!cachedLogoSrc && (orgLogoPath || orgAvatarSafe)) {
       orgAvatarEl.style.visibility = 'hidden';
     }
+    /** @type {HTMLSpanElement|HTMLImageElement} */
     let avatarNode = orgAvatarEl;
     if (cachedLogoSrc) {
       const cachedImg = doc.createElement('img');
@@ -1300,7 +1317,7 @@ export function createSettingsOverlay({
       cachedImg.alt = orgName;
       cachedImg.width = 28;
       cachedImg.height = 28;
-      cachedImg.style.cssText = 'border-radius: 50%; object-fit: cover;';
+      cachedImg.className = 'tp3d-settings-avatar-img';
       cachedImg.onerror = () => {
         if (cachedImg.parentNode) cachedImg.parentNode.replaceChild(orgAvatarEl, cachedImg);
         avatarNode = orgAvatarEl;
@@ -1326,14 +1343,18 @@ export function createSettingsOverlay({
           lastOrgLogoExpiresAt = Date.now() + 50000;
         }
 
-        if (avatarNode && avatarNode.tagName === 'IMG' && avatarNode.src === logoSrc) return;
+        if (
+          avatarNode &&
+          avatarNode.tagName === 'IMG' &&
+          /** @type {HTMLImageElement} */ (avatarNode).src === logoSrc
+        ) return;
 
         const orgImg = doc.createElement('img');
         orgImg.src = logoSrc;
         orgImg.alt = orgName;
         orgImg.width = 28;
         orgImg.height = 28;
-        orgImg.style.cssText = 'border-radius: 50%; object-fit: cover;';
+        orgImg.className = 'tp3d-settings-avatar-img';
         orgImg.onload = function () {
           if (avatarNode && avatarNode.parentNode) {
             avatarNode.parentNode.replaceChild(orgImg, avatarNode);
@@ -1391,9 +1412,8 @@ export function createSettingsOverlay({
 
       const retryBtn = doc.createElement('button');
       retryBtn.type = 'button';
-      retryBtn.className = 'btn';
+      retryBtn.className = 'btn tp3d-settings-mt-sm';
       retryBtn.textContent = 'Retry';
-      retryBtn.style.marginTop = 'var(--space-2)';
       retryBtn.addEventListener('click', () => {
         if (api && typeof api.refreshBilling === 'function') {
           api.refreshBilling({ force: true }).catch(() => {});
@@ -1432,8 +1452,7 @@ export function createSettingsOverlay({
 
       // Status / cancellation info
       const statusLine = doc.createElement('div');
-      statusLine.className = 'muted';
-      statusLine.style.marginTop = 'var(--space-1)';
+      statusLine.className = 'muted tp3d-settings-mt-xs';
 
       if (isTrial && state.trialEndsAt) {
         const endDate = new Date(state.trialEndsAt);
@@ -1473,9 +1492,8 @@ export function createSettingsOverlay({
 
       const subBtn = doc.createElement('button');
       subBtn.type = 'button';
-      subBtn.className = 'btn btn-primary';
+      subBtn.className = 'btn btn-primary tp3d-settings-mt-sm';
       subBtn.textContent = 'Subscribe';
-      subBtn.style.marginTop = 'var(--space-2)';
       subBtn.addEventListener('click', () => {
         if (!api || typeof api.startCheckout !== 'function') {
           if (UIComponents) UIComponents.showToast('Checkout coming soon. Contact sales.', 'info', { title: 'Billing' });
@@ -1554,12 +1572,11 @@ export function createSettingsOverlay({
     // --- Debug diagnostics (dev only, inside <details>) ---
     if (isDebug) {
       const details = doc.createElement('details');
-      details.className = 'tp3d-settings-billing';
+      details.className = 'tp3d-settings-billing tp3d-settings-debug';
 
       const summary = doc.createElement('summary');
       summary.className = 'muted';
       summary.textContent = 'Diagnostics';
-      summary.style.cssText = 'cursor: pointer; font-size: var(--text-sm);';
       details.appendChild(summary);
 
       const lastEl = doc.createElement('div');
@@ -1575,7 +1592,6 @@ export function createSettingsOverlay({
       }
 
       const pre = doc.createElement('pre');
-      pre.style.cssText = 'max-height: 220px; overflow: auto; background: var(--bg-hover); padding: 8px; border-radius: 8px; font-size: 11px; margin-top: var(--space-2);';
       pre.textContent = JSON.stringify(state, null, 2);
       details.appendChild(pre);
 
@@ -1797,9 +1813,7 @@ export function createSettingsOverlay({
     })();
 
     const headerLeft = doc.createElement('div');
-    headerLeft.className = 'row';
-    headerLeft.style.gap = 'var(--space-3)';
-    headerLeft.style.alignItems = 'center';
+    headerLeft.className = 'tp3d-settings-header-row';
 
     // Back button for sub-views
     if (meta.showBack) {
@@ -1915,13 +1929,10 @@ export function createSettingsOverlay({
         const perfMode = Boolean(perf && perf.perfMode);
 
         const shadowRow = doc.createElement('div');
-        shadowRow.className = 'row';
-        shadowRow.style.gap = 'var(--space-2)';
-        shadowRow.style.alignItems = 'center';
+        shadowRow.className = 'tp3d-settings-inline-row';
 
         const shadowStatus = doc.createElement('div');
-        shadowStatus.className = 'muted';
-        shadowStatus.style.fontSize = 'var(--text-sm)';
+        shadowStatus.className = 'muted tp3d-settings-meta';
         shadowStatus.textContent = !hasRenderer
           ? 'Unavailable'
           : shadowsEnabled
@@ -2599,8 +2610,8 @@ export function createSettingsOverlay({
         logoCell.className = 'row';
 
         const logoPreview = doc.createElement('span');
-        logoPreview.className = 'tp3d-settings-account-avatar';
-        logoPreview.style.cssText = 'background: var(--accent-primary); display: inline-flex; width: 40px; height: 40px; font-size: 16px;';
+        logoPreview.className = 'tp3d-settings-account-avatar tp3d-settings-avatar--lg';
+        logoPreview.style.background = 'var(--accent-primary)';
         logoPreview.textContent = (orgData.name || 'W').charAt(0).toUpperCase();
         const orgId = orgData && orgData.id ? String(orgData.id) : '';
         const orgLogoPath2 = orgData.logo_path ? String(orgData.logo_path) : null;
@@ -2613,6 +2624,7 @@ export function createSettingsOverlay({
         if (!cachedLogoSrc && (orgLogoPath2 || orgAvatarUrl2)) {
           logoPreview.style.visibility = 'hidden';
         }
+        /** @type {HTMLSpanElement|HTMLImageElement} */
         let logoNode = logoPreview;
         if (cachedLogoSrc) {
           const cachedImg = doc.createElement('img');
@@ -2620,7 +2632,7 @@ export function createSettingsOverlay({
           cachedImg.alt = orgData.name || 'Logo';
           cachedImg.width = 40;
           cachedImg.height = 40;
-          cachedImg.style.cssText = 'border-radius: 50%; object-fit: cover;';
+          cachedImg.className = 'tp3d-settings-avatar-img';
           cachedImg.onerror = () => {
             if (cachedImg.parentNode) cachedImg.parentNode.replaceChild(logoPreview, cachedImg);
             logoNode = logoPreview;
@@ -2642,13 +2654,17 @@ export function createSettingsOverlay({
               lastOrgLogoUrl = src;
               lastOrgLogoExpiresAt = Date.now() + 50000;
             }
-            if (logoNode && logoNode.tagName === 'IMG' && logoNode.src === src) return;
+            if (
+              logoNode &&
+              logoNode.tagName === 'IMG' &&
+              /** @type {HTMLImageElement} */ (logoNode).src === src
+            ) return;
             const img = doc.createElement('img');
             img.src = src;
             img.alt = orgData.name || 'Logo';
             img.width = 40;
             img.height = 40;
-            img.style.cssText = 'border-radius: 50%; object-fit: cover;';
+            img.className = 'tp3d-settings-avatar-img';
             img.onload = () => {
               if (logoNode && logoNode.parentNode) {
                 logoNode.parentNode.replaceChild(img, logoNode);
@@ -2767,9 +2783,7 @@ export function createSettingsOverlay({
           viewContainer.appendChild(orgRow('Role', makeSkeleton()));
         } else if (!membershipData) {
           const wrap = doc.createElement('div');
-          wrap.style.display = 'flex';
-          wrap.style.flexDirection = 'column';
-          wrap.style.gap = '8px';
+          wrap.className = 'tp3d-settings-stack--tight';
 
           const noOrgEl = doc.createElement('div');
           noOrgEl.className = 'muted';
@@ -2837,8 +2851,8 @@ export function createSettingsOverlay({
           logoCell.className = 'row';
 
           const logoPreview = doc.createElement('span');
-          logoPreview.className = 'tp3d-settings-account-avatar';
-          logoPreview.style.cssText = 'background: var(--accent-primary); display: inline-flex; width: 40px; height: 40px; font-size: 16px;';
+          logoPreview.className = 'tp3d-settings-account-avatar tp3d-settings-avatar--lg';
+          logoPreview.style.background = 'var(--accent-primary)';
           logoPreview.textContent = (orgData.name || 'W').charAt(0).toUpperCase();
           const orgId = orgData && orgData.id ? String(orgData.id) : '';
           const orgLogoPath2 = orgData.logo_path ? String(orgData.logo_path) : null;
@@ -2851,6 +2865,7 @@ export function createSettingsOverlay({
           if (!cachedLogoSrc && (orgLogoPath2 || orgAvatarUrl2)) {
             logoPreview.style.visibility = 'hidden';
           }
+          /** @type {HTMLSpanElement|HTMLImageElement} */
           let logoNode = logoPreview;
           if (cachedLogoSrc) {
             const cachedImg = doc.createElement('img');
@@ -2858,7 +2873,7 @@ export function createSettingsOverlay({
             cachedImg.alt = orgData.name || 'Logo';
             cachedImg.width = 40;
             cachedImg.height = 40;
-            cachedImg.style.cssText = 'border-radius: 50%; object-fit: cover;';
+            cachedImg.className = 'tp3d-settings-avatar-img';
             cachedImg.onerror = () => {
               if (cachedImg.parentNode) cachedImg.parentNode.replaceChild(logoPreview, cachedImg);
               logoNode = logoPreview;
@@ -2881,13 +2896,17 @@ export function createSettingsOverlay({
                 lastOrgLogoUrl = src;
                 lastOrgLogoExpiresAt = Date.now() + 50000;
               }
-              if (logoNode && logoNode.tagName === 'IMG' && logoNode.src === src) return;
+              if (
+                logoNode &&
+                logoNode.tagName === 'IMG' &&
+                /** @type {HTMLImageElement} */ (logoNode).src === src
+              ) return;
               const img = doc.createElement('img');
               img.src = src;
               img.alt = orgData.name || 'Logo';
               img.width = 40;
               img.height = 40;
-              img.style.cssText = 'border-radius: 50%; object-fit: cover;';
+              img.className = 'tp3d-settings-avatar-img';
               img.onload = () => {
                 if (logoNode && logoNode.parentNode) {
                   logoNode.parentNode.replaceChild(img, logoNode);
@@ -2971,9 +2990,7 @@ export function createSettingsOverlay({
           // Edit button only for owner/admin
           if (!isOwnerOrAdmin) {
             const noteEl = doc.createElement('div');
-            noteEl.className = 'muted';
-            noteEl.style.fontSize = 'var(--text-sm)';
-            noteEl.style.marginTop = 'var(--space-3)';
+            noteEl.className = 'muted tp3d-settings-meta tp3d-settings-mt-md';
             noteEl.textContent = 'Only admins can edit organization details.';
             viewContainer.appendChild(noteEl);
           } else {
@@ -3016,23 +3033,23 @@ export function createSettingsOverlay({
         msg.className = 'muted';
         msg.textContent = 'Sign in to manage workspace members.';
         membersCard.appendChild(msg);
-        body.appendChild(membersCard);
       } else if (!orgId) {
         const msg = doc.createElement('div');
         msg.className = 'muted';
-        msg.textContent = 'Create or join a workspace to manage members.';
+        msg.textContent = 'No active organization selected.';
         membersCard.appendChild(msg);
-        body.appendChild(membersCard);
       } else {
         if (lastOrgMembersOrgId && String(lastOrgMembersOrgId) !== String(orgId)) {
           orgMembersData = null;
           orgMembersError = null;
+          orgMembersSearchQuery = '';
+          orgMembersRoleFilter = 'all';
         }
 
         const rolesHelp = doc.createElement('div');
         rolesHelp.className = 'muted tp3d-role-help';
         rolesHelp.textContent =
-          'Workspace Owners and Workspace Admins can assign and update roles, as well as set default roles. Roles available in a workspace are based on the solution set.';
+          'Workspace members are scoped to your active organization. Owners and admins can update roles.';
         membersCard.appendChild(rolesHelp);
 
         if (!orgMembersData && !isLoadingOrgMembers) {
@@ -3051,7 +3068,6 @@ export function createSettingsOverlay({
             <div class="tp3d-skeleton tp3d-skeleton-short"></div>
           `;
           membersCard.appendChild(skeletonGroup);
-          body.appendChild(membersCard);
         } else if (orgMembersError) {
           const msg = doc.createElement('div');
           msg.className = 'muted';
@@ -3075,26 +3091,80 @@ export function createSettingsOverlay({
           retryRow.appendChild(retryBtn);
           membersCard.appendChild(msg);
           membersCard.appendChild(retryRow);
-          body.appendChild(membersCard);
         } else {
           const members = Array.isArray(orgMembersData) ? orgMembersData : [];
-          const ownersCount = members.filter(m => m && m.role === 'owner').length;
+          const ownersCount = members.filter(m => m && String(m.role || '').toLowerCase() === 'owner').length;
+
+          const toolbar = doc.createElement('div');
+          toolbar.className = 'tp3d-org-members-toolbar';
+
+          const searchInput = doc.createElement('input');
+          searchInput.type = 'search';
+          searchInput.className = 'input tp3d-org-members-search';
+          searchInput.placeholder = 'Search members by name or email';
+          searchInput.value = orgMembersSearchQuery;
+          searchInput.setAttribute('aria-label', 'Search members');
+          toolbar.appendChild(searchInput);
+
+          const roleFilter = doc.createElement('select');
+          roleFilter.className = 'select tp3d-org-members-filter';
+          roleFilter.setAttribute('aria-label', 'Filter members by role');
+          roleFilter.innerHTML = `
+            <option value="all">All Roles</option>
+            <option value="owner">Owner</option>
+            <option value="admin">Admin</option>
+            <option value="member">Member</option>
+          `;
+          roleFilter.value = orgMembersRoleFilter;
+          toolbar.appendChild(roleFilter);
+          membersCard.appendChild(toolbar);
+
+          const comingSoon = doc.createElement('div');
+          comingSoon.className = 'muted tp3d-org-members-coming-soon';
+          comingSoon.textContent = 'Invitations: coming soon.';
+          membersCard.appendChild(comingSoon);
 
           if (members.length === 0) {
             const msg = doc.createElement('div');
             msg.className = 'muted';
             msg.textContent = 'No members found for this workspace.';
             membersCard.appendChild(msg);
-            body.appendChild(membersCard);
           } else {
-            const list = doc.createElement('div');
-            list.className = 'tp3d-org-members-list';
+            const tableWrap = doc.createElement('div');
+            tableWrap.className = 'tp3d-org-members-table-wrap';
 
+            const table = doc.createElement('table');
+            table.className = 'tp3d-org-members-table';
+
+            const thead = doc.createElement('thead');
+            const headRow = doc.createElement('tr');
+            ['Name', 'Email', 'Role', 'Joined', 'Actions'].forEach(label => {
+              const th = doc.createElement('th');
+              th.textContent = label;
+              headRow.appendChild(th);
+            });
+            thead.appendChild(headRow);
+            table.appendChild(thead);
+
+            const tbody = doc.createElement('tbody');
+            table.appendChild(tbody);
+            tableWrap.appendChild(table);
+            membersCard.appendChild(tableWrap);
+
+            const emptyFilteredState = doc.createElement('div');
+            emptyFilteredState.className = 'muted tp3d-org-members-empty';
+            emptyFilteredState.textContent = 'No members match your current filters.';
+            emptyFilteredState.hidden = true;
+            membersCard.appendChild(emptyFilteredState);
+
+            const rows = [];
             members.forEach(member => {
               if (!member || !member.user_id) return;
               const userId = String(member.user_id);
-              const role = member.role ? String(member.role) : 'member';
-              const isSelf = currentUserId && currentUserId === userId;
+              const role = String(member.role || 'member').toLowerCase();
+              const memberName = getMemberDisplayName(member);
+              const memberEmail = getMemberEmail(member);
+              const isSelf = Boolean(currentUserId && currentUserId === userId);
               const isOwnerMember = role === 'owner';
               const isAdminMember = role === 'admin';
               const isLastOwner = isOwnerMember && ownersCount <= 1;
@@ -3111,117 +3181,179 @@ export function createSettingsOverlay({
 
               let roleDisableReason = '';
               if (!canEditRole) {
-                if (!canManage) {roleDisableReason = 'Only owners and admins can change roles.';}
-                else if (!canManageAdmins && (isOwnerMember || isAdminMember))
-                  {roleDisableReason = 'Only owners can change admin/owner roles.';}
-                else if (isSelf && isLastOwner) {roleDisableReason = 'You cannot change the last owner role.';}
-                else if (isSelf) {roleDisableReason = 'You cannot change your own role.';}
+                if (!canManage) {
+                  roleDisableReason = 'Only owners and admins can change roles.';
+                }
+                else if (!canManageAdmins && (isOwnerMember || isAdminMember)) {
+                  roleDisableReason = 'Only owners can change admin/owner roles.';
+                } else if (isSelf && isLastOwner) {
+                  roleDisableReason = 'You cannot change the last owner role.';
+                }
               }
 
               let removeDisableReason = '';
               if (!canRemove) {
-                if (isSelf) {removeDisableReason = 'You cannot remove yourself.';}
-                else if (isOwnerMember && ownersCount <= 1) {removeDisableReason = 'You cannot remove the last owner.';}
-                else if (!canManage) {removeDisableReason = 'Only owners and admins can remove members.';}
-                else if (!canManageAdmins && (isOwnerMember || isAdminMember))
-                  {removeDisableReason = 'Only owners can remove admins/owners.';}
+                if (isSelf) {
+                  removeDisableReason = 'You cannot remove yourself.';
+                } else if (isOwnerMember && ownersCount <= 1) {
+                  removeDisableReason = 'You cannot remove the last owner.';
+                } else if (!canManage) {
+                  removeDisableReason = 'Only owners and admins can remove members.';
+                }
+                else if (!canManageAdmins && (isOwnerMember || isAdminMember)) {
+                  removeDisableReason = 'Only owners can remove admins/owners.';
+                }
               }
 
-              const rowEl = doc.createElement('div');
-              rowEl.className = 'tp3d-org-member-row';
+              const tr = doc.createElement('tr');
+              tr.dataset.memberRole = role;
+              tr.dataset.memberSearch = `${memberName} ${memberEmail}`.toLowerCase();
 
-              const meta = doc.createElement('div');
-              meta.className = 'tp3d-org-member-meta';
-              const nameRow = doc.createElement('div');
-              nameRow.className = 'tp3d-org-member-name-row';
+              const nameCell = doc.createElement('td');
+              const nameWrap = doc.createElement('div');
+              nameWrap.className = 'tp3d-org-member-name-row';
               const name = doc.createElement('div');
               name.className = 'tp3d-org-member-name';
-              name.textContent = getMemberDisplayName(member);
-              nameRow.appendChild(name);
+              name.textContent = memberName;
+              nameWrap.appendChild(name);
               if (isSelf) {
                 const badge = doc.createElement('span');
                 badge.className = 'badge tp3d-org-member-you-badge';
                 badge.textContent = 'You';
-                nameRow.appendChild(badge);
+                nameWrap.appendChild(badge);
               }
-              meta.appendChild(nameRow);
+              nameCell.appendChild(nameWrap);
+              tr.appendChild(nameCell);
 
-              const email = getMemberEmail(member);
-              if (email) {
-                const emailEl = doc.createElement('div');
-                emailEl.className = 'tp3d-org-member-email';
-                emailEl.textContent = email;
-                meta.appendChild(emailEl);
-              }
+              const emailCell = doc.createElement('td');
+              emailCell.className = 'tp3d-org-member-email';
+              emailCell.textContent = memberEmail || '—';
+              tr.appendChild(emailCell);
 
-              const actions = doc.createElement('div');
-              actions.className = 'tp3d-org-member-actions';
+              const roleCell = doc.createElement('td');
+              const roleBadge = doc.createElement('span');
+              roleBadge.className = 'badge tp3d-org-member-role-badge';
+              roleBadge.textContent = getRoleLabel(role);
+              roleCell.appendChild(roleBadge);
+              tr.appendChild(roleCell);
 
-              const roleSelect = doc.createElement('select');
-              roleSelect.className = 'select tp3d-org-member-role-select';
-              roleSelect.setAttribute('aria-label', 'Member role');
-              const roles = ['owner', 'admin', 'member', 'viewer'];
-              roles.forEach(r => {
-                const opt = doc.createElement('option');
-                opt.value = r;
-                opt.textContent = r.charAt(0).toUpperCase() + r.slice(1);
-                if (!canManageAdmins && (r === 'owner' || r === 'admin')) opt.disabled = true;
-                roleSelect.appendChild(opt);
-              });
-              if (!roles.includes(role)) {
-                const opt = doc.createElement('option');
-                opt.value = role;
-                opt.textContent = role;
-                roleSelect.appendChild(opt);
-              }
-              roleSelect.value = role;
-              roleSelect.disabled = !canEditRole;
-              if (roleDisableReason) roleSelect.setAttribute('data-tooltip', roleDisableReason);
-              roleSelect.addEventListener('change', ev => {
-                const nextRole = ev && ev.target ? String(ev.target.value) : role;
-                if (nextRole === role) return;
-                if (!canEditRole) {
-                  roleSelect.value = role;
-                  return;
+              const joinedCell = doc.createElement('td');
+              joinedCell.className = 'tp3d-org-member-joined';
+              joinedCell.textContent = formatMemberJoined(member);
+              tr.appendChild(joinedCell);
+
+              const actionsCell = doc.createElement('td');
+              actionsCell.className = 'tp3d-org-members-actions-cell';
+
+              if (!canManage) {
+                const readOnly = doc.createElement('span');
+                readOnly.className = 'muted';
+                readOnly.textContent = '—';
+                actionsCell.appendChild(readOnly);
+              } else {
+                const actions = doc.createElement('div');
+                actions.className = 'tp3d-org-member-actions';
+
+                const roleSelect = doc.createElement('select');
+                roleSelect.className = 'select tp3d-org-member-role-select';
+                roleSelect.setAttribute('aria-label', `Role for ${memberName}`);
+                const roles = ['owner', 'admin', 'member'];
+                roles.forEach(r => {
+                  const opt = doc.createElement('option');
+                  opt.value = r;
+                  opt.textContent = getRoleLabel(r);
+                  if (r === 'owner' && !isOwner) opt.disabled = true;
+                  roleSelect.appendChild(opt);
+                });
+                if (!roles.includes(role)) {
+                  const opt = doc.createElement('option');
+                  opt.value = role;
+                  opt.textContent = getRoleLabel(role);
+                  roleSelect.appendChild(opt);
                 }
-                updateMemberRole(orgId, member, nextRole, currentUserId, currentRole).catch(() => {
-                  roleSelect.value = role;
+                roleSelect.value = role;
+                roleSelect.disabled = !canEditRole;
+                if (roleDisableReason) roleSelect.setAttribute('data-tooltip', roleDisableReason);
+                roleSelect.addEventListener('change', ev => {
+                  const target = ev.target instanceof HTMLSelectElement ? ev.target : null;
+                  const nextRole = target ? String(target.value) : role;
+                  if (nextRole === role) return;
+                  if (nextRole === 'owner' && !isOwner) {
+                    UIComponents.showToast('Only owners can promote members to owner.', 'warning');
+                    roleSelect.value = role;
+                    return;
+                  }
+                  if (!canEditRole) {
+                    roleSelect.value = role;
+                    return;
+                  }
+                  updateMemberRole(orgId, member, nextRole, currentUserId, currentRole).catch(() => {
+                    roleSelect.value = role;
+                  });
                 });
-              });
+                actions.appendChild(roleSelect);
 
-              actions.appendChild(roleSelect);
-
-              const removeBtn = doc.createElement('button');
-              removeBtn.type = 'button';
-              removeBtn.className = 'btn btn-danger tp3d-org-member-remove-btn';
-              removeBtn.textContent = 'Remove';
-              removeBtn.disabled = !canRemove;
-              if (removeDisableReason) removeBtn.setAttribute('data-tooltip', removeDisableReason);
-              removeBtn.addEventListener('click', () => {
-                if (!canRemove) return;
-                const memberName = getMemberDisplayName(member);
-                UIComponents.confirm({
-                  title: 'Remove member',
-                  message: `Remove ${memberName} from this workspace?`,
-                  okLabel: 'Remove',
-                  cancelLabel: 'Cancel',
-                  danger: true,
-                }).then(ok => {
-                  if (ok) removeMember(orgId, member);
+                const removeBtn = doc.createElement('button');
+                removeBtn.type = 'button';
+                removeBtn.className = 'btn btn-danger tp3d-org-member-remove-btn';
+                removeBtn.textContent = 'Remove';
+                removeBtn.disabled = !canRemove;
+                if (removeDisableReason) removeBtn.setAttribute('data-tooltip', removeDisableReason);
+                removeBtn.addEventListener('click', () => {
+                  if (!canRemove) return;
+                  UIComponents.confirm({
+                    title: 'Remove member',
+                    message: `Remove ${memberName} from this workspace?`,
+                    okLabel: 'Remove',
+                    cancelLabel: 'Cancel',
+                    danger: true,
+                  }).then(ok => {
+                    if (ok) removeMember(orgId, member);
+                  });
                 });
-              });
-              actions.appendChild(removeBtn);
+                actions.appendChild(removeBtn);
 
-              rowEl.appendChild(meta);
-              rowEl.appendChild(actions);
-              list.appendChild(rowEl);
+                actionsCell.appendChild(actions);
+              }
+
+              tr.appendChild(actionsCell);
+              tbody.appendChild(tr);
+              rows.push(tr);
             });
 
-            membersCard.appendChild(list);
-            body.appendChild(membersCard);
+            const applyMemberFilters = () => {
+              const searchQuery = String(orgMembersSearchQuery || '')
+                .trim()
+                .toLowerCase();
+              const roleFilterValue = String(orgMembersRoleFilter || 'all').toLowerCase();
+              let visibleCount = 0;
+              rows.forEach(rowEl => {
+                const rowSearch = String(rowEl.dataset.memberSearch || '');
+                const rowRole = String(rowEl.dataset.memberRole || '').toLowerCase();
+                const matchesSearch = !searchQuery || rowSearch.includes(searchQuery);
+                const matchesRole = roleFilterValue === 'all' || rowRole === roleFilterValue;
+                const visible = matchesSearch && matchesRole;
+                rowEl.hidden = !visible;
+                if (visible) visibleCount += 1;
+              });
+              emptyFilteredState.hidden = visibleCount > 0;
+              tableWrap.hidden = visibleCount === 0;
+            };
+
+            searchInput.addEventListener('input', () => {
+              orgMembersSearchQuery = searchInput.value || '';
+              applyMemberFilters();
+            });
+            roleFilter.addEventListener('change', () => {
+              orgMembersRoleFilter = roleFilter.value || 'all';
+              applyMemberFilters();
+            });
+
+            applyMemberFilters();
           }
         }
       }
+      body.appendChild(membersCard);
     } else {
       const billingCard = doc.createElement('div');
       billingCard.className = 'card';

@@ -49,7 +49,7 @@ function getAnonKey() {
  * Build the auth headers required by every Supabase Edge Function call.
  * Reads the current Supabase session (sync) and the anon key from config.
  *
- * @returns {Record<string, string>}
+ * @returns {Promise<Record<string, string>>}
  * @throws {Error} If no session/token or missing anon key.
  */
 async function getFunctionAuthHeaders() {

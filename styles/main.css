@@ -3023,6 +3023,16 @@ body.modal-open {
   margin-bottom: var(--space-2);
 }
 
+.tp3d-members-inline-helper {
+  margin-top: var(--space-2);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.tp3d-members-skeleton {
+  margin-top: var(--space-2);
+}
+
 .tp3d-org-members-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 170px;

@@ -2214,6 +2214,27 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
         activeOrgSafe && activeOrgSafe.id
           ? String(activeOrgSafe.id)
           : profileOrgId || membershipOrgId || null;
+
+      // Ensure membership in the bundle reflects the active org context.
+      // getMyMembership() may be ambiguous for users who belong to multiple orgs.
+      let membershipSafe = membershipResult || null;
+      const activeRole =
+        activeOrgSafe && activeOrgSafe.role ? String(activeOrgSafe.role).toLowerCase() : null;
+      const membershipSafeOrgId = normalizeOrgId(
+        membershipSafe && membershipSafe.organization_id ? membershipSafe.organization_id : null
+      );
+      if (activeOrgId && (!membershipSafe || membershipSafeOrgId !== activeOrgId)) {
+        membershipSafe = {
+          ...(membershipSafe || {}),
+          organization_id: activeOrgId,
+          role: activeRole || (membershipSafe && membershipSafe.role ? membershipSafe.role : null),
+          joined_at:
+            (activeOrgSafe && activeOrgSafe.joined_at) ||
+            (membershipSafe && membershipSafe.joined_at ? membershipSafe.joined_at : null) ||
+            null,
+        };
+      }
+
       const partial = Boolean(hadTimeout || reasonParts.length > 0);
       const bundle = {
         key: authKey,
@@ -2223,7 +2244,7 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
         user,
         profile: profileResult || _buildDefaultProfile(user),
         orgs: orgsSafe,
-        membership: membershipResult || null,
+        membership: membershipSafe,
         activeOrg: activeOrgSafe,
         orgCount: orgsSafe.length,
         activeOrgId,
@@ -2429,29 +2450,16 @@ export async function getOrganizationMembers(orgId) {
 
   let profiles = [];
   if (userIds.length > 0) {
-    if (
-      !getOrganizationMembersFn._profileSelect ||
-      getOrganizationMembersFn._profileSelect.includes('email')
-    ) {
+    if (!getOrganizationMembersFn._profileSelect) {
+      // Keep default profile query compatible with schemas that do not expose email on public.profiles.
       getOrganizationMembersFn._profileSelect =
         'id, display_name, first_name, last_name, full_name, avatar_url';
     }
     let profileRows = null;
-    let profileError = null;
     const primarySelect = getOrganizationMembersFn._profileSelect;
     const primaryRes = await client.from('profiles').select(primarySelect).in('id', userIds);
     profileRows = primaryRes.data;
-    profileError = primaryRes.error;
-
-    if (profileError) {
-      const fallbackSelect = 'id, display_name, full_name';
-      const fallbackRes = await client.from('profiles').select(fallbackSelect).in('id', userIds);
-      if (!fallbackRes.error) {
-        getOrganizationMembersFn._profileSelect = fallbackSelect;
-        profileRows = fallbackRes.data;
-        profileError = null;
-      }
-    }
+    if (primaryRes.error) throw primaryRes.error;
 
     profiles = Array.isArray(profileRows) ? profileRows : [];
   }
@@ -2508,6 +2516,63 @@ export async function removeOrganizationMember(orgId, userId) {
   if (!org || !user) return false;
 
   const { error } = await client.from('organization_members').delete().eq('organization_id', org).eq('user_id', user);
+  if (error) throw error;
+  return true;
+}
+
+// ============================================================================
+// SECTION: ORGANIZATION INVITES
+// ============================================================================
+
+/**
+ * Fetch pending invites for an organization (RLS: owner/admin only).
+ * @param {string} orgId
+ * @returns {Promise<Array>}
+ */
+export async function getOrganizationInvites(orgId) {
+  const client = requireClient();
+  const clientSessionOk = await ensureClientSession();
+  if (!clientSessionOk) throw new Error('Not authenticated');
+  await requireUserId();
+  const id = String(orgId || '').trim();
+  if (!id) return [];
+
+  const { data, error } = await client
+    .from('organization_invites')
+    .select('id, organization_id, email, role, status, invited_by, invited_at, accepted_at, revoked_at')
+    .eq('organization_id', id)
+    .order('invited_at', { ascending: false });
+
+  if (error) {
+    const code = String(error.code || '');
+    // Missing relation from Postgres or PostgREST cache; provide explicit setup guidance.
+    if (code === '42P01' || code === 'PGRST205') {
+      throw new Error('organization_invites table is missing in this project. Run migrations and then refresh schema cache.');
+    }
+    throw error;
+  }
+  return Array.isArray(data) ? data : [];
+}
+
+/**
+ * Revoke (cancel) a pending invite.
+ * @param {string} inviteId
+ * @returns {Promise<boolean>}
+ */
+export async function revokeOrganizationInvite(inviteId) {
+  const client = requireClient();
+  const clientSessionOk = await ensureClientSession();
+  if (!clientSessionOk) throw new Error('Not authenticated');
+  await requireUserId();
+  const id = String(inviteId || '').trim();
+  if (!id) return false;
+
+  const { error } = await client
+    .from('organization_invites')
+    .update({ status: 'revoked', revoked_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('status', 'pending');
+
   if (error) throw error;
   return true;
 }
@@ -2904,8 +2969,10 @@ try {
     getCurrentOrganization,
     getMyOrgRole,
     getOrganizationMembers,
+    getOrganizationInvites,
     updateOrganizationMemberRole,
     removeOrganizationMember,
+    revokeOrganizationInvite,
     updateOrganization,
     uploadAvatar,
     deleteAvatar,

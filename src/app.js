@@ -81,7 +81,12 @@ import * as SupabaseClient from './core/supabase-client.js';
 import { createAuthOverlay } from './ui/overlays/auth-overlay.js';
 import { on, emit } from './core/events.js';
 import { APP_VERSION } from './core/version.js';
-import { fetchBillingStatus, createCheckoutSession, createPortalSession } from './data/services/billing.service.js';
+import {
+  fetchBillingStatus,
+  createCheckoutSession,
+  createPortalSession,
+  acceptOrgInvite,
+} from './data/services/billing.service.js';
 
 // ============================================================================
 // SECTION: INITIALIZATION
@@ -94,10 +99,12 @@ initTP3DDebugger();
 // ============================================================================
 
 const _billingState = {
+  pending: true,
   loading: false,
   ok: false,
   plan: null,
   status: null,
+  orgId: null,
   isPro: false,
   isActive: false,
   interval: null,
@@ -105,12 +112,64 @@ const _billingState = {
   currentPeriodEnd: null,
   cancelAtPeriodEnd: false,
   cancelAt: null,
+  portalAvailable: false,
   data: null,
   error: null,
   lastFetchedAt: 0,
 };
 const _billingSubscribers = new Set();
 const BILLING_THROTTLE_MS = 30000;
+const BILLING_REQUEST_TIMEOUT_MS = 15000;
+let _billingRefreshQueued = false;
+/** @type {null|((snapshot:any, meta?:{reason?:string, activeOrgId?:string|null})=>void)} */
+let _billingGateApplier = null;
+
+function isTp3dDebugEnabled() {
+  try {
+    return typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1';
+  } catch (_) {
+    return false;
+  }
+}
+
+function billingDebugLog(step, details) {
+  if (!isTp3dDebugEnabled()) return;
+  if (typeof details === 'undefined') {
+    console.info('[Billing][App]', step);
+    return;
+  }
+  console.info('[Billing][App]', step, details);
+}
+
+const ORG_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function normalizeOrgIdForBilling(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw.toLowerCase() === 'personal') return '';
+  return ORG_UUID_RE.test(raw) ? raw : '';
+}
+
+function getActiveOrgIdForBilling() {
+  try {
+    if (typeof window !== 'undefined' && window.OrgContext && typeof window.OrgContext.getActiveOrgId === 'function') {
+      const id = normalizeOrgIdForBilling(window.OrgContext.getActiveOrgId());
+      if (id) return id;
+    }
+  } catch (_) {
+    // ignore
+  }
+  return '';
+}
+
+function applyAccessGateFromBilling(billingSnapshot, meta = {}) {
+  if (typeof _billingGateApplier !== 'function') return;
+  try {
+    _billingGateApplier(billingSnapshot || getBillingState(), meta);
+  } catch (_) {
+    // gate application must never break app flow
+  }
+}
 
 function _notifyBilling() {
   const snapshot = getBillingState();
@@ -123,6 +182,8 @@ function getBillingState() {
     ok: _billingState.ok,
     plan: _billingState.plan,
     status: _billingState.status,
+    orgId: _billingState.orgId,
+    pending: _billingState.pending,
     isPro: _billingState.isPro,
     isActive: _billingState.isActive,
     interval: _billingState.interval,
@@ -130,6 +191,7 @@ function getBillingState() {
     currentPeriodEnd: _billingState.currentPeriodEnd,
     cancelAtPeriodEnd: _billingState.cancelAtPeriodEnd,
     cancelAt: _billingState.cancelAt,
+    portalAvailable: _billingState.portalAvailable,
     data: _billingState.data,
     error: _billingState.error,
     lastFetchedAt: _billingState.lastFetchedAt,
@@ -143,9 +205,11 @@ function subscribeBilling(fn) {
 
 function clearBillingState() {
   _billingState.loading = false;
+  _billingState.pending = true;
   _billingState.ok = false;
   _billingState.plan = null;
   _billingState.status = null;
+  _billingState.orgId = null;
   _billingState.isPro = false;
   _billingState.isActive = false;
   _billingState.interval = null;
@@ -153,30 +217,106 @@ function clearBillingState() {
   _billingState.currentPeriodEnd = null;
   _billingState.cancelAtPeriodEnd = false;
   _billingState.cancelAt = null;
+  _billingState.portalAvailable = false;
   _billingState.data = null;
   _billingState.error = null;
   _billingState.lastFetchedAt = 0;
   _notifyBilling();
+  applyAccessGateFromBilling(getBillingState(), { reason: 'clear' });
 }
 
-async function refreshBilling({ force = false } = {}) {
-  if (_billingState.loading) return;
+async function refreshBilling({ force = false, reason = 'manual' } = {}) {
+  const requestedOrgId = getActiveOrgIdForBilling();
+  if (_billingState.loading) {
+    if (force) _billingRefreshQueued = true;
+    billingDebugLog('refresh:skip-loading', { reason, force, requestedOrgId: requestedOrgId || null });
+    return getBillingState();
+  }
   const now = Date.now();
-  if (!force && _billingState.lastFetchedAt && (now - _billingState.lastFetchedAt) < BILLING_THROTTLE_MS) return;
+  if (
+    !force &&
+    !_billingState.pending &&
+    requestedOrgId &&
+    _billingState.orgId &&
+    requestedOrgId === _billingState.orgId &&
+    _billingState.lastFetchedAt &&
+    (now - _billingState.lastFetchedAt) < BILLING_THROTTLE_MS
+  ) {
+    billingDebugLog('refresh:skip-throttle', {
+      reason,
+      requestedOrgId: requestedOrgId || null,
+      ageMs: now - _billingState.lastFetchedAt,
+    });
+    applyAccessGateFromBilling(getBillingState(), { reason: 'throttled:' + reason, activeOrgId: requestedOrgId || null });
+    return getBillingState();
+  }
 
+  billingDebugLog('refresh:start', { reason, force, requestedOrgId: requestedOrgId || null });
   _billingState.loading = true;
   _billingState.error = null;
+  if (!_billingState.orgId || _billingState.orgId !== (requestedOrgId || null)) {
+    _billingState.pending = true;
+    _billingState.plan = null;
+    _billingState.status = null;
+    _billingState.isPro = false;
+    _billingState.isActive = false;
+    _billingState.interval = null;
+    _billingState.trialEndsAt = null;
+    _billingState.currentPeriodEnd = null;
+    _billingState.cancelAtPeriodEnd = false;
+    _billingState.cancelAt = null;
+    _billingState.portalAvailable = false;
+  }
+  _billingState.orgId = requestedOrgId || null;
   _notifyBilling();
+  applyAccessGateFromBilling(getBillingState(), { reason: 'loading:' + reason, activeOrgId: requestedOrgId || null });
 
   let result;
   try {
-    result = await fetchBillingStatus();
+    result = await Promise.race([
+      fetchBillingStatus(),
+      new Promise(resolve => {
+        setTimeout(() => {
+          resolve({
+            ok: false,
+            status: 408,
+            data: null,
+            error: { message: 'Billing request timed out', status: 408 },
+          });
+        }, BILLING_REQUEST_TIMEOUT_MS);
+      }),
+    ]);
   } catch (err) {
     result = { ok: false, status: null, data: null, error: { message: err && err.message ? err.message : 'Unknown error', status: null } };
   }
 
   _billingState.loading = false;
-  _billingState.lastFetchedAt = Date.now();
+  if (!(result && result.pending)) {
+    _billingState.lastFetchedAt = Date.now();
+  }
+
+  if (result && result.pending) {
+    _billingState.pending = true;
+    _billingState.ok = false;
+    _billingState.plan = null;
+    _billingState.status = null;
+    _billingState.orgId = requestedOrgId || null;
+    _billingState.isPro = false;
+    _billingState.isActive = false;
+    _billingState.interval = null;
+    _billingState.trialEndsAt = null;
+    _billingState.currentPeriodEnd = null;
+    _billingState.cancelAtPeriodEnd = false;
+    _billingState.cancelAt = null;
+    _billingState.portalAvailable = false;
+    _billingState.data = null;
+    _billingState.error = null;
+    _notifyBilling();
+    applyAccessGateFromBilling(getBillingState(), { reason: 'pending:' + reason, activeOrgId: requestedOrgId || null });
+    return getBillingState();
+  }
+
+  _billingState.pending = false;
   _billingState.ok = Boolean(result && result.ok);
 
   if (result && result.ok && result.data) {
@@ -217,6 +357,7 @@ async function refreshBilling({ force = false } = {}) {
 
     _billingState.plan = plan;
     _billingState.status = p.status ? String(p.status) : null;
+    _billingState.orgId = p.orgId ? String(p.orgId) : (requestedOrgId || null);
     _billingState.isPro = isPro;
     _billingState.isActive = isActive;
     _billingState.interval = p.interval ? String(p.interval) : null;
@@ -224,11 +365,13 @@ async function refreshBilling({ force = false } = {}) {
     _billingState.currentPeriodEnd = p.currentPeriodEnd ? String(p.currentPeriodEnd) : null;
     _billingState.cancelAtPeriodEnd = Boolean(p.cancelAtPeriodEnd);
     _billingState.cancelAt = p.cancelAt ? String(p.cancelAt) : null;
+    _billingState.portalAvailable = Boolean(p.portalAvailable);
     _billingState.error = null;
   } else {
     _billingState.data = result ? result.data : null;
     _billingState.plan = null;
     _billingState.status = null;
+    _billingState.orgId = requestedOrgId || null;
     _billingState.isPro = false;
     _billingState.isActive = false;
     _billingState.interval = null;
@@ -236,10 +379,12 @@ async function refreshBilling({ force = false } = {}) {
     _billingState.currentPeriodEnd = null;
     _billingState.cancelAtPeriodEnd = false;
     _billingState.cancelAt = null;
+    _billingState.portalAvailable = false;
     _billingState.error = result && result.error ? result.error : { message: 'Unknown error', status: null };
   }
 
   _notifyBilling();
+  applyAccessGateFromBilling(getBillingState(), { reason: 'refreshed:' + reason, activeOrgId: requestedOrgId || null });
 
   // Trial enforcement: if trial expired and not active, show upgrade notice
   try {
@@ -269,6 +414,14 @@ async function refreshBilling({ force = false } = {}) {
       console.info('[Billing][DEV] To override, set: localStorage.tp3dDevUserPlanOverride = \'{"' + (_dbgData.userId || '<userId>') + '": {"plan":"pro","status":"active"}}\'');
     }
   } catch (_) { /* ignore */ }
+
+  if (_billingRefreshQueued) {
+    _billingRefreshQueued = false;
+    setTimeout(() => {
+      refreshBilling({ force: true, reason: 'queued' }).catch(() => {});
+    }, 0);
+  }
+  return getBillingState();
 }
 
 /** @param {object} billingSnapshot – from getBillingState() */
@@ -278,12 +431,86 @@ function canUseProFeatures(billingSnapshot) {
 }
 
 /**
- * Start Stripe Checkout for a given price ID.
- * @param {string} priceId – Stripe price ID
+ * @param {unknown} value
+ * @returns {'month'|'year'}
+ */
+function normalizeCheckoutInterval(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  return raw === 'year' ? 'year' : 'month';
+}
+
+function getCheckoutPlanOptions() {
+  const monthlyPriceId = typeof window !== 'undefined' && window.__TP3D_STRIPE_PRICE_MONTHLY
+    ? String(window.__TP3D_STRIPE_PRICE_MONTHLY).trim()
+    : '';
+  const yearlyPriceId = typeof window !== 'undefined' && window.__TP3D_STRIPE_PRICE_YEARLY
+    ? String(window.__TP3D_STRIPE_PRICE_YEARLY).trim()
+    : '';
+  return {
+    month: {
+      interval: 'month',
+      label: 'Pro (Monthly)',
+      description: '$19.99/mo',
+      priceId: monthlyPriceId,
+      available: Boolean(monthlyPriceId),
+    },
+    year: {
+      interval: 'year',
+      label: 'Pro (Yearly)',
+      description: '$199/yr',
+      priceId: yearlyPriceId,
+      available: Boolean(yearlyPriceId),
+    },
+  };
+}
+
+/**
+ * Start Stripe Checkout for a given billing interval.
+ * @param {string|{interval?:'month'|'year',priceId?:string,price_id?:string}} input
  * @returns {Promise<{ok:boolean, error:string|null}>}
  */
-async function startCheckout(priceId) {
-  const result = await createCheckoutSession(priceId);
+async function startCheckout(input) {
+  let interval = 'month';
+  let priceId = '';
+  let hasExplicitInterval = false;
+  if (typeof input === 'string') {
+    if (input === 'month' || input === 'year') {
+      interval = normalizeCheckoutInterval(input);
+      hasExplicitInterval = true;
+    } else {
+      priceId = String(input || '').trim();
+    }
+  } else if (input && typeof input === 'object') {
+    if (typeof input.interval !== 'undefined') {
+      interval = normalizeCheckoutInterval(input.interval);
+      hasExplicitInterval = true;
+    }
+    const rawPriceId = input.priceId || input.price_id;
+    if (rawPriceId) priceId = String(rawPriceId).trim();
+  }
+  if (!priceId) {
+    const plans = getCheckoutPlanOptions();
+    priceId = interval === 'year' ? plans.year.priceId : plans.month.priceId;
+  }
+
+  const checkoutPayload = {};
+  if (hasExplicitInterval) checkoutPayload.interval = interval;
+  if (priceId) checkoutPayload.priceId = priceId;
+  if (!hasExplicitInterval && !priceId) checkoutPayload.interval = interval;
+
+  billingDebugLog('checkout:start', {
+    interval,
+    hasExplicitInterval,
+    hasPriceId: Boolean(priceId),
+    activeOrgId: getActiveOrgIdForBilling() || null,
+  });
+  const result = await Promise.race([
+    createCheckoutSession(checkoutPayload),
+    new Promise(resolve => {
+      setTimeout(() => resolve({ ok: false, url: null, error: 'Checkout request timed out' }), BILLING_REQUEST_TIMEOUT_MS);
+    }),
+  ]);
+  billingDebugLog('checkout:result', { ok: Boolean(result && result.ok), error: result && result.error ? String(result.error) : null });
   if (result.ok && result.url) {
     window.location.href = result.url;
     return { ok: true, error: null };
@@ -296,7 +523,14 @@ async function startCheckout(priceId) {
  * @returns {Promise<{ok:boolean, error:string|null}>}
  */
 async function openPortal() {
-  const result = await createPortalSession();
+  billingDebugLog('portal:start', { activeOrgId: getActiveOrgIdForBilling() || null });
+  const result = await Promise.race([
+    createPortalSession(),
+    new Promise(resolve => {
+      setTimeout(() => resolve({ ok: false, url: null, error: 'Portal request timed out' }), BILLING_REQUEST_TIMEOUT_MS);
+    }),
+  ]);
+  billingDebugLog('portal:result', { ok: Boolean(result && result.ok), error: result && result.error ? String(result.error) : null });
   if (result.ok && result.url) {
     window.location.href = result.url;
     return { ok: true, error: null };
@@ -306,8 +540,33 @@ async function openPortal() {
 
 // Expose for settings overlay and dev console
 try {
-  window.__TP3D_BILLING = { getBillingState, subscribeBilling, refreshBilling, clearBillingState, canUseProFeatures, startCheckout, openPortal };
+  window.__TP3D_BILLING = {
+    getBillingState,
+    subscribeBilling,
+    refreshBilling,
+    clearBillingState,
+    canUseProFeatures,
+    getCheckoutPlanOptions,
+    startCheckout,
+    openPortal,
+    selfTest: () => {
+      if (!isTp3dDebugEnabled()) {
+        return { ok: false, error: 'Enable tp3dDebug=1 to use billing self-test.' };
+      }
+      const snapshot = getBillingState();
+      const activeOrganizationId = getActiveOrgIdForBilling() || null;
+      const proAllowed = canUseProFeatures(snapshot);
+      const payload = { ok: true, activeOrganizationId, billingSnapshot: snapshot, proAllowed };
+      console.info('[Billing][SelfTest]', payload);
+      return payload;
+    },
+  };
 } catch (_) { /* ignore */ }
+
+const TP3D_BUILD_STAMP = Object.freeze({
+  gitCommitShort: '52aa4de',
+  buildTimeISO: '2026-02-18T03:32:00Z',
+});
 
 (async function () {
   try {
@@ -326,6 +585,18 @@ try {
   // SECTION: APP BOOTSTRAP ENTRY
   // ============================================================================
   console.info('[TruckPackerApp] threeReady resolved, bootstrapping app');
+  try {
+    const debugBuild =
+      typeof window !== 'undefined' &&
+      window.localStorage &&
+      window.localStorage.getItem('tp3dDebug') === '1';
+    if (debugBuild && !window.__TP3D_BUILD_STAMP_LOGGED__) {
+      window.__TP3D_BUILD_STAMP_LOGGED__ = true;
+      console.info('[TP3D BUILD]', TP3D_BUILD_STAMP);
+    }
+  } catch (_) {
+    // ignore
+  }
 
   window.TruckPackerApp = (function () {
     'use strict';
@@ -3515,8 +3786,10 @@ try {
       const hasOrg = id => id && orgs.some(o => o && String(o.id) === String(id));
 
       let orgId = null;
-      if (profileOrgId && hasOrg(profileOrgId)) orgId = profileOrgId;
-      else if (localOrgId && hasOrg(localOrgId)) orgId = localOrgId;
+      // Prefer explicit local selection first so post-invite org switches don't get
+      // immediately reverted by a stale profile.current_organization_id snapshot.
+      if (localOrgId && hasOrg(localOrgId)) orgId = localOrgId;
+      else if (profileOrgId && hasOrg(profileOrgId)) orgId = profileOrgId;
       else if (activeOrgHint && hasOrg(activeOrgHint)) orgId = activeOrgHint;
       else if (membershipOrgId && hasOrg(membershipOrgId)) orgId = membershipOrgId;
       else if (orgs.length > 0) orgId = String(orgs[0].id);
@@ -4076,7 +4349,7 @@ try {
         if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
           AccountSwitcher.refresh();
         }
-        refreshBilling({ force: isSignedInEvent || isUserSwitch }).catch(() => {});
+        refreshBilling({ force: isSignedInEvent || isUserSwitch, reason: 'render-auth-state' }).catch(() => {});
         showReadyOnce();
         return;
       }
@@ -4408,6 +4681,100 @@ try {
         }
       };
 
+      // Invite acceptance token (from org invite links)
+      let pendingInviteToken = null;
+      let inviteAcceptInFlight = false;
+      const inviteTokenStorageKey = 'tp3d:pending_invite_token';
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const tokenFromUrl = String(params.get('invite_token') || '').trim();
+        if (tokenFromUrl) {
+          pendingInviteToken = tokenFromUrl;
+          try {
+            window.sessionStorage.setItem(inviteTokenStorageKey, tokenFromUrl);
+          } catch (_) {
+            // ignore
+          }
+          const cleanUrl = new URL(window.location.href);
+          cleanUrl.searchParams.delete('invite_token');
+          window.history.replaceState({}, '', cleanUrl.toString());
+        } else {
+          try {
+            const storedToken = String(window.sessionStorage.getItem(inviteTokenStorageKey) || '').trim();
+            if (storedToken) pendingInviteToken = storedToken;
+          } catch (_) {
+            // ignore
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      async function tryAcceptPendingInvite(sessionHint = null) {
+        if (!pendingInviteToken || inviteAcceptInFlight) return;
+        const token = pendingInviteToken;
+
+        let session = sessionHint;
+        if (!session) {
+          try {
+            session = SupabaseClient.getSession && SupabaseClient.getSession();
+          } catch {
+            session = null;
+          }
+        }
+        if (!session || !session.access_token) return;
+
+        inviteAcceptInFlight = true;
+        try {
+          UIComponents.showToast('Accepting invite…', 'info', { title: 'Organization', duration: 6000 });
+          const result = await acceptOrgInvite(token);
+          pendingInviteToken = null;
+          try {
+            window.sessionStorage.removeItem(inviteTokenStorageKey);
+          } catch (_) {
+            // ignore
+          }
+
+          if (result && result.ok) {
+            const acceptedOrgId = String(
+              (result && result.organization_id) ||
+              (result && result.data && result.data.organization_id) ||
+              ''
+            ).trim();
+            UIComponents.showToast('Invite accepted. You are now a member of this organization.', 'success', {
+              title: 'Organization',
+              duration: 8000,
+            });
+            // Refresh org list first, then switch active org to the accepted invite org.
+            // This prevents landing in the newly-created personal org after signup.
+            await refreshOrgContext('invite-accepted-refresh', { force: true, forceEmit: true });
+            if (acceptedOrgId) {
+              await setActiveOrgId(acceptedOrgId, { source: 'invite-accepted' });
+            }
+            requestAuthRefresh('invite-accepted', { force: true, forceBundle: true, sessionHint: session });
+            try { SettingsOverlay.open('org-members'); } catch (_) { /* ignore */ }
+          } else {
+            UIComponents.showToast(result && result.error ? result.error : 'Failed to accept invite.', 'error', {
+              title: 'Organization',
+            });
+          }
+        } catch (err) {
+          pendingInviteToken = null;
+          try {
+            window.sessionStorage.removeItem(inviteTokenStorageKey);
+          } catch (_) {
+            // ignore
+          }
+          UIComponents.showToast(
+            'Failed to accept invite: ' + (err && err.message ? err.message : 'Unknown error'),
+            'error',
+            { title: 'Organization' },
+          );
+        } finally {
+          inviteAcceptInFlight = false;
+        }
+      }
+
       if (!authListenerInstalled) {
         authListenerInstalled = true;
         SupabaseClient.onAuthStateChange(async (event, session) => {
@@ -4462,7 +4829,8 @@ try {
             clearBillingState();
           } else if (isSignedInEvent || isTokenRefreshEvent || isInitialSessionEvent || isUserUpdatedEvent) {
             if (userFromSession && userFromSession.id) {
-              refreshBilling({ force: true }).catch(() => {});
+              refreshBilling({ force: true, reason: 'auth-change' }).catch(() => {});
+              tryAcceptPendingInvite(session || null).catch(() => {});
             }
           }
 
@@ -4579,6 +4947,13 @@ try {
                 // ignore
               }
             }
+            // Re-apply gating immediately for role/org context changes, then refresh org-scoped billing.
+            const nextOrgId = detailOrgId || (snapshot.activeOrgId ? String(snapshot.activeOrgId) : null);
+            applyAccessGateFromBilling(getBillingState(), {
+              reason: 'org-changed',
+              activeOrgId: nextOrgId,
+            });
+            refreshBilling({ force: true, reason: 'org-changed' }).catch(() => {});
           });
         } catch {
           // ignore
@@ -4600,74 +4975,339 @@ try {
       try {
         const upgradeEl = document.getElementById('tp3d-sidebar-upgrade');
         const upgradeWrap = document.getElementById('upgradeCardWrap');
-        if (upgradeEl) {
-          const updateSidebarNotice = (s) => {
-            if (s.loading || !s.ok) {
-              if (upgradeWrap) upgradeWrap.hidden = true;
-              else upgradeEl.hidden = true;
-              return;
-            }
-            const status = s.status || '';
-            const isTrial = status === 'trialing';
-            const needsUpgrade = !s.isActive || !s.isPro;
-            if (!isTrial && !needsUpgrade) {
-              if (upgradeWrap) upgradeWrap.hidden = true;
-              else upgradeEl.hidden = true;
-              return;
-            }
-            if (upgradeWrap) upgradeWrap.hidden = false;
-            else upgradeEl.hidden = false;
+        const TRIAL_WELCOME_LS_PREFIX = 'tp3d_trial_modal_shown_';
+        let trialExpiredModalRef = null;
+        let trialExpiredModalOrgId = null;
+        let trialWelcomeShownOrgId = null;
+        /** @type {Map<string, string>} */
+        const lastBillingStatusByOrg = new Map();
 
-            let trialDays = null;
-            if (isTrial && s.trialEndsAt) {
-              try {
-                const endMs = new Date(s.trialEndsAt).getTime();
-                if (Number.isFinite(endMs)) trialDays = Math.max(0, Math.ceil((endMs - Date.now()) / 86400000));
-              } catch (_) { /* ignore */ }
+        const pickCheckoutInterval = ({ initialInterval = 'month', title = 'Choose Plan', continueLabel = 'Continue' } = {}) =>
+          new Promise(resolve => {
+            const plans = getCheckoutPlanOptions();
+            const fallbackInterval = plans.month.available ? 'month' : (plans.year.available ? 'year' : 'month');
+            let selectedInterval = plans[initialInterval] && plans[initialInterval].available
+              ? initialInterval
+              : fallbackInterval;
+            let settled = false;
+            const settle = value => {
+              if (settled) return;
+              settled = true;
+              resolve(value);
+            };
+
+            const content = document.createElement('div');
+            content.className = 'tp3d-checkout-plan-picker';
+
+            const optionsWrap = document.createElement('div');
+            optionsWrap.className = 'tp3d-checkout-plan-options';
+
+            const monthBtn = document.createElement('button');
+            monthBtn.type = 'button';
+            monthBtn.className = 'btn btn-secondary tp3d-checkout-plan-option';
+            monthBtn.textContent = `${plans.month.label} — ${plans.month.description}`;
+            monthBtn.disabled = !plans.month.available;
+
+            const yearBtn = document.createElement('button');
+            yearBtn.type = 'button';
+            yearBtn.className = 'btn btn-secondary tp3d-checkout-plan-option';
+            yearBtn.textContent = `${plans.year.label} — ${plans.year.description}`;
+            yearBtn.disabled = !plans.year.available;
+
+            const statusLine = document.createElement('div');
+            statusLine.className = 'muted tp3d-checkout-plan-note';
+            statusLine.textContent = '';
+
+            const updateSelectionUI = () => {
+              monthBtn.classList.toggle('btn-primary', selectedInterval === 'month');
+              monthBtn.classList.toggle('btn-secondary', selectedInterval !== 'month');
+              yearBtn.classList.toggle('btn-primary', selectedInterval === 'year');
+              yearBtn.classList.toggle('btn-secondary', selectedInterval !== 'year');
+              const missing = [];
+              if (!plans.month.available) missing.push('Monthly plan is not configured.');
+              if (!plans.year.available) missing.push('Yearly plan is not configured.');
+              statusLine.textContent = missing.join(' ');
+            };
+
+            monthBtn.addEventListener('click', () => {
+              if (!plans.month.available) return;
+              selectedInterval = 'month';
+              updateSelectionUI();
+            });
+            yearBtn.addEventListener('click', () => {
+              if (!plans.year.available) return;
+              selectedInterval = 'year';
+              updateSelectionUI();
+            });
+
+            optionsWrap.appendChild(monthBtn);
+            optionsWrap.appendChild(yearBtn);
+            content.appendChild(optionsWrap);
+            content.appendChild(statusLine);
+            updateSelectionUI();
+
+            const modalRef = UIComponents.showModal({
+              title,
+              content,
+              actions: [
+                {
+                  label: 'Cancel',
+                  variant: 'ghost',
+                  onClick: () => {
+                    settle(null);
+                  },
+                },
+                {
+                  label: continueLabel,
+                  variant: 'primary',
+                  onClick: () => {
+                    const selectedPlan = plans[selectedInterval];
+                    if (!selectedPlan || !selectedPlan.available) {
+                      UIComponents.showToast(`Price not configured for interval: ${selectedInterval}`, 'warning', { title: 'Billing' });
+                      return false;
+                    }
+                    settle({ interval: selectedInterval });
+                    return true;
+                  },
+                },
+              ],
+              onClose: () => settle(null),
+            });
+
+            const continueBtn = modalRef && modalRef.modal
+              ? modalRef.modal.querySelector('.modal-footer .btn.btn-primary')
+              : null;
+            if (continueBtn && !plans.month.available && !plans.year.available) {
+              continueBtn.disabled = true;
             }
+          });
 
-            const msg = isTrial && trialDays !== null
-              ? 'Trial ends in ' + trialDays + ' day' + (trialDays !== 1 ? 's' : '')
-              : 'Upgrade to Pro to export PDFs';
+        try {
+          if (window.__TP3D_BILLING && typeof window.__TP3D_BILLING === 'object') {
+            window.__TP3D_BILLING.pickCheckoutInterval = pickCheckoutInterval;
+          }
+        } catch (_) {
+          // ignore
+        }
 
-            upgradeEl.innerHTML = '';
-            const txt = document.createElement('div');
-            txt.className = 'tp3d-sidebar-upgrade-text';
-            txt.textContent = msg;
-            upgradeEl.appendChild(txt);
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'btn btn-primary';
-            btn.textContent = 'Upgrade Plan';
-            btn.addEventListener('click', () => {
-              const priceId = typeof window !== 'undefined' && window.__TP3D_STRIPE_PRICE_MONTHLY
-                ? String(window.__TP3D_STRIPE_PRICE_MONTHLY) : '';
-              if (!priceId) {
-                UIComponents.showToast('Checkout coming soon. Contact sales.', 'info', { title: 'Billing' });
+        const closeTrialExpiredModal = () => {
+          if (!trialExpiredModalRef || typeof trialExpiredModalRef.close !== 'function') return;
+          const ref = trialExpiredModalRef;
+          trialExpiredModalRef = null;
+          trialExpiredModalOrgId = null;
+          try {
+            ref.close();
+          } catch (_) {
+            // ignore
+          }
+        };
+
+        const showTrialExpiredModal = (snapshot, canManageBilling) => {
+          const orgId = String(snapshot && snapshot.orgId ? snapshot.orgId : (orgContext && orgContext.activeOrgId) || '').trim();
+          if (!orgId) return;
+          if (trialExpiredModalRef && trialExpiredModalOrgId === orgId) return;
+          closeTrialExpiredModal();
+
+          const body = document.createElement('div');
+          const line1 = document.createElement('div');
+          line1.textContent = 'Your free trial has ended. Start a subscription to continue using Truck Packer 3D.';
+          body.appendChild(line1);
+          if (!canManageBilling) {
+            const roleHint = document.createElement('div');
+            roleHint.className = 'muted tp3d-settings-mt-sm';
+            roleHint.textContent = 'Only owners and admins can complete subscription checkout.';
+            body.appendChild(roleHint);
+          }
+
+          trialExpiredModalOrgId = orgId;
+          trialExpiredModalRef = UIComponents.showModal({
+            title: 'Trial Ended',
+            content: body,
+            dismissible: false,
+            hideClose: true,
+            actions: [
+              {
+                label: 'Start Subscription',
+                variant: 'primary',
+                onClick: () => {
+                  if (!canManageBilling) {
+                    UIComponents.showToast('Only owners/admins can manage billing for this workspace.', 'warning', { title: 'Billing' });
+                    return false;
+                  }
+                  pickCheckoutInterval({ title: 'Choose Plan', continueLabel: 'Continue' })
+                    .then(selection => {
+                      if (!selection || !selection.interval) return Promise.resolve();
+                      return startCheckout({ interval: selection.interval }).then((result) => {
+                        if (!result.ok) {
+                          UIComponents.showToast(result.error || 'Checkout failed', 'error', { title: 'Billing' });
+                        }
+                      });
+                    })
+                    .catch(() => {
+                      UIComponents.showToast('Checkout failed', 'error', { title: 'Billing' });
+                    });
+                  return false;
+                },
+              },
+              {
+                label: 'Logout',
+                variant: 'ghost',
+                onClick: () => {
+                  try {
+                    if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
+                      SupabaseClient.signOut({ global: true, allowOffline: true }).catch(() => {});
+                    }
+                  } catch (_) {
+                    // ignore
+                  }
+                  setTimeout(() => {
+                    try { window.location.reload(); } catch (_) { /* ignore */ }
+                  }, 250);
+                  return false;
+                },
+              },
+            ],
+            onClose: () => {
+              trialExpiredModalRef = null;
+              trialExpiredModalOrgId = null;
+            },
+          });
+        };
+
+        const maybeShowTrialWelcome = (snapshot, prevStatus) => {
+          if (!snapshot || !snapshot.ok || snapshot.pending || String(snapshot.status || '') !== 'trialing') return;
+          const orgId = String(snapshot.orgId || '').trim();
+          if (prevStatus === 'trialing') return;
+          if (!orgId || trialWelcomeShownOrgId === orgId) return;
+          const storageKey = TRIAL_WELCOME_LS_PREFIX + orgId;
+          try {
+            if (window.localStorage && window.localStorage.getItem(storageKey) === 'true') return;
+          } catch (_) {
+            // ignore
+          }
+          trialWelcomeShownOrgId = orgId;
+          try {
+            if (window.localStorage) window.localStorage.setItem(storageKey, 'true');
+          } catch (_) {
+            // ignore
+          }
+
+          const body = document.createElement('div');
+          const intro = document.createElement('div');
+          intro.textContent = 'Welcome. Your organization trial is active and Pro features are unlocked.';
+          body.appendChild(intro);
+          if (snapshot.trialEndsAt) {
+            const endLine = document.createElement('div');
+            endLine.className = 'muted tp3d-settings-mt-sm';
+            const endDate = new Date(snapshot.trialEndsAt);
+            endLine.textContent = 'Trial ends on ' + (isNaN(endDate.getTime()) ? String(snapshot.trialEndsAt) : endDate.toLocaleDateString());
+            body.appendChild(endLine);
+          }
+
+          UIComponents.showModal({
+            title: 'Pro Trial Started',
+            content: body,
+            actions: [{ label: 'Continue', variant: 'primary' }],
+          });
+        };
+
+        const updateSidebarNotice = (s) => {
+          const activeRole = String((orgContext && orgContext.role) || '').toLowerCase();
+          const canManageBilling = activeRole === 'owner' || activeRole === 'admin';
+          const orgId = String((s && s.orgId) || '').trim();
+          const status = String((s && s.status) || '');
+          const prevStatus = orgId ? String(lastBillingStatusByOrg.get(orgId) || '') : '';
+          if (orgId && status) lastBillingStatusByOrg.set(orgId, status);
+          const trialEndMs = s && s.trialEndsAt ? new Date(s.trialEndsAt).getTime() : NaN;
+          const trialExpired = Boolean(
+            s &&
+            s.ok &&
+            !s.pending &&
+            !s.isActive &&
+            (status === 'trial_expired' || (Number.isFinite(trialEndMs) && trialEndMs <= Date.now()))
+          );
+
+          if (trialExpired) showTrialExpiredModal(s, canManageBilling);
+          else closeTrialExpiredModal();
+
+          maybeShowTrialWelcome(s, prevStatus);
+
+          if (!upgradeEl) return;
+          if (s.loading || !s.ok || s.pending) {
+            if (upgradeWrap) upgradeWrap.hidden = true;
+            else upgradeEl.hidden = true;
+            return;
+          }
+          if (!canManageBilling) {
+            if (upgradeWrap) upgradeWrap.hidden = true;
+            else upgradeEl.hidden = true;
+            return;
+          }
+          const isTrial = status === 'trialing';
+          const needsUpgrade = !s.isActive || !s.isPro;
+          if (!isTrial && !needsUpgrade) {
+            if (upgradeWrap) upgradeWrap.hidden = true;
+            else upgradeEl.hidden = true;
+            return;
+          }
+          if (upgradeWrap) upgradeWrap.hidden = false;
+          else upgradeEl.hidden = false;
+
+          let trialDays = null;
+          if (isTrial && s.trialEndsAt) {
+            try {
+              const endMs = new Date(s.trialEndsAt).getTime();
+              if (Number.isFinite(endMs)) trialDays = Math.max(0, Math.ceil((endMs - Date.now()) / 86400000));
+            } catch (_) { /* ignore */ }
+          }
+
+          const msg = isTrial && trialDays !== null
+            ? 'Trial ends in ' + trialDays + ' day' + (trialDays !== 1 ? 's' : '')
+            : 'Upgrade to Pro to export PDFs';
+
+          upgradeEl.innerHTML = '';
+          const txt = document.createElement('div');
+          txt.className = 'tp3d-sidebar-upgrade-text';
+          txt.textContent = msg;
+          upgradeEl.appendChild(txt);
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn btn-primary';
+          btn.textContent = 'Upgrade Plan';
+          btn.addEventListener('click', () => {
+            btn.disabled = true;
+            pickCheckoutInterval({ title: 'Choose Plan', continueLabel: 'Continue' }).then(selection => {
+              if (!selection || !selection.interval) {
+                btn.disabled = false;
                 return;
               }
-              btn.disabled = true;
               btn.textContent = 'Redirecting\u2026';
-              startCheckout(priceId).then((r) => {
+              startCheckout({ interval: selection.interval }).then((r) => {
                 if (!r.ok) {
                   UIComponents.showToast(r.error || 'Checkout failed', 'error', { title: 'Billing' });
                   btn.disabled = false;
                   btn.textContent = 'Upgrade Plan';
                 }
-              }).catch(() => { btn.disabled = false; btn.textContent = 'Upgrade Plan'; });
+              }).catch(() => {
+                btn.disabled = false;
+                btn.textContent = 'Upgrade Plan';
+              });
+            }).catch(() => {
+              btn.disabled = false;
             });
-            upgradeEl.appendChild(btn);
-          };
-          subscribeBilling(updateSidebarNotice);
-          updateSidebarNotice(getBillingState());
-        }
+          });
+          upgradeEl.appendChild(btn);
+        };
+        _billingGateApplier = updateSidebarNotice;
+        subscribeBilling(snapshot => applyAccessGateFromBilling(snapshot, { reason: 'billing-subscriber' }));
+        applyAccessGateFromBilling(getBillingState(), { reason: 'gate-init' });
       } catch (_) { /* ignore */ }
 
       // Initial billing fetch (if session exists)
       try {
         const initSession = SupabaseClient.getSession();
         if (initSession && initSession.access_token) {
-          refreshBilling({ force: false }).catch(() => {});
+          refreshBilling({ force: false, reason: 'initial-load' }).catch(() => {});
         }
       } catch (_) { /* ignore */ }
 
@@ -4675,7 +5315,7 @@ try {
       try {
         window.addEventListener('focus', () => {
           const s = SupabaseClient.getSession && SupabaseClient.getSession();
-          if (s && s.access_token) refreshBilling({ force: false }).catch(() => {});
+          if (s && s.access_token) refreshBilling({ force: false, reason: 'window-focus' }).catch(() => {});
         });
       } catch (_) { /* ignore */ }
 
@@ -4683,6 +5323,7 @@ try {
       try {
         const billingParam = new URLSearchParams(window.location.search).get('billing');
         if (billingParam) {
+          billingDebugLog('stripe-return:param', { billing: billingParam });
           // Clean URL (remove billing param without reload)
           const cleanUrl = new URL(window.location.href);
           cleanUrl.searchParams.delete('billing');
@@ -4691,16 +5332,24 @@ try {
           if (billingParam === 'success') {
             UIComponents.showToast('Payment successful! Your plan is being activated.', 'success', { title: 'Billing', duration: 8000 });
             // Force refresh billing after a short delay (webhook may take a moment)
-            setTimeout(() => { refreshBilling({ force: true }).catch(() => {}); }, 2000);
-            setTimeout(() => { refreshBilling({ force: true }).catch(() => {}); }, 6000);
+            setTimeout(() => { refreshBilling({ force: true, reason: 'stripe-return-success-2s' }).catch(() => {}); }, 2000);
+            setTimeout(() => { refreshBilling({ force: true, reason: 'stripe-return-success-6s' }).catch(() => {}); }, 6000);
           } else if (billingParam === 'cancel') {
             UIComponents.showToast('Checkout was cancelled.', 'info', { title: 'Billing' });
-            refreshBilling({ force: true }).catch(() => {});
+            refreshBilling({ force: true, reason: 'stripe-return-cancel' }).catch(() => {});
           } else if (billingParam === 'portal_return') {
             UIComponents.showToast('Billing updated. Syncing status\u2026', 'info', { title: 'Billing', duration: 6000 });
-            refreshBilling({ force: true }).catch(() => {});
-            setTimeout(() => { refreshBilling({ force: true }).catch(() => {}); }, 4000);
+            refreshBilling({ force: true, reason: 'stripe-return-portal' }).catch(() => {});
+            setTimeout(() => { refreshBilling({ force: true, reason: 'stripe-return-portal-4s' }).catch(() => {}); }, 4000);
           }
+        }
+      } catch (_) { /* ignore */ }
+
+      // If a pending invite token exists and the user is already signed in, accept now.
+      try {
+        const currentSession = SupabaseClient.getSession && SupabaseClient.getSession();
+        if (currentSession && currentSession.access_token) {
+          tryAcceptPendingInvite(currentSession).catch(() => {});
         }
       } catch (_) { /* ignore */ }
 

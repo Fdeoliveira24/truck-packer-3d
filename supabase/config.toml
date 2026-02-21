@@ -408,3 +408,15 @@ verify_jwt = false
 
 [functions.request-account-deletion]
 verify_jwt = false
+
+[functions.org-invite]
+verify_jwt = false
+
+[functions.org-invite-accept]
+verify_jwt = false
+
+[functions.org-member-role-update]
+verify_jwt = false
+
+[functions.org-member-remove]
+verify_jwt = false

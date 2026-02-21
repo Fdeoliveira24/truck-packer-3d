@@ -103,6 +103,8 @@ export function createUIComponents() {
     const modal = document.createElement('div');
     modal.className = 'modal';
 
+    const showCloseButton = !(config && (config.hideClose === true || config.showCloseButton === false));
+
     const header = document.createElement('div');
     header.className = 'modal-header';
 
@@ -117,7 +119,9 @@ export function createUIComponents() {
     closeBtn.addEventListener('click', () => close());
 
     header.appendChild(title);
-    header.appendChild(closeBtn);
+    if (showCloseButton) {
+      header.appendChild(closeBtn);
+    }
 
     const body = document.createElement('div');
     body.className = 'modal-body';

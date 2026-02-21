@@ -75,6 +75,183 @@ function toEventCreatedMillis(value: unknown): number | null {
   return null;
 }
 
+function toIsoFromUnixSeconds(value: unknown): string | null {
+  const seconds = toUnixSeconds(value);
+  if (seconds === null) return null;
+  return new Date(seconds * 1000).toISOString();
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function normalizeOrganizationId(value: unknown): string | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  return UUID_RE.test(raw) ? raw : null;
+}
+
+function readOrganizationIdFromMetadata(metadata: unknown): string | null {
+  const source = metadata && typeof metadata === "object" ? (metadata as Record<string, unknown>) : null;
+  if (!source) return null;
+  return normalizeOrganizationId(source.organization_id ?? source.organizationId ?? null);
+}
+
+async function resolveOrganizationIdForBillingSync(
+  sb: ReturnType<typeof serviceClient>,
+  input: {
+    metadataOrganizationId: string | null;
+    stripeSubscriptionId: string;
+    stripeCustomerId: string;
+    debug: boolean;
+  },
+): Promise<{ organizationId: string | null; source: "metadata" | "subscriptions" | "billing_customers_subscription" | "billing_customers_customer" | "none" }> {
+  const { metadataOrganizationId, stripeSubscriptionId, stripeCustomerId, debug } = input;
+
+  if (metadataOrganizationId) {
+    return { organizationId: metadataOrganizationId, source: "metadata" };
+  }
+
+  if (stripeSubscriptionId) {
+    const subLookup = await sb
+      .from("subscriptions")
+      .select("organization_id")
+      .eq("stripe_subscription_id", stripeSubscriptionId)
+      .maybeSingle();
+    if (subLookup.error) {
+      if (!isColumnError(subLookup.error, "organization_id")) {
+        console.warn("stripe-webhook: subscriptions org lookup warning", {
+          stripe_subscription_id: stripeSubscriptionId,
+          error: subLookup.error,
+        });
+      }
+    } else {
+      const organizationId = normalizeOrganizationId(subLookup.data?.organization_id ?? null);
+      if (organizationId) {
+        return { organizationId, source: "subscriptions" };
+      }
+    }
+
+    const bySubscription = await sb
+      .from("billing_customers")
+      .select("organization_id")
+      .eq("stripe_subscription_id", stripeSubscriptionId)
+      .limit(2);
+    if (bySubscription.error) {
+      console.warn("stripe-webhook: billing_customers subscription lookup warning", {
+        stripe_subscription_id: stripeSubscriptionId,
+        error: bySubscription.error,
+      });
+    } else {
+      const orgIds = Array.from(
+        new Set(
+          (Array.isArray(bySubscription.data) ? bySubscription.data : [])
+            .map((row) => normalizeOrganizationId((row as Record<string, unknown>)?.organization_id ?? null))
+            .filter(Boolean),
+        ),
+      ) as string[];
+      if (orgIds.length === 1) {
+        return { organizationId: orgIds[0], source: "billing_customers_subscription" };
+      }
+      if (debug && orgIds.length > 1) {
+        console.warn("stripe-webhook: ambiguous billing_customers org by subscription", {
+          stripe_subscription_id: stripeSubscriptionId,
+          organization_ids: orgIds,
+        });
+      }
+    }
+  }
+
+  if (stripeCustomerId) {
+    const byCustomer = await sb
+      .from("billing_customers")
+      .select("organization_id")
+      .eq("stripe_customer_id", stripeCustomerId)
+      .limit(2);
+    if (byCustomer.error) {
+      console.warn("stripe-webhook: billing_customers customer lookup warning", {
+        stripe_customer_id: stripeCustomerId,
+        error: byCustomer.error,
+      });
+    } else {
+      const orgIds = Array.from(
+        new Set(
+          (Array.isArray(byCustomer.data) ? byCustomer.data : [])
+            .map((row) => normalizeOrganizationId((row as Record<string, unknown>)?.organization_id ?? null))
+            .filter(Boolean),
+        ),
+      ) as string[];
+      if (orgIds.length === 1) {
+        return { organizationId: orgIds[0], source: "billing_customers_customer" };
+      }
+      if (debug && orgIds.length > 1) {
+        console.warn("stripe-webhook: ambiguous billing_customers org by customer", {
+          stripe_customer_id: stripeCustomerId,
+          organization_ids: orgIds,
+        });
+      }
+    }
+  }
+
+  return { organizationId: null, source: "none" };
+}
+
+function isColumnError(error: unknown, columnName: string): boolean {
+  const e = error as Record<string, unknown> | null;
+  const code = String(e?.code ?? "");
+  const message = String(e?.message ?? "");
+  const details = String(e?.details ?? "");
+  if (code === "PGRST204" || code === "42703") return true;
+  const needle = columnName.toLowerCase();
+  return message.toLowerCase().includes(needle) || details.toLowerCase().includes(needle);
+}
+
+function eventCreatedFieldValue(seconds: number | null): string | number | null {
+  if (Number.isFinite(seconds as number)) return Number(seconds);
+  const iso = toIsoFromUnixSeconds(seconds);
+  if (iso) return iso;
+  return null;
+}
+
+async function markWebhookEventFailure(
+  sb: ReturnType<typeof serviceClient>,
+  eventId: string,
+  errorMessage: string,
+) {
+  const nowIso = new Date().toISOString();
+  const { error } = await sb
+    .from("webhook_events")
+    .update({
+      status: "failed",
+      error: errorMessage,
+      processed_at: nowIso,
+      updated_at: nowIso,
+    })
+    .eq("event_id", eventId);
+
+  if (error) {
+    console.error("stripe-webhook: failed to mark event failure:", {
+      eventId,
+      error,
+    });
+  }
+}
+
+async function markWebhookEventProcessed(
+  sb: ReturnType<typeof serviceClient>,
+  eventId: string,
+) {
+  const nowIso = new Date().toISOString();
+  const { error } = await sb
+    .from("webhook_events")
+    .update({
+      status: "processed",
+      error: null,
+      processed_at: nowIso,
+      updated_at: nowIso,
+    })
+    .eq("event_id", eventId);
+  return error ?? null;
+}
+
 async function backfillLastStripeEventCreated(
   sb: ReturnType<typeof serviceClient>,
   subscriptionId: string,
@@ -94,13 +271,23 @@ async function backfillLastStripeEventCreated(
     return;
   }
 
-  const { error } = await sb
+  const payload: Record<string, unknown> = {
+    last_stripe_event_created: eventCreatedFieldValue(eventCreatedSeconds),
+    updated_at: new Date().toISOString(),
+  };
+
+  let { error } = await sb
     .from("subscriptions")
-    .update({
-      last_stripe_event_created: Number(eventCreatedSeconds),
-      updated_at: new Date().toISOString(),
-    })
+    .update(payload)
     .eq("stripe_subscription_id", subscriptionId);
+
+  if (error && isColumnError(error, "last_stripe_event_created")) {
+    payload.last_stripe_event_created = Number(eventCreatedSeconds);
+    ({ error } = await sb
+      .from("subscriptions")
+      .update(payload)
+      .eq("stripe_subscription_id", subscriptionId));
+  }
 
   if (error) {
     console.error("stripe-webhook: failed timestamp backfill for subscription:", subscriptionId, error);
@@ -120,7 +307,11 @@ async function maybeBackfillSubscriptionTimestampForProcessedDuplicate(
     eventType === "customer.subscription.deleted"
   ) {
     subId = String(obj.id ?? "");
-  } else if (eventType === "invoice.payment_succeeded" || eventType === "invoice.payment_failed") {
+  } else if (
+    eventType === "invoice.payment_succeeded" ||
+    eventType === "invoice.payment_failed" ||
+    eventType === "invoice.paid"
+  ) {
     subId = String(obj.subscription ?? "");
   } else if (eventType === "checkout.session.completed") {
     subId = String(obj.subscription ?? "");
@@ -136,6 +327,11 @@ async function upsertSubscription(
   sb: ReturnType<typeof serviceClient>,
   sub: Record<string, unknown>,
   eventCreatedSeconds: number | null,
+  context: {
+    eventType: string;
+    eventId: string;
+    metadataOrganizationId?: string | null;
+  },
 ) {
   const debug = Deno.env.get("SUPABASE_DEBUG") === "1";
   const subId = String(sub.id ?? "");
@@ -147,30 +343,48 @@ async function upsertSubscription(
     (sub.items as any)?.data?.[0]?.price?.product ?? null;
   const intervalRaw =
     (sub.items as any)?.data?.[0]?.price?.recurring?.interval ?? null;
-  const interval =
+  let interval =
     intervalRaw === "month" || intervalRaw === "year" ? intervalRaw : null;
+  const metadataObj = ((sub as any)?.metadata && typeof (sub as any).metadata === "object")
+    ? ((sub as any).metadata as Record<string, unknown>)
+    : {};
+  const metadataOrganizationId = readOrganizationIdFromMetadata(metadataObj) ||
+    normalizeOrganizationId(context.metadataOrganizationId ?? null);
+  const metadataKeys = Object.keys(metadataObj);
 
   // Find Supabase user for this Stripe customer
-  const { data: customerRow } = await sb
+  const { data: customerRow, error: customerRowErr } = await sb
     .from("stripe_customers")
     .select("user_id")
     .eq("stripe_customer_id", customerId)
     .maybeSingle();
+  if (customerRowErr) {
+    throw new Error(
+      `stripe-webhook: stripe_customers lookup failed (eventType=${context.eventType}, eventId=${context.eventId}, customerId=${customerId || "null"}, subId=${subId || "null"}): ${customerRowErr.message}`,
+    );
+  }
 
   const userId = customerRow?.user_id ?? null;
   if (!userId) {
-    console.warn("stripe-webhook: no user for customer", customerId);
-    return;
+    throw new Error(
+      `stripe-webhook: no user for customer (eventType=${context.eventType}, eventId=${context.eventId}, customerId=${customerId || "null"}, subId=${subId || "null"})`,
+    );
   }
 
   let existingSub: { last_stripe_event_created?: string | null } | null = null;
   if (subId) {
     const { data: existing } = await sb
       .from("subscriptions")
-      .select("last_stripe_event_created")
+      .select("last_stripe_event_created, interval")
       .eq("stripe_subscription_id", subId)
       .maybeSingle();
     existingSub = existing ?? null;
+    if (!interval) {
+      const existingInterval = String((existing as Record<string, unknown> | null)?.interval ?? "");
+      if (existingInterval === "month" || existingInterval === "year") {
+        interval = existingInterval;
+      }
+    }
   }
 
   // Guard against out-of-order Stripe deliveries.
@@ -189,8 +403,13 @@ async function upsertSubscription(
       return;
     }
   }
+  if ((status === "active" || status === "trialing") && !interval) {
+    throw new Error(
+      `stripe-webhook: missing billing interval for active/trialing subscription (eventType=${context.eventType}, eventId=${context.eventId}, customerId=${customerId || "null"}, subId=${subId || "null"})`,
+    );
+  }
 
-  const row = {
+  const baseRow: Record<string, unknown> = {
     user_id: userId,
     stripe_subscription_id: subId,
     stripe_customer_id: customerId,
@@ -221,20 +440,22 @@ async function upsertSubscription(
       ? new Date((sub.ended_at as number) * 1000).toISOString()
       : null,
     last_stripe_event_created:
-      Number.isFinite(eventCreatedSeconds as number)
-        ? Number(eventCreatedSeconds)
-        : (existingSub?.last_stripe_event_created ?? null),
+      eventCreatedFieldValue(eventCreatedSeconds) ??
+      (existingSub?.last_stripe_event_created ?? null),
     updated_at: new Date().toISOString(),
   };
+  if (metadataOrganizationId) {
+    baseRow.organization_id = metadataOrganizationId;
+  }
 
-  let error: { message?: string } | null = null;
-  if (existingSub) {
-    const { error: updErr } = await sb
-      .from("subscriptions")
-      .update(row)
-      .eq("stripe_subscription_id", subId);
-    error = updErr;
-  } else {
+  const writeSubscription = async (row: Record<string, unknown>) => {
+    if (existingSub) {
+      const { error: updErr } = await sb
+        .from("subscriptions")
+        .update(row)
+        .eq("stripe_subscription_id", subId);
+      return updErr ?? null;
+    }
     const { error: insErr } = await sb
       .from("subscriptions")
       .insert(row);
@@ -243,10 +464,24 @@ async function upsertSubscription(
         .from("subscriptions")
         .update(row)
         .eq("stripe_subscription_id", subId);
-      error = updErr;
-    } else {
-      error = insErr;
+      return updErr ?? null;
     }
+    return insErr ?? null;
+  };
+
+  let row = { ...baseRow };
+  let error: { code?: string; message?: string; details?: string } | null = await writeSubscription(row);
+
+  // Backward-compat fallback when subscriptions.organization_id is not present yet.
+  if (error && metadataOrganizationId && isColumnError(error, "organization_id")) {
+    delete row.organization_id;
+    error = await writeSubscription(row);
+  }
+
+  // Backward-compat fallback when timestamp column expects a numeric epoch.
+  if (error && isColumnError(error, "last_stripe_event_created")) {
+    row.last_stripe_event_created = Number.isFinite(eventCreatedSeconds as number) ? Number(eventCreatedSeconds) : null;
+    error = await writeSubscription(row);
   }
 
   if (error) {
@@ -254,7 +489,125 @@ async function upsertSubscription(
     throw error;
   }
 
-  if (debug) console.log("stripe-webhook: upserted subscription", subId, status);
+  // Keep one active/trialing subscription projection per scope to avoid
+  // stale duplicate "active" rows driving incorrect billing status.
+  if (subId && (status === "active" || status === "trialing")) {
+    const competingStatuses = ["active", "trialing", "past_due", "unpaid"];
+    let dedupeQuery = sb
+      .from("subscriptions")
+      .update({
+        status: "canceled",
+        cancel_at_period_end: true,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", userId)
+      .neq("stripe_subscription_id", subId)
+      .in("status", competingStatuses);
+
+    if (metadataOrganizationId) {
+      dedupeQuery = dedupeQuery.eq("organization_id", metadataOrganizationId);
+    } else if (customerId) {
+      dedupeQuery = dedupeQuery.eq("stripe_customer_id", customerId);
+    }
+
+    let { error: dedupeErr } = await dedupeQuery;
+    if (dedupeErr && metadataOrganizationId && isColumnError(dedupeErr, "organization_id")) {
+      ({ error: dedupeErr } = await sb
+        .from("subscriptions")
+        .update({
+          status: "canceled",
+          cancel_at_period_end: true,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", userId)
+        .neq("stripe_subscription_id", subId)
+        .contains("metadata", { organization_id: metadataOrganizationId })
+        .in("status", competingStatuses));
+      if (dedupeErr) {
+        ({ error: dedupeErr } = await sb
+          .from("subscriptions")
+          .update({
+            status: "canceled",
+            cancel_at_period_end: true,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("user_id", userId)
+          .neq("stripe_subscription_id", subId)
+          .eq("stripe_customer_id", customerId)
+          .in("status", competingStatuses));
+      }
+    }
+    if (dedupeErr) {
+      console.warn("stripe-webhook: competing subscription cleanup failed", {
+        subId,
+        userId,
+        error: dedupeErr,
+      });
+    }
+  }
+
+  const resolvedOrg = await resolveOrganizationIdForBillingSync(sb, {
+    metadataOrganizationId,
+    stripeSubscriptionId: subId,
+    stripeCustomerId: customerId,
+    debug,
+  });
+  if (debug) {
+    console.log("stripe-webhook: billing_customers org resolve", {
+      stripe_subscription_id: subId || null,
+      stripe_customer_id: customerId || null,
+      source: resolvedOrg.source,
+      organization_id: resolvedOrg.organizationId,
+    });
+  }
+  if (resolvedOrg.organizationId) {
+    const allowedBillingStatuses = new Set(["active", "trialing", "past_due", "canceled", "unpaid"]);
+    const normalizedTrialEndsAt = status === "trialing"
+      ? (baseRow.trial_end ?? null)
+      : null;
+    const billingRow: Record<string, unknown> = {
+      organization_id: resolvedOrg.organizationId,
+      stripe_customer_id: customerId || null,
+      stripe_subscription_id: subId || null,
+      status: allowedBillingStatuses.has(status) ? status : null,
+      plan_name: "pro",
+      billing_interval: interval,
+      current_period_start: baseRow.current_period_start ?? null,
+      current_period_end: baseRow.current_period_end ?? null,
+      cancel_at_period_end: Boolean(baseRow.cancel_at_period_end),
+      trial_ends_at: normalizedTrialEndsAt,
+      updated_at: new Date().toISOString(),
+    };
+    if (!allowedBillingStatuses.has(status)) {
+      delete billingRow.status;
+    }
+
+    const { error: billingErr } = await sb
+      .from("billing_customers")
+      .upsert(billingRow, { onConflict: "organization_id" });
+    if (billingErr) {
+      throw new Error(
+        `stripe-webhook: billing_customers upsert failed (eventType=${context.eventType}, eventId=${context.eventId}, orgId=${resolvedOrg.organizationId}, customerId=${customerId || "null"}, subId=${subId || "null"}): ${billingErr.message}`,
+      );
+    }
+  } else if (subId || customerId) {
+    throw new Error(
+      `stripe-webhook: organization unresolved (eventType=${context.eventType}, eventId=${context.eventId}, source=${resolvedOrg.source}, customerId=${customerId || "null"}, subId=${subId || "null"}, metadataKeys=${metadataKeys.join(",") || "none"})`,
+    );
+  }
+
+  if (debug) {
+    console.log("stripe-webhook event sync", {
+      eventType: context.eventType,
+      eventId: context.eventId,
+      resolvedOrgId: resolvedOrg.organizationId,
+      source: resolvedOrg.source,
+      customerId: customerId || null,
+      subId: subId || null,
+      interval: interval || null,
+      status,
+    });
+  }
 }
 
 async function handleInvoice(
@@ -262,6 +615,10 @@ async function handleInvoice(
   invoice: Record<string, unknown>,
   stripe: ReturnType<typeof stripeClient>,
   eventCreatedSeconds: number | null,
+  context: {
+    eventType: string;
+    eventId: string;
+  },
 ) {
   const subId = String(invoice.subscription ?? "");
   if (!subId) return;
@@ -284,8 +641,8 @@ async function handleInvoice(
 
   // Keep subscription status aligned on payment events.
   try {
-    const sub = await stripe.subscriptions.retrieve(subId);
-    await upsertSubscription(sb, sub as unknown as Record<string, unknown>, eventCreatedSeconds);
+    const sub = await stripe.subscriptions.retrieve(subId, { expand: ["items.data.price"] });
+    await upsertSubscription(sb, sub as unknown as Record<string, unknown>, eventCreatedSeconds, context);
   } catch (err) {
     console.error("stripe-webhook invoice subscription resync error:", err);
     throw err;
@@ -334,6 +691,26 @@ Deno.serve(async (req) => {
       event as { id?: unknown; created?: unknown },
     );
     const eventObj = event.data.object as Record<string, unknown>;
+    const debug = Deno.env.get("SUPABASE_DEBUG") === "1";
+    const eventCustomerId = String(
+      (eventObj && (eventObj.customer as string | undefined)) ||
+        "",
+    );
+    const eventSubscriptionId = String(
+      (eventObj && (eventObj.subscription as string | undefined)) ||
+        (eventObj && (eventObj.id as string | undefined)) ||
+        "",
+    );
+    if (debug) {
+      console.log("stripe-webhook: received", {
+        eventId: event.id,
+        eventType: event.type,
+        livemode: Boolean(event.livemode),
+        eventCreated: eventCreatedSeconds,
+        customerId: eventCustomerId || null,
+        subscriptionId: eventSubscriptionId || null,
+      });
+    }
 
     // Idempotency with retry-safety:
     // - processed => return early
@@ -346,22 +723,38 @@ Deno.serve(async (req) => {
 
     if (existingErr) {
       console.error("stripe-webhook: failed reading existing event row:", existingErr);
+      await markWebhookEventFailure(sb, event.id, `webhook-event-read-failed: ${existingErr.message}`);
       return jsonResp({ error: "Failed reading webhook event state" }, 500);
     }
 
     if (!existingEvent) {
-      const { error: insErr } = await sb.from("webhook_events").insert({
+      const eventCreatedValue = eventCreatedFieldValue(eventCreatedSeconds);
+      let { error: insErr } = await sb.from("webhook_events").insert({
         event_id: event.id,
         event_type: event.type,
         livemode: event.livemode,
         payload: event.data.object,
-        event_created: eventCreatedSeconds,
+        event_created: eventCreatedValue,
         received_at: nowIso,
         status: "received",
         error: null,
         processed_at: null,
         updated_at: nowIso,
       });
+      if (insErr && isColumnError(insErr, "event_created")) {
+        ({ error: insErr } = await sb.from("webhook_events").insert({
+          event_id: event.id,
+          event_type: event.type,
+          livemode: event.livemode,
+          payload: event.data.object,
+          event_created: Number.isFinite(eventCreatedSeconds as number) ? Number(eventCreatedSeconds) : null,
+          received_at: nowIso,
+          status: "received",
+          error: null,
+          processed_at: null,
+          updated_at: nowIso,
+        }));
+      }
       if (insErr) {
         if (insErr.code === "23505") {
           const { data: duplicateEvent, error: duplicateErr } = await sb
@@ -372,6 +765,7 @@ Deno.serve(async (req) => {
 
           if (duplicateErr) {
             console.error("stripe-webhook: failed reading duplicate event row:", duplicateErr);
+            await markWebhookEventFailure(sb, event.id, `duplicate-event-read-failed: ${duplicateErr.message}`);
             return jsonResp({ error: "Failed reading duplicate webhook event state" }, 500);
           }
 
@@ -389,26 +783,42 @@ Deno.serve(async (req) => {
           }
         } else {
           console.error("stripe-webhook: event insert failed:", insErr);
+          await markWebhookEventFailure(sb, event.id, `webhook-event-insert-failed: ${insErr.message}`);
           return jsonResp({ error: "Failed recording webhook event" }, 500);
         }
       }
     } else {
-      const { error: syncErr } = await sb
+      const eventCreatedValue = eventCreatedFieldValue(eventCreatedSeconds);
+      let { error: syncErr } = await sb
         .from("webhook_events")
         .update({
           event_type: event.type,
           livemode: event.livemode,
           payload: event.data.object,
-          event_created:
-            Number.isFinite(eventCreatedSeconds as number)
-              ? Number(eventCreatedSeconds)
-              : (existingEvent.event_created ?? null),
+          event_created: eventCreatedValue ?? (existingEvent.event_created ?? null),
           received_at: nowIso,
           updated_at: nowIso,
         })
         .eq("event_id", event.id);
+      if (syncErr && isColumnError(syncErr, "event_created")) {
+        ({ error: syncErr } = await sb
+          .from("webhook_events")
+          .update({
+            event_type: event.type,
+            livemode: event.livemode,
+            payload: event.data.object,
+            event_created:
+              Number.isFinite(eventCreatedSeconds as number)
+                ? Number(eventCreatedSeconds)
+                : (existingEvent.event_created ?? null),
+            received_at: nowIso,
+            updated_at: nowIso,
+          })
+          .eq("event_id", event.id));
+      }
       if (syncErr) {
         console.error("stripe-webhook: failed syncing existing event metadata:", syncErr);
+        await markWebhookEventFailure(sb, event.id, `webhook-event-sync-failed: ${syncErr.message}`);
         return jsonResp({ error: "Failed syncing webhook event metadata" }, 500);
       }
       if (existingEvent.status === "processed") {
@@ -425,19 +835,9 @@ Deno.serve(async (req) => {
       }
     }
 
-    const { error: processingErr } = await sb
-      .from("webhook_events")
-      .update({
-        status: "processing",
-        error: null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("event_id", event.id);
-
-    if (processingErr) {
-      console.error("stripe-webhook: failed to mark processing:", processingErr);
-      return jsonResp({ error: "Failed to persist processing status" }, 500);
-    }
+    // Do not write a transient "processing" status because some deployments
+    // constrain status to received/processed/failed, which would leave events
+    // stuck at "received" if this update fails.
 
     try {
       // Route event
@@ -447,22 +847,60 @@ Deno.serve(async (req) => {
         case "checkout.session.completed": {
           // Expand subscription from checkout
           const subId = String(obj.subscription ?? "");
+          const sessionMetadataOrgId = readOrganizationIdFromMetadata((obj as Record<string, unknown>)?.metadata ?? null);
           if (subId) {
-            const sub = await stripe.subscriptions.retrieve(subId);
-            await upsertSubscription(sb, sub as unknown as Record<string, unknown>, eventCreatedSeconds);
+            const sub = await stripe.subscriptions.retrieve(subId, { expand: ["items.data.price"] });
+            const subForUpsert = sub as unknown as Record<string, unknown>;
+            if (
+              sessionMetadataOrgId &&
+              !readOrganizationIdFromMetadata((subForUpsert as any)?.metadata ?? null)
+            ) {
+              const existingMeta = (
+                (subForUpsert as any)?.metadata && typeof (subForUpsert as any).metadata === "object"
+              ) ? (subForUpsert as any).metadata as Record<string, unknown> : {};
+              (subForUpsert as any).metadata = {
+                ...existingMeta,
+                organization_id: sessionMetadataOrgId,
+              };
+            }
+            await upsertSubscription(
+              sb,
+              subForUpsert,
+              eventCreatedSeconds,
+              { eventType: event.type, eventId: event.id, metadataOrganizationId: sessionMetadataOrgId },
+            );
           }
           break;
         }
 
         case "customer.subscription.created":
-        case "customer.subscription.updated":
+        case "customer.subscription.updated": {
+          const subId = String(obj.id ?? "");
+          if (!subId) {
+            throw new Error(`stripe-webhook: missing subscription id on ${event.type} event`);
+          }
+          const latest = await stripe.subscriptions.retrieve(subId, { expand: ["items.data.price"] });
+          await upsertSubscription(
+            sb,
+            latest as unknown as Record<string, unknown>,
+            eventCreatedSeconds,
+            { eventType: event.type, eventId: event.id },
+          );
+          break;
+        }
         case "customer.subscription.deleted":
-          await upsertSubscription(sb, obj, eventCreatedSeconds);
+          await upsertSubscription(
+            sb,
+            obj,
+            eventCreatedSeconds,
+            { eventType: event.type, eventId: event.id },
+          );
           break;
 
         case "invoice.payment_succeeded":
         case "invoice.payment_failed":
-          await handleInvoice(sb, obj, stripe, eventCreatedSeconds);
+        case "invoice.paid":
+          await handleInvoice(sb, obj, stripe, eventCreatedSeconds, { eventType: event.type, eventId: event.id });
           break;
 
         default:
@@ -471,33 +909,28 @@ Deno.serve(async (req) => {
           }
       }
 
-      const { error: markProcessedErr } = await sb
-        .from("webhook_events")
-        .update({
-          status: "processed",
-          error: null,
-          processed_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("event_id", event.id);
+      const markProcessedErr = await markWebhookEventProcessed(sb, event.id);
 
       if (markProcessedErr) {
         console.error("stripe-webhook: failed to mark processed:", markProcessedErr);
+        await markWebhookEventFailure(sb, event.id, `mark-processed-failed: ${markProcessedErr.message}`);
         return jsonResp({ error: "Failed to persist processed status" }, 500);
+      }
+
+      if (debug) {
+        console.log("stripe-webhook: processed", {
+          eventId: event.id,
+          eventType: event.type,
+          customerId: eventCustomerId || null,
+          subscriptionId: eventSubscriptionId || null,
+        });
       }
 
       return jsonResp({ received: true });
     } catch (procErr) {
       const errMsg = String((procErr as Error)?.message ?? procErr);
       try {
-        await sb
-          .from("webhook_events")
-          .update({
-            status: "failed",
-            error: errMsg,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("event_id", event.id);
+        await markWebhookEventFailure(sb, event.id, errMsg);
       } catch (markErr) {
         console.error("stripe-webhook: failed to mark event as failed:", markErr);
       }

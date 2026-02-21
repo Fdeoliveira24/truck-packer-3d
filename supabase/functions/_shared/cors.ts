@@ -15,6 +15,10 @@ const DEV_ORIGINS = new Set([
   "http://localhost:3000",
 ]);
 
+const ALLOW_HEADERS =
+  "authorization, x-client-info, apikey, content-type, stripe-signature, x-user-jwt";
+const ALLOW_METHODS = "GET,POST,PATCH,DELETE,OPTIONS";
+
 function parseAllowedOrigins() {
   const raw = getEnv("ALLOWED_ORIGINS");
   const list = raw
@@ -52,10 +56,10 @@ export function corsHeaders(req: Request): Record<string, string> {
 
   return {
     "Access-Control-Allow-Origin": allowOrigin,
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, stripe-signature, x-user-jwt",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": ALLOW_HEADERS,
+    "Access-Control-Allow-Methods": ALLOW_METHODS,
     "Access-Control-Max-Age": "86400",
+    "Vary": "Origin",
   };
 }
 
@@ -74,9 +78,9 @@ export function json(
     headers: {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": allowOrigin ?? "null",
-      "Access-Control-Allow-Headers":
-        "authorization, x-client-info, apikey, content-type, stripe-signature, x-user-jwt",
-      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      "Access-Control-Allow-Headers": ALLOW_HEADERS,
+      "Access-Control-Allow-Methods": ALLOW_METHODS,
+      "Vary": "Origin",
     },
   });
 }
@@ -85,15 +89,8 @@ export function handleCors(req: Request): Response | null {
   const origin = getAllowedOrigin(req);
 
   if (req.method === "OPTIONS") {
-    if (origin === null) {
-      return new Response(JSON.stringify({ error: "Origin not allowed" }), {
-        status: 403,
-        headers: { ...corsHeaders(req), "content-type": "application/json" },
-      });
-    }
-
     return new Response(null, {
-      status: 204,
+      status: 200,
       headers: corsHeaders(req),
     });
   }

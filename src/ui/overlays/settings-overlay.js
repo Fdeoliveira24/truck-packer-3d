@@ -34,6 +34,11 @@ import { getUserAvatarView } from '../../core/utils/index.js';
 import * as ImportExport from '../../services/import-export.js';
 import * as StateStore from '../../core/state-store.js';
 import * as CoreStorage from '../../core/storage.js';
+import {
+  sendOrgInvite,
+  updateOrgMemberRole as updateOrgMemberRoleFn,
+  removeOrgMember as removeOrgMemberFn,
+} from '../../data/services/billing.service.js';
 
 export function createSettingsOverlay({
   documentRef = document,
@@ -71,6 +76,7 @@ export function createSettingsOverlay({
   const TAB_STORAGE_KEY = 'tp3d:settings:activeTab';
   const SETTINGS_MODAL_ATTR = 'data-tp3d-settings-modal';
   const SETTINGS_INSTANCE_ATTR = 'data-tp3d-settings-instance';
+  const ORG_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
   function debugEnabled() {
     try {
@@ -87,6 +93,20 @@ export function createSettingsOverlay({
     } catch {
       // ignore
     }
+  }
+
+  function normalizeOrgId(value) {
+    const raw = String(value || '').trim();
+    if (!raw || raw.toLowerCase() === 'personal') return '';
+    return ORG_UUID_RE.test(raw) ? raw : '';
+  }
+
+  /**
+   * @param {unknown} value
+   * @returns {'month'|'year'}
+   */
+  function normalizeInterval(value) {
+    return String(value || '').trim().toLowerCase() === 'year' ? 'year' : 'month';
   }
 
   function escapeHtml(value) {
@@ -206,10 +226,20 @@ export function createSettingsOverlay({
   let orgMembersRoleFilter = 'all';
   const orgMemberActions = new Set();
   let lastOrgMembersOrgId = null;
+
+  // Organization invites state
+  let orgInvitesData = null;
+  let isLoadingOrgInvites = false;
+  let orgInvitesError = null;
+  let orgInvitesRequestId = 0;
+  const orgInviteActions = new Set(); // invite IDs currently being acted on
   let lastKnownUserId = null;
   let lastBundleRefreshAt = 0;
   let billingUnsubscribe = null;
   let billingSubscriptionToken = 0;
+  let modalOrgId = '';
+  let selectedInterval = 'month';
+  let orgChangedHandler = null;
   let lastOrgLogoKey = null;
   let lastOrgLogoUrl = null;
   let lastOrgLogoExpiresAt = 0;
@@ -217,6 +247,117 @@ export function createSettingsOverlay({
   // Account bundle loading state (single request for all account data)
   let isLoadingAccountBundle = false;
   let accountBundleRequestId = 0; // "Last request wins" guard
+
+  function getOrgIdFromOrgContext() {
+    try {
+      if (typeof window !== 'undefined' && window.OrgContext && typeof window.OrgContext.getActiveOrgId === 'function') {
+        return normalizeOrgId(window.OrgContext.getActiveOrgId());
+      }
+    } catch {
+      // ignore
+    }
+    return '';
+  }
+
+  function getOrgIdFromBillingState() {
+    try {
+      const api = getBillingApiSafely();
+      if (!api || typeof api.getBillingState !== 'function') return '';
+      const state = api.getBillingState();
+      return normalizeOrgId(state && state.orgId ? state.orgId : '');
+    } catch {
+      // ignore
+    }
+    return '';
+  }
+
+  function getOrgIdFromLocalStorage() {
+    try {
+      if (typeof window === 'undefined' || !window.localStorage) return '';
+      return normalizeOrgId(window.localStorage.getItem('tp3d:active-org-id') || '');
+    } catch {
+      // ignore
+    }
+    return '';
+  }
+
+  function resolveInitialModalOrgId() {
+    return getOrgIdFromOrgContext() || getOrgIdFromBillingState() || getOrgIdFromLocalStorage() || '';
+  }
+
+  function ensureModalOrgId() {
+    if (!modalOrgId) {
+      modalOrgId = resolveInitialModalOrgId();
+    }
+    return modalOrgId;
+  }
+
+  function clearOrgScopedCaches(nextOrgId) {
+    const next = normalizeOrgId(nextOrgId);
+    if (lastOrgMembersOrgId && String(lastOrgMembersOrgId) !== String(next)) {
+      orgMembersData = null;
+      orgMembersError = null;
+      orgMembersSearchQuery = '';
+      orgMembersRoleFilter = 'all';
+      orgInvitesData = null;
+      orgInvitesError = null;
+    }
+  }
+
+  function refreshBillingForOrgChange(nextOrgId, source) {
+    const normalizedOrgId = normalizeOrgId(nextOrgId);
+    if (!normalizedOrgId) return;
+    const api = getBillingApiSafely();
+    if (!api) return;
+
+    if (typeof api.clearBillingState === 'function') {
+      try {
+        api.clearBillingState();
+      } catch {
+        // ignore
+      }
+    }
+
+    const billingWrap = doc.getElementById('tp3d-billing-wrap');
+    if (billingWrap) {
+      renderBillingInto(billingWrap);
+    }
+
+    if (typeof api.refreshBilling === 'function') {
+      api.refreshBilling({ force: true, reason: source || 'settings:org-changed' })
+        .catch(() => {})
+        .finally(() => {
+          const wrap = doc.getElementById('tp3d-billing-wrap');
+          if (wrap) renderBillingInto(wrap);
+        });
+    }
+  }
+
+  function ensureOrgChangedListener() {
+    if (orgChangedHandler || typeof window === 'undefined') return;
+    orgChangedHandler = ev => {
+      const nextOrgId = normalizeOrgId(ev && ev.detail ? ev.detail.orgId : '');
+      if (!nextOrgId || nextOrgId === modalOrgId) return;
+      modalOrgId = nextOrgId;
+      clearOrgScopedCaches(nextOrgId);
+      queueAccountBundleRefresh({ force: true, source: 'settings:org-changed' });
+      refreshBillingForOrgChange(nextOrgId, 'settings:org-changed');
+      if (settingsOverlay && settingsOverlay.isConnected) {
+        render();
+      }
+    };
+    window.addEventListener('tp3d:org-changed', orgChangedHandler);
+  }
+
+  function removeOrgChangedListener() {
+    if (!orgChangedHandler || typeof window === 'undefined') return;
+    try {
+      window.removeEventListener('tp3d:org-changed', orgChangedHandler);
+    } catch {
+      // ignore
+    }
+    orgChangedHandler = null;
+  }
 
   // Static content for Updates and Roadmap (embedded to avoid external dependencies)
   const updatesData = [
@@ -538,7 +679,7 @@ export function createSettingsOverlay({
     }
   }
 
-  async function updateMemberRole(orgId, member, nextRole, currentUserId, currentRole) {
+  async function updateMemberRole(orgId, member, nextRole, currentUserId) {
     if (!member || !member.user_id || !orgId) return null;
     const userId = String(member.user_id);
     if (orgMemberActions.has(userId)) return null;
@@ -547,14 +688,16 @@ export function createSettingsOverlay({
     const actionId = _tabState.lastActionId;
     renderIfFresh(actionId, 'memberRole:update:begin');
     try {
-      const updated = await SupabaseClient.updateOrganizationMemberRole(orgId, userId, nextRole);
-      if (updated && orgMembersData) {
-        orgMembersData = orgMembersData.map(m =>
-          m && m.user_id && String(m.user_id) === userId ? { ...m, role: updated.role } : m
-        );
+      const result = await updateOrgMemberRoleFn(orgId, userId, nextRole);
+      if (!result || !result.ok) {
+        UIComponents.showToast(result && result.error ? result.error : 'Failed to update role.', 'error');
+        renderIfFresh(actionId, 'memberRole:update:error');
+        return null;
       }
-      if (currentUserId && currentUserId === userId && membershipData) {
-        membershipData = { ...membershipData, role: updated ? updated.role : membershipData.role };
+      await loadOrgMembers(orgId);
+      const updated = result.member || null;
+      if (updated && currentUserId && currentUserId === userId && membershipData) {
+        membershipData = { ...membershipData, role: updated.role || membershipData.role };
       }
       UIComponents.showToast('Role updated', 'success');
       renderIfFresh(actionId, 'memberRole:update');
@@ -578,10 +721,13 @@ export function createSettingsOverlay({
     const actionId = _tabState.lastActionId;
     renderIfFresh(actionId, 'memberRemove:begin');
     try {
-      await SupabaseClient.removeOrganizationMember(orgId, userId);
-      if (orgMembersData) {
-        orgMembersData = orgMembersData.filter(m => !(m && m.user_id && String(m.user_id) === userId));
+      const result = await removeOrgMemberFn(orgId, userId);
+      if (!result || !result.ok) {
+        UIComponents.showToast(result && result.error ? result.error : 'Failed to remove member.', 'error');
+        renderIfFresh(actionId, 'memberRemove:error');
+        return false;
       }
+      await loadOrgMembers(orgId);
       UIComponents.showToast('Member removed', 'success');
       renderIfFresh(actionId, 'memberRemove');
       return true;
@@ -592,6 +738,152 @@ export function createSettingsOverlay({
     } finally {
       orgMemberActions.delete(userId);
       renderIfFresh(actionId, 'memberRemove:done');
+    }
+  }
+
+  // ---- Organization invites ----
+
+  async function loadOrgInvites(orgId) {
+    if (isLoadingOrgInvites || !orgId) return null;
+    const thisRequestId = ++orgInvitesRequestId;
+    isLoadingOrgInvites = true;
+    orgInvitesError = null;
+    try {
+      const invites = await SupabaseClient.getOrganizationInvites(orgId);
+      if (thisRequestId !== orgInvitesRequestId) return null;
+      orgInvitesData = Array.isArray(invites) ? invites : [];
+      return orgInvitesData;
+    } catch (err) {
+      if (thisRequestId !== orgInvitesRequestId) return null;
+      orgInvitesError = err;
+      orgInvitesData = Array.isArray(orgInvitesData) ? orgInvitesData : [];
+      return null;
+    } finally {
+      if (thisRequestId === orgInvitesRequestId) {
+        isLoadingOrgInvites = false;
+      }
+    }
+  }
+
+  async function sendInvite(orgId, email, role) {
+    if (!orgId || !email) return null;
+    const actionId = _tabState.lastActionId;
+    const normalizedRole = String(role || 'member').trim().toLowerCase();
+    const roleAllowed = normalizedRole === 'member' || normalizedRole === 'admin';
+    debug('orgInvite:send:request', { orgId, email, role: normalizedRole, roleAllowed });
+    if (!roleAllowed) {
+      UIComponents.showToast('Invites support Member or Admin roles only.', 'warning', { title: 'Invites' });
+      return null;
+    }
+    try {
+      const result = await sendOrgInvite(orgId, email, normalizedRole);
+      if (!result || !result.ok) {
+        UIComponents.showToast(result && result.error ? result.error : 'Invite failed', 'error', { title: 'Invites' });
+        return null;
+      }
+      const inviteLink = result && result.invite_link ? String(result.invite_link) : '';
+      const copyInviteAction = inviteLink
+        ? [{
+            label: 'Copy Link',
+            onClick: () => {
+              try {
+                if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                  navigator.clipboard.writeText(inviteLink).then(() => {
+                    UIComponents.showToast('Invite link copied', 'success', { title: 'Invites' });
+                  }).catch(() => {
+                    UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
+                  });
+                }
+              } catch {
+                UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
+              }
+            },
+          }]
+        : undefined;
+      UIComponents.showToast('Invite sent to ' + email, 'success', { title: 'Invites', actions: copyInviteAction });
+      // Refresh invites list
+      await loadOrgInvites(orgId);
+      renderIfFresh(actionId, 'invite:send');
+      return result;
+    } catch (err) {
+      UIComponents.showToast('Invite failed: ' + (err && err.message ? err.message : err), 'error', { title: 'Invites' });
+      return null;
+    }
+  }
+
+  async function revokeInvite(orgId, invite) {
+    if (!invite || !invite.id) return false;
+    const inviteId = String(invite.id);
+    if (orgInviteActions.has(inviteId)) return false;
+
+    orgInviteActions.add(inviteId);
+    const actionId = _tabState.lastActionId;
+    renderIfFresh(actionId, 'invite:revoke:begin');
+    try {
+      await SupabaseClient.revokeOrganizationInvite(inviteId);
+      await loadOrgInvites(orgId);
+      UIComponents.showToast('Invite revoked', 'success', { title: 'Invites' });
+      renderIfFresh(actionId, 'invite:revoke');
+      return true;
+    } catch (err) {
+      UIComponents.showToast('Revoke failed: ' + (err && err.message ? err.message : err), 'error', { title: 'Invites' });
+      renderIfFresh(actionId, 'invite:revoke:error');
+      return false;
+    } finally {
+      orgInviteActions.delete(inviteId);
+      renderIfFresh(actionId, 'invite:revoke:done');
+    }
+  }
+
+  async function resendInvite(orgId, invite) {
+    if (!invite || !invite.id) return null;
+    const inviteId = String(invite.id);
+    if (orgInviteActions.has(inviteId)) return null;
+
+    orgInviteActions.add(inviteId);
+    const actionId = _tabState.lastActionId;
+    renderIfFresh(actionId, 'invite:resend:begin');
+    try {
+      const inviteRole = String(invite.role || 'member').trim().toLowerCase();
+      if (inviteRole !== 'member' && inviteRole !== 'admin') {
+        UIComponents.showToast('Only Member/Admin invites can be resent.', 'warning', { title: 'Invites' });
+        return null;
+      }
+      const result = await sendOrgInvite(orgId, invite.email, inviteRole);
+      if (!result || !result.ok) {
+        UIComponents.showToast(result && result.error ? result.error : 'Resend failed', 'error', { title: 'Invites' });
+        return null;
+      }
+      const inviteLink = result && result.invite_link ? String(result.invite_link) : '';
+      const copyInviteAction = inviteLink
+        ? [{
+            label: 'Copy Link',
+            onClick: () => {
+              try {
+                if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                  navigator.clipboard.writeText(inviteLink).then(() => {
+                    UIComponents.showToast('Invite link copied', 'success', { title: 'Invites' });
+                  }).catch(() => {
+                    UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
+                  });
+                }
+              } catch {
+                UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
+              }
+            },
+          }]
+        : undefined;
+      UIComponents.showToast('Invite resent to ' + invite.email, 'success', { title: 'Invites', actions: copyInviteAction });
+      await loadOrgInvites(orgId);
+      renderIfFresh(actionId, 'invite:resend');
+      return result;
+    } catch (err) {
+      UIComponents.showToast('Resend failed: ' + (err && err.message ? err.message : err), 'error', { title: 'Invites' });
+      renderIfFresh(actionId, 'invite:resend:error');
+      return null;
+    } finally {
+      orgInviteActions.delete(inviteId);
+      renderIfFresh(actionId, 'invite:resend:done');
     }
   }
 
@@ -654,6 +946,7 @@ export function createSettingsOverlay({
   function close() {
     if (!settingsOverlay) return;
     isUploadingAvatar = false;
+    removeOrgChangedListener();
     if (billingUnsubscribe) {
       try {
         billingUnsubscribe();
@@ -710,6 +1003,8 @@ export function createSettingsOverlay({
     settingsLeftPane = null;
     settingsRightPane = null;
     settingsInstanceId = 0;
+    modalOrgId = '';
+    selectedInterval = 'month';
     resourcesSubView = 'root'; // Reset sub-view on close
 
     try {
@@ -1219,6 +1514,7 @@ export function createSettingsOverlay({
     const api = getBillingApiSafely();
     const fallbackState = {
       ok: false,
+      pending: true,
       loading: false,
       plan: null,
       status: null,
@@ -1229,26 +1525,48 @@ export function createSettingsOverlay({
       currentPeriodEnd: null,
       cancelAtPeriodEnd: false,
       cancelAt: null,
+      portalAvailable: false,
       error: null,
       data: null,
       lastFetchedAt: 0,
     };
 
     const state = (api && typeof api.getBillingState === 'function' ? api.getBillingState() : null) || fallbackState;
+    const lockedOrgId = ensureModalOrgId();
+    const currentOrgId = getOrgIdFromOrgContext();
+    const billingOrgId = normalizeOrgId(state.orgId || '');
     const loading = Boolean(state.loading);
-    const showSkeleton = loading && !state.lastFetchedAt;
-    const planText = loading ? 'Checking\u2026' : state.plan || 'Free';
+    const pending = Boolean(state.pending);
+    const staleOrgState = Boolean(lockedOrgId && billingOrgId && billingOrgId !== lockedOrgId);
+    const billingMatchesLockedOrg = Boolean(lockedOrgId && billingOrgId && billingOrgId === lockedOrgId);
+    const hasRenderableBillingState = Boolean(billingMatchesLockedOrg && state.lastFetchedAt);
+    const showSkeleton = Boolean(
+      !lockedOrgId ||
+      staleOrgState ||
+      ((loading || pending) && !hasRenderableBillingState)
+    );
     const status = state.status ? String(state.status) : '';
     const isTrial = status === 'trialing';
+    const isActiveSubscription = status === 'active';
     const isProOrTrial = state.isPro;
     const interval = state.interval ? String(state.interval) : '';
     const intervalLabel = interval === 'month' ? 'Monthly' : interval === 'year' ? 'Yearly' : null;
     const cancelAtPeriodEnd = Boolean(state.cancelAtPeriodEnd);
     const cancelAt = state.cancelAt ? String(state.cancelAt) : null;
+    const portalAvailable = Boolean(state.portalAvailable);
+    const trialWelcomeShown = (() => {
+      try {
+        const orgId = lockedOrgId || billingOrgId || '';
+        if (!orgId || typeof window === 'undefined' || !window.localStorage) return false;
+        return window.localStorage.getItem('tp3d_trial_modal_shown_' + orgId) === 'true';
+      } catch (_) {
+        return false;
+      }
+    })();
 
     // Compute trial days left
     let trialDaysLeft = null;
-    if (state.trialEndsAt) {
+    if (isTrial && state.trialEndsAt) {
       try {
         const endMs = new Date(state.trialEndsAt).getTime();
         if (Number.isFinite(endMs)) {
@@ -1264,12 +1582,25 @@ export function createSettingsOverlay({
         return false;
       }
     })();
+    const orgDataId = normalizeOrgId(orgData && orgData.id ? orgData.id : '');
+    const membershipOrgId = normalizeOrgId(
+      membershipData && membershipData.organization_id ? membershipData.organization_id : ''
+    );
+    const billingRole = String(
+      (orgDataId && orgDataId === lockedOrgId && orgData && orgData.role) ||
+      (membershipOrgId && membershipOrgId === lockedOrgId && membershipData && membershipData.role) ||
+      ''
+    ).toLowerCase();
+    const canManageBilling = billingRole === 'owner' || billingRole === 'admin';
 
     // Build DOM
     targetEl.textContent = '';
 
     // --- Organization section ---
-    const orgName = orgData && orgData.name ? String(orgData.name) : 'Personal Workspace';
+    const orgMatchesLocked = Boolean(lockedOrgId && orgDataId && orgDataId === lockedOrgId);
+    const orgName = orgMatchesLocked && orgData && orgData.name
+      ? String(orgData.name)
+      : (lockedOrgId ? 'Loading organization…' : 'Personal Workspace');
 
     const orgSection = doc.createElement('div');
     orgSection.className = 'tp3d-settings-billing';
@@ -1291,8 +1622,8 @@ export function createSettingsOverlay({
     orgValue.className = 'row';
 
     // Org logo: prefer logo_path (Supabase Storage signed URL), fallback avatar_url, else initials
-    const orgLogoPath = orgData && orgData.logo_path ? String(orgData.logo_path) : null;
-    const orgAvatarUrl = orgData && orgData.avatar_url ? String(orgData.avatar_url) : null;
+    const orgLogoPath = orgMatchesLocked && orgData && orgData.logo_path ? String(orgData.logo_path) : null;
+    const orgAvatarUrl = orgMatchesLocked && orgData && orgData.avatar_url ? String(orgData.avatar_url) : null;
     const orgAvatarSafe = orgAvatarUrl && /^https?:\/\//i.test(orgAvatarUrl) ? orgAvatarUrl : null;
 
     // Create initials avatar as default (may be replaced by img)
@@ -1300,7 +1631,7 @@ export function createSettingsOverlay({
     orgAvatarEl.className = 'tp3d-settings-account-avatar tp3d-settings-avatar--sm';
     orgAvatarEl.style.background = 'var(--accent-primary)';
     orgAvatarEl.textContent = orgName.charAt(0).toUpperCase();
-    const orgId = orgData && orgData.id ? String(orgData.id) : '';
+    const orgId = orgMatchesLocked ? String(orgDataId) : '';
     const logoKey = orgId + '|' + (orgLogoPath || orgAvatarSafe || '');
     const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
       ? lastOrgLogoUrl
@@ -1397,11 +1728,11 @@ export function createSettingsOverlay({
 
     if (showSkeleton) {
       const skeletonGroup = doc.createElement('div');
-      skeletonGroup.className = 'tp3d-skeleton-group';
+      skeletonGroup.className = 'tp3d-skeleton-group tp3d-skel';
       skeletonGroup.innerHTML = `
-        <div class="tp3d-skeleton tp3d-skeleton-title"></div>
-        <div class="tp3d-skeleton tp3d-skeleton-short"></div>
-        <div class="tp3d-skeleton tp3d-skeleton-short"></div>
+        <div class="tp3d-skel-line tp3d-skeleton-title"></div>
+        <div class="tp3d-skel-line tp3d-skeleton-short"></div>
+        <div class="tp3d-skel-line tp3d-skeleton-short"></div>
       `;
       planCard.appendChild(skeletonGroup);
     } else if (state.error && !state.ok) {
@@ -1440,6 +1771,12 @@ export function createSettingsOverlay({
       planBadge.className = 'badge' + (isTrial ? ' badge--trial' : isProOrTrial ? ' badge--active' : ' badge--free');
       planBadge.textContent = 'Current Plan';
       planHeader.appendChild(planBadge);
+      if (isActiveSubscription && cancelAtPeriodEnd) {
+        const cancelBadge = doc.createElement('span');
+        cancelBadge.className = 'badge badge--pending';
+        cancelBadge.textContent = 'Cancels';
+        planHeader.appendChild(cancelBadge);
+      }
 
       if (trialDaysLeft !== null) {
         const daysEl = doc.createElement('span');
@@ -1456,9 +1793,12 @@ export function createSettingsOverlay({
 
       if (isTrial && state.trialEndsAt) {
         const endDate = new Date(state.trialEndsAt);
-        statusLine.textContent = 'Trial ends on ' + (isNaN(endDate.getTime()) ? state.trialEndsAt : endDate.toLocaleDateString());
+        const endText = isNaN(endDate.getTime()) ? state.trialEndsAt : endDate.toLocaleDateString();
+        statusLine.textContent = trialWelcomeShown
+          ? 'You are on Pro trial until ' + endText
+          : 'Trial ends on ' + endText;
       } else if (isProOrTrial && cancelAtPeriodEnd) {
-        const endValue = cancelAt || state.currentPeriodEnd;
+        const endValue = state.currentPeriodEnd || cancelAt;
         if (endValue) {
           const endDate = new Date(endValue);
           statusLine.textContent = 'Ends on ' + (isNaN(endDate.getTime()) ? endValue : endDate.toLocaleDateString());
@@ -1475,7 +1815,7 @@ export function createSettingsOverlay({
     subSection.appendChild(planCard);
 
     // Upgrade CTA card (only if not pro/active)
-    if (!loading && !isProOrTrial) {
+    if (!showSkeleton && !loading && !pending && !isProOrTrial && canManageBilling) {
       const ctaCard = doc.createElement('div');
       ctaCard.className = 'card';
 
@@ -1486,7 +1826,9 @@ export function createSettingsOverlay({
       ctaInfo.appendChild(ctaTitle);
       const ctaDesc = doc.createElement('div');
       ctaDesc.className = 'muted';
-      ctaDesc.textContent = 'Subscribe to keep using truck packer after your free trial ends, cancel anytime.';
+      ctaDesc.textContent = status === 'trial_expired'
+        ? 'Your trial has ended. Subscribe to continue using Pro features.'
+        : 'Subscribe to unlock Pro features for this workspace.';
       ctaInfo.appendChild(ctaDesc);
       ctaCard.appendChild(ctaInfo);
 
@@ -1499,45 +1841,98 @@ export function createSettingsOverlay({
           if (UIComponents) UIComponents.showToast('Checkout coming soon. Contact sales.', 'info', { title: 'Billing' });
           return;
         }
-        subBtn.disabled = true;
-        subBtn.textContent = 'Redirecting\u2026';
-        // Use monthly price by default; env var STRIPE_PRICE_PRO_MONTHLY must be set on server
-        const priceId = typeof window !== 'undefined' && window.__TP3D_STRIPE_PRICE_MONTHLY
-          ? String(window.__TP3D_STRIPE_PRICE_MONTHLY) : '';
-        if (!priceId) {
-          if (UIComponents) UIComponents.showToast('Stripe price not configured. Contact support.', 'warning', { title: 'Billing' });
-          subBtn.disabled = false;
-          subBtn.textContent = 'Subscribe';
-          return;
-        }
-        api.startCheckout(priceId).then((r) => {
-          if (!r.ok) {
-            if (UIComponents) UIComponents.showToast(r.error || 'Checkout failed', 'error', { title: 'Billing' });
+        const pickerPromise =
+          typeof api.pickCheckoutInterval === 'function'
+            ? api.pickCheckoutInterval({
+              initialInterval: selectedInterval,
+              title: 'Choose Plan',
+              continueLabel: 'Continue',
+            })
+            : Promise.resolve({ interval: selectedInterval });
+
+        Promise.resolve(pickerPromise).then(selection => {
+          if (!selection || !selection.interval) return;
+          selectedInterval = normalizeInterval(selection.interval);
+
+          if (typeof api.getCheckoutPlanOptions === 'function') {
+            const options = api.getCheckoutPlanOptions();
+            const selectedOption = options && options[selectedInterval] ? options[selectedInterval] : null;
+            if (selectedOption && !selectedOption.available) {
+              if (UIComponents) {
+                UIComponents.showToast(`Price not configured for interval: ${selectedInterval}`, 'warning', { title: 'Billing' });
+              }
+              return;
+            }
+          }
+
+          subBtn.disabled = true;
+          subBtn.textContent = 'Redirecting\u2026';
+          api.startCheckout({ interval: selectedInterval }).then((r) => {
+            if (!r.ok) {
+              if (UIComponents) UIComponents.showToast(r.error || 'Checkout failed', 'error', { title: 'Billing' });
+              subBtn.disabled = false;
+              subBtn.textContent = 'Subscribe';
+            }
+          }).catch(() => {
             subBtn.disabled = false;
             subBtn.textContent = 'Subscribe';
-          }
+          });
         }).catch(() => {
-          subBtn.disabled = false;
-          subBtn.textContent = 'Subscribe';
+          if (UIComponents) UIComponents.showToast('Checkout failed', 'error', { title: 'Billing' });
         });
       });
       ctaCard.appendChild(subBtn);
 
       subSection.appendChild(ctaCard);
+    } else if (!showSkeleton && !loading && !pending && !isProOrTrial && !canManageBilling) {
+      const note = doc.createElement('div');
+      note.className = 'muted tp3d-settings-mt-sm';
+      note.textContent = 'Only owners and admins can manage billing for this organization.';
+      subSection.appendChild(note);
     }
 
-    // Manage subscription (for active paid users)
-    // Action buttons row
-    const actionsRow = doc.createElement('div');
-    actionsRow.className = 'row tp3d-billing-actions';
+    let manageDisabledReason = '';
+    if (!lockedOrgId) {
+      manageDisabledReason = 'Select an organization to manage billing.';
+    } else if (loading || pending || staleOrgState) {
+      manageDisabledReason = 'Loading billing info…';
+    } else if (!canManageBilling) {
+      manageDisabledReason = 'Only owners/admins can manage billing.';
+    } else if (!state.ok || !portalAvailable || !isProOrTrial || !api || typeof api.openPortal !== 'function') {
+      manageDisabledReason = "Billing portal isn't available yet. Try Refresh.";
+    }
 
-    if (!showSkeleton && isProOrTrial && !isTrial && api && typeof api.openPortal === 'function') {
+    if (debugEnabled()) {
+      console.log(
+        `[BillingUI] org(lock)=${lockedOrgId || 'none'}, org(current)=${currentOrgId || 'none'}, org(billing)=${billingOrgId || 'none'}, role=${billingRole || 'none'}, canManage=${canManageBilling}, portalAvail=${portalAvailable}, loading=${loading}, status=${status || 'none'}, showSkeleton=${showSkeleton}, manageDisabledReason=${manageDisabledReason || 'none'}`
+      );
+    }
+
+    if (showSkeleton) {
+      const actionsSkeleton = doc.createElement('div');
+      actionsSkeleton.className = 'row tp3d-billing-actions tp3d-skel tp3d-billing-skel-actions';
+      actionsSkeleton.innerHTML = `
+        <span class="tp3d-skel-btn"></span>
+        <span class="tp3d-skel-btn"></span>
+      `;
+      subSection.appendChild(actionsSkeleton);
+    } else {
+      // Action buttons row
+      const actionsRow = doc.createElement('div');
+      actionsRow.className = 'row tp3d-billing-actions';
+
+      const manageWrap = doc.createElement('span');
+      manageWrap.className = 'tp3d-billing-manage-wrap';
       const manageBtn = doc.createElement('button');
       manageBtn.type = 'button';
       manageBtn.className = 'btn btn-secondary';
       manageBtn.textContent = 'Manage';
-      manageBtn.disabled = loading;
+      manageBtn.disabled = Boolean(manageDisabledReason);
+      if (manageDisabledReason) {
+        manageBtn.setAttribute('aria-label', `Manage disabled: ${manageDisabledReason}`);
+      }
       manageBtn.addEventListener('click', () => {
+        if (manageBtn.disabled || !api || typeof api.openPortal !== 'function') return;
         manageBtn.disabled = true;
         manageBtn.textContent = 'Redirecting\u2026';
         api.openPortal().then((r) => {
@@ -1551,21 +1946,22 @@ export function createSettingsOverlay({
           manageBtn.textContent = 'Manage';
         });
       });
-      actionsRow.appendChild(manageBtn);
-    }
+      manageWrap.appendChild(manageBtn);
+      actionsRow.appendChild(manageWrap);
 
-    const refreshBtn = doc.createElement('button');
-    refreshBtn.type = 'button';
-    refreshBtn.className = 'btn btn-secondary';
-    refreshBtn.textContent = 'Refresh';
-    refreshBtn.disabled = loading;
-    refreshBtn.addEventListener('click', () => {
-      if (api && typeof api.refreshBilling === 'function') {
-        api.refreshBilling({ force: true }).catch(() => {});
-      }
-    });
-    actionsRow.appendChild(refreshBtn);
-    subSection.appendChild(actionsRow);
+      const refreshBtn = doc.createElement('button');
+      refreshBtn.type = 'button';
+      refreshBtn.className = 'btn btn-secondary';
+      refreshBtn.textContent = 'Refresh';
+      refreshBtn.disabled = Boolean(loading || !lockedOrgId);
+      refreshBtn.addEventListener('click', () => {
+        if (api && typeof api.refreshBilling === 'function' && lockedOrgId) {
+          api.refreshBilling({ force: true }).catch(() => {});
+        }
+      });
+      actionsRow.appendChild(refreshBtn);
+      subSection.appendChild(actionsRow);
+    }
 
     targetEl.appendChild(subSection);
 
@@ -1642,10 +2038,19 @@ export function createSettingsOverlay({
 
     // Left: account switcher button
     const userView = getCurrentUserView();
-    const hasOrg = Boolean(membershipData && membershipData.organization_id);
-    if (!hasOrg && (_tabState.activeTabId === 'org-members' || _tabState.activeTabId === 'org-billing')) {
-      _tabState.activeTabId = 'org-general';
-    }
+    const orgContextId = getOrgIdFromOrgContext();
+    const lockedOrgId = ensureModalOrgId();
+    const hasOrg = Boolean(
+      lockedOrgId ||
+      (orgData && orgData.id) ||
+      (membershipData && membershipData.organization_id) ||
+      orgContextId
+    );
+    const isOrgHydrating = Boolean(
+      userView.isAuthed &&
+      !hasOrg &&
+      (isLoadingAccountBundle || isLoadingMembership || isLoadingOrg)
+    );
     const accountBtn = doc.createElement('button');
     accountBtn.type = 'button';
     accountBtn.className = 'btn';
@@ -1680,13 +2085,14 @@ export function createSettingsOverlay({
     };
 
     /**
-     * @param {{ key: string, label: string, icon?: string, indent?: boolean }} opts
+     * @param {{ key: string, label: string, icon?: string, indent?: boolean, disabled?: boolean }} opts
      */
-    const makeItem = ({ key, label, icon, indent = false }) => {
+    const makeItem = ({ key, label, icon, indent = false, disabled = false }) => {
       const btn = doc.createElement('button');
       btn.type = 'button';
       btn.className = 'nav-btn';
       btn.classList.add('tp3d-settings-nav-item');
+      if (disabled) btn.classList.add('is-disabled');
       btn.dataset.settingsTab = key;
       btn.setAttribute('role', 'tab');
 
@@ -1707,6 +2113,7 @@ export function createSettingsOverlay({
       btn.classList.toggle('active', isActive);
       btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
       btn.setAttribute('tabindex', isActive ? '0' : '-1');
+      btn.disabled = Boolean(disabled);
       btn.dataset.tab = key;
       btn.dataset.settingsTab = key;
       return btn;
@@ -1721,14 +2128,26 @@ export function createSettingsOverlay({
     navWrap.appendChild(
       makeItem({ key: 'org-general', label: 'General', icon: 'fa-regular fa-building', indent: true })
     );
-    if (hasOrg) {
-      navWrap.appendChild(
-        makeItem({ key: 'org-members', label: 'Members', icon: 'fa-solid fa-users', indent: true })
-      );
-      navWrap.appendChild(
-        makeItem({ key: 'org-billing', label: 'Billing', icon: 'fa-regular fa-credit-card', indent: true })
-      );
-    }
+    navWrap.appendChild(
+      makeItem({
+        key: 'org-members',
+        label: 'Members',
+        icon: 'fa-solid fa-users',
+        indent: true,
+        disabled: !hasOrg,
+        disabledReason: isOrgHydrating ? 'Loading organization…' : 'No active organization selected.',
+      })
+    );
+    navWrap.appendChild(
+      makeItem({
+        key: 'org-billing',
+        label: 'Billing',
+        icon: 'fa-regular fa-credit-card',
+        indent: true,
+        disabled: !hasOrg,
+        disabledReason: isOrgHydrating ? 'Loading organization…' : 'No active organization selected.',
+      })
+    );
     settingsLeftPane.appendChild(navWrap);
 
     // Right: header
@@ -1821,7 +2240,6 @@ export function createSettingsOverlay({
       backBtn.type = 'button';
       backBtn.className = 'btn btn-ghost';
       backBtn.innerHTML = '<i class="fa-solid fa-arrow-left"></i>';
-      backBtn.setAttribute('data-tooltip', 'Back to Resources');
       backBtn.addEventListener('click', () => setResourcesSubView('root'));
       headerLeft.appendChild(backBtn);
     }
@@ -2557,7 +2975,12 @@ export function createSettingsOverlay({
       };
 
       // Determine if user is owner/admin using membership.role
-      const isOwnerOrAdmin = membershipData && (membershipData.role === 'owner' || membershipData.role === 'admin');
+      const orgRole = String(
+        (orgData && orgData.role) ||
+        (membershipData && membershipData.role) ||
+        ''
+      ).toLowerCase();
+      const isOwnerOrAdmin = orgRole === 'owner' || orgRole === 'admin';
 
       if (isEditingOrg && orgData && isOwnerOrAdmin) {
         // Edit mode
@@ -2576,8 +2999,13 @@ export function createSettingsOverlay({
             postal_code: formData.get('postal_code') || null,
             country: formData.get('country') || null,
           };
-          if (membershipData && membershipData.organization_id) {
-            saveOrganization(updates, membershipData.organization_id);
+          const orgIdForSave = String(
+            (orgData && orgData.id) ||
+            (membershipData && membershipData.organization_id) ||
+            ''
+          ).trim();
+          if (orgIdForSave) {
+            saveOrganization(updates, orgIdForSave);
           }
         });
 
@@ -2686,8 +3114,12 @@ export function createSettingsOverlay({
         logoInput.style.display = 'none';
         logoInput.addEventListener('change', () => {
           const f = logoInput.files && logoInput.files[0];
-          if (!f || !membershipData || !membershipData.organization_id) return;
-          const orgIdLocal = membershipData.organization_id;
+          const orgIdLocal = String(
+            (orgData && orgData.id) ||
+            (membershipData && membershipData.organization_id) ||
+            ''
+          ).trim();
+          if (!f || !orgIdLocal) return;
           UIComponents.showToast('Uploading logo…', 'info', { title: 'Organization' });
           SupabaseClient.uploadOrgLogo(orgIdLocal, f)
             .then(() => {
@@ -2980,10 +3412,12 @@ export function createSettingsOverlay({
 
           // Role display
           const roleEl = doc.createElement('div');
-          const roleDisplay =
-            membershipData && membershipData.role
-              ? membershipData.role.charAt(0).toUpperCase() + membershipData.role.slice(1)
-              : 'Member';
+          const roleValue = String(
+            (orgData && orgData.role) ||
+            (membershipData && membershipData.role) ||
+            'member'
+          ).toLowerCase();
+          const roleDisplay = roleValue.charAt(0).toUpperCase() + roleValue.slice(1);
           roleEl.textContent = roleDisplay;
           viewContainer.appendChild(orgRow('Role', roleEl));
 
@@ -3017,9 +3451,17 @@ export function createSettingsOverlay({
       body.appendChild(orgCard);
     } else if (_tabState.activeTabId === 'org-members') {
       const orgUserView = getCurrentUserView(profileData);
-      const orgId = membershipData && membershipData.organization_id ? String(membershipData.organization_id) : null;
+      const orgId = String(
+        (orgData && orgData.id) ||
+        (membershipData && membershipData.organization_id) ||
+        ''
+      ).trim() || null;
       const currentUserId = orgUserView && orgUserView.userId ? String(orgUserView.userId) : null;
-      const currentRole = membershipData && membershipData.role ? String(membershipData.role) : null;
+      const currentRole = String(
+        (orgData && orgData.role) ||
+        (membershipData && membershipData.role) ||
+        ''
+      ).toLowerCase() || null;
       const isOwner = currentRole === 'owner';
       const isAdmin = currentRole === 'admin';
       const canManage = isOwner || isAdmin;
@@ -3036,7 +3478,7 @@ export function createSettingsOverlay({
       } else if (!orgId) {
         const msg = doc.createElement('div');
         msg.className = 'muted';
-        msg.textContent = 'No active organization selected.';
+        msg.textContent = isOrgHydrating ? 'Loading organization…' : 'No active organization selected.';
         membersCard.appendChild(msg);
       } else {
         if (lastOrgMembersOrgId && String(lastOrgMembersOrgId) !== String(orgId)) {
@@ -3044,6 +3486,8 @@ export function createSettingsOverlay({
           orgMembersError = null;
           orgMembersSearchQuery = '';
           orgMembersRoleFilter = 'all';
+          orgInvitesData = null;
+          orgInvitesError = null;
         }
 
         const rolesHelp = doc.createElement('div');
@@ -3056,6 +3500,14 @@ export function createSettingsOverlay({
           const actionId = _tabState.lastActionId;
           loadOrgMembers(orgId)
             .then(() => renderIfFresh(actionId, 'org-members'))
+            .catch(() => {});
+        }
+
+        // Load invites in parallel (owner/admin only)
+        if (canManage && !orgInvitesData && !isLoadingOrgInvites) {
+          const actionId = _tabState.lastActionId;
+          loadOrgInvites(orgId)
+            .then(() => renderIfFresh(actionId, 'org-invites'))
             .catch(() => {});
         }
 
@@ -3095,8 +3547,24 @@ export function createSettingsOverlay({
           const members = Array.isArray(orgMembersData) ? orgMembersData : [];
           const ownersCount = members.filter(m => m && String(m.role || '').toLowerCase() === 'owner').length;
 
+          const searchSection = doc.createElement('div');
+          searchSection.className = 'tp3d-org-members-section tp3d-org-members-search-section';
+
+          const searchSectionTitle = doc.createElement('div');
+          searchSectionTitle.className = 'tp3d-org-members-section-title';
+          searchSectionTitle.textContent = 'Search & Filter';
+          searchSection.appendChild(searchSectionTitle);
+
           const toolbar = doc.createElement('div');
           toolbar.className = 'tp3d-org-members-toolbar';
+
+          const searchWrap = doc.createElement('div');
+          searchWrap.className = 'tp3d-org-members-search-wrap';
+
+          const searchIcon = doc.createElement('i');
+          searchIcon.className = 'fa-solid fa-magnifying-glass tp3d-org-members-search-icon';
+          searchIcon.setAttribute('aria-hidden', 'true');
+          searchWrap.appendChild(searchIcon);
 
           const searchInput = doc.createElement('input');
           searchInput.type = 'search';
@@ -3104,7 +3572,8 @@ export function createSettingsOverlay({
           searchInput.placeholder = 'Search members by name or email';
           searchInput.value = orgMembersSearchQuery;
           searchInput.setAttribute('aria-label', 'Search members');
-          toolbar.appendChild(searchInput);
+          searchWrap.appendChild(searchInput);
+          toolbar.appendChild(searchWrap);
 
           const roleFilter = doc.createElement('select');
           roleFilter.className = 'select tp3d-org-members-filter';
@@ -3117,12 +3586,203 @@ export function createSettingsOverlay({
           `;
           roleFilter.value = orgMembersRoleFilter;
           toolbar.appendChild(roleFilter);
-          membersCard.appendChild(toolbar);
+          searchSection.appendChild(toolbar);
+          membersCard.appendChild(searchSection);
 
-          const comingSoon = doc.createElement('div');
-          comingSoon.className = 'muted tp3d-org-members-coming-soon';
-          comingSoon.textContent = 'Invitations: coming soon.';
-          membersCard.appendChild(comingSoon);
+          // ---- Invite form + pending invites (owner/admin only) ----
+          if (canManage) {
+            const inviteSection = doc.createElement('div');
+            inviteSection.className = 'tp3d-org-members-section tp3d-org-invite-section';
+
+            const inviteSectionTitle = doc.createElement('div');
+            inviteSectionTitle.className = 'tp3d-org-members-section-title';
+            inviteSectionTitle.textContent = 'Invitations';
+            inviteSection.appendChild(inviteSectionTitle);
+
+            // Invite form
+            const inviteForm = doc.createElement('div');
+            inviteForm.className = 'tp3d-org-invite-form';
+
+            const inviteEmailWrap = doc.createElement('div');
+            inviteEmailWrap.className = 'tp3d-org-invite-email-wrap';
+
+            const inviteEmailIcon = doc.createElement('i');
+            inviteEmailIcon.className = 'fa-solid fa-envelope tp3d-org-invite-email-icon';
+            inviteEmailIcon.setAttribute('aria-hidden', 'true');
+            inviteEmailWrap.appendChild(inviteEmailIcon);
+
+            const inviteEmailInput = doc.createElement('input');
+            inviteEmailInput.type = 'email';
+            inviteEmailInput.className = 'input tp3d-org-invite-email';
+            inviteEmailInput.placeholder = 'Email address to invite';
+            inviteEmailInput.setAttribute('aria-label', 'Invite email');
+            inviteEmailWrap.appendChild(inviteEmailInput);
+            inviteForm.appendChild(inviteEmailWrap);
+
+            const inviteRoleSelect = doc.createElement('select');
+            inviteRoleSelect.className = 'select tp3d-org-invite-role';
+            inviteRoleSelect.setAttribute('aria-label', 'Invite role');
+            inviteRoleSelect.innerHTML = `
+              <option value="member">Member</option>
+              <option value="admin">Admin</option>
+            `;
+            inviteForm.appendChild(inviteRoleSelect);
+
+            const inviteBtn = doc.createElement('button');
+            inviteBtn.type = 'button';
+            inviteBtn.className = 'btn btn-primary tp3d-org-invite-btn';
+            inviteBtn.textContent = '+ Invite';
+            inviteBtn.addEventListener('click', () => {
+              const email = inviteEmailInput.value.trim().toLowerCase();
+              if (!email || !email.includes('@')) {
+                UIComponents.showToast('Enter a valid email address.', 'warning', { title: 'Invites' });
+                return;
+              }
+              const role = inviteRoleSelect.value || 'member';
+              inviteBtn.disabled = true;
+              inviteBtn.textContent = 'Sending…';
+              sendInvite(orgId, email, role).then(() => {
+                inviteEmailInput.value = '';
+                inviteBtn.disabled = false;
+                inviteBtn.textContent = '+ Invite';
+              }).catch(() => {
+                inviteBtn.disabled = false;
+                inviteBtn.textContent = '+ Invite';
+              });
+            });
+            inviteForm.appendChild(inviteBtn);
+            inviteSection.appendChild(inviteForm);
+
+            // Pending invites table
+            const pendingInvites = Array.isArray(orgInvitesData)
+              ? orgInvitesData.filter(i => i && i.status === 'pending')
+              : [];
+
+            if (isLoadingOrgInvites && !orgInvitesData) {
+              const skeletonInvites = doc.createElement('div');
+              skeletonInvites.className = 'tp3d-skeleton-group';
+              skeletonInvites.innerHTML = '<div class="tp3d-skeleton tp3d-skeleton-short"></div>';
+              inviteSection.appendChild(skeletonInvites);
+            } else if (orgInvitesError) {
+              const inviteError = doc.createElement('div');
+              inviteError.className = 'tp3d-org-feedback tp3d-org-feedback--error';
+              inviteError.textContent = `Failed to load invites. ${
+                orgInvitesError && orgInvitesError.message ? orgInvitesError.message : 'Try again.'
+              }`;
+              inviteSection.appendChild(inviteError);
+            } else if (pendingInvites.length > 0) {
+              const inviteLabel = doc.createElement('div');
+              inviteLabel.className = 'tp3d-org-invite-label';
+              inviteLabel.textContent = 'Pending Invites (' + pendingInvites.length + ')';
+              inviteSection.appendChild(inviteLabel);
+
+              const inviteTableWrap = doc.createElement('div');
+              inviteTableWrap.className = 'tp3d-org-members-table-wrap tp3d-org-invite-table-wrap';
+
+              const inviteTable = doc.createElement('table');
+              inviteTable.className = 'tp3d-org-members-table';
+
+              const inviteThead = doc.createElement('thead');
+              const inviteHeadRow = doc.createElement('tr');
+              ['Email', 'Role', 'Invited', 'Status', 'Actions'].forEach(label => {
+                const th = doc.createElement('th');
+                th.textContent = label;
+                inviteHeadRow.appendChild(th);
+              });
+              inviteThead.appendChild(inviteHeadRow);
+              inviteTable.appendChild(inviteThead);
+
+              const inviteTbody = doc.createElement('tbody');
+              const inviteRows = [];
+
+              pendingInvites.forEach(invite => {
+                const inviteId = String(invite.id || '');
+                const isBusyInvite = orgInviteActions.has(inviteId);
+                const tr = doc.createElement('tr');
+                tr.dataset.memberSearch = String(invite.email || '').toLowerCase();
+                tr.dataset.memberRole = String(invite.role || 'member').toLowerCase();
+
+                const emailTd = doc.createElement('td');
+                emailTd.textContent = invite.email || '—';
+                tr.appendChild(emailTd);
+
+                const roleTd = doc.createElement('td');
+                const roleBadge = doc.createElement('span');
+                roleBadge.className = 'badge tp3d-org-member-role-badge';
+                roleBadge.textContent = getRoleLabel(invite.role);
+                roleTd.appendChild(roleBadge);
+                tr.appendChild(roleTd);
+
+                const invitedTd = doc.createElement('td');
+                invitedTd.className = 'tp3d-org-member-joined';
+                invitedTd.textContent = invite.invited_at
+                  ? new Date(invite.invited_at).toLocaleDateString()
+                  : '—';
+                tr.appendChild(invitedTd);
+
+                const statusTd = doc.createElement('td');
+                const statusBadge = doc.createElement('span');
+                statusBadge.className = 'badge badge--pending';
+                statusBadge.textContent = 'Pending';
+                statusTd.appendChild(statusBadge);
+                tr.appendChild(statusTd);
+
+                const actionsTd = doc.createElement('td');
+                actionsTd.className = 'tp3d-org-members-actions-cell';
+                const actionsWrap = doc.createElement('div');
+                actionsWrap.className = 'tp3d-org-member-actions';
+
+                const resendBtn = doc.createElement('button');
+                resendBtn.type = 'button';
+                resendBtn.className = 'btn btn-ghost';
+                resendBtn.textContent = 'Resend';
+                resendBtn.disabled = isBusyInvite;
+                resendBtn.addEventListener('click', () => {
+                  resendBtn.disabled = true;
+                  resendBtn.textContent = 'Sending…';
+                  resendInvite(orgId, invite).finally(() => {
+                    resendBtn.disabled = false;
+                    resendBtn.textContent = 'Resend';
+                  });
+                });
+                actionsWrap.appendChild(resendBtn);
+
+                const revokeBtn = doc.createElement('button');
+                revokeBtn.type = 'button';
+                revokeBtn.className = 'btn btn-danger';
+                revokeBtn.textContent = 'Revoke';
+                revokeBtn.disabled = isBusyInvite;
+                revokeBtn.addEventListener('click', () => {
+                  UIComponents.confirm({
+                    title: 'Revoke invite',
+                    message: 'Revoke the pending invite to ' + invite.email + '?',
+                    okLabel: 'Revoke',
+                    cancelLabel: 'Cancel',
+                    danger: true,
+                  }).then(ok => {
+                    if (ok) revokeInvite(orgId, invite);
+                  });
+                });
+                actionsWrap.appendChild(revokeBtn);
+
+                actionsTd.appendChild(actionsWrap);
+                tr.appendChild(actionsTd);
+                inviteTbody.appendChild(tr);
+                inviteRows.push(tr);
+              });
+
+              inviteTable.appendChild(inviteTbody);
+              inviteTableWrap.appendChild(inviteTable);
+              inviteSection.appendChild(inviteTableWrap);
+            } else {
+              const noInvites = doc.createElement('div');
+              noInvites.className = 'tp3d-org-feedback tp3d-org-feedback--warning';
+              noInvites.textContent = 'No pending invites.';
+              inviteSection.appendChild(noInvites);
+            }
+
+            membersCard.appendChild(inviteSection);
+          }
 
           if (members.length === 0) {
             const msg = doc.createElement('div');
@@ -3178,32 +3838,6 @@ export function createSettingsOverlay({
               if (isSelf) canRemove = false;
               if (isOwnerMember && ownersCount <= 1) canRemove = false;
               if (!canManageAdmins && (isOwnerMember || isAdminMember)) canRemove = false;
-
-              let roleDisableReason = '';
-              if (!canEditRole) {
-                if (!canManage) {
-                  roleDisableReason = 'Only owners and admins can change roles.';
-                }
-                else if (!canManageAdmins && (isOwnerMember || isAdminMember)) {
-                  roleDisableReason = 'Only owners can change admin/owner roles.';
-                } else if (isSelf && isLastOwner) {
-                  roleDisableReason = 'You cannot change the last owner role.';
-                }
-              }
-
-              let removeDisableReason = '';
-              if (!canRemove) {
-                if (isSelf) {
-                  removeDisableReason = 'You cannot remove yourself.';
-                } else if (isOwnerMember && ownersCount <= 1) {
-                  removeDisableReason = 'You cannot remove the last owner.';
-                } else if (!canManage) {
-                  removeDisableReason = 'Only owners and admins can remove members.';
-                }
-                else if (!canManageAdmins && (isOwnerMember || isAdminMember)) {
-                  removeDisableReason = 'Only owners can remove admins/owners.';
-                }
-              }
 
               const tr = doc.createElement('tr');
               tr.dataset.memberRole = role;
@@ -3273,7 +3907,6 @@ export function createSettingsOverlay({
                 }
                 roleSelect.value = role;
                 roleSelect.disabled = !canEditRole;
-                if (roleDisableReason) roleSelect.setAttribute('data-tooltip', roleDisableReason);
                 roleSelect.addEventListener('change', ev => {
                   const target = ev.target instanceof HTMLSelectElement ? ev.target : null;
                   const nextRole = target ? String(target.value) : role;
@@ -3287,7 +3920,7 @@ export function createSettingsOverlay({
                     roleSelect.value = role;
                     return;
                   }
-                  updateMemberRole(orgId, member, nextRole, currentUserId, currentRole).catch(() => {
+                  updateMemberRole(orgId, member, nextRole, currentUserId).catch(() => {
                     roleSelect.value = role;
                   });
                 });
@@ -3298,7 +3931,6 @@ export function createSettingsOverlay({
                 removeBtn.className = 'btn btn-danger tp3d-org-member-remove-btn';
                 removeBtn.textContent = 'Remove';
                 removeBtn.disabled = !canRemove;
-                if (removeDisableReason) removeBtn.setAttribute('data-tooltip', removeDisableReason);
                 removeBtn.addEventListener('click', () => {
                   if (!canRemove) return;
                   UIComponents.confirm({
@@ -3327,6 +3959,7 @@ export function createSettingsOverlay({
                 .toLowerCase();
               const roleFilterValue = String(orgMembersRoleFilter || 'all').toLowerCase();
               let visibleCount = 0;
+              // Filter member rows
               rows.forEach(rowEl => {
                 const rowSearch = String(rowEl.dataset.memberSearch || '');
                 const rowRole = String(rowEl.dataset.memberRole || '').toLowerCase();
@@ -3336,7 +3969,24 @@ export function createSettingsOverlay({
                 rowEl.hidden = !visible;
                 if (visible) visibleCount += 1;
               });
-              emptyFilteredState.hidden = visibleCount > 0;
+              // Also filter invite rows (in the invite table) by the same criteria
+              const inviteTableRows = membersCard.querySelectorAll('.tp3d-org-invite-section tbody tr');
+              let inviteVisibleCount = 0;
+              inviteTableRows.forEach(rowEl => {
+                const rowElement = rowEl instanceof HTMLElement ? rowEl : null;
+                if (!rowElement) return;
+                const rowSearch = String(rowElement.dataset.memberSearch || '');
+                const rowRole = String(rowElement.dataset.memberRole || '').toLowerCase();
+                const matchesSearch = !searchQuery || rowSearch.includes(searchQuery);
+                const matchesRole = roleFilterValue === 'all' || rowRole === roleFilterValue;
+                const visible = matchesSearch && matchesRole;
+                rowElement.hidden = !visible;
+                if (visible) inviteVisibleCount += 1;
+              });
+              const inviteTableWrap = membersCard.querySelector('.tp3d-org-invite-table-wrap');
+              const inviteWrapEl = inviteTableWrap instanceof HTMLElement ? inviteTableWrap : null;
+              if (inviteWrapEl) inviteWrapEl.hidden = inviteVisibleCount === 0;
+              emptyFilteredState.hidden = (visibleCount + inviteVisibleCount) > 0;
               tableWrap.hidden = visibleCount === 0;
             };
 
@@ -3362,7 +4012,7 @@ export function createSettingsOverlay({
       const billingWrap = doc.createElement('div');
       billingWrap.classList.add('tp3d-settings-billing');
       billingWrap.id = 'tp3d-billing-wrap';
-      billingWrap.textContent = 'Checking billing...';
+      billingWrap.textContent = 'Loading billing…';
 
       billingCard.appendChild(billingWrap);
       body.appendChild(billingCard);
@@ -3385,8 +4035,13 @@ export function createSettingsOverlay({
 
   function open(tab) {
     cleanupStaleSettingsModals('open');
+    if (!modalOrgId) {
+      modalOrgId = resolveInitialModalOrgId();
+    }
+    clearOrgScopedCaches(modalOrgId);
     const nextTab = resolveInitialTab(tab);
     if (settingsOverlay && settingsOverlay.isConnected) {
+      ensureOrgChangedListener();
       setActiveTab(nextTab, { source: 'open', actionId: _tabState.lastActionId });
       debugSettingsModalSnapshot('open:reuse');
       debugTabSnapshot('open:reuse');
@@ -3484,6 +4139,7 @@ export function createSettingsOverlay({
       }
     };
 
+    ensureOrgChangedListener();
     bindTabsOnce();
     setActiveTab(nextTab, { source: 'open', actionId: _tabState.lastActionId });
     debugSettingsModalSnapshot('open:created');
@@ -3530,8 +4186,13 @@ export function createSettingsOverlay({
     isLoadingOrgMembers = false;
     orgMembersError = null;
     orgMembersRequestId = 0;
+    orgInvitesData = null;
+    isLoadingOrgInvites = false;
+    orgInvitesError = null;
+    orgInvitesRequestId = 0;
     lastOrgMembersOrgId = null;
     orgMemberActions.clear();
+    orgInviteActions.clear();
 
     // FIX: Clear org logo overlay cache to prevent stale logo across user switches
     lastOrgLogoKey = null;

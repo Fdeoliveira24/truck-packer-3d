@@ -84,6 +84,17 @@ export function createCasesScreen({
       btnViewGrid && btnViewGrid.addEventListener('click', () => setViewMode('grid'));
       btnViewList && btnViewList.addEventListener('click', () => setViewMode('list'));
       btnFiltersToggle && btnFiltersToggle.addEventListener('click', () => toggleFiltersVisible());
+
+      /* Close filter popup when clicking outside the panel or toggle button */
+      document.addEventListener('click', (e) => {
+        if (!filtersEl || !filtersEl.classList.contains('is-open')) return;
+        if (filtersEl.contains(e.target) || (btnFiltersToggle && btnFiltersToggle.contains(e.target))) return;
+        const prefs = PreferencesManager.get();
+        prefs.casesFiltersVisible = false;
+        PreferencesManager.set(prefs);
+        applyFiltersVisibility();
+      });
+
       btnCardDisplay &&
         btnCardDisplay.addEventListener('click', () => {
           // TODO: Add keyboard shortcut + update Keyboard Shortcuts modal later
@@ -125,7 +136,7 @@ export function createCasesScreen({
     function applyFiltersVisibility() {
       if (!filtersEl) return;
       const visible = PreferencesManager.get().casesFiltersVisible !== false;
-      filtersEl.style.display = visible ? '' : 'none';
+      filtersEl.classList.toggle('is-open', visible);
       btnFiltersToggle && btnFiltersToggle.classList.toggle('btn-primary', visible);
     }
 

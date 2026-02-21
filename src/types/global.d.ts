@@ -16,6 +16,7 @@ declare global {
     __TP3D_DIAG__?: any;
     __TP3D_ORG_METRICS__?: any;
     __TP3D_STRIPE_PRICE_MONTHLY?: any;
+    __TP3D_BUILD_STAMP_LOGGED__?: any;
     __TP3D_DIAG_PERSIST_KEY__?: any;
     __TP3D_FORCE_DEBUG__?: any;
     __TP3D_WRAPPER_DETECTIVE__?: any;

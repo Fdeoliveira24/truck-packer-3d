@@ -245,6 +245,11 @@ export function createSettingsOverlay({
   let lastOrgLogoKey = null;
   let lastOrgLogoUrl = null;
   let lastOrgLogoExpiresAt = 0;
+  const BILLING_CONTEXT_RETRY_MS = 2500;
+  let billingContextInflightPromise = null;
+  let billingContextInflightOrgId = '';
+  let billingContextLastAttemptAt = 0;
+  let billingContextResolvedOrgId = '';
 
   // Account bundle loading state (single request for all account data)
   let isLoadingAccountBundle = false;
@@ -294,6 +299,35 @@ export function createSettingsOverlay({
     return modalOrgId;
   }
 
+  function isKnownOrgRole(roleValue) {
+    return roleValue === 'owner' || roleValue === 'admin' || roleValue === 'member';
+  }
+
+  function getRoleForOrg(orgId) {
+    const normalizedOrgId = normalizeOrgId(orgId);
+    if (!normalizedOrgId) return '';
+    const orgDataId = normalizeOrgId(orgData && orgData.id ? orgData.id : '');
+    const membershipOrgId = normalizeOrgId(
+      membershipData && membershipData.organization_id ? membershipData.organization_id : ''
+    );
+    return String(
+      (orgDataId && orgDataId === normalizedOrgId && orgData && orgData.role) ||
+      (membershipOrgId && membershipOrgId === normalizedOrgId && membershipData && membershipData.role) ||
+      ''
+    ).toLowerCase();
+  }
+
+  function hasOrgProfileForOrg(orgId) {
+    const normalizedOrgId = normalizeOrgId(orgId);
+    const orgDataId = normalizeOrgId(orgData && orgData.id ? orgData.id : '');
+    return Boolean(
+      normalizedOrgId &&
+      orgDataId === normalizedOrgId &&
+      orgData &&
+      String(orgData.name || '').trim()
+    );
+  }
+
   function clearOrgScopedCaches(nextOrgId) {
     const next = normalizeOrgId(nextOrgId);
     if (lastOrgMembersOrgId && String(lastOrgMembersOrgId) !== String(next)) {
@@ -307,6 +341,85 @@ export function createSettingsOverlay({
       orgInvitesData = null;
       orgInvitesError = null;
     }
+    if (!next || billingContextInflightOrgId !== next) {
+      billingContextInflightPromise = null;
+      billingContextInflightOrgId = '';
+    }
+    if (!next || billingContextResolvedOrgId !== next) {
+      billingContextResolvedOrgId = '';
+    }
+  }
+
+  function ensureBillingContextHydrated(orgId, { force = false, source = 'org-billing:hydrate-context' } = {}) {
+    const normalizedOrgId = normalizeOrgId(orgId);
+    if (!normalizedOrgId) return Promise.resolve(null);
+
+    const role = getRoleForOrg(normalizedOrgId);
+    const roleKnown = isKnownOrgRole(role);
+    const orgProfileLoaded = hasOrgProfileForOrg(normalizedOrgId);
+    if (!force && orgProfileLoaded && roleKnown) {
+      billingContextResolvedOrgId = normalizedOrgId;
+      return Promise.resolve({ ok: true });
+    }
+
+    if (!force && billingContextInflightPromise && billingContextInflightOrgId === normalizedOrgId) {
+      return billingContextInflightPromise;
+    }
+
+    const now = Date.now();
+    if (
+      !force &&
+      billingContextLastAttemptAt &&
+      (now - billingContextLastAttemptAt) < BILLING_CONTEXT_RETRY_MS &&
+      !billingContextInflightPromise
+    ) {
+      return Promise.resolve(null);
+    }
+
+    billingContextLastAttemptAt = now;
+    billingContextInflightOrgId = normalizedOrgId;
+    const actionId = _tabState.lastActionId;
+    const request = (async () => {
+      try {
+        await loadAccountBundle({ force: true });
+      } catch {
+        // ignore
+      }
+
+      if (!hasOrgProfileForOrg(normalizedOrgId)) {
+        try {
+          await loadOrganization(normalizedOrgId);
+        } catch {
+          // ignore
+        }
+      }
+
+      if (!isKnownOrgRole(getRoleForOrg(normalizedOrgId)) && SupabaseClient && typeof SupabaseClient.getMyMembership === 'function') {
+        try {
+          isLoadingMembership = true;
+          const membership = await SupabaseClient.getMyMembership();
+          if (membership) membershipData = membership;
+        } catch {
+          // ignore
+        } finally {
+          isLoadingMembership = false;
+        }
+      }
+
+      const hydrated = hasOrgProfileForOrg(normalizedOrgId) && isKnownOrgRole(getRoleForOrg(normalizedOrgId));
+      billingContextResolvedOrgId = hydrated ? normalizedOrgId : '';
+      return { ok: hydrated };
+    })()
+      .finally(() => {
+        if (billingContextInflightOrgId === normalizedOrgId) {
+          billingContextInflightPromise = null;
+          billingContextInflightOrgId = '';
+        }
+        renderIfFresh(actionId, source);
+      });
+
+    billingContextInflightPromise = request;
+    return request;
   }
 
   function refreshBillingForOrgChange(nextOrgId, source) {
@@ -352,6 +465,9 @@ export function createSettingsOverlay({
       lastOrgMembersOrgId = null;
       queueAccountBundleRefresh({ force: true, source: 'settings:org-changed' });
       refreshBillingForOrgChange(nextOrgId, 'settings:org-changed');
+      if (_tabState.activeTabId === 'org-billing') {
+        ensureBillingContextHydrated(nextOrgId, { force: true, source: 'org-billing:org-changed' }).catch(() => {});
+      }
       if (settingsOverlay && settingsOverlay.isConnected) {
         render();
       }
@@ -1121,6 +1237,10 @@ export function createSettingsOverlay({
 
     // Billing tab should always refresh latest state
     if (nextTab === 'org-billing') {
+      const lockedOrgId = ensureModalOrgId();
+      if (lockedOrgId) {
+        ensureBillingContextHydrated(lockedOrgId, { source: 'org-billing:tab-activate' }).catch(() => {});
+      }
       const api = getBillingApiSafely();
       if (api && typeof api.refreshBilling === 'function') {
         api.refreshBilling({ force: true }).catch(() => {});
@@ -1584,12 +1704,17 @@ export function createSettingsOverlay({
     );
     const status = state.status ? String(state.status) : '';
     const isTrial = status === 'trialing';
-    const isActiveSubscription = status === 'active';
     const isProOrTrial = state.isPro;
     const interval = state.interval ? String(state.interval) : '';
     const intervalLabel = interval === 'month' ? 'Monthly' : interval === 'year' ? 'Yearly' : null;
     const cancelAtPeriodEnd = Boolean(state.cancelAtPeriodEnd);
     const cancelAt = state.cancelAt ? String(state.cancelAt) : null;
+    const hasCancelAt = Boolean(cancelAt && cancelAt.trim());
+    const isCancelScheduled = Boolean(
+      (status === 'active' || status === 'trialing') &&
+      (cancelAtPeriodEnd || hasCancelAt)
+    );
+    const cancelEndValue = cancelAt || state.currentPeriodEnd || null;
     const portalAvailable = Boolean(state.portalAvailable);
     const trialWelcomeShown = (() => {
       try {
@@ -1619,25 +1744,35 @@ export function createSettingsOverlay({
         return false;
       }
     })();
-    const orgDataId = normalizeOrgId(orgData && orgData.id ? orgData.id : '');
-    const membershipOrgId = normalizeOrgId(
-      membershipData && membershipData.organization_id ? membershipData.organization_id : ''
-    );
-    const billingRole = String(
-      (orgDataId && orgDataId === lockedOrgId && orgData && orgData.role) ||
-      (membershipOrgId && membershipOrgId === lockedOrgId && membershipData && membershipData.role) ||
-      ''
-    ).toLowerCase();
+    const billingRole = getRoleForOrg(lockedOrgId || billingOrgId);
+    const roleKnown = isKnownOrgRole(billingRole);
     const canManageBilling = billingRole === 'owner' || billingRole === 'admin';
+    const orgProfileLoaded = hasOrgProfileForOrg(lockedOrgId);
+    const billingContextInflightForOrg = Boolean(
+      lockedOrgId &&
+      billingContextInflightPromise &&
+      billingContextInflightOrgId === lockedOrgId
+    );
+    const billingContextLoading = billingContextInflightForOrg;
+    if (lockedOrgId && (!orgProfileLoaded || !roleKnown)) {
+      ensureBillingContextHydrated(lockedOrgId, { source: 'org-billing:render' }).catch(() => {});
+    }
+    const orgContextStalled = Boolean(
+      lockedOrgId &&
+      !orgProfileLoaded &&
+      !billingContextLoading &&
+      billingContextLastAttemptAt &&
+      (Date.now() - billingContextLastAttemptAt) > BILLING_CONTEXT_RETRY_MS
+    );
 
     // Build DOM
     targetEl.textContent = '';
 
     // --- Organization section ---
-    const orgMatchesLocked = Boolean(lockedOrgId && orgDataId && orgDataId === lockedOrgId);
+    const orgMatchesLocked = orgProfileLoaded;
     const orgName = orgMatchesLocked && orgData && orgData.name
       ? String(orgData.name)
-      : (lockedOrgId ? 'Loading organization…' : 'Personal Workspace');
+      : (lockedOrgId ? 'Organization' : 'Personal Workspace');
 
     const orgSection = doc.createElement('div');
     orgSection.className = 'tp3d-settings-billing';
@@ -1658,91 +1793,110 @@ export function createSettingsOverlay({
     const orgValue = doc.createElement('div');
     orgValue.className = 'row';
 
-    // Org logo: prefer logo_path (Supabase Storage signed URL), fallback avatar_url, else initials
-    const orgLogoPath = orgMatchesLocked && orgData && orgData.logo_path ? String(orgData.logo_path) : null;
-    const orgAvatarUrl = orgMatchesLocked && orgData && orgData.avatar_url ? String(orgData.avatar_url) : null;
-    const orgAvatarSafe = orgAvatarUrl && /^https?:\/\//i.test(orgAvatarUrl) ? orgAvatarUrl : null;
+    if (lockedOrgId && !orgMatchesLocked && billingContextLoading) {
+      orgValue.classList.add('tp3d-billing-org-skeleton', 'tp3d-skel');
+      const avatarSkel = doc.createElement('span');
+      avatarSkel.className = 'tp3d-skel-line tp3d-billing-org-skeleton-avatar';
+      const nameSkel = doc.createElement('span');
+      nameSkel.className = 'tp3d-skel-line tp3d-billing-org-skeleton-name';
+      orgValue.appendChild(avatarSkel);
+      orgValue.appendChild(nameSkel);
+    } else {
+      const orgDataId = normalizeOrgId(orgData && orgData.id ? orgData.id : '');
 
-    // Create initials avatar as default (may be replaced by img)
-    const orgAvatarEl = doc.createElement('span');
-    orgAvatarEl.className = 'tp3d-settings-account-avatar tp3d-settings-avatar--sm';
-    orgAvatarEl.style.background = 'var(--accent-primary)';
-    orgAvatarEl.textContent = orgName.charAt(0).toUpperCase();
-    const orgId = orgMatchesLocked ? String(orgDataId) : '';
-    const logoKey = orgId + '|' + (orgLogoPath || orgAvatarSafe || '');
-    const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
-      ? lastOrgLogoUrl
-      : null;
-    // Hide initials while async logo loads to prevent flicker
-    if (!cachedLogoSrc && (orgLogoPath || orgAvatarSafe)) {
-      orgAvatarEl.style.visibility = 'hidden';
-    }
-    /** @type {HTMLSpanElement|HTMLImageElement} */
-    let avatarNode = orgAvatarEl;
-    if (cachedLogoSrc) {
-      const cachedImg = doc.createElement('img');
-      cachedImg.src = cachedLogoSrc;
-      cachedImg.alt = orgName;
-      cachedImg.width = 28;
-      cachedImg.height = 28;
-      cachedImg.className = 'tp3d-settings-avatar-img';
-      cachedImg.onerror = () => {
-        if (cachedImg.parentNode) cachedImg.parentNode.replaceChild(orgAvatarEl, cachedImg);
-        avatarNode = orgAvatarEl;
-      };
-      avatarNode = cachedImg;
-    }
-    orgValue.appendChild(avatarNode);
+      // Org logo: prefer logo_path (Supabase Storage signed URL), fallback avatar_url, else initials
+      const orgLogoPath = orgMatchesLocked && orgData && orgData.logo_path ? String(orgData.logo_path) : null;
+      const orgAvatarUrl = orgMatchesLocked && orgData && orgData.avatar_url ? String(orgData.avatar_url) : null;
+      const orgAvatarSafe = orgAvatarUrl && /^https?:\/\//i.test(orgAvatarUrl) ? orgAvatarUrl : null;
 
-    // Async: try to load logo image (signed URL or avatar_url)
-    if (orgLogoPath || orgAvatarSafe) {
-      const loadLogo = async () => {
-        let logoSrc = null;
-        if (orgLogoPath && SupabaseClient && typeof SupabaseClient.getOrgLogoUrl === 'function') {
-          logoSrc = await SupabaseClient.getOrgLogoUrl(orgLogoPath, orgData.updated_at || '');
-        }
-        if (!logoSrc && orgAvatarSafe) {
-          logoSrc = orgAvatarSafe;
-        }
-        if (!logoSrc) return;
-        if (logoKey) {
-          lastOrgLogoKey = logoKey;
-          lastOrgLogoUrl = logoSrc;
-          lastOrgLogoExpiresAt = Date.now() + 50000;
-        }
-
-        if (
-          avatarNode &&
-          avatarNode.tagName === 'IMG' &&
-          /** @type {HTMLImageElement} */ (avatarNode).src === logoSrc
-        ) return;
-
-        const orgImg = doc.createElement('img');
-        orgImg.src = logoSrc;
-        orgImg.alt = orgName;
-        orgImg.width = 28;
-        orgImg.height = 28;
-        orgImg.className = 'tp3d-settings-avatar-img';
-        orgImg.onload = function () {
-          if (avatarNode && avatarNode.parentNode) {
-            avatarNode.parentNode.replaceChild(orgImg, avatarNode);
-            avatarNode = orgImg;
-          }
-        };
-        orgImg.onerror = function () {
-          orgAvatarEl.style.visibility = '';
-          if (orgImg.parentNode) orgImg.parentNode.replaceChild(orgAvatarEl, orgImg);
+      // Create initials avatar as default (may be replaced by img)
+      const orgAvatarEl = doc.createElement('span');
+      orgAvatarEl.className = 'tp3d-settings-account-avatar tp3d-settings-avatar--sm';
+      orgAvatarEl.style.background = 'var(--accent-primary)';
+      orgAvatarEl.textContent = orgName.charAt(0).toUpperCase();
+      const orgId = orgMatchesLocked ? String(orgDataId) : '';
+      const logoKey = orgId + '|' + (orgLogoPath || orgAvatarSafe || '');
+      const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
+        ? lastOrgLogoUrl
+        : null;
+      // Hide initials while async logo loads to prevent flicker
+      if (!cachedLogoSrc && (orgLogoPath || orgAvatarSafe)) {
+        orgAvatarEl.style.visibility = 'hidden';
+      }
+      /** @type {HTMLSpanElement|HTMLImageElement} */
+      let avatarNode = orgAvatarEl;
+      if (cachedLogoSrc) {
+        const cachedImg = doc.createElement('img');
+        cachedImg.src = cachedLogoSrc;
+        cachedImg.alt = orgName;
+        cachedImg.width = 28;
+        cachedImg.height = 28;
+        cachedImg.className = 'tp3d-settings-avatar-img';
+        cachedImg.onerror = () => {
+          if (cachedImg.parentNode) cachedImg.parentNode.replaceChild(orgAvatarEl, cachedImg);
           avatarNode = orgAvatarEl;
         };
-      };
-      loadLogo().catch(() => { orgAvatarEl.style.visibility = ''; });
+        avatarNode = cachedImg;
+      }
+      orgValue.appendChild(avatarNode);
+
+      // Async: try to load logo image (signed URL or avatar_url)
+      if (orgLogoPath || orgAvatarSafe) {
+        const loadLogo = async () => {
+          let logoSrc = null;
+          if (orgLogoPath && SupabaseClient && typeof SupabaseClient.getOrgLogoUrl === 'function') {
+            logoSrc = await SupabaseClient.getOrgLogoUrl(orgLogoPath, orgData.updated_at || '');
+          }
+          if (!logoSrc && orgAvatarSafe) {
+            logoSrc = orgAvatarSafe;
+          }
+          if (!logoSrc) return;
+          if (logoKey) {
+            lastOrgLogoKey = logoKey;
+            lastOrgLogoUrl = logoSrc;
+            lastOrgLogoExpiresAt = Date.now() + 50000;
+          }
+
+          if (
+            avatarNode &&
+            avatarNode.tagName === 'IMG' &&
+            /** @type {HTMLImageElement} */ (avatarNode).src === logoSrc
+          ) return;
+
+          const orgImg = doc.createElement('img');
+          orgImg.src = logoSrc;
+          orgImg.alt = orgName;
+          orgImg.width = 28;
+          orgImg.height = 28;
+          orgImg.className = 'tp3d-settings-avatar-img';
+          orgImg.onload = function () {
+            if (avatarNode && avatarNode.parentNode) {
+              avatarNode.parentNode.replaceChild(orgImg, avatarNode);
+              avatarNode = orgImg;
+            }
+          };
+          orgImg.onerror = function () {
+            orgAvatarEl.style.visibility = '';
+            if (orgImg.parentNode) orgImg.parentNode.replaceChild(orgAvatarEl, orgImg);
+            avatarNode = orgAvatarEl;
+          };
+        };
+        loadLogo().catch(() => { orgAvatarEl.style.visibility = ''; });
+      }
+      const orgNameSpan = doc.createElement('span');
+      orgNameSpan.textContent = orgName;
+      orgValue.appendChild(orgNameSpan);
     }
-    const orgNameSpan = doc.createElement('span');
-    orgNameSpan.textContent = orgName;
-    orgValue.appendChild(orgNameSpan);
     orgRow.appendChild(orgValue);
 
     orgSection.appendChild(orgRow);
+
+    if (orgContextStalled) {
+      const orgHelper = doc.createElement('div');
+      orgHelper.className = 'muted tp3d-members-inline-helper';
+      orgHelper.textContent = 'Organization details are not available yet. Try Refresh.';
+      orgSection.appendChild(orgHelper);
+    }
 
     const orgDivider = doc.createElement('div');
     orgDivider.className = 'tp3d-settings-org-divider';
@@ -1808,11 +1962,20 @@ export function createSettingsOverlay({
       planBadge.className = 'badge' + (isTrial ? ' badge--trial' : isProOrTrial ? ' badge--active' : ' badge--free');
       planBadge.textContent = 'Current Plan';
       planHeader.appendChild(planBadge);
-      if (isActiveSubscription && cancelAtPeriodEnd) {
+      let cancelEndText = '';
+      if (isCancelScheduled) {
         const cancelBadge = doc.createElement('span');
         cancelBadge.className = 'badge badge--pending';
         cancelBadge.textContent = 'Cancels';
         planHeader.appendChild(cancelBadge);
+        if (cancelEndValue) {
+          const endDate = new Date(cancelEndValue);
+          cancelEndText = 'Ends on ' + (isNaN(endDate.getTime()) ? cancelEndValue : endDate.toLocaleDateString());
+          const cancelInline = doc.createElement('span');
+          cancelInline.className = 'tp3d-billing-cancel-inline tp3d-org-feedback tp3d-org-feedback--warning';
+          cancelInline.textContent = cancelEndText;
+          planHeader.appendChild(cancelInline);
+        }
       }
 
       if (trialDaysLeft !== null) {
@@ -1834,17 +1997,11 @@ export function createSettingsOverlay({
         statusLine.textContent = trialWelcomeShown
           ? 'You are on Pro trial until ' + endText
           : 'Trial ends on ' + endText;
-      } else if (isProOrTrial && cancelAtPeriodEnd) {
-        const endValue = state.currentPeriodEnd || cancelAt;
-        if (endValue) {
-          const endDate = new Date(endValue);
-          statusLine.textContent = 'Ends on ' + (isNaN(endDate.getTime()) ? endValue : endDate.toLocaleDateString());
-        }
       } else if (!isProOrTrial && status) {
         statusLine.textContent = 'Status: ' + status.replace(/_/g, ' ');
       }
 
-      if (statusLine.textContent) {
+      if (statusLine.textContent && statusLine.textContent !== cancelEndText) {
         planCard.appendChild(statusLine);
       }
     }
@@ -1852,7 +2009,7 @@ export function createSettingsOverlay({
     subSection.appendChild(planCard);
 
     // Upgrade CTA card (only if not pro/active)
-    if (!showSkeleton && !loading && !pending && !isProOrTrial && canManageBilling) {
+    if (!showSkeleton && !loading && !pending && !isProOrTrial && roleKnown && canManageBilling) {
       const ctaCard = doc.createElement('div');
       ctaCard.className = 'card';
 
@@ -1921,27 +2078,36 @@ export function createSettingsOverlay({
       ctaCard.appendChild(subBtn);
 
       subSection.appendChild(ctaCard);
-    } else if (!showSkeleton && !loading && !pending && !isProOrTrial && !canManageBilling) {
+    } else if (!showSkeleton && !loading && !pending && !isProOrTrial && roleKnown && !canManageBilling) {
       const note = doc.createElement('div');
       note.className = 'muted tp3d-settings-mt-sm';
       note.textContent = 'Only owners and admins can manage billing for this organization.';
       subSection.appendChild(note);
+    } else if (!showSkeleton && !loading && !pending && !isProOrTrial && !roleKnown) {
+      const note = doc.createElement('div');
+      note.className = 'muted tp3d-settings-mt-sm';
+      note.textContent = 'Loading permissions…';
+      subSection.appendChild(note);
     }
 
+    const roleLoading = Boolean(lockedOrgId && !roleKnown && billingContextInflightForOrg);
     let manageDisabledReason = '';
     if (!lockedOrgId) {
       manageDisabledReason = 'Select an organization to manage billing.';
     } else if (loading || pending || staleOrgState) {
       manageDisabledReason = 'Loading billing info…';
-    } else if (!canManageBilling) {
+    } else if (roleLoading) {
+      manageDisabledReason = 'Loading permissions…';
+    } else if (roleKnown && !canManageBilling) {
       manageDisabledReason = 'Only owners/admins can manage billing.';
     } else if (!state.ok || !portalAvailable || !isProOrTrial || !api || typeof api.openPortal !== 'function') {
       manageDisabledReason = "Billing portal isn't available yet. Try Refresh.";
     }
+    const manageEnabled = !manageDisabledReason;
 
     if (debugEnabled()) {
-      console.log(
-        `[BillingUI] org(lock)=${lockedOrgId || 'none'}, org(current)=${currentOrgId || 'none'}, org(billing)=${billingOrgId || 'none'}, role=${billingRole || 'none'}, canManage=${canManageBilling}, portalAvail=${portalAvailable}, loading=${loading}, status=${status || 'none'}, showSkeleton=${showSkeleton}, manageDisabledReason=${manageDisabledReason || 'none'}`
+      console.debug(
+        `[BillingUI] activeOrgId=${currentOrgId || 'none'}, modalLockedOrgId=${lockedOrgId || 'none'}, billingOrgId=${billingOrgId || 'none'}, orgProfileLoaded=${orgProfileLoaded}, role=${billingRole || 'null'}, manageEnabled=${manageEnabled}, disableReason=${manageDisabledReason || 'none'}, portalAvailable=${portalAvailable}, loading=${loading}, status=${status || 'none'}, interval=${interval || 'none'}, cancelAtPeriodEnd=${cancelAtPeriodEnd}, cancelAt=${cancelAt || 'null'}, currentPeriodEnd=${state.currentPeriodEnd || 'null'}, computedIsCancelScheduled=${isCancelScheduled}`
       );
     }
 
@@ -1992,7 +2158,9 @@ export function createSettingsOverlay({
       refreshBtn.textContent = 'Refresh';
       refreshBtn.disabled = Boolean(loading || !lockedOrgId);
       refreshBtn.addEventListener('click', () => {
-        if (api && typeof api.refreshBilling === 'function' && lockedOrgId) {
+        if (!lockedOrgId) return;
+        ensureBillingContextHydrated(lockedOrgId, { force: true, source: 'org-billing:refresh' }).catch(() => {});
+        if (api && typeof api.refreshBilling === 'function') {
           api.refreshBilling({ force: true }).catch(() => {});
         }
       });

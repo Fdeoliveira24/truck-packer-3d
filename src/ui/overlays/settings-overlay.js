@@ -245,6 +245,7 @@ export function createSettingsOverlay({
   let lastOrgLogoKey = null;
   let lastOrgLogoUrl = null;
   let lastOrgLogoExpiresAt = 0;
+  const ORG_LOGO_CACHE_TTL_MS = 5 * 60 * 1000;
   const BILLING_CONTEXT_RETRY_MS = 2500;
   let billingContextInflightPromise = null;
   let billingContextInflightOrgId = '';
@@ -1819,10 +1820,6 @@ export function createSettingsOverlay({
       const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
         ? lastOrgLogoUrl
         : null;
-      // Hide initials while async logo loads to prevent flicker
-      if (!cachedLogoSrc && (orgLogoPath || orgAvatarSafe)) {
-        orgAvatarEl.style.visibility = 'hidden';
-      }
       /** @type {HTMLSpanElement|HTMLImageElement} */
       let avatarNode = orgAvatarEl;
       if (cachedLogoSrc) {
@@ -1854,7 +1851,7 @@ export function createSettingsOverlay({
           if (logoKey) {
             lastOrgLogoKey = logoKey;
             lastOrgLogoUrl = logoSrc;
-            lastOrgLogoExpiresAt = Date.now() + 50000;
+            lastOrgLogoExpiresAt = Date.now() + ORG_LOGO_CACHE_TTL_MS;
           }
 
           if (
@@ -1876,12 +1873,11 @@ export function createSettingsOverlay({
             }
           };
           orgImg.onerror = function () {
-            orgAvatarEl.style.visibility = '';
             if (orgImg.parentNode) orgImg.parentNode.replaceChild(orgAvatarEl, orgImg);
             avatarNode = orgAvatarEl;
           };
         };
-        loadLogo().catch(() => { orgAvatarEl.style.visibility = ''; });
+        loadLogo().catch(() => {});
       }
       const orgNameSpan = doc.createElement('span');
       orgNameSpan.textContent = orgName;
@@ -3253,10 +3249,6 @@ export function createSettingsOverlay({
         const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
           ? lastOrgLogoUrl
           : null;
-        // Hide initials while async logo loads to prevent flicker
-        if (!cachedLogoSrc && (orgLogoPath2 || orgAvatarUrl2)) {
-          logoPreview.style.visibility = 'hidden';
-        }
         /** @type {HTMLSpanElement|HTMLImageElement} */
         let logoNode = logoPreview;
         if (cachedLogoSrc) {
@@ -3285,7 +3277,7 @@ export function createSettingsOverlay({
             if (logoKey) {
               lastOrgLogoKey = logoKey;
               lastOrgLogoUrl = src;
-              lastOrgLogoExpiresAt = Date.now() + 50000;
+              lastOrgLogoExpiresAt = Date.now() + ORG_LOGO_CACHE_TTL_MS;
             }
             if (
               logoNode &&
@@ -3305,12 +3297,11 @@ export function createSettingsOverlay({
               }
             };
             img.onerror = () => {
-              logoPreview.style.visibility = '';
               if (img.parentNode) img.parentNode.replaceChild(logoPreview, img);
               logoNode = logoPreview;
             };
           };
-          loadLogo2().catch(() => { logoPreview.style.visibility = ''; });
+          loadLogo2().catch(() => {});
         }
 
         const logoInput = doc.createElement('input');
@@ -3498,10 +3489,6 @@ export function createSettingsOverlay({
           const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
             ? lastOrgLogoUrl
             : null;
-          // Hide initials while async logo loads to prevent flicker
-          if (!cachedLogoSrc && (orgLogoPath2 || orgAvatarUrl2)) {
-            logoPreview.style.visibility = 'hidden';
-          }
           /** @type {HTMLSpanElement|HTMLImageElement} */
           let logoNode = logoPreview;
           if (cachedLogoSrc) {
@@ -3531,7 +3518,7 @@ export function createSettingsOverlay({
               if (logoKey) {
                 lastOrgLogoKey = logoKey;
                 lastOrgLogoUrl = src;
-                lastOrgLogoExpiresAt = Date.now() + 50000;
+                lastOrgLogoExpiresAt = Date.now() + ORG_LOGO_CACHE_TTL_MS;
               }
               if (
                 logoNode &&
@@ -3551,12 +3538,11 @@ export function createSettingsOverlay({
                 }
               };
               img.onerror = () => {
-                logoPreview.style.visibility = '';
                 if (img.parentNode) img.parentNode.replaceChild(logoPreview, img);
                 logoNode = logoPreview;
               };
             };
-            loadLogo2().catch(() => { logoPreview.style.visibility = ''; });
+            loadLogo2().catch(() => {});
           }
 
           viewContainer.appendChild(orgRow('Logo', logoCell));

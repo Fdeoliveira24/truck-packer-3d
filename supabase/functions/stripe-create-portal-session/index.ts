@@ -1,6 +1,6 @@
 import { getAllowedOrigin, json } from "../_shared/cors.ts";
 import { requireUser, serviceClient } from "../_shared/auth.ts";
-import { stripeClient } from "../_shared/stripe.ts";
+import { assertStripeEnv, stripeClient } from "../_shared/stripe.ts";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -20,6 +20,11 @@ function normalizeOrgId(value: unknown): string | null {
   return UUID_RE.test(raw) ? raw : null;
 }
 
+function getPortalConfigurationId(): string | null {
+  const id = String(Deno.env.get("STRIPE_PORTAL_CONFIGURATION_ID") || "").trim();
+  return id || null;
+}
+
 Deno.serve(async (req) => {
   const origin = getAllowedOrigin(req);
 
@@ -34,6 +39,7 @@ Deno.serve(async (req) => {
       return json({ error: auth.error || "Unauthorized" }, { status: 401, origin });
     }
     const user = auth.user;
+    assertStripeEnv(["STRIPE_SECRET_KEY"]);
 
     const sb = serviceClient();
     const stripe = stripeClient();
@@ -117,16 +123,22 @@ Deno.serve(async (req) => {
     return_url.pathname = "/index.html";
     return_url.searchParams.set("billing", "portal_return");
 
-    const session = await stripe.billingPortal.sessions.create({
+    const portalConfigurationId = getPortalConfigurationId();
+    const sessionPayload: Record<string, unknown> = {
       customer: stripeCustomerId,
       return_url: return_url.toString(),
-    });
+    };
+    if (portalConfigurationId) {
+      sessionPayload.configuration = portalConfigurationId;
+    }
+    const session = await stripe.billingPortal.sessions.create(sessionPayload as any);
 
     if (debug) {
       console.log("stripe-create-portal-session", {
         user_id: user.id,
         organization_id: organizationId,
         stripe_customer_id: stripeCustomerId,
+        portal_configuration_id: portalConfigurationId || null,
       });
     }
 

@@ -1300,6 +1300,10 @@ export function createEditorScreen({
 
       caseSearchEl.addEventListener('input', Utils.debounce(renderCaseBrowser, 250));
       if (caseFilterToggleEl) {
+        const searchWrapEl = caseSearchEl ? caseSearchEl.closest('.tp3d-editor-case-search') : null;
+        if (searchWrapEl && caseChipsEl && caseChipsEl.parentElement !== searchWrapEl) {
+          searchWrapEl.appendChild(caseChipsEl);
+        }
         try {
           const stored = window.localStorage.getItem(caseFiltersStorageKey);
           if (stored === '0') showCaseFilters = false;
@@ -1309,6 +1313,13 @@ export function createEditorScreen({
         setCaseFiltersVisible(showCaseFilters, false);
         caseFilterToggleEl.addEventListener('click', () => {
           setCaseFiltersVisible(!showCaseFilters, true);
+        });
+        document.addEventListener('click', ev => {
+          if (!showCaseFilters) return;
+          if (!(ev.target instanceof Node)) return;
+          if (caseFilterToggleEl.contains(ev.target)) return;
+          if (caseChipsEl && caseChipsEl.contains(ev.target)) return;
+          setCaseFiltersVisible(false, true);
         });
       }
       btnLeft.addEventListener('click', () => togglePanel('left'));
@@ -1557,6 +1568,7 @@ export function createEditorScreen({
       }
       if (caseFilterToggleEl) {
         caseFilterToggleEl.setAttribute('aria-pressed', showCaseFilters ? 'true' : 'false');
+        caseFilterToggleEl.setAttribute('aria-expanded', showCaseFilters ? 'true' : 'false');
         caseFilterToggleEl.classList.toggle('btn-primary', showCaseFilters);
       }
       if (persist) {
@@ -2571,6 +2583,9 @@ export function createEditorScreen({
         if (which === 'left') return compact ? '270px' : '290px';
         return compact ? '300px' : '340px';
       };
+      if (side === 'left' && !visible) {
+        setCaseFiltersVisible(false, false);
+      }
       if (side === 'left') {
         if (isMobile) leftEl.classList.toggle('open', visible);
         else shellEl.style.setProperty('--left-col', visible ? defaultCol('left') : '0px');

@@ -879,7 +879,6 @@ export function createPacksScreen({
         cell.className = 'pack-preview-cell';
         const meta = CaseLibrary.getById(inst.caseId);
         if (meta && meta.color) cell.style.background = meta.color;
-        cell.setAttribute('data-tooltip', meta ? meta.name : 'Case');
         preview.appendChild(cell);
       });
       return preview;

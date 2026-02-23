@@ -418,7 +418,7 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
   if (_billingRefreshQueued) {
     _billingRefreshQueued = false;
     setTimeout(() => {
-      refreshBilling({ force: true, reason: 'queued' }).catch(() => {});
+      refreshBilling({ force: true, reason: 'queued' }).catch(() => { });
     }, 0);
   }
   return getBillingState();
@@ -1031,26 +1031,54 @@ const TP3D_BUILD_STAMP = Object.freeze({
         UIComponents.showToast('Coming soon', 'info');
       }
 
-      async function createWorkspacePrompt() {
-        const name = window.prompt('Workspace name:');
-        if (!name || !name.trim()) return;
-        try {
-          UIComponents.showToast('Creating workspace\u2026', 'info');
-          const { org, membership } = await SupabaseClient.createOrganization({ name: name.trim() });
-          if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
-          UIComponents.showToast('Workspace "' + (org.name || name.trim()) + '" created!', 'success');
-          // Refresh org context to reflect new workspace
-          orgContext = {
-            activeOrgId: org.id,
-            activeOrg: { ...org, role: membership.role },
-            orgs: orgContext && orgContext.orgs ? [...orgContext.orgs, { ...org, role: membership.role }] : [{ ...org, role: membership.role }],
-            role: membership.role,
-            updatedAt: Date.now(),
-          };
-          renderButton(document.getElementById('btn-account-switcher'));
-        } catch (err) {
-          UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
-        }
+      function createWorkspacePrompt() {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'w-full px-3 py-2 border rounded-md text-sm mb-4';
+        input.placeholder = 'e.g. My Company';
+
+        const content = document.createElement('div');
+        content.appendChild(input);
+
+        let modalRef = null;
+
+        const handleCreate = async () => {
+          const name = input.value.trim();
+          if (!name) return;
+          if (modalRef && typeof modalRef.close === 'function') modalRef.close();
+          try {
+            UIComponents.showToast('Creating workspace\u2026', 'info');
+            const { org, membership } = await SupabaseClient.createOrganization({ name });
+            if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
+            UIComponents.showToast('Workspace "' + (org.name || name) + '" created!', 'success');
+            // Refresh org context to reflect new workspace
+            orgContext = {
+              activeOrgId: org.id,
+              activeOrg: { ...org, role: membership.role },
+              orgs: orgContext && orgContext.orgs ? [...orgContext.orgs, { ...org, role: membership.role }] : [{ ...org, role: membership.role }],
+              role: membership.role,
+              updatedAt: Date.now(),
+            };
+            renderButton(document.getElementById('btn-account-switcher'));
+          } catch (err) {
+            UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
+          }
+        };
+
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') handleCreate();
+        });
+
+        modalRef = UIComponents.showModal({
+          title: 'Create Workspace',
+          content,
+          actions: [
+            { label: 'Cancel', variant: 'ghost' },
+            { label: 'Create', variant: 'primary', onClick: handleCreate }
+          ]
+        });
+
+        setTimeout(() => input.focus(), 50);
       }
 
       async function logout() {
@@ -1161,7 +1189,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
        * @param {{ align?: string }} [opts]
        */
       function bind(buttonEl, { align } = {}) {
-        if (!buttonEl) return () => {};
+        if (!buttonEl) return () => { };
         if (mounts.has(buttonEl)) return mounts.get(buttonEl);
 
         renderButton(buttonEl);
@@ -1749,7 +1777,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const pHL = p.dims.l / 2;
           const pHW = p.dims.w / 2;
           if (bMinX < p.pos.x + pHL - EPS && bMaxX > p.pos.x - pHL + EPS &&
-              bMinZ < p.pos.z + pHW - EPS && bMaxZ > p.pos.z - pHW + EPS) {
+            bMinZ < p.pos.z + pHW - EPS && bMaxZ > p.pos.z - pHW + EPS) {
             const top = p.pos.y + p.dims.h / 2;
             if (top > floor) { floor = top; }
           }
@@ -1768,8 +1796,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const bMin = { x: p.pos.x - p.dims.l / 2, y: p.pos.y - p.dims.h / 2, z: p.pos.z - p.dims.w / 2 };
           const bMax = { x: p.pos.x + p.dims.l / 2, y: p.pos.y + p.dims.h / 2, z: p.pos.z + p.dims.w / 2 };
           if (aMin.x < bMax.x - EPS && aMax.x > bMin.x + EPS &&
-              aMin.y < bMax.y - EPS && aMax.y > bMin.y + EPS &&
-              aMin.z < bMax.z - EPS && aMax.z > bMin.z + EPS) {
+            aMin.y < bMax.y - EPS && aMax.y > bMin.y + EPS &&
+            aMin.z < bMax.z - EPS && aMax.z > bMin.z + EPS) {
             return true;
           }
         }
@@ -2925,7 +2953,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     const UpdatesUI = (() => {
       const listEl = document.getElementById('updates-list');
-      function initUpdatesUI() {}
+      function initUpdatesUI() { }
       function render() {
         listEl.innerHTML = '';
         Data.updates.forEach(u => {
@@ -2972,7 +3000,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     const RoadmapUI = (() => {
       const listEl = document.getElementById('roadmap-list');
-      function initRoadmapUI() {}
+      function initRoadmapUI() { }
       function render() {
         listEl.innerHTML = '';
         Data.roadmap.forEach(group => {
@@ -3711,7 +3739,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       try {
         if (SupabaseClient && typeof SupabaseClient.updateProfile === 'function') {
-          SupabaseClient.updateProfile({ current_organization_id: nextId }).catch(() => {});
+          SupabaseClient.updateProfile({ current_organization_id: nextId }).catch(() => { });
         }
       } catch {
         // ignore
@@ -3773,10 +3801,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       const profileOrgId = normalizeOrgId(
         profile &&
-          (profile.current_organization_id ||
-            profile.current_org_id ||
-            profile.currentOrgId ||
-            profile.currentOrgID)
+        (profile.current_organization_id ||
+          profile.current_org_id ||
+          profile.currentOrgId ||
+          profile.currentOrgID)
       );
       const localOrgId = normalizeOrgId(readLocalOrgId());
       const membershipOrgId = normalizeOrgId(
@@ -3959,7 +3987,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           lastOrgPersistAt = now;
           try {
             if (SupabaseClient && typeof SupabaseClient.updateProfile === 'function') {
-              SupabaseClient.updateProfile({ current_organization_id: nextOrgIdStr }).catch(() => {});
+              SupabaseClient.updateProfile({ current_organization_id: nextOrgIdStr }).catch(() => { });
             }
           } catch {
             // ignore
@@ -4349,7 +4377,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
           AccountSwitcher.refresh();
         }
-        refreshBilling({ force: isSignedInEvent || isUserSwitch, reason: 'render-auth-state' }).catch(() => {});
+        refreshBilling({ force: isSignedInEvent || isUserSwitch, reason: 'render-auth-state' }).catch(() => { });
         showReadyOnce();
         return;
       }
@@ -4829,8 +4857,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
             clearBillingState();
           } else if (isSignedInEvent || isTokenRefreshEvent || isInitialSessionEvent || isUserUpdatedEvent) {
             if (userFromSession && userFromSession.id) {
-              refreshBilling({ force: true, reason: 'auth-change' }).catch(() => {});
-              tryAcceptPendingInvite(session || null).catch(() => {});
+              refreshBilling({ force: true, reason: 'auth-change' }).catch(() => { });
+              tryAcceptPendingInvite(session || null).catch(() => { });
             }
           }
 
@@ -4953,7 +4981,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
               reason: 'org-changed',
               activeOrgId: nextOrgId,
             });
-            refreshBilling({ force: true, reason: 'org-changed' }).catch(() => {});
+            refreshBilling({ force: true, reason: 'org-changed' }).catch(() => { });
           });
         } catch {
           // ignore
@@ -5155,7 +5183,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
                 onClick: () => {
                   try {
                     if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
-                      SupabaseClient.signOut({ global: true, allowOffline: true }).catch(() => {});
+                      SupabaseClient.signOut({ global: true, allowOffline: true }).catch(() => { });
                     }
                   } catch (_) {
                     // ignore
@@ -5307,7 +5335,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       try {
         const initSession = SupabaseClient.getSession();
         if (initSession && initSession.access_token) {
-          refreshBilling({ force: false, reason: 'initial-load' }).catch(() => {});
+          refreshBilling({ force: false, reason: 'initial-load' }).catch(() => { });
         }
       } catch (_) { /* ignore */ }
 
@@ -5315,7 +5343,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       try {
         window.addEventListener('focus', () => {
           const s = SupabaseClient.getSession && SupabaseClient.getSession();
-          if (s && s.access_token) refreshBilling({ force: false, reason: 'window-focus' }).catch(() => {});
+          if (s && s.access_token) refreshBilling({ force: false, reason: 'window-focus' }).catch(() => { });
         });
       } catch (_) { /* ignore */ }
 
@@ -5332,15 +5360,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
           if (billingParam === 'success') {
             UIComponents.showToast('Payment successful! Your plan is being activated.', 'success', { title: 'Billing', duration: 8000 });
             // Force refresh billing after a short delay (webhook may take a moment)
-            setTimeout(() => { refreshBilling({ force: true, reason: 'stripe-return-success-2s' }).catch(() => {}); }, 2000);
-            setTimeout(() => { refreshBilling({ force: true, reason: 'stripe-return-success-6s' }).catch(() => {}); }, 6000);
+            setTimeout(() => { refreshBilling({ force: true, reason: 'stripe-return-success-2s' }).catch(() => { }); }, 2000);
+            setTimeout(() => { refreshBilling({ force: true, reason: 'stripe-return-success-6s' }).catch(() => { }); }, 6000);
           } else if (billingParam === 'cancel') {
             UIComponents.showToast('Checkout was cancelled.', 'info', { title: 'Billing' });
-            refreshBilling({ force: true, reason: 'stripe-return-cancel' }).catch(() => {});
+            refreshBilling({ force: true, reason: 'stripe-return-cancel' }).catch(() => { });
           } else if (billingParam === 'portal_return') {
             UIComponents.showToast('Billing updated. Syncing status\u2026', 'info', { title: 'Billing', duration: 6000 });
-            refreshBilling({ force: true, reason: 'stripe-return-portal' }).catch(() => {});
-            setTimeout(() => { refreshBilling({ force: true, reason: 'stripe-return-portal-4s' }).catch(() => {}); }, 4000);
+            refreshBilling({ force: true, reason: 'stripe-return-portal' }).catch(() => { });
+            setTimeout(() => { refreshBilling({ force: true, reason: 'stripe-return-portal-4s' }).catch(() => { }); }, 4000);
           }
         }
       } catch (_) { /* ignore */ }
@@ -5349,7 +5377,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       try {
         const currentSession = SupabaseClient.getSession && SupabaseClient.getSession();
         if (currentSession && currentSession.access_token) {
-          tryAcceptPendingInvite(currentSession).catch(() => {});
+          tryAcceptPendingInvite(currentSession).catch(() => { });
         }
       } catch (_) { /* ignore */ }
 

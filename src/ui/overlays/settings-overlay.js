@@ -444,7 +444,7 @@ export function createSettingsOverlay({
 
     if (typeof api.refreshBilling === 'function') {
       api.refreshBilling({ force: true, reason: source || 'settings:org-changed' })
-        .catch(() => {})
+        .catch(() => { })
         .finally(() => {
           const wrap = doc.getElementById('tp3d-billing-wrap');
           if (wrap) renderBillingInto(wrap);
@@ -467,7 +467,7 @@ export function createSettingsOverlay({
       queueAccountBundleRefresh({ force: true, source: 'settings:org-changed' });
       refreshBillingForOrgChange(nextOrgId, 'settings:org-changed');
       if (_tabState.activeTabId === 'org-billing') {
-        ensureBillingContextHydrated(nextOrgId, { force: true, source: 'org-billing:org-changed' }).catch(() => {});
+        ensureBillingContextHydrated(nextOrgId, { force: true, source: 'org-billing:org-changed' }).catch(() => { });
       }
       if (settingsOverlay && settingsOverlay.isConnected) {
         render();
@@ -476,7 +476,7 @@ export function createSettingsOverlay({
         const actionId = _tabState.lastActionId;
         loadOrgMembers(nextOrgId)
           .then(() => renderIfFresh(actionId, 'org-members:org-changed'))
-          .catch(() => {});
+          .catch(() => { });
       }
     };
     window.addEventListener('tp3d:org-changed', orgChangedHandler);
@@ -654,7 +654,7 @@ export function createSettingsOverlay({
     const actionId = _tabState.lastActionId;
     loadAccountBundle({ force })
       .then(() => renderIfFresh(actionId, source))
-      .catch(() => {});
+      .catch(() => { });
   }
 
   async function loadProfile() {
@@ -938,21 +938,21 @@ export function createSettingsOverlay({
       const inviteLink = result && result.invite_link ? String(result.invite_link) : '';
       const copyInviteAction = inviteLink
         ? [{
-            label: 'Copy Link',
-            onClick: () => {
-              try {
-                if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-                  navigator.clipboard.writeText(inviteLink).then(() => {
-                    UIComponents.showToast('Invite link copied', 'success', { title: 'Invites' });
-                  }).catch(() => {
-                    UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
-                  });
-                }
-              } catch {
-                UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
+          label: 'Copy Link',
+          onClick: () => {
+            try {
+              if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                navigator.clipboard.writeText(inviteLink).then(() => {
+                  UIComponents.showToast('Invite link copied', 'success', { title: 'Invites' });
+                }).catch(() => {
+                  UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
+                });
               }
-            },
-          }]
+            } catch {
+              UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
+            }
+          },
+        }]
         : undefined;
       UIComponents.showToast('Invite sent to ' + email, 'success', { title: 'Invites', actions: copyInviteAction });
       // Refresh invites list
@@ -1011,21 +1011,21 @@ export function createSettingsOverlay({
       const inviteLink = result && result.invite_link ? String(result.invite_link) : '';
       const copyInviteAction = inviteLink
         ? [{
-            label: 'Copy Link',
-            onClick: () => {
-              try {
-                if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-                  navigator.clipboard.writeText(inviteLink).then(() => {
-                    UIComponents.showToast('Invite link copied', 'success', { title: 'Invites' });
-                  }).catch(() => {
-                    UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
-                  });
-                }
-              } catch {
-                UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
+          label: 'Copy Link',
+          onClick: () => {
+            try {
+              if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                navigator.clipboard.writeText(inviteLink).then(() => {
+                  UIComponents.showToast('Invite link copied', 'success', { title: 'Invites' });
+                }).catch(() => {
+                  UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
+                });
               }
-            },
-          }]
+            } catch {
+              UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
+            }
+          },
+        }]
         : undefined;
       UIComponents.showToast('Invite resent to ' + invite.email, 'success', { title: 'Invites', actions: copyInviteAction });
       await loadOrgInvites(orgId);
@@ -1240,11 +1240,11 @@ export function createSettingsOverlay({
     if (nextTab === 'org-billing') {
       const lockedOrgId = ensureModalOrgId();
       if (lockedOrgId) {
-        ensureBillingContextHydrated(lockedOrgId, { source: 'org-billing:tab-activate' }).catch(() => {});
+        ensureBillingContextHydrated(lockedOrgId, { source: 'org-billing:tab-activate' }).catch(() => { });
       }
       const api = getBillingApiSafely();
       if (api && typeof api.refreshBilling === 'function') {
-        api.refreshBilling({ force: true }).catch(() => {});
+        api.refreshBilling({ force: true }).catch(() => { });
       }
     }
   }
@@ -1539,8 +1539,7 @@ export function createSettingsOverlay({
       summary.className = 'card';
       summary.innerHTML = `
         <div class="tp3d-import-summary-title">Import Result</div>
-        <div class="muted tp3d-import-summary-meta">File: ${
-          Utils && Utils.escapeHtml ? Utils.escapeHtml(file.name) : file.name
+        <div class="muted tp3d-import-summary-meta">File: ${Utils && Utils.escapeHtml ? Utils.escapeHtml(file.name) : file.name
         }</div>
         <div class="tp3d-import-summary-spacer"></div>
         <div class="tp3d-import-badges">
@@ -1716,6 +1715,12 @@ export function createSettingsOverlay({
       (cancelAtPeriodEnd || hasCancelAt)
     );
     const cancelEndValue = cancelAt || state.currentPeriodEnd || null;
+    const hasRenewal = !isTrial && status === 'active' && !isCancelScheduled && Boolean(state.currentPeriodEnd);
+    let renewalText = null;
+    if (hasRenewal) {
+      const d = new Date(state.currentPeriodEnd);
+      renewalText = isNaN(d.getTime()) ? String(state.currentPeriodEnd) : d.toLocaleDateString();
+    }
     const portalAvailable = Boolean(state.portalAvailable);
     const trialWelcomeShown = (() => {
       try {
@@ -1756,7 +1761,7 @@ export function createSettingsOverlay({
     );
     const billingContextLoading = billingContextInflightForOrg;
     if (lockedOrgId && (!orgProfileLoaded || !roleKnown)) {
-      ensureBillingContextHydrated(lockedOrgId, { source: 'org-billing:render' }).catch(() => {});
+      ensureBillingContextHydrated(lockedOrgId, { source: 'org-billing:render' }).catch(() => { });
     }
     const orgContextStalled = Boolean(
       lockedOrgId &&
@@ -1877,7 +1882,7 @@ export function createSettingsOverlay({
             avatarNode = orgAvatarEl;
           };
         };
-        loadLogo().catch(() => {});
+        loadLogo().catch(() => { });
       }
       const orgNameSpan = doc.createElement('span');
       orgNameSpan.textContent = orgName;
@@ -1934,7 +1939,7 @@ export function createSettingsOverlay({
       retryBtn.textContent = 'Retry';
       retryBtn.addEventListener('click', () => {
         if (api && typeof api.refreshBilling === 'function') {
-          api.refreshBilling({ force: true }).catch(() => {});
+          api.refreshBilling({ force: true }).catch(() => { });
         }
       });
       planCard.appendChild(retryBtn);
@@ -1972,6 +1977,16 @@ export function createSettingsOverlay({
           cancelInline.textContent = cancelEndText;
           planHeader.appendChild(cancelInline);
         }
+      } else if (hasRenewal && renewalText) {
+        const renewBadge = doc.createElement('span');
+        renewBadge.className = 'badge badge--pending';
+        renewBadge.textContent = 'Renews';
+        planHeader.appendChild(renewBadge);
+
+        const renewInline = doc.createElement('span');
+        renewInline.className = 'tp3d-billing-cancel-inline';
+        renewInline.textContent = 'Renews on ' + renewalText;
+        planHeader.appendChild(renewInline);
       }
 
       if (trialDaysLeft !== null) {
@@ -2155,9 +2170,9 @@ export function createSettingsOverlay({
       refreshBtn.disabled = Boolean(loading || !lockedOrgId);
       refreshBtn.addEventListener('click', () => {
         if (!lockedOrgId) return;
-        ensureBillingContextHydrated(lockedOrgId, { force: true, source: 'org-billing:refresh' }).catch(() => {});
+        ensureBillingContextHydrated(lockedOrgId, { force: true, source: 'org-billing:refresh' }).catch(() => { });
         if (api && typeof api.refreshBilling === 'function') {
-          api.refreshBilling({ force: true }).catch(() => {});
+          api.refreshBilling({ force: true }).catch(() => { });
         }
       });
       actionsRow.appendChild(refreshBtn);
@@ -2216,16 +2231,16 @@ export function createSettingsOverlay({
 
     billingUnsubscribe = typeof maybeUnsub === 'function'
       ? () => {
-          try {
-            maybeUnsub();
-          } catch {
-            // ignore
-          }
-          billingUnsubscribe = null;
+        try {
+          maybeUnsub();
+        } catch {
+          // ignore
         }
+        billingUnsubscribe = null;
+      }
       : () => {
-          billingUnsubscribe = null;
-        };
+        billingUnsubscribe = null;
+      };
   }
 
   function render() {
@@ -2653,7 +2668,7 @@ export function createSettingsOverlay({
         const actionId = _tabState.lastActionId;
         loadAccountBundle()
           .then(() => renderIfFresh(actionId, 'account-bundle'))
-          .catch(() => {});
+          .catch(() => { });
       }
 
       // Avatar section
@@ -3301,7 +3316,7 @@ export function createSettingsOverlay({
               logoNode = logoPreview;
             };
           };
-          loadLogo2().catch(() => {});
+          loadLogo2().catch(() => { });
         }
 
         const logoInput = doc.createElement('input');
@@ -3423,23 +3438,52 @@ export function createSettingsOverlay({
           createBtn.className = 'btn btn-primary';
           createBtn.textContent = '+ New Workspace';
           createBtn.addEventListener('click', () => {
-            const name = window.prompt('Workspace name:');
-            if (!name || !name.trim()) return;
-            createBtn.disabled = true;
-            createBtn.textContent = 'Creating\u2026';
-            SupabaseClient.createOrganization({ name: name.trim() })
-              .then(({ org, membership }) => {
-                membershipData = membership;
-                orgData = org;
-                if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
-                UIComponents.showToast('Workspace created!', 'success');
-                render();
-              })
-              .catch(err => {
-                UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
-                createBtn.disabled = false;
-                createBtn.textContent = '+ New Workspace';
-              });
+            const input = doc.createElement('input');
+            input.type = 'text';
+            input.className = 'w-full px-3 py-2 border rounded-md text-sm mb-4';
+            input.placeholder = 'e.g. My Company';
+
+            const content = doc.createElement('div');
+            content.appendChild(input);
+
+            let modalRef = null;
+
+            const handleCreate = () => {
+              const name = input.value.trim();
+              if (!name) return;
+              if (modalRef && typeof modalRef.close === 'function') modalRef.close();
+
+              createBtn.disabled = true;
+              createBtn.textContent = 'Creating\u2026';
+              SupabaseClient.createOrganization({ name })
+                .then(({ org, membership }) => {
+                  membershipData = membership;
+                  orgData = org;
+                  if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
+                  UIComponents.showToast('Workspace created!', 'success');
+                  render();
+                })
+                .catch(err => {
+                  UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
+                  createBtn.disabled = false;
+                  createBtn.textContent = '+ New Workspace';
+                });
+            };
+
+            input.addEventListener('keydown', (e) => {
+              if (e.key === 'Enter') handleCreate();
+            });
+
+            modalRef = UIComponents.showModal({
+              title: 'Create Workspace',
+              content,
+              actions: [
+                { label: 'Cancel', variant: 'ghost' },
+                { label: 'Create', variant: 'primary', onClick: handleCreate }
+              ]
+            });
+
+            setTimeout(() => input.focus(), 50);
           });
           wrap.appendChild(createBtn);
 
@@ -3542,7 +3586,7 @@ export function createSettingsOverlay({
                 logoNode = logoPreview;
               };
             };
-            loadLogo2().catch(() => {});
+            loadLogo2().catch(() => { });
           }
 
           viewContainer.appendChild(orgRow('Logo', logoCell));
@@ -3735,7 +3779,7 @@ export function createSettingsOverlay({
             const actionId = _tabState.lastActionId;
             loadOrgMembers(nextOrgId)
               .then(() => renderIfFresh(actionId, 'org-members:refresh'))
-              .catch(() => {});
+              .catch(() => { });
           }
           render();
         });
@@ -3768,7 +3812,7 @@ export function createSettingsOverlay({
           const actionId = _tabState.lastActionId;
           loadOrgMembers(orgId)
             .then(() => renderIfFresh(actionId, 'org-members'))
-            .catch(() => {});
+            .catch(() => { });
         }
 
         // Load invites in parallel (owner/admin only)
@@ -3776,7 +3820,7 @@ export function createSettingsOverlay({
           const actionId = _tabState.lastActionId;
           loadOrgInvites(orgId)
             .then(() => renderIfFresh(actionId, 'org-invites'))
-            .catch(() => {});
+            .catch(() => { });
         }
 
         if (membersLoading && !hasMembersForOrg) {
@@ -3805,7 +3849,7 @@ export function createSettingsOverlay({
             const actionId = _tabState.lastActionId;
             loadOrgMembers(orgId)
               .then(() => renderIfFresh(actionId, 'org-members'))
-              .catch(() => {});
+              .catch(() => { });
           });
 
           retryRow.appendChild(retryBtn);
@@ -3946,9 +3990,8 @@ export function createSettingsOverlay({
             } else if (orgInvitesError) {
               const inviteError = doc.createElement('div');
               inviteError.className = 'tp3d-org-feedback tp3d-org-feedback--error';
-              inviteError.textContent = `Failed to load invites. ${
-                orgInvitesError && orgInvitesError.message ? orgInvitesError.message : 'Try again.'
-              }`;
+              inviteError.textContent = `Failed to load invites. ${orgInvitesError && orgInvitesError.message ? orgInvitesError.message : 'Try again.'
+                }`;
               inviteSection.appendChild(inviteError);
             } else if (pendingInvites.length > 0) {
               const inviteLabel = doc.createElement('div');

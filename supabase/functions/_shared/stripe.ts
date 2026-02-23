@@ -6,6 +6,14 @@ export function stripeClient() {
   return new Stripe(key, { apiVersion: "2024-06-20" });
 }
 
+export function assertStripeEnv(names: string[]): void {
+  const missing = names.filter((name) => !String(Deno.env.get(name) || "").trim());
+  if (!missing.length) return;
+  const err = new Error(`Missing required Stripe secrets: ${missing.join(", ")}`);
+  (err as { status?: number }).status = 500;
+  throw err;
+}
+
 export function assertAllowedPrice(priceId: string): void {
   const allowed = new Set(
     [

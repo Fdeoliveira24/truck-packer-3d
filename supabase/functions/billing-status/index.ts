@@ -124,6 +124,11 @@ function uniq(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
+function isTruthyEnv(name: string): boolean {
+  const raw = String(Deno.env.get(name) || "").trim().toLowerCase();
+  return raw === "1" || raw === "true";
+}
+
 function getJwtFromRequest(req: Request): string | null {
   // Primary: explicit header used by the app
   const xUserJwt = req.headers.get("x-user-jwt") || req.headers.get("X-User-JWT");
@@ -166,7 +171,8 @@ Deno.serve(async (req) => {
   if (cors) return cors;
 
   try {
-    const debug = Deno.env.get("SUPABASE_DEBUG") === "1";
+    const backendDebugEnabled = isTruthyEnv("TP3D_DEBUG");
+    const debug = Deno.env.get("SUPABASE_DEBUG") === "1" || backendDebugEnabled;
     if (debug) {
       const authHeader = req.headers.get("authorization") || req.headers.get("Authorization") || "";
       console.log("auth header present:", !!authHeader);
@@ -177,7 +183,7 @@ Deno.serve(async (req) => {
     }
 
     const requestUrl = new URL(req.url);
-    const responseDebugEnabled = requestUrl.searchParams.get("tp3dDebug") === "1";
+    const responseDebugEnabled = backendDebugEnabled && requestUrl.searchParams.get("tp3dDebug") === "1";
     const requestedOrgRaw =
       requestUrl.searchParams.get("organization_id") ||
       requestUrl.searchParams.get("org_id") ||
@@ -204,12 +210,14 @@ Deno.serve(async (req) => {
     // Startup log: helps confirm what the function sees in the Edge runtime
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
     const hasServiceRoleKey = Boolean(serviceRoleKey);
-    console.log("billing-status startup", {
-      envKeyUsed,
-      hasServiceRoleKey,
-      hasAnonKey: Boolean(anonKey),
-      normalizedHost: normalizedSupabaseUrl.host,
-    });
+    if (debug) {
+      console.log("billing-status startup", {
+        envKeyUsed,
+        hasServiceRoleKey,
+        hasAnonKey: Boolean(anonKey),
+        normalizedHost: normalizedSupabaseUrl.host,
+      });
+    }
 
     if (!normalizedSupabaseUrl.url) {
       return json(req, 500, {
@@ -730,7 +738,6 @@ Deno.serve(async (req) => {
       status: subStatus,
       isActive,
       interval,
-      duplicateActiveCount,
       trialEndsAt,
       currentPeriodEnd,
       cancelAtPeriodEnd,
@@ -743,6 +750,7 @@ Deno.serve(async (req) => {
         billingCustomerStatus: billingCustomerStatus || null,
         billingCustomerTrialEndsAt,
         usedServiceRole,
+        duplicateActiveCount,
       };
     }
     return json(req, 200, responsePayload);

@@ -92,46 +92,7 @@ export function getSession() {
   return initSession();
 }
 
-export function setCurrentOrgId(nextOrgId) {
-  const s = getSession();
-  const orgs = Array.isArray(s.orgs) ? s.orgs : [];
-  const exists = orgs.some(o => o.id === nextOrgId);
-  if (!exists) throw new Error('Organization not found');
-  s.user.currentOrgId = nextOrgId;
-  s.currentOrg = computeCurrentOrg(s);
-  persist(s);
-  notify();
-  return s;
-}
 
-export function upsertOrg(org) {
-  const s = getSession();
-  const next = deepClone(s);
-  next.orgs = Array.isArray(next.orgs) ? next.orgs : [];
-  const idx = next.orgs.findIndex(o => o.id === org.id);
-  if (idx >= 0) next.orgs[idx] = { ...next.orgs[idx], ...org };
-  else next.orgs.push(org);
-  next.currentOrg = computeCurrentOrg(next);
-  _session = next;
-  persist(_session);
-  notify();
-  return _session;
-}
-
-export function createOrganization({ name }) {
-  const id = `org-${uuid()}`;
-  const org = {
-    id,
-    type: 'organization',
-    name: String(name || 'New Organization').trim() || 'New Organization',
-    role: 'Owner',
-    plan: 'Trial',
-    trialEndsAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
-  };
-  upsertOrg(org);
-  setCurrentOrgId(id);
-  return org;
-}
 
 export function subscribeSession(callback) {
   subscribers.add(callback);

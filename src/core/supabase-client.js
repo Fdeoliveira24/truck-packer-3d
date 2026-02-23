@@ -719,8 +719,7 @@ function getUserRawSingleFlight() {
   }
   if (_authCooldownUntil && now < _authCooldownUntil) {
     const cachedUser = (_authState && _authState.user) || (_session && _session.user) || null;
-    if (debugEnabled())
-      {debugLog('warn', '[SupabaseClient] getUser skipped (auth cooldown)', { cachedUser: Boolean(cachedUser) });}
+    if (debugEnabled()) { debugLog('warn', '[SupabaseClient] getUser skipped (auth cooldown)', { cachedUser: Boolean(cachedUser) }); }
     const out = { data: { user: cachedUser }, error: null };
     _getUserRawLastResult = out;
     _getUserRawLastAt = now;
@@ -1538,7 +1537,7 @@ async function requireUserId() {
 
 export function onAuthStateChange(handler) {
   const client = requireClient();
-  const cb = typeof handler === 'function' ? handler : () => {};
+  const cb = typeof handler === 'function' ? handler : () => { };
   const { data } = client.auth.onAuthStateChange((event, session) => cb(event, session));
   const sub = data && data.subscription ? data.subscription : null;
   return () => {
@@ -2188,10 +2187,10 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
       };
       const profileOrgId = normalizeOrgId(
         profileResult &&
-          (profileResult.current_organization_id ||
-            profileResult.current_org_id ||
-            profileResult.currentOrgId ||
-            profileResult.currentOrgID)
+        (profileResult.current_organization_id ||
+          profileResult.current_org_id ||
+          profileResult.currentOrgId ||
+          profileResult.currentOrgID)
       );
       const membershipOrgId = normalizeOrgId(
         membershipResult && membershipResult.organization_id ? membershipResult.organization_id : null
@@ -2746,42 +2745,14 @@ export async function createOrganization({ name, slug }) {
   const userId = await getAuthedUserId();
   if (!userId) throw new Error('Not authenticated');
 
-  // Generate slug from name if not provided
-  const orgSlug = slug
-    ? String(slug).trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
-    : String(name).trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') + '-' + Date.now().toString(36);
-
-  // Create organization
-  const { data: org, error: orgErr } = await client
-    .from('organizations')
-    .insert({
-      name: String(name).trim(),
-      slug: orgSlug,
-      owner_id: userId,
-    })
-    .select()
-    .single();
+  // Call the new RPC to safely bypass organization insert RLS
+  const { data: org, error: orgErr } = await client.rpc('create_organization', {
+    org_name: String(name).trim()
+  });
 
   if (orgErr) throw orgErr;
 
-  // Create owner membership
-  const { data: membership, error: memErr } = await client
-    .from('organization_members')
-    .insert({
-      organization_id: org.id,
-      user_id: userId,
-      role: 'owner',
-    })
-    .select()
-    .single();
-
-  if (memErr) {
-    // Rollback org if membership fails
-    try { await client.from('organizations').delete().eq('id', org.id); } catch (_) { /* ignore */ }
-    throw memErr;
-  }
-
-  return { org, membership };
+  return { org, membership: { role: 'owner', organization_id: org.id, user_id: userId } };
 }
 
 /**

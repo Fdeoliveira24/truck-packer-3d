@@ -1,6 +1,6 @@
 import { getAllowedOrigin, json } from "../_shared/cors.ts";
 import { requireUser, serviceClient } from "../_shared/auth.ts";
-import { stripeClient, assertAllowedPrice, buildReturnUrls } from "../_shared/stripe.ts";
+import { stripeClient, assertAllowedPrice, assertStripeEnv, buildReturnUrls } from "../_shared/stripe.ts";
 
 const STRIPE_BLOCKING_STATUSES = new Set(["active", "trialing", "past_due", "unpaid"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -19,6 +19,11 @@ function checkoutIdempotencyKey(userId: string, priceId: string): string {
   return `checkout:${userId}:${priceId}:${utcMinuteBucket()}`;
 }
 
+function getPortalConfigurationId(): string | null {
+  const id = String(Deno.env.get("STRIPE_PORTAL_CONFIGURATION_ID") || "").trim();
+  return id || null;
+}
+
 async function createPortalUrl(
   stripe: ReturnType<typeof stripeClient>,
   stripeCustomerId: string,
@@ -28,10 +33,16 @@ async function createPortalUrl(
   return_url.pathname = "/index.html";
   return_url.searchParams.set("billing", "portal_return");
 
-  const session = await stripe.billingPortal.sessions.create({
+  const portalConfigurationId = getPortalConfigurationId();
+  const sessionPayload: Record<string, unknown> = {
     customer: stripeCustomerId,
     return_url: return_url.toString(),
-  });
+  };
+  if (portalConfigurationId) {
+    sessionPayload.configuration = portalConfigurationId;
+  }
+
+  const session = await stripe.billingPortal.sessions.create(sessionPayload as any);
 
   return session.url;
 }
@@ -114,6 +125,7 @@ Deno.serve(async (req) => {
       return json({ error: auth.error || "Unauthorized" }, { status: 401, origin });
     }
     const user = auth.user;
+    assertStripeEnv(["STRIPE_SECRET_KEY", "STRIPE_PRICE_PRO_MONTHLY", "STRIPE_PRICE_PRO_YEARLY"]);
 
     const body = await req.json().catch(() => ({}));
     const hasInterval = typeof body.interval !== "undefined" && body.interval !== null && String(body.interval).trim() !== "";
@@ -228,15 +240,28 @@ Deno.serve(async (req) => {
       null;
 
     const billingCustomerStatus = String(billingCustomerRow?.status || "").toLowerCase();
-    const billingCustomerSubId = String(billingCustomerRow?.stripe_subscription_id || "");
-    if (!existingSub && stripeCustomerId && billingCustomerSubId && STRIPE_BLOCKING_STATUSES.has(billingCustomerStatus)) {
+    if (!existingSub && stripeCustomerId && STRIPE_BLOCKING_STATUSES.has(billingCustomerStatus)) {
+      if (debug) {
+        console.log("stripe-create-checkout-session: duplicate blocked via billing_customers", {
+          user_id: user.id,
+          organization_id: organizationId,
+          stripe_customer_id: stripeCustomerId,
+          billing_status: billingCustomerStatus,
+        });
+      }
       const url = await createPortalUrl(stripe, stripeCustomerId, origin);
       return json({ url }, { status: 200, origin });
     }
 
     if (existingSub && existingSub.status && stripeCustomerId) {
-      if (!stripeCustomerId) {
-        return json({ error: "Existing subscription found but no Stripe customer" }, { status: 409, origin });
+      if (debug) {
+        console.log("stripe-create-checkout-session: duplicate blocked via subscriptions table", {
+          user_id: user.id,
+          organization_id: organizationId,
+          stripe_customer_id: stripeCustomerId,
+          stripe_subscription_id: String(existingSub.stripe_subscription_id || ""),
+          status: String(existingSub.status || ""),
+        });
       }
       const url = await createPortalUrl(stripe, stripeCustomerId, origin);
       return json({ url }, { status: 200, origin });
@@ -248,9 +273,16 @@ Deno.serve(async (req) => {
         stripe,
         stripeCustomerId,
         organizationId,
-        allowLegacyUserScopedFallback,
+        true,
       );
       if (hasBlocking) {
+        if (debug) {
+          console.log("stripe-create-checkout-session: duplicate blocked via Stripe customer lookup", {
+            user_id: user.id,
+            organization_id: organizationId,
+            stripe_customer_id: stripeCustomerId,
+          });
+        }
         const url = await createPortalUrl(stripe, stripeCustomerId, origin);
         return json({ url }, { status: 200, origin });
       }

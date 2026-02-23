@@ -4,7 +4,7 @@
 // Requires env: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
 
 import { serviceClient } from "../_shared/auth.ts";
-import { stripeClient } from "../_shared/stripe.ts";
+import { assertStripeEnv, stripeClient } from "../_shared/stripe.ts";
 
 function getEnv(name: string): string {
   const v = Deno.env.get(name);
@@ -18,6 +18,8 @@ function jsonResp(data: unknown, status = 200): Response {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+class NonRetriableWebhookError extends Error {}
 
 function toUnixSeconds(value: unknown): number | null {
   if (typeof value === "number") {
@@ -95,27 +97,88 @@ function readOrganizationIdFromMetadata(metadata: unknown): string | null {
   return normalizeOrganizationId(source.organization_id ?? source.organizationId ?? null);
 }
 
+async function resolveSingleOrganizationForUser(
+  sb: ReturnType<typeof serviceClient>,
+  userId: string,
+  debug: boolean,
+): Promise<string | null> {
+  if (!userId) return null;
+  const memberships = await sb
+    .from("organization_members")
+    .select("organization_id")
+    .eq("user_id", userId)
+    .limit(2);
+
+  if (memberships.error) {
+    if (debug) {
+      console.warn("stripe-webhook: user membership lookup warning", { userId, error: memberships.error });
+    }
+    return null;
+  }
+
+  const orgIds = Array.from(
+    new Set(
+      (Array.isArray(memberships.data) ? memberships.data : [])
+        .map((row) => normalizeOrganizationId((row as Record<string, unknown>)?.organization_id ?? null))
+        .filter(Boolean),
+    ),
+  ) as string[];
+  if (orgIds.length === 1) return orgIds[0];
+  return null;
+}
+
 async function resolveOrganizationIdForBillingSync(
   sb: ReturnType<typeof serviceClient>,
   input: {
-    metadataOrganizationId: string | null;
+    metadataSubscriptionOrganizationId: string | null;
+    metadataCustomerOrganizationId: string | null;
+    metadataCheckoutOrganizationId: string | null;
     stripeSubscriptionId: string;
     stripeCustomerId: string;
+    userId: string;
     debug: boolean;
   },
-): Promise<{ organizationId: string | null; source: "metadata" | "subscriptions" | "billing_customers_subscription" | "billing_customers_customer" | "none" }> {
-  const { metadataOrganizationId, stripeSubscriptionId, stripeCustomerId, debug } = input;
+): Promise<{
+  organizationId: string | null;
+  source:
+    | "metadata_subscription"
+    | "metadata_customer"
+    | "metadata_checkout"
+    | "subscriptions"
+    | "subscriptions_user_membership"
+    | "billing_customers_subscription"
+    | "billing_customers_customer"
+    | "user_membership"
+    | "none";
+}> {
+  const {
+    metadataSubscriptionOrganizationId,
+    metadataCustomerOrganizationId,
+    metadataCheckoutOrganizationId,
+    stripeSubscriptionId,
+    stripeCustomerId,
+    userId,
+    debug,
+  } = input;
 
-  if (metadataOrganizationId) {
-    return { organizationId: metadataOrganizationId, source: "metadata" };
+  if (metadataSubscriptionOrganizationId) {
+    return { organizationId: metadataSubscriptionOrganizationId, source: "metadata_subscription" };
+  }
+  if (metadataCustomerOrganizationId) {
+    return { organizationId: metadataCustomerOrganizationId, source: "metadata_customer" };
+  }
+  if (metadataCheckoutOrganizationId) {
+    return { organizationId: metadataCheckoutOrganizationId, source: "metadata_checkout" };
   }
 
   if (stripeSubscriptionId) {
+    let subscriptionUserId = "";
     const subLookup = await sb
       .from("subscriptions")
-      .select("organization_id")
+      .select("organization_id,user_id")
       .eq("stripe_subscription_id", stripeSubscriptionId)
-      .maybeSingle();
+      .limit(2);
+
     if (subLookup.error) {
       if (!isColumnError(subLookup.error, "organization_id")) {
         console.warn("stripe-webhook: subscriptions org lookup warning", {
@@ -123,11 +186,38 @@ async function resolveOrganizationIdForBillingSync(
           error: subLookup.error,
         });
       }
-    } else {
-      const organizationId = normalizeOrganizationId(subLookup.data?.organization_id ?? null);
-      if (organizationId) {
-        return { organizationId, source: "subscriptions" };
+      const legacySubLookup = await sb
+        .from("subscriptions")
+        .select("user_id")
+        .eq("stripe_subscription_id", stripeSubscriptionId)
+        .maybeSingle();
+      if (!legacySubLookup.error) {
+        subscriptionUserId = String(legacySubLookup.data?.user_id || "");
       }
+    } else {
+      const rows = Array.isArray(subLookup.data) ? subLookup.data : [];
+      const orgIds = Array.from(
+        new Set(
+          rows
+            .map((row) => normalizeOrganizationId((row as Record<string, unknown>)?.organization_id ?? null))
+            .filter(Boolean),
+        ),
+      ) as string[];
+      if (orgIds.length === 1) {
+        return { organizationId: orgIds[0], source: "subscriptions" };
+      }
+      if (debug && orgIds.length > 1) {
+        console.warn("stripe-webhook: ambiguous subscriptions org by subscription", {
+          stripe_subscription_id: stripeSubscriptionId,
+          organization_ids: orgIds,
+        });
+      }
+      subscriptionUserId = String((rows[0] as Record<string, unknown> | undefined)?.user_id || "");
+    }
+
+    const resolvedFromSubUser = await resolveSingleOrganizationForUser(sb, subscriptionUserId, debug);
+    if (resolvedFromSubUser) {
+      return { organizationId: resolvedFromSubUser, source: "subscriptions_user_membership" };
     }
 
     const bySubscription = await sb
@@ -189,6 +279,11 @@ async function resolveOrganizationIdForBillingSync(
         });
       }
     }
+  }
+
+  const resolvedFromUser = await resolveSingleOrganizationForUser(sb, userId, debug);
+  if (resolvedFromUser) {
+    return { organizationId: resolvedFromUser, source: "user_membership" };
   }
 
   return { organizationId: null, source: "none" };
@@ -326,16 +421,21 @@ async function maybeBackfillSubscriptionTimestampForProcessedDuplicate(
 async function upsertSubscription(
   sb: ReturnType<typeof serviceClient>,
   sub: Record<string, unknown>,
+  stripe: ReturnType<typeof stripeClient>,
   eventCreatedSeconds: number | null,
   context: {
     eventType: string;
     eventId: string;
-    metadataOrganizationId?: string | null;
+    metadataCheckoutOrganizationId?: string | null;
+    metadataCustomerOrganizationId?: string | null;
   },
 ) {
   const debug = Deno.env.get("SUPABASE_DEBUG") === "1";
   const subId = String(sub.id ?? "");
-  const customerId = String(sub.customer ?? "");
+  const customerRef = sub.customer;
+  const customerId = typeof customerRef === "string"
+    ? customerRef
+    : String((customerRef as Record<string, unknown> | null)?.id ?? "");
   const status = String(sub.status ?? "");
   const priceId =
     (sub.items as any)?.data?.[0]?.price?.id ?? null;
@@ -348,9 +448,19 @@ async function upsertSubscription(
   const metadataObj = ((sub as any)?.metadata && typeof (sub as any).metadata === "object")
     ? ((sub as any).metadata as Record<string, unknown>)
     : {};
-  const metadataOrganizationId = readOrganizationIdFromMetadata(metadataObj) ||
-    normalizeOrganizationId(context.metadataOrganizationId ?? null);
-  const metadataKeys = Object.keys(metadataObj);
+  const customerMetadataObj = customerRef && typeof customerRef === "object"
+    ? (((customerRef as Record<string, unknown>).metadata as Record<string, unknown> | undefined) ?? {})
+    : {};
+  const metadataSubscriptionOrganizationId = readOrganizationIdFromMetadata(metadataObj);
+  const metadataCustomerOrganizationId = readOrganizationIdFromMetadata(customerMetadataObj) ||
+    normalizeOrganizationId(context.metadataCustomerOrganizationId ?? null);
+  const metadataCheckoutOrganizationId = normalizeOrganizationId(context.metadataCheckoutOrganizationId ?? null);
+  const metadataKeys = Array.from(
+    new Set([
+      ...Object.keys(metadataObj),
+      ...Object.keys(customerMetadataObj),
+    ]),
+  );
 
   // Find Supabase user for this Stripe customer
   const { data: customerRow, error: customerRowErr } = await sb
@@ -368,6 +478,23 @@ async function upsertSubscription(
   if (!userId) {
     throw new Error(
       `stripe-webhook: no user for customer (eventType=${context.eventType}, eventId=${context.eventId}, customerId=${customerId || "null"}, subId=${subId || "null"})`,
+    );
+  }
+
+  // Stripe Dashboard / portal updates can emit events without metadata.
+  // Metadata-only org resolution is not reliable, so we fall back to DB mappings.
+  const resolvedOrg = await resolveOrganizationIdForBillingSync(sb, {
+    metadataSubscriptionOrganizationId,
+    metadataCustomerOrganizationId,
+    metadataCheckoutOrganizationId,
+    stripeSubscriptionId: subId,
+    stripeCustomerId: customerId,
+    userId: String(userId),
+    debug,
+  });
+  if (!resolvedOrg.organizationId) {
+    throw new NonRetriableWebhookError(
+      `stripe-webhook: organization unresolved (eventType=${context.eventType}, eventId=${context.eventId}, source=${resolvedOrg.source}, customerId=${customerId || "null"}, subId=${subId || "null"}, metadataKeys=${metadataKeys.join(",") || "none"})`,
     );
   }
 
@@ -409,6 +536,51 @@ async function upsertSubscription(
     );
   }
 
+  const currentPeriodEndSeconds = toUnixSeconds(sub.current_period_end);
+  let cancelAtSeconds = toUnixSeconds(sub.cancel_at);
+  let cancelAtPeriodEnd = Boolean(sub.cancel_at_period_end);
+
+  // Some Stripe portal/dashboard flows drive cancellation from subscription schedules.
+  // In those cases cancel_at_period_end can remain false on the subscription payload.
+  if (!cancelAtPeriodEnd && !cancelAtSeconds && (status === "active" || status === "trialing")) {
+    const scheduleRef = (sub as Record<string, unknown>).schedule;
+    const scheduleId = typeof scheduleRef === "string"
+      ? scheduleRef
+      : String((scheduleRef as Record<string, unknown> | null)?.id ?? "");
+
+    if (scheduleId) {
+      try {
+        const schedule = await stripe.subscriptionSchedules.retrieve(scheduleId);
+        const endBehavior = String((schedule as Record<string, unknown>)?.end_behavior ?? "");
+        if (endBehavior === "cancel") {
+          const phases = Array.isArray((schedule as Record<string, unknown>)?.phases)
+            ? ((schedule as Record<string, unknown>).phases as Array<Record<string, unknown>>)
+            : [];
+          const currentPhase = ((schedule as Record<string, unknown>)?.current_phase as Record<string, unknown> | null) ?? null;
+          const candidateEnd = toUnixSeconds(currentPhase?.end_date) ??
+            toUnixSeconds(phases[phases.length - 1]?.end_date);
+          if (candidateEnd) {
+            cancelAtSeconds = candidateEnd;
+          }
+        }
+      } catch (scheduleErr) {
+        if (debug) {
+          console.warn("stripe-webhook: failed schedule cancellation lookup", {
+            eventType: context.eventType,
+            eventId: context.eventId,
+            subId,
+            scheduleId,
+            error: (scheduleErr as Error)?.message ?? String(scheduleErr),
+          });
+        }
+      }
+    }
+  }
+
+  if (!cancelAtPeriodEnd && cancelAtSeconds && currentPeriodEndSeconds && cancelAtSeconds <= currentPeriodEndSeconds) {
+    cancelAtPeriodEnd = true;
+  }
+
   const baseRow: Record<string, unknown> = {
     user_id: userId,
     stripe_subscription_id: subId,
@@ -420,12 +592,12 @@ async function upsertSubscription(
     current_period_start: sub.current_period_start
       ? new Date((sub.current_period_start as number) * 1000).toISOString()
       : null,
-    current_period_end: sub.current_period_end
-      ? new Date((sub.current_period_end as number) * 1000).toISOString()
+    current_period_end: currentPeriodEndSeconds
+      ? new Date(currentPeriodEndSeconds * 1000).toISOString()
       : null,
-    cancel_at_period_end: Boolean(sub.cancel_at_period_end),
-    cancel_at: sub.cancel_at
-      ? new Date((sub.cancel_at as number) * 1000).toISOString()
+    cancel_at_period_end: cancelAtPeriodEnd,
+    cancel_at: cancelAtSeconds
+      ? new Date(cancelAtSeconds * 1000).toISOString()
       : null,
     canceled_at: sub.canceled_at
       ? new Date((sub.canceled_at as number) * 1000).toISOString()
@@ -444,8 +616,8 @@ async function upsertSubscription(
       (existingSub?.last_stripe_event_created ?? null),
     updated_at: new Date().toISOString(),
   };
-  if (metadataOrganizationId) {
-    baseRow.organization_id = metadataOrganizationId;
+  if (resolvedOrg.organizationId) {
+    baseRow.organization_id = resolvedOrg.organizationId;
   }
 
   const writeSubscription = async (row: Record<string, unknown>) => {
@@ -473,7 +645,7 @@ async function upsertSubscription(
   let error: { code?: string; message?: string; details?: string } | null = await writeSubscription(row);
 
   // Backward-compat fallback when subscriptions.organization_id is not present yet.
-  if (error && metadataOrganizationId && isColumnError(error, "organization_id")) {
+  if (error && resolvedOrg.organizationId && isColumnError(error, "organization_id")) {
     delete row.organization_id;
     error = await writeSubscription(row);
   }
@@ -504,14 +676,14 @@ async function upsertSubscription(
       .neq("stripe_subscription_id", subId)
       .in("status", competingStatuses);
 
-    if (metadataOrganizationId) {
-      dedupeQuery = dedupeQuery.eq("organization_id", metadataOrganizationId);
+    if (resolvedOrg.organizationId) {
+      dedupeQuery = dedupeQuery.eq("organization_id", resolvedOrg.organizationId);
     } else if (customerId) {
       dedupeQuery = dedupeQuery.eq("stripe_customer_id", customerId);
     }
 
     let { error: dedupeErr } = await dedupeQuery;
-    if (dedupeErr && metadataOrganizationId && isColumnError(dedupeErr, "organization_id")) {
+    if (dedupeErr && resolvedOrg.organizationId && isColumnError(dedupeErr, "organization_id")) {
       ({ error: dedupeErr } = await sb
         .from("subscriptions")
         .update({
@@ -521,7 +693,7 @@ async function upsertSubscription(
         })
         .eq("user_id", userId)
         .neq("stripe_subscription_id", subId)
-        .contains("metadata", { organization_id: metadataOrganizationId })
+        .contains("metadata", { organization_id: resolvedOrg.organizationId })
         .in("status", competingStatuses));
       if (dedupeErr) {
         ({ error: dedupeErr } = await sb
@@ -546,53 +718,33 @@ async function upsertSubscription(
     }
   }
 
-  const resolvedOrg = await resolveOrganizationIdForBillingSync(sb, {
-    metadataOrganizationId,
-    stripeSubscriptionId: subId,
-    stripeCustomerId: customerId,
-    debug,
-  });
-  if (debug) {
-    console.log("stripe-webhook: billing_customers org resolve", {
-      stripe_subscription_id: subId || null,
-      stripe_customer_id: customerId || null,
-      source: resolvedOrg.source,
-      organization_id: resolvedOrg.organizationId,
-    });
+  const allowedBillingStatuses = new Set(["active", "trialing", "past_due", "canceled", "unpaid"]);
+  const normalizedTrialEndsAt = status === "trialing"
+    ? (baseRow.trial_end ?? null)
+    : null;
+  const billingRow: Record<string, unknown> = {
+    organization_id: resolvedOrg.organizationId,
+    stripe_customer_id: customerId || null,
+    stripe_subscription_id: subId || null,
+    status: allowedBillingStatuses.has(status) ? status : null,
+    plan_name: "pro",
+    billing_interval: interval,
+    current_period_start: baseRow.current_period_start ?? null,
+    current_period_end: baseRow.current_period_end ?? null,
+    cancel_at_period_end: Boolean(baseRow.cancel_at_period_end),
+    trial_ends_at: normalizedTrialEndsAt,
+    updated_at: new Date().toISOString(),
+  };
+  if (!allowedBillingStatuses.has(status)) {
+    delete billingRow.status;
   }
-  if (resolvedOrg.organizationId) {
-    const allowedBillingStatuses = new Set(["active", "trialing", "past_due", "canceled", "unpaid"]);
-    const normalizedTrialEndsAt = status === "trialing"
-      ? (baseRow.trial_end ?? null)
-      : null;
-    const billingRow: Record<string, unknown> = {
-      organization_id: resolvedOrg.organizationId,
-      stripe_customer_id: customerId || null,
-      stripe_subscription_id: subId || null,
-      status: allowedBillingStatuses.has(status) ? status : null,
-      plan_name: "pro",
-      billing_interval: interval,
-      current_period_start: baseRow.current_period_start ?? null,
-      current_period_end: baseRow.current_period_end ?? null,
-      cancel_at_period_end: Boolean(baseRow.cancel_at_period_end),
-      trial_ends_at: normalizedTrialEndsAt,
-      updated_at: new Date().toISOString(),
-    };
-    if (!allowedBillingStatuses.has(status)) {
-      delete billingRow.status;
-    }
 
-    const { error: billingErr } = await sb
-      .from("billing_customers")
-      .upsert(billingRow, { onConflict: "organization_id" });
-    if (billingErr) {
-      throw new Error(
-        `stripe-webhook: billing_customers upsert failed (eventType=${context.eventType}, eventId=${context.eventId}, orgId=${resolvedOrg.organizationId}, customerId=${customerId || "null"}, subId=${subId || "null"}): ${billingErr.message}`,
-      );
-    }
-  } else if (subId || customerId) {
+  const { error: billingErr } = await sb
+    .from("billing_customers")
+    .upsert(billingRow, { onConflict: "organization_id" });
+  if (billingErr) {
     throw new Error(
-      `stripe-webhook: organization unresolved (eventType=${context.eventType}, eventId=${context.eventId}, source=${resolvedOrg.source}, customerId=${customerId || "null"}, subId=${subId || "null"}, metadataKeys=${metadataKeys.join(",") || "none"})`,
+      `stripe-webhook: billing_customers upsert failed (eventType=${context.eventType}, eventId=${context.eventId}, orgId=${resolvedOrg.organizationId}, customerId=${customerId || "null"}, subId=${subId || "null"}): ${billingErr.message}`,
     );
   }
 
@@ -641,8 +793,8 @@ async function handleInvoice(
 
   // Keep subscription status aligned on payment events.
   try {
-    const sub = await stripe.subscriptions.retrieve(subId, { expand: ["items.data.price"] });
-    await upsertSubscription(sb, sub as unknown as Record<string, unknown>, eventCreatedSeconds, context);
+    const sub = await stripe.subscriptions.retrieve(subId, { expand: ["items.data.price", "customer"] });
+    await upsertSubscription(sb, sub as unknown as Record<string, unknown>, stripe, eventCreatedSeconds, context);
   } catch (err) {
     console.error("stripe-webhook invoice subscription resync error:", err);
     throw err;
@@ -661,6 +813,7 @@ Deno.serve(async (req) => {
   }
 
   try {
+    assertStripeEnv(["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]);
     const stripe = stripeClient();
     const webhookSecret = getEnv("STRIPE_WEBHOOK_SECRET");
     const signature = req.headers.get("stripe-signature");
@@ -849,7 +1002,7 @@ Deno.serve(async (req) => {
           const subId = String(obj.subscription ?? "");
           const sessionMetadataOrgId = readOrganizationIdFromMetadata((obj as Record<string, unknown>)?.metadata ?? null);
           if (subId) {
-            const sub = await stripe.subscriptions.retrieve(subId, { expand: ["items.data.price"] });
+            const sub = await stripe.subscriptions.retrieve(subId, { expand: ["items.data.price", "customer"] });
             const subForUpsert = sub as unknown as Record<string, unknown>;
             if (
               sessionMetadataOrgId &&
@@ -866,8 +1019,13 @@ Deno.serve(async (req) => {
             await upsertSubscription(
               sb,
               subForUpsert,
+              stripe,
               eventCreatedSeconds,
-              { eventType: event.type, eventId: event.id, metadataOrganizationId: sessionMetadataOrgId },
+              {
+                eventType: event.type,
+                eventId: event.id,
+                metadataCheckoutOrganizationId: sessionMetadataOrgId,
+              },
             );
           }
           break;
@@ -879,10 +1037,11 @@ Deno.serve(async (req) => {
           if (!subId) {
             throw new Error(`stripe-webhook: missing subscription id on ${event.type} event`);
           }
-          const latest = await stripe.subscriptions.retrieve(subId, { expand: ["items.data.price"] });
+          const latest = await stripe.subscriptions.retrieve(subId, { expand: ["items.data.price", "customer"] });
           await upsertSubscription(
             sb,
             latest as unknown as Record<string, unknown>,
+            stripe,
             eventCreatedSeconds,
             { eventType: event.type, eventId: event.id },
           );
@@ -892,6 +1051,7 @@ Deno.serve(async (req) => {
           await upsertSubscription(
             sb,
             obj,
+            stripe,
             eventCreatedSeconds,
             { eventType: event.type, eventId: event.id },
           );
@@ -901,6 +1061,16 @@ Deno.serve(async (req) => {
         case "invoice.payment_failed":
         case "invoice.paid":
           await handleInvoice(sb, obj, stripe, eventCreatedSeconds, { eventType: event.type, eventId: event.id });
+          break;
+        case "payment_method.attached":
+        case "payment_method.detached":
+          if (debug) {
+            console.log("stripe-webhook: payment_method event ignored", {
+              eventType: event.type,
+              eventId: event.id,
+              customerId: eventCustomerId || null,
+            });
+          }
           break;
 
         default:
@@ -935,6 +1105,9 @@ Deno.serve(async (req) => {
         console.error("stripe-webhook: failed to mark event as failed:", markErr);
       }
       console.error("stripe-webhook processing error:", procErr);
+      if (procErr instanceof NonRetriableWebhookError) {
+        return jsonResp({ received: true }, 200);
+      }
       return jsonResp({ error: errMsg }, 500);
     }
   } catch (e) {

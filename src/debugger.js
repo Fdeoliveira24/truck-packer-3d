@@ -670,7 +670,6 @@ function inspectTrialWelcomeModal(container) {
     };
     recordEvent('[TP3D][TrialWelcome]', 'debug', report);
     if (_active) {
-      /* eslint-disable no-console */
       console.groupCollapsed('[TP3D][TrialWelcome] modal inspector');
       console.log('found wrap:', report.foundWrap);
       console.log('found ul  :', report.foundUl, ulEl);
@@ -680,7 +679,6 @@ function inspectTrialWelcomeModal(container) {
         '| ulOpacity:',    report.ulOpacity);
       console.log('ulHeight  :', report.ulHeight, '| ulOverflow:', report.ulOverflow);
       console.groupEnd();
-      /* eslint-enable no-console */
     }
   } catch (_) {
     // ignore

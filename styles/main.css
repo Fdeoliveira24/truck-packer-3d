@@ -2795,6 +2795,7 @@ body.modal-open {
   right: 0;
   top: calc(100% - 102px);
   z-index: 10;
+
   /* was: 2 — raised to clear sibling content for tooltip visibility */
 }
 
@@ -4223,4 +4224,89 @@ body.modal-open {
   .tp3d-trial-welcome {
     padding: var(--space-5);
   }
+}
+
+/* ================================
+  Billing — Plan Header (two-column)
+================================== */
+
+.tp3d-billing-plan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.tp3d-billing-plan-header__left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.tp3d-billing-plan-header__name {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+
+.tp3d-billing-plan-header__divider {
+  color: var(--text-muted);
+  font-weight: var(--font-normal);
+  user-select: none;
+}
+
+.tp3d-billing-plan-header__label {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.tp3d-billing-plan-header__right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.tp3d-billing-plan-header__days {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+/* ================================
+  Billing — Pro CTA Card
+================================== */
+
+.tp3d-billing-pro-cta-card {
+  background: var(--accent-primary-12);
+  border-color: rgba(255, 159, 28, 0.25);
+}
+
+.tp3d-billing-pro-cta-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.tp3d-billing-pro-cta-info {
+  flex: 1;
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.tp3d-billing-pro-cta-title {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+
+.tp3d-billing-pro-cta-desc {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: var(--leading-normal);
+}
+
+.tp3d-billing-pro-cta-btn {
+  flex-shrink: 0;
 }

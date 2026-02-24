@@ -21,6 +21,46 @@ export const STORAGE_KEY = 'truckPacker3d:v1';
 
 const saveDebounced = debounce(saveNow, 250);
 
+export function readJson(key, fallback = null) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(raw, fallback));
+    return parsed == null ? fallback : parsed;
+  } catch (err) {
+    emit('storage:read_error', {
+      key,
+      message: err && err.message ? err.message : 'Read failed',
+      error: err,
+    });
+    return fallback;
+  }
+}
+
+export function writeJson(key, value) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch (err) {
+    emit('storage:write_error', {
+      key,
+      message: err && err.message ? err.message : 'Write failed',
+      error: err,
+    });
+  }
+}
+
+export function removeKey(key) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch (err) {
+    emit('storage:remove_error', {
+      key,
+      message: err && err.message ? err.message : 'Remove failed',
+      error: err,
+    });
+  }
+}
+
 export function load() {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);

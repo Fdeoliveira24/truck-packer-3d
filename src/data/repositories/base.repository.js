@@ -28,6 +28,9 @@ export class BaseRepository {
     throw new Error('Not implemented');
   }
 
+  /**
+   * @returns {Promise<boolean|void>}
+   */
   async delete(_id, _options) {
     throw new Error('Not implemented');
   }

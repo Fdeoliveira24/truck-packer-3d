@@ -1,7 +1,7 @@
 <!doctype html>
 <!--
   TRUCK PACKER 3D
-  Version: 1.0.0 (MVP)
+  Version: 1.0.1 (MVP)
   A production-ready, single-file 3D logistics planning workspace.
 
   QUICK START:
@@ -95,6 +95,10 @@
 
               // Try local fallback as final option
               const local = String(localPath || '').trim();
+              if (!local || window.__TP3D_BOOT.vendorLoaded[k]) {
+                // No local path — resolve promise so app can continue
+                if (window.__TP3D_BOOT.vendorResolvers[k]) window.__TP3D_BOOT.vendorResolvers[k](false);
+              }
               if (local && !window.__TP3D_BOOT.vendorLoaded[k]) {
                 try {
                   const localScript = document.createElement('script');
@@ -107,6 +111,8 @@
                   localScript.onerror = function () {
                     window.__tp3dCdnFail(name + ' (local fallback)', local, k);
                     if (debugEnabled()) console.info('[TP3D] vendor local fallback failed:', k, local);
+                    // Resolve promise so __tp3dVendorAllReady() does not hang forever
+                    if (window.__TP3D_BOOT.vendorResolvers[k]) window.__TP3D_BOOT.vendorResolvers[k](false);
                   };
                   parent.insertBefore(localScript, script && script.nextSibling ? script.nextSibling : null);
                   if (debugEnabled()) console.info('[TP3D] vendor local fallback injecting:', k, local);
@@ -283,7 +289,11 @@
           </button>
         </nav>
 
-        <div style="padding: var(--space-3)">
+        <div id="upgradeCardWrap" class="tp3d-sidebar-upgrade-wrap" hidden>
+          <div id="tp3d-sidebar-upgrade" class="tp3d-sidebar-upgrade"></div>
+        </div>
+
+        <div style="margin-top: auto; padding: var(--space-3)">
           <button class="btn" id="btn-account-switcher" type="button">
             <span style="display: flex; align-items: center; gap: var(--space-3); min-width: 0">
               <span
@@ -304,7 +314,7 @@
       <main class="main">
         <header class="topbar">
           <div class="topbar-left">
-            <button class="btn btn-ghost" id="btn-sidebar" type="button" title="Menu" aria-label="Menu">
+            <button class="btn btn-ghost" id="btn-sidebar" type="button" aria-label="Menu">
               <i class="fa-solid fa-bars"></i>
             </button>
             <div class="topbar-title">
@@ -367,10 +377,10 @@
                 />
               </div>
               <div class="row" style="gap: 4px">
-                <button class="btn" id="packs-view-grid" type="button" title="Grid view" aria-label="Grid view">
+                <button class="btn" id="packs-view-grid" type="button" data-tooltip="Grid view" aria-label="Grid view">
                   <i class="fa-solid fa-grip"></i>
                 </button>
-                <button class="btn" id="packs-view-list" type="button" title="List view" aria-label="List view">
+                <button class="btn" id="packs-view-list" type="button" data-tooltip="List view" aria-label="List view">
                   <i class="fa-solid fa-list"></i>
                 </button>
 
@@ -378,7 +388,7 @@
                   class="btn"
                   id="packs-filters-toggle"
                   type="button"
-                  title="Toggle filters"
+                  data-tooltip="Toggle filters"
                   aria-label="Toggle filters"
                 >
                   <i class="fa-solid fa-filter"></i>
@@ -387,7 +397,7 @@
                   class="btn"
                   id="packs-card-display"
                   type="button"
-                  title="Card display"
+                  data-tooltip="Card display"
                   aria-label="Card display"
                 >
                   <i class="fa-solid fa-eye"></i>
@@ -396,7 +406,7 @@
                   class="btn"
                   id="packs-trailer-presets"
                   type="button"
-                  title="Trailer preset"
+                  data-tooltip="Trailer preset"
                   aria-label="Trailer preset"
                 >
                   <i class="fa-solid fa-truck"></i>
@@ -416,15 +426,15 @@
             </div>
             <div style="height: 10px"></div>
             <div class="row" style="gap: 8px; flex-wrap: wrap">
-              <button class="chip" id="packs-filter-chip-empty" type="button" title="Packs with 0 cases">
+              <button class="chip" id="packs-filter-chip-empty" type="button">
                 <span class="chip-dot"></span>
                 Empty
               </button>
-              <button class="chip" id="packs-filter-chip-partial" type="button" title="Packs with some volume used">
+              <button class="chip" id="packs-filter-chip-partial" type="button">
                 <span class="chip-dot"></span>
                 Partial
               </button>
-              <button class="chip" id="packs-filter-chip-full" type="button" title="Packs at 100% volume">
+              <button class="chip" id="packs-filter-chip-full" type="button">
                 <span class="chip-dot"></span>
                 Full
               </button>
@@ -594,17 +604,17 @@
                 />
               </div>
               <div class="row" style="gap: 4px">
-                <button class="btn" id="cases-view-grid" type="button" title="Grid view" aria-label="Grid view">
+                <button class="btn" id="cases-view-grid" type="button" data-tooltip="Grid view" aria-label="Grid view">
                   <i class="fa-solid fa-grip"></i>
                 </button>
-                <button class="btn" id="cases-view-list" type="button" title="List view" aria-label="List view">
+                <button class="btn" id="cases-view-list" type="button" data-tooltip="List view" aria-label="List view">
                   <i class="fa-solid fa-list"></i>
                 </button>
                 <button
                   class="btn"
                   id="cases-filters-toggle"
                   type="button"
-                  title="Toggle filters"
+                  data-tooltip="Toggle filters"
                   aria-label="Toggle filters"
                 >
                   <i class="fa-solid fa-filter"></i>
@@ -613,12 +623,12 @@
                   class="btn"
                   id="cases-card-display"
                   type="button"
-                  title="Card display"
+                  data-tooltip="Card display"
                   aria-label="Card display"
                 >
                   <i class="fa-solid fa-eye"></i>
                 </button>
-                <button class="btn" id="btn-manage-categories" type="button" title="Categories" aria-label="Categories">
+                <button class="btn" id="btn-manage-categories" type="button" data-tooltip="Categories" aria-label="Categories">
                   <i class="fa-solid fa-tags"></i>
                 </button>
               </div>
@@ -730,32 +740,43 @@
                     class="btn btn-ghost"
                     id="btn-left-close"
                     type="button"
-                    title="Hide"
                     aria-label="Hide case browser"
                   >
                     <i class="fa-solid fa-xmark"></i>
                   </button>
                 </div>
                 <div class="panel-body">
-                  <div class="field">
-                    <div style="position: relative">
-                      <i
-                        class="fa-solid fa-magnifying-glass"
-                        style="
-                          position: absolute;
-                          left: 10px;
-                          top: 50%;
-                          transform: translateY(-50%);
-                          color: var(--text-muted);
-                        "
-                      ></i>
-                      <input
-                        class="input"
-                        id="editor-case-search"
-                        type="text"
-                        placeholder="Search cases..."
-                        style="padding-left: 30px"
-                      />
+                  <div class="field tp3d-editor-case-search">
+                    <div class="row tp3d-editor-case-search-row" style="gap: 8px; align-items: center">
+                      <div style="position: relative; flex: 1">
+                        <i
+                          class="fa-solid fa-magnifying-glass"
+                          style="
+                            position: absolute;
+                            left: 10px;
+                            top: 50%;
+                            transform: translateY(-50%);
+                            color: var(--text-muted);
+                          "
+                        ></i>
+                        <input
+                          class="input"
+                          id="editor-case-search"
+                          type="text"
+                          placeholder="Search cases..."
+                          style="padding-left: 30px"
+                        />
+                      </div>
+                      <button
+                        class="btn"
+                        id="editor-case-filters-toggle"
+                        type="button"
+                        data-tooltip="Toggle filters"
+                        aria-label="Toggle filters"
+                        aria-pressed="true"
+                      >
+                        <i class="fa-solid fa-filter"></i>
+                      </button>
                     </div>
                   </div>
                   <div style="height: 12px"></div>
@@ -768,30 +789,46 @@
               <div class="panel canvas-wrap">
                 <div id="viewport"></div>
                 <div class="viewport-toolbar" id="viewport-toolbar">
-                  <button class="toolbar-btn" id="btn-editor-left" type="button" title="Toggle case browser">
+                  <button class="toolbar-btn" id="btn-editor-left" type="button" data-tooltip="Toggle case browser">
                     <i class="fa-solid fa-boxes-stacked"></i>
                     Cases
                   </button>
-                  <button class="toolbar-btn" id="btn-editor-right" type="button" title="Toggle inspector">
+                  <button class="toolbar-btn" id="btn-editor-right" type="button" data-tooltip="Toggle inspector">
                     <i class="fa-solid fa-sliders"></i>
                     Inspector
                   </button>
-                  <button class="toolbar-btn" id="btn-autopack" type="button" title="AutoPack (Ctrl/Cmd+P)">
+                  <button class="toolbar-btn" id="btn-autopack" type="button" data-tooltip="AutoPack (Ctrl/Cmd+P)">
                     <i class="fa-solid fa-wand-magic-sparkles"></i>
                     AutoPack
                   </button>
-                  <button class="toolbar-btn" id="btn-screenshot" type="button" title="Screenshot PNG">
+                  <button class="toolbar-btn" id="btn-unpack" type="button" data-tooltip="Move all cases to staging area">
+                    <i class="fa-solid fa-box-open"></i>
+                    Unpack
+                  </button>
+                  <button class="toolbar-btn" id="btn-share" type="button" data-tooltip="Screenshot + PDF">
+                    <i class="fa-solid fa-share-nodes"></i>
+                    Share
+                    <i class="fa-solid fa-chevron-down tp3d-toolbar-caret"></i>
+                  </button>
+                  <button class="toolbar-btn tp3d-toolbar-hidden-action" id="btn-screenshot" type="button" aria-hidden="true" tabindex="-1">
                     <i class="fa-solid fa-camera"></i>
                     Screenshot
                   </button>
-                  <button class="toolbar-btn" id="btn-pdf" type="button" title="PDF plan sheet">
+                  <button class="toolbar-btn tp3d-toolbar-hidden-action" id="btn-pdf" type="button" aria-hidden="true" tabindex="-1">
                     <i class="fa-solid fa-file-pdf"></i>
                     PDF
                   </button>
                 </div>
-                <div class="viewport-overlay" id="viewport-hint">
-                  Tip: Click to select. Drag to move. Shift+Click for multi-select.
-                </div>
+                <button
+                  class="viewport-hint-icon"
+                  id="viewport-hint-icon"
+                  type="button"
+                  aria-label="Editor tips"
+                  aria-expanded="false"
+                  data-tooltip="Click to select. Drag to move. Shift+Click for multi-select. Scroll to zoom."
+                >
+                  <i class="fa-solid fa-circle-info"></i>
+                </button>
               </div>
 
               <div class="panel right" id="editor-right">
@@ -801,7 +838,6 @@
                     class="btn btn-ghost"
                     id="btn-right-close"
                     type="button"
-                    title="Hide"
                     aria-label="Hide inspector"
                   >
                     <i class="fa-solid fa-xmark"></i>
@@ -954,7 +990,7 @@
         <div class="row" style="justify-content: flex-end">
           <button class="btn btn-primary" id="system-retry" type="button">
             <i class="fa-solid fa-rotate"></i>
-            Retry
+            Try Again
           </button>
         </div>
       </div>
@@ -963,8 +999,14 @@
     <script>
       window.__TP3D_SUPABASE = {
         url: 'https://yduzbvijzwczjapanxbd.supabase.co',
-        anonKey: 'sb_publishable_pZ8LBlPGe8N_Ny_jp3CV1Q_s7D48jTC',
+        // IMPORTANT: Supabase anon public key (JWT string starting with "eyJ")
+        anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlkdXpidmlqendjemphcGFueGJkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg3ODMyMDQsImV4cCI6MjA4NDM1OTIwNH0.bbUvCW-UsT0pfSX1z2SUN6MIs4LO3tO87wuCZtdlOhg',
+        // Stripe publishable key (do NOT use as Supabase anon key)
+        publishableKey: 'sb_publishable_pZ8LBlPGe8N_Ny_jp3CV1Q_s7D48jTC',
       };
+      // Stripe price IDs (set these to your real Stripe test/live price IDs)
+      window.__TP3D_STRIPE_PRICE_MONTHLY = 'price_1Sz4prG4h8YnGsk4KLgYPRKD'; // e.g. 'price_xxxx'
+      window.__TP3D_STRIPE_PRICE_YEARLY = 'price_1Sz5GfG4h8YnGsk4sqWGQtAs';  // e.g. 'price_yyyy'
     </script>
 
     <script

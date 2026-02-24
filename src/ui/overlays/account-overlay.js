@@ -6,7 +6,11 @@
 
 import { getUserAvatarView } from '../../core/utils/index.js';
 
-export function createAccountOverlay({ documentRef = document, SupabaseClient }) {
+/**
+ * @param {{ documentRef?: Document, SupabaseClient?: any, UIComponents?: any }} [opts]
+ */
+export function createAccountOverlay(opts = {}) {
+  const { documentRef = document, SupabaseClient, UIComponents } = opts;
   const doc = documentRef;
 
   let accountOverlay = null;
@@ -15,20 +19,81 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
   let lastFocusedEl = null;
   let warnedMissingModalRoot = false;
 
-  async function getCurrentUserView() {
+  // Epoch guard for race condition protection
+  let renderRequestId = 0;
+  let cachedUserView = null;
+  let cachedUserViewAt = 0;
+  let refreshUserViewPromise = null;
+  let lastRefreshAt = 0;
+  let lastKnownUserId = null;
+  let lastRenderedUserView = null;
+
+  function isSameUserView(a, b) {
+    if (!a || !b) return false;
+    return (
+      a.isAuthed === b.isAuthed &&
+      a.userId === b.userId &&
+      a.email === b.email &&
+      a.displayName === b.displayName &&
+      a.initials === b.initials &&
+      a.workspaceShareId === b.workspaceShareId
+    );
+  }
+
+  async function fetchUserView({ force = false } = {}) {
     let user = null;
     let profile = null;
 
     try {
-      user = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
-      if (user && SupabaseClient && typeof SupabaseClient.getProfile === 'function') {
-        profile = await SupabaseClient.getProfile(user.id);
+      // Use the single-flight bundle approach for consistent data
+      if (SupabaseClient && typeof SupabaseClient.getAccountBundleSingleFlight === 'function') {
+        const bundle = await SupabaseClient.getAccountBundleSingleFlight({ force });
+        if (bundle && !bundle.canceled) {
+          user = bundle.user || null;
+          profile = bundle.profile || null;
+        }
+      } else {
+        // Fallback for older code paths
+        user = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
+        if (user && SupabaseClient && typeof SupabaseClient.getProfile === 'function') {
+          profile = await SupabaseClient.getProfile(user.id);
+        }
       }
     } catch {
       profile = null;
     }
 
-    return getUserAvatarView({ user, profile });
+    const view = getUserAvatarView({ user, profile });
+    cachedUserView = view;
+    cachedUserViewAt = Date.now();
+    lastKnownUserId = user && user.id ? String(user.id) : lastKnownUserId;
+    return view;
+  }
+
+  async function refreshUserViewAsync() {
+    if (refreshUserViewPromise) return refreshUserViewPromise;
+    refreshUserViewPromise = fetchUserView({ force: true })
+      .then(() => {
+        if (accountModal) void render();
+      })
+      .catch(() => {})
+      .finally(() => {
+        refreshUserViewPromise = null;
+      });
+    return refreshUserViewPromise;
+  }
+
+  async function getCurrentUserView() {
+    if (cachedUserView) {
+      const now = Date.now();
+      const ageMs = cachedUserViewAt ? now - cachedUserViewAt : Number.POSITIVE_INFINITY;
+      if (ageMs > 500 && now - lastRefreshAt > 500) {
+        lastRefreshAt = now;
+        void refreshUserViewAsync();
+      }
+      return cachedUserView;
+    }
+    return fetchUserView();
   }
 
   function isOpen() {
@@ -138,9 +203,12 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     const p2 = doc.createElement('div');
     p2.className = 'muted';
     p2.style.marginTop = '6px';
-    p2.textContent = 'Deleting a user is irreversible. This will remove the selected user from the project and all associated data.';
+    p2.textContent =
+      'Deleting a user is irreversible. This will remove the selected user from the project and all associated data.';
 
-    const safeEmail = String(email || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const safeEmail = String(email || '')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
 
     const p3 = doc.createElement('div');
     p3.style.marginTop = '12px';
@@ -216,7 +284,10 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
       }
     };
 
-    const isValid = () => String(input.value || '').trim().toUpperCase() === 'DELETE';
+    const isValid = () =>
+      String(input.value || '')
+        .trim()
+        .toUpperCase() === 'DELETE';
 
     const sync = () => {
       const ok = isValid();
@@ -227,7 +298,7 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     input.addEventListener('input', sync);
 
     // Prevent Enter from acting like "confirm"; Enter focuses the delete button
-    input.addEventListener('keydown', (ev) => {
+    input.addEventListener('keydown', ev => {
       if (ev.key !== 'Enter') return;
       ev.preventDefault();
       ev.stopPropagation();
@@ -269,11 +340,11 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     cancelBtn.addEventListener('click', cleanup);
     deleteBtn.addEventListener('click', runConfirm);
 
-    overlay.addEventListener('click', (ev) => {
+    overlay.addEventListener('click', ev => {
       if (ev.target === overlay) cleanup();
     });
 
-    escapeHandler = (ev) => {
+    escapeHandler = ev => {
       if (ev.key === 'Escape') {
         ev.preventDefault();
         cleanup();
@@ -298,7 +369,17 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
   async function render() {
     if (!accountModal) return;
 
+    // Epoch guard: capture request ID before async work
+    const thisRequestId = ++renderRequestId;
+
     const userView = await getCurrentUserView();
+
+    // Stale check: if another render started, discard this result
+    if (thisRequestId !== renderRequestId) return;
+
+    if (lastRenderedUserView && isSameUserView(lastRenderedUserView, userView)) {
+      return;
+    }
 
     accountModal.innerHTML = '';
 
@@ -367,8 +448,9 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
     avatarHint.className = 'muted';
     avatarHint.textContent = userView.isAuthed ? 'Upload a JPG, PNG, or WebP.' : 'Sign in to upload an avatar.';
 
-    avatarInput.addEventListener('change', async (e) => {
-      const file = e && e.target && e.target.files ? e.target.files[0] : null;
+    avatarInput.addEventListener('change', async e => {
+      const inputEl = /** @type {HTMLInputElement|null} */ (e && e.target ? e.target : null);
+      const file = inputEl && inputEl.files ? inputEl.files[0] : null;
       if (!file) return;
       const user = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
       if (!user) return;
@@ -376,11 +458,15 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
       try {
         avatarInput.disabled = true;
 
-        const ext = String(file.name || '').split('.').pop() || 'png';
+        const ext =
+          String(file.name || '')
+            .split('.')
+            .pop() || 'png';
         const safeExt = ext.toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
         const filePath = `${user.id}/avatar.${safeExt}`;
 
-        const client = SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
+        const client =
+          SupabaseClient && typeof SupabaseClient.getClient === 'function' ? SupabaseClient.getClient() : null;
         if (!client || !client.storage) throw new Error('Storage not available');
 
         const { error: uploadErr } = await client.storage.from('avatars').upload(filePath, file, { upsert: true });
@@ -456,7 +542,12 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
             }
             window.location.reload();
           } catch (err) {
-            alert(`Delete request failed: ${err && err.message ? err.message : err}`);
+            const msg = err && err.message ? err.message : String(err);
+            if (UIComponents && typeof UIComponents.showToast === 'function') {
+              UIComponents.showToast(`Delete request failed: ${msg}`, 'error');
+            } else {
+              console.error('[AccountOverlay] Delete request failed:', msg);
+            }
           }
         },
       });
@@ -485,6 +576,8 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
 
     danger.appendChild(dangerRow);
     body.appendChild(danger);
+
+    lastRenderedUserView = userView;
   }
 
   function open() {
@@ -493,7 +586,8 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
       return;
     }
 
-    lastFocusedEl = doc.activeElement && typeof doc.activeElement.focus === 'function' ? doc.activeElement : null;
+    const activeEl = doc.activeElement instanceof HTMLElement ? doc.activeElement : null;
+    lastFocusedEl = activeEl && typeof activeEl.focus === 'function' ? activeEl : null;
 
     accountOverlay = doc.createElement('div');
     accountOverlay.className = 'modal-overlay';
@@ -508,11 +602,11 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
 
     accountOverlay.appendChild(accountModal);
 
-    accountOverlay.addEventListener('click', (ev) => {
+    accountOverlay.addEventListener('click', ev => {
       if (ev.target === accountOverlay) close();
     });
 
-    trapKeydownHandler = (ev) => {
+    trapKeydownHandler = ev => {
       if (ev.key === 'Escape') {
         close();
         return;
@@ -523,7 +617,7 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
 
       const focusables = Array.from(
         accountModal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
-      ).filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null);
+      ).filter(el => !el.hasAttribute('disabled') && el.offsetParent !== null);
 
       if (!focusables.length) {
         ev.preventDefault();
@@ -567,15 +661,47 @@ export function createAccountOverlay({ documentRef = document, SupabaseClient })
       }
     };
 
+    const tempSkeleton = doc.createElement('div');
+    tempSkeleton.className = 'tp3d-settings-right-body';
+    tempSkeleton.innerHTML = `
+      <div class="tp3d-skeleton-group">
+        <div class="tp3d-skeleton tp3d-skeleton-w40 tp3d-skeleton-title"></div>
+        <div class="tp3d-skeleton tp3d-skeleton-w70"></div>
+        <div class="tp3d-skeleton tp3d-skeleton-short"></div>
+        <div class="tp3d-skeleton tp3d-skeleton-short"></div>
+      </div>`;
+    accountModal.appendChild(tempSkeleton);
+
     void render();
 
-    const focusTarget = accountModal.querySelector(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    const focusTarget = /** @type {HTMLElement|null} */ (
+      accountModal.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
     );
     (focusTarget || accountModal).focus();
   }
 
-  function handleAuthChange() {
+  function handleAuthChange(_event) {
+    if (_event === 'SIGNED_OUT') {
+      cachedUserView = null;
+      cachedUserViewAt = 0;
+      lastKnownUserId = null;
+      lastRenderedUserView = null;
+      return;
+    }
+    try {
+      const u = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
+      const currentUserId = u && u.id ? String(u.id) : null;
+      if (currentUserId && lastKnownUserId && currentUserId !== lastKnownUserId) {
+        cachedUserView = null;
+        cachedUserViewAt = 0;
+      }
+      if (currentUserId) lastKnownUserId = currentUserId;
+    } catch {
+      // ignore
+    }
+    // Bump render request ID to invalidate any in-flight renders with stale data
+    renderRequestId++;
+
     if (isOpen()) {
       void render();
     }

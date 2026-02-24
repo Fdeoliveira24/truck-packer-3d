@@ -131,6 +131,8 @@ Phase 1 introduces a session/org foundation, plan/role-aware feature flags, and 
 
 - **Framework**: Vanilla JavaScript (ES6+)
 - **3D Engine**: Three.js v0.160.0
+- **Type Checking**: `typescript` is kept as a dev tool to run `npm run typecheck` (`tsc` with
+  `--allowJs --checkJs`) against JavaScript sources
 - **File Format**: Single HTML file (~6100 lines)
 - **Storage**: Browser localStorage with JSON export/import
 - **Browser Requirements**: Modern browser with WebGL support

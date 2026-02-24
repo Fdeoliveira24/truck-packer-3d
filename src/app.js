@@ -5216,8 +5216,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const canManageBilling = activeRole === 'owner' || activeRole === 'admin';
           const orgId = String((s && s.orgId) || '').trim();
           const status = String((s && s.status) || '');
-          const prevStatus = orgId ? String(lastBillingStatusByOrg.get(orgId) || '') : '';
-          if (orgId && status) lastBillingStatusByOrg.set(orgId, status);
+          const _storedStatus = orgId ? (() => { try { return sessionStorage.getItem('tp3d:billing:status:' + orgId) || ''; } catch (_) { return ''; } })() : '';
+          const prevStatus = orgId ? String(lastBillingStatusByOrg.get(orgId) || _storedStatus) : '';
+          if (orgId && status) {
+            lastBillingStatusByOrg.set(orgId, status);
+            try { sessionStorage.setItem('tp3d:billing:status:' + orgId, status); } catch (_) {}
+          }
           const trialEndMs = s && s.trialEndsAt ? new Date(s.trialEndsAt).getTime() : NaN;
           const trialExpired = Boolean(
             s &&
@@ -5233,9 +5237,23 @@ const TP3D_BUILD_STAMP = Object.freeze({
           maybeShowTrialWelcome(s, prevStatus);
 
           if (!upgradeEl) return;
+          const upgradeCurrentlyVisible = Boolean(upgradeWrap ? !upgradeWrap.hidden : !upgradeEl.hidden);
           if (s.loading || !s.ok || s.pending) {
-            if (upgradeWrap) upgradeWrap.hidden = true;
-            else upgradeEl.hidden = true;
+            const keepVisibleWhileSyncing = canManageBilling && (upgradeCurrentlyVisible || status === 'trialing' || prevStatus === 'trialing');
+            if (!keepVisibleWhileSyncing) {
+              if (upgradeWrap) upgradeWrap.hidden = true;
+              else upgradeEl.hidden = true;
+              return;
+            }
+            if (upgradeWrap) upgradeWrap.hidden = false;
+            else upgradeEl.hidden = false;
+            const syncingText = upgradeEl.querySelector('.tp3d-sidebar-upgrade-text');
+            if (syncingText) syncingText.textContent = 'Syncing billing status…';
+            const syncingBtn = upgradeEl.querySelector('button');
+            if (syncingBtn) {
+              syncingBtn.disabled = true;
+              syncingBtn.textContent = 'Syncing…';
+            }
             return;
           }
           if (!canManageBilling) {
@@ -5331,6 +5349,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
           if (billingParam === 'success') {
             UIComponents.showToast('Payment successful! Your plan is being activated.', 'success', { title: 'Billing', duration: 8000 });
+            refreshBilling({ force: true, reason: 'stripe-return-success-now' }).catch(() => { });
             // Force refresh billing after a short delay (webhook may take a moment)
             setTimeout(() => { refreshBilling({ force: true, reason: 'stripe-return-success-2s' }).catch(() => { }); }, 2000);
             setTimeout(() => { refreshBilling({ force: true, reason: 'stripe-return-success-6s' }).catch(() => { }); }, 6000);

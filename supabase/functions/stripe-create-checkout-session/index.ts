@@ -28,6 +28,7 @@ async function createPortalUrl(
   stripe: ReturnType<typeof stripeClient>,
   stripeCustomerId: string,
   origin: string,
+  subscriptionId?: string,
 ): Promise<string> {
   const return_url = new URL(origin);
   return_url.pathname = "/index.html";
@@ -41,6 +42,12 @@ async function createPortalUrl(
   if (portalConfigurationId) {
     sessionPayload.configuration = portalConfigurationId;
   }
+  if (subscriptionId) {
+    sessionPayload.flow_data = {
+      type: "subscription_update",
+      subscription_update: { subscription: subscriptionId },
+    };
+  }
 
   const session = await stripe.billingPortal.sessions.create(sessionPayload as any);
 
@@ -52,20 +59,21 @@ async function hasBlockingStripeSubscription(
   stripeCustomerId: string,
   organizationId: string,
   allowMissingOrgMetadata: boolean,
-): Promise<boolean> {
+): Promise<string | null> {
   const list = await stripe.subscriptions.list({
     customer: stripeCustomerId,
     status: "all",
     limit: 100,
   });
   const subs = Array.isArray(list.data) ? list.data : [];
-  return subs.some((s) => {
+  const found = subs.find((s) => {
     const status = String(s.status || "");
     if (!STRIPE_BLOCKING_STATUSES.has(status)) return false;
     const metadataOrgId = readOrganizationIdFromMetadata((s as Record<string, unknown>)?.metadata ?? null);
     if (metadataOrgId) return metadataOrgId === organizationId;
     return allowMissingOrgMetadata;
   });
+  return found ? String(found.id) : null;
 }
 
 function normalizeOrganizationId(value: unknown): string | null {
@@ -240,16 +248,23 @@ Deno.serve(async (req) => {
       null;
 
     const billingCustomerStatus = String(billingCustomerRow?.status || "").toLowerCase();
-    if (!existingSub && stripeCustomerId && STRIPE_BLOCKING_STATUSES.has(billingCustomerStatus)) {
+    const billingCustomerSubscriptionId = String(billingCustomerRow?.stripe_subscription_id || "").trim();
+    if (
+      !existingSub &&
+      stripeCustomerId &&
+      billingCustomerSubscriptionId &&
+      STRIPE_BLOCKING_STATUSES.has(billingCustomerStatus)
+    ) {
       if (debug) {
         console.log("stripe-create-checkout-session: duplicate blocked via billing_customers", {
           user_id: user.id,
           organization_id: organizationId,
           stripe_customer_id: stripeCustomerId,
+          stripe_subscription_id: billingCustomerSubscriptionId,
           billing_status: billingCustomerStatus,
         });
       }
-      const url = await createPortalUrl(stripe, stripeCustomerId, origin);
+      const url = await createPortalUrl(stripe, stripeCustomerId, origin, billingCustomerSubscriptionId || undefined);
       return json({ url }, { status: 200, origin });
     }
 
@@ -263,27 +278,28 @@ Deno.serve(async (req) => {
           status: String(existingSub.status || ""),
         });
       }
-      const url = await createPortalUrl(stripe, stripeCustomerId, origin);
+      const url = await createPortalUrl(stripe, stripeCustomerId, origin, String(existingSub.stripe_subscription_id || "") || undefined);
       return json({ url }, { status: 200, origin });
     }
 
     // Race guard: DB projection can lag webhooks. Query Stripe directly before creating checkout.
     if (stripeCustomerId) {
-      const hasBlocking = await hasBlockingStripeSubscription(
+      const blockingSubId = await hasBlockingStripeSubscription(
         stripe,
         stripeCustomerId,
         organizationId,
         true,
       );
-      if (hasBlocking) {
+      if (blockingSubId) {
         if (debug) {
           console.log("stripe-create-checkout-session: duplicate blocked via Stripe customer lookup", {
             user_id: user.id,
             organization_id: organizationId,
             stripe_customer_id: stripeCustomerId,
+            stripe_subscription_id: blockingSubId,
           });
         }
-        const url = await createPortalUrl(stripe, stripeCustomerId, origin);
+        const url = await createPortalUrl(stripe, stripeCustomerId, origin, blockingSubId);
         return json({ url }, { status: 200, origin });
       }
     }

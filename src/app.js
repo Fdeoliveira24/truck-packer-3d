@@ -5192,22 +5192,110 @@ const TP3D_BUILD_STAMP = Object.freeze({
             // ignore
           }
 
-          const body = document.createElement('div');
-          const intro = document.createElement('div');
-          intro.textContent = 'Welcome. Your organization trial is active and Pro features are unlocked.';
-          body.appendChild(intro);
-          if (snapshot.trialEndsAt) {
-            const endLine = document.createElement('div');
-            endLine.className = 'muted tp3d-settings-mt-sm';
-            const endDate = new Date(snapshot.trialEndsAt);
-            endLine.textContent = 'Trial ends on ' + (isNaN(endDate.getTime()) ? String(snapshot.trialEndsAt) : endDate.toLocaleDateString());
-            body.appendChild(endLine);
-          }
+          // ---- Build welcome modal content ----
+          const wrap = document.createElement('div');
+          wrap.className = 'tp3d-trial-welcome';
 
-          UIComponents.showModal({
-            title: 'Pro Trial Started',
-            content: body,
-            actions: [{ label: 'Continue', variant: 'primary' }],
+          // Title
+          const titleEl = document.createElement('div');
+          titleEl.className = 'tp3d-trial-welcome__title';
+          titleEl.textContent = 'Welcome to Truck Packer';
+          wrap.appendChild(titleEl);
+
+          // Subtitle with styled inline phrase
+          const subtitleEl = document.createElement('p');
+          subtitleEl.className = 'tp3d-trial-welcome__subtitle';
+          subtitleEl.appendChild(document.createTextNode('Your one stop shop for the '));
+          const artEl = document.createElement('em');
+          artEl.className = 'tp3d-trial-welcome__art';
+          artEl.textContent = 'not so subtle art';
+          subtitleEl.appendChild(artEl);
+          subtitleEl.appendChild(document.createTextNode(' of truck packing'));
+          wrap.appendChild(subtitleEl);
+
+          // Section heading
+          const sectionHeadingEl = document.createElement('p');
+          sectionHeadingEl.className = 'tp3d-trial-welcome__section-heading';
+          sectionHeadingEl.textContent = 'Start your 7-day free trial';
+          wrap.appendChild(sectionHeadingEl);
+
+          // Features intro
+          const featuresIntroEl = document.createElement('p');
+          featuresIntroEl.className = 'tp3d-trial-welcome__features-intro';
+          featuresIntroEl.textContent = 'Get full access to all pro features:';
+          wrap.appendChild(featuresIntroEl);
+
+          // Feature checklist
+          const featuresList = document.createElement('ul');
+          featuresList.className = 'tp3d-trial-welcome__features';
+          const featureItems = [
+            'Unlimited packs',
+            'Unlimited case presets',
+            'AutoPack',
+            'Export to PDF',
+            'Import cases from .xlsx or .csv',
+          ];
+          featureItems.forEach(text => {
+            const li = document.createElement('li');
+            const icon = document.createElement('i');
+            icon.className = 'fa-solid fa-circle-check';
+            icon.setAttribute('aria-hidden', 'true');
+            li.appendChild(icon);
+            li.appendChild(document.createTextNode(text));
+            featuresList.appendChild(li);
+          });
+          wrap.appendChild(featuresList);
+
+          // No credit card note
+          const noteEl = document.createElement('p');
+          noteEl.className = 'tp3d-trial-welcome__note';
+          noteEl.textContent = 'No credit card required, click the button below to get started.';
+          wrap.appendChild(noteEl);
+
+          // Get Started CTA (closes modal)
+          const ctaBtn = document.createElement('button');
+          ctaBtn.type = 'button';
+          ctaBtn.className = 'btn btn-primary tp3d-trial-welcome__cta';
+          ctaBtn.textContent = 'Get Started';
+          wrap.appendChild(ctaBtn);
+
+          // Logout link
+          const footerEl = document.createElement('div');
+          footerEl.className = 'tp3d-trial-welcome__footer';
+          const logoutBtn = document.createElement('button');
+          logoutBtn.type = 'button';
+          logoutBtn.className = 'tp3d-trial-welcome__logout';
+          logoutBtn.textContent = 'Logout';
+          logoutBtn.addEventListener('click', () => {
+            try {
+              if (SupabaseClient && typeof SupabaseClient.setAuthIntent === 'function') SupabaseClient.setAuthIntent('signOut');
+              if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
+                SupabaseClient.signOut({ global: true, allowOffline: true }).catch(() => { });
+              }
+            } catch (_) {
+              // ignore
+            }
+            setTimeout(() => {
+              try { window.location.reload(); } catch (_) { /* ignore */ }
+            }, 250);
+          });
+          footerEl.appendChild(logoutBtn);
+          wrap.appendChild(footerEl);
+
+          // Show modal — empty title + hideClose so our custom header takes full body
+          const _welcomeRef = UIComponents.showModal({
+            title: '',
+            hideClose: true,
+            content: wrap,
+            actions: [],
+          });
+          // Add scoped class to hide the empty modal-header skeleton
+          if (_welcomeRef && _welcomeRef.modal) {
+            _welcomeRef.modal.classList.add('tp3d-trial-welcome-modal');
+          }
+          // Wire Get Started → close
+          ctaBtn.addEventListener('click', () => {
+            try { _welcomeRef && typeof _welcomeRef.close === 'function' && _welcomeRef.close(); } catch (_) { /* ignore */ }
           });
         };
 

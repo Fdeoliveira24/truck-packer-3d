@@ -1715,12 +1715,6 @@ export function createSettingsOverlay({
       (cancelAtPeriodEnd || hasCancelAt)
     );
     const cancelEndValue = cancelAt || state.currentPeriodEnd || null;
-    const hasRenewal = !isTrial && status === 'active' && !isCancelScheduled && Boolean(state.currentPeriodEnd);
-    let renewalText = null;
-    if (hasRenewal) {
-      const d = new Date(state.currentPeriodEnd);
-      renewalText = isNaN(d.getTime()) ? String(state.currentPeriodEnd) : d.toLocaleDateString();
-    }
     const portalAvailable = Boolean(state.portalAvailable);
     const trialWelcomeShown = (() => {
       try {
@@ -1818,7 +1812,7 @@ export function createSettingsOverlay({
       // Create initials avatar as default (may be replaced by img)
       const orgAvatarEl = doc.createElement('span');
       orgAvatarEl.className = 'tp3d-settings-account-avatar tp3d-settings-avatar--sm';
-      orgAvatarEl.style.background = 'var(--accent-primary)';
+      orgAvatarEl.classList.add('tp3d-billing-avatar-initials');
       orgAvatarEl.textContent = orgName.charAt(0).toUpperCase();
       const orgId = orgMatchesLocked ? String(orgDataId) : '';
       const logoKey = orgId + '|' + (orgLogoPath || orgAvatarSafe || '');
@@ -1960,7 +1954,7 @@ export function createSettingsOverlay({
       planHeader.appendChild(planName);
 
       const planBadge = doc.createElement('span');
-      planBadge.className = 'badge' + (isTrial ? ' badge--trial' : isProOrTrial ? ' badge--active' : ' badge--free');
+      planBadge.className = 'badge' + (isProOrTrial ? ' badge--active' : ' badge--free');
       planBadge.textContent = 'Current Plan';
       planHeader.appendChild(planBadge);
       let cancelEndText = '';
@@ -1977,19 +1971,33 @@ export function createSettingsOverlay({
           cancelInline.textContent = cancelEndText;
           planHeader.appendChild(cancelInline);
         }
-      } else if (hasRenewal && renewalText) {
+      } else if (isProOrTrial && !isTrial && state.currentPeriodEnd) {
+        const renewDate = new Date(state.currentPeriodEnd);
+        const renewText = isNaN(renewDate.getTime()) ? String(state.currentPeriodEnd) : renewDate.toLocaleDateString();
         const renewBadge = doc.createElement('span');
         renewBadge.className = 'badge badge--pending';
         renewBadge.textContent = 'Renews';
         planHeader.appendChild(renewBadge);
-
         const renewInline = doc.createElement('span');
-        renewInline.className = 'tp3d-billing-cancel-inline';
-        renewInline.textContent = 'Renews on ' + renewalText;
+        renewInline.className = 'tp3d-billing-cancel-inline tp3d-org-feedback tp3d-org-feedback--warning';
+        renewInline.textContent = 'Renews on ' + renewText;
         planHeader.appendChild(renewInline);
       }
 
-      if (trialDaysLeft !== null) {
+      if (isTrial && !isCancelScheduled && state.trialEndsAt) {
+        const trialDate = new Date(state.trialEndsAt);
+        const trialDateText = isNaN(trialDate.getTime()) ? String(state.trialEndsAt) : trialDate.toLocaleDateString();
+        const trialBadge = doc.createElement('span');
+        trialBadge.className = 'badge badge--pending';
+        trialBadge.textContent = trialDaysLeft !== null
+          ? trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '') + ' left'
+          : 'Trial';
+        planHeader.appendChild(trialBadge);
+        const trialInline = doc.createElement('span');
+        trialInline.className = 'tp3d-billing-cancel-inline tp3d-org-feedback tp3d-org-feedback--warning';
+        trialInline.textContent = 'Ends on ' + trialDateText;
+        planHeader.appendChild(trialInline);
+      } else if (trialDaysLeft !== null) {
         const daysEl = doc.createElement('span');
         daysEl.className = 'muted';
         daysEl.textContent = trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '') + ' left';
@@ -2002,7 +2010,9 @@ export function createSettingsOverlay({
       const statusLine = doc.createElement('div');
       statusLine.className = 'muted tp3d-settings-mt-xs';
 
-      if (isTrial && state.trialEndsAt) {
+      if (isTrial && !isCancelScheduled && state.trialEndsAt) {
+        // date already shown inline in header row; no second line needed
+      } else if (isTrial && state.trialEndsAt) {
         const endDate = new Date(state.trialEndsAt);
         const endText = isNaN(endDate.getTime()) ? state.trialEndsAt : endDate.toLocaleDateString();
         statusLine.textContent = trialWelcomeShown
@@ -2301,7 +2311,7 @@ export function createSettingsOverlay({
     };
 
     /**
-     * @param {{ key: string, label: string, icon?: string, indent?: boolean, disabled?: boolean }} opts
+     * @param {{ key: string, label: string, icon?: string, indent?: boolean, disabled?: boolean, disabledReason?: string }} opts
      */
     const makeItem = ({ key, label, icon, indent = false, disabled = false }) => {
       const btn = doc.createElement('button');
@@ -3438,52 +3448,23 @@ export function createSettingsOverlay({
           createBtn.className = 'btn btn-primary';
           createBtn.textContent = '+ New Workspace';
           createBtn.addEventListener('click', () => {
-            const input = doc.createElement('input');
-            input.type = 'text';
-            input.className = 'w-full px-3 py-2 border rounded-md text-sm mb-4';
-            input.placeholder = 'e.g. My Company';
-
-            const content = doc.createElement('div');
-            content.appendChild(input);
-
-            let modalRef = null;
-
-            const handleCreate = () => {
-              const name = input.value.trim();
-              if (!name) return;
-              if (modalRef && typeof modalRef.close === 'function') modalRef.close();
-
-              createBtn.disabled = true;
-              createBtn.textContent = 'Creating\u2026';
-              SupabaseClient.createOrganization({ name })
-                .then(({ org, membership }) => {
-                  membershipData = membership;
-                  orgData = org;
-                  if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
-                  UIComponents.showToast('Workspace created!', 'success');
-                  render();
-                })
-                .catch(err => {
-                  UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
-                  createBtn.disabled = false;
-                  createBtn.textContent = '+ New Workspace';
-                });
-            };
-
-            input.addEventListener('keydown', (e) => {
-              if (e.key === 'Enter') handleCreate();
-            });
-
-            modalRef = UIComponents.showModal({
-              title: 'Create Workspace',
-              content,
-              actions: [
-                { label: 'Cancel', variant: 'ghost' },
-                { label: 'Create', variant: 'primary', onClick: handleCreate }
-              ]
-            });
-
-            setTimeout(() => input.focus(), 50);
+            const name = window.prompt('Workspace name:');
+            if (!name || !name.trim()) return;
+            createBtn.disabled = true;
+            createBtn.textContent = 'Creating\u2026';
+            SupabaseClient.createOrganization({ name: name.trim() })
+              .then(({ org, membership }) => {
+                membershipData = membership;
+                orgData = org;
+                if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
+                UIComponents.showToast('Workspace created!', 'success');
+                render();
+              })
+              .catch(err => {
+                UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
+                createBtn.disabled = false;
+                createBtn.textContent = '+ New Workspace';
+              });
           });
           wrap.appendChild(createBtn);
 

@@ -1031,54 +1031,26 @@ const TP3D_BUILD_STAMP = Object.freeze({
         UIComponents.showToast('Coming soon', 'info');
       }
 
-      function createWorkspacePrompt() {
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.className = 'w-full px-3 py-2 border rounded-md text-sm mb-4';
-        input.placeholder = 'e.g. My Company';
-
-        const content = document.createElement('div');
-        content.appendChild(input);
-
-        let modalRef = null;
-
-        const handleCreate = async () => {
-          const name = input.value.trim();
-          if (!name) return;
-          if (modalRef && typeof modalRef.close === 'function') modalRef.close();
-          try {
-            UIComponents.showToast('Creating workspace\u2026', 'info');
-            const { org, membership } = await SupabaseClient.createOrganization({ name });
-            if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
-            UIComponents.showToast('Workspace "' + (org.name || name) + '" created!', 'success');
-            // Refresh org context to reflect new workspace
-            orgContext = {
-              activeOrgId: org.id,
-              activeOrg: { ...org, role: membership.role },
-              orgs: orgContext && orgContext.orgs ? [...orgContext.orgs, { ...org, role: membership.role }] : [{ ...org, role: membership.role }],
-              role: membership.role,
-              updatedAt: Date.now(),
-            };
-            renderButton(document.getElementById('btn-account-switcher'));
-          } catch (err) {
-            UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
-          }
-        };
-
-        input.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') handleCreate();
-        });
-
-        modalRef = UIComponents.showModal({
-          title: 'Create Workspace',
-          content,
-          actions: [
-            { label: 'Cancel', variant: 'ghost' },
-            { label: 'Create', variant: 'primary', onClick: handleCreate }
-          ]
-        });
-
-        setTimeout(() => input.focus(), 50);
+      async function createWorkspacePrompt() {
+        const name = window.prompt('Workspace name:');
+        if (!name || !name.trim()) return;
+        try {
+          UIComponents.showToast('Creating workspace\u2026', 'info');
+          const { org, membership } = await SupabaseClient.createOrganization({ name: name.trim() });
+          if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
+          UIComponents.showToast('Workspace "' + (org.name || name.trim()) + '" created!', 'success');
+          // Refresh org context to reflect new workspace
+          orgContext = {
+            activeOrgId: org.id,
+            activeOrg: { ...org, role: membership.role },
+            orgs: orgContext && orgContext.orgs ? [...orgContext.orgs, { ...org, role: membership.role }] : [{ ...org, role: membership.role }],
+            role: membership.role,
+            updatedAt: Date.now(),
+          };
+          renderButton(document.getElementById('btn-account-switcher'));
+        } catch (err) {
+          UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
+        }
       }
 
       async function logout() {

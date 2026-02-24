@@ -31,7 +31,7 @@ begin
         s.stripe_customer_id,
         s.stripe_subscription_id,
         s.status,
-        case when s.interval in ('month', 'year') then s.interval::public.billing_interval else null end as billing_interval,
+        case when s.interval in ('month', 'year') then s.interval else null end as billing_interval,
         s.current_period_start,
         s.current_period_end,
         coalesce(s.cancel_at_period_end, false) as cancel_at_period_end,
@@ -53,8 +53,9 @@ begin
       where s.organization_id is not null
     )
     update public.billing_customers bc
-    set stripe_subscription_id = r.stripe_subscription_id,
-        status = r.status::public.billing_status,
+    set stripe_customer_id = r.stripe_customer_id,
+        stripe_subscription_id = r.stripe_subscription_id,
+        status = r.status,
         plan_name = case when r.status in ('active', 'trialing', 'past_due') then 'pro' else bc.plan_name end,
         billing_interval = coalesce(r.billing_interval, bc.billing_interval),
         current_period_start = r.current_period_start,
@@ -78,7 +79,7 @@ begin
         s.stripe_customer_id,
         s.stripe_subscription_id,
         s.status,
-        case when s.interval in ('month', 'year') then s.interval::public.billing_interval else null end as billing_interval,
+        case when s.interval in ('month', 'year') then s.interval else null end as billing_interval,
         s.current_period_start,
         s.current_period_end,
         coalesce(s.cancel_at_period_end, false) as cancel_at_period_end,
@@ -101,8 +102,9 @@ begin
       join public.subscriptions s on s.user_id = o.owner_id
     )
     update public.billing_customers bc
-    set stripe_subscription_id = r.stripe_subscription_id,
-        status = r.status::public.billing_status,
+    set stripe_customer_id = r.stripe_customer_id,
+        stripe_subscription_id = r.stripe_subscription_id,
+        status = r.status,
         plan_name = case when r.status in ('active', 'trialing', 'past_due') then 'pro' else bc.plan_name end,
         billing_interval = coalesce(r.billing_interval, bc.billing_interval),
         current_period_start = r.current_period_start,

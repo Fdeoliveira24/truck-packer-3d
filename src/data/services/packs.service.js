@@ -11,17 +11,15 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
-
+import { getSession } from '../../auth/session.js';
 import { LocalRepository } from '../repositories/local.repository.js';
 import { normalizePack } from '../models/pack.model.js';
 
 const repo = new LocalRepository('packs');
 
 function orgId() {
-  if (typeof window !== 'undefined' && window.OrgContext && typeof window.OrgContext.getActiveOrgId === 'function') {
-    return window.OrgContext.getActiveOrgId() || 'personal';
-  }
-  return 'personal';
+  const session = getSession();
+  return (session.user && session.user.currentOrgId) || 'personal';
 }
 
 export const PacksService = {

@@ -2745,14 +2745,42 @@ export async function createOrganization({ name, slug }) {
   const userId = await getAuthedUserId();
   if (!userId) throw new Error('Not authenticated');
 
-  // Call the new RPC to safely bypass organization insert RLS
-  const { data: org, error: orgErr } = await client.rpc('create_organization', {
-    org_name: String(name).trim()
-  });
+  // Generate slug from name if not provided
+  const orgSlug = slug
+    ? String(slug).trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+    : String(name).trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') + '-' + Date.now().toString(36);
+
+  // Create organization
+  const { data: org, error: orgErr } = await client
+    .from('organizations')
+    .insert({
+      name: String(name).trim(),
+      slug: orgSlug,
+      owner_id: userId,
+    })
+    .select()
+    .single();
 
   if (orgErr) throw orgErr;
 
-  return { org, membership: { role: 'owner', organization_id: org.id, user_id: userId } };
+  // Create owner membership
+  const { data: membership, error: memErr } = await client
+    .from('organization_members')
+    .insert({
+      organization_id: org.id,
+      user_id: userId,
+      role: 'owner',
+    })
+    .select()
+    .single();
+
+  if (memErr) {
+    // Rollback org if membership fails
+    try { await client.from('organizations').delete().eq('id', org.id); } catch (_) { /* ignore */ }
+    throw memErr;
+  }
+
+  return { org, membership };
 }
 
 /**

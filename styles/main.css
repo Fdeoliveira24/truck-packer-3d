@@ -349,8 +349,8 @@ a {
   flex-direction: column;
 }
 
-#screen-packs > .table-footer,
-#screen-cases > .table-footer {
+#screen-packs>.table-footer,
+#screen-cases>.table-footer {
   margin-top: auto;
 }
 
@@ -662,7 +662,7 @@ textarea:focus {
 }
 
 /* Anchor for the filter popup — search bar row becomes the positioning context */
-#screen-cases > .row:has(#cases-search) {
+#screen-cases>.row:has(#cases-search) {
   position: relative;
 }
 
@@ -680,9 +680,9 @@ textarea:focus {
   overflow-y: auto;
 }
 
-#editor-left .panel-body .field{
- top:-13px;
- bottom:auto;
+#editor-left .panel-body .field {
+  top: -13px;
+  bottom: auto;
 }
 
 #editor-right .panel-body {
@@ -1112,6 +1112,7 @@ input[type='checkbox']:checked::after {
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-md);
   }
+
   .table-footer .tf-left,
   .table-footer .tf-mid,
   .table-footer .tf-right {
@@ -1119,12 +1120,15 @@ input[type='checkbox']:checked::after {
     flex: 0 0 auto;
     justify-content: space-between;
   }
+
   .table-footer .tf-mid {
     order: 1;
   }
+
   .table-footer .tf-left {
     order: 2;
   }
+
   .table-footer .tf-right {
     order: 3;
   }
@@ -1333,16 +1337,19 @@ tr:hover td {
     display: flex;
     flex-direction: column;
   }
+
   .modal-body {
     overflow-y: auto;
     flex: 1;
     min-height: 0;
   }
+
   .modal-footer {
     flex-direction: column-reverse;
     gap: var(--space-3);
     padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
   }
+
   .modal-footer .btn {
     width: 100%;
   }
@@ -1358,7 +1365,7 @@ tr:hover td {
   padding: var(--space-2) var(--space-3);
 }
 
-.tp3d-settings-account-btn > i {
+.tp3d-settings-account-btn>i {
   display: none;
 }
 
@@ -1404,7 +1411,7 @@ tr:hover td {
 }
 
 /* Fallback for environments without flex gap support: add explicit spacing */
-.tp3d-settings-left-pane > .tp3d-settings-account-btn {
+.tp3d-settings-left-pane>.tp3d-settings-account-btn {
   margin-bottom: var(--space-5);
 }
 
@@ -1785,6 +1792,7 @@ tr:hover td {
     grid-template-rows: auto 1fr;
     max-height: 100vh;
   }
+
   .tp3d-settings-left-pane {
     border-right: none;
     border-bottom: 1px solid var(--border-subtle);
@@ -1792,6 +1800,7 @@ tr:hover td {
     overflow-x: auto;
     overflow-y: visible;
   }
+
   .tp3d-settings-nav-wrap {
     display: flex;
     flex-direction: row;
@@ -1799,13 +1808,16 @@ tr:hover td {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
   }
+
   .tp3d-settings-nav-header {
     display: none;
   }
+
   .tp3d-settings-nav-item {
     white-space: nowrap;
     flex-shrink: 0;
   }
+
   .tp3d-settings-right-pane {
     overflow-y: auto;
   }
@@ -2126,6 +2138,7 @@ body.modal-open {
     transform: translateX(12px);
     opacity: 0;
   }
+
   to {
     transform: translateX(0);
     opacity: 1;
@@ -2211,6 +2224,7 @@ body.modal-open {
   z-index: 5;
   padding: 0;
 }
+
 .viewport-hint-icon:hover {
   color: var(--text-primary);
 }
@@ -2768,19 +2782,20 @@ body.modal-open {
   cursor: help;
 }
 
-#inspector-body .card > .row.space-between {
+#inspector-body .card>.row.space-between {
   align-items: center;
 }
 
-#inspector-body .card > .row.space-between .tp3d-editor-info-icon {
+#inspector-body .card>.row.space-between .tp3d-editor-info-icon {
   margin-left: auto;
 }
 
-.tp3d-editor-transform-card > .row.space-between .tp3d-editor-info-icon {
+.tp3d-editor-transform-card>.row.space-between .tp3d-editor-info-icon {
   position: absolute;
   right: 0;
   top: calc(100% - 102px);
-  z-index: 10;  /* was: 2 — raised to clear sibling content for tooltip visibility */
+  z-index: 10;
+  /* was: 2 — raised to clear sibling content for tooltip visibility */
 }
 
 .tp3d-editor-transform-divider {
@@ -2939,9 +2954,11 @@ body.modal-open {
   0% {
     opacity: 0.55;
   }
+
   50% {
     opacity: 1;
   }
+
   100% {
     opacity: 0.55;
   }
@@ -3237,6 +3254,10 @@ body.modal-open {
   display: inline-flex;
   align-items: center;
   white-space: nowrap;
+}
+
+.tp3d-billing-avatar-initials {
+  background: var(--accent-primary);
 }
 
 .tp3d-checkout-plan-picker {

@@ -11,6 +11,20 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
+import { openImportDialogWithFilePicker } from '../helpers/import-dialog-utils.js';
+
+/**
+ * @param {{
+ *  documentRef?: Document,
+ *  UIComponents?: any,
+ *  ImportExport?: any,
+ *  StateStore?: any,
+ *  Storage?: any,
+ *  PreferencesManager?: any,
+ *  applyCaseDefaultColor?: Function,
+ *  Utils?: any
+ * }} [opts]
+ */
 export function createImportAppDialog({
   documentRef = document,
   UIComponents,
@@ -153,35 +167,17 @@ export function createImportAppDialog({
     content.appendChild(hint);
     content.appendChild(results);
 
-    const fileInput = doc.createElement('input');
-    fileInput.type = 'file';
-    fileInput.accept = '.json,application/json';
-
-    const modal = UIComponents.showModal({
+    openImportDialogWithFilePicker({
+      documentRef: doc,
+      UIComponents,
       title: 'Import App JSON',
       content,
-      actions: [{ label: 'Close', variant: 'primary' }],
-    });
-
-    browseBtn.addEventListener('click', () => fileInput.click());
-
-    drop.addEventListener('dragover', ev => {
-      ev.preventDefault();
-      drop.classList.add('is-dragover');
-    });
-    drop.addEventListener('dragleave', () => {
-      drop.classList.remove('is-dragover');
-    });
-    drop.addEventListener('drop', ev => {
-      ev.preventDefault();
-      drop.classList.remove('is-dragover');
-      const file = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
-      if (file) handleFile(file, results, modal);
-    });
-
-    fileInput.addEventListener('change', () => {
-      const file = fileInput.files && fileInput.files[0];
-      if (file) handleFile(file, results, modal);
+      accept: '.json,application/json',
+      drop,
+      browseBtn,
+      onFile: (file, modal) => {
+        handleFile(file, results, modal);
+      },
     });
   }
 

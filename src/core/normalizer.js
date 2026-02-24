@@ -89,6 +89,11 @@ export function normalizePreferences(prefs) {
   next.units.length = CoreUtils.lengthUnits.includes(next.units.length) ? next.units.length : base.units.length;
   next.units.weight = CoreUtils.weightUnits.includes(next.units.weight) ? next.units.weight : base.units.weight;
   next.theme = next.theme === 'dark' ? 'dark' : 'light';
+  const quality = safeString(next.renderQuality, base.renderQuality).toLowerCase();
+  next.renderQuality = ['low', 'medium', 'high', 'auto'].includes(quality) ? quality : base.renderQuality;
+  next.showLabels = next.showLabels !== false;
+  next.showShadows = next.showShadows !== false;
+  next.showBevels = next.showBevels !== false;
   next.labelFontSize = CoreUtils.clamp(finiteNumber(next.labelFontSize, base.labelFontSize), 8, 24);
   next.hiddenCaseOpacity = CoreUtils.clamp(finiteNumber(next.hiddenCaseOpacity, base.hiddenCaseOpacity), 0, 1);
   next.snapping = next.snapping && typeof next.snapping === 'object' ? next.snapping : base.snapping;
@@ -126,6 +131,14 @@ export function normalizeCase(c, now) {
   const length = positiveNumber(dims.length, 48);
   const width = positiveNumber(dims.width, 24);
   const height = positiveNumber(dims.height, 24);
+  const shapeRaw = safeString(c && c.shape, 'box').toLowerCase();
+  const shape = shapeRaw === 'cylinder' || shapeRaw === 'drum' || shapeRaw === 'box' ? shapeRaw : 'box';
+  const orientationRaw = safeString(c && c.orientationLock, 'any').toLowerCase();
+  const orientationLock = orientationRaw === 'upright' ? 'upright' : orientationRaw === 'onside' ? 'onSide' : 'any';
+  const maxStackCount = Math.max(0, finiteNumber(c && c.maxStackCount, 0));
+  const maxPalletWeight = Math.max(0, finiteNumber(c && c.maxPalletWeight, 0));
+  const hazmatRaw = safeString(c && c.hazmatClass, '');
+  const hazmatClass = hazmatRaw ? hazmatRaw : null;
   const category = safeString(c && c.category, 'default').toLowerCase();
   const color = safeString(c && c.color, '');
   return {
@@ -136,6 +149,14 @@ export function normalizeCase(c, now) {
     dimensions: { length, width, height },
     weight: Math.max(0, finiteNumber(c && c.weight, 0)),
     volume: CoreUtils.volumeInCubicInches({ length, width, height }),
+    shape,
+    stackable: !(c && c.stackable === false),
+    maxStackCount,
+    orientationLock,
+    noStackOnTop: Boolean(c && c.noStackOnTop),
+    isPallet: Boolean(c && c.isPallet),
+    maxPalletWeight,
+    hazmatClass,
     canFlip: Boolean(c && c.canFlip),
     notes: safeString(c && c.notes, ''),
     color,
@@ -201,6 +222,18 @@ export function normalizePack(p, caseMap, now) {
   const thumbnailUpdatedAt = Number.isFinite(p && p.thumbnailUpdatedAt) ? p.thumbnailUpdatedAt : null;
   const thumbnailSource =
     p && (p.thumbnailSource === 'auto' || p.thumbnailSource === 'manual') ? p.thumbnailSource : null;
+  const baseStats = {
+    totalCases: 0,
+    hiddenCases: 0,
+    packedCases: 0,
+    volumeUsed: 0,
+    volumePercent: 0,
+    totalWeight: 0,
+    cog: null,
+    oogWarnings: [],
+    palletWarnings: [],
+  };
+  const stats = p && p.stats && typeof p.stats === 'object' ? { ...baseStats, ...p.stats } : baseStats;
   return {
     id: safeString(p && p.id, uuid()),
     title: safeString(p && p.title, 'Untitled Pack'),
@@ -211,7 +244,7 @@ export function normalizePack(p, caseMap, now) {
     truck,
     cases: instances,
     groups: Array.isArray(p && p.groups) ? p.groups : [],
-    stats: { totalCases: 0, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
+    stats,
     createdAt: finiteNumber(p && p.createdAt, now),
     lastEdited: finiteNumber(p && p.lastEdited, now),
     thumbnail,

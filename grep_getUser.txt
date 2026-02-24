@@ -1,0 +1,4 @@
+src/ui/overlays/auth-overlay.js:493:          // FIX: Use wrapper instead of direct client.auth.getUser() to avoid bypassing single-flight protection
+src/core/supabase-client.js:426:    _authGetUser || (client.auth && client.auth.getUser ? client.auth.getUser.bind(client.auth) : null);
+src/core/supabase-client.js:711:          _authGetUser = _client.auth.getUser ? _client.auth.getUser.bind(_client.auth) : null;
+src/core/supabase-client.js:717:          if (_authGetUser) _client.auth.getUser = () => getUserRawSingleFlight();

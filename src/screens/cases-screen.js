@@ -27,12 +27,12 @@ export function createCasesScreen({
   CardDisplayOverlay,
 }) {
   const CasesUI = (() => {
-    const searchEl = document.getElementById('cases-search');
-    const filtersEl = document.getElementById('cases-filters');
-    const gridEl = document.getElementById('cases-grid');
-    const tbodyEl = document.getElementById('cases-tbody');
-    const emptyEl = document.getElementById('cases-empty');
-    const selectAllEl = document.getElementById('cases-select-all');
+    const searchEl = /** @type {HTMLInputElement} */ (document.getElementById('cases-search'));
+    const filtersEl = /** @type {HTMLElement} */ (document.getElementById('cases-filters'));
+    const gridEl = /** @type {HTMLElement} */ (document.getElementById('cases-grid'));
+    const tbodyEl = /** @type {HTMLElement} */ (document.getElementById('cases-tbody'));
+    const emptyEl = /** @type {HTMLElement} */ (document.getElementById('cases-empty'));
+    const selectAllEl = /** @type {HTMLInputElement} */ (document.getElementById('cases-select-all'));
     const btnNew = document.getElementById('btn-new-case');
     const btnTemplate = document.getElementById('btn-cases-template');
     const btnImport = document.getElementById('btn-cases-import');
@@ -52,7 +52,7 @@ export function createCasesScreen({
     const selectedIds = new Set();
     let lastDatasetKey = '';
     let lastVisibleIds = [];
-    const casesTableWrap = document.querySelector('#screen-cases .table-wrap');
+    const casesTableWrap = /** @type {HTMLElement} */ (document.querySelector('#screen-cases .table-wrap'));
     const casesListState = {
       pageIndex: 0,
       rowsPerPage: 50,
@@ -84,6 +84,17 @@ export function createCasesScreen({
       btnViewGrid && btnViewGrid.addEventListener('click', () => setViewMode('grid'));
       btnViewList && btnViewList.addEventListener('click', () => setViewMode('list'));
       btnFiltersToggle && btnFiltersToggle.addEventListener('click', () => toggleFiltersVisible());
+
+      /* Close filter popup when clicking outside the panel or toggle button */
+      document.addEventListener('click', (e) => {
+        if (!filtersEl || !filtersEl.classList.contains('is-open')) return;
+        if (filtersEl.contains(e.target) || (btnFiltersToggle && btnFiltersToggle.contains(e.target))) return;
+        const prefs = PreferencesManager.get();
+        prefs.casesFiltersVisible = false;
+        PreferencesManager.set(prefs);
+        applyFiltersVisibility();
+      });
+
       btnCardDisplay &&
         btnCardDisplay.addEventListener('click', () => {
           // TODO: Add keyboard shortcut + update Keyboard Shortcuts modal later
@@ -96,7 +107,7 @@ export function createCasesScreen({
       applyFiltersVisibility();
     }
 
-    function getCasesFooterMountElForMode(mode) {
+    function getCasesFooterMountElForMode(_mode) {
       // Footer must be appended directly to #screen-cases to match CSS selector
       return document.getElementById('screen-cases');
     }
@@ -125,7 +136,7 @@ export function createCasesScreen({
     function applyFiltersVisibility() {
       if (!filtersEl) return;
       const visible = PreferencesManager.get().casesFiltersVisible !== false;
-      filtersEl.style.display = visible ? '' : 'none';
+      filtersEl.classList.toggle('is-open', visible);
       btnFiltersToggle && btnFiltersToggle.classList.toggle('btn-primary', visible);
     }
 
@@ -159,6 +170,7 @@ export function createCasesScreen({
 
       actionsDefaultEl.style.display = selectedCount ? 'none' : 'flex';
       actionsBulkEl.style.display = selectedCount ? 'flex' : 'none';
+      if (btnNew) btnNew.style.display = selectedCount ? 'none' : 'inline-flex';
       selectedCountEl.textContent = `${selectedCount} of ${visibleCount} row(s) selected.`;
       btnBulkDelete.innerHTML = `<i class="fa-solid fa-trash"></i> Delete (${selectedCount})`;
 
@@ -224,12 +236,15 @@ export function createCasesScreen({
           updateHeaderIcons();
         };
         sortControl.addEventListener('click', toggleSort);
-        sortControl.addEventListener('keydown', ev => {
-          if (ev.key === 'Enter' || ev.key === ' ') {
-            ev.preventDefault();
-            toggleSort();
+        sortControl.addEventListener(
+          'keydown',
+          /** @param {KeyboardEvent} ev */ ev => {
+            if (ev.key === 'Enter' || ev.key === ' ') {
+              ev.preventDefault();
+              toggleSort();
+            }
           }
-        });
+        );
       });
       updateHeaderIcons();
     }
@@ -362,18 +377,18 @@ export function createCasesScreen({
         card.classList.toggle('selected', selectedIds.has(c.id));
         card.tabIndex = 0;
         card.addEventListener('click', ev => {
-          if (
-            ev.target &&
-            ev.target.closest &&
-            (ev.target.closest('[data-case-menu]') || ev.target.closest('[data-case-select]'))
-          ) {
+          const targetEl = ev.target instanceof Element ? ev.target : null;
+          if (targetEl && (targetEl.closest('[data-case-menu]') || targetEl.closest('[data-case-select]'))) {
             return;
           }
           openCaseModal(c);
         });
-        card.addEventListener('keydown', ev => {
-          if (ev.key === 'Enter') openCaseModal(c);
-        });
+        card.addEventListener(
+          'keydown',
+          /** @param {KeyboardEvent} ev */ ev => {
+            if (ev.key === 'Enter') openCaseModal(c);
+          }
+        );
 
         const title = document.createElement('h3');
         title.textContent = c.name || '—';
@@ -458,7 +473,7 @@ export function createCasesScreen({
         kebabBtn.addEventListener('click', ev => {
           ev.stopPropagation();
           UIComponents.openDropdown(kebabBtn, [
-            { label: 'Edit', icon: 'fa-solid fa-pen', onClick: () => openCaseModal(c) },
+            { label: 'Edit', icon: 'fa-solid fa-pen-to-square', onClick: () => openCaseModal(c) },
             {
               label: 'Duplicate',
               icon: 'fa-solid fa-clone',
@@ -469,7 +484,7 @@ export function createCasesScreen({
             },
             {
               label: 'Delete',
-              icon: 'fa-solid fa-trash',
+              icon: 'fa-solid fa-trash-can',
               variant: 'danger',
               dividerBefore: true,
               onClick: () => deleteCase(c.id),
@@ -629,7 +644,8 @@ export function createCasesScreen({
         cb.checked = selectedIds.has(c.id);
         cb.addEventListener('click', ev => ev.stopPropagation());
         cb.addEventListener('change', ev => {
-          if (ev.target.checked) selectedIds.add(c.id);
+          const target = /** @type {HTMLInputElement|null} */ (ev.target);
+          if (target && target.checked) selectedIds.add(c.id);
           else selectedIds.delete(c.id);
           render();
         });
@@ -706,7 +722,7 @@ export function createCasesScreen({
         btn.addEventListener('click', ev => {
           ev.stopPropagation();
           UIComponents.openDropdown(btn, [
-            { label: 'Edit', icon: 'fa-solid fa-pen', onClick: () => openCaseModal(c) },
+            { label: 'Edit', icon: 'fa-solid fa-pen-to-square', onClick: () => openCaseModal(c) },
             {
               label: 'Duplicate',
               icon: 'fa-solid fa-clone',
@@ -717,7 +733,7 @@ export function createCasesScreen({
             },
             {
               label: 'Delete',
-              icon: 'fa-solid fa-trash',
+              icon: 'fa-solid fa-trash-can',
               variant: 'danger',
               dividerBefore: true,
               onClick: () => deleteCase(c.id),
@@ -735,7 +751,9 @@ export function createCasesScreen({
     function applyListColumnVisibility(prefs) {
       const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.cases) || {};
       const set = (sortKey, visible) => {
-        const th = document.querySelector(`#screen-cases table thead th[data-sort="${sortKey}"]`);
+        const th = /** @type {HTMLElement|null} */ (
+          document.querySelector(`#screen-cases table thead th[data-sort="${sortKey}"]`)
+        );
         if (th) th.style.display = visible ? '' : 'none';
       };
       set('length', badgePrefs.showDims !== false);
@@ -745,9 +763,13 @@ export function createCasesScreen({
       set('weight', badgePrefs.showWeight !== false);
       set('category', badgePrefs.showCategory !== false);
 
-      const catTh = document.querySelector('#screen-cases table thead th[data-sort="category"]');
+      const catTh = /** @type {HTMLElement|null} */ (
+        document.querySelector('#screen-cases table thead th[data-sort="category"]')
+      );
       const flipTh = catTh ? catTh.nextElementSibling : null;
-      if (flipTh) flipTh.style.display = badgePrefs.showFlip !== false ? '' : 'none';
+      if (flipTh && flipTh instanceof HTMLElement) {
+        flipTh.style.display = badgePrefs.showFlip !== false ? '' : 'none';
+      }
     }
 
     function chip(label, key, active, onClick, color, count) {
@@ -767,9 +789,12 @@ export function createCasesScreen({
         onClick();
       };
       el.addEventListener('click', activate);
-      el.addEventListener('keydown', ev => {
-        if (ev.key === 'Enter') activate();
-      });
+      el.addEventListener(
+        'keydown',
+        /** @param {KeyboardEvent} ev */ ev => {
+          if (ev.key === 'Enter') activate();
+        }
+      );
       return el;
     }
 
@@ -946,7 +971,9 @@ export function createCasesScreen({
 
     function toggleCategoriesPopover(anchorEl) {
       if (!anchorEl) return;
-      const open = document.querySelector('[data-dropdown="1"][data-role="categories"]');
+      const open = /** @type {HTMLElement|null} */ (
+        document.querySelector('[data-dropdown="1"][data-role="categories"]')
+      );
       if (open && open.dataset.anchorId === anchorEl.id) {
         UIComponents.closeAllDropdowns();
         return;
@@ -1130,7 +1157,7 @@ export function createCasesScreen({
           saveBtn.className = 'btn btn-ghost';
           saveBtn.classList.add('tp3d-cases-catmgr-btn-pad');
           saveBtn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i>';
-          saveBtn.title = 'Save changes';
+          saveBtn.setAttribute('data-tooltip', 'Save changes');
           saveBtn.addEventListener('click', () => {
             const renamed = CategoryService.rename(cat.key, name.value, color.value);
             renderList();
@@ -1144,7 +1171,7 @@ export function createCasesScreen({
             delBtn.className = 'btn btn-ghost';
             delBtn.classList.add('tp3d-cases-catmgr-btn-pad', 'tp3d-cases-catmgr-del-color');
             delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
-            delBtn.title = 'Delete category';
+            delBtn.setAttribute('data-tooltip', 'Delete category');
             delBtn.addEventListener('click', async () => {
               const ok = await UIComponents.confirm({
                 title: `Delete "${cat.name}"?`,
@@ -1198,12 +1225,6 @@ export function createCasesScreen({
         content,
         actions: [{ label: 'Close', variant: 'primary' }],
       });
-    }
-
-    function normalizeHex(value) {
-      const s = String(value || '').trim();
-      const m = s.match(/^#([0-9a-f]{6})$/i);
-      return m ? `#${m[1].toLowerCase()}` : null;
     }
 
     function field(label, type, placeholder, required) {

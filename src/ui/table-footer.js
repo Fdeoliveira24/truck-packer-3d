@@ -79,7 +79,7 @@ export function createTableFooter(options = {}) {
   ROW_OPTIONS.forEach(value => {
     const opt = document.createElement('option');
     opt.value = String(value);
-    opt.textContent = value;
+    opt.textContent = String(value);
     selectEl.appendChild(opt);
   });
   selectEl.value = String(DEFAULT_ROWS_PER_PAGE);

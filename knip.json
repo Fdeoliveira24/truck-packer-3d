@@ -1,0 +1,5 @@
+{
+  "entry": ["index.html", "src/app.js", "src/**/*.js"],
+  "project": ["src/**/*.js"],
+  "ignore": ["vendor/**", "supabase/**", "cleanup-docs/**", "docs/**"]
+}

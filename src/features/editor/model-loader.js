@@ -12,7 +12,9 @@
 // ============================================================================
 
 export const ModelLoader = {
+  // Phase 2 placeholder: retained for API shape, but not implemented yet.
+  isAvailable: false,
   async loadGLTF(_url) {
-    throw new Error('3D model loading not implemented (Phase 2)');
+    throw new Error('3D model loading not implemented (Phase 2 placeholder)');
   },
 };

@@ -15,6 +15,8 @@ import * as StateStore from '../core/state-store.js';
 import * as Utils from '../core/utils/index.js';
 import * as CoreNormalizer from '../core/normalizer.js';
 import * as CaseLibrary from './case-library.js';
+import { computeCoG } from './cog-service.js';
+import { computeOOGWarnings, computePalletWarnings } from './oog-service.js';
 
 function getDims(truck) {
   const t = truck && typeof truck === 'object' ? truck : {};
@@ -112,14 +114,18 @@ function getTrailerCapacityInches3(truck) {
 }
 
 function isAabbContainedInAnyZone(aabb, zones) {
+  // Bug 5 fix: add small epsilon tolerance for floating-point rounding.
+  // AutoPack places items with fp arithmetic, so a box at x=0.0000000001
+  // would fail an exact >= 0 check. 0.05 inches is imperceptible visually.
+  const EPS = 0.05;
   for (const z of zones || []) {
     if (
-      aabb.min.x >= z.min.x &&
-      aabb.max.x <= z.max.x &&
-      aabb.min.y >= z.min.y &&
-      aabb.max.y <= z.max.y &&
-      aabb.min.z >= z.min.z &&
-      aabb.max.z <= z.max.z
+      aabb.min.x >= z.min.x - EPS &&
+      aabb.max.x <= z.max.x + EPS &&
+      aabb.min.y >= z.min.y - EPS &&
+      aabb.max.y <= z.max.y + EPS &&
+      aabb.min.z >= z.min.z - EPS &&
+      aabb.max.z <= z.max.z + EPS
     ) {
       return true;
     }
@@ -140,7 +146,7 @@ export function create(packData) {
   const rawTruck = packData.truck || { length: 636, width: 102, height: 98 };
   const shapeMode =
     rawTruck &&
-    (rawTruck.shapeMode === 'wheelWells' || rawTruck.shapeMode === 'frontBonus' || rawTruck.shapeMode === 'rect')
+      (rawTruck.shapeMode === 'wheelWells' || rawTruck.shapeMode === 'frontBonus' || rawTruck.shapeMode === 'rect')
       ? rawTruck.shapeMode
       : 'rect';
   const shapeConfig =
@@ -164,7 +170,17 @@ export function create(packData) {
     truck,
     cases: [],
     groups: [],
-    stats: { totalCases: 0, packedCases: 0, volumeUsed: 0, totalWeight: 0 },
+    stats: {
+      totalCases: 0,
+      hiddenCases: 0,
+      packedCases: 0,
+      volumeUsed: 0,
+      volumePercent: 0,
+      totalWeight: 0,
+      cog: null,
+      oogWarnings: [],
+      palletWarnings: [],
+    },
     createdAt: now,
     lastEdited: now,
     thumbnail: null,
@@ -231,11 +247,13 @@ export function addInstance(packId, caseId, position) {
   if (!pack) return null;
   const caseData = CaseLibrary.getById(caseId);
   if (!caseData) return null;
+  const truckLen = Number(pack.truck && pack.truck.length) || 0;
+  const spawnX = truckLen > 0 ? Math.min(10, Math.max(1, truckLen - 1)) : 10;
   const instance = {
     id: Utils.uuid(),
     caseId,
     transform: {
-      position: position || { x: -80, y: Math.max(1, caseData.dimensions.height / 2), z: 0 },
+      position: position || { x: spawnX, y: Math.max(1, caseData.dimensions.height / 2), z: 0 },
       rotation: { x: 0, y: 0, z: 0 },
       scale: { x: 1, y: 1, z: 1 },
     },
@@ -268,17 +286,22 @@ export function computeStats(pack, caseLibraryOverride) {
   let usedIn3 = 0;
   let totalWeight = 0;
   let packedCases = 0;
+  let hiddenCases = 0;
   const getCase = caseId => {
     if (Array.isArray(caseLibraryOverride)) return caseLibraryOverride.find(c => c.id === caseId) || null;
     return CaseLibrary.getById(caseId);
   };
   (pack.cases || []).forEach(inst => {
+    if (inst.hidden) hiddenCases++;
     const c = getCase(inst.caseId);
     if (!c) return;
     if (inst.hidden) return;
     const dims = c.dimensions || { length: 0, width: 0, height: 0 };
+    // Use oriented dimensions from AutoPack if available, else fall back to original
+    const od = inst.orientedDims || null;
+    const effDims = od || dims;
     const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
-    const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
+    const half = { x: effDims.length / 2, y: effDims.height / 2, z: effDims.width / 2 };
     const aabb = {
       min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
       max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
@@ -290,12 +313,20 @@ export function computeStats(pack, caseLibraryOverride) {
     totalWeight += Number(c.weight) || 0;
   });
   const volumePercent = truckVol > 0 ? (usedIn3 / truckVol) * 100 : 0;
+  const caseLib = Array.isArray(caseLibraryOverride) ? caseLibraryOverride : CaseLibrary.getCases();
+  const cog = computeCoG(pack, caseLib);
+  const oogWarnings = computeOOGWarnings(pack, caseLib);
+  const palletWarnings = computePalletWarnings(pack, caseLib);
   return {
     totalCases: (pack.cases || []).length,
+    hiddenCases,
     packedCases,
     volumeUsed: usedIn3,
     volumePercent,
     totalWeight,
+    cog,
+    oogWarnings,
+    palletWarnings,
   };
 }
 

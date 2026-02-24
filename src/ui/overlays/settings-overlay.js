@@ -34,6 +34,11 @@ import { getUserAvatarView } from '../../core/utils/index.js';
 import * as ImportExport from '../../services/import-export.js';
 import * as StateStore from '../../core/state-store.js';
 import * as CoreStorage from '../../core/storage.js';
+import {
+  sendOrgInvite,
+  updateOrgMemberRole as updateOrgMemberRoleFn,
+  removeOrgMember as removeOrgMemberFn,
+} from '../../data/services/billing.service.js';
 
 export function createSettingsOverlay({
   documentRef = document,
@@ -42,13 +47,14 @@ export function createSettingsOverlay({
   PreferencesManager,
   Defaults: _Defaults,
   Utils,
+  getSceneManager,
   getAccountSwitcher,
   SupabaseClient,
-  onExportApp,
-  onImportApp,
-  onHelp,
-  onUpdates,
-  onRoadmap,
+  onExportApp: _onExportApp,
+  onImportApp: _onImportApp,
+  onHelp: _onHelp,
+  onUpdates: _onUpdates,
+  onRoadmap: _onRoadmap,
 }) {
   const doc = documentRef;
 
@@ -56,26 +62,435 @@ export function createSettingsOverlay({
   let settingsModal = null;
   let settingsLeftPane = null;
   let settingsRightPane = null;
-  let settingsActiveTab = 'preferences';
+  const _tabState = { activeTabId: 'preferences', didBind: false, lastActionId: 0 };
+  let settingsInstanceId = 0;
+  let settingsInstanceCounter = 0;
   let resourcesSubView = 'root'; // 'root' | 'updates' | 'roadmap' | 'export' | 'import' | 'help'
   let unmountAccountButton = null;
   let lastFocusedEl = null;
   let trapKeydownHandler = null;
   let warnedMissingModalRoot = false;
+  let tabClickHandler = null;
+
+  const SETTINGS_TABS = new Set(['account', 'preferences', 'resources', 'org-general', 'org-members', 'org-billing']);
+  const TAB_STORAGE_KEY = 'tp3d:settings:activeTab';
+  const SETTINGS_MODAL_ATTR = 'data-tp3d-settings-modal';
+  const SETTINGS_INSTANCE_ATTR = 'data-tp3d-settings-instance';
+  const ORG_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  function debugEnabled() {
+    try {
+      return window.localStorage && window.localStorage.getItem('tp3dDebug') === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  function debug(message, data) {
+    if (!debugEnabled()) return;
+    try {
+      console.log('[SettingsOverlay]', message, data || {});
+    } catch {
+      // ignore
+    }
+  }
+
+  function normalizeOrgId(value) {
+    const raw = String(value || '').trim();
+    if (!raw || raw.toLowerCase() === 'personal') return '';
+    return ORG_UUID_RE.test(raw) ? raw : '';
+  }
+
+  /**
+   * @param {unknown} value
+   * @returns {'month'|'year'}
+   */
+  function normalizeInterval(value) {
+    return String(value || '').trim().toLowerCase() === 'year' ? 'year' : 'month';
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function nextSettingsInstanceId() {
+    settingsInstanceCounter += 1;
+    settingsInstanceId = settingsInstanceCounter;
+    return settingsInstanceId;
+  }
+
+  function getSettingsModalRoots() {
+    return Array.from(doc.querySelectorAll(`[${SETTINGS_MODAL_ATTR}="1"]`));
+  }
+
+  function debugSettingsModalSnapshot(source, root = settingsOverlay) {
+    if (!debugEnabled()) return;
+    const dialogs = doc.querySelectorAll('[role="dialog"], .modal');
+    const settingsRoots = getSettingsModalRoots();
+    const buttons = root ? root.querySelectorAll('[data-tab]') : [];
+    const panels = root ? root.querySelectorAll('[data-tab-panel]') : [];
+    const payload = {
+      source,
+      instanceId: settingsInstanceId,
+      dialogCount: dialogs.length,
+      settingsModalCount: settingsRoots.length,
+      buttonCount: buttons.length,
+      panelCount: panels.length,
+    };
+    debug('modalSnapshot', payload);
+    if (settingsRoots.length > 1) {
+      console.warn('[SettingsOverlay] Multiple settings modals detected', payload);
+      console.trace();
+    }
+  }
+
+  function debugTabSnapshot(source, root = settingsOverlay) {
+    if (!debugEnabled() || !root) return;
+    const activeBtn = root.querySelector('[data-tab].active');
+    const activePanel = root.querySelector('[data-tab-panel]:not([hidden])');
+    const domTabId = activeBtn ? activeBtn.getAttribute('data-tab') : null;
+    const domPanelId = activePanel ? activePanel.getAttribute('data-tab-panel') : null;
+    const payload = {
+      source,
+      instanceId: settingsInstanceId,
+      stateTabId: _tabState.activeTabId,
+      domTabId,
+      domPanelId,
+    };
+    if (domTabId !== _tabState.activeTabId || domPanelId !== _tabState.activeTabId) {
+      console.warn('[SettingsOverlay] Tab desync detected', payload);
+      console.trace();
+      return;
+    }
+    debug('tabSnapshot', payload);
+  }
+
+  function cleanupStaleSettingsModals(source) {
+    const roots = getSettingsModalRoots();
+    if (!roots.length) return;
+    let removed = 0;
+    roots.forEach(root => {
+      if (settingsModal && root === settingsModal) return;
+      const overlay = /** @type {HTMLElement & { _tp3dCleanup?: () => void }} */ (
+        root.closest('.modal-overlay') || root
+      );
+      try {
+        overlay && overlay._tp3dCleanup && overlay._tp3dCleanup();
+      } catch {
+        // ignore
+      }
+      try {
+        if (overlay && overlay.parentElement) {
+          overlay.parentElement.removeChild(overlay);
+          removed += 1;
+        }
+      } catch {
+        // ignore
+      }
+    });
+    if (removed) debug('cleanupStaleSettingsModals', { source, removed });
+  }
+
+  function renderIfFresh(actionId, source) {
+    if (typeof actionId === 'number' && actionId < _tabState.lastActionId) {
+      debug('render skipped (stale)', { source, actionId, lastActionId: _tabState.lastActionId });
+      return null;
+    }
+    return render();
+  }
 
   // Profile editing state
   let profileData = null;
   let isEditingProfile = false;
   let isLoadingProfile = false;
   let isSavingProfile = false;
+  let isUploadingAvatar = false;
 
   // Organization editing state
   let orgData = null;
-  let membershipData = null;  // NEW: Store membership separately
+  let membershipData = null; // Store membership separately
   let isEditingOrg = false;
   let isLoadingOrg = false;
-  let isLoadingMembership = false;  // NEW: Track membership loading
+  let isLoadingMembership = false; // Track membership loading
   let isSavingOrg = false;
+  let orgMembersData = null;
+  let isLoadingOrgMembers = false;
+  let orgMembersError = null;
+  let orgMembersRequestId = 0;
+  let orgMembersInflightPromise = null;
+  let orgMembersInflightOrgId = null;
+  let orgMembersSearchQuery = '';
+  let orgMembersRoleFilter = 'all';
+  const orgMemberActions = new Set();
+  let lastOrgMembersOrgId = null;
+
+  // Organization invites state
+  let orgInvitesData = null;
+  let isLoadingOrgInvites = false;
+  let orgInvitesError = null;
+  let orgInvitesRequestId = 0;
+  const orgInviteActions = new Set(); // invite IDs currently being acted on
+  let lastKnownUserId = null;
+  let lastBundleRefreshAt = 0;
+  let billingUnsubscribe = null;
+  let billingSubscriptionToken = 0;
+  let modalOrgId = '';
+  let selectedInterval = 'month';
+  let orgChangedHandler = null;
+  let lastOrgLogoKey = null;
+  let lastOrgLogoUrl = null;
+  let lastOrgLogoExpiresAt = 0;
+  const ORG_LOGO_CACHE_TTL_MS = 5 * 60 * 1000;
+  const BILLING_CONTEXT_RETRY_MS = 2500;
+  let billingContextInflightPromise = null;
+  let billingContextInflightOrgId = '';
+  let billingContextLastAttemptAt = 0;
+  let billingContextResolvedOrgId = '';
+
+  // Account bundle loading state (single request for all account data)
+  let isLoadingAccountBundle = false;
+  let accountBundleRequestId = 0; // "Last request wins" guard
+
+  function getOrgIdFromOrgContext() {
+    try {
+      if (typeof window !== 'undefined' && window.OrgContext && typeof window.OrgContext.getActiveOrgId === 'function') {
+        return normalizeOrgId(window.OrgContext.getActiveOrgId());
+      }
+    } catch {
+      // ignore
+    }
+    return '';
+  }
+
+  function getOrgIdFromBillingState() {
+    try {
+      const api = getBillingApiSafely();
+      if (!api || typeof api.getBillingState !== 'function') return '';
+      const state = api.getBillingState();
+      return normalizeOrgId(state && state.orgId ? state.orgId : '');
+    } catch {
+      // ignore
+    }
+    return '';
+  }
+
+  function getOrgIdFromLocalStorage() {
+    try {
+      if (typeof window === 'undefined' || !window.localStorage) return '';
+      return normalizeOrgId(window.localStorage.getItem('tp3d:active-org-id') || '');
+    } catch {
+      // ignore
+    }
+    return '';
+  }
+
+  function resolveInitialModalOrgId() {
+    return getOrgIdFromOrgContext() || getOrgIdFromBillingState() || getOrgIdFromLocalStorage() || '';
+  }
+
+  function ensureModalOrgId() {
+    if (!modalOrgId) {
+      modalOrgId = resolveInitialModalOrgId();
+    }
+    return modalOrgId;
+  }
+
+  function isKnownOrgRole(roleValue) {
+    return roleValue === 'owner' || roleValue === 'admin' || roleValue === 'member';
+  }
+
+  function getRoleForOrg(orgId) {
+    const normalizedOrgId = normalizeOrgId(orgId);
+    if (!normalizedOrgId) return '';
+    const orgDataId = normalizeOrgId(orgData && orgData.id ? orgData.id : '');
+    const membershipOrgId = normalizeOrgId(
+      membershipData && membershipData.organization_id ? membershipData.organization_id : ''
+    );
+    return String(
+      (orgDataId && orgDataId === normalizedOrgId && orgData && orgData.role) ||
+      (membershipOrgId && membershipOrgId === normalizedOrgId && membershipData && membershipData.role) ||
+      ''
+    ).toLowerCase();
+  }
+
+  function hasOrgProfileForOrg(orgId) {
+    const normalizedOrgId = normalizeOrgId(orgId);
+    const orgDataId = normalizeOrgId(orgData && orgData.id ? orgData.id : '');
+    return Boolean(
+      normalizedOrgId &&
+      orgDataId === normalizedOrgId &&
+      orgData &&
+      String(orgData.name || '').trim()
+    );
+  }
+
+  function clearOrgScopedCaches(nextOrgId) {
+    const next = normalizeOrgId(nextOrgId);
+    if (lastOrgMembersOrgId && String(lastOrgMembersOrgId) !== String(next)) {
+      orgMembersData = null;
+      orgMembersError = null;
+      isLoadingOrgMembers = false;
+      orgMembersInflightPromise = null;
+      orgMembersInflightOrgId = null;
+      orgMembersSearchQuery = '';
+      orgMembersRoleFilter = 'all';
+      orgInvitesData = null;
+      orgInvitesError = null;
+    }
+    if (!next || billingContextInflightOrgId !== next) {
+      billingContextInflightPromise = null;
+      billingContextInflightOrgId = '';
+    }
+    if (!next || billingContextResolvedOrgId !== next) {
+      billingContextResolvedOrgId = '';
+    }
+  }
+
+  function ensureBillingContextHydrated(orgId, { force = false, source = 'org-billing:hydrate-context' } = {}) {
+    const normalizedOrgId = normalizeOrgId(orgId);
+    if (!normalizedOrgId) return Promise.resolve(null);
+
+    const role = getRoleForOrg(normalizedOrgId);
+    const roleKnown = isKnownOrgRole(role);
+    const orgProfileLoaded = hasOrgProfileForOrg(normalizedOrgId);
+    if (!force && orgProfileLoaded && roleKnown) {
+      billingContextResolvedOrgId = normalizedOrgId;
+      return Promise.resolve({ ok: true });
+    }
+
+    if (!force && billingContextInflightPromise && billingContextInflightOrgId === normalizedOrgId) {
+      return billingContextInflightPromise;
+    }
+
+    const now = Date.now();
+    if (
+      !force &&
+      billingContextLastAttemptAt &&
+      (now - billingContextLastAttemptAt) < BILLING_CONTEXT_RETRY_MS &&
+      !billingContextInflightPromise
+    ) {
+      return Promise.resolve(null);
+    }
+
+    billingContextLastAttemptAt = now;
+    billingContextInflightOrgId = normalizedOrgId;
+    const actionId = _tabState.lastActionId;
+    const request = (async () => {
+      try {
+        await loadAccountBundle({ force: true });
+      } catch {
+        // ignore
+      }
+
+      if (!hasOrgProfileForOrg(normalizedOrgId)) {
+        try {
+          await loadOrganization(normalizedOrgId);
+        } catch {
+          // ignore
+        }
+      }
+
+      if (!isKnownOrgRole(getRoleForOrg(normalizedOrgId)) && SupabaseClient && typeof SupabaseClient.getMyMembership === 'function') {
+        try {
+          isLoadingMembership = true;
+          const membership = await SupabaseClient.getMyMembership();
+          if (membership) membershipData = membership;
+        } catch {
+          // ignore
+        } finally {
+          isLoadingMembership = false;
+        }
+      }
+
+      const hydrated = hasOrgProfileForOrg(normalizedOrgId) && isKnownOrgRole(getRoleForOrg(normalizedOrgId));
+      billingContextResolvedOrgId = hydrated ? normalizedOrgId : '';
+      return { ok: hydrated };
+    })()
+      .finally(() => {
+        if (billingContextInflightOrgId === normalizedOrgId) {
+          billingContextInflightPromise = null;
+          billingContextInflightOrgId = '';
+        }
+        renderIfFresh(actionId, source);
+      });
+
+    billingContextInflightPromise = request;
+    return request;
+  }
+
+  function refreshBillingForOrgChange(nextOrgId, source) {
+    const normalizedOrgId = normalizeOrgId(nextOrgId);
+    if (!normalizedOrgId) return;
+    const api = getBillingApiSafely();
+    if (!api) return;
+
+    if (typeof api.clearBillingState === 'function') {
+      try {
+        api.clearBillingState();
+      } catch {
+        // ignore
+      }
+    }
+
+    const billingWrap = doc.getElementById('tp3d-billing-wrap');
+    if (billingWrap) {
+      renderBillingInto(billingWrap);
+    }
+
+    if (typeof api.refreshBilling === 'function') {
+      api.refreshBilling({ force: true, reason: source || 'settings:org-changed' })
+        .catch(() => { })
+        .finally(() => {
+          const wrap = doc.getElementById('tp3d-billing-wrap');
+          if (wrap) renderBillingInto(wrap);
+        });
+    }
+  }
+
+  function ensureOrgChangedListener() {
+    if (orgChangedHandler || typeof window === 'undefined') return;
+    orgChangedHandler = ev => {
+      const nextOrgId = normalizeOrgId(ev && ev.detail ? ev.detail.orgId : '');
+      if (!nextOrgId || nextOrgId === modalOrgId) return;
+      modalOrgId = nextOrgId;
+      clearOrgScopedCaches(nextOrgId);
+      orgMembersRequestId += 1;
+      isLoadingOrgMembers = true;
+      orgMembersError = null;
+      orgMembersData = null;
+      lastOrgMembersOrgId = null;
+      queueAccountBundleRefresh({ force: true, source: 'settings:org-changed' });
+      refreshBillingForOrgChange(nextOrgId, 'settings:org-changed');
+      if (_tabState.activeTabId === 'org-billing') {
+        ensureBillingContextHydrated(nextOrgId, { force: true, source: 'org-billing:org-changed' }).catch(() => { });
+      }
+      if (settingsOverlay && settingsOverlay.isConnected) {
+        render();
+      }
+      if (_tabState.activeTabId === 'org-members') {
+        const actionId = _tabState.lastActionId;
+        loadOrgMembers(nextOrgId)
+          .then(() => renderIfFresh(actionId, 'org-members:org-changed'))
+          .catch(() => { });
+      }
+    };
+    window.addEventListener('tp3d:org-changed', orgChangedHandler);
+  }
+
+  function removeOrgChangedListener() {
+    if (!orgChangedHandler || typeof window === 'undefined') return;
+    try {
+      window.removeEventListener('tp3d:org-changed', orgChangedHandler);
+    } catch {
+      // ignore
+    }
+    orgChangedHandler = null;
+  }
 
   // Static content for Updates and Roadmap (embedded to avoid external dependencies)
   const updatesData = [
@@ -173,14 +588,85 @@ export function createSettingsOverlay({
     return getUserAvatarView({ user, sessionUser, profile });
   }
 
+  /**
+   * Load all account data (profile, membership, org) in a single request.
+   * Uses the epoch-validated single-flight bundle to prevent stale data.
+   * @param {{ force?: boolean }} [options]
+   * @returns {Promise<Object|null>} The account bundle or null
+   */
+  async function loadAccountBundle({ force = false } = {}) {
+    if (isLoadingAccountBundle) return null;
+
+    // Capture request ID for "last request wins" guard
+    const thisRequestId = ++accountBundleRequestId;
+    isLoadingAccountBundle = true;
+
+    try {
+      const bundle = await SupabaseClient.getAccountBundleSingleFlight({ force });
+
+      // Check if this is still the latest request
+      if (thisRequestId !== accountBundleRequestId) {
+        // A newer request was made, discard this result
+        return null;
+      }
+
+      // Check if bundle was canceled due to auth change
+      if (bundle && bundle.canceled) {
+        isLoadingAccountBundle = false;
+        return null;
+      }
+
+      // Populate all module-level caches from the bundle
+      if (bundle) {
+        profileData = bundle.profile || null;
+        membershipData = bundle.membership || null;
+        orgData = bundle.activeOrg || null;
+
+        // If we have membership but no org data yet, and membership has org_id, fetch org
+        if (membershipData && membershipData.organization_id && !orgData) {
+          // The bundle doesn't include full org details, load it separately
+          try {
+            orgData = await SupabaseClient.getOrganization(membershipData.organization_id);
+          } catch {
+            orgData = null;
+          }
+        }
+      }
+
+      isLoadingAccountBundle = false;
+      isLoadingProfile = false;
+      isLoadingMembership = false;
+      isLoadingOrg = false;
+
+      return bundle;
+    } catch (err) {
+      console.error('[SettingsOverlay] Failed to load account bundle:', err);
+      isLoadingAccountBundle = false;
+      return null;
+    }
+  }
+
+  function queueAccountBundleRefresh({ force = true, source = 'account-bundle-refresh' } = {}) {
+    if (isLoadingAccountBundle) return;
+    const now = Date.now();
+    if (now - lastBundleRefreshAt < 500) return;
+    lastBundleRefreshAt = now;
+    const actionId = _tabState.lastActionId;
+    loadAccountBundle({ force })
+      .then(() => renderIfFresh(actionId, source))
+      .catch(() => { });
+  }
+
   async function loadProfile() {
-    if (isLoadingProfile) return;
+    // Use the bundle loader instead of individual profile fetch
+    // This ensures epoch validation and prevents stale data
+    if (isLoadingProfile || isLoadingAccountBundle) return profileData;
+
     isLoadingProfile = true;
     try {
-      const profile = await SupabaseClient.getProfile();
-      profileData = profile;
+      await loadAccountBundle();
       isLoadingProfile = false;
-      return profile;
+      return profileData; // Return from module-level cache
     } catch (err) {
       isLoadingProfile = false;
       console.error('Failed to load profile:', err);
@@ -189,15 +675,20 @@ export function createSettingsOverlay({
   }
 
   async function saveProfile(updates) {
-    if (isSavingProfile) return;
+    if (isSavingProfile) return null;
     isSavingProfile = true;
+    const actionId = _tabState.lastActionId;
     try {
       const updated = await SupabaseClient.updateProfile(updates);
       profileData = updated;
       isSavingProfile = false;
       isEditingProfile = false;
+      // Invalidate account cache so next fetch gets fresh data
+      if (SupabaseClient.invalidateAccountCache) {
+        SupabaseClient.invalidateAccountCache();
+      }
       UIComponents.showToast('Profile saved', 'success');
-      render();
+      renderIfFresh(actionId, 'saveProfile');
       return updated;
     } catch (err) {
       isSavingProfile = false;
@@ -207,7 +698,7 @@ export function createSettingsOverlay({
   }
 
   async function loadOrganization(orgId = null) {
-    if (isLoadingOrg || !orgId) return;
+    if (isLoadingOrg || !orgId) return null;
     isLoadingOrg = true;
     try {
       const org = await SupabaseClient.getOrganization(orgId);
@@ -222,8 +713,9 @@ export function createSettingsOverlay({
   }
 
   async function saveOrganization(updates, orgId = null) {
-    if (isSavingOrg || !orgId) return;
+    if (isSavingOrg || !orgId) return null;
     isSavingOrg = true;
+    const actionId = _tabState.lastActionId;
     try {
       // Trim string values
       const trimmed = {};
@@ -235,8 +727,12 @@ export function createSettingsOverlay({
       orgData = updated;
       isSavingOrg = false;
       isEditingOrg = false;
+      // Invalidate account cache so next fetch gets fresh data
+      if (SupabaseClient.invalidateAccountCache) {
+        SupabaseClient.invalidateAccountCache();
+      }
       UIComponents.showToast('Organization updated', 'success');
-      render();
+      renderIfFresh(actionId, 'saveOrganization');
       return updated;
     } catch (err) {
       isSavingOrg = false;
@@ -245,7 +741,310 @@ export function createSettingsOverlay({
     }
   }
 
+  async function loadOrgMembers(orgId) {
+    try {
+      if (typeof document !== 'undefined' && document.hidden === true) return null;
+    } catch {
+      // ignore
+    }
+    const normalizedOrgId = normalizeOrgId(orgId);
+    if (!normalizedOrgId) return null;
+    if (isLoadingOrgMembers && orgMembersInflightPromise && orgMembersInflightOrgId === normalizedOrgId) {
+      return orgMembersInflightPromise;
+    }
+    if (isLoadingOrgMembers && orgMembersInflightOrgId && orgMembersInflightOrgId !== normalizedOrgId) {
+      orgMembersRequestId += 1;
+    }
+    const thisRequestId = ++orgMembersRequestId;
+    isLoadingOrgMembers = true;
+    orgMembersInflightOrgId = normalizedOrgId;
+    orgMembersError = null;
+    const requestPromise = (async () => {
+      try {
+        const members = await SupabaseClient.getOrganizationMembers(normalizedOrgId);
+        if (thisRequestId !== orgMembersRequestId) return null;
+        orgMembersData = Array.isArray(members) ? members : [];
+        lastOrgMembersOrgId = String(normalizedOrgId);
+        return orgMembersData;
+      } catch (err) {
+        if (thisRequestId !== orgMembersRequestId) return null;
+        orgMembersError = err;
+        orgMembersData = Array.isArray(orgMembersData) ? orgMembersData : [];
+        return null;
+      } finally {
+        if (thisRequestId === orgMembersRequestId) {
+          isLoadingOrgMembers = false;
+        }
+        if (orgMembersInflightOrgId === normalizedOrgId) {
+          orgMembersInflightPromise = null;
+          orgMembersInflightOrgId = null;
+        }
+      }
+    })();
+    orgMembersInflightPromise = requestPromise;
+    return requestPromise;
+  }
+
+  function getMemberDisplayName(member) {
+    const profile = member && member.profile ? member.profile : null;
+    const displayName = profile && profile.display_name ? String(profile.display_name) : '';
+    const fullNameFromProfile = profile && profile.full_name ? String(profile.full_name) : '';
+    const firstName = profile && profile.first_name ? String(profile.first_name) : '';
+    const lastName = profile && profile.last_name ? String(profile.last_name) : '';
+    const fullName = `${firstName} ${lastName}`.trim();
+    if (displayName) return displayName;
+    if (fullNameFromProfile) return fullNameFromProfile;
+    if (fullName) return fullName;
+    if (profile && profile.email) return String(profile.email);
+    return member && member.user_id ? String(member.user_id) : 'Member';
+  }
+
+  function getMemberEmail(member) {
+    const profile = member && member.profile ? member.profile : null;
+    const profileEmail = profile && profile.email ? String(profile.email) : '';
+    if (profileEmail) return profileEmail;
+    if (member && member.email) return String(member.email);
+    if (member && member.user_email) return String(member.user_email);
+    return '';
+  }
+
+  function getRoleLabel(roleValue) {
+    const role = String(roleValue || 'member').toLowerCase();
+    if (role === 'owner') return 'Owner';
+    if (role === 'admin') return 'Admin';
+    if (role === 'member') return 'Member';
+    return role ? role.charAt(0).toUpperCase() + role.slice(1) : 'Member';
+  }
+
+  function canManageMembers(roleValue) {
+    const role = String(roleValue || '').toLowerCase();
+    return role === 'owner' || role === 'admin';
+  }
+
+  function formatMemberJoined(member) {
+    const joined = member && member.joined_at ? String(member.joined_at) : '';
+    if (!joined) return '—';
+    try {
+      const parsed = new Date(joined);
+      if (Number.isNaN(parsed.getTime())) return '—';
+      return parsed.toLocaleDateString();
+    } catch {
+      return '—';
+    }
+  }
+
+  async function updateMemberRole(orgId, member, nextRole, currentUserId) {
+    if (!member || !member.user_id || !orgId) return null;
+    const userId = String(member.user_id);
+    if (orgMemberActions.has(userId)) return null;
+
+    orgMemberActions.add(userId);
+    const actionId = _tabState.lastActionId;
+    renderIfFresh(actionId, 'memberRole:update:begin');
+    try {
+      const result = await updateOrgMemberRoleFn(orgId, userId, nextRole);
+      if (!result || !result.ok) {
+        UIComponents.showToast(result && result.error ? result.error : 'Failed to update role.', 'error');
+        renderIfFresh(actionId, 'memberRole:update:error');
+        return null;
+      }
+      await loadOrgMembers(orgId);
+      const updated = result.member || null;
+      if (updated && currentUserId && currentUserId === userId && membershipData) {
+        membershipData = { ...membershipData, role: updated.role || membershipData.role };
+      }
+      UIComponents.showToast('Role updated', 'success');
+      renderIfFresh(actionId, 'memberRole:update');
+      return updated;
+    } catch (err) {
+      UIComponents.showToast(`Failed to update role: ${err && err.message ? err.message : err}`, 'error');
+      renderIfFresh(actionId, 'memberRole:update:error');
+      return null;
+    } finally {
+      orgMemberActions.delete(userId);
+      renderIfFresh(actionId, 'memberRole:update:done');
+    }
+  }
+
+  async function removeMember(orgId, member) {
+    if (!member || !member.user_id || !orgId) return false;
+    const userId = String(member.user_id);
+    if (orgMemberActions.has(userId)) return false;
+
+    orgMemberActions.add(userId);
+    const actionId = _tabState.lastActionId;
+    renderIfFresh(actionId, 'memberRemove:begin');
+    try {
+      const result = await removeOrgMemberFn(orgId, userId);
+      if (!result || !result.ok) {
+        UIComponents.showToast(result && result.error ? result.error : 'Failed to remove member.', 'error');
+        renderIfFresh(actionId, 'memberRemove:error');
+        return false;
+      }
+      await loadOrgMembers(orgId);
+      UIComponents.showToast('Member removed', 'success');
+      renderIfFresh(actionId, 'memberRemove');
+      return true;
+    } catch (err) {
+      UIComponents.showToast(`Failed to remove member: ${err && err.message ? err.message : err}`, 'error');
+      renderIfFresh(actionId, 'memberRemove:error');
+      return false;
+    } finally {
+      orgMemberActions.delete(userId);
+      renderIfFresh(actionId, 'memberRemove:done');
+    }
+  }
+
+  // ---- Organization invites ----
+
+  async function loadOrgInvites(orgId) {
+    if (isLoadingOrgInvites || !orgId) return null;
+    const thisRequestId = ++orgInvitesRequestId;
+    isLoadingOrgInvites = true;
+    orgInvitesError = null;
+    try {
+      const invites = await SupabaseClient.getOrganizationInvites(orgId);
+      if (thisRequestId !== orgInvitesRequestId) return null;
+      orgInvitesData = Array.isArray(invites) ? invites : [];
+      return orgInvitesData;
+    } catch (err) {
+      if (thisRequestId !== orgInvitesRequestId) return null;
+      orgInvitesError = err;
+      orgInvitesData = Array.isArray(orgInvitesData) ? orgInvitesData : [];
+      return null;
+    } finally {
+      if (thisRequestId === orgInvitesRequestId) {
+        isLoadingOrgInvites = false;
+      }
+    }
+  }
+
+  async function sendInvite(orgId, email, role) {
+    if (!orgId || !email) return null;
+    const actionId = _tabState.lastActionId;
+    const normalizedRole = String(role || 'member').trim().toLowerCase();
+    const roleAllowed = normalizedRole === 'member' || normalizedRole === 'admin';
+    debug('orgInvite:send:request', { orgId, email, role: normalizedRole, roleAllowed });
+    if (!roleAllowed) {
+      UIComponents.showToast('Invites support Member or Admin roles only.', 'warning', { title: 'Invites' });
+      return null;
+    }
+    try {
+      const result = await sendOrgInvite(orgId, email, normalizedRole);
+      if (!result || !result.ok) {
+        UIComponents.showToast(result && result.error ? result.error : 'Invite failed', 'error', { title: 'Invites' });
+        return null;
+      }
+      const inviteLink = result && result.invite_link ? String(result.invite_link) : '';
+      const copyInviteAction = inviteLink
+        ? [{
+          label: 'Copy Link',
+          onClick: () => {
+            try {
+              if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                navigator.clipboard.writeText(inviteLink).then(() => {
+                  UIComponents.showToast('Invite link copied', 'success', { title: 'Invites' });
+                }).catch(() => {
+                  UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
+                });
+              }
+            } catch {
+              UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
+            }
+          },
+        }]
+        : undefined;
+      UIComponents.showToast('Invite sent to ' + email, 'success', { title: 'Invites', actions: copyInviteAction });
+      // Refresh invites list
+      await loadOrgInvites(orgId);
+      renderIfFresh(actionId, 'invite:send');
+      return result;
+    } catch (err) {
+      UIComponents.showToast('Invite failed: ' + (err && err.message ? err.message : err), 'error', { title: 'Invites' });
+      return null;
+    }
+  }
+
+  async function revokeInvite(orgId, invite) {
+    if (!invite || !invite.id) return false;
+    const inviteId = String(invite.id);
+    if (orgInviteActions.has(inviteId)) return false;
+
+    orgInviteActions.add(inviteId);
+    const actionId = _tabState.lastActionId;
+    renderIfFresh(actionId, 'invite:revoke:begin');
+    try {
+      await SupabaseClient.revokeOrganizationInvite(inviteId);
+      await loadOrgInvites(orgId);
+      UIComponents.showToast('Invite revoked', 'success', { title: 'Invites' });
+      renderIfFresh(actionId, 'invite:revoke');
+      return true;
+    } catch (err) {
+      UIComponents.showToast('Revoke failed: ' + (err && err.message ? err.message : err), 'error', { title: 'Invites' });
+      renderIfFresh(actionId, 'invite:revoke:error');
+      return false;
+    } finally {
+      orgInviteActions.delete(inviteId);
+      renderIfFresh(actionId, 'invite:revoke:done');
+    }
+  }
+
+  async function resendInvite(orgId, invite) {
+    if (!invite || !invite.id) return null;
+    const inviteId = String(invite.id);
+    if (orgInviteActions.has(inviteId)) return null;
+
+    orgInviteActions.add(inviteId);
+    const actionId = _tabState.lastActionId;
+    renderIfFresh(actionId, 'invite:resend:begin');
+    try {
+      const inviteRole = String(invite.role || 'member').trim().toLowerCase();
+      if (inviteRole !== 'member' && inviteRole !== 'admin') {
+        UIComponents.showToast('Only Member/Admin invites can be resent.', 'warning', { title: 'Invites' });
+        return null;
+      }
+      const result = await sendOrgInvite(orgId, invite.email, inviteRole);
+      if (!result || !result.ok) {
+        UIComponents.showToast(result && result.error ? result.error : 'Resend failed', 'error', { title: 'Invites' });
+        return null;
+      }
+      const inviteLink = result && result.invite_link ? String(result.invite_link) : '';
+      const copyInviteAction = inviteLink
+        ? [{
+          label: 'Copy Link',
+          onClick: () => {
+            try {
+              if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                navigator.clipboard.writeText(inviteLink).then(() => {
+                  UIComponents.showToast('Invite link copied', 'success', { title: 'Invites' });
+                }).catch(() => {
+                  UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
+                });
+              }
+            } catch {
+              UIComponents.showToast('Could not copy invite link', 'warning', { title: 'Invites' });
+            }
+          },
+        }]
+        : undefined;
+      UIComponents.showToast('Invite resent to ' + invite.email, 'success', { title: 'Invites', actions: copyInviteAction });
+      await loadOrgInvites(orgId);
+      renderIfFresh(actionId, 'invite:resend');
+      return result;
+    } catch (err) {
+      UIComponents.showToast('Resend failed: ' + (err && err.message ? err.message : err), 'error', { title: 'Invites' });
+      renderIfFresh(actionId, 'invite:resend:error');
+      return null;
+    } finally {
+      orgInviteActions.delete(inviteId);
+      renderIfFresh(actionId, 'invite:resend:done');
+    }
+  }
+
   async function handleAvatarUpload(file) {
+    const actionId = _tabState.lastActionId;
+    isUploadingAvatar = true;
+    renderIfFresh(actionId, 'avatarUpload:begin');
     try {
       const publicUrl = await SupabaseClient.uploadAvatar(file);
       // Add cache-busting timestamp to force browser to reload image
@@ -253,7 +1052,7 @@ export function createSettingsOverlay({
       await SupabaseClient.updateProfile({ avatar_url: publicUrl });
       UIComponents.showToast('Avatar uploaded', 'success');
       await loadProfile();
-      render();
+      renderIfFresh(actionId, 'avatarUpload');
       // Notify app to refresh sidebar avatar
       try {
         const event = new CustomEvent('tp3d:profile-updated', { detail: { avatar_url: cacheBustedUrl } });
@@ -263,16 +1062,22 @@ export function createSettingsOverlay({
       }
     } catch (err) {
       UIComponents.showToast(`Upload failed: ${err && err.message ? err.message : err}`, 'error');
+    } finally {
+      isUploadingAvatar = false;
+      renderIfFresh(actionId, 'avatarUpload:done');
     }
   }
 
   async function handleAvatarRemove() {
+    const actionId = _tabState.lastActionId;
+    isUploadingAvatar = true;
+    renderIfFresh(actionId, 'avatarRemove:begin');
     try {
       await SupabaseClient.deleteAvatar();
       await SupabaseClient.updateProfile({ avatar_url: null });
       UIComponents.showToast('Avatar removed', 'success');
       await loadProfile();
-      render();
+      renderIfFresh(actionId, 'avatarRemove');
       // Notify app to refresh sidebar avatar
       try {
         const event = new CustomEvent('tp3d:profile-updated', { detail: { avatar_url: null } });
@@ -282,6 +1087,9 @@ export function createSettingsOverlay({
       }
     } catch (err) {
       UIComponents.showToast(`Remove failed: ${err && err.message ? err.message : err}`, 'error');
+    } finally {
+      isUploadingAvatar = false;
+      renderIfFresh(actionId, 'avatarRemove:done');
     }
   }
 
@@ -291,6 +1099,16 @@ export function createSettingsOverlay({
 
   function close() {
     if (!settingsOverlay) return;
+    isUploadingAvatar = false;
+    removeOrgChangedListener();
+    if (billingUnsubscribe) {
+      try {
+        billingUnsubscribe();
+      } catch {
+        // ignore
+      }
+      billingUnsubscribe = null;
+    }
     try {
       if (typeof unmountAccountButton === 'function') unmountAccountButton();
     } catch {
@@ -318,15 +1136,29 @@ export function createSettingsOverlay({
     trapKeydownHandler = null;
 
     try {
+      if (tabClickHandler && settingsOverlay) {
+        if (settingsLeftPane) settingsLeftPane.removeEventListener('click', tabClickHandler);
+      }
+    } catch {
+      // ignore
+    }
+    tabClickHandler = null;
+    _tabState.didBind = false;
+
+    try {
       if (settingsOverlay.parentElement) settingsOverlay.parentElement.removeChild(settingsOverlay);
     } catch {
       // ignore
     }
 
+    debugSettingsModalSnapshot('close');
     settingsOverlay = null;
     settingsModal = null;
     settingsLeftPane = null;
     settingsRightPane = null;
+    settingsInstanceId = 0;
+    modalOrgId = '';
+    selectedInterval = 'month';
     resourcesSubView = 'root'; // Reset sub-view on close
 
     try {
@@ -339,13 +1171,130 @@ export function createSettingsOverlay({
     lastFocusedEl = null;
   }
 
-  function setActive(tab) {
-    settingsActiveTab = String(tab || 'preferences');
-    // Reset sub-view when switching tabs
-    if (tab !== 'resources') {
+  function normalizeTab(tab) {
+    const key = typeof tab === 'string' ? tab : '';
+    return SETTINGS_TABS.has(key) ? key : 'preferences';
+  }
+
+  function readSavedTab() {
+    try {
+      if (window && window.sessionStorage) {
+        const saved = window.sessionStorage.getItem(TAB_STORAGE_KEY);
+        return saved && SETTINGS_TABS.has(saved) ? saved : null;
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  function persistTab(tab) {
+    try {
+      if (window && window.sessionStorage) {
+        window.sessionStorage.setItem(TAB_STORAGE_KEY, tab);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  function resolveInitialTab(tab) {
+    const requested = typeof tab === 'string' && tab ? tab : null;
+    const saved = readSavedTab();
+    return normalizeTab(requested || saved || _tabState.activeTabId);
+  }
+
+  /**
+   * Repro steps:
+   * 1) open settings
+   * 2) click tabs fast
+   * 3) close + reopen
+   * 4) apply + reset
+   * 5) confirm button highlight always matches visible panel
+   */
+  function setActiveTab(tabId, meta = {}) {
+    const nextTab = normalizeTab(tabId);
+    const actionId = typeof meta.actionId === 'number' ? meta.actionId : null;
+    if (actionId != null && actionId < _tabState.lastActionId) {
+      debug('setActiveTab skipped (stale)', { tabId: nextTab, actionId, lastActionId: _tabState.lastActionId });
+      return;
+    }
+    _tabState.activeTabId = nextTab;
+    if (nextTab !== 'resources') {
       resourcesSubView = 'root';
     }
-    render();
+    persistTab(nextTab);
+    const counts = render();
+    debug('setActiveTab', {
+      tabId: nextTab,
+      source: meta.source,
+      actionId,
+      lastActionId: _tabState.lastActionId,
+      instanceId: settingsInstanceId,
+      buttonCount: counts ? counts.buttonCount : 0,
+      panelCount: counts ? counts.panelCount : 0,
+    });
+    debugTabSnapshot('setActiveTab');
+
+    // Billing tab should always refresh latest state
+    if (nextTab === 'org-billing') {
+      const lockedOrgId = ensureModalOrgId();
+      if (lockedOrgId) {
+        ensureBillingContextHydrated(lockedOrgId, { source: 'org-billing:tab-activate' }).catch(() => { });
+      }
+      const api = getBillingApiSafely();
+      if (api && typeof api.refreshBilling === 'function') {
+        api.refreshBilling({ force: true }).catch(() => { });
+      }
+    }
+  }
+
+  function setActive(tab) {
+    setActiveTab(tab, { source: 'api' });
+  }
+
+  function bindTabsOnce() {
+    if (_tabState.didBind || !settingsLeftPane) {
+      debug('bindTabsOnce skipped', { didBind: _tabState.didBind, instanceId: settingsInstanceId });
+      return;
+    }
+    tabClickHandler = ev => {
+      const target = ev.target instanceof Element ? ev.target.closest('[data-tab]') : null;
+      if (!target) return;
+      const key = target.getAttribute('data-tab') || (target.dataset ? target.dataset.tab : null);
+      if (!key) return;
+      ev.preventDefault();
+      _tabState.lastActionId += 1;
+      setActiveTab(key, { source: 'click', actionId: _tabState.lastActionId });
+    };
+    settingsLeftPane.addEventListener('click', tabClickHandler);
+    _tabState.didBind = true;
+    const buttons = settingsOverlay ? settingsOverlay.querySelectorAll('[data-tab]') : [];
+    const panels = settingsOverlay ? settingsOverlay.querySelectorAll('[data-tab-panel]') : [];
+    debug('bindTabsOnce bound', {
+      didBind: _tabState.didBind,
+      instanceId: settingsInstanceId,
+      buttonCount: buttons.length,
+      panelCount: panels.length,
+    });
+    debugSettingsModalSnapshot('bindTabsOnce');
+  }
+
+  function applyTabStateToDOM() {
+    const buttons = settingsOverlay ? settingsOverlay.querySelectorAll('[data-tab]') : [];
+    const panels = settingsOverlay ? settingsOverlay.querySelectorAll('[data-tab-panel]') : [];
+    buttons.forEach(btn => {
+      const key = btn.getAttribute('data-tab');
+      const isActive = key === _tabState.activeTabId;
+      btn.classList.toggle('active', isActive);
+      btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      btn.setAttribute('tabindex', isActive ? '0' : '-1');
+    });
+    panels.forEach(panel => {
+      const key = panel.getAttribute('data-tab-panel');
+      panel.hidden = key !== _tabState.activeTabId;
+    });
+    return { buttonCount: buttons.length, panelCount: panels.length };
   }
 
   function setResourcesSubView(subView) {
@@ -369,8 +1318,7 @@ export function createSettingsOverlay({
   // Render Updates content inside the modal
   function renderUpdatesContent(container) {
     const wrap = doc.createElement('div');
-    wrap.className = 'grid';
-    wrap.style.gap = 'var(--space-4)';
+    wrap.className = 'tp3d-settings-stack';
 
     updatesData.forEach(u => {
       const card = doc.createElement('div');
@@ -378,10 +1326,9 @@ export function createSettingsOverlay({
 
       const header = doc.createElement('div');
       header.className = 'row space-between';
-      header.style.alignItems = 'flex-start';
 
       const left = doc.createElement('div');
-      left.innerHTML = `<div style="font-weight:var(--font-semibold);font-size:var(--text-lg)">Version ${u.version}</div><div class="muted" style="font-size:var(--text-xs)">${new Date(u.date).toLocaleDateString()}</div>`;
+      left.innerHTML = `<div class="tp3d-settings-card-title">Version ${u.version}</div><div class="muted tp3d-settings-meta">${new Date(u.date).toLocaleDateString()}</div>`;
       header.appendChild(left);
       card.appendChild(header);
 
@@ -393,15 +1340,12 @@ export function createSettingsOverlay({
 
       sections.forEach(s => {
         const t = doc.createElement('div');
-        t.style.marginTop = '12px';
-        t.style.fontWeight = 'var(--font-semibold)';
+        t.className = 'tp3d-settings-section-heading';
         t.textContent = s.title;
         card.appendChild(t);
 
         const ul = doc.createElement('ul');
-        ul.style.margin = '8px 0 0 16px';
-        ul.style.color = 'var(--text-secondary)';
-        ul.style.fontSize = 'var(--text-sm)';
+        ul.className = 'tp3d-settings-list';
         s.items.forEach(it => {
           const li = doc.createElement('li');
           li.textContent = it;
@@ -419,39 +1363,34 @@ export function createSettingsOverlay({
   // Render Roadmap content inside the modal
   function renderRoadmapContent(container) {
     const wrap = doc.createElement('div');
-    wrap.className = 'grid';
-    wrap.style.gap = 'var(--space-5)';
+    wrap.className = 'tp3d-settings-stack--loose';
 
     roadmapData.forEach(group => {
       const groupWrap = doc.createElement('div');
-      groupWrap.className = 'grid';
-      groupWrap.style.gap = '10px';
+      groupWrap.className = 'tp3d-settings-stack--tight';
 
       const h = doc.createElement('div');
-      h.style.fontSize = 'var(--text-lg)';
-      h.style.fontWeight = 'var(--font-semibold)';
+      h.className = 'tp3d-settings-card-title';
       h.textContent = group.quarter;
       groupWrap.appendChild(h);
 
       const grid = doc.createElement('div');
-      grid.className = 'grid';
-      grid.style.gap = 'var(--space-3)';
+      grid.className = 'tp3d-settings-stack--tight';
 
       group.items.forEach(item => {
         const card = doc.createElement('div');
-        card.className = 'card';
-        card.style.cursor = 'pointer';
+        card.className = 'card tp3d-settings-card--clickable';
         card.innerHTML = `
-          <div class="row space-between" style="gap:10px">
+          <div class="row space-between">
             <div style="font-weight:var(--font-semibold)">${item.title}</div>
-            <div class="badge" style="border-color:transparent;background:${item.color};color:white"><i class="${item.badgeIcon}"></i> ${item.status}</div>
+            <div class="badge tp3d-settings-roadmap-badge" style="background:${item.color}"><i class="${item.badgeIcon}"></i> ${item.status}</div>
           </div>
-          <div class="muted" style="font-size:var(--text-sm);margin-top:8px">${item.details}</div>
+          <div class="muted tp3d-settings-meta tp3d-settings-mt-sm">${item.details}</div>
         `;
         card.addEventListener('click', () => {
           UIComponents.showModal({
             title: item.title,
-            content: `<div class="muted" style="font-size:var(--text-sm)">${item.details}</div>`,
+            content: `<div class="muted tp3d-settings-meta">${item.details}</div>`,
             actions: [{ label: 'Close', variant: 'primary' }],
           });
         });
@@ -719,8 +1658,605 @@ export function createSettingsOverlay({
     container.appendChild(wrap);
   }
 
+  function getBillingApiSafely() {
+    try {
+      return typeof window !== 'undefined' ? window.__TP3D_BILLING || null : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function renderBillingInto(targetEl) {
+    if (!targetEl) return;
+    const api = getBillingApiSafely();
+    const fallbackState = {
+      ok: false,
+      pending: true,
+      loading: false,
+      plan: null,
+      status: null,
+      isActive: false,
+      isPro: false,
+      interval: null,
+      trialEndsAt: null,
+      currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
+      cancelAt: null,
+      portalAvailable: false,
+      error: null,
+      data: null,
+      lastFetchedAt: 0,
+    };
+
+    const state = (api && typeof api.getBillingState === 'function' ? api.getBillingState() : null) || fallbackState;
+    const lockedOrgId = ensureModalOrgId();
+    const currentOrgId = getOrgIdFromOrgContext();
+    const billingOrgId = normalizeOrgId(state.orgId || '');
+    const loading = Boolean(state.loading);
+    const pending = Boolean(state.pending);
+    const staleOrgState = Boolean(lockedOrgId && billingOrgId && billingOrgId !== lockedOrgId);
+    const billingMatchesLockedOrg = Boolean(lockedOrgId && billingOrgId && billingOrgId === lockedOrgId);
+    const hasRenderableBillingState = Boolean(billingMatchesLockedOrg && state.lastFetchedAt);
+    const showSkeleton = Boolean(
+      !lockedOrgId ||
+      staleOrgState ||
+      ((loading || pending) && !hasRenderableBillingState)
+    );
+    const status = state.status ? String(state.status) : '';
+    const isTrial = status === 'trialing';
+    const isProOrTrial = state.isPro;
+    const interval = state.interval ? String(state.interval) : '';
+    const intervalLabel = interval === 'month' ? 'Monthly' : interval === 'year' ? 'Yearly' : null;
+    const cancelAtPeriodEnd = Boolean(state.cancelAtPeriodEnd);
+    const cancelAt = state.cancelAt ? String(state.cancelAt) : null;
+    const hasCancelAt = Boolean(cancelAt && cancelAt.trim());
+    const isCancelScheduled = Boolean(
+      (status === 'active' || status === 'trialing') &&
+      (cancelAtPeriodEnd || hasCancelAt)
+    );
+    const cancelEndValue = cancelAt || state.currentPeriodEnd || null;
+    const portalAvailable = Boolean(state.portalAvailable);
+    const trialWelcomeShown = (() => {
+      try {
+        const orgId = lockedOrgId || billingOrgId || '';
+        if (!orgId || typeof window === 'undefined' || !window.localStorage) return false;
+        return window.localStorage.getItem('tp3d_trial_modal_shown_' + orgId) === 'true';
+      } catch (_) {
+        return false;
+      }
+    })();
+
+    // Compute trial days left
+    let trialDaysLeft = null;
+    if (isTrial && state.trialEndsAt) {
+      try {
+        const endMs = new Date(state.trialEndsAt).getTime();
+        if (Number.isFinite(endMs)) {
+          trialDaysLeft = Math.max(0, Math.ceil((endMs - Date.now()) / (24 * 60 * 60 * 1000)));
+        }
+      } catch (_) { /* ignore */ }
+    }
+
+    const isDebug = (() => {
+      try {
+        return typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1';
+      } catch {
+        return false;
+      }
+    })();
+    const billingRole = getRoleForOrg(lockedOrgId || billingOrgId);
+    const roleKnown = isKnownOrgRole(billingRole);
+    const canManageBilling = billingRole === 'owner' || billingRole === 'admin';
+    const orgProfileLoaded = hasOrgProfileForOrg(lockedOrgId);
+    const billingContextInflightForOrg = Boolean(
+      lockedOrgId &&
+      billingContextInflightPromise &&
+      billingContextInflightOrgId === lockedOrgId
+    );
+    const billingContextLoading = billingContextInflightForOrg;
+    if (lockedOrgId && (!orgProfileLoaded || !roleKnown)) {
+      ensureBillingContextHydrated(lockedOrgId, { source: 'org-billing:render' }).catch(() => { });
+    }
+    const orgContextStalled = Boolean(
+      lockedOrgId &&
+      !orgProfileLoaded &&
+      !billingContextLoading &&
+      billingContextLastAttemptAt &&
+      (Date.now() - billingContextLastAttemptAt) > BILLING_CONTEXT_RETRY_MS
+    );
+
+    // Build DOM
+    targetEl.textContent = '';
+
+    // --- Organization section ---
+    const orgMatchesLocked = orgProfileLoaded;
+    const orgName = orgMatchesLocked && orgData && orgData.name
+      ? String(orgData.name)
+      : (lockedOrgId ? 'Organization' : 'Personal Workspace');
+
+    const orgSection = doc.createElement('div');
+    orgSection.className = 'tp3d-settings-billing';
+
+    const orgHeading = doc.createElement('div');
+    orgHeading.className = 'tp3d-settings-billing-title';
+    orgHeading.textContent = 'Organization';
+    orgSection.appendChild(orgHeading);
+
+    const orgRow = doc.createElement('div');
+    orgRow.className = 'tp3d-settings-row';
+
+    const orgLabel = doc.createElement('div');
+    orgLabel.className = 'tp3d-settings-row-label';
+    orgLabel.textContent = 'Organization';
+    orgRow.appendChild(orgLabel);
+
+    const orgValue = doc.createElement('div');
+    orgValue.className = 'row';
+
+    if (lockedOrgId && !orgMatchesLocked && billingContextLoading) {
+      orgValue.classList.add('tp3d-billing-org-skeleton', 'tp3d-skel');
+      const avatarSkel = doc.createElement('span');
+      avatarSkel.className = 'tp3d-skel-line tp3d-billing-org-skeleton-avatar';
+      const nameSkel = doc.createElement('span');
+      nameSkel.className = 'tp3d-skel-line tp3d-billing-org-skeleton-name';
+      orgValue.appendChild(avatarSkel);
+      orgValue.appendChild(nameSkel);
+    } else {
+      const orgDataId = normalizeOrgId(orgData && orgData.id ? orgData.id : '');
+
+      // Org logo: prefer logo_path (Supabase Storage signed URL), fallback avatar_url, else initials
+      const orgLogoPath = orgMatchesLocked && orgData && orgData.logo_path ? String(orgData.logo_path) : null;
+      const orgAvatarUrl = orgMatchesLocked && orgData && orgData.avatar_url ? String(orgData.avatar_url) : null;
+      const orgAvatarSafe = orgAvatarUrl && /^https?:\/\//i.test(orgAvatarUrl) ? orgAvatarUrl : null;
+
+      // Create initials avatar as default (may be replaced by img)
+      const orgAvatarEl = doc.createElement('span');
+      orgAvatarEl.className = 'tp3d-settings-account-avatar tp3d-settings-avatar--sm';
+      orgAvatarEl.classList.add('tp3d-billing-avatar-initials');
+      orgAvatarEl.textContent = orgName.charAt(0).toUpperCase();
+      const orgId = orgMatchesLocked ? String(orgDataId) : '';
+      const logoKey = orgId + '|' + (orgLogoPath || orgAvatarSafe || '');
+      const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
+        ? lastOrgLogoUrl
+        : null;
+      /** @type {HTMLSpanElement|HTMLImageElement} */
+      let avatarNode = orgAvatarEl;
+      if (cachedLogoSrc) {
+        const cachedImg = doc.createElement('img');
+        cachedImg.src = cachedLogoSrc;
+        cachedImg.alt = orgName;
+        cachedImg.width = 28;
+        cachedImg.height = 28;
+        cachedImg.className = 'tp3d-settings-avatar-img';
+        cachedImg.onerror = () => {
+          if (cachedImg.parentNode) cachedImg.parentNode.replaceChild(orgAvatarEl, cachedImg);
+          avatarNode = orgAvatarEl;
+        };
+        avatarNode = cachedImg;
+      }
+      orgValue.appendChild(avatarNode);
+
+      // Async: try to load logo image (signed URL or avatar_url)
+      if (orgLogoPath || orgAvatarSafe) {
+        const loadLogo = async () => {
+          let logoSrc = null;
+          if (orgLogoPath && SupabaseClient && typeof SupabaseClient.getOrgLogoUrl === 'function') {
+            logoSrc = await SupabaseClient.getOrgLogoUrl(orgLogoPath, orgData.updated_at || '');
+          }
+          if (!logoSrc && orgAvatarSafe) {
+            logoSrc = orgAvatarSafe;
+          }
+          if (!logoSrc) return;
+          if (logoKey) {
+            lastOrgLogoKey = logoKey;
+            lastOrgLogoUrl = logoSrc;
+            lastOrgLogoExpiresAt = Date.now() + ORG_LOGO_CACHE_TTL_MS;
+          }
+
+          if (
+            avatarNode &&
+            avatarNode.tagName === 'IMG' &&
+            /** @type {HTMLImageElement} */ (avatarNode).src === logoSrc
+          ) return;
+
+          const orgImg = doc.createElement('img');
+          orgImg.src = logoSrc;
+          orgImg.alt = orgName;
+          orgImg.width = 28;
+          orgImg.height = 28;
+          orgImg.className = 'tp3d-settings-avatar-img';
+          orgImg.onload = function () {
+            if (avatarNode && avatarNode.parentNode) {
+              avatarNode.parentNode.replaceChild(orgImg, avatarNode);
+              avatarNode = orgImg;
+            }
+          };
+          orgImg.onerror = function () {
+            if (orgImg.parentNode) orgImg.parentNode.replaceChild(orgAvatarEl, orgImg);
+            avatarNode = orgAvatarEl;
+          };
+        };
+        loadLogo().catch(() => { });
+      }
+      const orgNameSpan = doc.createElement('span');
+      orgNameSpan.textContent = orgName;
+      orgValue.appendChild(orgNameSpan);
+    }
+    orgRow.appendChild(orgValue);
+
+    orgSection.appendChild(orgRow);
+
+    if (orgContextStalled) {
+      const orgHelper = doc.createElement('div');
+      orgHelper.className = 'muted tp3d-members-inline-helper';
+      orgHelper.textContent = 'Organization details are not available yet. Try Refresh.';
+      orgSection.appendChild(orgHelper);
+    }
+
+    const orgDivider = doc.createElement('div');
+    orgDivider.className = 'tp3d-settings-org-divider';
+    orgSection.appendChild(orgDivider);
+
+    targetEl.appendChild(orgSection);
+
+    // --- Subscription section ---
+    const subSection = doc.createElement('div');
+    subSection.className = 'tp3d-settings-billing';
+
+    const subHeading = doc.createElement('div');
+    subHeading.className = 'tp3d-settings-billing-title';
+    subHeading.textContent = 'Subscription';
+    subSection.appendChild(subHeading);
+
+    // Current plan card
+    const planCard = doc.createElement('div');
+    planCard.className = 'card';
+
+    if (showSkeleton) {
+      const skeletonGroup = doc.createElement('div');
+      skeletonGroup.className = 'tp3d-skeleton-group tp3d-skel';
+      skeletonGroup.innerHTML = `
+        <div class="tp3d-skel-line tp3d-skeleton-title"></div>
+        <div class="tp3d-skel-line tp3d-skeleton-short"></div>
+        <div class="tp3d-skel-line tp3d-skeleton-short"></div>
+      `;
+      planCard.appendChild(skeletonGroup);
+    } else if (state.error && !state.ok) {
+      const errMsg = doc.createElement('div');
+      errMsg.className = 'muted';
+      errMsg.textContent = 'Billing unavailable. The app continues to work normally.';
+      planCard.appendChild(errMsg);
+
+      const retryBtn = doc.createElement('button');
+      retryBtn.type = 'button';
+      retryBtn.className = 'btn tp3d-settings-mt-sm';
+      retryBtn.textContent = 'Retry';
+      retryBtn.addEventListener('click', () => {
+        if (api && typeof api.refreshBilling === 'function') {
+          api.refreshBilling({ force: true }).catch(() => { });
+        }
+      });
+      planCard.appendChild(retryBtn);
+    } else {
+      // Plan header row
+      const planHeader = doc.createElement('div');
+      planHeader.className = 'row';
+
+      const planName = doc.createElement('div');
+      planName.className = 'tp3d-settings-billing-title';
+      if (isTrial) {
+        planName.textContent = 'Pro (Trial)';
+      } else if (isProOrTrial) {
+        planName.textContent = intervalLabel ? `Pro (${intervalLabel})` : 'Pro';
+      } else {
+        planName.textContent = 'Free';
+      }
+      planHeader.appendChild(planName);
+
+      const planBadge = doc.createElement('span');
+      planBadge.className = 'badge' + (isProOrTrial ? ' badge--active' : ' badge--free');
+      planBadge.textContent = 'Current Plan';
+      planHeader.appendChild(planBadge);
+      let cancelEndText = '';
+      if (isCancelScheduled) {
+        const cancelBadge = doc.createElement('span');
+        cancelBadge.className = 'badge badge--pending';
+        cancelBadge.textContent = 'Cancels';
+        planHeader.appendChild(cancelBadge);
+        if (cancelEndValue) {
+          const endDate = new Date(cancelEndValue);
+          cancelEndText = 'Ends on ' + (isNaN(endDate.getTime()) ? cancelEndValue : endDate.toLocaleDateString());
+          const cancelInline = doc.createElement('span');
+          cancelInline.className = 'tp3d-billing-cancel-inline tp3d-org-feedback tp3d-org-feedback--warning';
+          cancelInline.textContent = cancelEndText;
+          planHeader.appendChild(cancelInline);
+        }
+      } else if (isProOrTrial && !isTrial && state.currentPeriodEnd) {
+        const renewDate = new Date(state.currentPeriodEnd);
+        const renewText = isNaN(renewDate.getTime()) ? String(state.currentPeriodEnd) : renewDate.toLocaleDateString();
+        const renewBadge = doc.createElement('span');
+        renewBadge.className = 'badge badge--pending';
+        renewBadge.textContent = 'Renews';
+        planHeader.appendChild(renewBadge);
+        const renewInline = doc.createElement('span');
+        renewInline.className = 'tp3d-billing-cancel-inline tp3d-org-feedback tp3d-org-feedback--warning';
+        renewInline.textContent = 'Renews on ' + renewText;
+        planHeader.appendChild(renewInline);
+      }
+
+      if (isTrial && !isCancelScheduled && state.trialEndsAt) {
+        const trialDate = new Date(state.trialEndsAt);
+        const trialDateText = isNaN(trialDate.getTime()) ? String(state.trialEndsAt) : trialDate.toLocaleDateString();
+        const trialBadge = doc.createElement('span');
+        trialBadge.className = 'badge badge--pending';
+        trialBadge.textContent = trialDaysLeft !== null
+          ? trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '') + ' left'
+          : 'Trial';
+        planHeader.appendChild(trialBadge);
+        const trialInline = doc.createElement('span');
+        trialInline.className = 'tp3d-billing-cancel-inline tp3d-org-feedback tp3d-org-feedback--warning';
+        trialInline.textContent = 'Ends on ' + trialDateText;
+        planHeader.appendChild(trialInline);
+      } else if (trialDaysLeft !== null) {
+        const daysEl = doc.createElement('span');
+        daysEl.className = 'muted';
+        daysEl.textContent = trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '') + ' left';
+        planHeader.appendChild(daysEl);
+      }
+
+      planCard.appendChild(planHeader);
+
+      // Status / cancellation info
+      const statusLine = doc.createElement('div');
+      statusLine.className = 'muted tp3d-settings-mt-xs';
+
+      if (isTrial && !isCancelScheduled && state.trialEndsAt) {
+        // date already shown inline in header row; no second line needed
+      } else if (isTrial && state.trialEndsAt) {
+        const endDate = new Date(state.trialEndsAt);
+        const endText = isNaN(endDate.getTime()) ? state.trialEndsAt : endDate.toLocaleDateString();
+        statusLine.textContent = trialWelcomeShown
+          ? 'You are on Pro trial until ' + endText
+          : 'Trial ends on ' + endText;
+      } else if (!isProOrTrial && status) {
+        statusLine.textContent = 'Status: ' + status.replace(/_/g, ' ');
+      }
+
+      if (statusLine.textContent && statusLine.textContent !== cancelEndText) {
+        planCard.appendChild(statusLine);
+      }
+    }
+
+    subSection.appendChild(planCard);
+
+    // Upgrade CTA card (only if not pro/active)
+    if (!showSkeleton && !loading && !pending && !isProOrTrial && roleKnown && canManageBilling) {
+      const ctaCard = doc.createElement('div');
+      ctaCard.className = 'card';
+
+      const ctaInfo = doc.createElement('div');
+      const ctaTitle = doc.createElement('div');
+      ctaTitle.className = 'tp3d-settings-billing-title';
+      ctaTitle.textContent = '\u26A1 Truck Packer Pro';
+      ctaInfo.appendChild(ctaTitle);
+      const ctaDesc = doc.createElement('div');
+      ctaDesc.className = 'muted';
+      ctaDesc.textContent = status === 'trial_expired'
+        ? 'Your trial has ended. Subscribe to continue using Pro features.'
+        : 'Subscribe to unlock Pro features for this workspace.';
+      ctaInfo.appendChild(ctaDesc);
+      ctaCard.appendChild(ctaInfo);
+
+      const subBtn = doc.createElement('button');
+      subBtn.type = 'button';
+      subBtn.className = 'btn btn-primary tp3d-settings-mt-sm';
+      subBtn.textContent = 'Subscribe';
+      subBtn.addEventListener('click', () => {
+        if (!api || typeof api.startCheckout !== 'function') {
+          if (UIComponents) UIComponents.showToast('Checkout coming soon. Contact sales.', 'info', { title: 'Billing' });
+          return;
+        }
+        const pickerPromise =
+          typeof api.pickCheckoutInterval === 'function'
+            ? api.pickCheckoutInterval({
+              initialInterval: selectedInterval,
+              title: 'Choose Plan',
+              continueLabel: 'Continue',
+            })
+            : Promise.resolve({ interval: selectedInterval });
+
+        Promise.resolve(pickerPromise).then(selection => {
+          if (!selection || !selection.interval) return;
+          selectedInterval = normalizeInterval(selection.interval);
+
+          if (typeof api.getCheckoutPlanOptions === 'function') {
+            const options = api.getCheckoutPlanOptions();
+            const selectedOption = options && options[selectedInterval] ? options[selectedInterval] : null;
+            if (selectedOption && !selectedOption.available) {
+              if (UIComponents) {
+                UIComponents.showToast(`Price not configured for interval: ${selectedInterval}`, 'warning', { title: 'Billing' });
+              }
+              return;
+            }
+          }
+
+          subBtn.disabled = true;
+          subBtn.textContent = 'Redirecting\u2026';
+          api.startCheckout({ interval: selectedInterval }).then((r) => {
+            if (!r.ok) {
+              if (UIComponents) UIComponents.showToast(r.error || 'Checkout failed', 'error', { title: 'Billing' });
+              subBtn.disabled = false;
+              subBtn.textContent = 'Subscribe';
+            }
+          }).catch(() => {
+            subBtn.disabled = false;
+            subBtn.textContent = 'Subscribe';
+          });
+        }).catch(() => {
+          if (UIComponents) UIComponents.showToast('Checkout failed', 'error', { title: 'Billing' });
+        });
+      });
+      ctaCard.appendChild(subBtn);
+
+      subSection.appendChild(ctaCard);
+    } else if (!showSkeleton && !loading && !pending && !isProOrTrial && roleKnown && !canManageBilling) {
+      const note = doc.createElement('div');
+      note.className = 'muted tp3d-settings-mt-sm';
+      note.textContent = 'Only owners and admins can manage billing for this organization.';
+      subSection.appendChild(note);
+    } else if (!showSkeleton && !loading && !pending && !isProOrTrial && !roleKnown) {
+      const note = doc.createElement('div');
+      note.className = 'muted tp3d-settings-mt-sm';
+      note.textContent = 'Loading permissions…';
+      subSection.appendChild(note);
+    }
+
+    const roleLoading = Boolean(lockedOrgId && !roleKnown && billingContextInflightForOrg);
+    let manageDisabledReason = '';
+    if (!lockedOrgId) {
+      manageDisabledReason = 'Select an organization to manage billing.';
+    } else if (loading || pending || staleOrgState) {
+      manageDisabledReason = 'Loading billing info…';
+    } else if (roleLoading) {
+      manageDisabledReason = 'Loading permissions…';
+    } else if (roleKnown && !canManageBilling) {
+      manageDisabledReason = 'Only owners/admins can manage billing.';
+    } else if (!state.ok || !portalAvailable || !isProOrTrial || !api || typeof api.openPortal !== 'function') {
+      manageDisabledReason = "Billing portal isn't available yet. Try Refresh.";
+    }
+    const manageEnabled = !manageDisabledReason;
+
+    if (debugEnabled()) {
+      console.debug(
+        `[BillingUI] activeOrgId=${currentOrgId || 'none'}, modalLockedOrgId=${lockedOrgId || 'none'}, billingOrgId=${billingOrgId || 'none'}, orgProfileLoaded=${orgProfileLoaded}, role=${billingRole || 'null'}, manageEnabled=${manageEnabled}, disableReason=${manageDisabledReason || 'none'}, portalAvailable=${portalAvailable}, loading=${loading}, status=${status || 'none'}, interval=${interval || 'none'}, cancelAtPeriodEnd=${cancelAtPeriodEnd}, cancelAt=${cancelAt || 'null'}, currentPeriodEnd=${state.currentPeriodEnd || 'null'}, computedIsCancelScheduled=${isCancelScheduled}`
+      );
+    }
+
+    if (showSkeleton) {
+      const actionsSkeleton = doc.createElement('div');
+      actionsSkeleton.className = 'row tp3d-billing-actions tp3d-skel tp3d-billing-skel-actions';
+      actionsSkeleton.innerHTML = `
+        <span class="tp3d-skel-btn"></span>
+        <span class="tp3d-skel-btn"></span>
+      `;
+      subSection.appendChild(actionsSkeleton);
+    } else {
+      // Action buttons row
+      const actionsRow = doc.createElement('div');
+      actionsRow.className = 'row tp3d-billing-actions';
+
+      const manageWrap = doc.createElement('span');
+      manageWrap.className = 'tp3d-billing-manage-wrap';
+      const manageBtn = doc.createElement('button');
+      manageBtn.type = 'button';
+      manageBtn.className = 'btn btn-secondary';
+      manageBtn.textContent = 'Manage';
+      manageBtn.disabled = Boolean(manageDisabledReason);
+      if (manageDisabledReason) {
+        manageBtn.setAttribute('aria-label', `Manage disabled: ${manageDisabledReason}`);
+      }
+      manageBtn.addEventListener('click', () => {
+        if (manageBtn.disabled || !api || typeof api.openPortal !== 'function') return;
+        manageBtn.disabled = true;
+        manageBtn.textContent = 'Redirecting\u2026';
+        api.openPortal().then((r) => {
+          if (!r.ok) {
+            if (UIComponents) UIComponents.showToast(r.error || 'Portal session failed', 'error', { title: 'Billing' });
+            manageBtn.disabled = false;
+            manageBtn.textContent = 'Manage';
+          }
+        }).catch(() => {
+          manageBtn.disabled = false;
+          manageBtn.textContent = 'Manage';
+        });
+      });
+      manageWrap.appendChild(manageBtn);
+      actionsRow.appendChild(manageWrap);
+
+      const refreshBtn = doc.createElement('button');
+      refreshBtn.type = 'button';
+      refreshBtn.className = 'btn btn-secondary';
+      refreshBtn.textContent = 'Refresh';
+      refreshBtn.disabled = Boolean(loading || !lockedOrgId);
+      refreshBtn.addEventListener('click', () => {
+        if (!lockedOrgId) return;
+        ensureBillingContextHydrated(lockedOrgId, { force: true, source: 'org-billing:refresh' }).catch(() => { });
+        if (api && typeof api.refreshBilling === 'function') {
+          api.refreshBilling({ force: true }).catch(() => { });
+        }
+      });
+      actionsRow.appendChild(refreshBtn);
+      subSection.appendChild(actionsRow);
+    }
+
+    targetEl.appendChild(subSection);
+
+    // --- Debug diagnostics (dev only, inside <details>) ---
+    if (isDebug) {
+      const details = doc.createElement('details');
+      details.className = 'tp3d-settings-billing tp3d-settings-debug';
+
+      const summary = doc.createElement('summary');
+      summary.className = 'muted';
+      summary.textContent = 'Diagnostics';
+      details.appendChild(summary);
+
+      const lastEl = doc.createElement('div');
+      lastEl.className = 'muted';
+      lastEl.textContent = 'Last fetched: ' + (state.lastFetchedAt ? new Date(state.lastFetchedAt).toLocaleString() : 'never');
+      details.appendChild(lastEl);
+
+      if (state.error) {
+        const errEl = doc.createElement('div');
+        errEl.className = 'muted';
+        errEl.textContent = 'Error: ' + (typeof state.error === 'string' ? state.error : state.error.message || String(state.error));
+        details.appendChild(errEl);
+      }
+
+      const pre = doc.createElement('pre');
+      pre.textContent = JSON.stringify(state, null, 2);
+      details.appendChild(pre);
+
+      targetEl.appendChild(details);
+    }
+  }
+
+  function ensureBillingSubscription() {
+    const api = getBillingApiSafely();
+    if (!api || typeof api.subscribeBilling !== 'function') return;
+    if (billingUnsubscribe) return;
+
+    billingSubscriptionToken += 1;
+    const currentToken = billingSubscriptionToken;
+    const maybeUnsub = api.subscribeBilling(() => {
+      // Always target the latest wrap if the DOM was re-rendered
+      const wrap = doc.getElementById('tp3d-billing-wrap');
+      if (!wrap) return;
+      try {
+        renderBillingInto(wrap);
+      } catch (err) {
+        debug('billing render failed', { err, token: currentToken });
+      }
+    });
+
+    billingUnsubscribe = typeof maybeUnsub === 'function'
+      ? () => {
+        try {
+          maybeUnsub();
+        } catch {
+          // ignore
+        }
+        billingUnsubscribe = null;
+      }
+      : () => {
+        billingUnsubscribe = null;
+      };
+  }
+
   function render() {
-    if (!settingsOverlay) return;
+    if (!settingsOverlay) {
+      return null;
+    }
     const prefs = PreferencesManager.get();
 
     settingsLeftPane.innerHTML = '';
@@ -728,6 +2264,19 @@ export function createSettingsOverlay({
 
     // Left: account switcher button
     const userView = getCurrentUserView();
+    const orgContextId = getOrgIdFromOrgContext();
+    const lockedOrgId = ensureModalOrgId();
+    const hasOrg = Boolean(
+      lockedOrgId ||
+      (orgData && orgData.id) ||
+      (membershipData && membershipData.organization_id) ||
+      orgContextId
+    );
+    const isOrgHydrating = Boolean(
+      userView.isAuthed &&
+      !hasOrg &&
+      (isLoadingAccountBundle || isLoadingMembership || isLoadingOrg)
+    );
     const accountBtn = doc.createElement('button');
     accountBtn.type = 'button';
     accountBtn.className = 'btn';
@@ -750,6 +2299,8 @@ export function createSettingsOverlay({
     // Left: settings navigation
     const navWrap = doc.createElement('div');
     navWrap.classList.add('tp3d-settings-nav-wrap');
+    navWrap.dataset.settingsTabs = '1';
+    navWrap.setAttribute('role', 'tablist');
 
     const makeHeader = text => {
       const h = doc.createElement('div');
@@ -759,12 +2310,17 @@ export function createSettingsOverlay({
       return h;
     };
 
-    const makeItem = ({ key, label, icon, indent }) => {
+    /**
+     * @param {{ key: string, label: string, icon?: string, indent?: boolean, disabled?: boolean, disabledReason?: string }} opts
+     */
+    const makeItem = ({ key, label, icon, indent = false, disabled = false }) => {
       const btn = doc.createElement('button');
       btn.type = 'button';
       btn.className = 'nav-btn';
       btn.classList.add('tp3d-settings-nav-item');
+      if (disabled) btn.classList.add('is-disabled');
       btn.dataset.settingsTab = key;
+      btn.setAttribute('role', 'tab');
 
       if (icon) {
         const i = doc.createElement('i');
@@ -779,8 +2335,13 @@ export function createSettingsOverlay({
       text.classList.add('tp3d-settings-nav-label');
       btn.appendChild(text);
 
-      btn.classList.toggle('active', settingsActiveTab === key);
-      btn.addEventListener('click', () => setActive(key));
+      const isActive = _tabState.activeTabId === key;
+      btn.classList.toggle('active', isActive);
+      btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      btn.setAttribute('tabindex', isActive ? '0' : '-1');
+      btn.disabled = Boolean(disabled);
+      btn.dataset.tab = key;
+      btn.dataset.settingsTab = key;
       return btn;
     };
 
@@ -794,7 +2355,24 @@ export function createSettingsOverlay({
       makeItem({ key: 'org-general', label: 'General', icon: 'fa-regular fa-building', indent: true })
     );
     navWrap.appendChild(
-      makeItem({ key: 'org-billing', label: 'Billing', icon: 'fa-regular fa-credit-card', indent: true })
+      makeItem({
+        key: 'org-members',
+        label: 'Members',
+        icon: 'fa-solid fa-users',
+        indent: true,
+        disabled: !hasOrg,
+        disabledReason: isOrgHydrating ? 'Loading organization…' : 'No active organization selected.',
+      })
+    );
+    navWrap.appendChild(
+      makeItem({
+        key: 'org-billing',
+        label: 'Billing',
+        icon: 'fa-regular fa-credit-card',
+        indent: true,
+        disabled: !hasOrg,
+        disabledReason: isOrgHydrating ? 'Loading organization…' : 'No active organization selected.',
+      })
     );
     settingsLeftPane.appendChild(navWrap);
 
@@ -804,7 +2382,7 @@ export function createSettingsOverlay({
     header.classList.add('tp3d-settings-right-header');
 
     const meta = (() => {
-      switch (settingsActiveTab) {
+      switch (_tabState.activeTabId) {
         case 'preferences':
           return {
             title: 'Preferences',
@@ -861,6 +2439,11 @@ export function createSettingsOverlay({
             title: 'Organization',
             helper: 'View workspace details and role.',
           };
+        case 'org-members':
+          return {
+            title: 'Members',
+            helper: 'Manage workspace members and roles.',
+          };
         case 'org-billing':
           return {
             title: 'Billing',
@@ -875,9 +2458,7 @@ export function createSettingsOverlay({
     })();
 
     const headerLeft = doc.createElement('div');
-    headerLeft.className = 'row';
-    headerLeft.style.gap = 'var(--space-3)';
-    headerLeft.style.alignItems = 'center';
+    headerLeft.className = 'tp3d-settings-header-row';
 
     // Back button for sub-views
     if (meta.showBack) {
@@ -885,7 +2466,6 @@ export function createSettingsOverlay({
       backBtn.type = 'button';
       backBtn.className = 'btn btn-ghost';
       backBtn.innerHTML = '<i class="fa-solid fa-arrow-left"></i>';
-      backBtn.title = 'Back to Resources';
       backBtn.addEventListener('click', () => setResourcesSubView('root'));
       headerLeft.appendChild(backBtn);
     }
@@ -918,6 +2498,8 @@ export function createSettingsOverlay({
 
     const body = doc.createElement('div');
     body.classList.add('tp3d-settings-right-body');
+    body.setAttribute('data-tab-panel', _tabState.activeTabId);
+    body.hidden = false;
     settingsRightPane.appendChild(body);
 
     function row(label, valueEl) {
@@ -931,7 +2513,7 @@ export function createSettingsOverlay({
       return wrap;
     }
 
-    if (settingsActiveTab === 'preferences') {
+    if (_tabState.activeTabId === 'preferences') {
       const length = doc.createElement('select');
       length.className = 'select';
       length.innerHTML = `
@@ -981,6 +2563,50 @@ export function createSettingsOverlay({
       body.appendChild(row('Label Font Size', labelSize));
       body.appendChild(row('Theme', theme));
 
+      const showShadowControls = false;
+      if (showShadowControls) {
+        const sceneManager = typeof getSceneManager === 'function' ? getSceneManager() : null;
+        const renderer = sceneManager && typeof sceneManager.getRenderer === 'function' ? sceneManager.getRenderer() : null;
+        const perf = sceneManager && typeof sceneManager.getPerf === 'function' ? sceneManager.getPerf() : null;
+        const hasRenderer = Boolean(renderer && renderer.shadowMap);
+        const shadowsEnabled = hasRenderer && renderer.shadowMap.enabled;
+        const perfMode = Boolean(perf && perf.perfMode);
+
+        const shadowRow = doc.createElement('div');
+        shadowRow.className = 'tp3d-settings-inline-row';
+
+        const shadowStatus = doc.createElement('div');
+        shadowStatus.className = 'muted tp3d-settings-meta';
+        shadowStatus.textContent = !hasRenderer
+          ? 'Unavailable'
+          : shadowsEnabled
+            ? 'Enabled'
+            : perfMode
+              ? 'Disabled (performance mode)'
+              : 'Disabled';
+
+        const restoreBtn = doc.createElement('button');
+        restoreBtn.type = 'button';
+        restoreBtn.className = 'btn btn-ghost';
+        restoreBtn.textContent = 'Restore shadows';
+        restoreBtn.disabled = !sceneManager || !hasRenderer || shadowsEnabled === true;
+        restoreBtn.addEventListener('click', () => {
+          if (!sceneManager || typeof sceneManager.restoreShadows !== 'function') return;
+          const ok = sceneManager.restoreShadows();
+          if (ok) {
+            shadowStatus.textContent = 'Enabled';
+            restoreBtn.disabled = true;
+            UIComponents.showToast('Shadows restored', 'success', { title: 'View', duration: 1600 });
+          } else {
+            UIComponents.showToast('Shadows unavailable', 'warning', { title: 'View', duration: 1600 });
+          }
+        });
+
+        shadowRow.appendChild(shadowStatus);
+        shadowRow.appendChild(restoreBtn);
+        body.appendChild(row('Shadows', shadowRow));
+      }
+
       const actions = doc.createElement('div');
       actions.className = 'row';
       actions.classList.add('tp3d-settings-actions-row');
@@ -999,7 +2625,7 @@ export function createSettingsOverlay({
       );
       actions.appendChild(saveBtn);
       body.appendChild(actions);
-    } else if (settingsActiveTab === 'resources') {
+    } else if (_tabState.activeTabId === 'resources') {
       // Handle sub-views within Resources
       if (resourcesSubView === 'updates') {
         // Render embedded Updates content
@@ -1017,12 +2643,6 @@ export function createSettingsOverlay({
         // Root view: show buttons
         const container = doc.createElement('div');
         container.className = 'grid';
-
-        const runResourceAction = (cb, { closeFirst = true } = {}) => {
-          if (typeof cb !== 'function') return;
-          if (closeFirst) close();
-          cb();
-        };
 
         const makeBtn = (label, variant, onClick) => {
           const btn = doc.createElement('button');
@@ -1049,13 +2669,15 @@ export function createSettingsOverlay({
         container.appendChild(helpBtn);
         body.appendChild(container);
       }
-    } else if (settingsActiveTab === 'account') {
-      const userView = getCurrentUserView(profileData);
+    } else if (_tabState.activeTabId === 'account') {
+      const accountUserView = getCurrentUserView(profileData);
 
-      // Load profile if not already loaded
-      if (!profileData && !isLoadingProfile && userView.isAuthed) {
-        loadProfile()
-          .then(() => render())
+      // Load all account data via bundle if profile not already loaded
+      // This uses the epoch-validated single-flight approach to prevent stale data
+      if (!profileData && !isLoadingProfile && !isLoadingAccountBundle && accountUserView.isAuthed) {
+        const actionId = _tabState.lastActionId;
+        loadAccountBundle()
+          .then(() => renderIfFresh(actionId, 'account-bundle'))
           .catch(() => { });
       }
 
@@ -1067,6 +2689,9 @@ export function createSettingsOverlay({
 
       const avatarPreview = doc.createElement('div');
       avatarPreview.className = 'brand-mark tp3d-account-avatar-preview';
+      if (isUploadingAvatar) {
+        avatarPreview.classList.add('is-uploading');
+      }
 
       if (profileData && profileData.avatar_url) {
         avatarPreview.classList.add('has-image');
@@ -1079,48 +2704,51 @@ export function createSettingsOverlay({
         img.className = 'tp3d-account-avatar-img';
         avatarPreview.appendChild(img);
       } else {
-        avatarPreview.textContent = userView.initials || '';
-      }
-
-      const avatarButtons = doc.createElement('div');
-      avatarButtons.className = 'tp3d-account-avatar-buttons';
-
-      const uploadBtn = doc.createElement('button');
-      uploadBtn.type = 'button';
-      uploadBtn.className = 'btn btn-secondary';
-      uploadBtn.textContent = profileData && profileData.avatar_url ? 'Change Avatar' : 'Upload Avatar';
-      uploadBtn.disabled = !userView.isAuthed;
-
-      const fileInput = doc.createElement('input');
-      fileInput.type = 'file';
-      fileInput.accept = 'image/png,image/jpeg,image/jpg,image/webp';
-      fileInput.setAttribute('aria-hidden', 'true');
-      fileInput.classList.add('visually-hidden');
-
-      uploadBtn.addEventListener('click', () => fileInput.click());
-      fileInput.addEventListener('change', async e => {
-        const file = e.target.files && e.target.files[0];
-        if (file) {
-          await handleAvatarUpload(file);
-          fileInput.value = '';
-        }
-      });
-
-      avatarButtons.appendChild(uploadBtn);
-
-      if (profileData && profileData.avatar_url) {
-        const removeBtn = doc.createElement('button');
-        removeBtn.type = 'button';
-        removeBtn.className = 'btn btn-ghost';
-        removeBtn.textContent = 'Remove';
-        removeBtn.disabled = !userView.isAuthed;
-        removeBtn.addEventListener('click', () => handleAvatarRemove());
-        avatarButtons.appendChild(removeBtn);
+        avatarPreview.textContent = accountUserView.initials || '';
       }
 
       avatarContainer.appendChild(avatarPreview);
-      avatarContainer.appendChild(avatarButtons);
-      avatarContainer.appendChild(fileInput);
+      if (isEditingProfile) {
+        const avatarButtons = doc.createElement('div');
+        avatarButtons.className = 'tp3d-account-avatar-buttons';
+
+        const uploadBtn = doc.createElement('button');
+        uploadBtn.type = 'button';
+        uploadBtn.className = 'btn btn-secondary';
+        uploadBtn.textContent = profileData && profileData.avatar_url ? 'Change Avatar' : 'Upload Avatar';
+        uploadBtn.disabled = !accountUserView.isAuthed || isUploadingAvatar;
+
+        const fileInput = doc.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = 'image/png,image/jpeg,image/jpg,image/webp';
+        fileInput.setAttribute('aria-hidden', 'true');
+        fileInput.classList.add('visually-hidden');
+
+        uploadBtn.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', async e => {
+          const inputEl = /** @type {HTMLInputElement|null} */ (e.target);
+          const file = inputEl && inputEl.files ? inputEl.files[0] : null;
+          if (file) {
+            await handleAvatarUpload(file);
+            fileInput.value = '';
+          }
+        });
+
+        avatarButtons.appendChild(uploadBtn);
+
+        if (profileData && profileData.avatar_url) {
+          const removeBtn = doc.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.className = 'btn btn-ghost';
+          removeBtn.textContent = 'Remove';
+          removeBtn.disabled = !accountUserView.isAuthed || isUploadingAvatar;
+          removeBtn.addEventListener('click', () => handleAvatarRemove());
+          avatarButtons.appendChild(removeBtn);
+        }
+
+        avatarContainer.appendChild(avatarButtons);
+        avatarContainer.appendChild(fileInput);
+      }
       avatarSection.appendChild(avatarContainer);
       body.appendChild(avatarSection);
 
@@ -1174,7 +2802,6 @@ export function createSettingsOverlay({
         firstNameInput.placeholder = 'Your first name';
         firstNameField.appendChild(firstNameLabel);
         firstNameField.appendChild(firstNameInput);
-        form.appendChild(firstNameField);
 
         // Last Name field
         const lastNameField = doc.createElement('div');
@@ -1190,7 +2817,12 @@ export function createSettingsOverlay({
         lastNameInput.placeholder = 'Your last name';
         lastNameField.appendChild(lastNameLabel);
         lastNameField.appendChild(lastNameInput);
-        form.appendChild(lastNameField);
+
+        const nameRow = doc.createElement('div');
+        nameRow.className = 'tp3d-account-field-row';
+        nameRow.appendChild(firstNameField);
+        nameRow.appendChild(lastNameField);
+        form.appendChild(nameRow);
 
         // Bio field
         const bioField = doc.createElement('div');
@@ -1224,7 +2856,11 @@ export function createSettingsOverlay({
         const saveBtn = doc.createElement('button');
         saveBtn.type = 'submit';
         saveBtn.className = 'btn btn-primary';
-        saveBtn.textContent = isSavingProfile ? 'Saving...' : 'Save Changes';
+        if (isSavingProfile) {
+          saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving…';
+        } else {
+          saveBtn.textContent = 'Save Changes';
+        }
         saveBtn.disabled = isSavingProfile;
 
         actions.appendChild(cancelBtn);
@@ -1237,49 +2873,64 @@ export function createSettingsOverlay({
         const viewContainer = doc.createElement('div');
         viewContainer.className = 'grid';
 
-        // Display name
-        const displayNameEl = doc.createElement('div');
-        displayNameEl.textContent = (profileData && profileData.display_name) || userView.displayName || '\u2014';
-        viewContainer.appendChild(row('Display Name', displayNameEl));
+        if (!profileData && (isLoadingProfile || isLoadingAccountBundle)) {
+          const makeSkeleton = () => {
+            const el = doc.createElement('div');
+            el.className = 'tp3d-skeleton tp3d-skeleton-short';
+            return el;
+          };
+          viewContainer.appendChild(row('Display Name', makeSkeleton()));
+          viewContainer.appendChild(row('First Name', makeSkeleton()));
+          viewContainer.appendChild(row('Last Name', makeSkeleton()));
+          viewContainer.appendChild(row('Bio', makeSkeleton()));
+          viewContainer.appendChild(row('Email', makeSkeleton()));
+        } else {
+          // Display name
+          const displayNameEl = doc.createElement('div');
+          displayNameEl.textContent =
+            (profileData && profileData.display_name) || accountUserView.displayName || '\u2014';
+          viewContainer.appendChild(row('Display Name', displayNameEl));
 
-        // First name
-        if (profileData) {
-          const firstNameEl = doc.createElement('div');
-          firstNameEl.textContent = profileData.first_name || '\u2014';
-          viewContainer.appendChild(row('First Name', firstNameEl));
+          // First name
+          if (profileData) {
+            const firstNameEl = doc.createElement('div');
+            firstNameEl.textContent = profileData.first_name || '\u2014';
+            viewContainer.appendChild(row('First Name', firstNameEl));
 
-          // Last name
-          const lastNameEl = doc.createElement('div');
-          lastNameEl.textContent = profileData.last_name || '\u2014';
-          viewContainer.appendChild(row('Last Name', lastNameEl));
+            // Last name
+            const lastNameEl = doc.createElement('div');
+            lastNameEl.textContent = profileData.last_name || '\u2014';
+            viewContainer.appendChild(row('Last Name', lastNameEl));
 
-          // Bio
-          if (profileData.bio) {
-            const bioEl = doc.createElement('div');
-            bioEl.textContent = profileData.bio;
-            viewContainer.appendChild(row('Bio', bioEl));
+            // Bio
+            if (profileData.bio) {
+              const bioEl = doc.createElement('div');
+              bioEl.textContent = profileData.bio;
+              viewContainer.appendChild(row('Bio', bioEl));
+            }
           }
-        }
 
-        // Email
-        const emailEl = doc.createElement('div');
-        emailEl.textContent = userView.isAuthed && userView.email ? userView.email : 'Not signed in';
-        viewContainer.appendChild(row('Email', emailEl));
+          // Email
+          const emailEl = doc.createElement('div');
+          emailEl.textContent =
+            accountUserView.isAuthed && accountUserView.email ? accountUserView.email : 'Not signed in';
+          viewContainer.appendChild(row('Email', emailEl));
 
-        // Edit button
-        if (userView.isAuthed && profileData) {
-          const editActions = doc.createElement('div');
-          editActions.className = 'tp3d-account-actions';
-          const editBtn = doc.createElement('button');
-          editBtn.type = 'button';
-          editBtn.className = 'btn btn-primary';
-          editBtn.textContent = 'Edit Profile';
-          editBtn.addEventListener('click', () => {
-            isEditingProfile = true;
-            render();
-          });
-          editActions.appendChild(editBtn);
-          viewContainer.appendChild(editActions);
+          // Edit button
+          if (accountUserView.isAuthed && profileData) {
+            const editActions = doc.createElement('div');
+            editActions.className = 'tp3d-account-actions';
+            const editBtn = doc.createElement('button');
+            editBtn.type = 'button';
+            editBtn.className = 'btn btn-primary';
+            editBtn.textContent = 'Edit Profile';
+            editBtn.addEventListener('click', () => {
+              isEditingProfile = true;
+              render();
+            });
+            editActions.appendChild(editBtn);
+            viewContainer.appendChild(editActions);
+          }
         }
 
         profileSection.appendChild(viewContainer);
@@ -1306,7 +2957,7 @@ export function createSettingsOverlay({
       deleteBtn.type = 'button';
       deleteBtn.className = 'btn btn-danger';
       deleteBtn.textContent = 'Delete Account';
-      deleteBtn.disabled = !userView.isAuthed;
+      deleteBtn.disabled = !accountUserView.isAuthed;
       deleteBtn.addEventListener('click', () => {
         // Create confirmation modal content
         const modalContent = doc.createElement('div');
@@ -1345,7 +2996,10 @@ export function createSettingsOverlay({
         modalContent.appendChild(dangerMsg);
         modalContent.appendChild(confirmWrap);
 
-        const isValid = () => String(confirmInput.value || '').trim().toUpperCase() === 'DELETE';
+        const isValid = () =>
+          String(confirmInput.value || '')
+            .trim()
+            .toUpperCase() === 'DELETE';
 
         // Show modal
         const modalRef = UIComponents.showModal({
@@ -1507,28 +3161,19 @@ export function createSettingsOverlay({
       dangerRow.appendChild(dRight);
       danger.appendChild(dangerRow);
       body.appendChild(danger);
-    } else if (settingsActiveTab === 'org-general') {
-      const userView = getCurrentUserView(profileData);
+    } else if (_tabState.activeTabId === 'org-general') {
+      const orgUserView = getCurrentUserView(profileData);
 
-      // Load membership first if not already loaded
-      if (!membershipData && !isLoadingMembership && userView.isAuthed) {
-        isLoadingMembership = true;
-        SupabaseClient.getMyMembership()
-          .then(mem => {
-            membershipData = mem;
-            isLoadingMembership = false;
-            if (mem && mem.organization_id) {
-              // Now load the organization
-              return loadOrganization(mem.organization_id);
-            }
-            return null;
-          })
+      // Load all account data via bundle if not already loaded
+      // This uses the epoch-validated single-flight approach to prevent stale data
+      if (!membershipData && !orgData && !isLoadingAccountBundle && !isLoadingMembership && orgUserView.isAuthed) {
+        const actionId = _tabState.lastActionId;
+        loadAccountBundle()
           .then(() => {
-            render();
+            renderIfFresh(actionId, 'org-bundle');
           })
           .catch(() => {
-            isLoadingMembership = false;
-            render();
+            renderIfFresh(actionId, 'org-bundle-error');
           });
       }
 
@@ -1556,8 +3201,12 @@ export function createSettingsOverlay({
       };
 
       // Determine if user is owner/admin using membership.role
-      const isOwnerOrAdmin =
-        membershipData && (membershipData.role === 'owner' || membershipData.role === 'admin');
+      const orgRole = String(
+        (orgData && orgData.role) ||
+        (membershipData && membershipData.role) ||
+        ''
+      ).toLowerCase();
+      const isOwnerOrAdmin = orgRole === 'owner' || orgRole === 'admin';
 
       if (isEditingOrg && orgData && isOwnerOrAdmin) {
         // Edit mode
@@ -1576,8 +3225,13 @@ export function createSettingsOverlay({
             postal_code: formData.get('postal_code') || null,
             country: formData.get('country') || null,
           };
-          if (membershipData && membershipData.organization_id) {
-            saveOrganization(updates, membershipData.organization_id);
+          const orgIdForSave = String(
+            (orgData && orgData.id) ||
+            (membershipData && membershipData.organization_id) ||
+            ''
+          ).trim();
+          if (orgIdForSave) {
+            saveOrganization(updates, orgIdForSave);
           }
         });
 
@@ -1598,13 +3252,139 @@ export function createSettingsOverlay({
           return field;
         };
 
+        const makeFieldRow = (leftField, rightField) => {
+          const fieldRow = doc.createElement('div');
+          fieldRow.className = 'tp3d-account-field-row tp3d-org-field-row';
+          if (leftField) fieldRow.appendChild(leftField);
+          if (rightField) fieldRow.appendChild(rightField);
+          return fieldRow;
+        };
+
+        const logoCell = doc.createElement('div');
+        logoCell.className = 'row';
+
+        const logoPreview = doc.createElement('span');
+        logoPreview.className = 'tp3d-settings-account-avatar tp3d-settings-avatar--lg';
+        logoPreview.style.background = 'var(--accent-primary)';
+        logoPreview.textContent = (orgData.name || 'W').charAt(0).toUpperCase();
+        const orgId = orgData && orgData.id ? String(orgData.id) : '';
+        const orgLogoPath2 = orgData.logo_path ? String(orgData.logo_path) : null;
+        const orgAvatarUrl2 = orgData.avatar_url ? String(orgData.avatar_url) : null;
+        const logoKey = orgId + '|' + (orgLogoPath2 || orgAvatarUrl2 || '');
+        const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
+          ? lastOrgLogoUrl
+          : null;
+        /** @type {HTMLSpanElement|HTMLImageElement} */
+        let logoNode = logoPreview;
+        if (cachedLogoSrc) {
+          const cachedImg = doc.createElement('img');
+          cachedImg.src = cachedLogoSrc;
+          cachedImg.alt = orgData.name || 'Logo';
+          cachedImg.width = 40;
+          cachedImg.height = 40;
+          cachedImg.className = 'tp3d-settings-avatar-img';
+          cachedImg.onerror = () => {
+            if (cachedImg.parentNode) cachedImg.parentNode.replaceChild(logoPreview, cachedImg);
+            logoNode = logoPreview;
+          };
+          logoNode = cachedImg;
+        }
+        logoCell.appendChild(logoNode);
+
+        if (orgLogoPath2 || orgAvatarUrl2) {
+          const loadLogo2 = async () => {
+            let src = null;
+            if (orgLogoPath2 && SupabaseClient && typeof SupabaseClient.getOrgLogoUrl === 'function') {
+              src = await SupabaseClient.getOrgLogoUrl(orgLogoPath2, orgData.updated_at || '');
+            }
+            if (!src && orgAvatarUrl2 && /^https?:\/\//i.test(orgAvatarUrl2)) src = orgAvatarUrl2;
+            if (!src) return;
+            if (logoKey) {
+              lastOrgLogoKey = logoKey;
+              lastOrgLogoUrl = src;
+              lastOrgLogoExpiresAt = Date.now() + ORG_LOGO_CACHE_TTL_MS;
+            }
+            if (
+              logoNode &&
+              logoNode.tagName === 'IMG' &&
+              /** @type {HTMLImageElement} */ (logoNode).src === src
+            ) return;
+            const img = doc.createElement('img');
+            img.src = src;
+            img.alt = orgData.name || 'Logo';
+            img.width = 40;
+            img.height = 40;
+            img.className = 'tp3d-settings-avatar-img';
+            img.onload = () => {
+              if (logoNode && logoNode.parentNode) {
+                logoNode.parentNode.replaceChild(img, logoNode);
+                logoNode = img;
+              }
+            };
+            img.onerror = () => {
+              if (img.parentNode) img.parentNode.replaceChild(logoPreview, img);
+              logoNode = logoPreview;
+            };
+          };
+          loadLogo2().catch(() => { });
+        }
+
+        const logoInput = doc.createElement('input');
+        logoInput.type = 'file';
+        logoInput.accept = 'image/png,image/jpeg,image/webp';
+        logoInput.style.display = 'none';
+        logoInput.addEventListener('change', () => {
+          const f = logoInput.files && logoInput.files[0];
+          const orgIdLocal = String(
+            (orgData && orgData.id) ||
+            (membershipData && membershipData.organization_id) ||
+            ''
+          ).trim();
+          if (!f || !orgIdLocal) return;
+          UIComponents.showToast('Uploading logo…', 'info', { title: 'Organization' });
+          SupabaseClient.uploadOrgLogo(orgIdLocal, f)
+            .then(() => {
+              UIComponents.showToast('Logo updated', 'success');
+              // Clear overlay logo cache so re-render fetches the new logo
+              lastOrgLogoKey = null;
+              lastOrgLogoUrl = null;
+              lastOrgLogoExpiresAt = 0;
+              return loadOrganization(orgIdLocal);
+            })
+            .then(() => render())
+            .catch(err => {
+              UIComponents.showToast('Upload failed: ' + (err && err.message ? err.message : err), 'error');
+            });
+        });
+        logoCell.appendChild(logoInput);
+
+        const changeBtn = doc.createElement('button');
+        changeBtn.type = 'button';
+        changeBtn.className = 'btn';
+        changeBtn.textContent = 'Change Logo';
+        changeBtn.addEventListener('click', () => logoInput.click());
+        logoCell.appendChild(changeBtn);
+
+        form.appendChild(orgRow('Logo', logoCell));
         form.appendChild(makeField('Name', 'name', orgData.name || '', 'Organization name'));
-        form.appendChild(makeField('Phone', 'phone', orgData.phone || '', '+1 (555) 000-0000'));
-        form.appendChild(makeField('Address Line 1', 'address_line1', orgData.address_line1 || '', 'Street address'));
-        form.appendChild(makeField('Address Line 2', 'address_line2', orgData.address_line2 || '', 'Apt, suite, etc'));
-        form.appendChild(makeField('City', 'city', orgData.city || '', 'City'));
-        form.appendChild(makeField('State', 'state', orgData.state || '', 'State / Province'));
-        form.appendChild(makeField('Postal Code', 'postal_code', orgData.postal_code || '', 'Postal code'));
+        form.appendChild(
+          makeFieldRow(
+            makeField('Phone', 'phone', orgData.phone || '', '+1 (555) 000-0000'),
+            makeField('Address Line 1', 'address_line1', orgData.address_line1 || '', 'Street address')
+          )
+        );
+        form.appendChild(
+          makeFieldRow(
+            makeField('City', 'city', orgData.city || '', 'City'),
+            makeField('State', 'state', orgData.state || '', 'State / Province')
+          )
+        );
+        form.appendChild(
+          makeFieldRow(
+            makeField('Address Line 2', 'address_line2', orgData.address_line2 || '', 'Apt, suite, etc'),
+            makeField('Postal Code', 'postal_code', orgData.postal_code || '', 'Postal code')
+          )
+        );
         form.appendChild(makeField('Country', 'country', orgData.country || '', 'Country'));
 
         // Actions
@@ -1624,7 +3404,11 @@ export function createSettingsOverlay({
         const saveBtn = doc.createElement('button');
         saveBtn.type = 'submit';
         saveBtn.className = 'btn btn-primary';
-        saveBtn.textContent = isSavingOrg ? 'Saving...' : 'Save Changes';
+        if (isSavingOrg) {
+          saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving…';
+        } else {
+          saveBtn.textContent = 'Save Changes';
+        }
         saveBtn.disabled = isSavingOrg;
 
         actions.appendChild(cancelBtn);
@@ -1639,21 +3423,50 @@ export function createSettingsOverlay({
         const viewContainer = doc.createElement('div');
         viewContainer.className = 'grid';
 
-        if (isLoadingMembership || isLoadingOrg) {
-          const loadingEl = doc.createElement('div');
-          loadingEl.className = 'muted';
-          loadingEl.textContent = 'Loading organization...';
-          viewContainer.appendChild(loadingEl);
+        if (isLoadingMembership || isLoadingOrg || isLoadingAccountBundle) {
+          const makeSkeleton = () => {
+            const el = doc.createElement('div');
+            el.className = 'tp3d-skeleton tp3d-skeleton-short';
+            return el;
+          };
+          viewContainer.appendChild(orgRow('Name', makeSkeleton()));
+          viewContainer.appendChild(orgRow('Slug', makeSkeleton()));
+          viewContainer.appendChild(orgRow('Phone', makeSkeleton()));
+          viewContainer.appendChild(orgRow('Address', makeSkeleton()));
+          viewContainer.appendChild(orgRow('Role', makeSkeleton()));
         } else if (!membershipData) {
           const wrap = doc.createElement('div');
-          wrap.style.display = 'flex';
-          wrap.style.flexDirection = 'column';
-          wrap.style.gap = '8px';
+          wrap.className = 'tp3d-settings-stack--tight';
 
           const noOrgEl = doc.createElement('div');
           noOrgEl.className = 'muted';
-          noOrgEl.textContent = 'No workspace found for this account.';
+          noOrgEl.textContent = 'Create a workspace to manage organization details.';
           wrap.appendChild(noOrgEl);
+
+          const createBtn = doc.createElement('button');
+          createBtn.type = 'button';
+          createBtn.className = 'btn btn-primary';
+          createBtn.textContent = '+ New Workspace';
+          createBtn.addEventListener('click', () => {
+            const name = window.prompt('Workspace name:');
+            if (!name || !name.trim()) return;
+            createBtn.disabled = true;
+            createBtn.textContent = 'Creating\u2026';
+            SupabaseClient.createOrganization({ name: name.trim() })
+              .then(({ org, membership }) => {
+                membershipData = membership;
+                orgData = org;
+                if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
+                UIComponents.showToast('Workspace created!', 'success');
+                render();
+              })
+              .catch(err => {
+                UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
+                createBtn.disabled = false;
+                createBtn.textContent = '+ New Workspace';
+              });
+          });
+          wrap.appendChild(createBtn);
 
           const retryRow = doc.createElement('div');
           retryRow.style.display = 'flex';
@@ -1686,6 +3499,79 @@ export function createSettingsOverlay({
           wrap.appendChild(retryRow);
           viewContainer.appendChild(wrap);
         } else if (orgData) {
+          // Org logo row (display only)
+          const logoCell = doc.createElement('div');
+          logoCell.className = 'row';
+
+          const logoPreview = doc.createElement('span');
+          logoPreview.className = 'tp3d-settings-account-avatar tp3d-settings-avatar--lg';
+          logoPreview.style.background = 'var(--accent-primary)';
+          logoPreview.textContent = (orgData.name || 'W').charAt(0).toUpperCase();
+          const orgId = orgData && orgData.id ? String(orgData.id) : '';
+          const orgLogoPath2 = orgData.logo_path ? String(orgData.logo_path) : null;
+          const orgAvatarUrl2 = orgData.avatar_url ? String(orgData.avatar_url) : null;
+          const logoKey = orgId + '|' + (orgLogoPath2 || orgAvatarUrl2 || '');
+          const cachedLogoSrc = logoKey && lastOrgLogoKey === logoKey && lastOrgLogoExpiresAt > Date.now()
+            ? lastOrgLogoUrl
+            : null;
+          /** @type {HTMLSpanElement|HTMLImageElement} */
+          let logoNode = logoPreview;
+          if (cachedLogoSrc) {
+            const cachedImg = doc.createElement('img');
+            cachedImg.src = cachedLogoSrc;
+            cachedImg.alt = orgData.name || 'Logo';
+            cachedImg.width = 40;
+            cachedImg.height = 40;
+            cachedImg.className = 'tp3d-settings-avatar-img';
+            cachedImg.onerror = () => {
+              if (cachedImg.parentNode) cachedImg.parentNode.replaceChild(logoPreview, cachedImg);
+              logoNode = logoPreview;
+            };
+            logoNode = cachedImg;
+          }
+          logoCell.appendChild(logoNode);
+
+          // Async load logo image if available
+          if (orgLogoPath2 || orgAvatarUrl2) {
+            const loadLogo2 = async () => {
+              let src = null;
+              if (orgLogoPath2 && SupabaseClient && typeof SupabaseClient.getOrgLogoUrl === 'function') {
+                src = await SupabaseClient.getOrgLogoUrl(orgLogoPath2, orgData.updated_at || '');
+              }
+              if (!src && orgAvatarUrl2 && /^https?:\/\//i.test(orgAvatarUrl2)) src = orgAvatarUrl2;
+              if (!src) return;
+              if (logoKey) {
+                lastOrgLogoKey = logoKey;
+                lastOrgLogoUrl = src;
+                lastOrgLogoExpiresAt = Date.now() + ORG_LOGO_CACHE_TTL_MS;
+              }
+              if (
+                logoNode &&
+                logoNode.tagName === 'IMG' &&
+                /** @type {HTMLImageElement} */ (logoNode).src === src
+              ) return;
+              const img = doc.createElement('img');
+              img.src = src;
+              img.alt = orgData.name || 'Logo';
+              img.width = 40;
+              img.height = 40;
+              img.className = 'tp3d-settings-avatar-img';
+              img.onload = () => {
+                if (logoNode && logoNode.parentNode) {
+                  logoNode.parentNode.replaceChild(img, logoNode);
+                  logoNode = img;
+                }
+              };
+              img.onerror = () => {
+                if (img.parentNode) img.parentNode.replaceChild(logoPreview, img);
+                logoNode = logoPreview;
+              };
+            };
+            loadLogo2().catch(() => { });
+          }
+
+          viewContainer.appendChild(orgRow('Logo', logoCell));
+
           viewContainer.appendChild(
             orgRow(
               'Name',
@@ -1742,19 +3628,19 @@ export function createSettingsOverlay({
 
           // Role display
           const roleEl = doc.createElement('div');
-          const roleDisplay =
-            membershipData && membershipData.role
-              ? membershipData.role.charAt(0).toUpperCase() + membershipData.role.slice(1)
-              : 'Member';
+          const roleValue = String(
+            (orgData && orgData.role) ||
+            (membershipData && membershipData.role) ||
+            'member'
+          ).toLowerCase();
+          const roleDisplay = roleValue.charAt(0).toUpperCase() + roleValue.slice(1);
           roleEl.textContent = roleDisplay;
           viewContainer.appendChild(orgRow('Role', roleEl));
 
           // Edit button only for owner/admin
           if (!isOwnerOrAdmin) {
             const noteEl = doc.createElement('div');
-            noteEl.className = 'muted';
-            noteEl.style.fontSize = 'var(--text-sm)';
-            noteEl.style.marginTop = 'var(--space-3)';
+            noteEl.className = 'muted tp3d-settings-meta tp3d-settings-mt-md';
             noteEl.textContent = 'Only admins can edit organization details.';
             viewContainer.appendChild(noteEl);
           } else {
@@ -1779,32 +3665,700 @@ export function createSettingsOverlay({
       }
 
       body.appendChild(orgCard);
+    } else if (_tabState.activeTabId === 'org-members') {
+      const orgUserView = getCurrentUserView(profileData);
+      const membersLockedOrgId = ensureModalOrgId();
+      const currentOrgId = getOrgIdFromOrgContext();
+      const orgId = membersLockedOrgId || null;
+      const orgDataId = normalizeOrgId(orgData && orgData.id ? orgData.id : '');
+      const membershipOrgId = normalizeOrgId(
+        membershipData && membershipData.organization_id ? membershipData.organization_id : ''
+      );
+      const orgHydrating = Boolean(
+        orgUserView.isAuthed &&
+        !orgId &&
+        (isLoadingAccountBundle || isLoadingMembership || isLoadingOrg)
+      );
+      const currentUserId = orgUserView && orgUserView.userId ? String(orgUserView.userId) : null;
+      const currentRole = String(
+        (orgDataId && orgDataId === orgId && orgData && orgData.role) ||
+        (membershipOrgId && membershipOrgId === orgId && membershipData && membershipData.role) ||
+        ''
+      ).toLowerCase() || null;
+      const isOwner = currentRole === 'owner';
+      const canManage = canManageMembers(currentRole);
+      const canManageAdmins = isOwner;
+      const hasMembersForOrg = Boolean(
+        orgId &&
+        lastOrgMembersOrgId &&
+        String(lastOrgMembersOrgId) === String(orgId) &&
+        Array.isArray(orgMembersData)
+      );
+      const membersStale = Boolean(
+        orgId &&
+        lastOrgMembersOrgId &&
+        String(lastOrgMembersOrgId) !== String(orgId)
+      );
+      const membersLoading = Boolean(isLoadingOrgMembers && (!hasMembersForOrg || membersStale));
+      let membersDisabledReason = '';
+      if (orgHydrating) {
+        membersDisabledReason = 'Loading organization…';
+      } else if (!orgId) {
+        membersDisabledReason = 'Select an organization to manage members';
+      } else if (membersLoading || membersStale) {
+        membersDisabledReason = 'Members are not available yet, please refresh';
+      } else if (!canManage) {
+        membersDisabledReason = 'Only owners/admins can manage members';
+      }
+
+      if (debugEnabled()) {
+        const membersCount = hasMembersForOrg && Array.isArray(orgMembersData) ? orgMembersData.length : null;
+        console.debug(
+          `[MembersUI] modalOrgId=${membersLockedOrgId || 'none'}, currentOrgId=${currentOrgId || 'none'}, orgHydrating=${orgHydrating}, members.loading=${membersLoading}, members.count=${membersCount === null ? 'null' : membersCount}, canManage=${canManage}, reason=${membersDisabledReason || 'none'}`
+        );
+      }
+
+      const membersCard = doc.createElement('div');
+      membersCard.className = 'card tp3d-settings-card-max';
+
+      if (!orgUserView.isAuthed) {
+        const msg = doc.createElement('div');
+        msg.className = 'muted';
+        msg.textContent = 'Sign in to manage workspace members.';
+        membersCard.appendChild(msg);
+      } else if (!orgId) {
+        if (orgHydrating) {
+          const skeletonGroup = doc.createElement('div');
+          skeletonGroup.className = 'tp3d-skeleton-group tp3d-skel tp3d-members-skeleton';
+          skeletonGroup.innerHTML = `
+            <div class="tp3d-skel-line tp3d-skeleton-title"></div>
+            <div class="tp3d-skel-line tp3d-skeleton-short"></div>
+            <div class="tp3d-skel-line tp3d-skeleton-short"></div>
+          `;
+          membersCard.appendChild(skeletonGroup);
+        } else {
+          const msg = doc.createElement('div');
+          msg.className = 'muted';
+          msg.textContent = 'Select an organization to manage members.';
+          membersCard.appendChild(msg);
+        }
+        const membersHelperMessage = doc.createElement('div');
+        membersHelperMessage.className = 'muted tp3d-members-inline-helper';
+        membersHelperMessage.textContent = membersDisabledReason || 'Members are not available yet, please refresh';
+        membersCard.appendChild(membersHelperMessage);
+        const refreshRow = doc.createElement('div');
+        refreshRow.className = 'row';
+        const refreshBtn = doc.createElement('button');
+        refreshBtn.type = 'button';
+        refreshBtn.className = 'btn btn-secondary';
+        refreshBtn.textContent = 'Refresh';
+        refreshBtn.addEventListener('click', () => {
+          queueAccountBundleRefresh({ force: true, source: 'org-members:refresh-org' });
+          modalOrgId = resolveInitialModalOrgId();
+          const nextOrgId = ensureModalOrgId();
+          if (nextOrgId) {
+            const actionId = _tabState.lastActionId;
+            loadOrgMembers(nextOrgId)
+              .then(() => renderIfFresh(actionId, 'org-members:refresh'))
+              .catch(() => { });
+          }
+          render();
+        });
+        refreshRow.appendChild(refreshBtn);
+        membersCard.appendChild(refreshRow);
+      } else {
+        if (membersStale) {
+          orgMembersData = null;
+          orgMembersError = null;
+          orgMembersSearchQuery = '';
+          orgMembersRoleFilter = 'all';
+          orgInvitesData = null;
+          orgInvitesError = null;
+        }
+
+        const rolesHelp = doc.createElement('div');
+        rolesHelp.className = 'muted tp3d-role-help';
+        rolesHelp.textContent =
+          'Workspace members are scoped to your active organization. Owners and admins can update roles.';
+        membersCard.appendChild(rolesHelp);
+
+        if (membersDisabledReason) {
+          const membersStateHelp = doc.createElement('div');
+          membersStateHelp.className = 'muted tp3d-members-inline-helper';
+          membersStateHelp.textContent = membersDisabledReason;
+          membersCard.appendChild(membersStateHelp);
+        }
+
+        if (!hasMembersForOrg && !isLoadingOrgMembers) {
+          const actionId = _tabState.lastActionId;
+          loadOrgMembers(orgId)
+            .then(() => renderIfFresh(actionId, 'org-members'))
+            .catch(() => { });
+        }
+
+        // Load invites in parallel (owner/admin only)
+        if (canManage && !membersDisabledReason && !orgInvitesData && !isLoadingOrgInvites) {
+          const actionId = _tabState.lastActionId;
+          loadOrgInvites(orgId)
+            .then(() => renderIfFresh(actionId, 'org-invites'))
+            .catch(() => { });
+        }
+
+        if (membersLoading && !hasMembersForOrg) {
+          const skeletonGroup = doc.createElement('div');
+          skeletonGroup.className = 'tp3d-skeleton-group tp3d-skel tp3d-members-skeleton';
+          skeletonGroup.innerHTML = `
+            <div class="tp3d-skel-line tp3d-skeleton-title"></div>
+            <div class="tp3d-skel-line tp3d-skeleton-short"></div>
+            <div class="tp3d-skel-line tp3d-skeleton-short"></div>
+          `;
+          membersCard.appendChild(skeletonGroup);
+        } else if (orgMembersError) {
+          const msg = doc.createElement('div');
+          msg.className = 'muted';
+          msg.textContent = 'Failed to load members. Please try again.';
+
+          const retryRow = doc.createElement('div');
+          retryRow.className = 'row';
+
+          const retryBtn = doc.createElement('button');
+          retryBtn.type = 'button';
+          retryBtn.className = 'btn btn-ghost';
+          retryBtn.textContent = 'Retry';
+          retryBtn.addEventListener('click', () => {
+            if (isLoadingOrgMembers) return;
+            const actionId = _tabState.lastActionId;
+            loadOrgMembers(orgId)
+              .then(() => renderIfFresh(actionId, 'org-members'))
+              .catch(() => { });
+          });
+
+          retryRow.appendChild(retryBtn);
+          membersCard.appendChild(msg);
+          membersCard.appendChild(retryRow);
+        } else {
+          const members = Array.isArray(orgMembersData) ? orgMembersData : [];
+          const ownersCount = members.filter(m => m && String(m.role || '').toLowerCase() === 'owner').length;
+
+          const searchSection = doc.createElement('div');
+          searchSection.className = 'tp3d-org-members-section tp3d-org-members-search-section';
+
+          const searchSectionTitle = doc.createElement('div');
+          searchSectionTitle.className = 'tp3d-org-members-section-title';
+          searchSectionTitle.textContent = 'Search & Filter';
+          searchSection.appendChild(searchSectionTitle);
+
+          const toolbar = doc.createElement('div');
+          toolbar.className = 'tp3d-org-members-toolbar';
+
+          const searchWrap = doc.createElement('div');
+          searchWrap.className = 'tp3d-org-members-search-wrap';
+
+          const searchIcon = doc.createElement('i');
+          searchIcon.className = 'fa-solid fa-magnifying-glass tp3d-org-members-search-icon';
+          searchIcon.setAttribute('aria-hidden', 'true');
+          searchWrap.appendChild(searchIcon);
+
+          const searchInput = doc.createElement('input');
+          searchInput.type = 'search';
+          searchInput.className = 'input tp3d-org-members-search';
+          searchInput.placeholder = 'Search members by name or email';
+          searchInput.value = orgMembersSearchQuery;
+          searchInput.setAttribute('aria-label', 'Search members');
+          searchWrap.appendChild(searchInput);
+          toolbar.appendChild(searchWrap);
+
+          const roleFilter = doc.createElement('select');
+          roleFilter.className = 'select tp3d-org-members-filter';
+          roleFilter.setAttribute('aria-label', 'Filter members by role');
+          roleFilter.innerHTML = `
+            <option value="all">All Roles</option>
+            <option value="owner">Owner</option>
+            <option value="admin">Admin</option>
+            <option value="member">Member</option>
+          `;
+          roleFilter.value = orgMembersRoleFilter;
+          toolbar.appendChild(roleFilter);
+          searchSection.appendChild(toolbar);
+          membersCard.appendChild(searchSection);
+
+          // ---- Invite form + pending invites (owner/admin only) ----
+          {
+            const inviteSection = doc.createElement('div');
+            inviteSection.className = 'tp3d-org-members-section tp3d-org-invite-section';
+            const inviteControlsDisabled = Boolean(membersDisabledReason || !canManage);
+
+            const inviteSectionTitle = doc.createElement('div');
+            inviteSectionTitle.className = 'tp3d-org-members-section-title';
+            inviteSectionTitle.textContent = 'Invitations';
+            inviteSection.appendChild(inviteSectionTitle);
+
+            // Invite form
+            const inviteForm = doc.createElement('div');
+            inviteForm.className = 'tp3d-org-invite-form';
+
+            const inviteEmailWrap = doc.createElement('div');
+            inviteEmailWrap.className = 'tp3d-org-invite-email-wrap';
+
+            const inviteEmailIcon = doc.createElement('i');
+            inviteEmailIcon.className = 'fa-solid fa-envelope tp3d-org-invite-email-icon';
+            inviteEmailIcon.setAttribute('aria-hidden', 'true');
+            inviteEmailWrap.appendChild(inviteEmailIcon);
+
+            const inviteEmailInput = doc.createElement('input');
+            inviteEmailInput.type = 'email';
+            inviteEmailInput.className = 'input tp3d-org-invite-email';
+            inviteEmailInput.placeholder = 'Email address to invite';
+            inviteEmailInput.setAttribute('aria-label', 'Invite email');
+            inviteEmailInput.disabled = inviteControlsDisabled;
+            inviteEmailWrap.appendChild(inviteEmailInput);
+            inviteForm.appendChild(inviteEmailWrap);
+
+            const inviteRoleSelect = doc.createElement('select');
+            inviteRoleSelect.className = 'select tp3d-org-invite-role';
+            inviteRoleSelect.setAttribute('aria-label', 'Invite role');
+            inviteRoleSelect.disabled = inviteControlsDisabled;
+            inviteRoleSelect.innerHTML = `
+              <option value="member">Member</option>
+              <option value="admin">Admin</option>
+            `;
+            inviteForm.appendChild(inviteRoleSelect);
+
+            const inviteBtn = doc.createElement('button');
+            inviteBtn.type = 'button';
+            inviteBtn.className = 'btn btn-primary tp3d-org-invite-btn';
+            inviteBtn.textContent = '+ Invite';
+            inviteBtn.disabled = inviteControlsDisabled;
+            inviteBtn.addEventListener('click', () => {
+              if (inviteControlsDisabled) return;
+              const email = inviteEmailInput.value.trim().toLowerCase();
+              if (!email || !email.includes('@')) {
+                UIComponents.showToast('Enter a valid email address.', 'warning', { title: 'Invites' });
+                return;
+              }
+              const role = inviteRoleSelect.value || 'member';
+              inviteBtn.disabled = true;
+              inviteBtn.textContent = 'Sending…';
+              sendInvite(orgId, email, role).then(() => {
+                inviteEmailInput.value = '';
+                inviteBtn.disabled = false;
+                inviteBtn.textContent = '+ Invite';
+              }).catch(() => {
+                inviteBtn.disabled = false;
+                inviteBtn.textContent = '+ Invite';
+              });
+            });
+            inviteForm.appendChild(inviteBtn);
+            inviteSection.appendChild(inviteForm);
+
+            if (inviteControlsDisabled) {
+              const inviteHelper = doc.createElement('div');
+              inviteHelper.className = 'muted tp3d-members-inline-helper';
+              inviteHelper.textContent = membersDisabledReason || 'Only owners/admins can manage members';
+              inviteSection.appendChild(inviteHelper);
+            }
+
+            // Pending invites table
+            const pendingInvites = Array.isArray(orgInvitesData)
+              ? orgInvitesData.filter(i => i && i.status === 'pending')
+              : [];
+
+            if (isLoadingOrgInvites && !orgInvitesData) {
+              const skeletonInvites = doc.createElement('div');
+              skeletonInvites.className = 'tp3d-skeleton-group';
+              skeletonInvites.innerHTML = '<div class="tp3d-skeleton tp3d-skeleton-short"></div>';
+              inviteSection.appendChild(skeletonInvites);
+            } else if (orgInvitesError) {
+              const inviteError = doc.createElement('div');
+              inviteError.className = 'tp3d-org-feedback tp3d-org-feedback--error';
+              inviteError.textContent = `Failed to load invites. ${orgInvitesError && orgInvitesError.message ? orgInvitesError.message : 'Try again.'
+                }`;
+              inviteSection.appendChild(inviteError);
+            } else if (pendingInvites.length > 0) {
+              const inviteLabel = doc.createElement('div');
+              inviteLabel.className = 'tp3d-org-invite-label';
+              inviteLabel.textContent = 'Pending Invites (' + pendingInvites.length + ')';
+              inviteSection.appendChild(inviteLabel);
+
+              const inviteTableWrap = doc.createElement('div');
+              inviteTableWrap.className = 'tp3d-org-members-table-wrap tp3d-org-invite-table-wrap';
+
+              const inviteTable = doc.createElement('table');
+              inviteTable.className = 'tp3d-org-members-table';
+
+              const inviteThead = doc.createElement('thead');
+              const inviteHeadRow = doc.createElement('tr');
+              ['Email', 'Role', 'Invited', 'Status', 'Actions'].forEach(label => {
+                const th = doc.createElement('th');
+                th.textContent = label;
+                inviteHeadRow.appendChild(th);
+              });
+              inviteThead.appendChild(inviteHeadRow);
+              inviteTable.appendChild(inviteThead);
+
+              const inviteTbody = doc.createElement('tbody');
+              const inviteRows = [];
+
+              pendingInvites.forEach(invite => {
+                const inviteId = String(invite.id || '');
+                const isBusyInvite = orgInviteActions.has(inviteId);
+                const tr = doc.createElement('tr');
+                tr.dataset.memberSearch = String(invite.email || '').toLowerCase();
+                tr.dataset.memberRole = String(invite.role || 'member').toLowerCase();
+
+                const emailTd = doc.createElement('td');
+                emailTd.textContent = invite.email || '—';
+                tr.appendChild(emailTd);
+
+                const roleTd = doc.createElement('td');
+                const roleBadge = doc.createElement('span');
+                roleBadge.className = 'badge tp3d-org-member-role-badge';
+                roleBadge.textContent = getRoleLabel(invite.role);
+                roleTd.appendChild(roleBadge);
+                tr.appendChild(roleTd);
+
+                const invitedTd = doc.createElement('td');
+                invitedTd.className = 'tp3d-org-member-joined';
+                invitedTd.textContent = invite.invited_at
+                  ? new Date(invite.invited_at).toLocaleDateString()
+                  : '—';
+                tr.appendChild(invitedTd);
+
+                const statusTd = doc.createElement('td');
+                const statusBadge = doc.createElement('span');
+                statusBadge.className = 'badge badge--pending';
+                statusBadge.textContent = 'Pending';
+                statusTd.appendChild(statusBadge);
+                tr.appendChild(statusTd);
+
+                const actionsTd = doc.createElement('td');
+                actionsTd.className = 'tp3d-org-members-actions-cell';
+                const actionsWrap = doc.createElement('div');
+                actionsWrap.className = 'tp3d-org-member-actions';
+
+                const resendBtn = doc.createElement('button');
+                resendBtn.type = 'button';
+                resendBtn.className = 'btn btn-ghost';
+                resendBtn.textContent = 'Resend';
+                resendBtn.disabled = isBusyInvite || inviteControlsDisabled;
+                resendBtn.addEventListener('click', () => {
+                  if (inviteControlsDisabled) return;
+                  resendBtn.disabled = true;
+                  resendBtn.textContent = 'Sending…';
+                  resendInvite(orgId, invite).finally(() => {
+                    resendBtn.disabled = false;
+                    resendBtn.textContent = 'Resend';
+                  });
+                });
+                actionsWrap.appendChild(resendBtn);
+
+                const revokeBtn = doc.createElement('button');
+                revokeBtn.type = 'button';
+                revokeBtn.className = 'btn btn-danger';
+                revokeBtn.textContent = 'Revoke';
+                revokeBtn.disabled = isBusyInvite || inviteControlsDisabled;
+                revokeBtn.addEventListener('click', () => {
+                  if (inviteControlsDisabled) return;
+                  UIComponents.confirm({
+                    title: 'Revoke invite',
+                    message: 'Revoke the pending invite to ' + invite.email + '?',
+                    okLabel: 'Revoke',
+                    cancelLabel: 'Cancel',
+                    danger: true,
+                  }).then(ok => {
+                    if (ok) revokeInvite(orgId, invite);
+                  });
+                });
+                actionsWrap.appendChild(revokeBtn);
+
+                actionsTd.appendChild(actionsWrap);
+                tr.appendChild(actionsTd);
+                inviteTbody.appendChild(tr);
+                inviteRows.push(tr);
+              });
+
+              inviteTable.appendChild(inviteTbody);
+              inviteTableWrap.appendChild(inviteTable);
+              inviteSection.appendChild(inviteTableWrap);
+            } else {
+              const noInvites = doc.createElement('div');
+              noInvites.className = 'tp3d-org-feedback tp3d-org-feedback--warning';
+              noInvites.textContent = 'No pending invites.';
+              inviteSection.appendChild(noInvites);
+            }
+
+            membersCard.appendChild(inviteSection);
+          }
+
+          if (members.length === 0) {
+            const msg = doc.createElement('div');
+            msg.className = 'muted';
+            msg.textContent = 'No members found for this workspace.';
+            membersCard.appendChild(msg);
+          } else {
+            const tableWrap = doc.createElement('div');
+            tableWrap.className = 'tp3d-org-members-table-wrap';
+
+            const table = doc.createElement('table');
+            table.className = 'tp3d-org-members-table';
+
+            const thead = doc.createElement('thead');
+            const headRow = doc.createElement('tr');
+            ['Name', 'Email', 'Role', 'Joined', 'Actions'].forEach(label => {
+              const th = doc.createElement('th');
+              th.textContent = label;
+              headRow.appendChild(th);
+            });
+            thead.appendChild(headRow);
+            table.appendChild(thead);
+
+            const tbody = doc.createElement('tbody');
+            table.appendChild(tbody);
+            tableWrap.appendChild(table);
+            membersCard.appendChild(tableWrap);
+
+            const emptyFilteredState = doc.createElement('div');
+            emptyFilteredState.className = 'muted tp3d-org-members-empty';
+            emptyFilteredState.textContent = 'No members match your current filters.';
+            emptyFilteredState.hidden = true;
+            membersCard.appendChild(emptyFilteredState);
+
+            const rows = [];
+            members.forEach(member => {
+              if (!member || !member.user_id) return;
+              const userId = String(member.user_id);
+              const role = String(member.role || 'member').toLowerCase();
+              const memberName = getMemberDisplayName(member);
+              const memberEmail = getMemberEmail(member);
+              const isSelf = Boolean(currentUserId && currentUserId === userId);
+              const isOwnerMember = role === 'owner';
+              const isAdminMember = role === 'admin';
+              const isLastOwner = isOwnerMember && ownersCount <= 1;
+              const isBusy = orgMemberActions.has(userId);
+
+              let canEditRole = canManage && !isBusy;
+              if (!canManageAdmins && (isOwnerMember || isAdminMember)) canEditRole = false;
+              if (isSelf && isLastOwner) canEditRole = false;
+
+              let canRemove = canManage && !isBusy;
+              if (isSelf) canRemove = false;
+              if (isOwnerMember && ownersCount <= 1) canRemove = false;
+              if (!canManageAdmins && (isOwnerMember || isAdminMember)) canRemove = false;
+
+              const tr = doc.createElement('tr');
+              tr.dataset.memberRole = role;
+              tr.dataset.memberSearch = `${memberName} ${memberEmail}`.toLowerCase();
+
+              const nameCell = doc.createElement('td');
+              const nameWrap = doc.createElement('div');
+              nameWrap.className = 'tp3d-org-member-name-row';
+              const name = doc.createElement('div');
+              name.className = 'tp3d-org-member-name';
+              name.textContent = memberName;
+              nameWrap.appendChild(name);
+              if (isSelf) {
+                const badge = doc.createElement('span');
+                badge.className = 'badge tp3d-org-member-you-badge';
+                badge.textContent = 'You';
+                nameWrap.appendChild(badge);
+              }
+              nameCell.appendChild(nameWrap);
+              tr.appendChild(nameCell);
+
+              const emailCell = doc.createElement('td');
+              emailCell.className = 'tp3d-org-member-email';
+              emailCell.textContent = memberEmail || '—';
+              tr.appendChild(emailCell);
+
+              const roleCell = doc.createElement('td');
+              const roleBadge = doc.createElement('span');
+              roleBadge.className = 'badge tp3d-org-member-role-badge';
+              roleBadge.textContent = getRoleLabel(role);
+              roleCell.appendChild(roleBadge);
+              tr.appendChild(roleCell);
+
+              const joinedCell = doc.createElement('td');
+              joinedCell.className = 'tp3d-org-member-joined';
+              joinedCell.textContent = formatMemberJoined(member);
+              tr.appendChild(joinedCell);
+
+              const actionsCell = doc.createElement('td');
+              actionsCell.className = 'tp3d-org-members-actions-cell';
+              const actions = doc.createElement('div');
+              actions.className = 'tp3d-org-member-actions';
+
+              const roleSelect = doc.createElement('select');
+              roleSelect.className = 'select tp3d-org-member-role-select';
+              roleSelect.setAttribute('aria-label', `Role for ${memberName}`);
+              const roles = ['owner', 'admin', 'member'];
+              roles.forEach(r => {
+                const opt = doc.createElement('option');
+                opt.value = r;
+                opt.textContent = getRoleLabel(r);
+                if (r === 'owner' && !isOwner) opt.disabled = true;
+                roleSelect.appendChild(opt);
+              });
+              if (!roles.includes(role)) {
+                const opt = doc.createElement('option');
+                opt.value = role;
+                opt.textContent = getRoleLabel(role);
+                roleSelect.appendChild(opt);
+              }
+              roleSelect.value = role;
+              roleSelect.disabled = Boolean(membersDisabledReason || !canEditRole);
+              roleSelect.addEventListener('change', ev => {
+                const target = ev.target instanceof HTMLSelectElement ? ev.target : null;
+                const nextRole = target ? String(target.value) : role;
+                if (nextRole === role) return;
+                if (nextRole === 'owner' && !isOwner) {
+                  UIComponents.showToast('Only owners can promote members to owner.', 'warning');
+                  roleSelect.value = role;
+                  return;
+                }
+                if (membersDisabledReason || !canEditRole) {
+                  roleSelect.value = role;
+                  return;
+                }
+                updateMemberRole(orgId, member, nextRole, currentUserId).catch(() => {
+                  roleSelect.value = role;
+                });
+              });
+              actions.appendChild(roleSelect);
+
+              const removeBtn = doc.createElement('button');
+              removeBtn.type = 'button';
+              removeBtn.className = 'btn btn-danger tp3d-org-member-remove-btn';
+              removeBtn.textContent = 'Remove';
+              removeBtn.disabled = Boolean(membersDisabledReason || !canRemove);
+              removeBtn.addEventListener('click', () => {
+                if (membersDisabledReason || !canRemove) return;
+                UIComponents.confirm({
+                  title: 'Remove member',
+                  message: `Remove ${memberName} from this workspace?`,
+                  okLabel: 'Remove',
+                  cancelLabel: 'Cancel',
+                  danger: true,
+                }).then(ok => {
+                  if (ok) removeMember(orgId, member);
+                });
+              });
+              actions.appendChild(removeBtn);
+
+              actionsCell.appendChild(actions);
+
+              tr.appendChild(actionsCell);
+              tbody.appendChild(tr);
+              rows.push(tr);
+            });
+
+            const applyMemberFilters = () => {
+              const searchQuery = String(orgMembersSearchQuery || '')
+                .trim()
+                .toLowerCase();
+              const roleFilterValue = String(orgMembersRoleFilter || 'all').toLowerCase();
+              let visibleCount = 0;
+              // Filter member rows
+              rows.forEach(rowEl => {
+                const rowSearch = String(rowEl.dataset.memberSearch || '');
+                const rowRole = String(rowEl.dataset.memberRole || '').toLowerCase();
+                const matchesSearch = !searchQuery || rowSearch.includes(searchQuery);
+                const matchesRole = roleFilterValue === 'all' || rowRole === roleFilterValue;
+                const visible = matchesSearch && matchesRole;
+                rowEl.hidden = !visible;
+                if (visible) visibleCount += 1;
+              });
+              // Also filter invite rows (in the invite table) by the same criteria
+              const inviteTableRows = membersCard.querySelectorAll('.tp3d-org-invite-section tbody tr');
+              let inviteVisibleCount = 0;
+              inviteTableRows.forEach(rowEl => {
+                const rowElement = rowEl instanceof HTMLElement ? rowEl : null;
+                if (!rowElement) return;
+                const rowSearch = String(rowElement.dataset.memberSearch || '');
+                const rowRole = String(rowElement.dataset.memberRole || '').toLowerCase();
+                const matchesSearch = !searchQuery || rowSearch.includes(searchQuery);
+                const matchesRole = roleFilterValue === 'all' || rowRole === roleFilterValue;
+                const visible = matchesSearch && matchesRole;
+                rowElement.hidden = !visible;
+                if (visible) inviteVisibleCount += 1;
+              });
+              const inviteTableWrap = membersCard.querySelector('.tp3d-org-invite-table-wrap');
+              const inviteWrapEl = inviteTableWrap instanceof HTMLElement ? inviteTableWrap : null;
+              if (inviteWrapEl) inviteWrapEl.hidden = inviteVisibleCount === 0;
+              emptyFilteredState.hidden = (visibleCount + inviteVisibleCount) > 0;
+              tableWrap.hidden = visibleCount === 0;
+            };
+
+            searchInput.addEventListener('input', () => {
+              orgMembersSearchQuery = searchInput.value || '';
+              applyMemberFilters();
+            });
+            roleFilter.addEventListener('change', () => {
+              orgMembersRoleFilter = roleFilter.value || 'all';
+              applyMemberFilters();
+            });
+
+            applyMemberFilters();
+          }
+        }
+      }
+      body.appendChild(membersCard);
     } else {
       const billingCard = doc.createElement('div');
       billingCard.className = 'card';
       billingCard.classList.add('tp3d-settings-card-max');
+
       const billingWrap = doc.createElement('div');
       billingWrap.classList.add('tp3d-settings-billing');
+      billingWrap.id = 'tp3d-billing-wrap';
+      billingWrap.textContent = 'Loading billing…';
 
-      const billingTitle = doc.createElement('div');
-      billingTitle.classList.add('tp3d-settings-billing-title');
-      billingTitle.textContent = 'Billing';
-
-      const billingMsg = doc.createElement('div');
-      billingMsg.className = 'muted tp3d-settings-billing-msg';
-      billingMsg.textContent = 'Billing is not set up yet.';
-
-      billingWrap.appendChild(billingTitle);
-      billingWrap.appendChild(billingMsg);
       billingCard.appendChild(billingWrap);
       body.appendChild(billingCard);
+
+      renderBillingInto(billingWrap);
+      ensureBillingSubscription();
     }
+    const counts = applyTabStateToDOM();
+    debug('render', {
+      tabId: _tabState.activeTabId,
+      actionId: _tabState.lastActionId,
+      instanceId: settingsInstanceId,
+      buttonCount: counts.buttonCount,
+      panelCount: counts.panelCount,
+    });
+    debugTabSnapshot('render');
+    debugSettingsModalSnapshot('render');
+    return counts;
   }
 
   function open(tab) {
-    if (settingsOverlay) return setActive(tab || settingsActiveTab);
+    cleanupStaleSettingsModals('open');
+    if (!modalOrgId) {
+      modalOrgId = resolveInitialModalOrgId();
+    }
+    clearOrgScopedCaches(modalOrgId);
+    const nextTab = resolveInitialTab(tab);
+    if (settingsOverlay && settingsOverlay.isConnected) {
+      ensureOrgChangedListener();
+      setActiveTab(nextTab, { source: 'open', actionId: _tabState.lastActionId });
+      debugSettingsModalSnapshot('open:reuse');
+      debugTabSnapshot('open:reuse');
+      if (profileData || membershipData || orgData) {
+        queueAccountBundleRefresh({ force: true, source: 'open:reuse-refresh' });
+      }
+      return;
+    }
+    if (settingsOverlay && !settingsOverlay.isConnected) {
+      settingsOverlay = null;
+      settingsModal = null;
+      settingsLeftPane = null;
+      settingsRightPane = null;
+      tabClickHandler = null;
+      _tabState.didBind = false;
+    }
 
-    lastFocusedEl = doc.activeElement && typeof doc.activeElement.focus === 'function' ? doc.activeElement : null;
+    const activeEl = doc.activeElement instanceof HTMLElement ? doc.activeElement : null;
+    lastFocusedEl = activeEl && typeof activeEl.focus === 'function' ? activeEl : null;
 
     settingsOverlay = doc.createElement('div');
     settingsOverlay.className = 'modal-overlay';
@@ -1812,6 +4366,9 @@ export function createSettingsOverlay({
     settingsModal = doc.createElement('div');
     settingsModal.className = 'modal';
     settingsModal.classList.add('tp3d-settings-modal');
+    const instanceId = nextSettingsInstanceId();
+    settingsModal.setAttribute(SETTINGS_MODAL_ATTR, '1');
+    settingsModal.setAttribute(SETTINGS_INSTANCE_ATTR, String(instanceId));
     settingsModal.setAttribute('role', 'dialog');
     settingsModal.setAttribute('aria-modal', 'true');
     settingsModal.setAttribute('tabindex', '-1');
@@ -1880,13 +4437,17 @@ export function createSettingsOverlay({
       }
     };
 
-    if (tab) {
-      settingsActiveTab = String(tab);
+    ensureOrgChangedListener();
+    bindTabsOnce();
+    setActiveTab(nextTab, { source: 'open', actionId: _tabState.lastActionId });
+    debugSettingsModalSnapshot('open:created');
+    debugTabSnapshot('open:created');
+    if (profileData || membershipData || orgData) {
+      queueAccountBundleRefresh({ force: true, source: 'open:created-refresh' });
     }
-    render();
 
-    const focusTarget = settingsModal.querySelector(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    const focusTarget = /** @type {HTMLElement|null} */ (
+      settingsModal.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
     );
     (focusTarget || settingsModal).focus();
   }
@@ -1899,9 +4460,66 @@ export function createSettingsOverlay({
     if (isOpen()) render();
   }
 
+  /**
+   * Clear all cached user-specific data.
+   * MUST be called when auth state changes to prevent stale data from previous user.
+   */
+  function clearCachedUserData() {
+    // FIX: Clear profile cache to prevent showing old user's data after user switch
+    profileData = null;
+    isEditingProfile = false;
+    isLoadingProfile = false;
+    isSavingProfile = false;
+    isUploadingAvatar = false;
+
+    // FIX: Clear organization cache to prevent showing old user's org data
+    orgData = null;
+    membershipData = null;
+    isEditingOrg = false;
+    isLoadingOrg = false;
+    isLoadingMembership = false;
+    isSavingOrg = false;
+
+    orgMembersData = null;
+    isLoadingOrgMembers = false;
+    orgMembersError = null;
+    orgMembersRequestId = 0;
+    orgInvitesData = null;
+    isLoadingOrgInvites = false;
+    orgInvitesError = null;
+    orgInvitesRequestId = 0;
+    lastOrgMembersOrgId = null;
+    orgMemberActions.clear();
+    orgInviteActions.clear();
+
+    // FIX: Clear org logo overlay cache to prevent stale logo across user switches
+    lastOrgLogoKey = null;
+    lastOrgLogoUrl = null;
+    lastOrgLogoExpiresAt = 0;
+  }
+
   function handleAuthChange(_event) {
     try {
+      if (_event === 'SIGNED_OUT') {
+        clearCachedUserData();
+        lastKnownUserId = null;
+        return;
+      }
+      let currentUserId = null;
+      try {
+        const u = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
+        currentUserId = u && u.id ? String(u.id) : null;
+      } catch {
+        currentUserId = null;
+      }
+      if (currentUserId && lastKnownUserId && currentUserId !== lastKnownUserId) {
+        clearCachedUserData();
+      }
+      if (currentUserId) lastKnownUserId = currentUserId;
       refreshAccountUI();
+      if (isOpen() && (profileData || membershipData || orgData)) {
+        queueAccountBundleRefresh({ force: true, source: 'auth-change-refresh' });
+      }
     } catch {
       // ignore
     }

@@ -393,3 +393,30 @@ entrypoint = "./functions/delete-account/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/delete-account/*.html" ]
+
+[functions.billing-status]
+verify_jwt = false
+
+[functions.stripe-create-checkout-session]
+verify_jwt = false
+
+[functions.stripe-create-portal-session]
+verify_jwt = false
+
+[functions.stripe-webhook]
+verify_jwt = false
+
+[functions.request-account-deletion]
+verify_jwt = false
+
+[functions.org-invite]
+verify_jwt = false
+
+[functions.org-invite-accept]
+verify_jwt = false
+
+[functions.org-member-role-update]
+verify_jwt = false
+
+[functions.org-member-remove]
+verify_jwt = false

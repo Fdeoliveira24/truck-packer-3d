@@ -120,7 +120,9 @@ const _billingState = {
 const _billingSubscribers = new Set();
 const BILLING_THROTTLE_MS = 30000;
 const BILLING_REQUEST_TIMEOUT_MS = 15000;
+const BILLING_FOCUS_REFRESH_COOLDOWN_MS = 300000; // 5 minutes — do not spam refresh on every focus
 let _billingRefreshQueued = false;
+let _billingLastFocusRefreshAt = 0;
 /** @type {null|((snapshot:any, meta?:{reason?:string, activeOrgId?:string|null})=>void)} */
 let _billingGateApplier = null;
 
@@ -221,6 +223,7 @@ function clearBillingState() {
   _billingState.data = null;
   _billingState.error = null;
   _billingState.lastFetchedAt = 0;
+  _billingLastFocusRefreshAt = 0;
   _notifyBilling();
   applyAccessGateFromBilling(getBillingState(), { reason: 'clear' });
 }
@@ -3807,7 +3810,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return { orgId, activeOrg, orgs, role, profileOrgId, profile };
     }
 
-    function clearOrgContext() {
+    function clearOrgContext({ clearLocalOrgHint = false, confirmedNoOrg = false } = {}) {
       orgContext = {
         activeOrgId: null,
         activeOrg: null,
@@ -3817,8 +3820,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
       };
       lastOrgIdNotified = null;
       lastOrgChangeAt = 0;
-      writeLocalOrgId(null);
-      applyOrgRequiredUi(false);
+      if (clearLocalOrgHint || confirmedNoOrg) writeLocalOrgId(null);
+      applyOrgRequiredUi(false, { confirmedNoOrg });
     }
 
     let orgScopedRenderTimer = null;
@@ -3888,13 +3891,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
       el.setAttribute('aria-disabled', disabled ? 'true' : 'false');
     }
 
-    function applyOrgRequiredUi(hasOrg) {
+    function applyOrgRequiredUi(hasOrg, { confirmedNoOrg = false } = {}) {
       const banner = ensureOrgRequiredBanner();
       if (!banner) {
         if (!orgBannerRetryTimer) {
           orgBannerRetryTimer = window.setTimeout(() => {
             orgBannerRetryTimer = null;
-            applyOrgRequiredUi(hasOrg);
+            applyOrgRequiredUi(hasOrg, { confirmedNoOrg });
           }, 0);
         }
         return;
@@ -3905,7 +3908,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
         orgBannerRetryTimer = null;
       }
 
-      banner.hidden = Boolean(hasOrg);
+      const authSnapshot = getCurrentAuthSnapshot();
+      // Use definitively signed-out (not 'unknown'/'checking') so we don't flash the banner
+      // while auth is still resolving on slow connections.
+      const isDefinitelySignedOut = Boolean(authSnapshot && authSnapshot.status === 'signed_out');
+      // A stored org hint means the user has (or recently had) an org — keep banner hidden
+      // while auth/bundle is still resolving (prevents flash for returning users).
+      const hasLocalOrgHint = Boolean(readLocalOrgId());
+      const suppressUncertain = !isDefinitelySignedOut && !confirmedNoOrg && hasLocalOrgHint;
+      const showNoOrgBanner = !hasOrg && !suppressUncertain && (isDefinitelySignedOut || confirmedNoOrg);
+      banner.hidden = !showNoOrgBanner;
 
       const disable = !hasOrg;
       setDisabled(document.getElementById('btn-new-pack'), disable);
@@ -3921,7 +3933,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
     async function applyOrgContextFromBundle(bundle, { reason = 'org-context', forceEmit = false } = {}) {
       if (!bundle || !bundle.session || !bundle.user) {
-        clearOrgContext();
+        // Do NOT wipe org state when bundle is unavailable — it may just be loading or a transient
+        // network error. Only clear if auth is definitively signed_out.
+        const _snap = getCurrentAuthSnapshot();
+        if (_snap && _snap.status === 'signed_out') {
+          clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: true });
+        }
         return null;
       }
 
@@ -3930,7 +3947,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const now = Date.now();
 
       if (!nextOrgId) {
-        clearOrgContext();
+        clearOrgContext({
+          clearLocalOrgHint: false,
+          confirmedNoOrg: Array.isArray(resolved.orgs) && resolved.orgs.length === 0,
+        });
         return null;
       }
 
@@ -4020,7 +4040,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       const snapshot = getCurrentAuthSnapshot();
       if (snapshot.status !== 'signed_in' || !snapshot.hasToken) {
-        if (snapshot.status === 'signed_out') clearOrgContext();
+        if (snapshot.status === 'signed_out') clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: true });
         return null;
       }
 
@@ -4370,7 +4390,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         // ignore
       }
       try {
-        clearOrgContext();
+        clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: true });
       } catch {
         // ignore
       }
@@ -5195,6 +5215,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // ---- Build welcome modal content ----
           const wrap = document.createElement('div');
           wrap.className = 'tp3d-trial-welcome';
+          const panel = document.createElement('div');
+          panel.className = 'tp3d-trial-welcome__panel';
+          wrap.appendChild(panel);
 
           // Title
           const titleEl = document.createElement('div');
@@ -5236,14 +5259,32 @@ const TP3D_BUILD_STAMP = Object.freeze({
             'Import cases from .xlsx or .csv',
           ];
           featureItems.forEach(text => {
-            const li = document.createElement('li');
-            const icon = document.createElement('i');
-            icon.className = 'fa-solid fa-circle-check';
-            icon.setAttribute('aria-hidden', 'true');
-            li.appendChild(icon);
-            li.appendChild(document.createTextNode(text));
-            featuresList.appendChild(li);
-          });
+  const li = document.createElement('li');
+  const icon = document.createElement('i');
+  icon.className = 'fa-solid fa-circle-check';
+  icon.setAttribute('aria-hidden', 'true');
+  li.appendChild(icon);
+
+  // Make file extensions bold for readability.
+  if (text === 'Import cases from .xlsx or .csv') {
+    // Wrap all inline content in a span so it stays one grid item
+    // (li uses display:grid; bare child nodes each become a grid item).
+    const textWrap = document.createElement('span');
+    textWrap.appendChild(document.createTextNode('Import cases from '));
+    const xlsx = document.createElement('strong');
+    xlsx.textContent = '.xlsx';
+    textWrap.appendChild(xlsx);
+    textWrap.appendChild(document.createTextNode(' or '));
+    const csv = document.createElement('strong');
+    csv.textContent = '.csv';
+    textWrap.appendChild(csv);
+    li.appendChild(textWrap);
+  } else {
+    li.appendChild(document.createTextNode(text));
+  }
+
+  featuresList.appendChild(li);
+});
           wrap.appendChild(featuresList);
 
           // No credit card note
@@ -5308,7 +5349,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const prevStatus = orgId ? String(lastBillingStatusByOrg.get(orgId) || _storedStatus) : '';
           if (orgId && status) {
             lastBillingStatusByOrg.set(orgId, status);
-            try { sessionStorage.setItem('tp3d:billing:status:' + orgId, status); } catch (_) {}
+            try { sessionStorage.setItem('tp3d:billing:status:' + orgId, status); } catch (_) { /* ignore */ }
           }
           const trialEndMs = s && s.trialEndsAt ? new Date(s.trialEndsAt).getTime() : NaN;
           const trialExpired = Boolean(
@@ -5326,22 +5367,26 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
           if (!upgradeEl) return;
           const upgradeCurrentlyVisible = Boolean(upgradeWrap ? !upgradeWrap.hidden : !upgradeEl.hidden);
-          if (s.loading || !s.ok || s.pending) {
-            const keepVisibleWhileSyncing = canManageBilling && (upgradeCurrentlyVisible || status === 'trialing' || prevStatus === 'trialing');
-            if (!keepVisibleWhileSyncing) {
-              if (upgradeWrap) upgradeWrap.hidden = true;
-              else upgradeEl.hidden = true;
+          if (s.loading || s.pending) {
+            // Keep the card title / content intact while syncing — only update button state.
+            // This prevents the card from flipping to a blank/syncing state on tab focus.
+            if (canManageBilling && upgradeCurrentlyVisible) {
+              const syncingBtn = upgradeEl.querySelector('button');
+              if (syncingBtn) {
+                syncingBtn.disabled = true;
+                syncingBtn.textContent = 'Syncing\u2026';
+              }
               return;
             }
-            if (upgradeWrap) upgradeWrap.hidden = false;
-            else upgradeEl.hidden = false;
-            const syncingText = upgradeEl.querySelector('.tp3d-sidebar-upgrade-text');
-            if (syncingText) syncingText.textContent = 'Syncing billing status…';
-            const syncingBtn = upgradeEl.querySelector('button');
-            if (syncingBtn) {
-              syncingBtn.disabled = true;
-              syncingBtn.textContent = 'Syncing…';
-            }
+            // Card wasn't visible — keep it hidden until we have resolved data.
+            if (upgradeWrap) upgradeWrap.hidden = true;
+            else upgradeEl.hidden = true;
+            return;
+          }
+          if (!s.ok) {
+            // Billing fetch failed — hide the upgrade card (do not show stale Upgrade CTA).
+            if (upgradeWrap) upgradeWrap.hidden = true;
+            else upgradeEl.hidden = true;
             return;
           }
           if (!canManageBilling) {
@@ -5367,15 +5412,20 @@ const TP3D_BUILD_STAMP = Object.freeze({
             } catch (_) { /* ignore */ }
           }
 
-          const msg = isTrial && trialDays !== null
-            ? 'Trial ends in ' + trialDays + ' day' + (trialDays !== 1 ? 's' : '')
-            : 'Upgrade to Pro to export PDFs';
-
           upgradeEl.innerHTML = '';
-          const txt = document.createElement('div');
-          txt.className = 'tp3d-sidebar-upgrade-text';
-          txt.textContent = msg;
-          upgradeEl.appendChild(txt);
+          const titleEl = document.createElement('div');
+          titleEl.className = 'tp3d-sidebar-upgrade-text';
+          titleEl.textContent = isTrial && trialDays !== null
+            ? 'Your free trial ends in ' + trialDays + ' day' + (trialDays !== 1 ? 's' : '')
+            : 'Upgrade to Pro';
+          upgradeEl.appendChild(titleEl);
+          if (isTrial && s.trialEndsAt) {
+            const trialDate = new Date(s.trialEndsAt);
+            const subEl = document.createElement('div');
+            subEl.className = 'muted tp3d-settings-mt-xs';
+            subEl.textContent = 'Ends on ' + (isNaN(trialDate.getTime()) ? String(s.trialEndsAt) : trialDate.toLocaleDateString());
+            upgradeEl.appendChild(subEl);
+          }
           const btn = document.createElement('button');
           btn.type = 'button';
           btn.className = 'btn btn-primary';
@@ -5421,7 +5471,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
       try {
         window.addEventListener('focus', () => {
           const s = SupabaseClient.getSession && SupabaseClient.getSession();
-          if (s && s.access_token) refreshBilling({ force: false, reason: 'window-focus' }).catch(() => { });
+          if (!s || !s.access_token) return;
+          const now = Date.now();
+          if (_billingLastFocusRefreshAt && (now - _billingLastFocusRefreshAt) < BILLING_FOCUS_REFRESH_COOLDOWN_MS) return;
+          if (
+            _billingState.ok &&
+            _billingState.lastFetchedAt &&
+            (now - _billingState.lastFetchedAt) < BILLING_FOCUS_REFRESH_COOLDOWN_MS
+          ) return;
+          _billingLastFocusRefreshAt = now;
+          refreshBilling({ force: false, reason: 'window-focus' }).catch(() => { });
         });
       } catch (_) { /* ignore */ }
 

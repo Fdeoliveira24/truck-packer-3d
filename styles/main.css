@@ -3315,9 +3315,9 @@ body.modal-open {
   width: min(520px, 100%);
 }
 
-/* Hide the "Dialog" fallback title text; keep the X close button */
+/* Hide the "Dialog" fallback title text; keep layout so X stays on the right */
 .tp3d-plan-picker-modal .modal-title {
-  display: none;
+  visibility: hidden;
 }
 
 /* Remove the divider line under the header */

@@ -2795,7 +2795,6 @@ body.modal-open {
   right: 0;
   top: calc(100% - 102px);
   z-index: 10;
-
   /* was: 2 — raised to clear sibling content for tooltip visibility */
 }
 
@@ -4227,86 +4226,50 @@ body.modal-open {
 }
 
 /* ================================
-  Billing — Plan Header (two-column)
+  Billing Pro CTA card
 ================================== */
 
-.tp3d-billing-plan-header {
+/* 2-column tinted card shown for Free/Trial users (not active Pro) */
+.tp3d-billing-pro-cta {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.tp3d-billing-plan-header__left {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.tp3d-billing-plan-header__name {
-  font-size: var(--text-base);
-  font-weight: var(--font-semibold);
-  color: var(--text-primary);
-}
-
-.tp3d-billing-plan-header__divider {
-  color: var(--text-muted);
-  font-weight: var(--font-normal);
-  user-select: none;
-}
-
-.tp3d-billing-plan-header__label {
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-
-.tp3d-billing-plan-header__right {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.tp3d-billing-plan-header__days {
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-
-/* ================================
-  Billing — Pro CTA Card
-================================== */
-
-.tp3d-billing-pro-cta-card {
-  background: var(--accent-primary-12);
-  border-color: rgba(255, 159, 28, 0.25);
-}
-
-.tp3d-billing-pro-cta-row {
-  display: flex;
-  align-items: center;
   gap: var(--space-4);
+  padding: var(--space-4);
+  margin-top: var(--space-3);
+  background: rgba(255, 159, 28, 0.07);
+  border: 1px solid rgba(255, 159, 28, 0.22);
+  border-radius: var(--radius-md);
 }
 
-.tp3d-billing-pro-cta-info {
-  flex: 1;
-  display: grid;
+/* Left column: icon + title + sub text */
+.tp3d-billing-pro-cta__left {
+  display: flex;
+  flex-direction: column;
   gap: var(--space-1);
   min-width: 0;
 }
 
-.tp3d-billing-pro-cta-title {
+.tp3d-billing-pro-cta__icon {
+  font-size: var(--text-xl);
+  line-height: 1;
+}
+
+.tp3d-billing-pro-cta__title {
   font-size: var(--text-base);
   font-weight: var(--font-semibold);
   color: var(--text-primary);
 }
 
-.tp3d-billing-pro-cta-desc {
+.tp3d-billing-pro-cta__sub {
   font-size: var(--text-sm);
   color: var(--text-secondary);
   line-height: var(--leading-normal);
 }
 
-.tp3d-billing-pro-cta-btn {
+/* Right column: Subscribe button, vertically centered */
+.tp3d-billing-pro-cta__right {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
 }

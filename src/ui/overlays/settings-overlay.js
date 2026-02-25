@@ -1940,80 +1940,81 @@ export function createSettingsOverlay({
       });
       planCard.appendChild(retryBtn);
     } else {
-      // Plan header row — two-column layout
+      // Plan header row
       const planHeader = doc.createElement('div');
-      planHeader.className = 'tp3d-billing-plan-header';
+      planHeader.className = 'row';
 
-      // Left: plan name + pipe separator + "Current Plan"
-      const planHeaderLeft = doc.createElement('div');
-      planHeaderLeft.className = 'tp3d-billing-plan-header__left';
-
-      const planName = doc.createElement('span');
-      planName.className = 'tp3d-billing-plan-header__name';
+      const planName = doc.createElement('div');
+      planName.className = 'tp3d-settings-billing-title';
       if (isTrial) {
-        planName.textContent = 'Free Trial';
+        planName.textContent = 'Pro (Trial)';
       } else if (isProOrTrial) {
         planName.textContent = intervalLabel ? `Pro (${intervalLabel})` : 'Pro';
       } else {
         planName.textContent = 'Free';
       }
-      planHeaderLeft.appendChild(planName);
+      planHeader.appendChild(planName);
 
-      const planDivider = doc.createElement('span');
-      planDivider.className = 'tp3d-billing-plan-header__divider';
-      planDivider.setAttribute('aria-hidden', 'true');
-      planDivider.textContent = '|';
-      planHeaderLeft.appendChild(planDivider);
-
-      const planLabel = doc.createElement('span');
-      planLabel.className = 'tp3d-billing-plan-header__label';
-      planLabel.textContent = 'Current Plan';
-      planHeaderLeft.appendChild(planLabel);
-
-      planHeader.appendChild(planHeaderLeft);
-
-      // Right: days left / renewal / cancel info
-      const planHeaderRight = doc.createElement('div');
-      planHeaderRight.className = 'tp3d-billing-plan-header__right';
-
+      const planBadge = doc.createElement('span');
+      planBadge.className = 'badge' + (isProOrTrial ? ' badge--active' : ' badge--free');
+      planBadge.textContent = 'Current Plan';
+      planHeader.appendChild(planBadge);
       let cancelEndText = '';
-      if (isCancelScheduled && cancelEndValue) {
-        const endDate = new Date(cancelEndValue);
-        cancelEndText = 'Ends on ' + (isNaN(endDate.getTime()) ? cancelEndValue : endDate.toLocaleDateString());
+      if (isCancelScheduled) {
         const cancelBadge = doc.createElement('span');
         cancelBadge.className = 'badge badge--pending';
         cancelBadge.textContent = 'Cancels';
-        planHeaderRight.appendChild(cancelBadge);
-        const cancelInline = doc.createElement('span');
-        cancelInline.className = 'tp3d-billing-cancel-inline tp3d-org-feedback tp3d-org-feedback--warning';
-        cancelInline.textContent = cancelEndText;
-        planHeaderRight.appendChild(cancelInline);
+        planHeader.appendChild(cancelBadge);
+        if (cancelEndValue) {
+          const endDate = new Date(cancelEndValue);
+          cancelEndText = 'Ends on ' + (isNaN(endDate.getTime()) ? cancelEndValue : endDate.toLocaleDateString());
+          const cancelInline = doc.createElement('span');
+          cancelInline.className = 'tp3d-billing-cancel-inline tp3d-org-feedback tp3d-org-feedback--warning';
+          cancelInline.textContent = cancelEndText;
+          planHeader.appendChild(cancelInline);
+        }
       } else if (isProOrTrial && !isTrial && state.currentPeriodEnd) {
         const renewDate = new Date(state.currentPeriodEnd);
         const renewText = isNaN(renewDate.getTime()) ? String(state.currentPeriodEnd) : renewDate.toLocaleDateString();
         const renewBadge = doc.createElement('span');
         renewBadge.className = 'badge badge--pending';
         renewBadge.textContent = 'Renews';
-        planHeaderRight.appendChild(renewBadge);
+        planHeader.appendChild(renewBadge);
         const renewInline = doc.createElement('span');
         renewInline.className = 'tp3d-billing-cancel-inline tp3d-org-feedback tp3d-org-feedback--warning';
         renewInline.textContent = 'Renews on ' + renewText;
-        planHeaderRight.appendChild(renewInline);
-      } else if (isTrial && trialDaysLeft !== null) {
-        const daysEl = doc.createElement('span');
-        daysEl.className = 'tp3d-billing-plan-header__days';
-        daysEl.textContent = trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '') + ' left';
-        planHeaderRight.appendChild(daysEl);
+        planHeader.appendChild(renewInline);
       }
 
-      planHeader.appendChild(planHeaderRight);
+      if (isTrial && !isCancelScheduled && state.trialEndsAt) {
+        const trialDate = new Date(state.trialEndsAt);
+        const trialDateText = isNaN(trialDate.getTime()) ? String(state.trialEndsAt) : trialDate.toLocaleDateString();
+        const trialBadge = doc.createElement('span');
+        trialBadge.className = 'badge badge--pending';
+        trialBadge.textContent = trialDaysLeft !== null
+          ? trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '') + ' left'
+          : 'Trial';
+        planHeader.appendChild(trialBadge);
+        const trialInline = doc.createElement('span');
+        trialInline.className = 'tp3d-billing-cancel-inline tp3d-org-feedback tp3d-org-feedback--warning';
+        trialInline.textContent = 'Ends on ' + trialDateText;
+        planHeader.appendChild(trialInline);
+      } else if (trialDaysLeft !== null) {
+        const daysEl = doc.createElement('span');
+        daysEl.className = 'muted';
+        daysEl.textContent = trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '') + ' left';
+        planHeader.appendChild(daysEl);
+      }
+
       planCard.appendChild(planHeader);
 
       // Status / cancellation info
       const statusLine = doc.createElement('div');
       statusLine.className = 'muted tp3d-settings-mt-xs';
 
-      if (isTrial && state.trialEndsAt) {
+      if (isTrial && !isCancelScheduled && state.trialEndsAt) {
+        // date already shown inline in header row; no second line needed
+      } else if (isTrial && state.trialEndsAt) {
         const endDate = new Date(state.trialEndsAt);
         const endText = isNaN(endDate.getTime()) ? state.trialEndsAt : endDate.toLocaleDateString();
         statusLine.textContent = trialWelcomeShown
@@ -2033,30 +2034,38 @@ export function createSettingsOverlay({
     // Upgrade CTA card (only if not pro/active)
     if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isProOrTrial && roleKnown && canManageBilling) {
       const ctaCard = doc.createElement('div');
-      ctaCard.className = 'card tp3d-billing-pro-cta-card';
+      ctaCard.className = 'tp3d-billing-pro-cta';
 
-      const ctaRow = doc.createElement('div');
-      ctaRow.className = 'tp3d-billing-pro-cta-row';
+      // Left column: icon + title + supporting text
+      const ctaLeft = doc.createElement('div');
+      ctaLeft.className = 'tp3d-billing-pro-cta__left';
 
-      const ctaInfo = doc.createElement('div');
-      ctaInfo.className = 'tp3d-billing-pro-cta-info';
+      const ctaIcon = doc.createElement('span');
+      ctaIcon.className = 'tp3d-billing-pro-cta__icon';
+      ctaIcon.textContent = '\uD83D\uDCE6'; // 📦
+      ctaLeft.appendChild(ctaIcon);
+
       const ctaTitle = doc.createElement('div');
-      ctaTitle.className = 'tp3d-billing-pro-cta-title';
-      ctaTitle.textContent = '\u26A1 Truck Packer Pro 3D';
-      ctaInfo.appendChild(ctaTitle);
+      ctaTitle.className = 'tp3d-billing-pro-cta__title';
+      ctaTitle.textContent = 'Truck Packer Pro 3D';
+      ctaLeft.appendChild(ctaTitle);
+
       const ctaDesc = doc.createElement('div');
-      ctaDesc.className = 'tp3d-billing-pro-cta-desc';
+      ctaDesc.className = 'tp3d-billing-pro-cta__sub';
       ctaDesc.textContent = status === 'trial_expired'
         ? 'Your trial has ended. Subscribe to continue using Pro features.'
-        : isTrial
-          ? 'Subscribe to keep using Truck Packer after your free trial ends, cancel anytime.'
-          : 'Subscribe to unlock Pro features for this workspace.';
-      ctaInfo.appendChild(ctaDesc);
-      ctaRow.appendChild(ctaInfo);
+        : 'Subscribe to keep using Truck Packer after your free trial ends, cancel anytime.';
+      ctaLeft.appendChild(ctaDesc);
+
+      ctaCard.appendChild(ctaLeft);
+
+      // Right column: Subscribe button, vertically centered
+      const ctaRight = doc.createElement('div');
+      ctaRight.className = 'tp3d-billing-pro-cta__right';
 
       const subBtn = doc.createElement('button');
       subBtn.type = 'button';
-      subBtn.className = 'btn btn-primary tp3d-billing-pro-cta-btn';
+      subBtn.className = 'btn btn-primary';
       subBtn.textContent = 'Subscribe';
       subBtn.addEventListener('click', () => {
         if (!api || typeof api.startCheckout !== 'function') {
@@ -2103,8 +2112,8 @@ export function createSettingsOverlay({
           if (UIComponents) UIComponents.showToast('Checkout failed', 'error', { title: 'Billing' });
         });
       });
-      ctaRow.appendChild(subBtn);
-      ctaCard.appendChild(ctaRow);
+      ctaRight.appendChild(subBtn);
+      ctaCard.appendChild(ctaRight);
 
       subSection.appendChild(ctaCard);
     } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isProOrTrial && roleKnown && !canManageBilling) {
@@ -2179,7 +2188,9 @@ export function createSettingsOverlay({
         });
       });
       manageWrap.appendChild(manageBtn);
-      actionsRow.appendChild(manageWrap);
+      // Show Manage for Pro users always; for Free/Trial only when portal is available.
+      const showManage = isProOrTrial || manageEnabled;
+      if (showManage) actionsRow.appendChild(manageWrap);
 
       const refreshBtn = doc.createElement('button');
       refreshBtn.type = 'button';

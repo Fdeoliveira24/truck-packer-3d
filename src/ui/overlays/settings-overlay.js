@@ -1921,7 +1921,9 @@ export function createSettingsOverlay({
         <div class="tp3d-skel-line tp3d-skeleton-short"></div>
       `;
       planCard.appendChild(skeletonGroup);
-    } else if (state.error && !state.ok) {
+    } else if (!state.ok || state.error) {
+      // Billing unavailable: covers error responses AND any non-success state (ok=false).
+      // Do NOT fall through to plan info / Subscribe CTA when billing status is unknown.
       const errMsg = doc.createElement('div');
       errMsg.className = 'muted';
       errMsg.textContent = 'Billing unavailable. The app continues to work normally.';
@@ -2029,27 +2031,47 @@ export function createSettingsOverlay({
 
     subSection.appendChild(planCard);
 
-    // Upgrade CTA card (only if not pro/active)
-    if (!showSkeleton && !loading && !pending && !isProOrTrial && roleKnown && canManageBilling) {
+    // Upgrade CTA card — shown for Free users and Trial users; hidden only for paid active Pro.
+    const isActivePaidPro = isProOrTrial && !isTrial;
+    if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && roleKnown && canManageBilling) {
       const ctaCard = doc.createElement('div');
-      ctaCard.className = 'card';
+      ctaCard.className = 'tp3d-billing-pro-cta';
 
-      const ctaInfo = doc.createElement('div');
+      // Left column: icon + title + supporting text
+      const ctaLeft = doc.createElement('div');
+      ctaLeft.className = 'tp3d-billing-pro-cta__left';
+
+      const ctaIcon = doc.createElement('span');
+      ctaIcon.className = 'tp3d-billing-pro-cta__icon';
+      ctaIcon.textContent = '\uD83D\uDCE6'; // 📦
+      ctaLeft.appendChild(ctaIcon);
+
+      // Text block: title + sub stacked vertically, sits next to the icon
+      const ctaBody = doc.createElement('div');
+      ctaBody.className = 'tp3d-billing-pro-cta__body';
+
       const ctaTitle = doc.createElement('div');
-      ctaTitle.className = 'tp3d-settings-billing-title';
-      ctaTitle.textContent = '\u26A1 Truck Packer Pro';
-      ctaInfo.appendChild(ctaTitle);
+      ctaTitle.className = 'tp3d-billing-pro-cta__title';
+      ctaTitle.textContent = 'Truck Packer Pro 3D';
+      ctaBody.appendChild(ctaTitle);
+
       const ctaDesc = doc.createElement('div');
-      ctaDesc.className = 'muted';
+      ctaDesc.className = 'tp3d-billing-pro-cta__sub';
       ctaDesc.textContent = status === 'trial_expired'
         ? 'Your trial has ended. Subscribe to continue using Pro features.'
-        : 'Subscribe to unlock Pro features for this workspace.';
-      ctaInfo.appendChild(ctaDesc);
-      ctaCard.appendChild(ctaInfo);
+        : 'Subscribe to keep using Truck Packer after your free trial ends, cancel anytime.';
+      ctaBody.appendChild(ctaDesc);
+
+      ctaLeft.appendChild(ctaBody);
+      ctaCard.appendChild(ctaLeft);
+
+      // Right column: Subscribe button, vertically centered
+      const ctaRight = doc.createElement('div');
+      ctaRight.className = 'tp3d-billing-pro-cta__right';
 
       const subBtn = doc.createElement('button');
       subBtn.type = 'button';
-      subBtn.className = 'btn btn-primary tp3d-settings-mt-sm';
+      subBtn.className = 'btn btn-primary';
       subBtn.textContent = 'Subscribe';
       subBtn.addEventListener('click', () => {
         if (!api || typeof api.startCheckout !== 'function') {
@@ -2096,15 +2118,16 @@ export function createSettingsOverlay({
           if (UIComponents) UIComponents.showToast('Checkout failed', 'error', { title: 'Billing' });
         });
       });
-      ctaCard.appendChild(subBtn);
+      ctaRight.appendChild(subBtn);
+      ctaCard.appendChild(ctaRight);
 
       subSection.appendChild(ctaCard);
-    } else if (!showSkeleton && !loading && !pending && !isProOrTrial && roleKnown && !canManageBilling) {
+    } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && roleKnown && !canManageBilling) {
       const note = doc.createElement('div');
       note.className = 'muted tp3d-settings-mt-sm';
       note.textContent = 'Only owners and admins can manage billing for this organization.';
       subSection.appendChild(note);
-    } else if (!showSkeleton && !loading && !pending && !isProOrTrial && !roleKnown) {
+    } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && !roleKnown) {
       const note = doc.createElement('div');
       note.className = 'muted tp3d-settings-mt-sm';
       note.textContent = 'Loading permissions…';
@@ -2171,7 +2194,9 @@ export function createSettingsOverlay({
         });
       });
       manageWrap.appendChild(manageBtn);
-      actionsRow.appendChild(manageWrap);
+      // Manage is only relevant for active paid Pro users.
+      const showManage = isActivePaidPro;
+      if (showManage) actionsRow.appendChild(manageWrap);
 
       const refreshBtn = doc.createElement('button');
       refreshBtn.type = 'button';

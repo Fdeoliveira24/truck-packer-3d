@@ -646,6 +646,47 @@ function snapshotSettings(source = 'manual') {
   return payload;
 }
 
+function inspectTrialWelcomeModal(container) {
+  try {
+    const wrapEl = container.querySelector && container.querySelector('.tp3d-trial-welcome');
+    const ulEl =
+      (container.querySelector && container.querySelector('.tp3d-trial-welcome__features')) ||
+      (container.querySelector && container.querySelector('.tp3d-trial-feature-list'));
+    const liCount = ulEl ? ulEl.querySelectorAll('li').length : 0;
+    let ulDisplay = 'n/a', ulVisibility = 'n/a', ulOpacity = 'n/a', ulHeight = 'n/a', ulOverflow = 'n/a';
+    if (ulEl && typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+      const cs = window.getComputedStyle(ulEl);
+      ulDisplay    = cs.display;
+      ulVisibility = cs.visibility;
+      ulOpacity    = cs.opacity;
+      ulHeight     = cs.height;
+      ulOverflow   = cs.overflow;
+    }
+    const report = {
+      foundWrap: Boolean(wrapEl),
+      foundUl:   Boolean(ulEl),
+      liCount,
+      ulDisplay, ulVisibility, ulOpacity, ulHeight, ulOverflow,
+    };
+    recordEvent('[TP3D][TrialWelcome]', 'debug', report);
+    if (_active) {
+      /* eslint-disable no-console */
+      console.groupCollapsed('[TP3D][TrialWelcome] modal inspector');
+      console.log('found wrap:', report.foundWrap);
+      console.log('found ul  :', report.foundUl, ulEl);
+      console.log('liCount   :', report.liCount);
+      console.log('ulDisplay :', report.ulDisplay,
+        '| ulVisibility:', report.ulVisibility,
+        '| ulOpacity:',    report.ulOpacity);
+      console.log('ulHeight  :', report.ulHeight, '| ulOverflow:', report.ulOverflow);
+      console.groupEnd();
+      /* eslint-enable no-console */
+    }
+  } catch (_) {
+    // ignore
+  }
+}
+
 function installModalObserver() {
   if (_modalObserver) return;
   const isModal = el =>
@@ -658,6 +699,9 @@ function installModalObserver() {
       for (const n of m.addedNodes) {
         if (n.nodeType === 1 && isModal(n)) {
           recordEvent('MODAL ADDED', 'dom', { modal: describeNode(n) });
+          if (n.querySelector && n.querySelector('.tp3d-trial-welcome')) {
+            setTimeout(() => inspectTrialWelcomeModal(n), 0);
+          }
         }
       }
       for (const n of m.removedNodes) {

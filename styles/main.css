@@ -4040,3 +4040,187 @@ body.modal-open {
     display: none;
   }
 }
+
+
+/* ================================
+  Trial Welcome Modal
+================================== */
+
+/* Slightly narrower than the default modal */
+.tp3d-trial-welcome-modal {
+  width: min(520px, 100%);
+}
+
+/* Hide the empty modal-header produced by showModal when title='' */
+.tp3d-trial-welcome-modal .modal-header {
+  display: none;
+}
+
+/* Hide the default footer since this modal uses an in-body CTA + link */
+.tp3d-trial-welcome-modal .modal-footer {
+  display: none;
+}
+
+/* Remove default modal-body padding so the welcome panel controls spacing */
+.tp3d-trial-welcome-modal .modal-body {
+  padding: 0;
+  gap: 0;
+}
+
+/* Panel wrapper: adds border, padding, and comfortable spacing */
+.tp3d-trial-welcome {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+}
+
+/* If a placeholder panel element exists in DOM, keep it hidden */
+.tp3d-trial-welcome__panel {
+  display: none;
+}
+
+/* Title */
+.tp3d-trial-welcome__title {
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
+  color: var(--accent-primary);
+  line-height: var(--leading-tight);
+  margin: 0;
+}
+
+/* Subtitle paragraph */
+.tp3d-trial-welcome__subtitle {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: var(--leading-relaxed);
+  margin: 0;
+}
+
+/* Inline phrase: ONLY underline (no color change) */
+.tp3d-trial-welcome__art {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--accent-primary);
+  text-underline-offset: 3px;
+  font-style: normal;
+}
+
+/* Section heading */
+.tp3d-trial-welcome__section-heading {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  margin: var(--space-2) 0 0;
+}
+
+/* Features intro */
+.tp3d-trial-welcome__features-intro {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: var(--leading-normal);
+  margin: 0;
+}
+
+/* Feature checklist */
+.tp3d-trial-welcome__features {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-3);
+}
+
+.tp3d-trial-welcome__features strong {
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-trial-welcome__features li {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  align-items: start;
+  column-gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  line-height: var(--leading-relaxed);
+}
+
+/* Prefer a CSS-drawn icon so the checklist never disappears */
+.tp3d-trial-welcome__features li::before {
+  content: '\2713';
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.14);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: var(--success);
+  font-size: 12px;
+  font-weight: var(--font-bold);
+  margin-top: 2px;
+}
+
+/* Hide the FA icon (we still keep it in markup, but we don't depend on it) */
+.tp3d-trial-welcome__features li i {
+  display: none;
+}
+
+/* Note */
+.tp3d-trial-welcome__note {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: var(--leading-normal);
+  margin: 0;
+}
+
+/* CTA button: full-width and centered text */
+.tp3d-trial-welcome__cta {
+  width: 100%;
+  margin-top: var(--space-3);
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 14px 16px;
+  font-weight: var(--font-semibold);
+}
+
+/* Footer row holding Logout link, right-aligned */
+.tp3d-trial-welcome__footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-1);
+}
+
+/* Logout link */
+.tp3d-trial-welcome__logout {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent-primary);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  cursor: pointer;
+  line-height: var(--leading-normal);
+  text-decoration: none;
+}
+
+.tp3d-trial-welcome__logout:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.tp3d-trial-welcome__logout:active {
+  color: var(--accent-pressed);
+}
+
+@media (max-width: 520px) {
+  .tp3d-trial-welcome {
+    padding: var(--space-5);
+  }
+}

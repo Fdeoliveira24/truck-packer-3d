@@ -5142,7 +5142,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             }
             content.appendChild(ctaBtn);
 
-            // Cancel anytime note (below CTA)
+            // Cancel anytime note — below the CTA
             const cancelNote = document.createElement('div');
             cancelNote.className = 'tp3d-plan-picker__cancel-note';
             cancelNote.textContent = 'Cancel anytime!';
@@ -5172,7 +5172,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             updateSelectionUI();
 
             const modalRef = UIComponents.showModal({
-              title: ' ',
+              title: '',
               hideClose: false,
               content,
               actions: [],

@@ -3315,15 +3315,14 @@ body.modal-open {
   width: min(520px, 100%);
 }
 
-/* modal-header is shown — close X appears in the standard top-right position */
+/* header stays visible so the close X renders — no override needed */
 
 .tp3d-plan-picker-modal .modal-footer {
   display: none;
 }
 
 .tp3d-plan-picker-modal .modal-body {
-  padding: var(--space-5);
-  gap: 0;
+  padding: var(--space-4) var(--space-5) var(--space-5);
 }
 
 /* Content wrapper */
@@ -3341,11 +3340,11 @@ body.modal-open {
   line-height: var(--leading-tight);
 }
 
-/* Feature list — grid layout matches trial welcome checklist */
+/* Feature list */
 .tp3d-plan-picker__features {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 0 0 0 var(--space-1);
   display: grid;
   gap: var(--space-3);
 }
@@ -3360,7 +3359,7 @@ body.modal-open {
   line-height: var(--leading-relaxed);
 }
 
-/* Check icon — mirrors .tp3d-trial-welcome__features li::before exactly */
+/* CSS-only green circle check — matches trial welcome sizing */
 .tp3d-plan-picker__feature::before {
   content: '\2713';
   width: 18px;

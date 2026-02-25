@@ -75,8 +75,8 @@ Deno.serve(async (req) => {
 
     if (memberErr) throw memberErr;
     const role = String(memberRow?.role || "").toLowerCase();
-    if (role !== "owner" && role !== "admin") {
-      return json({ error: "Only owners/admins can manage billing for this organization" }, { status: 403, origin });
+    if (role !== "owner") {
+      return json({ error: "Only the org owner can manage billing for this organization" }, { status: 403, origin });
     }
 
     if (!stripeCustomerId) {

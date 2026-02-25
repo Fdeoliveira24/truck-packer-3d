@@ -167,8 +167,8 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (memberErr) throw memberErr;
     const memberRole = String(memberRow?.role || "").toLowerCase();
-    if (memberRole !== "owner" && memberRole !== "admin") {
-      return json({ error: "Only owners/admins can manage billing for this organization" }, { status: 403, origin });
+    if (memberRole !== "owner") {
+      return json({ error: "Only the org owner can manage billing for this organization" }, { status: 403, origin });
     }
 
     let allowLegacyUserScopedFallback = false;

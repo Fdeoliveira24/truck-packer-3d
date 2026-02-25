@@ -5227,7 +5227,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           if (!canManageBilling) {
             const roleHint = document.createElement('div');
             roleHint.className = 'muted tp3d-settings-mt-sm';
-            roleHint.textContent = 'Only owners and admins can complete subscription checkout.';
+            roleHint.textContent = 'Only the org owner can complete subscription checkout.';
             body.appendChild(roleHint);
           }
 
@@ -5243,7 +5243,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
                 variant: 'primary',
                 onClick: () => {
                   if (!canManageBilling) {
-                    UIComponents.showToast('Only owners/admins can manage billing for this workspace.', 'warning', { title: 'Billing' });
+                    UIComponents.showToast('Only the org owner can manage billing for this workspace.', 'warning', { title: 'Billing' });
                     return false;
                   }
                   pickCheckoutInterval({ title: 'Choose Plan', continueLabel: 'Continue' })
@@ -5434,7 +5434,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
         const updateSidebarNotice = (s) => {
           const activeRole = String((orgContext && orgContext.role) || '').toLowerCase();
-          const canManageBilling = activeRole === 'owner' || activeRole === 'admin';
+          const canManageBilling = activeRole === 'owner';
           const orgId = String((s && s.orgId) || '').trim();
           const status = String((s && s.status) || '');
           const _storedStatus = orgId ? (() => { try { return sessionStorage.getItem('tp3d:billing:status:' + orgId) || ''; } catch (_) { return ''; } })() : '';

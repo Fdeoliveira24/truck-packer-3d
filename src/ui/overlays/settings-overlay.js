@@ -1746,7 +1746,7 @@ export function createSettingsOverlay({
     })();
     const billingRole = getRoleForOrg(lockedOrgId || billingOrgId);
     const roleKnown = isKnownOrgRole(billingRole);
-    const canManageBilling = billingRole === 'owner' || billingRole === 'admin';
+    const canManageBilling = billingRole === 'owner';
     const orgProfileLoaded = hasOrgProfileForOrg(lockedOrgId);
     const billingContextInflightForOrg = Boolean(
       lockedOrgId &&
@@ -2125,7 +2125,7 @@ export function createSettingsOverlay({
     } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && roleKnown && !canManageBilling) {
       const note = doc.createElement('div');
       note.className = 'muted tp3d-settings-mt-sm';
-      note.textContent = 'Only owners and admins can manage billing for this organization.';
+      note.textContent = 'Only the org owner can manage billing for this organization.';
       subSection.appendChild(note);
     } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && !roleKnown) {
       const note = doc.createElement('div');
@@ -2143,7 +2143,7 @@ export function createSettingsOverlay({
     } else if (roleLoading) {
       manageDisabledReason = 'Loading permissions…';
     } else if (roleKnown && !canManageBilling) {
-      manageDisabledReason = 'Only owners/admins can manage billing.';
+      manageDisabledReason = 'Only the org owner can manage billing.';
     } else if (!state.ok || !portalAvailable || !isProOrTrial || !api || typeof api.openPortal !== 'function') {
       manageDisabledReason = "Billing portal isn't available yet. Try Refresh.";
     }

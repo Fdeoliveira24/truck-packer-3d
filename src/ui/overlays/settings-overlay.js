@@ -2031,8 +2031,9 @@ export function createSettingsOverlay({
 
     subSection.appendChild(planCard);
 
-    // Upgrade CTA card (only if not pro/active)
-    if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isProOrTrial && roleKnown && canManageBilling) {
+    // Upgrade CTA card — shown for Free users and Trial users; hidden only for paid active Pro.
+    const isActivePaidPro = isProOrTrial && !isTrial;
+    if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && roleKnown && canManageBilling) {
       const ctaCard = doc.createElement('div');
       ctaCard.className = 'tp3d-billing-pro-cta';
 
@@ -2116,12 +2117,12 @@ export function createSettingsOverlay({
       ctaCard.appendChild(ctaRight);
 
       subSection.appendChild(ctaCard);
-    } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isProOrTrial && roleKnown && !canManageBilling) {
+    } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && roleKnown && !canManageBilling) {
       const note = doc.createElement('div');
       note.className = 'muted tp3d-settings-mt-sm';
       note.textContent = 'Only owners and admins can manage billing for this organization.';
       subSection.appendChild(note);
-    } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isProOrTrial && !roleKnown) {
+    } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && !roleKnown) {
       const note = doc.createElement('div');
       note.className = 'muted tp3d-settings-mt-sm';
       note.textContent = 'Loading permissions…';
@@ -2188,8 +2189,8 @@ export function createSettingsOverlay({
         });
       });
       manageWrap.appendChild(manageBtn);
-      // Show Manage for Pro users always; for Free/Trial only when portal is available.
-      const showManage = isProOrTrial || manageEnabled;
+      // Show Manage for paid Pro users always; for Free/Trial only when portal is available.
+      const showManage = isActivePaidPro || manageEnabled;
       if (showManage) actionsRow.appendChild(manageWrap);
 
       const refreshBtn = doc.createElement('button');

@@ -3807,7 +3807,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return { orgId, activeOrg, orgs, role, profileOrgId, profile };
     }
 
-    function clearOrgContext() {
+    function clearOrgContext({ clearLocalOrgHint = false, confirmedNoOrg = false } = {}) {
       orgContext = {
         activeOrgId: null,
         activeOrg: null,
@@ -3817,8 +3817,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       };
       lastOrgIdNotified = null;
       lastOrgChangeAt = 0;
-      writeLocalOrgId(null);
-      applyOrgRequiredUi(false);
+      // Only wipe the stored org hint when we are certain (signed-out or confirmed empty).
+      // Clearing it too eagerly would lose the "returning user" suppression guard.
+      if (clearLocalOrgHint || confirmedNoOrg) writeLocalOrgId(null);
+      applyOrgRequiredUi(false, { confirmedNoOrg });
     }
 
     let orgScopedRenderTimer = null;
@@ -3888,13 +3890,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
       el.setAttribute('aria-disabled', disabled ? 'true' : 'false');
     }
 
-    function applyOrgRequiredUi(hasOrg) {
+    function applyOrgRequiredUi(hasOrg, { confirmedNoOrg = false } = {}) {
       const banner = ensureOrgRequiredBanner();
       if (!banner) {
         if (!orgBannerRetryTimer) {
           orgBannerRetryTimer = window.setTimeout(() => {
             orgBannerRetryTimer = null;
-            applyOrgRequiredUi(hasOrg);
+            applyOrgRequiredUi(hasOrg, { confirmedNoOrg });
           }, 0);
         }
         return;
@@ -3905,7 +3907,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
         orgBannerRetryTimer = null;
       }
 
-      banner.hidden = Boolean(hasOrg);
+      const authSnapshot = getCurrentAuthSnapshot();
+      // 'unknown' and 'checking' are NOT signed-out — do not flash the banner while
+      // auth is still resolving on slow connections.
+      const isDefinitelySignedOut = Boolean(authSnapshot && authSnapshot.status === 'signed_out');
+      // A stored org hint means the user has (or recently had) an org — keep banner hidden
+      // while auth/bundle is still resolving (prevents flash for returning users).
+      const hasLocalOrgHint = Boolean(readLocalOrgId());
+      const suppressUncertain = !isDefinitelySignedOut && !confirmedNoOrg && hasLocalOrgHint;
+      const showNoOrgBanner = !hasOrg && !suppressUncertain && (isDefinitelySignedOut || confirmedNoOrg);
+      banner.hidden = !showNoOrgBanner;
 
       const disable = !hasOrg;
       setDisabled(document.getElementById('btn-new-pack'), disable);
@@ -3921,7 +3932,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
     async function applyOrgContextFromBundle(bundle, { reason = 'org-context', forceEmit = false } = {}) {
       if (!bundle || !bundle.session || !bundle.user) {
-        clearOrgContext();
+        // Do NOT wipe org state when bundle is unavailable — it may just be loading or a transient
+        // network error. Only clear if auth is definitively signed_out.
+        const _snap = getCurrentAuthSnapshot();
+        if (_snap && _snap.status === 'signed_out') {
+          clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: true });
+        }
         return null;
       }
 
@@ -3930,7 +3946,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const now = Date.now();
 
       if (!nextOrgId) {
-        clearOrgContext();
+        clearOrgContext({
+          clearLocalOrgHint: false,
+          confirmedNoOrg: Array.isArray(resolved.orgs) && resolved.orgs.length === 0,
+        });
         return null;
       }
 

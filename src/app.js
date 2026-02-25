@@ -5016,90 +5016,182 @@ const TP3D_BUILD_STAMP = Object.freeze({
               resolve(value);
             };
 
+            // ── Build new plan-picker UI ──────────────────────────────────────
             const content = document.createElement('div');
-            content.className = 'tp3d-checkout-plan-picker';
+            content.className = 'tp3d-plan-picker';
 
-            const optionsWrap = document.createElement('div');
-            optionsWrap.className = 'tp3d-checkout-plan-options';
+            // Title
+            const pickerTitle = document.createElement('div');
+            pickerTitle.className = 'tp3d-plan-picker__title';
+            pickerTitle.textContent = 'Truck Packer Pro';
+            content.appendChild(pickerTitle);
 
-            const monthBtn = document.createElement('button');
-            monthBtn.type = 'button';
-            monthBtn.className = 'btn btn-secondary tp3d-checkout-plan-option';
-            monthBtn.textContent = `${plans.month.label} — ${plans.month.description}`;
-            monthBtn.disabled = !plans.month.available;
+            // Feature list
+            const featureItems = [
+              'Unlimited packs & cases',
+              'Advanced 3D editor',
+              'PDF & Excel export',
+              'Team collaboration',
+              'Priority support',
+            ];
+            const featureList = document.createElement('ul');
+            featureList.className = 'tp3d-plan-picker__features';
+            featureItems.forEach(text => {
+              const li = document.createElement('li');
+              li.className = 'tp3d-plan-picker__feature';
+              li.textContent = text;
+              featureList.appendChild(li);
+            });
+            content.appendChild(featureList);
 
-            const yearBtn = document.createElement('button');
-            yearBtn.type = 'button';
-            yearBtn.className = 'btn btn-secondary tp3d-checkout-plan-option';
-            yearBtn.textContent = `${plans.year.label} — ${plans.year.description}`;
-            yearBtn.disabled = !plans.year.available;
+            // "Learn More" link
+            const learnMore = document.createElement('a');
+            learnMore.className = 'tp3d-plan-picker__learn-more';
+            learnMore.href = '#';
+            learnMore.textContent = 'Learn More';
+            learnMore.addEventListener('click', e => e.preventDefault());
+            content.appendChild(learnMore);
 
+            // Plan cards
+            const cardsWrap = document.createElement('div');
+            cardsWrap.className = 'tp3d-plan-picker__cards';
+
+            const buildCard = (interval, badgeText, cardTitle, subText, priceMain, priceSub, disabled) => {
+              const card = document.createElement('button');
+              card.type = 'button';
+              card.className = 'tp3d-plan-card';
+              card.disabled = disabled;
+              card.dataset.interval = interval;
+
+              const cardLeft = document.createElement('div');
+              cardLeft.className = 'tp3d-plan-card__left';
+
+              if (badgeText) {
+                const badge = document.createElement('span');
+                badge.className = 'tp3d-plan-card__badge';
+                badge.textContent = badgeText;
+                cardLeft.appendChild(badge);
+              }
+
+              const cardTitleEl = document.createElement('div');
+              cardTitleEl.className = 'tp3d-plan-card__title';
+              cardTitleEl.textContent = cardTitle;
+              cardLeft.appendChild(cardTitleEl);
+
+              const cardSub = document.createElement('div');
+              cardSub.className = 'tp3d-plan-card__sub';
+              cardSub.textContent = subText;
+              cardLeft.appendChild(cardSub);
+
+              const cardPrice = document.createElement('div');
+              cardPrice.className = 'tp3d-plan-card__price';
+
+              const priceMainEl = document.createElement('span');
+              priceMainEl.className = 'tp3d-plan-card__price-main';
+              priceMainEl.textContent = priceMain;
+
+              const priceSubEl = document.createElement('span');
+              priceSubEl.className = 'tp3d-plan-card__price-sub';
+              priceSubEl.textContent = priceSub;
+
+              cardPrice.appendChild(priceMainEl);
+              cardPrice.appendChild(priceSubEl);
+
+              card.appendChild(cardLeft);
+              card.appendChild(cardPrice);
+              return card;
+            };
+
+            const yearCard = buildCard(
+              'year',
+              'Save 17%',
+              'Yearly Plan',
+              'Billed at $199.99/yr',
+              '$16.67',
+              'per month',
+              !plans.year.available
+            );
+
+            const monthCard = buildCard(
+              'month',
+              null,
+              'Monthly Plan',
+              'Billed monthly',
+              '$19.99',
+              'per month',
+              !plans.month.available
+            );
+
+            cardsWrap.appendChild(yearCard);
+            cardsWrap.appendChild(monthCard);
+            content.appendChild(cardsWrap);
+
+            // Status line for unavailable plans
             const statusLine = document.createElement('div');
             statusLine.className = 'muted tp3d-checkout-plan-note';
             statusLine.textContent = '';
+            content.appendChild(statusLine);
 
+            // CTA button
+            const ctaBtn = document.createElement('button');
+            ctaBtn.type = 'button';
+            ctaBtn.className = 'btn btn-primary tp3d-plan-picker__cta';
+            ctaBtn.textContent = 'Start my subscription';
+            if (!plans.month.available && !plans.year.available) {
+              ctaBtn.disabled = true;
+            }
+            content.appendChild(ctaBtn);
+
+            // Cancel anytime note (below CTA)
+            const cancelNote = document.createElement('div');
+            cancelNote.className = 'tp3d-plan-picker__cancel-note';
+            cancelNote.textContent = 'Cancel anytime!';
+            content.appendChild(cancelNote);
+
+            // Selection state
             const updateSelectionUI = () => {
-              monthBtn.classList.toggle('btn-primary', selectedInterval === 'month');
-              monthBtn.classList.toggle('btn-secondary', selectedInterval !== 'month');
-              yearBtn.classList.toggle('btn-primary', selectedInterval === 'year');
-              yearBtn.classList.toggle('btn-secondary', selectedInterval !== 'year');
+              yearCard.classList.toggle('tp3d-plan-card--selected', selectedInterval === 'year');
+              monthCard.classList.toggle('tp3d-plan-card--selected', selectedInterval === 'month');
               const missing = [];
               if (!plans.month.available) missing.push('Monthly plan is not configured.');
               if (!plans.year.available) missing.push('Yearly plan is not configured.');
               statusLine.textContent = missing.join(' ');
             };
 
-            monthBtn.addEventListener('click', () => {
-              if (!plans.month.available) return;
-              selectedInterval = 'month';
-              updateSelectionUI();
-            });
-            yearBtn.addEventListener('click', () => {
+            yearCard.addEventListener('click', () => {
               if (!plans.year.available) return;
               selectedInterval = 'year';
               updateSelectionUI();
             });
+            monthCard.addEventListener('click', () => {
+              if (!plans.month.available) return;
+              selectedInterval = 'month';
+              updateSelectionUI();
+            });
 
-            optionsWrap.appendChild(monthBtn);
-            optionsWrap.appendChild(yearBtn);
-            content.appendChild(optionsWrap);
-            content.appendChild(statusLine);
             updateSelectionUI();
 
             const modalRef = UIComponents.showModal({
-              title,
+              title: ' ',
+              hideClose: false,
               content,
-              actions: [
-                {
-                  label: 'Cancel',
-                  variant: 'ghost',
-                  onClick: () => {
-                    settle(null);
-                  },
-                },
-                {
-                  label: continueLabel,
-                  variant: 'primary',
-                  onClick: () => {
-                    const selectedPlan = plans[selectedInterval];
-                    if (!selectedPlan || !selectedPlan.available) {
-                      UIComponents.showToast(`Price not configured for interval: ${selectedInterval}`, 'warning', { title: 'Billing' });
-                      return false;
-                    }
-                    settle({ interval: selectedInterval });
-                    return true;
-                  },
-                },
-              ],
+              actions: [],
               onClose: () => settle(null),
             });
 
-            const continueBtn = modalRef && modalRef.modal
-              ? modalRef.modal.querySelector('.modal-footer .btn.btn-primary')
-              : null;
-            if (continueBtn && !plans.month.available && !plans.year.available) {
-              continueBtn.disabled = true;
+            if (modalRef && modalRef.modal) {
+              modalRef.modal.classList.add('tp3d-plan-picker-modal');
             }
+
+            ctaBtn.addEventListener('click', () => {
+              const selectedPlan = plans[selectedInterval];
+              if (!selectedPlan || !selectedPlan.available) {
+                UIComponents.showToast(`Price not configured for interval: ${selectedInterval}`, 'warning', { title: 'Billing' });
+                return;
+              }
+              settle({ interval: selectedInterval });
+              try { modalRef && typeof modalRef.close === 'function' && modalRef.close(); } catch (_) { /* ignore */ }
+            });
           });
 
         try {
@@ -5413,22 +5505,31 @@ const TP3D_BUILD_STAMP = Object.freeze({
           }
 
           upgradeEl.innerHTML = '';
+
+          // Header: icon + title
+          const headerEl = document.createElement('div');
+          headerEl.className = 'tp3d-sidebar-upgrade-header';
+          const iconEl = document.createElement('span');
+          iconEl.className = 'tp3d-sidebar-upgrade-icon';
+          iconEl.textContent = '\uD83D\uDCE6';
           const titleEl = document.createElement('div');
-          titleEl.className = 'tp3d-sidebar-upgrade-text';
-          titleEl.textContent = isTrial && trialDays !== null
+          titleEl.className = 'tp3d-sidebar-upgrade-title';
+          titleEl.textContent = 'Subscribe';
+          headerEl.appendChild(iconEl);
+          headerEl.appendChild(titleEl);
+          upgradeEl.appendChild(headerEl);
+
+          // Subtitle
+          const subEl = document.createElement('div');
+          subEl.className = 'tp3d-sidebar-upgrade-text';
+          subEl.textContent = isTrial && trialDays !== null
             ? 'Your free trial ends in ' + trialDays + ' day' + (trialDays !== 1 ? 's' : '')
-            : 'Upgrade to Pro';
-          upgradeEl.appendChild(titleEl);
-          if (isTrial && s.trialEndsAt) {
-            const trialDate = new Date(s.trialEndsAt);
-            const subEl = document.createElement('div');
-            subEl.className = 'muted tp3d-settings-mt-xs';
-            subEl.textContent = 'Ends on ' + (isNaN(trialDate.getTime()) ? String(s.trialEndsAt) : trialDate.toLocaleDateString());
-            upgradeEl.appendChild(subEl);
-          }
+            : 'Upgrade to Pro to unlock all features.';
+          upgradeEl.appendChild(subEl);
+
           const btn = document.createElement('button');
           btn.type = 'button';
-          btn.className = 'btn btn-primary';
+          btn.className = 'btn btn-primary tp3d-sidebar-upgrade-btn';
           btn.textContent = 'Upgrade Plan';
           btn.addEventListener('click', () => {
             btn.disabled = true;

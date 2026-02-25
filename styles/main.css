@@ -932,10 +932,38 @@ textarea:focus {
   gap: var(--space-2);
 }
 
+.tp3d-sidebar-upgrade-header {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-1);
+}
+
+.tp3d-sidebar-upgrade-icon {
+  font-size: var(--text-xl);
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.tp3d-sidebar-upgrade-title {
+  font-size: var(--text-lg);
+  font-weight: var(--font-bold);
+  color: var(--text-primary);
+  line-height: var(--leading-tight);
+}
+
 .tp3d-sidebar-upgrade-text {
   font-size: var(--text-sm);
   color: var(--text-secondary);
   line-height: var(--leading-tight);
+  padding: 0 var(--space-1);
+}
+
+.tp3d-sidebar-upgrade-btn {
+  width: 100%;
+  justify-content: center;
+  margin-top: var(--space-1);
 }
 
 .kebab {
@@ -3279,6 +3307,196 @@ body.modal-open {
   font-size: var(--text-xs);
 }
 
+/* ================================
+  Plan Picker Modal
+================================== */
+
+.tp3d-plan-picker-modal {
+  width: min(520px, 100%);
+}
+
+/* modal-header is shown — close X appears in the standard top-right position */
+
+.tp3d-plan-picker-modal .modal-footer {
+  display: none;
+}
+
+.tp3d-plan-picker-modal .modal-body {
+  padding: var(--space-5);
+  gap: 0;
+}
+
+/* Content wrapper */
+.tp3d-plan-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* Big title */
+.tp3d-plan-picker__title {
+  font-size: var(--text-2xl, 1.5rem);
+  font-weight: var(--font-bold);
+  color: var(--text-primary);
+  line-height: var(--leading-tight);
+}
+
+/* Feature list — grid layout matches trial welcome checklist */
+.tp3d-plan-picker__features {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-3);
+}
+
+.tp3d-plan-picker__feature {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  align-items: start;
+  column-gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  line-height: var(--leading-relaxed);
+}
+
+/* Check icon — mirrors .tp3d-trial-welcome__features li::before exactly */
+.tp3d-plan-picker__feature::before {
+  content: '\2713';
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.14);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: var(--success);
+  font-size: 12px;
+  font-weight: var(--font-bold);
+  margin-top: 2px;
+}
+
+/* Learn More link */
+.tp3d-plan-picker__learn-more {
+  font-size: var(--text-sm);
+  color: var(--accent-primary);
+  text-decoration: none;
+  align-self: flex-start;
+  margin-top: calc(-1 * var(--space-2));
+}
+
+.tp3d-plan-picker__learn-more:hover {
+  text-decoration: underline;
+}
+
+/* Cards wrapper */
+.tp3d-plan-picker__cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Individual plan card */
+.tp3d-plan-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 2px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  width: 100%;
+}
+
+.tp3d-plan-card:hover:not(:disabled) {
+  border-color: var(--accent-primary);
+}
+
+.tp3d-plan-card--selected {
+  border-color: var(--accent-primary);
+  background: rgba(255, 159, 28, 0.06);
+}
+
+.tp3d-plan-card:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Left column: badge + title + sub */
+.tp3d-plan-card__left {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* Save badge */
+.tp3d-plan-card__badge {
+  display: inline-block;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: #fff;
+  background: var(--success);
+  border-radius: var(--radius-full, 9999px);
+  padding: 1px var(--space-2);
+  line-height: 1.6;
+  align-self: flex-start;
+}
+
+.tp3d-plan-card__title {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  line-height: var(--leading-tight);
+}
+
+.tp3d-plan-card__sub {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: var(--leading-normal);
+}
+
+/* Right price block */
+.tp3d-plan-card__price {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  flex-shrink: 0;
+  gap: 2px;
+}
+
+.tp3d-plan-card__price-main {
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.tp3d-plan-card__price-sub {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* Cancel anytime note */
+.tp3d-plan-picker__cancel-note {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+/* Full-width CTA button */
+.tp3d-plan-picker__cta {
+  width: 100%;
+  justify-content: center;
+  font-size: var(--text-base);
+}
+
 .tp3d-billing-manage-wrap {
   display: inline-flex;
   align-items: center;
@@ -4246,7 +4464,7 @@ body.modal-open {
 .tp3d-billing-pro-cta__left {
   display: flex;
   flex-direction: row;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-3);
   min-width: 0;
 }

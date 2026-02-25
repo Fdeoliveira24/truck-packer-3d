@@ -2046,18 +2046,23 @@ export function createSettingsOverlay({
       ctaIcon.textContent = '\uD83D\uDCE6'; // 📦
       ctaLeft.appendChild(ctaIcon);
 
+      // Text block: title + sub stacked vertically, sits next to the icon
+      const ctaBody = doc.createElement('div');
+      ctaBody.className = 'tp3d-billing-pro-cta__body';
+
       const ctaTitle = doc.createElement('div');
       ctaTitle.className = 'tp3d-billing-pro-cta__title';
       ctaTitle.textContent = 'Truck Packer Pro 3D';
-      ctaLeft.appendChild(ctaTitle);
+      ctaBody.appendChild(ctaTitle);
 
       const ctaDesc = doc.createElement('div');
       ctaDesc.className = 'tp3d-billing-pro-cta__sub';
       ctaDesc.textContent = status === 'trial_expired'
         ? 'Your trial has ended. Subscribe to continue using Pro features.'
         : 'Subscribe to keep using Truck Packer after your free trial ends, cancel anytime.';
-      ctaLeft.appendChild(ctaDesc);
+      ctaBody.appendChild(ctaDesc);
 
+      ctaLeft.appendChild(ctaBody);
       ctaCard.appendChild(ctaLeft);
 
       // Right column: Subscribe button, vertically centered
@@ -2189,8 +2194,8 @@ export function createSettingsOverlay({
         });
       });
       manageWrap.appendChild(manageBtn);
-      // Show Manage for paid Pro users always; for Free/Trial only when portal is available.
-      const showManage = isActivePaidPro || manageEnabled;
+      // Manage is only relevant for active paid Pro users.
+      const showManage = isActivePaidPro;
       if (showManage) actionsRow.appendChild(manageWrap);
 
       const refreshBtn = doc.createElement('button');

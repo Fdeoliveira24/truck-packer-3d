@@ -4242,17 +4242,27 @@ body.modal-open {
   border-radius: var(--radius-md);
 }
 
-/* Left column: icon + title + sub text */
+/* Left column: icon + title + sub text inline */
 .tp3d-billing-pro-cta__left {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-3);
   min-width: 0;
 }
 
 .tp3d-billing-pro-cta__icon {
   font-size: var(--text-xl);
   line-height: 1;
+  flex-shrink: 0;
+}
+
+/* Text block: title + sub stacked vertically next to the icon */
+.tp3d-billing-pro-cta__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
 }
 
 .tp3d-billing-pro-cta__title {

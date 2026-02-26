@@ -180,7 +180,33 @@ Deno.serve(async (req) => {
         subscription_update: { subscription: stripeSubscriptionId },
       };
     }
-    const session = await stripe.billingPortal.sessions.create(sessionPayload as any);
+
+    // Attempt to create the portal session with flow_data preselection.
+    // If Stripe rejects because the subscription is managed by a schedule,
+    // fall back to a plain session (no flow_data) so the portal still opens.
+    let session: { url: string };
+    let scheduleFallback = false;
+    try {
+      session = await stripe.billingPortal.sessions.create(sessionPayload as any);
+    } catch (flowErr) {
+      const msg = String((flowErr as Error)?.message ?? "");
+      const isScheduleErr = msg.toLowerCase().includes("managed by a subscription schedule");
+      if (isScheduleErr && stripeSubscriptionId) {
+        console.log("[portal-session] schedule-managed fallback", {
+          organization_id: organizationId,
+          stripe_subscription_id: stripeSubscriptionId,
+        });
+        scheduleFallback = true;
+        const fallbackPayload: Record<string, unknown> = {
+          customer: stripeCustomerId,
+          return_url: sessionPayload.return_url,
+        };
+        if (portalConfigurationId) fallbackPayload.configuration = portalConfigurationId;
+        session = await stripe.billingPortal.sessions.create(fallbackPayload as any);
+      } else {
+        throw flowErr;
+      }
+    }
 
     // Server-side debug log — no secrets or JWTs logged.
     console.log("[portal-session]", {
@@ -188,6 +214,7 @@ Deno.serve(async (req) => {
       found_customer: Boolean(stripeCustomerId),
       stripe_subscription_id: stripeSubscriptionId || "none",
       portal_configuration_id: portalConfigurationId || null,
+      schedule_fallback: scheduleFallback,
     });
 
     if (debug) {
@@ -197,6 +224,7 @@ Deno.serve(async (req) => {
         stripe_customer_id: stripeCustomerId,
         portal_configuration_id: portalConfigurationId || null,
         stripe_subscription_id: stripeSubscriptionId || "none",
+        schedule_fallback: scheduleFallback,
       });
     }
 

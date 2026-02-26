@@ -5222,14 +5222,67 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
           const body = document.createElement('div');
           const line1 = document.createElement('div');
-          line1.textContent = 'Your free trial has ended. Start a subscription to continue using Truck Packer 3D.';
+          if (canManageBilling) {
+            line1.textContent = 'Your free trial has ended. Start a subscription to continue using Truck Packer 3D.';
+          } else {
+            line1.textContent = 'Your free trial has ended.';
+          }
           body.appendChild(line1);
           if (!canManageBilling) {
+            // TODO: replace support@pxl360.com with the real support email later.
             const roleHint = document.createElement('div');
             roleHint.className = 'muted tp3d-settings-mt-sm';
-            roleHint.textContent = 'Only the org owner can complete subscription checkout.';
+            const hintText = document.createTextNode('Ask your owner to upgrade this workspace or contact support: ');
+            roleHint.appendChild(hintText);
+            const supportLink = document.createElement('a');
+            supportLink.href = 'mailto:support@pxl360.com';
+            supportLink.textContent = 'support@pxl360.com';
+            roleHint.appendChild(supportLink);
             body.appendChild(roleHint);
           }
+
+          const logoutAction = {
+            label: 'Logout',
+            variant: 'ghost',
+            onClick: () => {
+              try {
+                if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
+                  SupabaseClient.signOut({ global: true, allowOffline: true }).catch(() => { });
+                }
+              } catch (_) {
+                // ignore
+              }
+              setTimeout(() => {
+                try { window.location.reload(); } catch (_) { /* ignore */ }
+              }, 250);
+              return false;
+            },
+          };
+
+          const modalActions = canManageBilling
+            ? [
+                {
+                  label: 'Start Subscription',
+                  variant: 'primary',
+                  onClick: () => {
+                    pickCheckoutInterval({ title: 'Choose Plan', continueLabel: 'Continue' })
+                      .then(selection => {
+                        if (!selection || !selection.interval) return Promise.resolve();
+                        return startCheckout({ interval: selection.interval }).then((result) => {
+                          if (!result.ok) {
+                            UIComponents.showToast(result.error || 'Checkout failed', 'error', { title: 'Billing' });
+                          }
+                        });
+                      })
+                      .catch(() => {
+                        UIComponents.showToast('Checkout failed', 'error', { title: 'Billing' });
+                      });
+                    return false;
+                  },
+                },
+                logoutAction,
+              ]
+            : [logoutAction];
 
           trialExpiredModalOrgId = orgId;
           trialExpiredModalRef = UIComponents.showModal({
@@ -5237,48 +5290,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             content: body,
             dismissible: false,
             hideClose: true,
-            actions: [
-              {
-                label: 'Start Subscription',
-                variant: 'primary',
-                onClick: () => {
-                  if (!canManageBilling) {
-                    UIComponents.showToast('Only the org owner can manage billing for this workspace.', 'warning', { title: 'Billing' });
-                    return false;
-                  }
-                  pickCheckoutInterval({ title: 'Choose Plan', continueLabel: 'Continue' })
-                    .then(selection => {
-                      if (!selection || !selection.interval) return Promise.resolve();
-                      return startCheckout({ interval: selection.interval }).then((result) => {
-                        if (!result.ok) {
-                          UIComponents.showToast(result.error || 'Checkout failed', 'error', { title: 'Billing' });
-                        }
-                      });
-                    })
-                    .catch(() => {
-                      UIComponents.showToast('Checkout failed', 'error', { title: 'Billing' });
-                    });
-                  return false;
-                },
-              },
-              {
-                label: 'Logout',
-                variant: 'ghost',
-                onClick: () => {
-                  try {
-                    if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
-                      SupabaseClient.signOut({ global: true, allowOffline: true }).catch(() => { });
-                    }
-                  } catch (_) {
-                    // ignore
-                  }
-                  setTimeout(() => {
-                    try { window.location.reload(); } catch (_) { /* ignore */ }
-                  }, 250);
-                  return false;
-                },
-              },
-            ],
+            actions: modalActions,
             onClose: () => {
               trialExpiredModalRef = null;
               trialExpiredModalOrgId = null;

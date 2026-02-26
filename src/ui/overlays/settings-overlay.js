@@ -1986,19 +1986,20 @@ export function createSettingsOverlay({
         planHeader.appendChild(renewInline);
       }
 
-      if (isTrial && !isCancelScheduled && state.trialEndsAt) {
-        const trialDate = new Date(state.trialEndsAt);
-        const trialDateText = isNaN(trialDate.getTime()) ? String(state.trialEndsAt) : trialDate.toLocaleDateString();
+      if (isTrial && !isCancelScheduled && trialDaysLeft !== null) {
         const trialBadge = doc.createElement('span');
         trialBadge.className = 'badge badge--pending';
-        trialBadge.textContent = trialDaysLeft !== null
-          ? trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '') + ' left'
-          : 'Trial';
+        trialBadge.textContent = trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '') + ' left';
         planHeader.appendChild(trialBadge);
         const trialInline = doc.createElement('span');
         trialInline.className = 'tp3d-billing-cancel-inline tp3d-org-feedback tp3d-org-feedback--warning';
-        trialInline.textContent = 'Ends on ' + trialDateText;
+        trialInline.textContent = 'Ends in ' + trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '');
         planHeader.appendChild(trialInline);
+      } else if (isTrial && !isCancelScheduled) {
+        const trialBadge = doc.createElement('span');
+        trialBadge.className = 'badge badge--pending';
+        trialBadge.textContent = 'Trial';
+        planHeader.appendChild(trialBadge);
       } else if (trialDaysLeft !== null) {
         const daysEl = doc.createElement('span');
         daysEl.className = 'muted';
@@ -2012,14 +2013,12 @@ export function createSettingsOverlay({
       const statusLine = doc.createElement('div');
       statusLine.className = 'muted tp3d-settings-mt-xs';
 
-      if (isTrial && !isCancelScheduled && state.trialEndsAt) {
-        // date already shown inline in header row; no second line needed
-      } else if (isTrial && state.trialEndsAt) {
-        const endDate = new Date(state.trialEndsAt);
-        const endText = isNaN(endDate.getTime()) ? state.trialEndsAt : endDate.toLocaleDateString();
-        statusLine.textContent = trialWelcomeShown
-          ? 'You are on Pro trial until ' + endText
-          : 'Trial ends on ' + endText;
+      if (isTrial && !isCancelScheduled && trialDaysLeft !== null) {
+        // relative days already shown inline in header row; no second line needed
+      } else if (isTrial && trialDaysLeft !== null) {
+        statusLine.textContent = 'Ends in ' + trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '');
+      } else if (!isProOrTrial && status === 'trial_expired') {
+        statusLine.textContent = 'Your free trial has ended.';
       } else if (!isProOrTrial && status) {
         statusLine.textContent = 'Status: ' + status.replace(/_/g, ' ');
       }
@@ -2123,9 +2122,15 @@ export function createSettingsOverlay({
 
       subSection.appendChild(ctaCard);
     } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && roleKnown && !canManageBilling) {
+      // TODO: replace support@pxl360.com with the real support email later.
       const note = doc.createElement('div');
       note.className = 'muted tp3d-settings-mt-sm';
-      note.textContent = 'Only the org owner can manage billing for this organization.';
+      const noteText = doc.createTextNode('Ask your owner to upgrade this workspace or contact support: ');
+      note.appendChild(noteText);
+      const supportLink = doc.createElement('a');
+      supportLink.href = 'mailto:support@pxl360.com';
+      supportLink.textContent = 'support@pxl360.com';
+      note.appendChild(supportLink);
       subSection.appendChild(note);
     } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && !roleKnown) {
       const note = doc.createElement('div');
@@ -2163,6 +2168,8 @@ export function createSettingsOverlay({
         <span class="tp3d-skel-btn"></span>
       `;
       subSection.appendChild(actionsSkeleton);
+    } else if (roleKnown && !canManageBilling) {
+      // Non-owners: no action buttons at all
     } else {
       // Action buttons row
       const actionsRow = doc.createElement('div');

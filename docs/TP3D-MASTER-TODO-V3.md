@@ -93,58 +93,42 @@ Completed:
 
 ---
 
-### P0.6 Baseline DB health checks (run during billing tests) — NOT DONE
-Add to your routine before/after billing tests:
+### P0.6 Baseline DB health checks (run during billing tests) — CHECKLIST READY (run + record to close)
 
-- [ ] No stuck webhook events (received > 5 mins)
-  ```sql
-  select count(*) as stuck_received_over_5m
-  from public.webhook_events
-  where status='received'
-    and processed_at is null
-    and received_at < now() - interval '5 minutes';
-  ```
-  Expect: 0
+SQL queries created: see `docs/P0.6-DB-HEALTH-CHECKLIST.md` (6 queries covering expired trials,
+duplicate active subs, missing org_id, billing_customers/subscriptions mismatches).
 
-- [ ] Webhook terminal states distribution looks sane
-  ```sql
-  select status, count(*) from public.webhook_events group by status order by status;
-  ```
+- [ ] Run all six queries against production (`yduzbvijzwczjapanxbd`)
+- [ ] Record results in the Results Log table in the checklist doc
+- [ ] Resolve any non-zero rows or document known exceptions
+- [ ] Mark P0.6 **DONE** once results are recorded
 
-- [ ] Billing projection row looks complete for the org under test
-  ```sql
-  select organization_id, status, plan_name, billing_interval,
-         current_period_start, current_period_end,
-         cancel_at_period_end, trial_ends_at,
-         stripe_customer_id, stripe_subscription_id, updated_at
-  from public.billing_customers
-  where organization_id = '<ORG_ID>';
-  ```
+Previous ad-hoc queries preserved for reference:
+- Stuck webhook events (> 5 mins): see checklist
+- Billing projection row check: see checklist Q4
 
 ---
 
-### P0.7 Trial-expired business rule ("soft lock" + limits) — NOT DONE (NEXT)
+### P0.7 Trial-expired business rule ("soft lock" + limits) — IMPLEMENTED (needs test to close)
 
-Goal: When trial expires, apply rules cleanly without breaking data.
+**Implemented in this session:**
+- [x] `billing-status`: emits `status='trial_expired'`, `plan='free'`, `isActive=false` for:
+  - No-card trials: `billing_customers.status='trialing'` + no `stripe_subscription_id` + `trial_ends_at` past
+  - Stripe-managed trials: `subscription.trial_end` in the past + no evidence of paid conversion (current_period_end ≤ trial_end + 3 days)
+- [x] Settings-overlay billing tab: shows "Your free trial has ended." (no date), owner CTA, non-owner support message (`support@pxl360.com` — TODO: replace later)
+- [x] Trial-expired modal: fires with `dismissible:false`; owner gets "Start Subscription" + Logout; non-owner gets support message + Logout
+- [x] Sidebar Subscribe card: fires for `trial_expired` (owner only)
+- [x] AutoPack gate: blocks with trial-aware toast + opens billing settings tab
+- [x] PDF export gate: updated to show trial-specific message + opens billing settings tab
 
-Decisions already made:
-- Trial UI should show only "Ends in X days" (not exact date).
-- Trial expired screen should say: "Ask your owner to upgrade account or contact support".
+**Mark DONE only after all three verified:**
+- [ ] Fresh trial org: "X days left" badge + sidebar card match
+- [ ] Trial-expired org: `status='trial_expired'` returned, correct owner/non-owner messaging, AutoPack + PDF blocked
+- [ ] Paid org: no interference with any of the above
 
-Work to do:
-- [ ] Define trial-expired rules in `/billing-status` response:
-  - If trial ended and no paid subscription: return `status='trial_expired'`, `plan='free'`, and a clean shape for UI.
-  - UI: show trial expired state without breaking the app.
-- [ ] Add "limits + enforcement" (your "visual tool only" idea) in a later step:
-  - packs limit
-  - cases limit
-  - export PDF disabled
-  - autopack limit
-  - invitations limit
-  - workspaces limit
-- [ ] Decide what "hard lock" means:
-  - Block only Pro actions (recommended first)
-  - Then, if limits exceeded after expiration, block creation/edit actions and show upgrade modal
+**Remains for later phases (P1+):**
+- [ ] Excel/CSV import gate (requires changes in `createImportCasesDialog` sub-module)
+- [ ] Hard limits: packs max, cases max, invitations max after trial expiry
 
 ---
 

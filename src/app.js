@@ -1827,6 +1827,20 @@ const TP3D_BUILD_STAMP = Object.freeze({
       async function pack() {
         if (isRunning) { return; }
 
+        // Billing gate: AutoPack requires active Pro subscription
+        try {
+          const _bs = window.__TP3D_BILLING && typeof window.__TP3D_BILLING.getBillingState === 'function'
+            ? window.__TP3D_BILLING.getBillingState() : null;
+          if (_bs && _bs.ok && !_bs.isActive) {
+            const _msg = _bs.status === 'trial_expired'
+              ? 'Your trial has ended. Upgrade to Pro to use AutoPack.'
+              : 'AutoPack is a Pro feature. Please upgrade to continue.';
+            UIComponents.showToast(_msg, 'info', { title: 'AutoPack' });
+            try { openSettingsOverlay('billing'); } catch (_) { /* ignore */ }
+            return;
+          }
+        } catch (_) { /* billing gate must never break AutoPack flow */ }
+
         const packId = StateStore.get('currentPackId');
         const packData = PackLibrary.getById(packId);
         if (!packData) {
@@ -2487,7 +2501,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
           }
           if (!_bs.isActive || !_bs.isPro) {
             if (_dbg) console.log('[Billing] PDF blocked: not Pro/active', _bs);
-            UIComponents.showToast('PDF export is a Pro feature. Please upgrade to continue.', 'info', { title: 'Export' });
+            const _pdfMsg = _bs.status === 'trial_expired'
+              ? 'Your trial has ended. Upgrade to Pro to export PDF.'
+              : 'PDF export is a Pro feature. Please upgrade to continue.';
+            UIComponents.showToast(_pdfMsg, 'info', { title: 'Export' });
+            try { openSettingsOverlay('billing'); } catch (_) { /* ignore */ }
             return;
           }
           if (_dbg) console.log('[Billing] PDF allowed', _bs);

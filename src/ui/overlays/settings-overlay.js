@@ -1978,7 +1978,7 @@ export function createSettingsOverlay({
         const renewText = isNaN(renewDate.getTime()) ? String(state.currentPeriodEnd) : renewDate.toLocaleDateString();
         const renewBadge = doc.createElement('span');
         renewBadge.className = 'badge badge--pending';
-        renewBadge.textContent = 'Renews';
+        renewBadge.textContent = 'Auto-renew';
         planHeader.appendChild(renewBadge);
         const renewInline = doc.createElement('span');
         renewInline.className = 'tp3d-billing-cancel-inline tp3d-org-feedback tp3d-org-feedback--warning';
@@ -1991,10 +1991,6 @@ export function createSettingsOverlay({
         trialBadge.className = 'badge badge--pending';
         trialBadge.textContent = trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '') + ' left';
         planHeader.appendChild(trialBadge);
-        const trialInline = doc.createElement('span');
-        trialInline.className = 'tp3d-billing-cancel-inline tp3d-org-feedback tp3d-org-feedback--warning';
-        trialInline.textContent = 'Ends in ' + trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '');
-        planHeader.appendChild(trialInline);
       } else if (isTrial && !isCancelScheduled) {
         const trialBadge = doc.createElement('span');
         trialBadge.className = 'badge badge--pending';
@@ -2013,10 +2009,8 @@ export function createSettingsOverlay({
       const statusLine = doc.createElement('div');
       statusLine.className = 'muted tp3d-settings-mt-xs';
 
-      if (isTrial && !isCancelScheduled && trialDaysLeft !== null) {
-        // relative days already shown inline in header row; no second line needed
-      } else if (isTrial && trialDaysLeft !== null) {
-        statusLine.textContent = 'Ends in ' + trialDaysLeft + ' day' + (trialDaysLeft !== 1 ? 's' : '');
+      if (isTrial) {
+        // days-left badge in header row is the single source of truth; no status line needed
       } else if (!isProOrTrial && status === 'trial_expired') {
         statusLine.textContent = 'Your free trial has ended.';
       } else if (!isProOrTrial && status) {
@@ -3952,7 +3946,7 @@ export function createSettingsOverlay({
             inviteRoleSelect.disabled = inviteControlsDisabled;
             inviteRoleSelect.innerHTML = `
               <option value="member">Member</option>
-              <option value="admin">Admin</option>
+              <option value="admin"${isOwner ? '' : ' disabled'}>Admin</option>
             `;
             inviteForm.appendChild(inviteRoleSelect);
 
@@ -4228,6 +4222,8 @@ export function createSettingsOverlay({
                 opt.value = r;
                 opt.textContent = getRoleLabel(r);
                 if (r === 'owner' && !isOwner) opt.disabled = true;
+                // Admins cannot promote to or manage admin role — only owners can.
+                if (r === 'admin' && !isOwner) opt.disabled = true;
                 roleSelect.appendChild(opt);
               });
               if (!roles.includes(role)) {
@@ -4244,6 +4240,11 @@ export function createSettingsOverlay({
                 if (nextRole === role) return;
                 if (nextRole === 'owner' && !isOwner) {
                   UIComponents.showToast('Only owners can promote members to owner.', 'warning');
+                  roleSelect.value = role;
+                  return;
+                }
+                if (nextRole === 'admin' && !isOwner) {
+                  UIComponents.showToast('Only owners can promote members to admin.', 'warning');
                   roleSelect.value = role;
                   return;
                 }

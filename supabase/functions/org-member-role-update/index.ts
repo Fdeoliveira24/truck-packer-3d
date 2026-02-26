@@ -78,6 +78,11 @@ Deno.serve(async (req) => {
       return json({ error: "Only owners can manage owner role." }, { status: 403, origin });
     }
 
+    // Admins cannot promote to admin or demote/edit existing admins — owner only.
+    if (actor.role !== "owner" && (nextRole === "admin" || targetRole === "admin")) {
+      return json({ error: "Only owners can manage admin roles." }, { status: 403, origin });
+    }
+
     if (targetRole === "owner" && nextRole !== "owner") {
       const owners = await ownerCount(sb, orgId);
       if (owners <= 1) {

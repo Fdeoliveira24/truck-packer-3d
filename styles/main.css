@@ -2823,6 +2823,7 @@ body.modal-open {
   right: 0;
   top: calc(100% - 102px);
   z-index: 10;
+
   /* was: 2 — raised to clear sibling content for tooltip visibility */
 }
 

@@ -79,25 +79,31 @@ Deno.serve(async (req) => {
       return json({ error: "Only the org owner can manage billing for this organization" }, { status: 403, origin });
     }
 
+    // --- Step 1: resolve stripe_customer_id + grab stripe_subscription_id in one query ---
+    let stripeSubscriptionId = "";
+
     if (!stripeCustomerId) {
       const billingCustomer = await sb
         .from("billing_customers")
-        .select("stripe_customer_id")
+        .select("stripe_customer_id, stripe_subscription_id")
         .eq("organization_id", organizationId)
         .maybeSingle();
       if (billingCustomer.error) throw billingCustomer.error;
       if (billingCustomer.data?.stripe_customer_id) {
         stripeCustomerId = String(billingCustomer.data.stripe_customer_id);
       }
+      if (billingCustomer.data?.stripe_subscription_id) {
+        stripeSubscriptionId = String(billingCustomer.data.stripe_subscription_id);
+      }
     }
 
     if (!stripeCustomerId) {
       const scoped = await sb
         .from("subscriptions")
-        .select("stripe_customer_id, status, current_period_end")
+        .select("stripe_customer_id, stripe_subscription_id, status, current_period_end")
         .eq("organization_id", organizationId)
         .in("status", ["active", "trialing", "past_due", "unpaid"])
-        .order("current_period_end", { ascending: false, nullsFirst: false })
+        .order("updated_at", { ascending: false, nullsFirst: false })
         .limit(1)
         .maybeSingle();
 
@@ -105,6 +111,9 @@ Deno.serve(async (req) => {
         if (!isMissingColumnError(scoped.error, "organization_id")) throw scoped.error;
       } else if (scoped.data?.stripe_customer_id) {
         stripeCustomerId = String(scoped.data.stripe_customer_id);
+        if (!stripeSubscriptionId && scoped.data?.stripe_subscription_id) {
+          stripeSubscriptionId = String(scoped.data.stripe_subscription_id);
+        }
       }
     }
 
@@ -119,6 +128,38 @@ Deno.serve(async (req) => {
       stripeCustomerId = String(existing.stripe_customer_id);
     }
 
+    // --- Step 2: if subscription id still missing, try subscriptions table by org ---
+    if (!stripeSubscriptionId) {
+      const subByOrg = await sb
+        .from("subscriptions")
+        .select("stripe_subscription_id, status")
+        .eq("organization_id", organizationId)
+        .in("status", ["active", "trialing", "past_due", "unpaid"])
+        .order("updated_at", { ascending: false, nullsFirst: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!subByOrg.error && subByOrg.data?.stripe_subscription_id) {
+        stripeSubscriptionId = String(subByOrg.data.stripe_subscription_id);
+      }
+    }
+
+    // --- Step 3: last fallback — by customer id ---
+    if (!stripeSubscriptionId && stripeCustomerId) {
+      const subByCust = await sb
+        .from("subscriptions")
+        .select("stripe_subscription_id, status")
+        .eq("stripe_customer_id", stripeCustomerId)
+        .in("status", ["active", "trialing", "past_due", "unpaid"])
+        .order("updated_at", { ascending: false, nullsFirst: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!subByCust.error && subByCust.data?.stripe_subscription_id) {
+        stripeSubscriptionId = String(subByCust.data.stripe_subscription_id);
+      }
+    }
+
     const return_url = new URL(origin);
     return_url.pathname = "/index.html";
     return_url.searchParams.set("billing", "portal_return");
@@ -131,14 +172,31 @@ Deno.serve(async (req) => {
     if (portalConfigurationId) {
       sessionPayload.configuration = portalConfigurationId;
     }
+    // Pre-select the active subscription so the portal lands directly on
+    // "Update subscription" and never shows an ambiguous multi-sub picker.
+    if (stripeSubscriptionId) {
+      sessionPayload.flow_data = {
+        type: "subscription_update",
+        subscription_update: { subscription: stripeSubscriptionId },
+      };
+    }
     const session = await stripe.billingPortal.sessions.create(sessionPayload as any);
 
+    // Server-side debug log — no secrets or JWTs logged.
+    console.log("[portal-session]", {
+      organization_id: organizationId,
+      found_customer: Boolean(stripeCustomerId),
+      stripe_subscription_id: stripeSubscriptionId || "none",
+      portal_configuration_id: portalConfigurationId || null,
+    });
+
     if (debug) {
-      console.log("stripe-create-portal-session", {
+      console.log("stripe-create-portal-session:verbose", {
         user_id: user.id,
         organization_id: organizationId,
         stripe_customer_id: stripeCustomerId,
         portal_configuration_id: portalConfigurationId || null,
+        stripe_subscription_id: stripeSubscriptionId || "none",
       });
     }
 

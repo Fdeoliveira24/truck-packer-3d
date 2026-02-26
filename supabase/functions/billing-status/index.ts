@@ -322,11 +322,13 @@ Deno.serve(async (req) => {
         .eq("organization_id", resolvedOrgId)
         .maybeSingle();
       billingCustomer = billingCustomerRes.data ?? null;
-      console.log("billing_customers lookup", {
-        orgId: resolvedOrgId,
-        found: !!billingCustomer,
-        error: billingCustomerRes.error?.message || null,
-      });
+      if (debug) {
+        console.log("billing_customers lookup", {
+          orgId: resolvedOrgId,
+          found: !!billingCustomer,
+          error: billingCustomerRes.error?.message || null,
+        });
+      }
       if (billingCustomerRes.error) {
         return json(req, 500, {
           error: "billing_customers lookup failed",

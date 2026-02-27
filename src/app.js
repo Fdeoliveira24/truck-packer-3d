@@ -5068,6 +5068,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const TRIAL_WELCOME_LS_PREFIX = 'tp3d_trial_modal_shown_';
         let trialExpiredModalRef = null;
         let trialExpiredModalOrgId = null;
+        let trialExpiredLockedOrgId = null;
         let trialWelcomeShownOrgId = null;
         /** @type {Map<string, string>} */
         const lastBillingStatusByOrg = new Map();
@@ -5355,6 +5356,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             : [logoutAction];
 
           trialExpiredModalOrgId = orgId;
+          trialExpiredLockedOrgId = orgId;
           trialExpiredModalRef = UIComponents.showModal({
             title: 'Trial Ended',
             content: body,
@@ -5535,7 +5537,21 @@ const TP3D_BUILD_STAMP = Object.freeze({
           );
 
           if (trialExpired) showTrialExpiredModal(s, canManageBilling);
-          else closeTrialExpiredModal();
+          else if (!s || (!s.pending && !s.loading)) {
+            const _authSnap = getCurrentAuthSnapshot();
+            const _signedIn = _authSnap.status === 'signed_in';
+            const _activeOid = String(_authSnap.activeOrgId || '').trim();
+            const _lockedForOrg = trialExpiredLockedOrgId && _signedIn && _activeOid === trialExpiredLockedOrgId;
+            const _defActive = s && s.ok && s.isActive;
+            if (_lockedForOrg && !_defActive) {
+              if (!trialExpiredModalRef) { try { showTrialExpiredModal(s, canManageBilling); } catch (_) { /* ignore */ } }
+            } else {
+              if (_defActive || !_signedIn || (trialExpiredLockedOrgId && _activeOid && _activeOid !== trialExpiredLockedOrgId)) {
+                trialExpiredLockedOrgId = null;
+              }
+              closeTrialExpiredModal();
+            }
+          }
 
           maybeShowTrialWelcome(s, prevStatus);
 

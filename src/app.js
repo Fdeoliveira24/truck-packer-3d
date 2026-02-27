@@ -1075,6 +1075,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (avatarEl) avatarEl.textContent = display.initials || '';
         const nameEl = buttonEl.querySelector('[data-account-name]');
         if (nameEl) nameEl.textContent = display.userName;
+        const orgNameEl = buttonEl.querySelector('[data-org-name]');
+        if (orgNameEl) orgNameEl.textContent = display.accountName;
         renderSidebarBrandMarks();
       }
 

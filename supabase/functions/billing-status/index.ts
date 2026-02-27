@@ -693,6 +693,16 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Handle billing_customers.status already set to "trial_expired" with no subscription row.
+    // Covers orgs where the trial expiry was recorded directly in billing_customers
+    // (e.g. bulk update) and no Stripe subscription exists yet.
+    if (!isActive && subStatus === "none" && resolvedOrgId && billingCustomerStatus === "trial_expired") {
+      subStatus = "trial_expired";
+      isTrial = false;
+      isActive = false;
+      trialEndsAtCandidate = billingCustomerTrialEndsAt ?? trialEndsAtCandidate;
+    }
+
     // Synthesize trial_expired for Stripe-managed trials that expired without paid conversion.
     // Guards: subscription exists, !isActive, not already trialing or trial_expired,
     // trial_end is set and in the past, and no evidence of a paid billing cycle.

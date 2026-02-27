@@ -434,6 +434,53 @@ function canUseProFeatures(billingSnapshot) {
 }
 
 /**
+ * Single source of truth for Pro-only feature gates.
+ * Returns billing + role state needed by all Pro-gated actions.
+ * @param {object} [billingSnapshot] - from getBillingState(); defaults to current state.
+ * @param {string} [userRole] - override; defaults to orgContext.role in module scope.
+ * @returns {{
+ *   isProActive: boolean,
+ *   isTrial: boolean,
+ *   isTrialExpired: boolean,
+ *   canUseProFeature: boolean,
+ *   blockReason: string,
+ *   uxMessage: string,
+ *   isOwner: boolean
+ * }}
+ */
+function getProRuleSet(billingSnapshot, userRole) {
+  const s = billingSnapshot || getBillingState();
+  const rawRole = String(userRole != null ? userRole : '').toLowerCase();
+  const isOwner = rawRole === 'owner';
+
+  const isTrial = Boolean(s.ok && s.isPro && s.isActive && s.status === 'trialing');
+  const isTrialExpired = Boolean(s.ok && !s.isActive && s.status === 'trial_expired');
+  const isProActive = Boolean(s.ok && s.isPro && s.isActive && !isTrial);
+  const canUseProFeature = Boolean(s.ok && s.isPro && s.isActive); // trial OR paid Pro
+
+  let blockReason = '';
+  let uxMessage = '';
+  if (!s.ok) {
+    blockReason = 'billing_unavailable';
+    uxMessage = 'Billing unavailable. Please try again.';
+  } else if (isTrialExpired) {
+    blockReason = 'trial_expired';
+    // TODO: replace support@pxl360.com with the real support email later.
+    uxMessage = isOwner
+      ? 'Your free trial has ended. Upgrade to Pro to continue.'
+      : 'Ask your owner to upgrade this workspace or contact support: support@pxl360.com';
+  } else if (!canUseProFeature) {
+    blockReason = 'not_pro';
+    // TODO: replace support@pxl360.com with the real support email later.
+    uxMessage = isOwner
+      ? 'This is a Pro feature. Upgrade to continue.'
+      : 'Ask your owner to upgrade this workspace or contact support: support@pxl360.com';
+  }
+
+  return { isProActive, isTrial, isTrialExpired, canUseProFeature, blockReason, uxMessage, isOwner };
+}
+
+/**
  * @param {unknown} value
  * @returns {'month'|'year'}
  */
@@ -549,6 +596,7 @@ try {
     refreshBilling,
     clearBillingState,
     canUseProFeatures,
+    getProRuleSet,
     getCheckoutPlanOptions,
     startCheckout,
     openPortal,
@@ -1831,13 +1879,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
         try {
           const _bs = window.__TP3D_BILLING && typeof window.__TP3D_BILLING.getBillingState === 'function'
             ? window.__TP3D_BILLING.getBillingState() : null;
-          if (_bs && _bs.ok && !_bs.isActive) {
-            const _msg = _bs.status === 'trial_expired'
-              ? 'Your trial has ended. Upgrade to Pro to use AutoPack.'
-              : 'AutoPack is a Pro feature. Please upgrade to continue.';
-            UIComponents.showToast(_msg, 'info', { title: 'AutoPack' });
-            try { openSettingsOverlay('billing'); } catch (_) { /* ignore */ }
-            return;
+          if (_bs && _bs.ok) {
+            const _rules = getProRuleSet(_bs, window.OrgContext && typeof window.OrgContext.getActiveRole === 'function' ? window.OrgContext.getActiveRole() : null);
+            if (!_rules.canUseProFeature) {
+              UIComponents.showToast(_rules.uxMessage, 'info', { title: 'AutoPack' });
+              if (_rules.isOwner && _rules.blockReason === 'trial_expired') {
+                try { openSettingsOverlay('billing'); } catch (_) { /* ignore */ }
+              }
+              return;
+            }
           }
         } catch (_) { /* billing gate must never break AutoPack flow */ }
 
@@ -2493,22 +2543,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
         try {
           const _bs = window.__TP3D_BILLING && typeof window.__TP3D_BILLING.getBillingState === 'function'
             ? window.__TP3D_BILLING.getBillingState() : null;
-          const _dbg = typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1';
           if (!_bs || !_bs.ok) {
-            if (_dbg) console.log('[Billing] PDF blocked: billing unavailable', _bs);
             UIComponents.showToast('Billing unavailable. Please try again.', 'warning', { title: 'Export' });
             return;
           }
-          if (!_bs.isActive || !_bs.isPro) {
-            if (_dbg) console.log('[Billing] PDF blocked: not Pro/active', _bs);
-            const _pdfMsg = _bs.status === 'trial_expired'
-              ? 'Your trial has ended. Upgrade to Pro to export PDF.'
-              : 'PDF export is a Pro feature. Please upgrade to continue.';
-            UIComponents.showToast(_pdfMsg, 'info', { title: 'Export' });
-            try { openSettingsOverlay('billing'); } catch (_) { /* ignore */ }
+          const _rules = getProRuleSet(_bs, window.OrgContext && typeof window.OrgContext.getActiveRole === 'function' ? window.OrgContext.getActiveRole() : null);
+          if (!_rules.canUseProFeature) {
+            UIComponents.showToast(_rules.uxMessage, 'info', { title: 'Export' });
+            if (_rules.isOwner && _rules.blockReason === 'trial_expired') {
+              try { openSettingsOverlay('billing'); } catch (_) { /* ignore */ }
+            }
             return;
           }
-          if (_dbg) console.log('[Billing] PDF allowed', _bs);
         } catch (_) { /* billing gate must never break PDF flow */ }
 
         try {
@@ -3753,6 +3799,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       getActiveOrgId,
       setActiveOrgId,
       hydrateActiveOrgId,
+      getActiveRole: () => (orgContext && typeof orgContext.role === 'string' ? orgContext.role : ''),
     };
 
     try {
@@ -3840,6 +3887,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       lastOrgChangeAt = 0;
       if (clearLocalOrgHint || confirmedNoOrg) writeLocalOrgId(null);
       applyOrgRequiredUi(false, { confirmedNoOrg });
+      queueOrgScopedRender('org-cleared');
     }
 
     let orgScopedRenderTimer = null;
@@ -4374,6 +4422,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (shouldShowSignInToast && canShowToast('auth-signed-in')) {
           const toastMsg = isUserSwitch ? 'Switched user' : 'Signed in';
           UIComponents.showToast(toastMsg, 'success', { title: 'Auth' });
+        }
+
+        if (isSignedInEvent || isUserSwitch) {
+          try { await refreshOrgContext('signed-in', { force: true, forceEmit: true }); } catch { /* ignore */ }
         }
 
         if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') {

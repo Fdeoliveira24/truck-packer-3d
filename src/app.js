@@ -4560,6 +4560,23 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       try { document.body.setAttribute('data-auth', 'signed_out'); } catch { /* ignore */ }
 
+      // ── P0.9.1: If this is a transient cross-tab SIGNED_OUT (not user-initiated)
+      //    and we have a recent signed-in snapshot, skip the destructive wipe.
+      //    The follow-up SIGNED_IN / TOKEN_REFRESHED will rehydrate normally. ──
+      const _isTransientSignedOut = !userInitiatedSignOut
+        && lastAuthEventSnapshot
+        && lastAuthEventSnapshot.status === 'signed_in'
+        && lastAuthEventSnapshot.hasToken === true
+        && (Date.now() - (lastAuthEventSnapshot.ts || 0)) < FALLBACK_AUTH_TTL_MS;
+
+      if (_isTransientSignedOut) {
+        // Do NOT wipe state/storage/org — just request a forced refresh so the
+        // imminent SIGNED_IN event can pick up cleanly.
+        requestAuthRefresh('transient-signed-out', { force: true, forceBundle: true });
+        return;
+      }
+      // ── end P0.9.1 ────────────────────────────────────────────────────────────────
+
       // ── P0.9: Reset scope to anon so autosave can't write to the old user's key ──
       suspendAutoSave = true;
       try {

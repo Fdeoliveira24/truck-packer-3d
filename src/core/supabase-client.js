@@ -2045,7 +2045,9 @@ export async function getMyMembership() {
 export async function getAccountBundleSingleFlight({ force = false } = {}) {
   const startEpoch = _authEpoch;
   if (_authState && _authState.status === 'signed_out') return null;
-  if (_signedOutCooldownUntil && Date.now() < _signedOutCooldownUntil) return null;
+  // P0.9.1: Only honour cooldown while still signed_out — if auth already
+  // recovered to signed_in (cross-tab token refresh), allow the bundle fetch.
+  if (_signedOutCooldownUntil && Date.now() < _signedOutCooldownUntil && _authState.status === 'signed_out') return null;
 
   const authReady = await awaitAuthReady({ timeoutMs: 5000 });
   if (!authReady.ok) {

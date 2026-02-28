@@ -109,7 +109,7 @@ export function createSettingsOverlay({
     return String(value || '').trim().toLowerCase() === 'year' ? 'year' : 'month';
   }
 
-  function escapeHtml(value) {
+  function _escapeHtml(value) {
     return String(value ?? '')
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -731,7 +731,7 @@ export function createSettingsOverlay({
       if (SupabaseClient.invalidateAccountCache) {
         SupabaseClient.invalidateAccountCache();
       }
-      UIComponents.showToast('Organization updated', 'success');
+      UIComponents.showToast('Workspace updated', 'success');
       renderIfFresh(actionId, 'saveOrganization');
       return updated;
     } catch (err) {
@@ -1716,7 +1716,7 @@ export function createSettingsOverlay({
     );
     const cancelEndValue = cancelAt || state.currentPeriodEnd || null;
     const portalAvailable = Boolean(state.portalAvailable);
-    const trialWelcomeShown = (() => {
+    const _trialWelcomeShown = (() => {
       try {
         const orgId = lockedOrgId || billingOrgId || '';
         if (!orgId || typeof window === 'undefined' || !window.localStorage) return false;
@@ -1772,14 +1772,14 @@ export function createSettingsOverlay({
     const orgMatchesLocked = orgProfileLoaded;
     const orgName = orgMatchesLocked && orgData && orgData.name
       ? String(orgData.name)
-      : (lockedOrgId ? 'Organization' : 'Personal Workspace');
+      : (lockedOrgId ? 'Workspace' : 'Personal Workspace');
 
     const orgSection = doc.createElement('div');
     orgSection.className = 'tp3d-settings-billing';
 
     const orgHeading = doc.createElement('div');
     orgHeading.className = 'tp3d-settings-billing-title';
-    orgHeading.textContent = 'Organization';
+    orgHeading.textContent = 'Workspace';
     orgSection.appendChild(orgHeading);
 
     const orgRow = doc.createElement('div');
@@ -1787,7 +1787,7 @@ export function createSettingsOverlay({
 
     const orgLabel = doc.createElement('div');
     orgLabel.className = 'tp3d-settings-row-label';
-    orgLabel.textContent = 'Organization';
+    orgLabel.textContent = 'Workspace';
     orgRow.appendChild(orgLabel);
 
     const orgValue = doc.createElement('div');
@@ -1889,7 +1889,7 @@ export function createSettingsOverlay({
     if (orgContextStalled) {
       const orgHelper = doc.createElement('div');
       orgHelper.className = 'muted tp3d-members-inline-helper';
-      orgHelper.textContent = 'Organization details are not available yet. Try Refresh.';
+      orgHelper.textContent = 'Workspace details are not available yet. Try Refresh.';
       orgSection.appendChild(orgHelper);
     }
 
@@ -2136,7 +2136,7 @@ export function createSettingsOverlay({
     const roleLoading = Boolean(lockedOrgId && !roleKnown && billingContextInflightForOrg);
     let manageDisabledReason = '';
     if (!lockedOrgId) {
-      manageDisabledReason = 'Select an organization to manage billing.';
+      manageDisabledReason = 'Select a workspace to manage billing.';
     } else if (loading || pending || staleOrgState) {
       manageDisabledReason = 'Loading billing info…';
     } else if (roleLoading) {
@@ -2376,7 +2376,7 @@ export function createSettingsOverlay({
     navWrap.appendChild(makeHeader('Settings'));
     navWrap.appendChild(makeItem({ key: 'preferences', label: 'Preferences', icon: 'fa-solid fa-gear' }));
     navWrap.appendChild(makeItem({ key: 'resources', label: 'Resources', icon: 'fa-solid fa-life-ring' }));
-    navWrap.appendChild(makeHeader('Organization'));
+    navWrap.appendChild(makeHeader('Workspace'));
     navWrap.appendChild(
       makeItem({ key: 'org-general', label: 'General', icon: 'fa-regular fa-building', indent: true })
     );
@@ -2387,7 +2387,7 @@ export function createSettingsOverlay({
         icon: 'fa-solid fa-users',
         indent: true,
         disabled: !hasOrg,
-        disabledReason: isOrgHydrating ? 'Loading organization…' : 'No active organization selected.',
+        disabledReason: isOrgHydrating ? 'Loading workspace…' : 'No active workspace selected.',
       })
     );
     navWrap.appendChild(
@@ -2397,7 +2397,7 @@ export function createSettingsOverlay({
         icon: 'fa-regular fa-credit-card',
         indent: true,
         disabled: !hasOrg,
-        disabledReason: isOrgHydrating ? 'Loading organization…' : 'No active organization selected.',
+        disabledReason: isOrgHydrating ? 'Loading workspace…' : 'No active workspace selected.',
       })
     );
     settingsLeftPane.appendChild(navWrap);
@@ -2462,7 +2462,7 @@ export function createSettingsOverlay({
           };
         case 'org-general':
           return {
-            title: 'Organization',
+            title: 'Workspace',
             helper: 'View workspace details and role.',
           };
         case 'org-members':
@@ -3367,7 +3367,7 @@ export function createSettingsOverlay({
             ''
           ).trim();
           if (!f || !orgIdLocal) return;
-          UIComponents.showToast('Uploading logo…', 'info', { title: 'Organization' });
+          UIComponents.showToast('Uploading logo…', 'info', { title: 'Workspace' });
           SupabaseClient.uploadOrgLogo(orgIdLocal, f)
             .then(() => {
               UIComponents.showToast('Logo updated', 'success');
@@ -3392,7 +3392,7 @@ export function createSettingsOverlay({
         logoCell.appendChild(changeBtn);
 
         form.appendChild(orgRow('Logo', logoCell));
-        form.appendChild(makeField('Name', 'name', orgData.name || '', 'Organization name'));
+        form.appendChild(makeField('Name', 'name', orgData.name || '', 'Workspace name'));
         form.appendChild(
           makeFieldRow(
             makeField('Phone', 'phone', orgData.phone || '', '+1 (555) 000-0000'),
@@ -3466,7 +3466,7 @@ export function createSettingsOverlay({
 
           const noOrgEl = doc.createElement('div');
           noOrgEl.className = 'muted';
-          noOrgEl.textContent = 'Create a workspace to manage organization details.';
+          noOrgEl.textContent = 'Create a workspace to manage workspace details.';
           wrap.appendChild(noOrgEl);
 
           const createBtn = doc.createElement('button');
@@ -3667,7 +3667,7 @@ export function createSettingsOverlay({
           if (!isOwnerOrAdmin) {
             const noteEl = doc.createElement('div');
             noteEl.className = 'muted tp3d-settings-meta tp3d-settings-mt-md';
-            noteEl.textContent = 'Only admins can edit organization details.';
+            noteEl.textContent = 'Only admins can edit workspace details.';
             viewContainer.appendChild(noteEl);
           } else {
             const editActions = doc.createElement('div');
@@ -3675,7 +3675,7 @@ export function createSettingsOverlay({
             const editBtn = doc.createElement('button');
             editBtn.type = 'button';
             editBtn.className = 'btn btn-primary';
-            editBtn.textContent = 'Edit Organization';
+            editBtn.textContent = 'Edit Workspace';
             editBtn.addEventListener('click', () => {
               isEditingOrg = true;
               render();
@@ -3728,9 +3728,9 @@ export function createSettingsOverlay({
       const membersLoading = Boolean(isLoadingOrgMembers && (!hasMembersForOrg || membersStale));
       let membersDisabledReason = '';
       if (orgHydrating) {
-        membersDisabledReason = 'Loading organization…';
+        membersDisabledReason = 'Loading workspace…';
       } else if (!orgId) {
-        membersDisabledReason = 'Select an organization to manage members';
+        membersDisabledReason = 'Select a workspace to manage members';
       } else if (membersLoading || membersStale) {
         membersDisabledReason = 'Members are not available yet, please refresh';
       } else if (!canManage) {
@@ -3765,7 +3765,7 @@ export function createSettingsOverlay({
         } else {
           const msg = doc.createElement('div');
           msg.className = 'muted';
-          msg.textContent = 'Select an organization to manage members.';
+          msg.textContent = 'Select a workspace to manage members.';
           membersCard.appendChild(msg);
         }
         const membersHelperMessage = doc.createElement('div');
@@ -3805,7 +3805,7 @@ export function createSettingsOverlay({
         const rolesHelp = doc.createElement('div');
         rolesHelp.className = 'muted tp3d-role-help';
         rolesHelp.textContent =
-          'Workspace members are scoped to your active organization. Owners and admins can update roles.';
+          'Workspace members are scoped to your active workspace. Owners and admins can update roles.';
         membersCard.appendChild(rolesHelp);
 
         if (membersDisabledReason) {

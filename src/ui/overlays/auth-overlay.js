@@ -45,7 +45,7 @@ const ENABLE_GOOGLE_SIGNIN = false;
 /**
  * @param {{ UIComponents?: any, SupabaseClient?: any, tp3dDebugKey?: string }} [opts]
  */
-export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient, tp3dDebugKey } = {}) {
+export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient, tp3dDebugKey: _tp3dDebugKey } = {}) {
   // ---- State ----
   let overlayEl = null;
   let modalEl = null;
@@ -65,8 +65,8 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
 
   // Form field state (preserved across re-renders within same page)
   let fieldEmail = '';
-  let fieldPassword = '';
-  let fieldPasswordConfirm = '';
+  let _fieldPassword = '';
+  let _fieldPasswordConfirm = '';
   let showPassword = false;
 
   // Rate-limit / cooldown state
@@ -216,8 +216,8 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
 
   function navigateTo(nextPage) {
     page = nextPage;
-    fieldPassword = '';
-    fieldPasswordConfirm = '';
+    _fieldPassword = '';
+    _fieldPasswordConfirm = '';
     showPassword = false;
     render();
     // Focus first input after render
@@ -933,7 +933,7 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
     return Boolean(isOpen);
   }
 
-  function setStatus(text) {
+  function setStatus(_text) {
     // Kept for backward compatibility with app.js callers
   }
 

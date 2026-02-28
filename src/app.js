@@ -1123,11 +1123,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
             await SupabaseClient.signOut({ global: true, allowOffline: true });
 
             SessionManager.clear();
-            try {
-              Storage.clearAll();
-            } catch {
-              // ignore
-            }
+            // P0.9 – Don't wipe user-scoped storage (data should survive for next login).
+            // Instead, pause autosave → reset in-memory state → set scope to anon.
+            suspendAutoSave = true;
+            try { resetAppStateToEmpty(); Storage.setStorageScope('anon'); hasLoadedScopedState = false; } finally { suspendAutoSave = false; }
             StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
             // Success toast is handled by the auth state listener (user-initiated only).
             return;
@@ -1138,11 +1137,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
 
         SessionManager.clear();
-        try {
-          Storage.clearAll();
-        } catch {
-          // ignore
-        }
+        // P0.9 – same scope-safe reset for non-Supabase fallback path
+        suspendAutoSave = true;
+        try { resetAppStateToEmpty(); Storage.setStorageScope('anon'); hasLoadedScopedState = false; } finally { suspendAutoSave = false; }
         StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
         UIComponents.showToast('Logged out', 'info');
       }
@@ -3479,6 +3476,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     // SECTION: BOOT HELPERS (SEED)
     // ============================================================================
+
+    // P0.9 – Autosave pause guard.  Set to true while swapping storage scope
+    // so the StateStore subscriber doesn't re-persist stale data.
+    let suspendAutoSave = false;
+
+    // P0.9 – Tracks whether we have loaded the scoped storage at least once
+    // after auth identity was known.  Needed because seedIfEmpty() runs at
+    // boot before auth resolves, using the 'anon' scope.
+    let hasLoadedScopedState = false;
+
     function seedIfEmpty() {
       const stored = Storage.load();
       if (stored && stored.caseLibrary && stored.packLibrary && stored.preferences) {
@@ -3511,6 +3518,58 @@ const TP3D_BUILD_STAMP = Object.freeze({
       };
       StateStore.init(initialState);
       Storage.saveNow();
+    }
+
+    /**
+     * P0.9 – Reset in-memory state to a safe empty shape so autosave can't
+     * re-persist stale (other-user) data.  Uses StateStore.replace so
+     * subscribers fire a full re-render.
+     */
+    function resetAppStateToEmpty() {
+      const emptyState = {
+        currentScreen: 'packs',
+        currentPackId: null,
+        selectedInstanceIds: [],
+        caseLibrary: [],
+        packLibrary: [],
+        preferences: Defaults.defaultPreferences,
+      };
+      StateStore.replace(emptyState, { skipHistory: true });
+    }
+
+    /**
+     * P0.9 – Load the scoped localStorage into StateStore (or seed demo data
+     * if no saved state exists for this scope).  Mirrors the logic in
+     * seedIfEmpty but can be called at any time after scope changes.
+     */
+    function loadScopedStateOrSeed() {
+      const stored = Storage.load();
+      if (stored && stored.caseLibrary && stored.packLibrary && stored.preferences) {
+        const storedCases = (stored.caseLibrary || []).map(applyCaseDefaultColor);
+        StateStore.replace({
+          currentScreen: 'packs',
+          currentPackId: stored.currentPackId || null,
+          selectedInstanceIds: [],
+          caseLibrary: storedCases,
+          packLibrary: stored.packLibrary,
+          preferences: stored.preferences,
+        }, { skipHistory: true });
+      } else {
+        // No saved data for this user – seed with demo data (same as initial boot).
+        const cases = Defaults.seedCases();
+        cases.forEach(c => { c.volume = Utils.volumeInCubicInches(c.dimensions); });
+        const demoPack = Defaults.seedPack(cases);
+        demoPack.stats = PackLibrary.computeStats(demoPack, cases);
+        StateStore.replace({
+          currentScreen: 'packs',
+          currentPackId: demoPack.id,
+          selectedInstanceIds: [],
+          caseLibrary: cases,
+          packLibrary: [demoPack],
+          preferences: Defaults.defaultPreferences,
+        }, { skipHistory: true });
+        Storage.saveNow();
+      }
     }
 
     // ============================================================================
@@ -3637,6 +3696,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // normal signed-out flows don't overwrite it while we show the disabled UI.
     let authBlockState = null;
 
+    // P0.7 – Cache the last *real* auth event so we can fall back to it when
+    // SupabaseClient.getAuthState() briefly returns status:'unknown' / hasToken:false
+    // immediately after a genuine SIGNED_IN or TOKEN_REFRESHED event.
+    let lastAuthEventSnapshot = null;
+    const FALLBACK_AUTH_TTL_MS = 8000;
+
     function setAuthBlocked(message) {
       try {
         authBlockState = { message: message || 'Your account has been disabled.', ts: Date.now() };
@@ -3726,11 +3791,25 @@ const TP3D_BUILD_STAMP = Object.freeze({
     function getCurrentAuthSnapshot() {
       const authState =
         SupabaseClient && typeof SupabaseClient.getAuthState === 'function' ? SupabaseClient.getAuthState() : null;
-      const status = authState && authState.status ? authState.status : 'unknown';
-      const session = authState && authState.session ? authState.session : null;
-      const user = authState && authState.user ? authState.user : session && session.user ? session.user : null;
-      const userId = user && user.id ? String(user.id) : null;
-      const hasToken = Boolean(session && session.access_token);
+      let status = authState && authState.status ? authState.status : 'unknown';
+      let session = authState && authState.session ? authState.session : null;
+      let user = authState && authState.user ? authState.user : session && session.user ? session.user : null;
+      let userId = user && user.id ? String(user.id) : null;
+      let hasToken = Boolean(session && session.access_token);
+
+      // P0.7 – If the wrapper reports unknown/no-token but we have a recent real
+      // auth event, trust the event snapshot instead (transient race window).
+      if ((status !== 'signed_in' || !hasToken) && lastAuthEventSnapshot) {
+        const age = Date.now() - (lastAuthEventSnapshot.ts || 0);
+        if (age < FALLBACK_AUTH_TTL_MS && lastAuthEventSnapshot.hasToken && lastAuthEventSnapshot.session) {
+          status = lastAuthEventSnapshot.status;
+          session = lastAuthEventSnapshot.session;
+          user = session && session.user ? session.user : null;
+          userId = user && user.id ? String(user.id) : null;
+          hasToken = true;
+        }
+      }
+
       return {
         status,
         userId,
@@ -3980,11 +4059,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
       // Use definitively signed-out (not 'unknown'/'checking') so we don't flash the banner
       // while auth is still resolving on slow connections.
       const isDefinitelySignedOut = Boolean(authSnapshot && authSnapshot.status === 'signed_out');
+      // P0.7 – If the wrapper says signed_out but the last real auth event was
+      // signed_in within the fallback TTL, treat it as a transient glitch.
+      const isTransientSignedOut = isDefinitelySignedOut && lastAuthEventSnapshot
+        && lastAuthEventSnapshot.status === 'signed_in' && lastAuthEventSnapshot.hasToken
+        && (Date.now() - (lastAuthEventSnapshot.ts || 0)) < FALLBACK_AUTH_TTL_MS;
       // A stored org hint means the user has (or recently had) an org — keep banner hidden
       // while auth/bundle is still resolving (prevents flash for returning users).
       const hasLocalOrgHint = Boolean(readLocalOrgId());
       const suppressUncertain = !isDefinitelySignedOut && !confirmedNoOrg && hasLocalOrgHint;
-      const showNoOrgBanner = !hasOrg && !suppressUncertain && (isDefinitelySignedOut || confirmedNoOrg);
+      const showNoOrgBanner = !hasOrg && !suppressUncertain && !isTransientSignedOut && (isDefinitelySignedOut || confirmedNoOrg);
       banner.hidden = !showNoOrgBanner;
 
       const disable = !hasOrg;
@@ -4015,12 +4099,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const now = Date.now();
 
       if (!nextOrgId) {
+        if (bundle && bundle.partial && readLocalOrgId()) return null;
         clearOrgContext({
           clearLocalOrgHint: false,
-          confirmedNoOrg: Array.isArray(resolved.orgs) && resolved.orgs.length === 0,
+          confirmedNoOrg: Boolean(!bundle?.partial && Array.isArray(resolved.orgs) && resolved.orgs.length === 0),
         });
         return null;
-      }
+      } 
 
       const prevOrgId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
       const nextOrgIdStr = String(nextOrgId);
@@ -4222,7 +4307,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
       authRefreshInFlight = (async () => {
         const authState =
           SupabaseClient && typeof SupabaseClient.getAuthState === 'function' ? SupabaseClient.getAuthState() : null;
-        const sessionHint = pending.sessionHint || (authState && authState.session ? authState.session : null);
+        let sessionHint = pending.sessionHint || (authState && authState.session ? authState.session : null);
+
+        // P0.7 – fall back to the cached auth-event session when the wrapper
+        // briefly returns null (transient unknown state after a real event).
+        if (!sessionHint && lastAuthEventSnapshot && lastAuthEventSnapshot.session && lastAuthEventSnapshot.hasToken) {
+          const age = Date.now() - (lastAuthEventSnapshot.ts || 0);
+          if (age < FALLBACK_AUTH_TTL_MS) sessionHint = lastAuthEventSnapshot.session;
+        }
 
         const hasTokens = Boolean(sessionHint && sessionHint.access_token && sessionHint.refresh_token);
         if (!hasTokens) {
@@ -4419,6 +4511,26 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const canProceed = await checkProfileStatus();
         if (!canProceed) return;
         AuthOverlay.hide();
+        try { document.body.setAttribute('data-auth', 'signed_in'); } catch { /* ignore */ }
+
+        // ── P0.9: Scope storage to this user and reload state ──────────
+        const uid = user && user.id ? String(user.id) : 'anon';
+        Storage.setStorageScope(uid);
+
+        if (isUserSwitch || !hasLoadedScopedState) {
+          // Pause autosave → wipe in-memory state → load user's storage (or seed)
+          suspendAutoSave = true;
+          try {
+            resetAppStateToEmpty();
+            loadScopedStateOrSeed();
+          } finally {
+            suspendAutoSave = false;
+          }
+          hasLoadedScopedState = true;
+          // Re-render all screens with the new user's data
+          try { renderAll(); } catch { /* ignore */ }
+        }
+        // ── end P0.9 ───────────────────────────────────────────────────
 
         const shouldShowSignInToast = isSignedInEvent && !isSameUser && (userInitiatedSignIn || isUserSwitch);
         if (shouldShowSignInToast && canShowToast('auth-signed-in')) {
@@ -4446,6 +4558,19 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return;
       }
 
+      try { document.body.setAttribute('data-auth', 'signed_out'); } catch { /* ignore */ }
+
+      // ── P0.9: Reset scope to anon so autosave can't write to the old user's key ──
+      suspendAutoSave = true;
+      try {
+        resetAppStateToEmpty();
+        Storage.setStorageScope('anon');
+        hasLoadedScopedState = false;
+      } finally {
+        suspendAutoSave = false;
+      }
+      // ── end P0.9 ─────────────────────────────────────────────────────────────────
+
       if (authBlockState) {
         AuthOverlay.showAccountDisabled(authBlockState.message);
       } else if (treatAsSignedOut || userInitiatedSignOut) {
@@ -4462,7 +4587,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         // ignore
       }
       try {
-        clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: true });
+        clearOrgContext({ clearLocalOrgHint: Boolean(userInitiatedSignOut), confirmedNoOrg: Boolean(userInitiatedSignOut) });
       } catch {
         // ignore
       }
@@ -4561,9 +4686,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
         // Check if user is banned (Supabase sets user.banned_until)
         if (fullUser && fullUser.banned_until) {
           const bannedUntil = new Date(fullUser.banned_until);
-          const now = new Date();
+          const bannedNow = new Date();
 
-          if (bannedUntil > now) {
+          if (bannedUntil > bannedNow) {
             // Still banned
             try {
               await SupabaseClient.signOut({ global: false, allowOffline: true });
@@ -4818,7 +4943,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
         inviteAcceptInFlight = true;
         try {
-          UIComponents.showToast('Accepting invite…', 'info', { title: 'Organization', duration: 6000 });
+          UIComponents.showToast('Accepting invite…', 'info', { title: 'Workspace', duration: 6000 });
           const result = await acceptOrgInvite(token);
           pendingInviteToken = null;
           try {
@@ -4833,8 +4958,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
               (result && result.data && result.data.organization_id) ||
               ''
             ).trim();
-            UIComponents.showToast('Invite accepted. You are now a member of this organization.', 'success', {
-              title: 'Organization',
+            UIComponents.showToast('Invite accepted. You are now a member of this workspace.', 'success', {
+              title: 'Workspace',
               duration: 8000,
             });
             // Refresh org list first, then switch active org to the accepted invite org.
@@ -4847,7 +4972,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             try { SettingsOverlay.open('org-members'); } catch (_) { /* ignore */ }
           } else {
             UIComponents.showToast(result && result.error ? result.error : 'Failed to accept invite.', 'error', {
-              title: 'Organization',
+              title: 'Workspace',
             });
           }
         } catch (err) {
@@ -4860,7 +4985,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           UIComponents.showToast(
             'Failed to accept invite: ' + (err && err.message ? err.message : 'Unknown error'),
             'error',
-            { title: 'Organization' },
+            { title: 'Workspace' },
           );
         } finally {
           inviteAcceptInFlight = false;
@@ -4887,6 +5012,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const userFromSession = session && session.user ? session.user : null;
           const newUserId = userFromSession && userFromSession.id ? String(userFromSession.id) : null;
           const previousUserId = lastAuthUserId ? String(lastAuthUserId) : null;
+
+          // P0.7 – Snapshot the *real* auth event so getCurrentAuthSnapshot() can
+          // fall back to it during the brief window where getAuthState() returns
+          // status:'unknown' / hasToken:false right after a valid event.
+          if (session && session.access_token) {
+            lastAuthEventSnapshot = { status: 'signed_in', userId: newUserId, hasToken: true, session, ts: Date.now() };
+          } else if (isSignedOutEvent) {
+            lastAuthEventSnapshot = { status: 'signed_out', userId: null, hasToken: false, session: null, ts: Date.now() };
+          }
 
           // FIX: Detect cross-tab login with DIFFERENT user - this is the key bug fix.
           // When a different user logs in on another tab, we receive SIGNED_IN but lastAuthUserId
@@ -5075,7 +5209,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         /** @type {Map<string, string>} */
         const lastBillingStatusByOrg = new Map();
 
-        const pickCheckoutInterval = ({ initialInterval = 'month', title = 'Choose Plan', continueLabel = 'Continue' } = {}) =>
+        const pickCheckoutInterval = ({ initialInterval = 'month', _title = 'Choose Plan', _continueLabel = 'Continue' } = {}) =>
           new Promise(resolve => {
             const plans = getCheckoutPlanOptions();
             const fallbackInterval = plans.month.available ? 'month' : (plans.year.available ? 'year' : 'month');
@@ -5538,7 +5672,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             (status === 'trial_expired' || (Number.isFinite(trialEndMs) && trialEndMs <= Date.now()))
           );
 
-          if (trialExpired) showTrialExpiredModal(s, canManageBilling);
+          if (trialExpired) { showTrialExpiredModal(s, canManageBilling); }
           else if (!s || (!s.pending && !s.loading)) {
             const _authSnap = getCurrentAuthSnapshot();
             const _signedIn = _authSnap.status === 'signed_in';
@@ -5550,8 +5684,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
             } else {
               if (_defActive || !_signedIn || (trialExpiredLockedOrgId && _activeOid && _activeOid !== trialExpiredLockedOrgId)) {
                 trialExpiredLockedOrgId = null;
+                closeTrialExpiredModal();
               }
-              closeTrialExpiredModal();
             }
           }
 
@@ -5723,6 +5857,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       let prevScreen = StateStore.get('currentScreen');
 
       StateStore.subscribe(changes => {
+        // P0.9 – While swapping storage scope, skip autosave so we don't
+        // persist stale (old-user) data into the new-user's key.
+        if (suspendAutoSave) return;
+
         if (
           changes.preferences ||
           changes.caseLibrary ||

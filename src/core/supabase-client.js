@@ -2058,6 +2058,43 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
   const clientSessionOk = await ensureClientSession();
   if (!clientSessionOk) return null;
 
+  // ── P0.8: Auth-base – snapshot signed-in session/user as fallback ──
+  const _authSnap = { ..._authState };
+  const baseSession = (_authSnap.status === 'signed_in' && _authSnap.session &&
+    _authSnap.session.access_token) ? _authSnap.session : null;
+  let baseUser = baseSession
+    ? (_authSnap.user || baseSession.user || null)
+    : null;
+  if (baseSession && !baseUser) {
+    try {
+      baseUser = await getUserSingleFlight() || baseSession.user || null;
+    } catch { baseUser = baseSession.user || null; }
+  }
+
+  /** Return partial bundle with auth-base session/user when available; else empty (P0.8). */
+  const _safeFallbackBundle = (reason, canceled, keyVal, epochVal) => {
+    if (baseSession && baseUser) {
+      if (debugEnabled()) debugLog('warn', '[SupabaseClient] INVALID BUNDLE: signed_in but missing session/user (forcing base fallback)', { reason });
+      return {
+        key: keyVal || getCurrentAuthKey(),
+        canceled: Boolean(canceled),
+        epoch: Number.isFinite(epochVal) ? epochVal : _authEpoch,
+        session: baseSession,
+        user: baseUser,
+        profile: null,
+        orgs: [],
+        membership: null,
+        activeOrg: null,
+        orgCount: 0,
+        activeOrgId: null,
+        partial: true,
+        fetchedAt: Date.now(),
+        reason: reason + ' (auth-base fallback)',
+      };
+    }
+    return _buildEmptyAccountBundle(reason, canceled, keyVal, epochVal);
+  };
+
   // Get current session from memory first (already validated by Supabase)
   let session = _authState.session || _session || null;
   let user = session && session.user ? session.user : _authState.user || null;
@@ -2067,11 +2104,11 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
     try {
       const sessionWrap = await withTimeout(getSessionSingleFlight(), ACCOUNT_SESSION_TIMEOUT_MS, null);
       if (_authEpoch !== startEpoch) {
-        // Auth changed during fetch, return empty bundle
-        return _buildEmptyAccountBundle('Auth changed during session fetch', true, null, startEpoch);
+        // Auth changed during fetch – use auth-base if available (P0.8)
+        return _safeFallbackBundle('Auth changed during session fetch', true, null, startEpoch);
       }
       if (sessionWrap.timedOut) {
-        return _buildEmptyAccountBundle('Session fetch timeout', true);
+        return _safeFallbackBundle('Session fetch timeout', true);
       }
       session = sessionWrap && sessionWrap.value && sessionWrap.value.session ? sessionWrap.value.session : null;
       user = session && session.user ? session.user : null;
@@ -2081,9 +2118,15 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
     }
   }
 
-  // No session = not logged in
+  // No session = not logged in (unless auth-base fallback available – P0.8)
   if (!session || !user || !normalizeUserId(user.id)) {
-    return _buildEmptyAccountBundle('No active session');
+    if (baseSession && baseUser && normalizeUserId(baseUser.id)) {
+      if (debugEnabled()) debugLog('warn', '[SupabaseClient] INVALID BUNDLE: signed_in but missing session/user (forcing base fallback)');
+      session = baseSession;
+      user = baseUser;
+    } else {
+      return _buildEmptyAccountBundle('No active session');
+    }
   }
 
   const authKey = getAuthKey(session);
@@ -2110,7 +2153,7 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
   const inflightPromise = (async () => {
     try {
       const userId = normalizeUserId(user.id);
-      if (!userId) return _buildEmptyAccountBundle('No active session');
+      if (!userId) return _safeFallbackBundle('No active session');
 
       const cachedProfile = cachedBundle && cachedBundle.profile ? cachedBundle.profile : null;
       const cachedOrgs = cachedBundle && Array.isArray(cachedBundle.orgs) ? cachedBundle.orgs : [];
@@ -2123,7 +2166,7 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
         null
       );
       if (_authEpoch !== startEpoch) {
-        return _buildEmptyAccountBundle('Auth changed during account fetch', true, authKey, startEpoch);
+        return _safeFallbackBundle('Auth changed during account fetch', true, authKey, startEpoch);
       }
 
       const orgsWrap = await withTimeout(
@@ -2132,7 +2175,7 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
         []
       );
       if (_authEpoch !== startEpoch) {
-        return _buildEmptyAccountBundle('Auth changed during account fetch', true, authKey, startEpoch);
+        return _safeFallbackBundle('Auth changed during account fetch', true, authKey, startEpoch);
       }
 
       const membershipWrap = await withTimeout(
@@ -2141,7 +2184,7 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
         null
       );
       if (_authEpoch !== startEpoch) {
-        return _buildEmptyAccountBundle('Auth changed during account fetch', true, authKey, startEpoch);
+        return _safeFallbackBundle('Auth changed during account fetch', true, authKey, startEpoch);
       }
 
       let profileResult = profileWrap.value;
@@ -2170,12 +2213,12 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
       // Check epoch again - if auth changed, discard results
       if (_authEpoch !== startEpoch) {
         if (debugEnabled()) debugLog('log', '[SupabaseClient] Account bundle: epoch changed, discarding');
-        return _buildEmptyAccountBundle('Auth changed during fetch', true, authKey, startEpoch);
+        return _safeFallbackBundle('Auth changed during fetch', true, authKey, startEpoch);
       }
 
       const currentUserId = getCurrentUserId();
       if (currentUserId && String(currentUserId) !== String(userId)) {
-        return _buildEmptyAccountBundle('User changed during fetch', true, authKey, startEpoch);
+        return _safeFallbackBundle('User changed during fetch', true, authKey, startEpoch);
       }
 
       // Build safe bundle with defaults for missing data
@@ -2266,8 +2309,8 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
       return bundle;
     } catch (err) {
       if (debugEnabled()) debugLog('error', '[SupabaseClient] Account bundle fetch error:', err);
-      // Return safe empty bundle on error (don't crash)
-      return _buildEmptyAccountBundle('Fetch error: ' + (err && err.message ? err.message : 'Unknown'));
+      // Return safe bundle on error (preserve auth base if available – P0.8)
+      return _safeFallbackBundle('Fetch error: ' + (err && err.message ? err.message : 'Unknown'));
     }
   })();
 

@@ -123,7 +123,7 @@ export function createOrganization({ name }) {
   const org = {
     id,
     type: 'organization',
-    name: String(name || 'New Organization').trim() || 'New Organization',
+    name: String(name || 'New Workspace').trim() || 'New Workspace',
     role: 'Owner',
     plan: 'Trial',
     trialEndsAt: Date.now() + 7 * 24 * 60 * 60 * 1000,

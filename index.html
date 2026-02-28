@@ -153,7 +153,7 @@
           window.THREE = { ...ThreeModule, OrbitControls: Orbit.OrbitControls };
           window.__tp3dVendorOk && window.__tp3dVendorOk('three');
           return true;
-        } catch (err) {
+        } catch (_err) {
           try {
             const ThreeModule = await import(fallbackBase);
             const Orbit = await import(`${fallbackBase}/examples/jsm/controls/OrbitControls.js`);
@@ -259,7 +259,7 @@
     </style>
   </head>
 
-  <body>
+  <body data-auth="signed_out">
     <noscript>
       <div style="padding: 20px; font-family: system-ui">This app requires JavaScript enabled.</div>
     </noscript>

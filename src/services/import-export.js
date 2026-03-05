@@ -17,6 +17,10 @@ import * as CoreStorage from '../core/storage.js';
 import * as CaseLibrary from './case-library.js';
 import { APP_VERSION } from '../core/version.js';
 
+const MAX_IMPORT_ROWS = 5000;
+const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024;
+const SUPPORTED_IMPORT_EXTENSIONS = new Set(['csv', 'xlsx']);
+
 function applyCaseDefaultColor(caseObj) {
   const next = { ...(caseObj || {}) };
   const existing = String(next.color || '').trim();
@@ -87,15 +91,26 @@ export function downloadCasesTemplate() {
 
 export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibrary.getCases()) {
   if (!window.XLSX) throw new Error('XLSX library not available');
-  const ext = String(file.name || '')
+  const fileName = String((file && file.name) || '').trim();
+  const ext = String(fileName || '')
     .split('.')
     .pop()
-    .toLowerCase();
+    .toLowerCase()
+    .trim();
+  if (!SUPPORTED_IMPORT_EXTENSIONS.has(ext)) {
+    throw new Error('Unsupported file type. Please upload a .csv or .xlsx file.');
+  }
+  const fileSizeBytes = Number(file && file.size);
+  if (Number.isFinite(fileSizeBytes) && fileSizeBytes > MAX_IMPORT_FILE_BYTES) {
+    throw new Error(`File too large. Max supported size is ${Math.floor(MAX_IMPORT_FILE_BYTES / (1024 * 1024))} MB.`);
+  }
   let workbook;
   if (ext === 'csv') {
+    if (!file || typeof file.text !== 'function') throw new Error('Invalid CSV file handle');
     const text = await file.text();
     workbook = window.XLSX.read(text, { type: 'string' });
   } else {
+    if (!file || typeof file.arrayBuffer !== 'function') throw new Error('Invalid XLSX file handle');
     const buf = await file.arrayBuffer();
     workbook = window.XLSX.read(buf, { type: 'array' });
   }
@@ -103,6 +118,10 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
   const sheet = workbook.Sheets[sheetName];
   const rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
   if (!rows || !rows.length) throw new Error('Empty file');
+  const dataRowCount = Math.max(0, rows.length - 1);
+  if (dataRowCount > MAX_IMPORT_ROWS) {
+    throw new Error(`Too many rows (${dataRowCount}). Max supported rows: ${MAX_IMPORT_ROWS}.`);
+  }
 
   const headerRow = rows[0].map(h => String(h || '').trim());
   const header = headerRow.map(normalizeHeader);
@@ -119,6 +138,7 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
         .toLowerCase()
     )
   );
+  const seenNames = new Set(existingNames);
   const errors = [];
   const duplicates = [];
   const valid = [];
@@ -153,7 +173,7 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
     }
 
     const nameKey = record.name.toLowerCase();
-    if (record.name && existingNames.has(nameKey)) {
+    if (record.name && seenNames.has(nameKey)) {
       duplicates.push(`Row ${rowNum}: Duplicate name "${record.name}" (skipped)`);
       continue;
     }
@@ -162,6 +182,7 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
       errors.push(...rowErrors);
       continue;
     }
+    seenNames.add(nameKey);
     valid.push(record);
   }
 
@@ -184,6 +205,14 @@ export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
       .trim()
       .toLowerCase();
     if (!nameKey || existingNames.has(nameKey)) return;
+    const length = Number(r.length);
+    const width = Number(r.width);
+    const height = Number(r.height);
+    if (!Number.isFinite(length) || length <= 0) return;
+    if (!Number.isFinite(width) || width <= 0) return;
+    if (!Number.isFinite(height) || height <= 0) return;
+    const weightRaw = Number(r.weight);
+    const safeWeight = Number.isFinite(weightRaw) && weightRaw > 0 ? weightRaw : 0;
     existingNames.add(nameKey);
     const record = applyCaseDefaultColor({
       id: Utils.uuid(),
@@ -193,12 +222,12 @@ export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
         String(r.category || 'default')
           .trim()
           .toLowerCase() || 'default',
-      dimensions: { length: Number(r.length), width: Number(r.width), height: Number(r.height) },
-      weight: Number(r.weight) || 0,
+      dimensions: { length, width, height },
+      weight: safeWeight,
       volume: Utils.volumeInCubicInches({
-        length: Number(r.length),
-        width: Number(r.width),
-        height: Number(r.height),
+        length,
+        width,
+        height,
       }),
       canFlip: Boolean(r.canFlip),
       notes: String(r.notes || '').trim(),

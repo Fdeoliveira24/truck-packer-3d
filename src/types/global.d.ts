@@ -13,13 +13,16 @@ declare global {
     __TP3D_BOOT?: any;
     __TP3D_UI?: any;
     __TP3D_BILLING?: any;
+    __TP3D_BILLING_TRACE_CURRENT_ID__?: any;
     __TP3D_DIAG__?: any;
     __TP3D_ORG_METRICS__?: any;
     __TP3D_STRIPE_PRICE_MONTHLY?: any;
+    __TP3D_STRIPE_PRICE_YEARLY?: any;
     __TP3D_BUILD_STAMP_LOGGED__?: any;
     __TP3D_DIAG_PERSIST_KEY__?: any;
     __TP3D_FORCE_DEBUG__?: any;
     __TP3D_WRAPPER_DETECTIVE__?: any;
+    __TP3D_TAB_ID__?: any;
     TruckPackerApp?: any;
     jspdf?: any;
     jsPDF?: any;

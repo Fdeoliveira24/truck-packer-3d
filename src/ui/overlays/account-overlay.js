@@ -206,13 +206,13 @@ export function createAccountOverlay(opts = {}) {
     p2.textContent =
       'Deleting a user is irreversible. This will remove the selected user from the project and all associated data.';
 
-    const safeEmail = String(email || '')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-
     const p3 = doc.createElement('div');
     p3.style.marginTop = '12px';
-    p3.innerHTML = `This is permanent. Are you sure you want to delete the user <strong>${safeEmail}</strong>?`;
+    p3.appendChild(doc.createTextNode('This is permanent. Are you sure you want to delete the user '));
+    const strongEmail = doc.createElement('strong');
+    strongEmail.textContent = String(email || '');
+    p3.appendChild(strongEmail);
+    p3.appendChild(doc.createTextNode('?'));
 
     const p4 = doc.createElement('div');
     p4.className = 'muted';
@@ -419,8 +419,15 @@ export function createAccountOverlay(opts = {}) {
     const nameRow = doc.createElement('div');
     nameRow.className = 'row';
     nameRow.classList.add('tp3d-settings-account-row');
-    nameRow.innerHTML = `<span class="brand-mark tp3d-settings-account-avatar-lg" aria-hidden="true">${userView.initials || ''}</span>
-      <div class="tp3d-settings-account-display">${userView.displayName || '—'}</div>`;
+    const avatarEl = doc.createElement('span');
+    avatarEl.className = 'brand-mark tp3d-settings-account-avatar-lg';
+    avatarEl.setAttribute('aria-hidden', 'true');
+    avatarEl.textContent = String(userView.initials || '');
+    const displayNameEl = doc.createElement('div');
+    displayNameEl.className = 'tp3d-settings-account-display';
+    displayNameEl.textContent = String(userView.displayName || '—');
+    nameRow.appendChild(avatarEl);
+    nameRow.appendChild(displayNameEl);
     body.appendChild(nameRow);
 
     const emailEl = doc.createElement('div');

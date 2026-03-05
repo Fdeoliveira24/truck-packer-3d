@@ -296,6 +296,18 @@ P0 is green only when ALL items here are checked:
 
 ## Running log (keep updated)
 
+- Date: 2026-03-05
+- Release process clarification (no-build static app):
+  - This repo is released as static assets; there is no `npm run build` step.
+  - Local run command: `python3 -m http.server 5500` then open `http://localhost:5500/index.html`.
+  - Release validation commands: `npm test`, `npm run -s typecheck`, `npm run lint`, optional `npm run stress:ui`.
+  - Expected console in normal flows: no blocking errors, no unhandled rejections, no token/JWT fragments logged.
+  - Required release files: `index.html`, `src/`, `styles/`, `vendor/`, audit docs under `docs/audits/`.
+- Legacy module notes (contradiction cleanup):
+  - Use `src/core/events.js` as the runtime event bus. Do **not** import `src/core/event-bus.js` in new code.
+  - Use `src/core/storage.js` scoped storage key strategy (`truckPacker3d:v1[:scope]`) as runtime source.
+  - `src/core/constants.js` `STORAGE_KEYS.appData/session` (`v2`) are legacy compatibility values, not the runtime storage authority.
+
 - Date: 2026-02-27
 - What changed:
   - Edge Function: `/billing-status` maps no-subscription `billing_customers.status='trial_expired'` to `status='trial_expired'`.

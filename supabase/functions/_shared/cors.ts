@@ -72,7 +72,7 @@ export function json(
   opts: { status?: number; origin?: string | null } = {},
 ): Response {
   const status = opts.status ?? 200;
-  const allowOrigin = opts.origin ?? "*";
+  const allowOrigin = opts.origin ?? "null";
   return new Response(JSON.stringify(data), {
     status,
     headers: {

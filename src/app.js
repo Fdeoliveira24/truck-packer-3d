@@ -123,15 +123,255 @@ const BILLING_REQUEST_TIMEOUT_MS = 15000;
 const BILLING_FOCUS_REFRESH_COOLDOWN_MS = 300000; // 5 minutes — do not spam refresh on every focus
 let _billingRefreshQueued = false;
 let _billingLastFocusRefreshAt = 0;
+let _lastBillingKey = '';
+let _lastBillingKeyAt = 0;
+let _billingTraceSeq = 0;
+const _bootStartedAtMs = Date.now();
 /** @type {null|((snapshot:any, meta?:{reason?:string, activeOrgId?:string|null})=>void)} */
 let _billingGateApplier = null;
 
+// ============================================================================
+// SECTION: CROSS-TAB BILLING COORDINATION (Rule C)
+// ============================================================================
+const _BILLING_LOCK_TTL_MS = 20000;      // lock expires after 20s (dead-tab safety)
+const _BILLING_SHARED_FRESH_MS = 90000;   // shared result considered fresh for 90s (cross-tab window)
+let _billingTabId = '';
+/** @type {BroadcastChannel|null} */
+let _billingBroadcast = null;
+let _lastAppliedBillingLfa = 0; // dedupe: last cross-tab lastFetchedAt we applied
+
+// Generate a unique per-tab ID
+try {
+  if (typeof window !== 'undefined' && window.sessionStorage) {
+    _billingTabId = window.sessionStorage.getItem('__tp3d_billing_tab') || '';
+    if (!_billingTabId) {
+      _billingTabId = 'tab_' + Math.random().toString(36).slice(2, 10) + '_' + Date.now();
+      window.sessionStorage.setItem('__tp3d_billing_tab', _billingTabId);
+    }
+  }
+} catch (_) { _billingTabId = 'tab_' + Math.random().toString(36).slice(2, 10); }
+
+function _billingLockKey(orgId) { return 'billing:inflight:' + orgId; }
+function _billingFreshKey(orgId) { return 'billing:lastFetchedAt:' + orgId; }
+function _billingResultKey(orgId) { return 'billing:lastState:' + orgId; }
+function _billingLegacyLockKey(orgId) { return 'tp3d:billing:lock:' + orgId; }
+function _billingLegacyFreshKey(orgId) { return 'tp3d:billing:fresh:' + orgId; }
+function _billingLegacyResultKey(orgId) { return 'tp3d:billing:result:' + orgId; }
+
+/**
+ * Try to acquire a cross-tab billing lock for the given org.
+ * Returns true if this tab may proceed with fetching, false if blocked.
+ */
+function _readStorageJson(key) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (_) { return null; }
+}
+
+function _tryAcquireBillingLock(orgId, reason = 'manual') {
+  try {
+    const now = Date.now();
+    const lock = _readStorageJson(_billingLockKey(orgId)) || _readStorageJson(_billingLegacyLockKey(orgId));
+    if (
+      lock &&
+      lock.tabId &&
+      lock.tabId !== _billingTabId &&
+      lock.at &&
+      (now - Number(lock.at)) < _BILLING_LOCK_TTL_MS
+    ) {
+      billingDebugLog('billing:cross-tab-lock:skip-inflight', {
+        reason,
+        orgId,
+        holder: lock.tabId,
+        ageMs: now - Number(lock.at),
+      });
+      return false;
+    }
+
+    const lockPayload = JSON.stringify({ tabId: _billingTabId, at: now, reason: String(reason || '') });
+    window.localStorage.setItem(_billingLockKey(orgId), lockPayload);
+    // Keep legacy key writable for older tabs that still read tp3d:* keys.
+    window.localStorage.setItem(_billingLegacyLockKey(orgId), lockPayload);
+
+    // Read-after-write verify to reduce races where two tabs set nearly simultaneously.
+    const verify = _readStorageJson(_billingLockKey(orgId));
+    if (!verify || verify.tabId !== _billingTabId || Number(verify.at) !== now) {
+      billingDebugLog('billing:cross-tab-lock:skip-inflight', {
+        reason,
+        orgId,
+        holder: verify && verify.tabId ? verify.tabId : 'unknown',
+      });
+      return false;
+    }
+    billingDebugLog('billing:cross-tab-lock:acquired', { reason, orgId, tabId: _billingTabId });
+    return true;
+  } catch (_) { return true; } // fail-open
+}
+
+function _releaseBillingLock(orgId, reason = 'manual') {
+  try {
+    const key = _billingLockKey(orgId);
+    const legacyKey = _billingLegacyLockKey(orgId);
+    const lock = _readStorageJson(key) || _readStorageJson(legacyKey);
+    if (lock && lock.tabId === _billingTabId) {
+      window.localStorage.removeItem(key);
+      window.localStorage.removeItem(legacyKey);
+      billingDebugLog('billing:cross-tab-lock:released', { reason, orgId, tabId: _billingTabId });
+    }
+  } catch (_) { /* ignore */ }
+}
+
+function _getSharedBillingFreshness(orgId) {
+  try {
+    const primary = Number(window.localStorage.getItem(_billingFreshKey(orgId)) || 0);
+    if (primary > 0) return primary;
+    return Number(window.localStorage.getItem(_billingLegacyFreshKey(orgId)) || 0);
+  } catch (_) { return 0; }
+}
+
+function _writeSharedBillingResult(orgId, state) {
+  try {
+    const fetchedAt = Number(state && state.lastFetchedAt) || Date.now();
+    window.localStorage.setItem(_billingFreshKey(orgId), String(fetchedAt));
+    // Keep legacy key writable for older tabs that still read tp3d:* keys.
+    window.localStorage.setItem(_billingLegacyFreshKey(orgId), String(fetchedAt));
+    // Write a minimal snapshot (avoid storing large data blobs)
+    const mini = {
+      ok: state.ok, plan: state.plan, status: state.status, orgId: state.orgId,
+      isPro: state.isPro, isActive: state.isActive, interval: state.interval,
+      trialEndsAt: state.trialEndsAt, currentPeriodEnd: state.currentPeriodEnd,
+      cancelAtPeriodEnd: state.cancelAtPeriodEnd, cancelAt: state.cancelAt,
+      portalAvailable: state.portalAvailable, error: state.error,
+      lastFetchedAt: fetchedAt,
+    };
+    const payload = JSON.stringify(mini);
+    window.localStorage.setItem(_billingResultKey(orgId), payload);
+    // Keep legacy key writable for older tabs that still read tp3d:* keys.
+    window.localStorage.setItem(_billingLegacyResultKey(orgId), payload);
+  } catch (_) { /* ignore */ }
+}
+
+function _readSharedBillingResult(orgId) {
+  return _readStorageJson(_billingResultKey(orgId)) || _readStorageJson(_billingLegacyResultKey(orgId));
+}
+
+function _applySharedBillingSnapshot(orgId, state, reason = 'cross-tab-shared') {
+  if (!state || typeof state !== 'object') return false;
+  _billingState.pending = false;
+  _billingState.loading = false;
+  _billingState.ok = Boolean(state.ok);
+  _billingState.plan = state.plan || null;
+  _billingState.status = state.status || null;
+  _billingState.orgId = state.orgId || orgId;
+  _billingState.isPro = Boolean(state.isPro);
+  _billingState.isActive = Boolean(state.isActive);
+  _billingState.interval = state.interval || null;
+  _billingState.trialEndsAt = state.trialEndsAt || null;
+  _billingState.currentPeriodEnd = state.currentPeriodEnd || null;
+  _billingState.cancelAtPeriodEnd = Boolean(state.cancelAtPeriodEnd);
+  _billingState.cancelAt = state.cancelAt || null;
+  _billingState.portalAvailable = Boolean(state.portalAvailable);
+  _billingState.error = state.error || null;
+  _billingState.data = null;
+  _billingState.lastFetchedAt = Number(state.lastFetchedAt) || _getSharedBillingFreshness(orgId) || Date.now();
+  _notifyBilling();
+  applyAccessGateFromBilling(getBillingState(), { reason, activeOrgId: orgId });
+  return true;
+}
+
+function _broadcastBillingResult(orgId, state) {
+  if (!_billingBroadcast) return;
+  try {
+    _billingBroadcast.postMessage({ type: 'billing-result', orgId, state: {
+      ok: state.ok, plan: state.plan, status: state.status, orgId: state.orgId,
+      isPro: state.isPro, isActive: state.isActive, interval: state.interval,
+      trialEndsAt: state.trialEndsAt, currentPeriodEnd: state.currentPeriodEnd,
+      cancelAtPeriodEnd: state.cancelAtPeriodEnd, cancelAt: state.cancelAt,
+      portalAvailable: state.portalAvailable, error: state.error,
+      lastFetchedAt: state.lastFetchedAt,
+    }, tabId: _billingTabId });
+  } catch (_) { /* ignore */ }
+}
+
+function _handleCrossTabBillingResult(orgId, state, fromTabId) {
+  if (fromTabId === 'storage') {
+    billingDebugLog('billing:cross-tab-storage:received', { orgId, localTabId: _billingTabId });
+  } else {
+    billingDebugLog('billing:cross-tab-broadcast:received', { orgId, fromTabId, localTabId: _billingTabId });
+  }
+  const currentOrgId = getActiveOrgIdForBilling();
+  if (!currentOrgId || currentOrgId !== orgId) return;
+  if (_billingState.loading) return; // don't overwrite an in-flight local fetch
+
+  // Dedupe: skip if we already applied a snapshot with the same lastFetchedAt
+  const incomingLfa = Number(state && state.lastFetchedAt) || 0;
+  if (incomingLfa && incomingLfa === _lastAppliedBillingLfa && incomingLfa === _billingState.lastFetchedAt) {
+    billingDebugLog('billing:cross-tab:skip-already-applied', { orgId, lastFetchedAt: incomingLfa, from: fromTabId });
+    return;
+  }
+
+  _applySharedBillingSnapshot(orgId, state, fromTabId === 'storage' ? 'cross-tab-storage' : 'cross-tab-broadcast');
+  _lastAppliedBillingLfa = _billingState.lastFetchedAt || incomingLfa;
+}
+
+function _extractOrgIdFromStorageKey(key, prefix) {
+  if (!key || !prefix || !key.startsWith(prefix)) return '';
+  const raw = key.slice(prefix.length).trim();
+  return normalizeOrgIdForBilling(raw);
+}
+
+function _handleCrossTabBillingStorageEvent(ev) {
+  try {
+    if (!ev || !ev.key) return;
+    const orgId = _extractOrgIdFromStorageKey(ev.key, 'billing:lastState:')
+      || _extractOrgIdFromStorageKey(ev.key, 'tp3d:billing:result:')
+      || _extractOrgIdFromStorageKey(ev.key, 'billing:lastFetchedAt:')
+      || _extractOrgIdFromStorageKey(ev.key, 'tp3d:billing:fresh:');
+    if (!orgId) return;
+    const currentOrgId = getActiveOrgIdForBilling();
+    if (!currentOrgId || currentOrgId !== orgId) return;
+    if (_billingState.loading) return;
+    const state = _readSharedBillingResult(orgId);
+    if (!state) return;
+    billingDebugLog('billing:cross-tab-storage:received', { orgId });
+    _handleCrossTabBillingResult(orgId, state, 'storage');
+  } catch (_) { /* ignore */ }
+}
+
+// Initialize BroadcastChannel listener
+try {
+  if (typeof BroadcastChannel !== 'undefined') {
+    _billingBroadcast = new BroadcastChannel('tp3d-billing');
+    _billingBroadcast.onmessage = (ev) => {
+      if (!ev || !ev.data || ev.data.type !== 'billing-result') return;
+      const msg = ev.data;
+      if (msg.orgId && msg.state && msg.tabId !== _billingTabId) {
+        _handleCrossTabBillingResult(msg.orgId, msg.state, msg.tabId);
+      }
+    };
+  }
+} catch (_) { _billingBroadcast = null; }
+
+try {
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('storage', _handleCrossTabBillingStorageEvent);
+  }
+} catch (_) { /* ignore */ }
+
 function isTp3dDebugEnabled() {
   try {
-    return typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1';
-  } catch (_) {
-    return false;
-  }
+    if (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1') return true;
+  } catch (_) { /* ignore */ }
+  try {
+    if (typeof URLSearchParams !== 'undefined' && new URLSearchParams(window.location.search).get('tp3dDebug') === '1') return true;
+  } catch (_) { /* ignore */ }
+  try {
+    if (typeof window !== 'undefined' && window.sessionStorage && window.sessionStorage.getItem('tp3dDebug') === '1') return true;
+  } catch (_) { /* ignore */ }
+  return false;
 }
 
 function billingDebugLog(step, details) {
@@ -157,6 +397,15 @@ function getActiveOrgIdForBilling() {
     if (typeof window !== 'undefined' && window.OrgContext && typeof window.OrgContext.getActiveOrgId === 'function') {
       const id = normalizeOrgIdForBilling(window.OrgContext.getActiveOrgId());
       if (id) return id;
+    }
+  } catch (_) {
+    // ignore
+  }
+  // Fallback: localStorage hint (same UUID validation as OrgContext path)
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = String(window.localStorage.getItem('tp3d:active-org-id') || '').trim();
+      if (raw && ORG_UUID_RE.test(raw)) return raw;
     }
   } catch (_) {
     // ignore
@@ -228,14 +477,102 @@ function clearBillingState() {
   applyAccessGateFromBilling(getBillingState(), { reason: 'clear' });
 }
 
+// ── Workspace readiness helper: prevents "create workspace" banner from sticking during auth wobble ──
+let _workspaceReadyInflight = false;
+async function ensureWorkspaceReadyForUI({ timeoutMs = 2500, pollMs = 80, forceFirst = true } = {}) {
+  try {
+    const mod = await import('./core/supabase-client.js');
+    const start = Date.now();
+
+    // Optional: first try with force=true to prime caches quickly
+    if (forceFirst) {
+      try {
+        const b0 = await mod.getAccountBundleSingleFlight({ force: true });
+        const active0 = b0 && b0.activeOrgId ? String(b0.activeOrgId) : null;
+        const orgCount0 = b0 && Number.isFinite(b0.orgCount) ? b0.orgCount : (b0 && b0.orgs ? b0.orgs.length : 0);
+        if (active0) return { ok: true, activeOrgId: active0, orgCount: orgCount0, bundle: b0, source: 'force-first' };
+        if (orgCount0 === 0) return { ok: false, reason: 'no-org', orgCount: 0, bundle: b0, source: 'force-first' };
+      } catch {
+        // ignore and fall through to polling
+      }
+    }
+
+    while (Date.now() - start < timeoutMs) {
+      const b = await mod.getAccountBundleSingleFlight({ force: false });
+      const activeOrgId = b && b.activeOrgId ? String(b.activeOrgId) : null;
+      const orgCount = b && Number.isFinite(b.orgCount) ? b.orgCount : (b && b.orgs ? b.orgs.length : 0);
+
+      if (activeOrgId) return { ok: true, activeOrgId, orgCount, bundle: b, source: 'poll' };
+      if (orgCount === 0) return { ok: false, reason: 'no-org', orgCount: 0, bundle: b, source: 'poll' };
+
+      await new Promise(r => setTimeout(r, pollMs));
+    }
+
+    return { ok: false, reason: 'timeout' };
+  } catch (e) {
+    return { ok: false, reason: 'error', error: e };
+  }
+}
+
 async function refreshBilling({ force = false, reason = 'manual' } = {}) {
   const requestedOrgId = getActiveOrgIdForBilling();
+  const now = Date.now();
+  const billingKey = `${requestedOrgId || ''}|${String(reason || 'manual')}|${force ? '1' : '0'}`;
+  if (_lastBillingKey === billingKey && (now - _lastBillingKeyAt) < 300) {
+    billingDebugLog('refresh:skip-burst', {
+      reason,
+      force,
+      requestedOrgId: requestedOrgId || null,
+      ageMs: now - _lastBillingKeyAt,
+    });
+    return getBillingState();
+  }
+  _lastBillingKey = billingKey;
+  _lastBillingKeyAt = now;
+
+  if (!requestedOrgId) {
+    _billingState.loading = false;
+    _billingState.pending = true;
+    billingDebugLog('refresh:skip-no-org', { reason, force });
+    return getBillingState();
+  }
+
   if (_billingState.loading) {
     if (force) _billingRefreshQueued = true;
     billingDebugLog('refresh:skip-loading', { reason, force, requestedOrgId: requestedOrgId || null });
     return getBillingState();
   }
-  const now = Date.now();
+  if (
+    force &&
+    requestedOrgId &&
+    _billingState.orgId &&
+    requestedOrgId === _billingState.orgId &&
+    _billingState.lastFetchedAt &&
+    (now - _billingState.lastFetchedAt) < 5000 &&
+    reason !== 'manual' &&
+    (reason === 'org-changed' || reason === 'auth-change' || reason === 'render-auth-state' || reason === 'token-refresh' || reason === 'settings-open' || reason === 'queued')
+  ) {
+    billingDebugLog('refresh:skip-recent-forced', {
+      reason,
+      requestedOrgId,
+      ageMs: now - _billingState.lastFetchedAt,
+    });
+    return getBillingState();
+  }
+  if (
+    reason === 'manual' &&
+    _billingState.ok &&
+    requestedOrgId &&
+    requestedOrgId === _billingState.orgId &&
+    _billingState.lastFetchedAt &&
+    (now - _billingState.lastFetchedAt) < 15000
+  ) {
+    billingDebugLog('refresh:skip-manual-recent', {
+      requestedOrgId,
+      ageMs: now - _billingState.lastFetchedAt,
+    });
+    return getBillingState();
+  }
   if (
     !force &&
     !_billingState.pending &&
@@ -254,177 +591,272 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
     return getBillingState();
   }
 
-  billingDebugLog('refresh:start', { reason, force, requestedOrgId: requestedOrgId || null });
-  _billingState.loading = true;
-  _billingState.error = null;
-  if (!_billingState.orgId || _billingState.orgId !== (requestedOrgId || null)) {
-    _billingState.pending = true;
-    _billingState.plan = null;
-    _billingState.status = null;
-    _billingState.isPro = false;
-    _billingState.isActive = false;
-    _billingState.interval = null;
-    _billingState.trialEndsAt = null;
-    _billingState.currentPeriodEnd = null;
-    _billingState.cancelAtPeriodEnd = false;
-    _billingState.cancelAt = null;
-    _billingState.portalAvailable = false;
-  }
-  _billingState.orgId = requestedOrgId || null;
-  _notifyBilling();
-  applyAccessGateFromBilling(getBillingState(), { reason: 'loading:' + reason, activeOrgId: requestedOrgId || null });
-
-  let result;
-  try {
-    result = await Promise.race([
-      fetchBillingStatus(),
-      new Promise(resolve => {
-        setTimeout(() => {
-          resolve({
-            ok: false,
-            status: 408,
-            data: null,
-            error: { message: 'Billing request timed out', status: 408 },
-          });
-        }, BILLING_REQUEST_TIMEOUT_MS);
-      }),
-    ]);
-  } catch (err) {
-    result = { ok: false, status: null, data: null, error: { message: err && err.message ? err.message : 'Unknown error', status: null } };
+  // ── Cross-tab shared freshness: skip if another tab recently fetched for this org ──
+  // Applies even on "force" calls: force bypasses local throttle, not cross-tab single-flight.
+  if (requestedOrgId) {
+    const sharedFreshAt = _getSharedBillingFreshness(requestedOrgId);
+    if (sharedFreshAt && (now - sharedFreshAt) < _BILLING_SHARED_FRESH_MS) {
+      const shared = _readSharedBillingResult(requestedOrgId);
+      if (shared) {
+        billingDebugLog('billing:cross-tab-lock:skip-fresh', {
+          reason,
+          orgId: requestedOrgId,
+          sharedAgeMs: now - sharedFreshAt,
+        });
+        if (!_billingState.lastFetchedAt || _billingState.lastFetchedAt < sharedFreshAt) {
+          _applySharedBillingSnapshot(requestedOrgId, shared, 'shared-fresh:' + reason);
+        }
+        return getBillingState();
+      }
+    }
   }
 
-  _billingState.loading = false;
-  if (!(result && result.pending)) {
-    _billingState.lastFetchedAt = Date.now();
+  // ── Cross-tab lock: only one tab may fetch at a time per org ──
+  let _acquiredCrossTabLock = false;
+  if (requestedOrgId) {
+    _acquiredCrossTabLock = _tryAcquireBillingLock(requestedOrgId, reason);
   }
-
-  if (result && result.pending) {
-    _billingState.pending = true;
-    _billingState.ok = false;
-    _billingState.plan = null;
-    _billingState.status = null;
-    _billingState.orgId = requestedOrgId || null;
-    _billingState.isPro = false;
-    _billingState.isActive = false;
-    _billingState.interval = null;
-    _billingState.trialEndsAt = null;
-    _billingState.currentPeriodEnd = null;
-    _billingState.cancelAtPeriodEnd = false;
-    _billingState.cancelAt = null;
-    _billingState.portalAvailable = false;
-    _billingState.data = null;
-    _billingState.error = null;
-    _notifyBilling();
-    applyAccessGateFromBilling(getBillingState(), { reason: 'pending:' + reason, activeOrgId: requestedOrgId || null });
+  if (requestedOrgId && !_acquiredCrossTabLock) {
+    // Another tab is fetching — check if shared result is available
+    const shared = _readSharedBillingResult(requestedOrgId);
+    if (shared) {
+      _applySharedBillingSnapshot(requestedOrgId, shared, 'cross-tab-locked:' + reason);
+    }
+    // Broadcast/storage listeners should update soon; keep one bounded retry for stale browsers.
+    if (!String(reason || '').startsWith('cross-tab-retry:')) {
+      setTimeout(() => {
+        refreshBilling({ force: false, reason: 'cross-tab-retry:' + reason }).catch(() => { });
+      }, 1200);
+    }
     return getBillingState();
   }
 
-  _billingState.pending = false;
-  _billingState.ok = Boolean(result && result.ok);
+  try {
+    billingDebugLog('refresh:start', { reason, force, requestedOrgId: requestedOrgId || null });
+    // ── BillingTrace (debug-only) ──
+    if (isTp3dDebugEnabled()) {
+      _billingTraceSeq += 1;
+      const _tid = _billingTraceSeq;
+      const callerHint = 'APP:' + (reason || 'manual');
+      try { window.__TP3D_BILLING_TRACE_CURRENT_ID__ = _tid; } catch { /* ignore */ }
+      const tracePayload = {
+        id: _tid,
+        reason,
+        force,
+        requestedOrgId: requestedOrgId || null,
+        ageFromInitMs: now - _bootStartedAtMs,
+        callerHint,
+      };
+      if (_tid <= 10) {
+        try {
+          const st = (new Error()).stack || '';
+          const frames = st.split('\n').filter(l => l.trim()).slice(1, 5);
+          tracePayload.stack = frames.map(f => f.trim());
+        } catch { /* ignore */ }
+      }
+      console.info('[BillingTrace] start', tracePayload);
+    }
+    _billingState.loading = true;
+    _billingState.error = null;
+    if (!_billingState.orgId || _billingState.orgId !== (requestedOrgId || null)) {
+      _billingState.pending = true;
+      _billingState.plan = null;
+      _billingState.status = null;
+      _billingState.isPro = false;
+      _billingState.isActive = false;
+      _billingState.interval = null;
+      _billingState.trialEndsAt = null;
+      _billingState.currentPeriodEnd = null;
+      _billingState.cancelAtPeriodEnd = false;
+      _billingState.cancelAt = null;
+      _billingState.portalAvailable = false;
+    }
+    _billingState.orgId = requestedOrgId || null;
+    _notifyBilling();
+    applyAccessGateFromBilling(getBillingState(), { reason: 'loading:' + reason, activeOrgId: requestedOrgId || null });
 
-  if (result && result.ok && result.data) {
-    // Edge function now returns a flat payload: { ok, userId, plan, status, isActive, trialEndsAt, currentPeriodEnd, ... }
-    const p = result.data;
-    _billingState.data = p;
-    const planRaw = p.plan ? String(p.plan) : 'free';
-    let isActive = Boolean(p.isActive);
-    let isPro = planRaw === 'pro' && isActive;
-    let plan = planRaw === 'pro' ? 'Pro' : 'Free';
+    // ── BillingTrace pre-fetch (debug-only) ──
+    if (isTp3dDebugEnabled()) {
+      const _pfTid = _billingTraceSeq; // already incremented above
+      const _pfPayload = {
+        id: _pfTid,
+        reason,
+        force,
+        requestedOrgId: requestedOrgId || null,
+        stateOrgId: _billingState.orgId || null,
+      };
+      if (_pfTid <= 8) {
+        try {
+          const st = (new Error()).stack || '';
+          const frames = st.split('\n').filter(l => l.trim()).slice(1, 5);
+          _pfPayload.stack = frames.map(f => f.trim());
+        } catch { /* ignore */ }
+      }
+      console.info('[BillingTrace] pre-fetch', _pfPayload);
+    }
 
-    // Dev-only per-user plan override (localhost/127.0.0.1 + debug only)
+    let result;
     try {
-      const _ls = typeof window !== 'undefined' && window.localStorage ? window.localStorage : null;
-      const _loc = typeof window !== 'undefined' ? window.location : null;
-      const _isLocal = _loc && (_loc.hostname === 'localhost' || _loc.hostname === '127.0.0.1');
-      const _isDebug = _ls && _ls.getItem('tp3dDebug') === '1';
-      if (_isLocal && _isDebug && _ls) {
-        // Legacy tp3dForceTrial support
-        if (_ls.getItem('tp3dForceTrial') === '1' && !isActive) {
-          plan = 'Pro'; isActive = true; isPro = true;
+      result = await Promise.race([
+        fetchBillingStatus(),
+        new Promise(resolve => {
+          setTimeout(() => {
+            resolve({
+              ok: false,
+              status: 408,
+              data: null,
+              error: { message: 'Billing request timed out', status: 408 },
+            });
+          }, BILLING_REQUEST_TIMEOUT_MS);
+        }),
+      ]);
+    } catch (err) {
+      result = { ok: false, status: null, data: null, error: { message: err && err.message ? err.message : 'Unknown error', status: null } };
+    }
+
+    _billingState.loading = false;
+    if (!(result && result.pending)) {
+      _billingState.lastFetchedAt = Date.now();
+    }
+
+    if (result && result.pending) {
+      _billingState.pending = true;
+      _billingState.ok = false;
+      _billingState.plan = null;
+      _billingState.status = null;
+      _billingState.orgId = requestedOrgId || null;
+      _billingState.isPro = false;
+      _billingState.isActive = false;
+      _billingState.interval = null;
+      _billingState.trialEndsAt = null;
+      _billingState.currentPeriodEnd = null;
+      _billingState.cancelAtPeriodEnd = false;
+      _billingState.cancelAt = null;
+      _billingState.portalAvailable = false;
+      _billingState.data = null;
+      _billingState.error = null;
+      _notifyBilling();
+      applyAccessGateFromBilling(getBillingState(), { reason: 'pending:' + reason, activeOrgId: requestedOrgId || null });
+      return getBillingState();
+    }
+
+    _billingState.pending = false;
+    _billingState.ok = Boolean(result && result.ok);
+
+    if (result && result.ok && result.data) {
+      // Edge function now returns a flat payload: { ok, userId, plan, status, isActive, trialEndsAt, currentPeriodEnd, ... }
+      const p = result.data;
+      _billingState.data = p;
+      const planRaw = p.plan ? String(p.plan) : 'free';
+      let isActive = Boolean(p.isActive);
+      let isPro = planRaw === 'pro' && isActive;
+      let plan = planRaw === 'pro' ? 'Pro' : 'Free';
+
+      // Dev-only per-user plan override (localhost/127.0.0.1 + debug only)
+      try {
+        const _ls = typeof window !== 'undefined' && window.localStorage ? window.localStorage : null;
+        const _loc = typeof window !== 'undefined' ? window.location : null;
+        const _isLocal = _loc && (_loc.hostname === 'localhost' || _loc.hostname === '127.0.0.1');
+        const _isDebug = _ls && _ls.getItem('tp3dDebug') === '1';
+        if (_isLocal && _isDebug && _ls) {
+          // Legacy tp3dForceTrial support
+          if (_ls.getItem('tp3dForceTrial') === '1' && !isActive) {
+            plan = 'Pro'; isActive = true; isPro = true;
+          }
+          // Per-user override: tp3dDevUserPlanOverride = JSON { "<userId>": { plan, status } }
+          const overrideRaw = _ls.getItem('tp3dDevUserPlanOverride');
+          if (overrideRaw && p.userId) {
+            const overrides = JSON.parse(overrideRaw);
+            const userOv = overrides[String(p.userId)];
+            if (userOv && userOv.plan) {
+              const ovPlan = String(userOv.plan);
+              plan = ovPlan === 'pro' || ovPlan === 'trial' ? 'Pro' : 'Free';
+              isActive = userOv.status === 'active' || userOv.status === 'trialing';
+              isPro = isActive && (plan === 'Pro');
+              console.info('[Billing][DEV] Per-user override applied:', { userId: p.userId, plan, isActive, isPro });
+            }
+          }
         }
-        // Per-user override: tp3dDevUserPlanOverride = JSON { "<userId>": { plan, status } }
-        const overrideRaw = _ls.getItem('tp3dDevUserPlanOverride');
-        if (overrideRaw && p.userId) {
-          const overrides = JSON.parse(overrideRaw);
-          const userOv = overrides[String(p.userId)];
-          if (userOv && userOv.plan) {
-            const ovPlan = String(userOv.plan);
-            plan = ovPlan === 'pro' || ovPlan === 'trial' ? 'Pro' : 'Free';
-            isActive = userOv.status === 'active' || userOv.status === 'trialing';
-            isPro = isActive && (plan === 'Pro');
-            console.info('[Billing][DEV] Per-user override applied:', { userId: p.userId, plan, isActive, isPro });
+      } catch { /* ignore */ }
+
+      _billingState.plan = plan;
+      _billingState.status = p.status ? String(p.status) : null;
+      _billingState.orgId = p.orgId ? String(p.orgId) : (requestedOrgId || null);
+      _billingState.isPro = isPro;
+      _billingState.isActive = isActive;
+      _billingState.interval = p.interval ? String(p.interval) : null;
+      _billingState.trialEndsAt = p.trialEndsAt ? String(p.trialEndsAt) : null;
+      _billingState.currentPeriodEnd = p.currentPeriodEnd ? String(p.currentPeriodEnd) : null;
+      _billingState.cancelAtPeriodEnd = Boolean(p.cancelAtPeriodEnd);
+      _billingState.cancelAt = p.cancelAt ? String(p.cancelAt) : null;
+      _billingState.portalAvailable = Boolean(p.portalAvailable);
+      _billingState.error = null;
+    } else {
+      _billingState.data = result ? result.data : null;
+      _billingState.plan = null;
+      _billingState.status = null;
+      _billingState.orgId = requestedOrgId || null;
+      _billingState.isPro = false;
+      _billingState.isActive = false;
+      _billingState.interval = null;
+      _billingState.trialEndsAt = null;
+      _billingState.currentPeriodEnd = null;
+      _billingState.cancelAtPeriodEnd = false;
+      _billingState.cancelAt = null;
+      _billingState.portalAvailable = false;
+      _billingState.error = result && result.error ? result.error : { message: 'Unknown error', status: null };
+    }
+
+    _notifyBilling();
+    applyAccessGateFromBilling(getBillingState(), { reason: 'refreshed:' + reason, activeOrgId: requestedOrgId || null });
+
+    // Trial enforcement: if trial expired and not active, show upgrade notice
+    try {
+      const _bs = getBillingState();
+      if (_bs.ok && !_bs.isActive && _bs.trialEndsAt) {
+        const endMs = new Date(_bs.trialEndsAt).getTime();
+        if (Number.isFinite(endMs) && endMs < Date.now()) {
+          // Trial has expired — show persistent upgrade notice (use global ref since refreshBilling is outside IIFE)
+          const _uic = typeof window !== 'undefined' && window.__TP3D_UI ? window.__TP3D_UI : null;
+          if (_uic && typeof _uic.showToast === 'function') {
+            _uic.showToast(
+              'Your free trial has ended. Upgrade to Pro to continue using premium features.',
+              'warning',
+              { title: 'Trial Expired', duration: 10000 },
+            );
           }
         }
       }
     } catch (_) { /* ignore */ }
 
-    _billingState.plan = plan;
-    _billingState.status = p.status ? String(p.status) : null;
-    _billingState.orgId = p.orgId ? String(p.orgId) : (requestedOrgId || null);
-    _billingState.isPro = isPro;
-    _billingState.isActive = isActive;
-    _billingState.interval = p.interval ? String(p.interval) : null;
-    _billingState.trialEndsAt = p.trialEndsAt ? String(p.trialEndsAt) : null;
-    _billingState.currentPeriodEnd = p.currentPeriodEnd ? String(p.currentPeriodEnd) : null;
-    _billingState.cancelAtPeriodEnd = Boolean(p.cancelAtPeriodEnd);
-    _billingState.cancelAt = p.cancelAt ? String(p.cancelAt) : null;
-    _billingState.portalAvailable = Boolean(p.portalAvailable);
-    _billingState.error = null;
-  } else {
-    _billingState.data = result ? result.data : null;
-    _billingState.plan = null;
-    _billingState.status = null;
-    _billingState.orgId = requestedOrgId || null;
-    _billingState.isPro = false;
-    _billingState.isActive = false;
-    _billingState.interval = null;
-    _billingState.trialEndsAt = null;
-    _billingState.currentPeriodEnd = null;
-    _billingState.cancelAtPeriodEnd = false;
-    _billingState.cancelAt = null;
-    _billingState.portalAvailable = false;
-    _billingState.error = result && result.error ? result.error : { message: 'Unknown error', status: null };
-  }
-
-  _notifyBilling();
-  applyAccessGateFromBilling(getBillingState(), { reason: 'refreshed:' + reason, activeOrgId: requestedOrgId || null });
-
-  // Trial enforcement: if trial expired and not active, show upgrade notice
-  try {
-    const _bs = getBillingState();
-    if (_bs.ok && !_bs.isActive && _bs.trialEndsAt) {
-      const endMs = new Date(_bs.trialEndsAt).getTime();
-      if (Number.isFinite(endMs) && endMs < Date.now()) {
-        // Trial has expired — show persistent upgrade notice (use global ref since refreshBilling is outside IIFE)
-        const _uic = typeof window !== 'undefined' && window.__TP3D_UI ? window.__TP3D_UI : null;
-        if (_uic && typeof _uic.showToast === 'function') {
-          _uic.showToast(
-            'Your free trial has ended. Upgrade to Pro to continue using premium features.',
-            'warning',
-            { title: 'Trial Expired', duration: 10000 },
-          );
-        }
+    try {
+      if (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1') {
+        const _dbgState = getBillingState();
+        const _dbgData = _dbgState.data || {};
+        console.info('[Billing] refreshed', _dbgState);
+        console.info('[Billing][DEV] userId:', _dbgData.userId || 'unknown', '| orgId:', _dbgData.orgId || 'none');
+        console.info('[Billing][DEV] To override, set: localStorage.tp3dDevUserPlanOverride = \'{"' + (_dbgData.userId || '<userId>') + '": {"plan":"pro","status":"active"}}\'');
       }
-    }
-  } catch (_) { /* ignore */ }
+    } catch (_) { /* ignore */ }
 
-  try {
-    if (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1') {
-      const _dbgState = getBillingState();
-      const _dbgData = _dbgState.data || {};
-      console.info('[Billing] refreshed', _dbgState);
-      console.info('[Billing][DEV] userId:', _dbgData.userId || 'unknown', '| orgId:', _dbgData.orgId || 'none');
-      console.info('[Billing][DEV] To override, set: localStorage.tp3dDevUserPlanOverride = \'{"' + (_dbgData.userId || '<userId>') + '": {"plan":"pro","status":"active"}}\'');
+    // ── Cross-tab: write shared result and broadcast ──
+    if (requestedOrgId) {
+      _writeSharedBillingResult(requestedOrgId, getBillingState());
+      _broadcastBillingResult(requestedOrgId, getBillingState());
     }
-  } catch (_) { /* ignore */ }
 
-  if (_billingRefreshQueued) {
-    _billingRefreshQueued = false;
-    setTimeout(() => {
-      refreshBilling({ force: true, reason: 'queued' }).catch(() => { });
-    }, 0);
+    if (_billingRefreshQueued) {
+      _billingRefreshQueued = false;
+      setTimeout(() => {
+        refreshBilling({ force: true, reason: 'queued' }).catch(() => { });
+      }, 0);
+    }
+    return getBillingState();
+  } finally {
+    if (requestedOrgId && _acquiredCrossTabLock) {
+      _releaseBillingLock(requestedOrgId, reason);
+    }
   }
-  return getBillingState();
 }
 
 /** @param {object} billingSnapshot – from getBillingState() */
@@ -543,10 +975,11 @@ async function startCheckout(input) {
     priceId = interval === 'year' ? plans.year.priceId : plans.month.priceId;
   }
 
+  /** @type {{interval?:'month'|'year', priceId?:string}} */
   const checkoutPayload = {};
-  if (hasExplicitInterval) checkoutPayload.interval = interval;
+  if (hasExplicitInterval) checkoutPayload.interval = /** @type {'month'|'year'} */ (interval);
   if (priceId) checkoutPayload.priceId = priceId;
-  if (!hasExplicitInterval && !priceId) checkoutPayload.interval = interval;
+  if (!hasExplicitInterval && !priceId) checkoutPayload.interval = /** @type {'month'|'year'} */ (interval);
 
   billingDebugLog('checkout:start', {
     interval,
@@ -1054,7 +1487,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const isAuthed = Boolean(view && view.isAuthed);
         const displayName = (view && view.displayName) || (isAuthed ? 'User' : 'Guest');
         const activeOrg = orgContext && orgContext.activeOrg ? orgContext.activeOrg : null;
-        const accountName = activeOrg && activeOrg.name ? activeOrg.name : 'Workspace';
+        // Show 'Loading…' instead of generic 'Workspace' when user is authed
+        // but org context hasn't arrived yet (cross-tab boot gap).
+        // eslint-disable-next-line no-use-before-define -- vars declared later in module scope
+        const orgHydrating = Boolean(isAuthed && !activeOrg && (orgContextInFlight || authRehydratePromise));
+        const accountName = activeOrg && activeOrg.name ? activeOrg.name : (orgHydrating ? 'Loading\u2026' : 'Workspace');
         const role =
           (orgContext && orgContext.role ? String(orgContext.role) : null) ||
           (activeOrg && activeOrg.role ? String(activeOrg.role) : null) ||
@@ -3379,11 +3816,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
         'ctrl+v': pasteClipboard,
         'meta+p': () => {
           if (!inEditor()) return;
-          AutoPackEngine.pack();
+          AutoPackEngine.pack().catch(err => console.error('[KeyboardShortcut] AutoPack error:', err));
         },
         'ctrl+p': () => {
           if (!inEditor()) return;
-          AutoPackEngine.pack();
+          AutoPackEngine.pack().catch(err => console.error('[KeyboardShortcut] AutoPack error:', err));
         },
         'meta+o': openPackDialog,
         'ctrl+o': openPackDialog,
@@ -3910,6 +4347,137 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
     }
 
+    // ── getActiveOrgIdNow: best-effort sync orgId with fallbacks ──
+    function getActiveOrgIdNow() {
+      // 1) window.OrgContext (canonical)
+      try {
+        const wcId = getActiveOrgIdForBilling();
+        if (wcId) return wcId;
+      } catch { /* ignore */ }
+      // 2) IIFE-scoped orgContext (available before window.OrgContext)
+      try {
+        const id = normalizeOrgIdForBilling(orgContext && orgContext.activeOrgId);
+        if (id) return id;
+      } catch { /* ignore */ }
+      // 3) localStorage hint (UUID-validated)
+      try {
+        const lsId = readLocalOrgId();
+        if (lsId && ORG_UUID_RE.test(lsId)) return lsId;
+      } catch { /* ignore */ }
+      return '';
+    }
+
+    // ── Billing org-ready pump: retries refreshBilling until orgId resolves ──
+    const BILLING_PUMP_RETRY_MS = 200;
+    const BILLING_PUMP_MAX_TRIES = 12;
+    const BILLING_PUMP_FRESH_MS = 30000;
+    const BILLING_PUMP_COOLDOWN_MS = 5000;
+    const BILLING_PUMP_HARD_COOLDOWN_MS = 10000;
+    const _BILLING_PUMP_FORCE_REASONS = new Set(['org-changed', 'manual', 'org-context:partial']);
+    const _BILLING_PUMP_COOLDOWN_REASONS = new Set(['render-auth-state', 'org-context', 'tab-visible', 'settings-open', 'storage']);
+    let _billingPumpTimer = null;
+    let _billingPumpTries = 0;
+    let _billingPumpEverRan = false;
+    const _billingPumpLastByReason = new Map();
+    let _billingPumpLastRunAtMs = 0;
+
+    function maybeScheduleBillingRefresh(reason) {
+      const activeOrgId = getActiveOrgIdNow();
+      const now = Date.now();
+
+      if (!activeOrgId) {
+        // No org yet — schedule a retry if under the limit
+        if (_billingPumpTries >= BILLING_PUMP_MAX_TRIES) {
+          billingDebugLog('[BillingPump] give-up', { reason, tries: _billingPumpTries });
+          _billingPumpTries = 0;
+          return;
+        }
+        _billingPumpTries += 1;
+        clearTimeout(_billingPumpTimer);
+        _billingPumpTimer = setTimeout(() => {
+          maybeScheduleBillingRefresh(reason);
+        }, BILLING_PUMP_RETRY_MS);
+        billingDebugLog('[BillingPump] retry-scheduled', { reason, try: _billingPumpTries });
+        return;
+      }
+
+      // Org available — reset retry counter
+      _billingPumpTries = 0;
+      clearTimeout(_billingPumpTimer);
+
+      // ── Hard cooldown: absolute minimum time between any pump runs ──
+      if (!_BILLING_PUMP_FORCE_REASONS.has(reason) && _billingPumpLastRunAtMs && (now - _billingPumpLastRunAtMs) < BILLING_PUMP_HARD_COOLDOWN_MS) {
+        billingDebugLog('[BillingPump] skip:hard-cooldown', { reason, ageMs: now - _billingPumpLastRunAtMs });
+        return;
+      }
+
+      // ── Strong "already fresh" guard: skip if billing is current for this org ──
+      const snap = (typeof window !== 'undefined' && window.__TP3D_BILLING
+        && typeof window.__TP3D_BILLING.getBillingState === 'function')
+        ? window.__TP3D_BILLING.getBillingState() : null;
+      if (
+        snap &&
+        snap.ok === true &&
+        !snap.loading &&
+        !snap.pending &&
+        !snap.error &&
+        snap.orgId &&
+        String(snap.orgId) === String(activeOrgId) &&
+        snap.lastFetchedAt &&
+        (now - snap.lastFetchedAt) < BILLING_PUMP_FRESH_MS &&
+        !_BILLING_PUMP_FORCE_REASONS.has(reason)
+      ) {
+        billingDebugLog('[BillingPump] skip:fresh', {
+          reason,
+          orgId: activeOrgId,
+          ageMs: now - snap.lastFetchedAt,
+        });
+        return;
+      }
+
+      // ── Cross-tab shared freshness: skip if another tab recently fetched ──
+      if (!_BILLING_PUMP_FORCE_REASONS.has(reason) && activeOrgId) {
+        const sharedFreshAt = _getSharedBillingFreshness(activeOrgId);
+        if (sharedFreshAt && (now - sharedFreshAt) < _BILLING_SHARED_FRESH_MS) {
+          billingDebugLog('billing:cross-tab-lock:skip-fresh', {
+            reason: 'pump:' + reason,
+            orgId: activeOrgId,
+            sharedAgeMs: now - sharedFreshAt,
+          });
+          // Reuse shared result if our local state is older
+          if (!_billingState.lastFetchedAt || _billingState.lastFetchedAt < sharedFreshAt) {
+            const shared = _readSharedBillingResult(activeOrgId);
+            if (shared) _applySharedBillingSnapshot(activeOrgId, shared, 'shared-fresh-pump:' + reason);
+          }
+          return;
+        }
+      }
+
+      // ── Per-reason cooldown (selected reasons only) ──
+      if (_BILLING_PUMP_COOLDOWN_REASONS.has(reason)) {
+        const lastAt = _billingPumpLastByReason.get(reason) || 0;
+        if ((now - lastAt) < BILLING_PUMP_COOLDOWN_MS) {
+          billingDebugLog('[BillingPump] skip:cooldown', { reason, ageMs: now - lastAt });
+          return;
+        }
+      }
+      _billingPumpLastByReason.set(reason, now);
+
+      // ── Decide force: only org-changed, manual, or first-ever pump ──
+      const shouldForce = _BILLING_PUMP_FORCE_REASONS.has(reason) || !_billingPumpEverRan;
+      _billingPumpEverRan = true;
+
+      _billingPumpLastRunAtMs = now;
+      billingDebugLog('[BillingPump] run', { reason, orgId: activeOrgId, force: shouldForce });
+      refreshBilling({ force: shouldForce, reason: 'pump:' + reason }).catch(() => { });
+    }
+
+    // Expose billing pump globally for SettingsOverlay (avoids import coupling)
+    try {
+      window.TruckPackerApp = window.TruckPackerApp || {};
+      window.TruckPackerApp.maybeScheduleBillingRefresh = maybeScheduleBillingRefresh;
+    } catch { /* ignore */ }
+
     function resolveOrgContextFromBundle(bundle) {
       const orgs = Array.isArray(bundle && bundle.orgs) ? bundle.orgs : [];
       const profile = bundle && bundle.profile ? bundle.profile : null;
@@ -3955,6 +4523,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       return { orgId, activeOrg, orgs, role, profileOrgId, profile };
     }
+
+    // ── Workspace-ready event replay buffer ──
+    let _lastWorkspaceReadyDetail = null;
+    let _lastWorkspaceReadyAt = 0;
+    const WORKSPACE_READY_REPLAY_MS = 5000;
 
     function clearOrgContext({ clearLocalOrgHint = false, confirmedNoOrg = false } = {}) {
       orgContext = {
@@ -4071,7 +4644,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const showNoOrgBanner = !hasOrg && !suppressUncertain && !isTransientSignedOut && (isDefinitelySignedOut || confirmedNoOrg);
       banner.hidden = !showNoOrgBanner;
 
-      const disable = !hasOrg;
+      // Only disable buttons when we are certain there is no org.
+      // During auth wobble (suppressed/uncertain), keep buttons enabled so the UI isn't frozen.
+      const disable = showNoOrgBanner;
       setDisabled(document.getElementById('btn-new-pack'), disable);
       setDisabled(document.getElementById('btn-import-pack'), disable);
       setDisabled(document.getElementById('btn-packs-bulk-delete'), disable);
@@ -4081,7 +4656,62 @@ const TP3D_BUILD_STAMP = Object.freeze({
       setDisabled(document.getElementById('btn-autopack'), disable);
       setDisabled(document.getElementById('btn-screenshot'), disable);
       setDisabled(document.getElementById('btn-pdf'), disable);
+
+      // ── Async workspace-ready recovery ──
+      // If we just set buttons to disabled (no org) but it's NOT confirmed, launch
+      // a background poll to check if a workspace becomes ready and re-apply.
+      if (!hasOrg && !confirmedNoOrg && !_workspaceReadyInflight) {
+        _workspaceReadyInflight = true;
+        ensureWorkspaceReadyForUI({ timeoutMs: 2500 }).then(async (result) => {
+          if (isTp3dDebugEnabled()) {
+            console.info('[WorkspaceReadyUI] poll result', result);
+          }
+          if (result && result.ok && result.activeOrgId) {
+            // Store for replay in case listener isn't installed yet
+            _lastWorkspaceReadyDetail = { activeOrgId: result.activeOrgId };
+            _lastWorkspaceReadyAt = Date.now();
+
+            if (isTp3dDebugEnabled()) {
+              console.info('[WorkspaceReadyUI] dispatch', { activeOrgId: result.activeOrgId });
+            }
+
+            // Dispatch event for any listeners
+            try {
+              window.dispatchEvent(new CustomEvent('tp3d:workspace-ready', {
+                detail: { activeOrgId: result.activeOrgId },
+              }));
+            } catch { /* ignore */ }
+
+            // Immediately self-heal: re-hydrate org context + re-render
+            // (ensures recovery even if listener hasn't been installed yet)
+            try {
+              await refreshOrgContext('workspace-ready:self-heal', { force: true, forceEmit: true });
+            } catch { /* ignore */ }
+            applyOrgRequiredUi(true);
+            queueOrgScopedRender('workspace-ready:self-heal');
+          }
+        }).finally(() => { _workspaceReadyInflight = false; });
+      }
     }
+
+    // ── Install workspace-ready listener early (before any call site can fire) ──
+    window.addEventListener('tp3d:workspace-ready', async (ev) => {
+      try {
+        const activeOrgId = ev && ev.detail && ev.detail.activeOrgId ? String(ev.detail.activeOrgId) : null;
+        if (!activeOrgId) return;
+        if (isTp3dDebugEnabled()) {
+          console.info('[WorkspaceReadyUI] receive', { activeOrgId });
+        }
+        // Re-apply org context from fresh bundle then re-render
+        try {
+          await refreshOrgContext('workspace-ready', { force: true, forceEmit: true });
+        } catch { /* ignore */ }
+        applyOrgRequiredUi(true);
+        queueOrgScopedRender('workspace-ready');
+      } catch {
+        // ignore
+      }
+    });
 
     async function applyOrgContextFromBundle(bundle, { reason = 'org-context', forceEmit = false } = {}) {
       if (!bundle || !bundle.session || !bundle.user) {
@@ -4099,7 +4729,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const now = Date.now();
 
       if (!nextOrgId) {
-        if (bundle && bundle.partial && readLocalOrgId()) return null;
+        if (bundle && bundle.partial && readLocalOrgId()) {
+          maybeScheduleBillingRefresh('org-context:partial');
+          return null;
+        }
         clearOrgContext({
           clearLocalOrgHint: false,
           confirmedNoOrg: Boolean(!bundle?.partial && Array.isArray(resolved.orgs) && resolved.orgs.length === 0),
@@ -4176,6 +4809,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (changed || forceEmit) {
         queueOrgScopedRender(reason);
       }
+      maybeScheduleBillingRefresh('org-context');
       return nextOrgIdStr;
     }
 
@@ -4448,13 +5082,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
         if (!bundleOk) return user;
 
-        try {
-          if (SettingsOverlay && typeof SettingsOverlay.refreshAccountUI === 'function') {
-            SettingsOverlay.refreshAccountUI();
-          }
-        } catch {
-          // ignore
-        }
+        // handleAuthChange internally coalesces refreshAccountUI via microtask.
+        // Do NOT call refreshAccountUI separately — it causes duplicate renders.
         try {
           if (SettingsOverlay && typeof SettingsOverlay.handleAuthChange === 'function') {
             SettingsOverlay.handleAuthChange(reason);
@@ -4553,7 +5182,31 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
           AccountSwitcher.refresh();
         }
-        refreshBilling({ force: isSignedInEvent || isUserSwitch, reason: 'render-auth-state' }).catch(() => { });
+        // Guard: skip pump if same user + same org + billing already fresh
+        if (!isSameUser || isUserSwitch) {
+          maybeScheduleBillingRefresh('render-auth-state');
+        } else {
+          const _pumpSnap = (typeof window !== 'undefined' && window.__TP3D_BILLING
+            && typeof window.__TP3D_BILLING.getBillingState === 'function')
+            ? window.__TP3D_BILLING.getBillingState() : null;
+          const _pumpFresh = _pumpSnap && _pumpSnap.ok && _pumpSnap.lastFetchedAt
+            && (Date.now() - _pumpSnap.lastFetchedAt) < BILLING_PUMP_FRESH_MS;
+          // Also check cross-tab shared freshness (90s window) to avoid
+          // scheduling a pump that will immediately be blocked as skip-fresh
+          let _pumpFreshCrossTab = false;
+          if (!_pumpFresh) {
+            const _pumpOrgId = getActiveOrgIdForBilling();
+            if (_pumpOrgId) {
+              const _sharedAt = _getSharedBillingFreshness(_pumpOrgId);
+              _pumpFreshCrossTab = Boolean(_sharedAt && (Date.now() - _sharedAt) < _BILLING_SHARED_FRESH_MS);
+            }
+          }
+          if (!_pumpFresh && !_pumpFreshCrossTab) {
+            maybeScheduleBillingRefresh('render-auth-state');
+          } else if (_pumpFreshCrossTab) {
+            billingDebugLog('billing:render-auth-state:skip-cross-tab-fresh');
+          }
+        }
         showReadyOnce();
         return;
       }
@@ -4755,8 +5408,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
     }
 
+    let initInFlightPromise = null;
+    let initCompleted = false;
+
     async function init() {
+      if (initInFlightPromise) return initInFlightPromise;
+      if (initCompleted) return;
       console.info('[TruckPackerApp] init start');
+      initInFlightPromise = (async () => {
       if (!(await validateRuntime())) return;
       installDevHelpers({ app: window.TruckPackerApp, stateStore: StateStore, Utils, documentRef: document });
       seedIfEmpty();
@@ -5068,11 +5727,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
           });
 
           // Sync billing state on auth changes
+          // NOTE: refreshBilling is NOT called here — renderAuthState (below) is the single billing trigger
           if (isSignedOutEvent) {
             clearBillingState();
           } else if (isSignedInEvent || isTokenRefreshEvent || isInitialSessionEvent || isUserUpdatedEvent) {
             if (userFromSession && userFromSession.id) {
-              refreshBilling({ force: true, reason: 'auth-change' }).catch(() => { });
               tryAcceptPendingInvite(session || null).catch(() => { });
             }
           }
@@ -5153,6 +5812,22 @@ const TP3D_BUILD_STAMP = Object.freeze({
             if (!isAuthKey) return;
             requestAuthRefresh('storage');
           });
+          // ── Replay any workspace-ready event that fired before this block ran ──
+          if (_lastWorkspaceReadyDetail && (Date.now() - _lastWorkspaceReadyAt) < WORKSPACE_READY_REPLAY_MS) {
+            const _replayOrgId = _lastWorkspaceReadyDetail.activeOrgId;
+            if (_replayOrgId) {
+              if (isTp3dDebugEnabled()) {
+                console.info('[WorkspaceReadyUI] replay', { activeOrgId: _replayOrgId });
+              }
+              (async () => {
+                try {
+                  await refreshOrgContext('workspace-ready:replay', { force: true, forceEmit: true });
+                } catch { /* ignore */ }
+                applyOrgRequiredUi(true);
+                queueOrgScopedRender('workspace-ready:replay');
+              })();
+            }
+          }
           window.addEventListener('tp3d:org-changed', ev => {
             const snapshot = getCurrentAuthSnapshot();
             if (snapshot.status !== 'signed_in' || !snapshot.hasToken) {
@@ -5161,8 +5836,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
             }
 
             const detailOrgId = ev && ev.detail && ev.detail.orgId ? String(ev.detail.orgId) : null;
+            const snapshotOrgId = snapshot.activeOrgId ? String(snapshot.activeOrgId) : null;
+            const sameOrg = Boolean(detailOrgId && snapshotOrgId && snapshotOrgId === detailOrgId);
             if (detailOrgId && snapshot.activeOrgId && String(snapshot.activeOrgId) === detailOrgId) {
               orgContextMetrics.orgChangedIgnoredSameId += 1;
+            }
+            if (sameOrg) {
+              return;
             }
 
             let hidden = false;
@@ -5174,29 +5854,28 @@ const TP3D_BUILD_STAMP = Object.freeze({
             if (hidden) {
               orgContextMetrics.orgChangedQueuedWhileHidden += 1;
               orgContextQueued = true;
+              return;
             }
 
             const overlayOpen = getOverlayOpen();
-            requestAuthRefresh('org-changed', { forceBundle: overlayOpen });
+            requestAuthRefresh('org-changed', { forceBundle: Boolean(overlayOpen) });
 
-            if (!hidden) {
-              orgContextMetrics.orgChangedHandled += 1;
-              queueOrgScopedRender('org-changed');
-              try {
-                if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
-                  AccountSwitcher.refresh();
-                }
-              } catch {
-                // ignore
+            orgContextMetrics.orgChangedHandled += 1;
+            queueOrgScopedRender('org-changed');
+            try {
+              if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
+                AccountSwitcher.refresh();
               }
+            } catch {
+              // ignore
             }
-            // Re-apply gating immediately for role/org context changes, then refresh org-scoped billing.
+            // Re-apply gating immediately for role/org context changes, then pump billing.
             const nextOrgId = detailOrgId || (snapshot.activeOrgId ? String(snapshot.activeOrgId) : null);
             applyAccessGateFromBilling(getBillingState(), {
               reason: 'org-changed',
               activeOrgId: nextOrgId,
             });
-            refreshBilling({ force: true, reason: 'org-changed' }).catch(() => { });
+            maybeScheduleBillingRefresh('org-changed');
           });
         } catch {
           // ignore
@@ -5489,7 +6168,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
                   label: 'Start Subscription',
                   variant: 'primary',
                   onClick: () => {
-                    pickCheckoutInterval({ title: 'Choose Plan', continueLabel: 'Continue' })
+                    pickCheckoutInterval({ _title: 'Choose Plan', _continueLabel: 'Continue' })
                       .then(selection => {
                         if (!selection || !selection.interval) return Promise.resolve();
                         return startCheckout({ interval: selection.interval }).then((result) => {
@@ -5784,7 +6463,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           btn.textContent = 'Upgrade Plan';
           btn.addEventListener('click', () => {
             btn.disabled = true;
-            pickCheckoutInterval({ title: 'Choose Plan', continueLabel: 'Continue' }).then(selection => {
+            pickCheckoutInterval({ _title: 'Choose Plan', _continueLabel: 'Continue' }).then(selection => {
               if (!selection || !selection.interval) {
                 btn.disabled = false;
                 return;
@@ -5811,17 +6490,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
         applyAccessGateFromBilling(getBillingState(), { reason: 'gate-init' });
       } catch (_) { /* ignore */ }
 
-      // Initial billing fetch (if session exists)
-      try {
-        const initSession = SupabaseClient.getSession();
-        if (initSession && initSession.access_token) {
-          refreshBilling({ force: false, reason: 'initial-load' }).catch(() => { });
-        }
-      } catch (_) { /* ignore */ }
-
-      // Refresh billing on focus (throttled inside refreshBilling)
+      // Refresh billing on focus (throttled inside refreshBilling + cross-tab freshness)
       try {
         window.addEventListener('focus', () => {
+          if (Date.now() - _bootStartedAtMs < 8000) return;
           const s = SupabaseClient.getSession && SupabaseClient.getSession();
           if (!s || !s.access_token) return;
           const now = Date.now();
@@ -5831,6 +6503,24 @@ const TP3D_BUILD_STAMP = Object.freeze({
             _billingState.lastFetchedAt &&
             (now - _billingState.lastFetchedAt) < BILLING_FOCUS_REFRESH_COOLDOWN_MS
           ) return;
+          // ── Cross-tab shared freshness: skip focus refresh if another tab fetched recently ──
+          const focusOrgId = getActiveOrgIdForBilling();
+          if (focusOrgId) {
+            const sharedFreshAt = _getSharedBillingFreshness(focusOrgId);
+            if (sharedFreshAt && (now - sharedFreshAt) < BILLING_FOCUS_REFRESH_COOLDOWN_MS) {
+              billingDebugLog('billing:cross-tab-lock:skip-fresh', {
+                reason: 'window-focus',
+                orgId: focusOrgId,
+                sharedAgeMs: now - sharedFreshAt,
+              });
+              // Reuse shared result if our local state is older
+              if (!_billingState.lastFetchedAt || _billingState.lastFetchedAt < sharedFreshAt) {
+                const shared = _readSharedBillingResult(focusOrgId);
+                if (shared) _applySharedBillingSnapshot(focusOrgId, shared, 'shared-fresh:window-focus');
+              }
+              return;
+            }
+          }
           _billingLastFocusRefreshAt = now;
           refreshBilling({ force: false, reason: 'window-focus' }).catch(() => { });
         });
@@ -5932,10 +6622,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
       renderAll();
       if (!supabaseInitOk) return;
       await bootstrapAuthGate();
+      })().finally(() => {
+        initInFlightPromise = null;
+        initCompleted = true;
+      });
+      return initInFlightPromise;
     }
 
     return {
       init,
+      maybeScheduleBillingRefresh,
       EditorUI,
       ui: {
         showToast: UIComponents.showToast,

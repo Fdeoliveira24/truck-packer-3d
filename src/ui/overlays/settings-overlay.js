@@ -62,7 +62,7 @@ export function createSettingsOverlay({
   let settingsModal = null;
   let settingsLeftPane = null;
   let settingsRightPane = null;
-  const _tabState = { activeTabId: 'preferences', didBind: false, lastActionId: 0 };
+  const _tabState = { activeTabId: 'preferences', didBind: false, lastActionId: 0, lastTabActionToken: 0 };
   let settingsInstanceId = 0;
   let settingsInstanceCounter = 0;
   let resourcesSubView = 'root'; // 'root' | 'updates' | 'roadmap' | 'export' | 'import' | 'help'
@@ -72,27 +72,269 @@ export function createSettingsOverlay({
   let warnedMissingModalRoot = false;
   let tabClickHandler = null;
 
+  // ── Render entry points inventory ──
+  // render()           – full DOM rebuild of left+right panes
+  //   called from: setActiveTab, open (via setActiveTab), renderIfFresh,
+  //     orgChangedHandler, setResourcesSubView, profile edit/cancel clicks,
+  //     org-members refresh, promise chains (.then(()=>render())), refreshAccountUI
+  // setActiveTab()     – sets tab state then calls render()
+  //   called from: open, tabClickHandler (click), setActive (api)
+  // open()             – creates/reuses overlay, calls setActiveTab
+  // bindTabsOnce()     – binds click handler that calls setActiveTab
+  // billing subscriber – calls renderBillingInto() only (NOT full render)
+  // orgChangedHandler  – calls render() + loadOrgMembers->renderIfFresh
+
   const SETTINGS_TABS = new Set(['account', 'preferences', 'resources', 'org-general', 'org-members', 'org-billing']);
   const TAB_STORAGE_KEY = 'tp3d:settings:activeTab';
   const SETTINGS_MODAL_ATTR = 'data-tp3d-settings-modal';
   const SETTINGS_INSTANCE_ATTR = 'data-tp3d-settings-instance';
   const ORG_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+  // ── Render-trace state (debug-only dedup) ──
+  let _renderTraceSeq = 0;
+  let _lastRenderSigHash = 0;
+  let _lastRenderTabId = '';
+  let _lastRenderActionId = -1;
+  let _lastRenderAtMs = 0;
+  let _lastRenderStableKey = '';
+  let _lastOrgBillingRenderLfa = 0; // tracks lastFetchedAt of last org-billing render
+  let _renderScheduled = false; // rAF coalescer flag
+  let _deferredRender = null; // { source, tabToken } deferred while a render was in-flight; re-fired next frame
+  let _tabActionToken = 0; // monotonic counter — incremented on every tab switch
+  // ── Render epoch: split into overlay-level and tab-level ──
+  // _overlayEpoch: bumped on open/close only — used by shared async (bundle, billing context)
+  // _tabEpoch: bumped on open/close/setActiveTab — used by tab-specific async (members, invites)
+  let _overlayEpoch = 0;
+  let _tabEpoch = 0;
+  let _renderEpoch = 0; // mirrors _tabEpoch for existing log compat
+  function bumpEpoch(source) {
+    const isTabSwitch = source && source.startsWith('setActiveTab:');
+    _tabEpoch += 1;
+    if (!isTabSwitch) {
+      _overlayEpoch += 1;
+    } else {
+      // Tab switch: bump tab action token — all prior tab-scoped async becomes stale.
+      _tabActionToken += 1;
+      _tabState.lastTabActionToken = _tabActionToken;
+    }
+    _renderEpoch = _tabEpoch;
+    debug('epoch:bump', { overlayEpoch: _overlayEpoch, tabEpoch: _tabEpoch, renderEpoch: _renderEpoch, tabActionToken: _tabActionToken, source });
+    return _renderEpoch;
+  }
+  function getCurrentActionId() { return _tabState.lastActionId; }
+  /** Capture overlay-level epoch for shared async work (survives tab switches). */
+  function getOverlayEpoch() { return _overlayEpoch; }
+  /** Capture tab-level epoch for tab-specific async (invalidated on tab switch). */
+  function _getTabEpoch() { return _tabEpoch; }
+  /** Get current tab action token. */
+  function getTabActionToken() { return _tabState.lastTabActionToken; }
+  /** Check if a captured tab action token is still current. */
+  function isTokenCurrent(token) { return token === _tabState.lastTabActionToken && isOpen() && Boolean(settingsOverlay); }
+  /**
+   * Source-to-target-tab routing: maps async render sources to the tab they belong to.
+   * Returns 'org-billing', 'org-members', or null (current-tab-safe / overlay-scoped).
+   */
+  function _getTargetTabForSource(source) {
+    if (typeof source !== 'string') return null;
+    if (source.startsWith('org-billing') || source.startsWith('billing-delayed-refresh') || source.startsWith('authGate:retry:billing')) return 'org-billing';
+    if (source.startsWith('org-members') || source.startsWith('org-invites') || source.startsWith('members:') || source.startsWith('memberRole:') || source.startsWith('memberRemove:') || source.startsWith('invite:') || source.startsWith('authGate:retry:members')) return 'org-members';
+    return null;
+  }
+  /** Tabs with pending repaint data that arrived after a tab switch (tabId → { source, token }). */
+  const _pendingRepaintByTab = new Map();
+  // Members auto-retry state: schedule retry when org becomes ready
+  let _membersRetryCount = 0;
+  let _membersRetryTimer = null;
+  const _MEMBERS_MAX_RETRIES = 3;
+  const _MEMBERS_BACKOFF = [200, 600, 1500];
+  // ── Callsite tracing + dup-signal state ──
+  let _callsiteLogCount = 0;
+  const _dupSignalMap = new Map(); // key → lastTs
+  // ── refreshAccountUI microtask coalescer ──
+  let _refreshAccountUIQueued = false;
+  let _refreshAccountUIPendingReason = null;
+  let _lastRefreshAccountUIAtMs = 0;
+  // ── Org-readiness grace window (suppress "no workspace" flash) ──
+  let _overlayOpenedAtMs = 0;
+  const _ORG_READY_GRACE_MS = 800;
+  const _ORG_TAB_SET = new Set(['org-members', 'org-billing', 'org-general']);
+  // ── Auth-ready gate for org-protected fetches ──
+  let _lastRefreshSessionAtMs = 0;
+  const _REFRESH_SESSION_COOLDOWN_MS = 10000;
+  let _authGatePendingRetry = false; // true when a fetch was skipped and needs retry on auth-ready
+  // ── Auth-change dedupe: ignore same-user SIGNED_IN repeats within 3s ──
+  let _lastAuthChangeKey = '';
+  let _lastAuthChangeAtMs = 0;
+  const _AUTH_CHANGE_DEDUPE_MS = 5000;
+  let _lastAuthSnapshot = null;
+
+  /** Return the Supabase per-tab id for cross-tab debug correlation. */
+  function getDebugTabId() {
+    try {
+      if (SupabaseClient && typeof SupabaseClient.getTabId === 'function') {
+        const id = SupabaseClient.getTabId();
+        if (id) return String(id);
+      }
+    } catch { /* ignore */ }
+    try {
+      const id = window.sessionStorage && window.sessionStorage.getItem('__tp3d_tab');
+      if (id) return String(id);
+    } catch { /* ignore */ }
+    return 'unknown';
+  }
+
   function debugEnabled() {
     try {
-      return window.localStorage && window.localStorage.getItem('tp3dDebug') === '1';
-    } catch {
-      return false;
-    }
+      if (window.localStorage && window.localStorage.getItem('tp3dDebug') === '1') return true;
+    } catch { /* ignore */ }
+    try {
+      if (typeof URLSearchParams !== 'undefined' && new URLSearchParams(location.search).get('tp3dDebug') === '1') return true;
+    } catch { /* ignore */ }
+    try {
+      if (window.sessionStorage && window.sessionStorage.getItem('tp3dDebug') === '1') return true;
+    } catch { /* ignore */ }
+    return false;
   }
 
   function debug(message, data) {
     if (!debugEnabled()) return;
     try {
-      console.log('[SettingsOverlay]', message, data || {});
+      const enriched = {
+        tabId: getDebugTabId(),
+        overlayOpen: Boolean(settingsOverlay),
+        modalConnected: Boolean(settingsOverlay && settingsOverlay.isConnected),
+        ...data,
+      };
+      console.log('[SettingsOverlay]', message, enriched);
     } catch {
       // ignore
     }
+  }
+
+  /** Debug helper: log render call site with compact stack (first 10 per open) */
+  let _debugRenderCallCount = 0;
+  function debugRenderCall(source, extra) {
+    if (!debugEnabled()) return;
+    _debugRenderCallCount += 1;
+    const payload = {
+      source,
+      instanceId: settingsInstanceId,
+      activeTabId: _tabState.activeTabId,
+      lastActionId: _tabState.lastActionId,
+      tabId: getDebugTabId(),
+      overlayOpen: Boolean(settingsOverlay),
+      modalConnected: Boolean(settingsOverlay && settingsOverlay.isConnected),
+      ts: Date.now(),
+      ...extra,
+    };
+    if (_debugRenderCallCount <= 10) {
+      try {
+        const st = (new Error()).stack || '';
+        payload.stack = st.split('\n').filter(l => l.trim()).slice(1, 4).map(f => f.trim());
+      } catch { /* ignore */ }
+    }
+    debug('renderCall', payload);
+  }
+
+  /** Log callsite with stack (first 10 per open) + dup-signal within 25ms */
+  function _debugCallsite(fnName, extra) {
+    if (!debugEnabled()) return;
+    _callsiteLogCount += 1;
+    const now = Date.now();
+    const payload = {
+      fn: fnName,
+      instanceId: settingsInstanceId,
+      activeTabId: _tabState.activeTabId,
+      lastActionId: _tabState.lastActionId,
+      tabId: getDebugTabId(),
+      overlayOpen: Boolean(settingsOverlay),
+      modalConnected: Boolean(settingsOverlay && settingsOverlay.isConnected),
+      ts: now,
+      ...extra,
+    };
+    if (_callsiteLogCount <= 10) {
+      try {
+        const st = (new Error()).stack || '';
+        payload.stack = st.split('\n').filter(l => l.trim()).slice(1, 6).map(f => f.trim());
+      } catch { /* ignore */ }
+    }
+    debug(fnName + ':callsite', payload);
+    // dup-signal detection
+    const key = `${fnName}|${_tabState.activeTabId}|${_tabState.lastActionId}`;
+    const prev = _dupSignalMap.get(key);
+    if (prev && (now - prev) < 25) {
+      debug('dup-signal', { key, dtMs: now - prev, source: fnName, tabId: _tabState.activeTabId, actionId: _tabState.lastActionId, instanceId: settingsInstanceId });
+    }
+    _dupSignalMap.set(key, now);
+    // Prevent map from growing unbounded
+    if (_dupSignalMap.size > 50) {
+      const oldest = _dupSignalMap.keys().next().value;
+      _dupSignalMap.delete(oldest);
+    }
+  }
+
+  /**
+   * Auth-ready gate: ensures a valid JWT is available before making org-protected
+   * API calls. Waits for Supabase cross-tab sync, then optionally refreshes session
+   * once per _REFRESH_SESSION_COOLDOWN_MS.
+   * @param {string} reason - Caller label for debug logs
+   * @param {{ timeoutMs?: number }} [opts]
+   * @returns {Promise<{ ok: boolean, hasUserJwt: boolean, code?: string }>}
+   */
+  async function ensureAuthReadyForOrgOps(reason, { timeoutMs = 2500 } = {}) {
+    debug('authReady:start', { reason, activeTabId: _tabState.activeTabId });
+    // Fast path: check synchronous session first
+    try {
+      const sess = SupabaseClient.getSession && SupabaseClient.getSession();
+      if (sess && sess.access_token) {
+        debug('authReady:ok', { reason, path: 'sync' });
+        return { ok: true, hasUserJwt: true };
+      }
+    } catch { /* ignore */ }
+
+    // Wait for cross-tab token sync via Supabase's awaitAuthReady
+    debug('authReady:wait', { reason, timeoutMs });
+    try {
+      if (SupabaseClient && typeof SupabaseClient.awaitAuthReady === 'function') {
+        const result = await SupabaseClient.awaitAuthReady({ timeoutMs });
+        if (result && result.ok) {
+          debug('authReady:ok', { reason, path: 'awaitAuthReady' });
+          return { ok: true, hasUserJwt: true };
+        }
+        if (result && result.reason === 'signed_out') {
+          debug('authReady:fail', { reason, code: 'SIGNED_OUT' });
+          return { ok: false, hasUserJwt: false, code: 'SIGNED_OUT' };
+        }
+      }
+    } catch { /* ignore */ }
+
+    // One refreshSession attempt per cooldown window
+    const now = Date.now();
+    if (now - _lastRefreshSessionAtMs >= _REFRESH_SESSION_COOLDOWN_MS) {
+      _lastRefreshSessionAtMs = now;
+      debug('authReady:refreshSession', { reason });
+      try {
+        if (SupabaseClient && typeof SupabaseClient.refreshSession === 'function') {
+          const refreshed = await SupabaseClient.refreshSession();
+          if (refreshed && refreshed.access_token) {
+            debug('authReady:ok', { reason, path: 'refreshSession' });
+            return { ok: true, hasUserJwt: true };
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
+    debug('authReady:fail', { reason, code: 'NO_TOKEN' });
+    return { ok: false, hasUserJwt: false, code: 'NO_TOKEN' };
+  }
+
+  /** djb2 non-crypto hash for render signature dedup */
+  function _djb2(str) {
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) {
+      h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+    }
+    return h;
   }
 
   function normalizeOrgId(value) {
@@ -196,12 +438,69 @@ export function createSettingsOverlay({
     if (removed) debug('cleanupStaleSettingsModals', { source, removed });
   }
 
-  function renderIfFresh(actionId, source) {
+  function renderIfFresh(actionId, source, tabEpoch, overlayEpoch, tabToken) {
+    _debugCallsite('renderIfFresh', { source, actionId, tabEpoch, overlayEpoch, tabToken });
+
+    // ── Overlay closed guard (Rule B) ──
+    if (!isOpen() || !settingsOverlay) {
+      debug('overlay-closed:drop', { source, gate: 'renderIfFresh' });
+      return null;
+    }
+
+    // ── Tab action token guard: if a tab-scoped token was provided, enforce it first ──
+    if (typeof tabToken === 'number' && !isTokenCurrent(tabToken)) {
+      debug('stale-token:drop', { source, tabToken, currentToken: _tabState.lastTabActionToken });
+      return null;
+    }
     if (typeof actionId === 'number' && actionId < _tabState.lastActionId) {
       debug('render skipped (stale)', { source, actionId, lastActionId: _tabState.lastActionId });
       return null;
     }
-    return render();
+    // If overlayEpoch provided, check overlay-level (shared async survives tab switches)
+    if (typeof overlayEpoch === 'number') {
+      if (overlayEpoch !== _overlayEpoch) {
+        debug('render skipped (overlayEpoch)', { source, overlayEpoch, currentOverlayEpoch: _overlayEpoch });
+        return null;
+      }
+    } else if (typeof tabEpoch === 'number' && tabEpoch !== _renderEpoch) {
+      // Also enforce token for pending repaint writes — stale tokens must not pollute the Map.
+      if (typeof tabToken === 'number' && !isTokenCurrent(tabToken)) {
+        debug('stale-token:drop', { source, tabToken, currentToken: _tabState.lastTabActionToken, gate: 'pending-repaint' });
+        return null;
+      }
+      // Route tab-scoped sources to pending repaint via _getTargetTabForSource.
+      const _targetTab = _getTargetTabForSource(source);
+      const _token = typeof tabToken === 'number' ? tabToken : getTabActionToken();
+      if (_targetTab) {
+        _pendingRepaintByTab.set(_targetTab, { source, token: _token });
+        debug('wrong-tab:queue-repaint', { source, targetTab: _targetTab, activeTab: _tabState.activeTabId, token: _token, gate: 'epoch-mismatch' });
+        // If we're already ON the target tab, apply in-place on the next frame
+        if (_tabState.activeTabId === _targetTab) {
+          _pendingRepaintByTab.delete(_targetTab);
+          const _applyToken = _token;
+          requestAnimationFrame(() => {
+            if (isTokenCurrent(_applyToken) && _tabState.activeTabId === _targetTab && isOpen()) {
+              debug('pendingRepaint:apply-in-place', { source, token: _applyToken });
+              render({ source: 'pendingRepaint:' + _targetTab + ':in-place', tabToken: _applyToken });
+            }
+          });
+        }
+      } else {
+        debug('render skipped (epoch)', { source, tabEpoch, currentEpoch: _renderEpoch });
+      }
+      return null;
+    }
+
+    // ── Source-to-target-tab routing (Rule A): prevent wrong-tab render ──
+    const _routeTarget = _getTargetTabForSource(source);
+    if (_routeTarget && _routeTarget !== _tabState.activeTabId) {
+      const _token = typeof tabToken === 'number' ? tabToken : getTabActionToken();
+      _pendingRepaintByTab.set(_routeTarget, { source, token: _token });
+      debug('wrong-tab:queue-repaint', { source, targetTab: _routeTarget, activeTab: _tabState.activeTabId, token: _token });
+      return null;
+    }
+
+    return render({ source: 'renderIfFresh:' + source, tabToken: typeof tabToken === 'number' ? tabToken : undefined });
   }
 
   // Profile editing state
@@ -237,6 +536,7 @@ export function createSettingsOverlay({
   const orgInviteActions = new Set(); // invite IDs currently being acted on
   let lastKnownUserId = null;
   let lastBundleRefreshAt = 0;
+  let _bundlePartialRetryCount = 0;
   let billingUnsubscribe = null;
   let billingSubscriptionToken = 0;
   let modalOrgId = '';
@@ -246,6 +546,32 @@ export function createSettingsOverlay({
   let lastOrgLogoUrl = null;
   let lastOrgLogoExpiresAt = 0;
   const ORG_LOGO_CACHE_TTL_MS = 5 * 60 * 1000;
+
+  /**
+   * Call the billing pump with a retry loop.
+   * If window.TruckPackerApp.maybeScheduleBillingRefresh is not yet available,
+   * retries up to `retries` times at `delayMs` intervals.
+   */
+  function _callBillingPumpWithRetry(reason, { retries = 10, delayMs = 250 } = {}) {
+    let attempt = 0;
+    const tick = () => {
+      attempt += 1;
+      const pump = typeof window !== 'undefined' && window.TruckPackerApp
+        && typeof window.TruckPackerApp.maybeScheduleBillingRefresh === 'function'
+        ? window.TruckPackerApp.maybeScheduleBillingRefresh : null;
+      if (pump) {
+        pump(reason);
+        return;
+      }
+      if (attempt < retries) {
+        setTimeout(tick, delayMs);
+      } else {
+        debug('billing-pump-retry:gave-up', { reason, retries });
+      }
+    };
+    tick();
+  }
+
   const BILLING_CONTEXT_RETRY_MS = 2500;
   let billingContextInflightPromise = null;
   let billingContextInflightOrgId = '';
@@ -300,6 +626,107 @@ export function createSettingsOverlay({
     return modalOrgId;
   }
 
+  function _safeAuthSnapshot(userId) {
+    let hasUserJwt = false;
+    try {
+      const sess = SupabaseClient && typeof SupabaseClient.getSession === 'function'
+        ? SupabaseClient.getSession()
+        : null;
+      hasUserJwt = Boolean(sess && sess.access_token);
+    } catch {
+      hasUserJwt = false;
+    }
+    const activeOrgId = getOrgIdFromOrgContext() || getOrgIdFromBillingState() || getOrgIdFromLocalStorage() || '';
+    return {
+      signedIn: Boolean(userId),
+      userId: userId ? String(userId) : '',
+      activeOrgId,
+      hasUserJwt,
+    };
+  }
+
+  function _hasMeaningfulAuthDelta(nextSnapshot) {
+    const prev = _lastAuthSnapshot;
+    if (!prev) return true;
+    if (!nextSnapshot) return false;
+    return (
+      prev.signedIn !== nextSnapshot.signedIn
+      || prev.userId !== nextSnapshot.userId
+      || prev.activeOrgId !== nextSnapshot.activeOrgId
+      || prev.hasUserJwt !== nextSnapshot.hasUserJwt
+    );
+  }
+
+  function _activeTabDependsOnAuthState(tabId) {
+    const tab = normalizeTab(tabId);
+    return tab === 'account' || tab === 'org-general' || tab === 'org-members' || tab === 'org-billing';
+  }
+
+  function _buildRenderStableKey() {
+    const tab = normalizeTab(_tabState.activeTabId);
+    const key = {
+      tab,
+      actionId: _tabState.lastActionId,
+      orgId: ensureModalOrgId() || getOrgIdFromOrgContext() || '',
+    };
+
+    if (tab === 'account') {
+      key.account = {
+        loadingBundle: Boolean(isLoadingAccountBundle),
+        loadingProfile: Boolean(isLoadingProfile),
+        savingProfile: Boolean(isSavingProfile),
+        uploadingAvatar: Boolean(isUploadingAvatar),
+        hasProfile: Boolean(profileData),
+        profileId: profileData && profileData.id ? String(profileData.id) : '',
+        profileUpdatedAt: profileData && profileData.updated_at ? String(profileData.updated_at) : '',
+      };
+    } else if (tab === 'org-members') {
+      key.members = {
+        loadingMembers: Boolean(isLoadingOrgMembers),
+        loadingInvites: Boolean(isLoadingOrgInvites),
+        membersCount: Array.isArray(orgMembersData) ? orgMembersData.length : 0,
+        invitesCount: Array.isArray(orgInvitesData) ? orgInvitesData.length : 0,
+        membersError: orgMembersError ? String(orgMembersError.message || orgMembersError.code || '1') : '',
+        invitesError: orgInvitesError ? String(orgInvitesError.message || orgInvitesError.code || '1') : '',
+        search: String(orgMembersSearchQuery || ''),
+        roleFilter: String(orgMembersRoleFilter || 'all'),
+      };
+    } else if (tab === 'org-billing') {
+      const api = getBillingApiSafely();
+      const bs = api && typeof api.getBillingState === 'function' ? api.getBillingState() : null;
+      key.billing = {
+        loading: Boolean(bs && bs.loading),
+        pending: Boolean(bs && bs.pending),
+        ok: Boolean(bs && bs.ok),
+        plan: bs && bs.plan ? String(bs.plan) : '',
+        status: bs && bs.status ? String(bs.status) : '',
+        orgId: normalizeOrgId(bs && bs.orgId ? bs.orgId : ''),
+        isPro: Boolean(bs && bs.isPro),
+        isActive: Boolean(bs && bs.isActive),
+        portalAvailable: Boolean(bs && bs.portalAvailable),
+        trialEndsAt: bs && bs.trialEndsAt ? String(bs.trialEndsAt) : '',
+        currentPeriodEnd: bs && bs.currentPeriodEnd ? String(bs.currentPeriodEnd) : '',
+        error: bs && bs.error ? String(bs.error.message || bs.error.status || '1') : '',
+      };
+    } else if (tab === 'org-general') {
+      key.orgGeneral = {
+        loadingBundle: Boolean(isLoadingAccountBundle),
+        loadingOrg: Boolean(isLoadingOrg),
+        loadingMembership: Boolean(isLoadingMembership),
+        savingOrg: Boolean(isSavingOrg),
+        orgName: orgData && orgData.name ? String(orgData.name) : '',
+        role: String(getRoleForOrg(key.orgId) || ''),
+      };
+    } else if (tab === 'resources') {
+      key.resources = { view: String(resourcesSubView || 'root') };
+    } else if (tab === 'preferences') {
+      key.preferences = {
+        hiddenOpacity: Number((PreferencesManager && PreferencesManager.get && PreferencesManager.get().hiddenOpacity) || 0),
+      };
+    }
+    return JSON.stringify(key);
+  }
+
   function isKnownOrgRole(roleValue) {
     return roleValue === 'owner' || roleValue === 'admin' || roleValue === 'member';
   }
@@ -351,18 +778,19 @@ export function createSettingsOverlay({
     }
   }
 
-  function ensureBillingContextHydrated(orgId, { force = false, source = 'org-billing:hydrate-context' } = {}) {
+  async function ensureBillingContextHydrated(orgId, { force = false, source = 'org-billing:hydrate-context' } = {}) {
     const normalizedOrgId = normalizeOrgId(orgId);
-    if (!normalizedOrgId) return Promise.resolve(null);
+    if (!normalizedOrgId) return null;
 
     const role = getRoleForOrg(normalizedOrgId);
     const roleKnown = isKnownOrgRole(role);
     const orgProfileLoaded = hasOrgProfileForOrg(normalizedOrgId);
     if (!force && orgProfileLoaded && roleKnown) {
       billingContextResolvedOrgId = normalizedOrgId;
-      return Promise.resolve({ ok: true });
+      return { ok: true };
     }
 
+    // ── Inflight guard: avoid redundant auth-ready checks ──
     if (!force && billingContextInflightPromise && billingContextInflightOrgId === normalizedOrgId) {
       return billingContextInflightPromise;
     }
@@ -374,12 +802,21 @@ export function createSettingsOverlay({
       (now - billingContextLastAttemptAt) < BILLING_CONTEXT_RETRY_MS &&
       !billingContextInflightPromise
     ) {
-      return Promise.resolve(null);
+      return null;
+    }
+
+    // ── Auth-ready gate: skip when JWT is missing (cross-tab boot gap) ──
+    const authCheck = await ensureAuthReadyForOrgOps('ensureBillingContextHydrated');
+    if (!authCheck.ok) {
+      debug('billingFetch:skip-no-token', { caller: source, orgId: normalizedOrgId, code: authCheck.code });
+      _authGatePendingRetry = true;
+      return null;
     }
 
     billingContextLastAttemptAt = now;
     billingContextInflightOrgId = normalizedOrgId;
-    const actionId = _tabState.lastActionId;
+    const oEpoch = getOverlayEpoch();
+    const _hydrateToken = getTabActionToken();
     const request = (async () => {
       try {
         await loadAccountBundle({ force: true });
@@ -416,14 +853,19 @@ export function createSettingsOverlay({
           billingContextInflightPromise = null;
           billingContextInflightOrgId = '';
         }
-        renderIfFresh(actionId, source);
+        // If tab action changed while async hydration was in flight, skip render
+        if (typeof _hydrateToken === 'number' && !isTokenCurrent(_hydrateToken)) {
+          debug('ensureBillingContextHydrated:skip-stale-token', { source, token: _hydrateToken, current: getTabActionToken() });
+          return;
+        }
+        renderIfFresh(getCurrentActionId(), source, undefined, oEpoch, _hydrateToken);
       });
 
     billingContextInflightPromise = request;
     return request;
   }
 
-  function refreshBillingForOrgChange(nextOrgId, source) {
+  function refreshBillingForOrgChange(nextOrgId, _source) {
     const normalizedOrgId = normalizeOrgId(nextOrgId);
     if (!normalizedOrgId) return;
     const api = getBillingApiSafely();
@@ -442,14 +884,17 @@ export function createSettingsOverlay({
       renderBillingInto(billingWrap);
     }
 
-    if (typeof api.refreshBilling === 'function') {
-      api.refreshBilling({ force: true, reason: source || 'settings:org-changed' })
-        .catch(() => { })
-        .finally(() => {
-          const wrap = doc.getElementById('tp3d-billing-wrap');
-          if (wrap) renderBillingInto(wrap);
-        });
+    // Route through pump instead of direct call
+    if (typeof window !== 'undefined' && window.TruckPackerApp && typeof window.TruckPackerApp.maybeScheduleBillingRefresh === 'function') {
+      window.TruckPackerApp.maybeScheduleBillingRefresh('org-changed');
+    } else {
+      _callBillingPumpWithRetry('org-changed');
     }
+    // Re-render billing wrap after a short delay for pump to complete
+    setTimeout(() => {
+      const wrap = doc.getElementById('tp3d-billing-wrap');
+      if (wrap) renderBillingInto(wrap);
+    }, 300);
   }
 
   function ensureOrgChangedListener() {
@@ -470,12 +915,13 @@ export function createSettingsOverlay({
         ensureBillingContextHydrated(nextOrgId, { force: true, source: 'org-billing:org-changed' }).catch(() => { });
       }
       if (settingsOverlay && settingsOverlay.isConnected) {
-        render();
+        render({ source: 'org-changed' });
       }
       if (_tabState.activeTabId === 'org-members') {
-        const actionId = _tabState.lastActionId;
+        const epoch = _renderEpoch;
+        const token = getTabActionToken();
         loadOrgMembers(nextOrgId)
-          .then(() => renderIfFresh(actionId, 'org-members:org-changed'))
+          .then(() => renderIfFresh(getCurrentActionId(), 'org-members:org-changed', epoch, undefined, token))
           .catch(() => { });
       }
     };
@@ -616,8 +1062,29 @@ export function createSettingsOverlay({
         return null;
       }
 
-      // Populate all module-level caches from the bundle
+      // Populate all module-level caches from the bundle.
+      // Guard: if bundle is partial with no activeOrgId, do NOT overwrite existing good org data.
       if (bundle) {
+        const isPartialNoOrg = bundle.partial === true && !bundle.activeOrgId;
+        if (isPartialNoOrg) {
+          // Always block on partial-no-org — even on first load when all caches are null.
+          // Safe-write profile (not org-scoped); preserve existing org/membership data.
+          if (bundle.profile) profileData = bundle.profile;
+          debug('loadAccountBundle:skip-partial', { partial: true, activeOrgId: bundle.activeOrgId, hasExistingProfile: Boolean(profileData), hasExistingOrg: Boolean(orgData) });
+          isLoadingAccountBundle = false;
+          isLoadingOrg = true; // keep org panels in skeleton until the full bundle arrives
+          // Schedule a retry to get the full bundle (max 3 retries, 800ms apart)
+          if (!_bundlePartialRetryCount) _bundlePartialRetryCount = 0;
+          if (_bundlePartialRetryCount < 3) {
+            _bundlePartialRetryCount += 1;
+            setTimeout(() => {
+              queueAccountBundleRefresh({ force: true, source: 'bundle-partial-retry' });
+            }, 800);
+          }
+          return null;
+        }
+        _bundlePartialRetryCount = 0;
+
         profileData = bundle.profile || null;
         membershipData = bundle.membership || null;
         orgData = bundle.activeOrg || null;
@@ -642,18 +1109,20 @@ export function createSettingsOverlay({
     } catch (err) {
       console.error('[SettingsOverlay] Failed to load account bundle:', err);
       isLoadingAccountBundle = false;
+      isLoadingOrg = false;
       return null;
     }
   }
 
   function queueAccountBundleRefresh({ force = true, source = 'account-bundle-refresh' } = {}) {
+    _debugCallsite('queueAccountBundleRefresh', { force, source });
     if (isLoadingAccountBundle) return;
     const now = Date.now();
-    if (now - lastBundleRefreshAt < 500) return;
+    if (now - lastBundleRefreshAt < 2000) return;
     lastBundleRefreshAt = now;
-    const actionId = _tabState.lastActionId;
+    const oEpoch = getOverlayEpoch();
     loadAccountBundle({ force })
-      .then(() => renderIfFresh(actionId, source))
+      .then(() => renderIfFresh(getCurrentActionId(), source, undefined, oEpoch))
       .catch(() => { });
   }
 
@@ -677,7 +1146,7 @@ export function createSettingsOverlay({
   async function saveProfile(updates) {
     if (isSavingProfile) return null;
     isSavingProfile = true;
-    const actionId = _tabState.lastActionId;
+    const epoch = _renderEpoch;
     try {
       const updated = await SupabaseClient.updateProfile(updates);
       profileData = updated;
@@ -688,7 +1157,7 @@ export function createSettingsOverlay({
         SupabaseClient.invalidateAccountCache();
       }
       UIComponents.showToast('Profile saved', 'success');
-      renderIfFresh(actionId, 'saveProfile');
+      renderIfFresh(getCurrentActionId(), 'saveProfile', epoch);
       return updated;
     } catch (err) {
       isSavingProfile = false;
@@ -715,7 +1184,7 @@ export function createSettingsOverlay({
   async function saveOrganization(updates, orgId = null) {
     if (isSavingOrg || !orgId) return null;
     isSavingOrg = true;
-    const actionId = _tabState.lastActionId;
+    const epoch = _renderEpoch;
     try {
       // Trim string values
       const trimmed = {};
@@ -732,7 +1201,7 @@ export function createSettingsOverlay({
         SupabaseClient.invalidateAccountCache();
       }
       UIComponents.showToast('Workspace updated', 'success');
-      renderIfFresh(actionId, 'saveOrganization');
+      renderIfFresh(getCurrentActionId(), 'saveOrganization', epoch);
       return updated;
     } catch (err) {
       isSavingOrg = false;
@@ -748,8 +1217,20 @@ export function createSettingsOverlay({
       // ignore
     }
     const normalizedOrgId = normalizeOrgId(orgId);
-    if (!normalizedOrgId) return null;
+    if (!normalizedOrgId) {
+      debug('loadOrgMembers:skip-no-org', { orgId: orgId || null });
+      return null;
+    }
+    // ── Auth-ready gate: skip fetch when JWT is missing (cross-tab boot gap) ──
+    const authCheck = await ensureAuthReadyForOrgOps('loadOrgMembers');
+    if (!authCheck.ok) {
+      debug('orgFetch:skip-no-token', { caller: 'loadOrgMembers', orgId: normalizedOrgId, code: authCheck.code });
+      orgMembersError = { message: 'Reconnecting\u2026', _authPending: true };
+      _authGatePendingRetry = true;
+      return null;
+    }
     if (isLoadingOrgMembers && orgMembersInflightPromise && orgMembersInflightOrgId === normalizedOrgId) {
+      debug('loadOrgMembers:reuse-inflight', { orgId: normalizedOrgId });
       return orgMembersInflightPromise;
     }
     if (isLoadingOrgMembers && orgMembersInflightOrgId && orgMembersInflightOrgId !== normalizedOrgId) {
@@ -759,17 +1240,21 @@ export function createSettingsOverlay({
     isLoadingOrgMembers = true;
     orgMembersInflightOrgId = normalizedOrgId;
     orgMembersError = null;
+    debug('loadOrgMembers:start', { orgId: normalizedOrgId, requestId: thisRequestId });
     const requestPromise = (async () => {
       try {
         const members = await SupabaseClient.getOrganizationMembers(normalizedOrgId);
         if (thisRequestId !== orgMembersRequestId) return null;
         orgMembersData = Array.isArray(members) ? members : [];
         lastOrgMembersOrgId = String(normalizedOrgId);
+        debug('loadOrgMembers:ok', { orgId: normalizedOrgId, count: orgMembersData.length });
+        _membersRetryCount = 0; // reset on success
         return orgMembersData;
       } catch (err) {
         if (thisRequestId !== orgMembersRequestId) return null;
         orgMembersError = err;
         orgMembersData = Array.isArray(orgMembersData) ? orgMembersData : [];
+        debug('loadOrgMembers:error', { orgId: normalizedOrgId, error: err && err.message || String(err) });
         return null;
       } finally {
         if (thisRequestId === orgMembersRequestId) {
@@ -839,13 +1324,13 @@ export function createSettingsOverlay({
     if (orgMemberActions.has(userId)) return null;
 
     orgMemberActions.add(userId);
-    const actionId = _tabState.lastActionId;
-    renderIfFresh(actionId, 'memberRole:update:begin');
+    const epoch = _renderEpoch;
+    renderIfFresh(getCurrentActionId(), 'memberRole:update:begin', epoch);
     try {
       const result = await updateOrgMemberRoleFn(orgId, userId, nextRole);
       if (!result || !result.ok) {
         UIComponents.showToast(result && result.error ? result.error : 'Failed to update role.', 'error');
-        renderIfFresh(actionId, 'memberRole:update:error');
+        renderIfFresh(getCurrentActionId(), 'memberRole:update:error', epoch);
         return null;
       }
       await loadOrgMembers(orgId);
@@ -854,15 +1339,15 @@ export function createSettingsOverlay({
         membershipData = { ...membershipData, role: updated.role || membershipData.role };
       }
       UIComponents.showToast('Role updated', 'success');
-      renderIfFresh(actionId, 'memberRole:update');
+      renderIfFresh(getCurrentActionId(), 'memberRole:update', epoch);
       return updated;
     } catch (err) {
       UIComponents.showToast(`Failed to update role: ${err && err.message ? err.message : err}`, 'error');
-      renderIfFresh(actionId, 'memberRole:update:error');
+      renderIfFresh(getCurrentActionId(), 'memberRole:update:error', epoch);
       return null;
     } finally {
       orgMemberActions.delete(userId);
-      renderIfFresh(actionId, 'memberRole:update:done');
+      renderIfFresh(getCurrentActionId(), 'memberRole:update:done', epoch);
     }
   }
 
@@ -872,26 +1357,26 @@ export function createSettingsOverlay({
     if (orgMemberActions.has(userId)) return false;
 
     orgMemberActions.add(userId);
-    const actionId = _tabState.lastActionId;
-    renderIfFresh(actionId, 'memberRemove:begin');
+    const epoch = _renderEpoch;
+    renderIfFresh(getCurrentActionId(), 'memberRemove:begin', epoch);
     try {
       const result = await removeOrgMemberFn(orgId, userId);
       if (!result || !result.ok) {
         UIComponents.showToast(result && result.error ? result.error : 'Failed to remove member.', 'error');
-        renderIfFresh(actionId, 'memberRemove:error');
+        renderIfFresh(getCurrentActionId(), 'memberRemove:error', epoch);
         return false;
       }
       await loadOrgMembers(orgId);
       UIComponents.showToast('Member removed', 'success');
-      renderIfFresh(actionId, 'memberRemove');
+      renderIfFresh(getCurrentActionId(), 'memberRemove', epoch);
       return true;
     } catch (err) {
       UIComponents.showToast(`Failed to remove member: ${err && err.message ? err.message : err}`, 'error');
-      renderIfFresh(actionId, 'memberRemove:error');
+      renderIfFresh(getCurrentActionId(), 'memberRemove:error', epoch);
       return false;
     } finally {
       orgMemberActions.delete(userId);
-      renderIfFresh(actionId, 'memberRemove:done');
+      renderIfFresh(getCurrentActionId(), 'memberRemove:done', epoch);
     }
   }
 
@@ -921,7 +1406,7 @@ export function createSettingsOverlay({
 
   async function sendInvite(orgId, email, role) {
     if (!orgId || !email) return null;
-    const actionId = _tabState.lastActionId;
+    const epoch = _renderEpoch;
     const normalizedRole = String(role || 'member').trim().toLowerCase();
     const roleAllowed = normalizedRole === 'member' || normalizedRole === 'admin';
     debug('orgInvite:send:request', { orgId, email, role: normalizedRole, roleAllowed });
@@ -957,7 +1442,7 @@ export function createSettingsOverlay({
       UIComponents.showToast('Invite sent to ' + email, 'success', { title: 'Invites', actions: copyInviteAction });
       // Refresh invites list
       await loadOrgInvites(orgId);
-      renderIfFresh(actionId, 'invite:send');
+      renderIfFresh(getCurrentActionId(), 'invite:send', epoch);
       return result;
     } catch (err) {
       UIComponents.showToast('Invite failed: ' + (err && err.message ? err.message : err), 'error', { title: 'Invites' });
@@ -971,21 +1456,21 @@ export function createSettingsOverlay({
     if (orgInviteActions.has(inviteId)) return false;
 
     orgInviteActions.add(inviteId);
-    const actionId = _tabState.lastActionId;
-    renderIfFresh(actionId, 'invite:revoke:begin');
+    const epoch = _renderEpoch;
+    renderIfFresh(getCurrentActionId(), 'invite:revoke:begin', epoch);
     try {
       await SupabaseClient.revokeOrganizationInvite(inviteId);
       await loadOrgInvites(orgId);
       UIComponents.showToast('Invite revoked', 'success', { title: 'Invites' });
-      renderIfFresh(actionId, 'invite:revoke');
+      renderIfFresh(getCurrentActionId(), 'invite:revoke', epoch);
       return true;
     } catch (err) {
       UIComponents.showToast('Revoke failed: ' + (err && err.message ? err.message : err), 'error', { title: 'Invites' });
-      renderIfFresh(actionId, 'invite:revoke:error');
+      renderIfFresh(getCurrentActionId(), 'invite:revoke:error', epoch);
       return false;
     } finally {
       orgInviteActions.delete(inviteId);
-      renderIfFresh(actionId, 'invite:revoke:done');
+      renderIfFresh(getCurrentActionId(), 'invite:revoke:done', epoch);
     }
   }
 
@@ -995,8 +1480,8 @@ export function createSettingsOverlay({
     if (orgInviteActions.has(inviteId)) return null;
 
     orgInviteActions.add(inviteId);
-    const actionId = _tabState.lastActionId;
-    renderIfFresh(actionId, 'invite:resend:begin');
+    const epoch = _renderEpoch;
+    renderIfFresh(getCurrentActionId(), 'invite:resend:begin', epoch);
     try {
       const inviteRole = String(invite.role || 'member').trim().toLowerCase();
       if (inviteRole !== 'member' && inviteRole !== 'admin') {
@@ -1029,22 +1514,22 @@ export function createSettingsOverlay({
         : undefined;
       UIComponents.showToast('Invite resent to ' + invite.email, 'success', { title: 'Invites', actions: copyInviteAction });
       await loadOrgInvites(orgId);
-      renderIfFresh(actionId, 'invite:resend');
+      renderIfFresh(getCurrentActionId(), 'invite:resend', epoch);
       return result;
     } catch (err) {
       UIComponents.showToast('Resend failed: ' + (err && err.message ? err.message : err), 'error', { title: 'Invites' });
-      renderIfFresh(actionId, 'invite:resend:error');
+      renderIfFresh(getCurrentActionId(), 'invite:resend:error', epoch);
       return null;
     } finally {
       orgInviteActions.delete(inviteId);
-      renderIfFresh(actionId, 'invite:resend:done');
+      renderIfFresh(getCurrentActionId(), 'invite:resend:done', epoch);
     }
   }
 
   async function handleAvatarUpload(file) {
-    const actionId = _tabState.lastActionId;
+    const epoch = _renderEpoch;
     isUploadingAvatar = true;
-    renderIfFresh(actionId, 'avatarUpload:begin');
+    renderIfFresh(getCurrentActionId(), 'avatarUpload:begin', epoch);
     try {
       const publicUrl = await SupabaseClient.uploadAvatar(file);
       // Add cache-busting timestamp to force browser to reload image
@@ -1052,7 +1537,7 @@ export function createSettingsOverlay({
       await SupabaseClient.updateProfile({ avatar_url: publicUrl });
       UIComponents.showToast('Avatar uploaded', 'success');
       await loadProfile();
-      renderIfFresh(actionId, 'avatarUpload');
+      renderIfFresh(getCurrentActionId(), 'avatarUpload', epoch);
       // Notify app to refresh sidebar avatar
       try {
         const event = new CustomEvent('tp3d:profile-updated', { detail: { avatar_url: cacheBustedUrl } });
@@ -1064,20 +1549,20 @@ export function createSettingsOverlay({
       UIComponents.showToast(`Upload failed: ${err && err.message ? err.message : err}`, 'error');
     } finally {
       isUploadingAvatar = false;
-      renderIfFresh(actionId, 'avatarUpload:done');
+      renderIfFresh(getCurrentActionId(), 'avatarUpload:done', epoch);
     }
   }
 
   async function handleAvatarRemove() {
-    const actionId = _tabState.lastActionId;
+    const epoch = _renderEpoch;
     isUploadingAvatar = true;
-    renderIfFresh(actionId, 'avatarRemove:begin');
+    renderIfFresh(getCurrentActionId(), 'avatarRemove:begin', epoch);
     try {
       await SupabaseClient.deleteAvatar();
       await SupabaseClient.updateProfile({ avatar_url: null });
       UIComponents.showToast('Avatar removed', 'success');
       await loadProfile();
-      renderIfFresh(actionId, 'avatarRemove');
+      renderIfFresh(getCurrentActionId(), 'avatarRemove', epoch);
       // Notify app to refresh sidebar avatar
       try {
         const event = new CustomEvent('tp3d:profile-updated', { detail: { avatar_url: null } });
@@ -1089,7 +1574,7 @@ export function createSettingsOverlay({
       UIComponents.showToast(`Remove failed: ${err && err.message ? err.message : err}`, 'error');
     } finally {
       isUploadingAvatar = false;
-      renderIfFresh(actionId, 'avatarRemove:done');
+      renderIfFresh(getCurrentActionId(), 'avatarRemove:done', epoch);
     }
   }
 
@@ -1097,8 +1582,17 @@ export function createSettingsOverlay({
     return Boolean(settingsOverlay);
   }
 
-  function close() {
+  function close(reason) {
+    const _closeReason = typeof reason === 'string' && reason ? reason : 'unknown';
     if (!settingsOverlay) return;
+    debug('[SettingsOverlay] close:called', {
+      reason: _closeReason,
+      tabId: _tabState.activeTabId,
+      overlayOpen: Boolean(settingsOverlay && settingsOverlay.isConnected),
+      overlayEpoch: _overlayEpoch,
+      tabEpoch: _tabEpoch,
+    });
+    bumpEpoch('close');
     isUploadingAvatar = false;
     removeOrgChangedListener();
     if (billingUnsubscribe) {
@@ -1152,6 +1646,29 @@ export function createSettingsOverlay({
     }
 
     debugSettingsModalSnapshot('close');
+    // Clear members auto-retry timer
+    if (_membersRetryTimer) { clearTimeout(_membersRetryTimer); _membersRetryTimer = null; }
+    _membersRetryCount = 0;
+    // Reset render trace counters
+    _renderTraceSeq = 0;
+    _lastRenderSigHash = 0;
+    _lastRenderTabId = '';
+    _lastRenderActionId = -1;
+    _lastRenderAtMs = 0;
+    _lastRenderStableKey = '';
+    _debugRenderCallCount = 0;
+    _callsiteLogCount = 0;
+    _dupSignalMap.clear();
+    _refreshAccountUIQueued = false;
+    _refreshAccountUIPendingReason = null;
+    _overlayOpenedAtMs = 0;
+    _authGatePendingRetry = false;
+    _lastAuthSnapshot = null;
+    _renderScheduled = false;
+    _deferredRender = null;
+    _pendingRepaintByTab.clear();
+    _tabActionToken = 0;
+    _tabState.lastTabActionToken = 0;
     settingsOverlay = null;
     settingsModal = null;
     settingsLeftPane = null;
@@ -1214,6 +1731,18 @@ export function createSettingsOverlay({
    */
   function setActiveTab(tabId, meta = {}) {
     const nextTab = normalizeTab(tabId);
+    const currentTab = normalizeTab(_tabState.activeTabId);
+    const source = String(meta.source || '');
+    if (nextTab === currentTab && source !== 'open') {
+      debug('setActiveTab:noop-same-tab', {
+        tabId: nextTab,
+        source: source || 'unknown',
+        actionId: typeof meta.actionId === 'number' ? meta.actionId : _tabState.lastActionId,
+        lastActionId: _tabState.lastActionId,
+      });
+      return;
+    }
+    bumpEpoch('setActiveTab:' + nextTab);
     const actionId = typeof meta.actionId === 'number' ? meta.actionId : null;
     if (actionId != null && actionId < _tabState.lastActionId) {
       debug('setActiveTab skipped (stale)', { tabId: nextTab, actionId, lastActionId: _tabState.lastActionId });
@@ -1224,7 +1753,8 @@ export function createSettingsOverlay({
       resourcesSubView = 'root';
     }
     persistTab(nextTab);
-    const counts = render();
+    const _setActiveToken = getTabActionToken();
+    const counts = render({ source: 'setActiveTab:' + (meta.source || 'unknown'), tabToken: _setActiveToken });
     debug('setActiveTab', {
       tabId: nextTab,
       source: meta.source,
@@ -1233,19 +1763,85 @@ export function createSettingsOverlay({
       instanceId: settingsInstanceId,
       buttonCount: counts ? counts.buttonCount : 0,
       panelCount: counts ? counts.panelCount : 0,
+      tabActionToken: _setActiveToken,
     });
     debugTabSnapshot('setActiveTab');
 
-    // Billing tab should always refresh latest state
+    // ── Pending repaint: apply data that arrived while another tab was active ──
+    if (_pendingRepaintByTab.has(nextTab)) {
+      const _pendingEntry = _pendingRepaintByTab.get(nextTab);
+      _pendingRepaintByTab.delete(nextTab);
+      // Apply only if the pending entry's token is current (i.e. for THIS tab activation)
+      if (_pendingEntry && (typeof _pendingEntry.token !== 'number' || isTokenCurrent(_pendingEntry.token))) {
+        debug('pendingRepaint:apply', { tab: nextTab, source: _pendingEntry.source, token: _pendingEntry.token });
+        requestAnimationFrame(() => {
+          if (isTokenCurrent(_setActiveToken) && _tabState.activeTabId === nextTab) {
+            render({ source: 'pendingRepaint:' + nextTab, tabToken: _setActiveToken });
+          }
+        });
+      } else {
+        debug('pendingRepaint:drop-stale-token', { tab: nextTab, source: _pendingEntry && _pendingEntry.source, token: _pendingEntry && _pendingEntry.token, currentToken: _tabState.lastTabActionToken });
+      }
+    }
+
+    // Billing tab: refresh only if stale (>30s), pending, loading, error, or org mismatch
     if (nextTab === 'org-billing') {
       const lockedOrgId = ensureModalOrgId();
       if (lockedOrgId) {
         ensureBillingContextHydrated(lockedOrgId, { source: 'org-billing:tab-activate' }).catch(() => { });
       }
-      const api = getBillingApiSafely();
-      if (api && typeof api.refreshBilling === 'function') {
-        api.refreshBilling({ force: true }).catch(() => { });
-      }
+      // Wrap in async to await auth-ready gate before triggering edge-function calls
+      (async () => {
+        const authCheck = await ensureAuthReadyForOrgOps('setActiveTab:org-billing');
+        if (!authCheck.ok) {
+          debug('billingFetch:skip-no-token', { caller: 'setActiveTab:org-billing', code: authCheck.code });
+          _authGatePendingRetry = true;
+          return;
+        }
+        const api = getBillingApiSafely();
+        if (api && typeof api.refreshBilling === 'function' && lockedOrgId) {
+          const bs = typeof api.getBillingState === 'function' ? api.getBillingState() : null;
+          const ageMs = bs && bs.lastFetchedAt ? Date.now() - bs.lastFetchedAt : Infinity;
+          const orgMatch = bs && bs.orgId ? normalizeOrgId(bs.orgId) === lockedOrgId : true;
+          const needsRefresh = !bs || bs.pending || bs.loading || !bs.lastFetchedAt
+            || ageMs > 30000 || bs.error || !bs.ok || !orgMatch;
+          if (needsRefresh) {
+            // Route through pump — never call refreshBilling directly from settings-overlay
+            if (typeof window !== 'undefined' && window.TruckPackerApp && typeof window.TruckPackerApp.maybeScheduleBillingRefresh === 'function') {
+              window.TruckPackerApp.maybeScheduleBillingRefresh('settings-billing-tab');
+            } else {
+              _callBillingPumpWithRetry('settings-billing-tab');
+            }
+            // Schedule a delayed re-render after billing data should have arrived
+            const bsBefore = bs ? JSON.stringify({ ok: bs.ok, plan: bs.plan, orgId: bs.orgId }) : '';
+            const _billingDelayToken = _setActiveToken;
+            setTimeout(() => {
+              if (!isOpen()) return;
+              if (!isTokenCurrent(_billingDelayToken)) {
+                debug('stale-token:drop', { source: 'billing-delayed-refresh', tabToken: _billingDelayToken, currentToken: _tabState.lastTabActionToken });
+                return;
+              }
+              const apiLater = getBillingApiSafely();
+              const bsLater = apiLater && typeof apiLater.getBillingState === 'function' ? apiLater.getBillingState() : null;
+              const bsAfter = bsLater ? JSON.stringify({ ok: bsLater.ok, plan: bsLater.plan, orgId: bsLater.orgId }) : '';
+              if (bsAfter !== bsBefore) {
+                if (_tabState.activeTabId === 'org-billing') {
+                  render({ source: 'billing-delayed-refresh', tabToken: _billingDelayToken });
+                } else {
+                  _pendingRepaintByTab.set('org-billing', { source: 'billing-delayed-refresh', token: _billingDelayToken });
+                }
+              }
+            }, 3000);
+          } else {
+            debug('setActiveTab:skip-billing-fresh', {
+              plan: bs.plan,
+              ageMs,
+              orgId: bs.orgId,
+              lockedOrgId,
+            });
+          }
+        }
+      })().catch(() => { });
     }
   }
 
@@ -1264,7 +1860,19 @@ export function createSettingsOverlay({
       const key = target.getAttribute('data-tab') || (target.dataset ? target.dataset.tab : null);
       if (!key) return;
       ev.preventDefault();
+      const nextTab = normalizeTab(key);
+      const currentTab = normalizeTab(_tabState.activeTabId);
+      if (nextTab === currentTab) {
+        debug('setActiveTab:noop-same-tab', {
+          tabId: nextTab,
+          source: 'click',
+          actionId: _tabState.lastActionId,
+          lastActionId: _tabState.lastActionId,
+        });
+        return;
+      }
       _tabState.lastActionId += 1;
+      debug('tab:click', { key, from: _tabState.activeTabId, nextActionId: _tabState.lastActionId });
       setActiveTab(key, { source: 'click', actionId: _tabState.lastActionId });
     };
     settingsLeftPane.addEventListener('click', tabClickHandler);
@@ -1299,7 +1907,7 @@ export function createSettingsOverlay({
 
   function setResourcesSubView(subView) {
     resourcesSubView = subView;
-    render();
+    render({ source: 'setResourcesSubView' });
   }
 
   function savePrefsFromForm({ length, weight, theme, labelSize, hiddenOpacity }) {
@@ -1328,7 +1936,14 @@ export function createSettingsOverlay({
       header.className = 'row space-between';
 
       const left = doc.createElement('div');
-      left.innerHTML = `<div class="tp3d-settings-card-title">Version ${u.version}</div><div class="muted tp3d-settings-meta">${new Date(u.date).toLocaleDateString()}</div>`;
+      const versionTitle = doc.createElement('div');
+      versionTitle.className = 'tp3d-settings-card-title';
+      versionTitle.textContent = `Version ${u.version}`;
+      const versionDate = doc.createElement('div');
+      versionDate.className = 'muted tp3d-settings-meta';
+      versionDate.textContent = new Date(u.date).toLocaleDateString();
+      left.appendChild(versionTitle);
+      left.appendChild(versionDate);
       header.appendChild(left);
       card.appendChild(header);
 
@@ -1380,17 +1995,33 @@ export function createSettingsOverlay({
       group.items.forEach(item => {
         const card = doc.createElement('div');
         card.className = 'card tp3d-settings-card--clickable';
-        card.innerHTML = `
-          <div class="row space-between">
-            <div style="font-weight:var(--font-semibold)">${item.title}</div>
-            <div class="badge tp3d-settings-roadmap-badge" style="background:${item.color}"><i class="${item.badgeIcon}"></i> ${item.status}</div>
-          </div>
-          <div class="muted tp3d-settings-meta tp3d-settings-mt-sm">${item.details}</div>
-        `;
+        const row = doc.createElement('div');
+        row.className = 'row space-between';
+        const title = doc.createElement('div');
+        title.style.fontWeight = 'var(--font-semibold)';
+        title.textContent = String(item.title || '');
+        const badge = doc.createElement('div');
+        badge.className = 'badge tp3d-settings-roadmap-badge';
+        badge.style.background = String(item.color || '');
+        const badgeIcon = doc.createElement('i');
+        badgeIcon.className = String(item.badgeIcon || '');
+        badgeIcon.setAttribute('aria-hidden', 'true');
+        badge.appendChild(badgeIcon);
+        badge.appendChild(doc.createTextNode(' ' + String(item.status || '')));
+        row.appendChild(title);
+        row.appendChild(badge);
+        const details = doc.createElement('div');
+        details.className = 'muted tp3d-settings-meta tp3d-settings-mt-sm';
+        details.textContent = String(item.details || '');
+        card.appendChild(row);
+        card.appendChild(details);
         card.addEventListener('click', () => {
+          const modalContent = doc.createElement('div');
+          modalContent.className = 'muted tp3d-settings-meta';
+          modalContent.textContent = String(item.details || '');
           UIComponents.showModal({
-            title: item.title,
-            content: `<div class="muted tp3d-settings-meta">${item.details}</div>`,
+            title: String(item.title || ''),
+            content: modalContent,
             actions: [{ label: 'Close', variant: 'primary' }],
           });
         });
@@ -1537,16 +2168,36 @@ export function createSettingsOverlay({
 
       const summary = doc.createElement('div');
       summary.className = 'card';
-      summary.innerHTML = `
-        <div class="tp3d-import-summary-title">Import Result</div>
-        <div class="muted tp3d-import-summary-meta">File: ${Utils && Utils.escapeHtml ? Utils.escapeHtml(file.name) : file.name
-        }</div>
-        <div class="tp3d-import-summary-spacer"></div>
-        <div class="tp3d-import-badges">
-          <div class="badge tp3d-import-badge-success">Packs: ${(imported.packLibrary || []).length}</div>
-          <div class="badge tp3d-import-badge-info">Cases: ${(imported.caseLibrary || []).length}</div>
-        </div>
-      `;
+
+      const summaryTitle = doc.createElement('div');
+      summaryTitle.className = 'tp3d-import-summary-title';
+      summaryTitle.textContent = 'Import Result';
+
+      const summaryMeta = doc.createElement('div');
+      summaryMeta.className = 'muted tp3d-import-summary-meta';
+      summaryMeta.textContent = 'File: ' + String((file && file.name) || '');
+
+      const summarySpacer = doc.createElement('div');
+      summarySpacer.className = 'tp3d-import-summary-spacer';
+
+      const badges = doc.createElement('div');
+      badges.className = 'tp3d-import-badges';
+
+      const packsBadge = doc.createElement('div');
+      packsBadge.className = 'badge tp3d-import-badge-success';
+      packsBadge.textContent = 'Packs: ' + String((imported.packLibrary || []).length);
+
+      const casesBadge = doc.createElement('div');
+      casesBadge.className = 'badge tp3d-import-badge-info';
+      casesBadge.textContent = 'Cases: ' + String((imported.caseLibrary || []).length);
+
+      badges.appendChild(packsBadge);
+      badges.appendChild(casesBadge);
+
+      summary.appendChild(summaryTitle);
+      summary.appendChild(summaryMeta);
+      summary.appendChild(summarySpacer);
+      summary.appendChild(badges);
       resultsEl.appendChild(summary);
 
       UIComponents.showToast('App data imported', 'success');
@@ -1668,6 +2319,7 @@ export function createSettingsOverlay({
 
   function renderBillingInto(targetEl) {
     if (!targetEl) return;
+    const _perfBillingT0 = debugEnabled() && typeof performance !== 'undefined' ? performance.now() : 0;
     const api = getBillingApiSafely();
     const fallbackState = {
       ok: false,
@@ -2245,6 +2897,9 @@ export function createSettingsOverlay({
 
       targetEl.appendChild(details);
     }
+    if (_perfBillingT0) {
+      debug('renderBillingInto:perf', { ms: Number((performance.now() - _perfBillingT0).toFixed(1)) });
+    }
   }
 
   function ensureBillingSubscription() {
@@ -2279,10 +2934,157 @@ export function createSettingsOverlay({
       };
   }
 
-  function render() {
+  function render(renderMeta) {
     if (!settingsOverlay) {
       return null;
     }
+    // ── Render coalescer: at most one full DOM rebuild per animation frame ──
+    // pendingRepaint sources always bypass so data-arrival repaints are never dropped.
+    // All other sources that arrive while a render is in-flight are DEFERRED (not dropped):
+    // stored in _deferredRender and re-fired on the next animation frame.
+    const _renderSourcePeek = (renderMeta && renderMeta.source) || 'unknown';
+    const _renderTokenPeek = renderMeta && typeof renderMeta.tabToken === 'number' ? renderMeta.tabToken : null;
+    if (_renderScheduled && !_renderSourcePeek.startsWith('pendingRepaint:')) {
+      // Only defer if token is current (or absent — overlay-level source)
+      if (_renderTokenPeek !== null && !isTokenCurrent(_renderTokenPeek)) {
+        debug('coalesced:drop-stale-token', { source: _renderSourcePeek, tabToken: _renderTokenPeek, currentToken: _tabState.lastTabActionToken });
+        return null;
+      }
+      _deferredRender = { source: _renderSourcePeek, tabToken: _renderTokenPeek };
+      debug('render:coalesced:deferred', { source: _renderSourcePeek, tab: _tabState.activeTabId, tabToken: _renderTokenPeek });
+      return null;
+    }
+    if (!_renderScheduled) {
+      _renderScheduled = true;
+      requestAnimationFrame(() => {
+        _renderScheduled = false;
+        // Re-fire any render that was deferred while this frame was running.
+        if (_deferredRender && settingsOverlay && isOpen()) {
+          const _dr = _deferredRender;
+          _deferredRender = null;
+          // Token check: only fire if still current (or no token = overlay-level)
+          if (_dr.tabToken === null || isTokenCurrent(_dr.tabToken)) {
+            requestAnimationFrame(() => {
+              if (settingsOverlay && isOpen()) {
+                render({ source: 'coalesced:deferred:' + _dr.source, tabToken: _dr.tabToken });
+              }
+            });
+          } else {
+            debug('coalesced:drop-stale-token:deferred', { source: _dr.source, tabToken: _dr.tabToken, currentToken: _tabState.lastTabActionToken });
+          }
+        } else {
+          _deferredRender = null;
+        }
+      });
+    }
+    const _renderSource = (renderMeta && renderMeta.source) || 'unknown';
+    debugRenderCall(_renderSource);
+
+    // ── No-op render guard: skip exact duplicate renders within 50ms ──
+    {
+      const stableKey = _buildRenderStableKey();
+      const isPendingRepaint = typeof _renderSource === 'string' && _renderSource.startsWith('pendingRepaint:');
+      if (!isPendingRepaint && stableKey && stableKey === _lastRenderStableKey) {
+        const _dedupTarget = _getTargetTabForSource(_renderSource);
+        if (_dedupTarget && _dedupTarget !== _tabState.activeTabId) {
+          _pendingRepaintByTab.set(_dedupTarget, { source: _renderSource, token: getTabActionToken() });
+        }
+        debug('render:skip-same-key', {
+          source: _renderSource,
+          tabId: _tabState.activeTabId,
+          actionId: _tabState.lastActionId,
+          renderKey: stableKey,
+        });
+        return null;
+      }
+
+      const api = getBillingApiSafely();
+      const bs = api && typeof api.getBillingState === 'function' ? api.getBillingState() : null;
+      const sigObj = {
+        iid: settingsInstanceId,
+        tab: _tabState.activeTabId,
+        aid: _tabState.lastActionId,
+        rsv: resourcesSubView,
+        bl: bs ? { ok: bs.ok, ld: bs.loading, pd: bs.pending, pl: bs.plan, st: bs.status,
+          ...(_tabState.activeTabId === 'org-billing' ? { oid: bs.orgId || null, lfa: bs.lastFetchedAt || 0 } : {}) } : null,
+        ep: isEditingProfile,
+        lp: isLoadingProfile,
+        sp: isSavingProfile,
+        eo: isEditingOrg,
+        lo: isLoadingOrg,
+        lm: isLoadingMembership,
+        lab: isLoadingAccountBundle,
+        ho: Boolean(modalOrgId),
+        // Members-related state
+        lom: isLoadingOrgMembers,
+        hm: Boolean(orgMembersData && Array.isArray(orgMembersData) && orgMembersData.length > 0),
+        me: Boolean(orgMembersError),
+        moid: lastOrgMembersOrgId || '',
+        // Org data presence
+        hod: Boolean(orgData && orgData.id),
+        hmd: Boolean(membershipData && membershipData.organization_id),
+        // Invites
+        li: isLoadingOrgInvites,
+        hi: Boolean(orgInvitesData),
+      };
+      const sigStr = JSON.stringify(sigObj);
+      const sigHash = _djb2(sigStr);
+      const now = Date.now();
+      const sameHash = sigHash === _lastRenderSigHash;
+      const sameTab = _tabState.activeTabId === _lastRenderTabId;
+      const sameAction = _tabState.lastActionId === _lastRenderActionId;
+      if (sameHash && sameTab && sameAction && (now - _lastRenderAtMs) < 50) {
+        // Allow pendingRepaint sources to bypass dedupe — the data IS new
+        if (!isPendingRepaint) {
+          // If a tab-scoped source fires while on a different tab, queue a pending repaint
+          // so the data isn't silently dropped (covers the 50ms time-window dedup case)
+          const _dedupTarget = _getTargetTabForSource(_renderSource);
+          if (_dedupTarget && _dedupTarget !== _tabState.activeTabId) {
+            _pendingRepaintByTab.set(_dedupTarget, { source: _renderSource, token: getTabActionToken() });
+          }
+          debug('render:skip-duplicate', {
+            source: _renderSource,
+            tabId: _tabState.activeTabId,
+            actionId: _tabState.lastActionId,
+            dtMs: now - _lastRenderAtMs,
+            sig: sigStr,
+          });
+          return null;
+        }
+      }
+      _lastRenderSigHash = sigHash;
+      _lastRenderTabId = _tabState.activeTabId;
+      _lastRenderActionId = _tabState.lastActionId;
+      _lastRenderAtMs = now;
+      _lastRenderStableKey = stableKey;
+      if (debugEnabled() && _tabState.activeTabId === 'org-billing' && bs && (bs.lastFetchedAt || 0) > _lastOrgBillingRenderLfa) {
+        _lastOrgBillingRenderLfa = bs.lastFetchedAt || 0;
+        debug('org-billing:repaint-billing-change', { ok: bs.ok, plan: bs.plan, lfa: bs.lastFetchedAt });
+      }
+
+      // Debug trace (with stack for first 10 renders)
+      if (debugEnabled()) {
+        _renderTraceSeq += 1;
+        const tracePayload = {
+          seq: _renderTraceSeq,
+          source: _renderSource,
+          instanceId: settingsInstanceId,
+          actionId: _tabState.lastActionId,
+          stateTabId: _tabState.activeTabId,
+          sigHash,
+          ts: now,
+        };
+        if (_renderTraceSeq <= 10) {
+          try {
+            const st = (new Error()).stack || '';
+            tracePayload.stackFrames = st.split('\n').filter(l => l.trim()).slice(1, 5).map(f => f.trim());
+          } catch { /* ignore */ }
+        }
+        debug('render:trace', tracePayload);
+      }
+    }
+
+    const _perfRenderT0 = debugEnabled() && typeof performance !== 'undefined' ? performance.now() : 0;
     const prefs = PreferencesManager.get();
 
     settingsLeftPane.innerHTML = '';
@@ -2301,22 +3103,37 @@ export function createSettingsOverlay({
     const isOrgHydrating = Boolean(
       userView.isAuthed &&
       !hasOrg &&
-      (isLoadingAccountBundle || isLoadingMembership || isLoadingOrg)
+      (isLoadingAccountBundle || isLoadingMembership || isLoadingOrg ||
+        (_overlayOpenedAtMs > 0 && (Date.now() - _overlayOpenedAtMs) < _ORG_READY_GRACE_MS))
     );
     const accountBtn = doc.createElement('button');
     accountBtn.type = 'button';
     accountBtn.className = 'btn';
     accountBtn.classList.add('tp3d-settings-account-btn');
-    accountBtn.innerHTML = `
-      <span class="tp3d-settings-account-inner">
-        <span class="brand-mark tp3d-settings-account-avatar" aria-hidden="true">${userView.initials || ''}</span>
-        <span class="tp3d-settings-account-text">
-          <span class="tp3d-settings-account-name">Workspace</span>
-          <span class="muted tp3d-settings-account-sub" data-account-name>${userView.displayName || 'â€”'}</span>
-        </span>
-      </span>
-      <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
-    `;
+    const accountInner = doc.createElement('span');
+    accountInner.className = 'tp3d-settings-account-inner';
+    const accountAvatar = doc.createElement('span');
+    accountAvatar.className = 'brand-mark tp3d-settings-account-avatar';
+    accountAvatar.setAttribute('aria-hidden', 'true');
+    accountAvatar.textContent = userView.initials || '';
+    const accountText = doc.createElement('span');
+    accountText.className = 'tp3d-settings-account-text';
+    const accountName = doc.createElement('span');
+    accountName.className = 'tp3d-settings-account-name';
+    accountName.textContent = 'Workspace';
+    const accountSub = doc.createElement('span');
+    accountSub.className = 'muted tp3d-settings-account-sub';
+    accountSub.dataset.accountName = '';
+    accountSub.textContent = userView.displayName || '—';
+    accountText.appendChild(accountName);
+    accountText.appendChild(accountSub);
+    accountInner.appendChild(accountAvatar);
+    accountInner.appendChild(accountText);
+    const accountChevron = doc.createElement('i');
+    accountChevron.className = 'fa-solid fa-chevron-down';
+    accountChevron.setAttribute('aria-hidden', 'true');
+    accountBtn.appendChild(accountInner);
+    accountBtn.appendChild(accountChevron);
     settingsLeftPane.appendChild(accountBtn);
     const accountSwitcher = getAccountSwitcher ? getAccountSwitcher() : null;
     unmountAccountButton =
@@ -2516,7 +3333,7 @@ export function createSettingsOverlay({
     closeBtn.type = 'button';
     closeBtn.className = 'btn btn-ghost';
     closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
-    closeBtn.addEventListener('click', () => close());
+    closeBtn.addEventListener('click', () => close('close-button'));
 
     header.appendChild(headerLeft);
     header.appendChild(closeBtn);
@@ -2701,9 +3518,9 @@ export function createSettingsOverlay({
       // Load all account data via bundle if profile not already loaded
       // This uses the epoch-validated single-flight approach to prevent stale data
       if (!profileData && !isLoadingProfile && !isLoadingAccountBundle && accountUserView.isAuthed) {
-        const actionId = _tabState.lastActionId;
+        const oEpoch = getOverlayEpoch();
         loadAccountBundle()
-          .then(() => renderIfFresh(actionId, 'account-bundle'))
+          .then(() => renderIfFresh(getCurrentActionId(), 'account-bundle', undefined, oEpoch))
           .catch(() => { });
       }
 
@@ -2876,7 +3693,7 @@ export function createSettingsOverlay({
         cancelBtn.disabled = isSavingProfile;
         cancelBtn.addEventListener('click', () => {
           isEditingProfile = false;
-          render();
+          render({ source: 'profile-cancel' });
         });
 
         const saveBtn = doc.createElement('button');
@@ -2952,7 +3769,7 @@ export function createSettingsOverlay({
             editBtn.textContent = 'Edit Profile';
             editBtn.addEventListener('click', () => {
               isEditingProfile = true;
-              render();
+              render({ source: 'profile-edit' });
             });
             editActions.appendChild(editBtn);
             viewContainer.appendChild(editActions);
@@ -3193,13 +4010,13 @@ export function createSettingsOverlay({
       // Load all account data via bundle if not already loaded
       // This uses the epoch-validated single-flight approach to prevent stale data
       if (!membershipData && !orgData && !isLoadingAccountBundle && !isLoadingMembership && orgUserView.isAuthed) {
-        const actionId = _tabState.lastActionId;
+        const oEpoch = getOverlayEpoch();
         loadAccountBundle()
           .then(() => {
-            renderIfFresh(actionId, 'org-bundle');
+            renderIfFresh(getCurrentActionId(), 'org-bundle', undefined, oEpoch);
           })
           .catch(() => {
-            renderIfFresh(actionId, 'org-bundle-error');
+            renderIfFresh(getCurrentActionId(), 'org-bundle-error', undefined, oEpoch);
           });
       }
 
@@ -3377,7 +4194,7 @@ export function createSettingsOverlay({
               lastOrgLogoExpiresAt = 0;
               return loadOrganization(orgIdLocal);
             })
-            .then(() => render())
+            .then(() => render({ source: 'logo-upload' }))
             .catch(err => {
               UIComponents.showToast('Upload failed: ' + (err && err.message ? err.message : err), 'error');
             });
@@ -3424,7 +4241,7 @@ export function createSettingsOverlay({
         cancelBtn.disabled = isSavingOrg;
         cancelBtn.addEventListener('click', () => {
           isEditingOrg = false;
-          render();
+          render({ source: 'org-cancel' });
         });
 
         const saveBtn = doc.createElement('button');
@@ -3461,69 +4278,95 @@ export function createSettingsOverlay({
           viewContainer.appendChild(orgRow('Address', makeSkeleton()));
           viewContainer.appendChild(orgRow('Role', makeSkeleton()));
         } else if (!membershipData) {
-          const wrap = doc.createElement('div');
-          wrap.className = 'tp3d-settings-stack--tight';
+          // Grace window: show skeleton instead of "Create workspace" for
+          // _ORG_READY_GRACE_MS after overlay open so org context can load.
+          const _withinGrace = _overlayOpenedAtMs > 0 &&
+            (Date.now() - _overlayOpenedAtMs) < _ORG_READY_GRACE_MS;
+          if (_withinGrace) {
+            if (debugEnabled()) console.log('[SettingsOverlay] org-general: within grace window — showing skeleton');
+            const makeSkeleton2 = () => {
+              const el = doc.createElement('div');
+              el.className = 'tp3d-skeleton tp3d-skeleton-short';
+              return el;
+            };
+            viewContainer.appendChild(orgRow('Name', makeSkeleton2()));
+            viewContainer.appendChild(orgRow('Slug', makeSkeleton2()));
+            viewContainer.appendChild(orgRow('Phone', makeSkeleton2()));
+            viewContainer.appendChild(orgRow('Address', makeSkeleton2()));
+            viewContainer.appendChild(orgRow('Role', makeSkeleton2()));
+            // Schedule a re-render after grace expires so we transition to
+            // the real state (either loaded data or "create workspace").
+            setTimeout(() => {
+              if (isOpen()) {
+                if (debugEnabled()) console.log('[SettingsOverlay] org-general: grace expired — re-rendering');
+                render({ source: 'grace-expired' });
+              }
+            }, _ORG_READY_GRACE_MS);
+          } else {
+            const wrap = doc.createElement('div');
+            wrap.className = 'tp3d-settings-stack--tight';
 
-          const noOrgEl = doc.createElement('div');
-          noOrgEl.className = 'muted';
-          noOrgEl.textContent = 'Create a workspace to manage workspace details.';
-          wrap.appendChild(noOrgEl);
+            const noOrgEl = doc.createElement('div');
+            noOrgEl.className = 'muted';
+            noOrgEl.textContent = 'Create a workspace to manage workspace details.';
+            wrap.appendChild(noOrgEl);
 
-          const createBtn = doc.createElement('button');
-          createBtn.type = 'button';
-          createBtn.className = 'btn btn-primary';
-          createBtn.textContent = '+ New Workspace';
-          createBtn.addEventListener('click', () => {
-            const name = window.prompt('Workspace name:');
-            if (!name || !name.trim()) return;
-            createBtn.disabled = true;
-            createBtn.textContent = 'Creating\u2026';
-            SupabaseClient.createOrganization({ name: name.trim() })
-              .then(({ org, membership }) => {
-                membershipData = membership;
-                orgData = org;
-                if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
-                UIComponents.showToast('Workspace created!', 'success');
-                render();
-              })
-              .catch(err => {
-                UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
-                createBtn.disabled = false;
-                createBtn.textContent = '+ New Workspace';
-              });
-          });
-          wrap.appendChild(createBtn);
+            const createBtn = doc.createElement('button');
+            createBtn.type = 'button';
+            createBtn.className = 'btn btn-primary';
+            createBtn.textContent = '+ New Workspace';
+            createBtn.addEventListener('click', () => {
+              const name = window.prompt('Workspace name:');
+              if (!name || !name.trim()) return;
+              createBtn.disabled = true;
+              createBtn.textContent = 'Creating\u2026';
+              SupabaseClient.createOrganization({ name: name.trim() })
+                .then(({ org, membership }) => {
+                  membershipData = membership;
+                  orgData = org;
+                  if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
+                  UIComponents.showToast('Workspace created!', 'success');
+                  render({ source: 'org-created' });
+                })
+                .catch(err => {
+                  UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
+                  createBtn.disabled = false;
+                  createBtn.textContent = '+ New Workspace';
+                });
+            });
+            wrap.appendChild(createBtn);
 
-          const retryRow = doc.createElement('div');
-          retryRow.style.display = 'flex';
-          retryRow.style.justifyContent = 'flex-end';
+            const retryRow = doc.createElement('div');
+            retryRow.style.display = 'flex';
+            retryRow.style.justifyContent = 'flex-end';
 
-          const retryBtn = doc.createElement('button');
-          retryBtn.type = 'button';
-          retryBtn.className = 'btn btn-ghost';
-          retryBtn.textContent = 'Retry';
-          retryBtn.addEventListener('click', () => {
-            if (isLoadingMembership) return;
-            isLoadingMembership = true;
-            SupabaseClient.getMyMembership()
-              .then(mem => {
-                membershipData = mem;
-                isLoadingMembership = false;
-                if (mem && mem.organization_id) {
-                  return loadOrganization(mem.organization_id);
-                }
-                return null;
-              })
-              .then(() => render())
-              .catch(() => {
-                isLoadingMembership = false;
-                render();
-              });
-          });
+            const retryBtn = doc.createElement('button');
+            retryBtn.type = 'button';
+            retryBtn.className = 'btn btn-ghost';
+            retryBtn.textContent = 'Retry';
+            retryBtn.addEventListener('click', () => {
+              if (isLoadingMembership) return;
+              isLoadingMembership = true;
+              SupabaseClient.getMyMembership()
+                .then(mem => {
+                  membershipData = mem;
+                  isLoadingMembership = false;
+                  if (mem && mem.organization_id) {
+                    return loadOrganization(mem.organization_id);
+                  }
+                  return null;
+                })
+                .then(() => render({ source: 'membership-retry' }))
+                .catch(() => {
+                  isLoadingMembership = false;
+                  render({ source: 'membership-retry-err' });
+                });
+            });
 
-          retryRow.appendChild(retryBtn);
-          wrap.appendChild(retryRow);
-          viewContainer.appendChild(wrap);
+            retryRow.appendChild(retryBtn);
+            wrap.appendChild(retryRow);
+            viewContainer.appendChild(wrap);
+          }
         } else if (orgData) {
           // Org logo row (display only)
           const logoCell = doc.createElement('div');
@@ -3678,7 +4521,7 @@ export function createSettingsOverlay({
             editBtn.textContent = 'Edit Workspace';
             editBtn.addEventListener('click', () => {
               isEditingOrg = true;
-              render();
+              render({ source: 'org-edit' });
             });
             editActions.appendChild(editBtn);
             viewContainer.appendChild(editActions);
@@ -3703,7 +4546,8 @@ export function createSettingsOverlay({
       const orgHydrating = Boolean(
         orgUserView.isAuthed &&
         !orgId &&
-        (isLoadingAccountBundle || isLoadingMembership || isLoadingOrg)
+        (isLoadingAccountBundle || isLoadingMembership || isLoadingOrg ||
+          (_overlayOpenedAtMs > 0 && (Date.now() - _overlayOpenedAtMs) < _ORG_READY_GRACE_MS))
       );
       const currentUserId = orgUserView && orgUserView.userId ? String(orgUserView.userId) : null;
       const currentRole = String(
@@ -3768,6 +4612,29 @@ export function createSettingsOverlay({
           msg.textContent = 'Select a workspace to manage members.';
           membersCard.appendChild(msg);
         }
+        // Auto-retry: schedule a deferred re-check when org context becomes ready
+        if (orgUserView.isAuthed && _membersRetryCount < _MEMBERS_MAX_RETRIES && !_membersRetryTimer) {
+          const delay = _MEMBERS_BACKOFF[_membersRetryCount] || 1500;
+          _membersRetryCount += 1;
+          debug('members:auto-retry:schedule', { attempt: _membersRetryCount, delayMs: delay });
+          const retryEpoch = _renderEpoch;
+          const retryToken = getTabActionToken();
+          _membersRetryTimer = setTimeout(() => {
+            _membersRetryTimer = null;
+            // Re-resolve org context
+            modalOrgId = resolveInitialModalOrgId();
+            const retryOrgId = ensureModalOrgId();
+            if (retryOrgId && _tabState.activeTabId === 'org-members') {
+              debug('members:auto-retry:fire', { orgId: retryOrgId, attempt: _membersRetryCount });
+              loadOrgMembers(retryOrgId)
+                .then(() => renderIfFresh(getCurrentActionId(), 'members:auto-retry', retryEpoch, undefined, retryToken))
+                .catch(() => { });
+            } else if (!retryOrgId) {
+              // Org still not ready — render() will schedule another retry if needed
+              renderIfFresh(getCurrentActionId(), 'members:auto-retry:no-org', retryEpoch, undefined, retryToken);
+            }
+          }, delay);
+        }
         const membersHelperMessage = doc.createElement('div');
         membersHelperMessage.className = 'muted tp3d-members-inline-helper';
         membersHelperMessage.textContent = membersDisabledReason || 'Members are not available yet, please refresh';
@@ -3783,12 +4650,13 @@ export function createSettingsOverlay({
           modalOrgId = resolveInitialModalOrgId();
           const nextOrgId = ensureModalOrgId();
           if (nextOrgId) {
-            const actionId = _tabState.lastActionId;
+            const epoch = _renderEpoch;
+            const token = getTabActionToken();
             loadOrgMembers(nextOrgId)
-              .then(() => renderIfFresh(actionId, 'org-members:refresh'))
+              .then(() => renderIfFresh(getCurrentActionId(), 'org-members:refresh', epoch, undefined, token))
               .catch(() => { });
           }
-          render();
+          render({ source: 'members-refresh' });
         });
         refreshRow.appendChild(refreshBtn);
         membersCard.appendChild(refreshRow);
@@ -3816,17 +4684,19 @@ export function createSettingsOverlay({
         }
 
         if (!hasMembersForOrg && !isLoadingOrgMembers) {
-          const actionId = _tabState.lastActionId;
+          const epoch = _renderEpoch;
+          const token = getTabActionToken();
           loadOrgMembers(orgId)
-            .then(() => renderIfFresh(actionId, 'org-members'))
+            .then(() => renderIfFresh(getCurrentActionId(), 'org-members', epoch, undefined, token))
             .catch(() => { });
         }
 
         // Load invites in parallel (owner/admin only)
         if (canManage && !membersDisabledReason && !orgInvitesData && !isLoadingOrgInvites) {
-          const actionId = _tabState.lastActionId;
+          const epoch = _renderEpoch;
+          const token = getTabActionToken();
           loadOrgInvites(orgId)
-            .then(() => renderIfFresh(actionId, 'org-invites'))
+            .then(() => renderIfFresh(getCurrentActionId(), 'org-invites', epoch, undefined, token))
             .catch(() => { });
         }
 
@@ -3840,6 +4710,21 @@ export function createSettingsOverlay({
           `;
           membersCard.appendChild(skeletonGroup);
         } else if (orgMembersError) {
+          // Auth-pending: show skeleton with "Reconnecting" instead of error
+          if (orgMembersError._authPending) {
+            const skeletonGroup = doc.createElement('div');
+            skeletonGroup.className = 'tp3d-skeleton-group tp3d-skel tp3d-members-skeleton';
+            skeletonGroup.innerHTML = `
+              <div class="tp3d-skel-line tp3d-skeleton-title"></div>
+              <div class="tp3d-skel-line tp3d-skeleton-short"></div>
+              <div class="tp3d-skel-line tp3d-skeleton-short"></div>
+            `;
+            membersCard.appendChild(skeletonGroup);
+            const reconnectMsg = doc.createElement('div');
+            reconnectMsg.className = 'muted';
+            reconnectMsg.textContent = 'Reconnecting\u2026';
+            membersCard.appendChild(reconnectMsg);
+          } else {
           const msg = doc.createElement('div');
           msg.className = 'muted';
           msg.textContent = 'Failed to load members. Please try again.';
@@ -3853,15 +4738,16 @@ export function createSettingsOverlay({
           retryBtn.textContent = 'Retry';
           retryBtn.addEventListener('click', () => {
             if (isLoadingOrgMembers) return;
-            const actionId = _tabState.lastActionId;
+            const epoch = _renderEpoch;
             loadOrgMembers(orgId)
-              .then(() => renderIfFresh(actionId, 'org-members'))
+              .then(() => renderIfFresh(getCurrentActionId(), 'org-members', epoch))
               .catch(() => { });
           });
 
           retryRow.appendChild(retryBtn);
           membersCard.appendChild(msg);
           membersCard.appendChild(retryRow);
+          }
         } else {
           const members = Array.isArray(orgMembersData) ? orgMembersData : [];
           const ownersCount = members.filter(m => m && String(m.role || '').toLowerCase() === 'owner').length;
@@ -3944,10 +4830,16 @@ export function createSettingsOverlay({
             inviteRoleSelect.className = 'select tp3d-org-invite-role';
             inviteRoleSelect.setAttribute('aria-label', 'Invite role');
             inviteRoleSelect.disabled = inviteControlsDisabled;
-            inviteRoleSelect.innerHTML = `
-              <option value="member">Member</option>
-              <option value="admin"${isOwner ? '' : ' disabled'}>Admin</option>
-            `;
+            const inviteMemberOpt = doc.createElement('option');
+            inviteMemberOpt.value = 'member';
+            inviteMemberOpt.textContent = 'Member';
+            inviteRoleSelect.appendChild(inviteMemberOpt);
+
+            const inviteAdminOpt = doc.createElement('option');
+            inviteAdminOpt.value = 'admin';
+            inviteAdminOpt.textContent = 'Admin';
+            inviteAdminOpt.disabled = !isOwner;
+            inviteRoleSelect.appendChild(inviteAdminOpt);
             inviteForm.appendChild(inviteRoleSelect);
 
             const inviteBtn = doc.createElement('button');
@@ -4150,6 +5042,7 @@ export function createSettingsOverlay({
             membersCard.appendChild(emptyFilteredState);
 
             const rows = [];
+            const _perfMembersT0 = debugEnabled() && typeof performance !== 'undefined' ? performance.now() : 0;
             members.forEach(member => {
               if (!member || !member.user_id) return;
               const userId = String(member.user_id);
@@ -4283,6 +5176,9 @@ export function createSettingsOverlay({
               tbody.appendChild(tr);
               rows.push(tr);
             });
+            if (_perfMembersT0) {
+              debug('render:members-loop:perf', { count: rows.length, ms: Number((performance.now() - _perfMembersT0).toFixed(1)) });
+            }
 
             const applyMemberFilters = () => {
               const searchQuery = String(orgMembersSearchQuery || '')
@@ -4352,6 +5248,30 @@ export function createSettingsOverlay({
       ensureBillingSubscription();
     }
     const counts = applyTabStateToDOM();
+    if (_perfRenderT0) {
+      debug('render:perf', { tab: _tabState.activeTabId, source: _renderSource, ms: Number((performance.now() - _perfRenderT0).toFixed(1)) });
+    }
+    // ── Post-render: drain any pending repaint queued for the active tab ──
+    // Handles the race where async data arrives during the DOM-build of this render.
+    // Dedupe sig guards prevent render loops when the state is unchanged.
+    const _activeTabAfterRender = _tabState.activeTabId;
+    if (_pendingRepaintByTab.has(_activeTabAfterRender)) {
+      const _drainEntry = _pendingRepaintByTab.get(_activeTabAfterRender);
+      _pendingRepaintByTab.delete(_activeTabAfterRender);
+      // Only fire if the queued entry's token is still current
+      if (_drainEntry && (typeof _drainEntry.token !== 'number' || isTokenCurrent(_drainEntry.token))) {
+        debug('pendingRepaint:end-of-render:schedule', { tab: _activeTabAfterRender, source: _drainEntry.source, token: _drainEntry.token });
+        const _drainToken = _drainEntry.token;
+        requestAnimationFrame(() => {
+          if (settingsOverlay && isOpen() && _tabState.activeTabId === _activeTabAfterRender &&
+              (typeof _drainToken !== 'number' || isTokenCurrent(_drainToken))) {
+            render({ source: 'pendingRepaint:' + _activeTabAfterRender, tabToken: _drainToken });
+          }
+        });
+      } else {
+        debug('pendingRepaint:drop-stale-token:end-of-render', { tab: _activeTabAfterRender, source: _drainEntry && _drainEntry.source, token: _drainEntry && _drainEntry.token, currentToken: _tabState.lastTabActionToken });
+      }
+    }
     debug('render', {
       tabId: _tabState.activeTabId,
       actionId: _tabState.lastActionId,
@@ -4366,6 +5286,8 @@ export function createSettingsOverlay({
 
   function open(tab) {
     cleanupStaleSettingsModals('open');
+    _overlayOpenedAtMs = Date.now();
+    bumpEpoch('open');
     if (!modalOrgId) {
       modalOrgId = resolveInitialModalOrgId();
     }
@@ -4417,12 +5339,12 @@ export function createSettingsOverlay({
     settingsOverlay.appendChild(settingsModal);
 
     settingsOverlay.addEventListener('click', ev => {
-      if (ev.target === settingsOverlay) close();
+      if (ev.target === settingsOverlay) close('backdrop-click');
     });
 
     trapKeydownHandler = ev => {
       if (ev.key === 'Escape') {
-        close();
+        close('escape-key');
         return;
       }
 
@@ -4489,8 +5411,49 @@ export function createSettingsOverlay({
     // No-op; settings overlay is constructed lazily on demand.
   }
 
-  function refreshAccountUI() {
-    if (isOpen()) render();
+  function refreshAccountUI(meta) {
+    const reason = (meta && meta.reason) || 'direct';
+    _debugCallsite('refreshAccountUI', { reason, coalesced: Boolean(meta && meta.coalesced) });
+    if (!isOpen()) {
+      debug('refreshAccountUI:skip-closed', { reason });
+      return;
+    }
+    // Tab-aware: skip full render on org tabs UNLESS the org is known.
+    // When org IS available an auth-change should allow the tab to re-render.
+    if (_ORG_TAB_SET.has(_tabState.activeTabId)) {
+      const hasOrg = Boolean(
+        typeof window !== 'undefined' &&
+        window.OrgContext &&
+        typeof window.OrgContext.getActiveOrgId === 'function' &&
+        window.OrgContext.getActiveOrgId()
+      );
+      if (!hasOrg) {
+        debug('refreshAccountUI:skip-org-tab', { tab: _tabState.activeTabId, reason });
+        return;
+      }
+      debug('refreshAccountUI:org-tab-override', { tab: _tabState.activeTabId, reason });
+    }
+    render({ source: 'refreshAccountUI' });
+  }
+
+  /**
+   * Microtask-coalesced wrapper: multiple calls within the same tick collapse to one.
+   * Internal callers should use this instead of refreshAccountUI() directly.
+   */
+  function requestRefreshAccountUI(reason) {
+    _refreshAccountUIPendingReason = reason;
+    if (_refreshAccountUIQueued) {
+      debug('requestRefreshAccountUI:coalesced', { reason, pendingReason: _refreshAccountUIPendingReason });
+      return;
+    }
+    _refreshAccountUIQueued = true;
+    const enqueue = typeof queueMicrotask === 'function' ? queueMicrotask : (fn) => Promise.resolve().then(fn);
+    enqueue(() => {
+      _refreshAccountUIQueued = false;
+      const pendingReason = _refreshAccountUIPendingReason;
+      _refreshAccountUIPendingReason = null;
+      refreshAccountUI({ reason: pendingReason || reason, coalesced: true });
+    });
   }
 
   /**
@@ -4534,8 +5497,12 @@ export function createSettingsOverlay({
   function handleAuthChange(_event) {
     try {
       if (_event === 'SIGNED_OUT') {
+        debug('auth:change', { reason: 'SIGNED_OUT', userIdTail: null });
         clearCachedUserData();
         lastKnownUserId = null;
+        _lastAuthChangeKey = '';
+        _lastAuthChangeAtMs = 0;
+        _lastAuthSnapshot = null;
         return;
       }
       let currentUserId = null;
@@ -4545,18 +5512,107 @@ export function createSettingsOverlay({
       } catch {
         currentUserId = null;
       }
+      const userIdTail = currentUserId ? currentUserId.slice(-6) : null;
+
+      // ── Dedupe: normalize key to status|userId, ignore repeats within 3s ──
+      const rawEvent = String(_event || '');
+      const authStatus = rawEvent.replace(/\|.*$/, '').replace(/^settings-open\|/, '');
+      const authChangeKey = `${authStatus}|${currentUserId || ''}`;
+      const authChangeNow = Date.now();
+      if (authChangeKey === _lastAuthChangeKey && (authChangeNow - _lastAuthChangeAtMs) < _AUTH_CHANGE_DEDUPE_MS) {
+        if (isOpen()) {
+          debug('auth:change:dedupe', { reason: String(_event || 'unknown'), userIdTail, ageMs: authChangeNow - _lastAuthChangeAtMs });
+        }
+        return;
+      }
+      _lastAuthChangeKey = authChangeKey;
+      _lastAuthChangeAtMs = authChangeNow;
+
+      const nextSnapshot = _safeAuthSnapshot(currentUserId);
+      if (!_hasMeaningfulAuthDelta(nextSnapshot)) {
+        debug('auth:change:skip-no-meaningful-delta', {
+          reason: String(_event || 'unknown'),
+          userIdTail,
+          activeTab: _tabState.activeTabId,
+        });
+        return;
+      }
+      _lastAuthSnapshot = nextSnapshot;
+
+      debug('auth:change', { reason: String(_event || 'unknown'), userIdTail });
       if (currentUserId && lastKnownUserId && currentUserId !== lastKnownUserId) {
         clearCachedUserData();
       }
       if (currentUserId) lastKnownUserId = currentUserId;
-      refreshAccountUI();
-      if (isOpen() && (profileData || membershipData || orgData)) {
+
+      // ── Only trigger UI refresh if overlay is actually open ──
+      if (!isOpen()) {
+        debug('auth:change:skip-closed', { reason: String(_event || 'unknown'), userIdTail });
+        return;
+      }
+      if (!_activeTabDependsOnAuthState(_tabState.activeTabId)) {
+        debug('auth:change:skip-tab-independent', {
+          reason: String(_event || 'unknown'),
+          userIdTail,
+          activeTab: _tabState.activeTabId,
+        });
+        return;
+      }
+      const shouldRefreshVisibleUi = (
+        _tabState.activeTabId === 'account'
+        || _tabState.activeTabId === 'org-general'
+        || _authGatePendingRetry
+      );
+      if (shouldRefreshVisibleUi) {
+        // 2s cooldown on refreshAccountUI to avoid auth-change storm
+        if ((authChangeNow - _lastRefreshAccountUIAtMs) >= 2000) {
+          _lastRefreshAccountUIAtMs = authChangeNow;
+          requestRefreshAccountUI('auth-change');
+        } else {
+          debug('auth:change:skip-refresh-cooldown', { reason: String(_event || 'unknown'), userIdTail, ageMs: authChangeNow - _lastRefreshAccountUIAtMs });
+        }
+      } else {
+        debug('auth:change:skip-ui-refresh-not-needed', {
+          reason: String(_event || 'unknown'),
+          userIdTail,
+          activeTab: _tabState.activeTabId,
+        });
+      }
+      if (
+        (_tabState.activeTabId === 'account' || _tabState.activeTabId === 'org-general')
+        && (profileData || membershipData || orgData)
+      ) {
         queueAccountBundleRefresh({ force: true, source: 'auth-change-refresh' });
+      }
+      // ── Auth-gate retry: re-trigger skipped org fetches now that auth may be ready ──
+      if (_authGatePendingRetry && isOpen() && currentUserId) {
+        _authGatePendingRetry = false;
+        const retryOrgId = ensureModalOrgId();
+        const activeTab = _tabState.activeTabId;
+        const epoch = _renderEpoch;
+        const token = getTabActionToken();
+        debug('authGate:retry', { tab: activeTab, orgId: retryOrgId });
+        if (retryOrgId && (activeTab === 'org-members' || activeTab === 'org-billing')) {
+          if (activeTab === 'org-members') {
+            loadOrgMembers(retryOrgId)
+              .then(() => renderIfFresh(getCurrentActionId(), 'authGate:retry:members', epoch, undefined, token))
+              .catch(() => { });
+          }
+          if (activeTab === 'org-billing') {
+            ensureBillingContextHydrated(retryOrgId, { force: true, source: 'authGate:retry:billing' }).catch(() => { });
+            // Route through pump — never call refreshBilling directly from settings-overlay
+            if (typeof window !== 'undefined' && window.TruckPackerApp && typeof window.TruckPackerApp.maybeScheduleBillingRefresh === 'function') {
+              window.TruckPackerApp.maybeScheduleBillingRefresh('auth-gate-retry');
+            } else {
+              _callBillingPumpWithRetry('auth-gate-retry');
+            }
+          }
+        }
       }
     } catch {
       // ignore
     }
   }
 
-  return { init, open, close, isOpen, setActive, render, refreshAccountUI, handleAuthChange };
+  return { init, open, close, isOpen, setActive, render, refreshAccountUI, requestRefreshAccountUI, handleAuthChange };
 }

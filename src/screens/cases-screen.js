@@ -88,7 +88,9 @@ export function createCasesScreen({
       /* Close filter popup when clicking outside the panel or toggle button */
       document.addEventListener('click', (e) => {
         if (!filtersEl || !filtersEl.classList.contains('is-open')) return;
-        if (filtersEl.contains(e.target) || (btnFiltersToggle && btnFiltersToggle.contains(e.target))) return;
+        const target = e && e.target instanceof Node ? e.target : null;
+        if (!target) return;
+        if (filtersEl.contains(target) || (btnFiltersToggle && btnFiltersToggle.contains(target))) return;
         const prefs = PreferencesManager.get();
         prefs.casesFiltersVisible = false;
         PreferencesManager.set(prefs);

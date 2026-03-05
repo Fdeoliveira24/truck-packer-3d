@@ -49,6 +49,104 @@ const _autopack = {
 let _supabaseInitWarned = false;
 let _supabaseAttachWarned = false;
 let _supabaseWrapStatusRecorded = false;
+let _billingDebugInstalled = false;
+let _billingPumpWrapped = false;
+let _billingApiWrapped = false;
+let _lastBillingSnapshotSig = '';
+let _lastBillingSnapshotAt = 0;
+
+let _billingWatchSeq = 0;
+const _billingWatchTimers = new Set();
+
+function getLocalOrgHint() {
+  try {
+    return window.localStorage ? window.localStorage.getItem('tp3d:active-org-id') : null;
+  } catch {
+    return null;
+  }
+}
+
+function getOrgContextSnapshot() {
+  try {
+    const oc = window.OrgContext;
+    const getId = oc && typeof oc.getActiveOrgId === 'function' ? oc.getActiveOrgId.bind(oc) : null;
+    const id = getId ? getId() : null;
+    return {
+      hasOrgContext: Boolean(oc),
+      hasGetActiveOrgId: Boolean(getId),
+      activeOrgId: id || null,
+    };
+  } catch {
+    return { hasOrgContext: false, hasGetActiveOrgId: false, activeOrgId: null };
+  }
+}
+
+function summarizeAccountBundle(bundle) {
+  try {
+    if (!bundle || typeof bundle !== 'object') return null;
+    return {
+      activeOrgId: bundle.activeOrgId || null,
+      orgCount: typeof bundle.orgCount === 'number' ? bundle.orgCount : null,
+      partial: Boolean(bundle.partial),
+      hasProfile: Boolean(bundle.profile || bundle.profileData || bundle.userProfile),
+      hasOrgData: Boolean(bundle.org || bundle.orgData || bundle.organization),
+      hasMembership: Boolean(bundle.membership || bundle.membershipData),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function clearBillingWatchTimers() {
+  try {
+    for (const t of _billingWatchTimers) clearTimeout(t);
+  } catch {
+    // ignore
+  }
+  _billingWatchTimers.clear();
+}
+
+function scheduleBillingWatch(label, delayMs) {
+  if (!_active) return;
+  const seq = ++_billingWatchSeq;
+  const startedAt = Date.now();
+  const before = getBillingStateSnapshot();
+  const beforeOrg = getOrgContextSnapshot();
+  const beforeHint = getLocalOrgHint();
+
+  const timer = setTimeout(() => {
+    _billingWatchTimers.delete(timer);
+    if (!_active) return;
+
+    const after = getBillingStateSnapshot();
+    const afterOrg = getOrgContextSnapshot();
+    const afterHint = getLocalOrgHint();
+
+    const b = before && before.state ? before.state : null;
+    const a = after && after.state ? after.state : null;
+
+    const stillEmpty = !a || a.ok !== true || !a.orgId;
+    if (stillEmpty) {
+      recordEvent('BILLING WATCH: still empty', 'race', {
+        label,
+        seq,
+        delayMs,
+        elapsedMs: Date.now() - startedAt,
+        tab: window.__TP3D_TAB_ID__ || null,
+        hidden: typeof document !== 'undefined' ? Boolean(document.hidden) : null,
+        localOrgHint_before: beforeHint,
+        localOrgHint_after: afterHint,
+        orgContext_before: beforeOrg,
+        orgContext_after: afterOrg,
+        billing_before: b,
+        billing_after: a,
+        stack: getStackSlice(4, 10),
+      });
+    }
+  }, delayMs);
+
+  _billingWatchTimers.add(timer);
+}
 function safeString(v) {
   try {
     return v == null ? '' : String(v);
@@ -159,6 +257,206 @@ function getStackSlice(skip = 2, take = 6) {
   }
 }
 
+function safeFnName(fn) {
+  try {
+    if (typeof fn !== 'function') return null;
+    return fn.name ? String(fn.name) : '(anonymous)';
+  } catch {
+    return null;
+  }
+}
+
+function getBillingStateSnapshot() {
+  try {
+    const billing = window.__TP3D_BILLING;
+    if (!billing) return { hasBilling: false };
+    const getState = billing.getBillingState;
+    const state = typeof getState === 'function' ? getState.call(billing) : null;
+    const safe = state && typeof state === 'object' ? state : null;
+    return {
+      hasBilling: true,
+      hasGetState: typeof getState === 'function',
+      hasRefresh: typeof billing.refreshBilling === 'function',
+      state: safe
+        ? {
+            ok: safe.ok,
+            loading: safe.loading,
+            pending: safe.pending,
+            error: safe.error ? (safe.error.message ? String(safe.error.message) : String(safe.error)) : null,
+            orgId: safe.orgId || null,
+            plan: safe.plan || null,
+            status: safe.status || null,
+            lastFetchedAt: safe.lastFetchedAt || null,
+            svcSeq: typeof safe.svcSeq === 'number' ? safe.svcSeq : null,
+          }
+        : null,
+    };
+  } catch (err) {
+    return { hasBilling: false, error: err && err.message ? String(err.message) : String(err) };
+  }
+}
+
+function getPumpSnapshot() {
+  try {
+    const app = window.TruckPackerApp;
+    const pump = app && app.maybeScheduleBillingRefresh ? app.maybeScheduleBillingRefresh : null;
+    return {
+      hasApp: Boolean(app),
+      hasPump: typeof pump === 'function',
+      pumpName: safeFnName(pump),
+      pumpPreview: fnPreview(pump, 260),
+    };
+  } catch (err) {
+    return { hasApp: false, hasPump: false, error: err && err.message ? String(err.message) : String(err) };
+  }
+}
+
+function maybeRecordBillingSnapshot(reason) {
+  if (!_active) return;
+  const now = Date.now();
+  if (now - _lastBillingSnapshotAt < 500) return;
+  _lastBillingSnapshotAt = now;
+
+  const pump = getPumpSnapshot();
+  const bill = getBillingStateSnapshot();
+
+  let sig = '';
+  try {
+    const s = bill && bill.state ? bill.state : null;
+    sig = JSON.stringify({
+      hasPump: pump.hasPump,
+      hasBilling: bill.hasBilling,
+      ok: s ? s.ok : null,
+      loading: s ? s.loading : null,
+      pending: s ? s.pending : null,
+      orgId: s ? s.orgId : null,
+      svcSeq: s ? s.svcSeq : null,
+    });
+  } catch {
+    sig = String(Math.random());
+  }
+
+  if (sig === _lastBillingSnapshotSig) return;
+  _lastBillingSnapshotSig = sig;
+
+  recordEvent('BILLING SNAPSHOT', 'debug', {
+    reason,
+    tab: window.__TP3D_TAB_ID__ || null,
+    hidden: typeof document !== 'undefined' ? Boolean(document.hidden) : null,
+    localOrgHint: getLocalOrgHint(),
+    orgContext: getOrgContextSnapshot(),
+    pump,
+    billing: bill,
+    stack: getStackSlice(3, 7),
+  });
+}
+
+function wrapBillingPumpIfPresent() {
+  if (_billingPumpWrapped) return;
+  try {
+    const app = window.TruckPackerApp;
+    if (!app || typeof app.maybeScheduleBillingRefresh !== 'function') return;
+
+    const original = app.maybeScheduleBillingRefresh.bind(app);
+    const origPreview = fnPreview(app.maybeScheduleBillingRefresh, 260);
+
+    app.maybeScheduleBillingRefresh = function (...args) {
+      try {
+        recordEvent('BILLING PUMP CALL', 'fetch', {
+          args: args && args.length ? args.slice(0, 3) : [],
+          tab: window.__TP3D_TAB_ID__ || null,
+          hidden: typeof document !== 'undefined' ? Boolean(document.hidden) : null,
+          pumpPreview: origPreview,
+          stack: getStackSlice(3, 8),
+        });
+        maybeRecordBillingSnapshot('pump-call');
+      } catch {
+        // ignore
+      }
+            const out = original(...args);
+      try {
+        scheduleBillingWatch('pump-call:+800ms', 800);
+        scheduleBillingWatch('pump-call:+2500ms', 2500);
+      } catch {
+        // ignore
+      }
+      return out;
+    };
+    app.maybeScheduleBillingRefresh.__tp3dDiagWrapped = true;
+    _billingPumpWrapped = true;
+
+    recordEvent('BILLING PUMP WRAPPED', 'debug', {
+      tab: window.__TP3D_TAB_ID__ || null,
+      preview: origPreview,
+    });
+  } catch (err) {
+    recordEvent('BILLING PUMP WRAP ERROR', 'debug', { msg: err && err.message ? String(err.message) : String(err) });
+  }
+}
+
+function wrapBillingApiIfPresent() {
+  if (_billingApiWrapped) return;
+  try {
+    const billing = window.__TP3D_BILLING;
+    if (!billing || typeof billing.refreshBilling !== 'function') return;
+
+    const original = billing.refreshBilling.bind(billing);
+    const origPreview = fnPreview(billing.refreshBilling, 260);
+
+    billing.refreshBilling = function (...args) {
+      try {
+        recordEvent('BILLING API refreshBilling', 'fetch', {
+          args: args && args.length ? args.slice(0, 2) : [],
+          tab: window.__TP3D_TAB_ID__ || null,
+          hidden: typeof document !== 'undefined' ? Boolean(document.hidden) : null,
+          fnPreview: origPreview,
+          stack: getStackSlice(3, 10),
+        });
+        maybeRecordBillingSnapshot('api-refreshBilling');
+      } catch {
+        // ignore
+      }
+      return original(...args);
+    };
+    billing.refreshBilling.__tp3dDiagWrapped = true;
+    _billingApiWrapped = true;
+
+    recordEvent('BILLING API WRAPPED', 'debug', {
+      tab: window.__TP3D_TAB_ID__ || null,
+      preview: origPreview,
+    });
+  } catch (err) {
+    recordEvent('BILLING API WRAP ERROR', 'debug', { msg: err && err.message ? String(err.message) : String(err) });
+  }
+}
+
+function installBillingDiagnostics() {
+  if (_billingDebugInstalled) return;
+  _billingDebugInstalled = true;
+
+  maybeRecordBillingSnapshot('billing-diag-install');
+
+  let tries = 0;
+  const maxTries = 120; // ~12s at 100ms
+  const t = setInterval(() => {
+    tries += 1;
+    wrapBillingPumpIfPresent();
+    wrapBillingApiIfPresent();
+    maybeRecordBillingSnapshot('billing-diag-poll');
+
+    if ((_billingPumpWrapped && _billingApiWrapped) || tries >= maxTries) {
+      clearInterval(t);
+      try { clearBillingWatchTimers(); } catch { /* ignore */ }
+      recordEvent('BILLING DIAG READY', 'debug', {
+        tab: window.__TP3D_TAB_ID__ || null,
+        tries,
+        pump: getPumpSnapshot(),
+        billing: getBillingStateSnapshot(),
+      });
+    }
+  }, 100);
+}
+
 function isSupabaseNotInitializedError(err) {
   const msg = err && err.message ? String(err.message) : String(err);
   return msg.includes('SupabaseClient not initialized');
@@ -201,8 +499,8 @@ function shouldIgnoreStorageKey(key) {
 const CONFIG = {
   maxEvents: DEFAULT_MAX_EVENTS,
   slowFetchMs: DEFAULT_SLOW_FETCH_MS,
-  consoleOutput: true,
-  includeStack: true,
+  consoleOutput: false,
+  includeStack: false,
   captureWindowErrors: true,
   captureUnhandledRejections: true,
   captureConsoleErrors: true,
@@ -513,7 +811,7 @@ function wrapFunction(obj, fnName, category) {
   if (!obj || !obj[fnName] || obj[fnName].__tp3dWrapped) return;
   const original = obj[fnName].bind(obj);
   obj[fnName] = async (...args) => {
-    if (fnName === 'getSession') {
+    if (fnName === 'getSession' || fnName === 'getUser') {
       const existing = _singleFlightPromises.get(fnName);
       if (existing) return existing;
     }
@@ -523,8 +821,23 @@ function wrapFunction(obj, fnName, category) {
     recordEvent(`CALL ${fnName}`, category, { callId, args: args[0] });
     const p = (async () => {
       try {
-        const res = await original(...args);
-        recordEvent(`OK ${fnName}`, category, { callId, ms: Math.round(performance.now() - startTime) });
+                const res = await original(...args);
+        const base = { callId, ms: Math.round(performance.now() - startTime) };
+
+        if (fnName === 'getAccountBundleSingleFlight' || fnName === 'getAccountBundleSingleFlightSafe') {
+          recordEvent(`OK ${fnName}`, category, {
+            ...base,
+            tab: window.__TP3D_TAB_ID__ || null,
+            hidden: typeof document !== 'undefined' ? Boolean(document.hidden) : null,
+            localOrgHint: getLocalOrgHint(),
+            orgContext: getOrgContextSnapshot(),
+            bundle: summarizeAccountBundle(res),
+            stack: getStackSlice(4, 10),
+          });
+        } else {
+          recordEvent(`OK ${fnName}`, category, base);
+        }
+
         return res;
       } catch (err) {
         recordEvent(`ERR ${fnName}`, category, {
@@ -535,10 +848,10 @@ function wrapFunction(obj, fnName, category) {
         throw err;
       } finally {
         cleanup();
-        if (fnName === 'getSession') _singleFlightPromises.delete(fnName);
+        if (fnName === 'getSession' || fnName === 'getUser') _singleFlightPromises.delete(fnName);
       }
     })();
-    if (fnName === 'getSession') _singleFlightPromises.set(fnName, p);
+    if (fnName === 'getSession' || fnName === 'getUser') _singleFlightPromises.set(fnName, p);
     return p;
   };
   obj[fnName].__tp3dWrapped = true;
@@ -593,6 +906,16 @@ function wrapStorage() {
     if (shouldIgnoreStorageKey(key)) {
       return originalSet.apply(this, arguments);
     }
+    // Avoid noisy logs for idempotent writes (same value re-set repeatedly)
+    try {
+      const prev = window.localStorage.getItem(key);
+      const next = value == null ? null : String(value);
+      if (prev === next) {
+        return originalSet.apply(this, arguments);
+      }
+    } catch {
+      // ignore
+    }
     recordEvent('LOCALSTORAGE SET', 'storage', {
       key,
       valueLength: value ? String(value).length : 0,
@@ -642,6 +965,11 @@ function snapshotSettings(source = 'manual') {
     activeBtn: activeBtn ? activeBtn.getAttribute('data-tab') : null,
     activePanel: activePanel ? activePanel.getAttribute('data-tab-panel') : null,
   };
+  try {
+    maybeRecordBillingSnapshot('settings-snapshot:' + source);
+  } catch {
+    // ignore
+  }
   recordEvent('SETTINGS SNAPSHOT', 'dom', payload);
   return payload;
 }
@@ -697,8 +1025,9 @@ function installModalObserver() {
       for (const n of m.addedNodes) {
         if (n.nodeType === 1 && isModal(n)) {
           recordEvent('MODAL ADDED', 'dom', { modal: describeNode(n) });
-          if (n.querySelector && n.querySelector('.tp3d-trial-welcome')) {
-            setTimeout(() => inspectTrialWelcomeModal(n), 0);
+          const modalEl = n instanceof Element ? n : null;
+          if (modalEl && modalEl.querySelector('.tp3d-trial-welcome')) {
+            setTimeout(() => inspectTrialWelcomeModal(modalEl), 0);
           }
         }
       }
@@ -750,7 +1079,7 @@ function installSupabaseClientTracking(api) {
   wrapFunction(api, 'getSessionSingleFlight', 'auth');
   wrapFunction(api, 'getUserSingleFlight', 'auth');
   wrapFunction(api, 'validateSessionSoft', 'auth');
-  wrapFunction(api, 'getAuthState', 'auth');
+  // wrapFunction(api, 'getAuthState', 'auth'); // Removed per reduced overhead/race signals
   wrapFunction(api, 'signOut', 'auth');
 }
 
@@ -827,6 +1156,11 @@ function installUserEvents() {
   document.addEventListener('visibilitychange', () => {
     recordEvent(document.hidden ? 'TAB HIDDEN' : 'TAB VISIBLE', 'nav', { hidden: document.hidden });
     recordRuntimeSnapshot(document.hidden ? 'tab-hidden' : 'tab-visible');
+    try {
+      maybeRecordBillingSnapshot(document.hidden ? 'tab-hidden' : 'tab-visible');
+    } catch {
+      // ignore
+    }
   });
   window.addEventListener('focus', () => recordEvent('WINDOW FOCUS', 'nav'));
   window.addEventListener('blur', () => recordEvent('WINDOW BLUR', 'nav'));
@@ -864,6 +1198,11 @@ function installNavEvents() {
       from: e.oldURL ? e.oldURL.split('#')[1] : '',
       to: e.newURL ? e.newURL.split('#')[1] : '',
     });
+    try {
+      maybeRecordBillingSnapshot('hash-change');
+    } catch {
+      // ignore
+    }
   });
 }
 
@@ -890,6 +1229,7 @@ function start() {
   installNavEvents();
   installStorageEvents();
   installAppEvents();
+  installBillingDiagnostics();
   installLongTaskObserver();
   installModalObserver();
 
@@ -1049,6 +1389,25 @@ export function initTP3DDebugger() {
       URL.revokeObjectURL(url);
     },
     snapshotSettings,
+    billingSnapshot: reason => {
+      try {
+        maybeRecordBillingSnapshot(reason || 'manual');
+      } catch {
+        // ignore
+      }
+      return {
+        pump: getPumpSnapshot(),
+        billing: getBillingStateSnapshot(),
+      };
+    },
+    wrapBillingNow: () => {
+      try {
+        installBillingDiagnostics();
+      } catch {
+        // ignore
+      }
+      return { ok: true };
+    },
 
     // AutoPack telemetry (called from packer when debug is enabled)
     autopackStart,

@@ -351,10 +351,9 @@ async function main() {
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: READY_TIMEOUT_MS });
     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page
-      .locator('.topbar, .sidebar, #screen-editor, [data-auth-overlay="1"]')
-      .first()
-      .waitFor({ state: 'visible', timeout: READY_TIMEOUT_MS });
+    // Avoid coupling readiness to specific selector visibility because auth/layout
+    // states can intentionally keep those nodes hidden for part of startup.
+    await page.waitForTimeout(500);
 
     const authState = await maybeHandleAuth(page);
     if (authState.skipped) {

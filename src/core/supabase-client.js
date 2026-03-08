@@ -54,7 +54,16 @@ let _authIntent = { type: null, ts: 0 };
 let _tabId = null;
 let _lastLogoutSignalAt = 0;
 let _profileAuthLogOnce = false;
+// Dedup key for repeated identical SIGNED_IN auth events (cross-tab storm prevention).
+// Cleared on signOut, forceLocalSignedOut, and user switch.
+let _lastSignedInEventKey = '';
 const _authState = { status: 'loading', session: null, user: null, updatedAt: 0 };
+
+// ── Auth proof fast-path: skip lock-based calls when session is recently proven ──
+const AUTH_PROOF_TTL_MS = 45000; // 45s after SIGNED_IN / TOKEN_REFRESHED
+let _authProvenUntil = 0;
+let _authGuardBackoff = 60000; // current guard interval (ms), grows on timeout
+const AUTH_GUARD_MAX_BACKOFF_MS = 300000; // 5 min cap
 
 /** In-memory cache for org logo signed URLs. Cleared on signOut and uploadOrgLogo. */
 const _orgLogoCache = new Map(); // key: logoPath|updatedAt, value: { url, expiresAt }
@@ -116,6 +125,17 @@ function isSessionExpired(session, skewSec = SESSION_EXPIRY_SKEW_SEC) {
 function isSessionUsable(session) {
   if (!session || !session.access_token) return false;
   return !isSessionExpired(session);
+}
+
+/**
+ * Returns true when the current tab has a recently-proven auth session.
+ * During this window, lock-based Supabase calls (getSession, getUser) are skipped
+ * to avoid cross-tab lock contention timeouts.
+ */
+function isAuthProven() {
+  if (!_authProvenUntil || Date.now() > _authProvenUntil) return false;
+  const s = _authState.session;
+  return isSessionUsable(s) && Boolean(_authState.user && _authState.user.id);
 }
 
 function normalizeUserId(id) {
@@ -194,6 +214,22 @@ export function getTabId() {
 }
 
 /**
+ * Exposed for external consumers (app.js refresh gating).
+ * Returns true when the current tab's auth session is recently proven valid.
+ */
+export { isAuthProven };
+
+/**
+ * Returns true when the account bundle cache exists and is within its TTL.
+ */
+export function hasValidBundleCache() {
+  if (!_accountCache.key || !_accountCache.ts || !_accountCache.data) return false;
+  const age = Date.now() - _accountCache.ts;
+  const effectiveTtl = _accountCache.data.authProofStale ? (ACCOUNT_TTL_MS / 2) : ACCOUNT_TTL_MS;
+  return age < effectiveTtl;
+}
+
+/**
  * Increment auth epoch and invalidate account cache.
  * Called on any auth state change.
  */
@@ -210,8 +246,20 @@ function bumpAuthEpoch(reason = '') {
 /**
  * Reset account bundle cache + bump auth epoch.
  * Use this on auth changes to prevent stale user/org data.
+ * @param {string} [reason]
+ * @param {{ skipEpochBump?: boolean }} [opts] - When true, clear cache without bumping epoch
+ *   (used when updateAuthState already bumped epoch for the same event).
  */
-export function resetAccountBundleCache(reason = 'auth-change') {
+export function resetAccountBundleCache(reason = 'auth-change', { skipEpochBump = false } = {}) {
+  if (skipEpochBump) {
+    // Clear cache/inflight without bumping epoch — epoch was already bumped by updateAuthState.
+    _inflightAccount = { key: null, epoch: null, promise: null, startedAt: 0 };
+    _accountCache = { key: null, ts: 0, data: null };
+    if (debugEnabled()) {
+      debugLog('log', '[SupabaseClient] Account cache cleared (epoch already bumped)', reason);
+    }
+    return;
+  }
   bumpAuthEpoch(reason);
 }
 
@@ -247,7 +295,28 @@ let _logoutChannel = null;
 let _storageLogoutListener = null;
 let _handlingCrossTabLogout = false;
 
+function teardownCrossTabLogout() {
+  try {
+    if (_logoutChannel && typeof _logoutChannel.close === 'function') {
+      _logoutChannel.close();
+    }
+  } catch {
+    // ignore
+  }
+  _logoutChannel = null;
+
+  if (_storageLogoutListener) {
+    try {
+      window.removeEventListener('storage', _storageLogoutListener);
+    } catch {
+      // ignore
+    }
+  }
+  _storageLogoutListener = null;
+}
+
 function initCrossTabLogout() {
+  if (_logoutChannel || _storageLogoutListener) return;
   // Try BroadcastChannel first (modern browsers)
   if (typeof BroadcastChannel !== 'undefined') {
     try {
@@ -282,7 +351,12 @@ function initCrossTabLogout() {
     }
   };
 
-  window.addEventListener('storage', _storageLogoutListener);
+  try {
+    window.addEventListener('storage', _storageLogoutListener);
+  } catch {
+    _storageLogoutListener = null;
+    return;
+  }
   if (debugEnabled()) debugLog('info', '[SupabaseClient] localStorage fallback initialized for cross-tab sync');
 }
 
@@ -442,6 +516,10 @@ function withTimeoutReject(promise, ms, label = 'timeout') {
 async function ensureClientSession() {
   const client = _client;
   if (!client) return false;
+  // Fast path: trust in-memory session set by Supabase auth events.
+  // Avoids Navigator Lock contention that causes cross-tab timeouts.
+  const existing = (_authState && _authState.session) || _session || null;
+  if (existing && isSessionUsable(existing)) return true;
   try {
     const session = await getSessionSingleFlightSafe(client, { force: true });
     return Boolean(session && session.access_token);
@@ -552,6 +630,9 @@ function updateAuthState(update = {}) {
     } else if (update.status === 'signed_in') {
       _signedOutCooldownUntil = 0;
     }
+    if (update.status === 'signed_out') {
+      _authProvenUntil = 0;
+    }
   }
 
   if (hasSession) {
@@ -575,9 +656,18 @@ function updateAuthState(update = {}) {
   const userChanged = prevUserId !== newUserId;
   const tokenChanged = prevSessionToken !== newSessionToken;
 
+  let didBumpEpoch = false;
   if (userChanged || tokenChanged) {
     bumpAuthEpoch();
+    didBumpEpoch = true;
   }
+
+  // Refresh auth proof TTL when we have a valid signed-in session
+  if (_authState.status === 'signed_in' && newSessionToken && newUserId) {
+    _authProvenUntil = Date.now() + AUTH_PROOF_TTL_MS;
+  }
+
+  return { didBumpEpoch };
 }
 
 function clearStorageKeyIfKnown(client) {
@@ -601,19 +691,53 @@ function clearStorageKeyIfKnown(client) {
 
 function getSessionRawSingleFlight() {
   const now = Date.now();
+
+  // Helper: return cached session instead of null during transient auth wobble.
+  const _cachedSessionForWobble = () => {
+    const s = (_authState && _authState.session) || _session || _cachedSession || null;
+    return s && s.access_token ? s : null;
+  };
+
   if (_authState && _authState.status === 'signed_out') {
+    // If we still have a cached session with a token, return it instead of null.
+    // A transient signed_out can occur while a SIGNED_IN event is in-flight.
+    const wobble = _cachedSessionForWobble();
+    if (wobble) {
+      if (debugEnabled()) debugLog('warn', '[SupabaseClient] getSession(raw): signed_out but returning cached session (auth wobble)');
+      const out = { data: { session: wobble }, error: null };
+      _getSessionRawLastResult = out;
+      _getSessionRawLastAt = now;
+      return Promise.resolve(out);
+    }
     const out = { data: { session: null }, error: null };
     _getSessionRawLastResult = out;
     _getSessionRawLastAt = now;
     return Promise.resolve(out);
   }
-  if (_signedOutCooldownUntil && now < _signedOutCooldownUntil) {
+  // If status is signed_in, ignore the signed-out cooldown — it's stale.
+  if (_signedOutCooldownUntil && now < _signedOutCooldownUntil && !(_authState && _authState.status === 'signed_in')) {
+    const wobble = _cachedSessionForWobble();
+    if (wobble) {
+      if (debugEnabled()) debugLog('warn', '[SupabaseClient] getSession(raw): cooldown but returning cached session (auth wobble)');
+      const out = { data: { session: wobble }, error: null };
+      _getSessionRawLastResult = out;
+      _getSessionRawLastAt = now;
+      return Promise.resolve(out);
+    }
     const out = { data: { session: null }, error: null };
     _getSessionRawLastResult = out;
     _getSessionRawLastAt = now;
     return Promise.resolve(out);
   }
-  if (_authInvalidatedAt && now - _authInvalidatedAt < 1500) {
+  if (_authInvalidatedAt && now - _authInvalidatedAt < 1500 && !(_authState && _authState.status === 'signed_in')) {
+    const wobble = _cachedSessionForWobble();
+    if (wobble) {
+      if (debugEnabled()) debugLog('warn', '[SupabaseClient] getSession(raw): invalidated but returning cached session (auth wobble)');
+      const out = { data: { session: wobble }, error: null };
+      _getSessionRawLastResult = out;
+      _getSessionRawLastAt = now;
+      return Promise.resolve(out);
+    }
     const out = { data: { session: null }, error: null };
     _getSessionRawLastResult = out;
     _getSessionRawLastAt = now;
@@ -680,11 +804,29 @@ function getSessionRawSingleFlight() {
       _getSessionRawLastAt = Date.now();
       return out;
     } catch (err) {
-      if (_authState && _authState.status === 'signed_out') {
+      // On timeout/error, prefer cached session over null to avoid downstream
+      // callers treating a temporary stall as "signed out".
+      const wobbleFallback = (() => {
+        const s = (_authState && _authState.session) || _session || _cachedSession || null;
+        return s && s.access_token ? s : null;
+      })();
+      if (_authState && _authState.status === 'signed_out' && !wobbleFallback) {
         const empty = { data: { session: null }, error: null };
         _getSessionRawLastResult = empty;
         _getSessionRawLastAt = Date.now();
         return empty;
+      }
+      if (wobbleFallback) {
+        if (debugEnabled()) {
+          debugLog('warn', '[SupabaseClient] getSession timeout -> returning cached session', {
+            hasAuthStateToken: Boolean(_authState && _authState.session && _authState.session.access_token),
+            hasCachedToken: Boolean(_cachedSession && _cachedSession.access_token),
+          });
+        }
+        const out = { data: { session: wobbleFallback }, error: null };
+        _getSessionRawLastResult = out;
+        _getSessionRawLastAt = Date.now();
+        return out;
       }
       return { data: null, error: err };
     } finally {
@@ -724,6 +866,16 @@ function getUserRawSingleFlight() {
     _getUserRawLastResult = out;
     _getUserRawLastAt = now;
     return Promise.resolve(out);
+  }
+  // Auth proof fast-path: skip network call when session was recently proven
+  if (isAuthProven()) {
+    const provenUser = (_authState && _authState.user) || (_session && _session.user) || null;
+    if (provenUser && provenUser.id) {
+      const out = { data: { user: provenUser }, error: null };
+      _getUserRawLastResult = out;
+      _getUserRawLastAt = now;
+      return Promise.resolve(out);
+    }
   }
   if (_getUserRawPromise) return _getUserRawPromise;
   if (_signOutPromise) return Promise.resolve({ data: { user: null }, error: null });
@@ -796,6 +948,16 @@ export async function getSessionSingleFlightSafe(client, { force = false } = {})
   if (!force && _signedOutCooldownUntil && now < _signedOutCooldownUntil) return null;
   if (!force && _authInvalidatedAt && now - _authInvalidatedAt < 1500) return null;
 
+  // Auth proof fast-path: return in-memory session when recently proven
+  if (!force && isAuthProven()) {
+    const provenSession = _authState.session;
+    if (provenSession) {
+      _cachedSession = provenSession;
+      _cachedAt = now;
+      return provenSession;
+    }
+  }
+
   const c = client || requireClient();
 
   // 1) quick cache for UI
@@ -867,8 +1029,18 @@ export async function getSessionSingleFlightSafe(client, { force = false } = {})
           return fallback;
         }
         if (force) {
+          // Even on force, prefer a cached session over returning null.
+          // Returning null cascades into "signed_out" and breaks billing/members.
+          if (isSessionUsable(fallback)) {
+            if (debugEnabled()) {
+              debugLog('warn', '[SupabaseClient] getSession timeout (force); returning cached session instead of null');
+            }
+            _cachedSession = fallback;
+            _cachedAt = Date.now();
+            return fallback;
+          }
           if (debugEnabled()) {
-            debugLog('warn', '[SupabaseClient] getSession timeout (force); returning null');
+            debugLog('warn', '[SupabaseClient] getSession timeout (force); returning null (no cached session)');
           }
           return null;
         }
@@ -1043,6 +1215,13 @@ export function getUserSingleFlight() {
         }
         return cachedUser;
       }
+      if (isAuthRevokedError(err)) {
+        forceLocalSignedOut({
+          reason: 'auth-revoked:getUserSingleFlight',
+          status: getErrorStatus(err),
+        });
+        return null;
+      }
       throw err;
     } finally {
       _getUserPromise = null;
@@ -1065,6 +1244,7 @@ function forceLocalSignedOut({ reason = 'auth-invalid', status = null } = {}) {
   }
   _cachedSession = null;
   _cachedAt = 0;
+  _lastSignedInEventKey = '';
   updateAuthState({ status: 'signed_out', session: null, user: null });
 
   // Best-effort local sign out (does not require network)
@@ -1110,6 +1290,9 @@ async function validateSessionOrSignOut({ source = 'unknown', silent = true } = 
 
   // Respect temporary cooldown after a stuck request
   if (_authCooldownUntil && Date.now() < _authCooldownUntil) return true;
+
+  // Auth proof fast-path: skip lock-based validation when session is recently proven
+  if (isAuthProven()) return true;
 
   // Avoid stacking hidden-tab validations; focus/visibility will retry.
   try {
@@ -1201,20 +1384,30 @@ function installAuthGuard() {
     }
   }
 
-  // Poll to catch cases like: user deleted in dashboard while a cached session exists
-  try {
-    _authGuardTimer = window.setInterval(() => {
-      try {
-        if (document && document.hidden) return;
-      } catch {
-        // ignore
-      }
-      if (_signOutPromise) return;
-      void validateSessionOrSignOut({ source: 'interval', silent: true });
-    }, 60 * 1000);
-  } catch {
-    _authGuardTimer = null;
+  // Poll to catch cases like: user deleted in dashboard while a cached session exists.
+  // Uses setTimeout recursion with exponential backoff on timeout failures.
+  function _scheduleGuardTick() {
+    try {
+      _authGuardTimer = window.setTimeout(async () => {
+        _authGuardTimer = null;
+        try {
+          if (document && document.hidden) { _scheduleGuardTick(); return; }
+        } catch { /* ignore */ }
+        if (_signOutPromise) { _scheduleGuardTick(); return; }
+        const ok = await validateSessionOrSignOut({ source: 'interval', silent: true });
+        // Backoff on failures (timeout/network), reset on success
+        if (ok) {
+          _authGuardBackoff = 60000; // reset to 60s on success
+        } else {
+          _authGuardBackoff = Math.min(_authGuardBackoff * 2, AUTH_GUARD_MAX_BACKOFF_MS);
+        }
+        _scheduleGuardTick();
+      }, _authGuardBackoff);
+    } catch {
+      _authGuardTimer = null;
+    }
   }
+  _scheduleGuardTick();
 
   void validateSessionOrSignOut({ source: 'install', silent: true });
 }
@@ -1346,8 +1539,27 @@ export function init({ url, anonKey }) {
       }
 
       _client.auth.onAuthStateChange((event, nextSession) => {
+        // ── Step 3: Strict dedup of repeated identical SIGNED_IN events ──
+        // Cross-tab storage changes cause Supabase to fire multiple SIGNED_IN
+        // events with the same session. Skip exact duplicates to prevent
+        // redundant updateAuthState calls and epoch churn.
+        // Only dedup SIGNED_IN; never dedup SIGNED_OUT/TOKEN_REFRESHED/USER_UPDATED.
+        if (event === 'SIGNED_IN' && nextSession && nextSession.access_token) {
+          const dedupUserId = nextSession.user && nextSession.user.id ? String(nextSession.user.id) : '';
+          const dedupKey = dedupUserId + '|' + nextSession.access_token;
+          if (dedupKey === _lastSignedInEventKey) {
+            // Exact duplicate — skip all processing
+            return;
+          }
+          _lastSignedInEventKey = dedupKey;
+        }
+        if (event === 'SIGNED_OUT') {
+          _lastSignedInEventKey = '';
+        }
+
         _session = nextSession || null;
-        updateAuthState({
+        const epochBefore = _authEpoch;
+        const { didBumpEpoch } = updateAuthState({
           status: nextSession ? 'signed_in' : 'signed_out',
           session: nextSession || null,
           user: nextSession && nextSession.user ? nextSession.user : null,
@@ -1363,6 +1575,12 @@ export function init({ url, anonKey }) {
             userId: nextUserId,
             hasToken,
           });
+          debugLog('info', '[SupabaseClient] auth event handling', {
+            event,
+            didBumpEpoch,
+            epochBefore,
+            epochAfter: _authEpoch,
+          });
         }
         if (
           event === 'SIGNED_IN' ||
@@ -1370,7 +1588,11 @@ export function init({ url, anonKey }) {
           event === 'TOKEN_REFRESHED' ||
           event === 'USER_UPDATED'
         ) {
-          resetAccountBundleCache(event);
+          // ── Step 1: Always skip epoch bump here ──
+          // updateAuthState already bumps epoch when user or token actually
+          // changes. The redundant bump was the sole cause of the epoch storm
+          // when repeated same-token events arrived cross-tab.
+          resetAccountBundleCache(event, { skipEpochBump: true });
         }
       });
       installAuthGuard();
@@ -1384,6 +1606,7 @@ export function init({ url, anonKey }) {
       if (debugEnabled()) {
         debugLog('info', '[SupabaseClient] init failed:', err && err.message ? String(err.message) : String(err));
       }
+      teardownCrossTabLogout();
       _initPromise = null;
       _client = null;
       _session = null;
@@ -1428,7 +1651,19 @@ export async function awaitAuthReady({ timeoutMs = 5000 } = {}) {
 
   const initial = snapshot();
   if (isReady(initial)) return { ok: true, reason: 'ready' };
-  if (initial.status === 'signed_out') return { ok: false, reason: 'signed_out' };
+
+  // Don't bail immediately on signed_out if we still have a cached token.
+  // A transient signed_out can occur during auth wobble (timeout → flip → recover).
+  const hasCachedToken = Boolean(
+    (_session && _session.access_token) ||
+    (_cachedSession && _cachedSession.access_token) ||
+    (_authState && _authState.session && _authState.session.access_token)
+  );
+  if (initial.status === 'signed_out' && !hasCachedToken) {
+    return { ok: false, reason: 'signed_out' };
+  }
+  // If signed_out WITH cached token, fall through to polling — the next
+  // SIGNED_IN event will flip status within a few hundred ms.
 
   return new Promise(resolve => {
     let timer = null;
@@ -1449,9 +1684,17 @@ export async function awaitAuthReady({ timeoutMs = 5000 } = {}) {
         return;
       }
       if (snap.status === 'signed_out') {
-        cleanup();
-        resolve({ ok: false, reason: 'signed_out' });
-        return;
+        // Same wobble check: don't bail if cached tokens still exist.
+        const stillHasToken = Boolean(
+          (_session && _session.access_token) ||
+          (_cachedSession && _cachedSession.access_token)
+        );
+        if (!stillHasToken) {
+          cleanup();
+          resolve({ ok: false, reason: 'signed_out' });
+          return;
+        }
+        // else: keep polling — SIGNED_IN event may arrive soon
       }
       if (Date.now() >= deadline) {
         cleanup();
@@ -1695,6 +1938,7 @@ export async function signOut(options = {}) {
     _getUserPromise = null;
     _getUserRawPromise = null;
     _sessionPromise = null;
+    _lastSignedInEventKey = '';
     updateAuthState({ status: 'signed_out', session: null, user: null });
 
     // Clear any known supabase storage key (defensive)
@@ -2045,7 +2289,9 @@ export async function getMyMembership() {
 export async function getAccountBundleSingleFlight({ force = false } = {}) {
   const startEpoch = _authEpoch;
   if (_authState && _authState.status === 'signed_out') return null;
-  if (_signedOutCooldownUntil && Date.now() < _signedOutCooldownUntil) return null;
+  // P0.9.1: Only honour cooldown while still signed_out — if auth already
+  // recovered to signed_in (cross-tab token refresh), allow the bundle fetch.
+  if (_signedOutCooldownUntil && Date.now() < _signedOutCooldownUntil && _authState.status === 'signed_out') return null;
 
   const authReady = await awaitAuthReady({ timeoutMs: 5000 });
   if (!authReady.ok) {
@@ -2058,6 +2304,43 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
   const clientSessionOk = await ensureClientSession();
   if (!clientSessionOk) return null;
 
+  // ── P0.8: Auth-base – snapshot signed-in session/user as fallback ──
+  const _authSnap = { ..._authState };
+  const baseSession = (_authSnap.status === 'signed_in' && _authSnap.session &&
+    _authSnap.session.access_token) ? _authSnap.session : null;
+  let baseUser = baseSession
+    ? (_authSnap.user || baseSession.user || null)
+    : null;
+  if (baseSession && !baseUser) {
+    try {
+      baseUser = await getUserSingleFlight() || baseSession.user || null;
+    } catch { baseUser = baseSession.user || null; }
+  }
+
+  /** Return partial bundle with auth-base session/user when available; else empty (P0.8). */
+  const _safeFallbackBundle = (reason, canceled, keyVal, epochVal) => {
+    if (baseSession && baseUser) {
+      if (debugEnabled()) debugLog('warn', '[SupabaseClient] INVALID BUNDLE: signed_in but missing session/user (forcing base fallback)', { reason });
+      return {
+        key: keyVal || getCurrentAuthKey(),
+        canceled: Boolean(canceled),
+        epoch: Number.isFinite(epochVal) ? epochVal : _authEpoch,
+        session: baseSession,
+        user: baseUser,
+        profile: null,
+        orgs: [],
+        membership: null,
+        activeOrg: null,
+        orgCount: 0,
+        activeOrgId: null,
+        partial: true,
+        fetchedAt: Date.now(),
+        reason: reason + ' (auth-base fallback)',
+      };
+    }
+    return _buildEmptyAccountBundle(reason, canceled, keyVal, epochVal);
+  };
+
   // Get current session from memory first (already validated by Supabase)
   let session = _authState.session || _session || null;
   let user = session && session.user ? session.user : _authState.user || null;
@@ -2067,11 +2350,11 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
     try {
       const sessionWrap = await withTimeout(getSessionSingleFlight(), ACCOUNT_SESSION_TIMEOUT_MS, null);
       if (_authEpoch !== startEpoch) {
-        // Auth changed during fetch, return empty bundle
-        return _buildEmptyAccountBundle('Auth changed during session fetch', true, null, startEpoch);
+        // Auth changed during fetch – use auth-base if available (P0.8)
+        return _safeFallbackBundle('Auth changed during session fetch', true, null, startEpoch);
       }
       if (sessionWrap.timedOut) {
-        return _buildEmptyAccountBundle('Session fetch timeout', true);
+        return _safeFallbackBundle('Session fetch timeout', true);
       }
       session = sessionWrap && sessionWrap.value && sessionWrap.value.session ? sessionWrap.value.session : null;
       user = session && session.user ? session.user : null;
@@ -2081,9 +2364,15 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
     }
   }
 
-  // No session = not logged in
+  // No session = not logged in (unless auth-base fallback available – P0.8)
   if (!session || !user || !normalizeUserId(user.id)) {
-    return _buildEmptyAccountBundle('No active session');
+    if (baseSession && baseUser && normalizeUserId(baseUser.id)) {
+      if (debugEnabled()) debugLog('warn', '[SupabaseClient] INVALID BUNDLE: signed_in but missing session/user (forcing base fallback)');
+      session = baseSession;
+      user = baseUser;
+    } else {
+      return _buildEmptyAccountBundle('No active session');
+    }
   }
 
   const authKey = getAuthKey(session);
@@ -2092,7 +2381,9 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
   // Check cache (unless force refresh requested)
   if (!force && _accountCache.key === authKey && _accountCache.ts > 0) {
     const age = Date.now() - _accountCache.ts;
-    if (age < ACCOUNT_TTL_MS && _accountCache.data) {
+    // Use shorter TTL for bundles that had auth proof timeouts
+    const effectiveTtl = (_accountCache.data && _accountCache.data.authProofStale) ? (ACCOUNT_TTL_MS / 2) : ACCOUNT_TTL_MS;
+    if (age < effectiveTtl && _accountCache.data) {
       if (debugEnabled()) debugLog('log', '[SupabaseClient] Account bundle from cache, age:', age, 'ms');
       return _accountCache.data;
     }
@@ -2110,7 +2401,7 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
   const inflightPromise = (async () => {
     try {
       const userId = normalizeUserId(user.id);
-      if (!userId) return _buildEmptyAccountBundle('No active session');
+      if (!userId) return _safeFallbackBundle('No active session');
 
       const cachedProfile = cachedBundle && cachedBundle.profile ? cachedBundle.profile : null;
       const cachedOrgs = cachedBundle && Array.isArray(cachedBundle.orgs) ? cachedBundle.orgs : [];
@@ -2123,7 +2414,7 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
         null
       );
       if (_authEpoch !== startEpoch) {
-        return _buildEmptyAccountBundle('Auth changed during account fetch', true, authKey, startEpoch);
+        return _safeFallbackBundle('Auth changed during account fetch', true, authKey, startEpoch);
       }
 
       const orgsWrap = await withTimeout(
@@ -2132,7 +2423,7 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
         []
       );
       if (_authEpoch !== startEpoch) {
-        return _buildEmptyAccountBundle('Auth changed during account fetch', true, authKey, startEpoch);
+        return _safeFallbackBundle('Auth changed during account fetch', true, authKey, startEpoch);
       }
 
       const membershipWrap = await withTimeout(
@@ -2141,7 +2432,7 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
         null
       );
       if (_authEpoch !== startEpoch) {
-        return _buildEmptyAccountBundle('Auth changed during account fetch', true, authKey, startEpoch);
+        return _safeFallbackBundle('Auth changed during account fetch', true, authKey, startEpoch);
       }
 
       let profileResult = profileWrap.value;
@@ -2170,12 +2461,12 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
       // Check epoch again - if auth changed, discard results
       if (_authEpoch !== startEpoch) {
         if (debugEnabled()) debugLog('log', '[SupabaseClient] Account bundle: epoch changed, discarding');
-        return _buildEmptyAccountBundle('Auth changed during fetch', true, authKey, startEpoch);
+        return _safeFallbackBundle('Auth changed during fetch', true, authKey, startEpoch);
       }
 
       const currentUserId = getCurrentUserId();
       if (currentUserId && String(currentUserId) !== String(userId)) {
-        return _buildEmptyAccountBundle('User changed during fetch', true, authKey, startEpoch);
+        return _safeFallbackBundle('User changed during fetch', true, authKey, startEpoch);
       }
 
       // Build safe bundle with defaults for missing data
@@ -2234,7 +2525,12 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
         };
       }
 
-      const partial = Boolean(hadTimeout || reasonParts.length > 0);
+      const authProofStale = Boolean(hadTimeout);
+      // partial = true ONLY when org context is incomplete.
+      // Timeouts on profile/membership alone don't make the bundle partial
+      // when we have a valid activeOrgId and at least one org.
+      const orgContextComplete = Boolean(activeOrgId && orgsSafe.length >= 1);
+      const partial = Boolean((hadTimeout || reasonParts.length > 0) && !orgContextComplete);
       const bundle = {
         key: authKey,
         canceled: false,
@@ -2248,17 +2544,25 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
         orgCount: orgsSafe.length,
         activeOrgId,
         partial,
+        authProofStale,
         reason: reasonParts.join('; '),
         fetchedAt: Date.now(),
       };
 
-      // Cache the result only if it completed without timeouts.
+      // Cache when org context is complete (even if auth proof was stale).
+      // Use shorter TTL for authProofStale bundles.
       if (!partial) {
         const liveKey = getCurrentAuthKey();
         if (liveKey === authKey && _authEpoch === startEpoch) {
           _accountCache = { key: authKey, ts: Date.now(), data: bundle };
         }
-        if (debugEnabled()) debugLog('log', '[SupabaseClient] Account bundle cached for', authKey);
+        if (debugEnabled()) {
+          debugLog('log', '[SupabaseClient] Account bundle cached', {
+            hasAuthKey: Boolean(authKey),
+            authEpoch: startEpoch,
+            authProofStale,
+          });
+        }
       } else if (debugEnabled()) {
         debugLog('warn', '[SupabaseClient] Account bundle partial (timeout), not caching');
       }
@@ -2266,8 +2570,8 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
       return bundle;
     } catch (err) {
       if (debugEnabled()) debugLog('error', '[SupabaseClient] Account bundle fetch error:', err);
-      // Return safe empty bundle on error (don't crash)
-      return _buildEmptyAccountBundle('Fetch error: ' + (err && err.message ? err.message : 'Unknown'));
+      // Return safe bundle on error (preserve auth base if available – P0.8)
+      return _safeFallbackBundle('Fetch error: ' + (err && err.message ? err.message : 'Unknown'));
     }
   })();
 
@@ -2939,6 +3243,8 @@ try {
     getCurrentUserId,
     getCurrentAuthKey,
     getTabId,
+    isAuthProven,
+    hasValidBundleCache,
     awaitAuthReady,
     getSessionSingleFlight,
     getSessionSingleFlightSafe,

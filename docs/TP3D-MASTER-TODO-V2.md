@@ -1,6 +1,6 @@
-# Truck Packer 3D — Master TODO (Pre‑Production → Enterprise Track)
+# Truck Packer 3D — Master TODO V2 (Pre‑Production → Enterprise Track)
 
-Last updated: 2026-02-20
+Last updated: 2026-02-26
 
 This list is meant to keep the project stable while we finish Billing/Access, then move into the product work needed to reach “enterprise-grade” and compete with cargo-planner.com.
 
@@ -26,9 +26,13 @@ For any org where a Stripe subscription exists:
 - `billing_customers.current_period_end` is NOT NULL
 - If `status='active'` then `trial_ends_at` MUST be NULL
 
+Portal session must be deterministic:
+- Stripe portal sessions should be created with an explicit subscription id when available (pre-select the org's active subscription).
+- If a Stripe customer has multiple subscriptions, the portal must still show Update subscription for the org’s active subscription.
+
 ### P0.1 Baseline DB health checks (run before and after each billing test)
 
-- [ ] **No stuck webhook events**
+- [x] **No stuck webhook events**
   ```sql
   select count(*) as stuck_received_over_5m
   from public.webhook_events
@@ -36,13 +40,13 @@ For any org where a Stripe subscription exists:
     and processed_at is null
     and received_at < now() - interval '5 minutes';
   ```
-  Expect: `0`
+  Notes: Verified during repeated testing; keep re-checking after any portal/checkout action.
 
-- [ ] **Webhook terminal distribution looks sane**
+- [x] **Webhook terminal distribution looks sane**
   ```sql
   select status, count(*) from public.webhook_events group by status order by status;
   ```
-  Expect: mostly `processed`; some `failed` is ok; no long-lived `received`.
+  Notes: Mostly processed; occasional failed acceptable; no long-lived received observed.
 
 - [ ] **Billing projection row is complete for Pro orgs**
   ```sql
@@ -66,11 +70,11 @@ Run in this order. Record results for **User1 / User2 / User3**.
 
 #### Test 1 — Yearly → Monthly (User2 / test2 org)
 
-- [ ] Stripe Portal: switch yearly plan → monthly
+- [x] Stripe Portal: switch yearly plan → monthly
 - [ ] Stripe Events: confirm new event(s) exist
-- [ ] Re-run **P0.1** checks
-- [ ] Verify projection changed (`billing_interval='month'`, `current_period_end` updated)
-- [ ] App Billing tab: shows Pro (Monthly) + correct dates
+- [x] Re-run **P0.1** checks
+- [x] Verify projection changed (`billing_interval='month'`, `current_period_end` updated)
+- [x] App Billing tab: shows Pro (Monthly) + correct dates
 - [ ] Cross-tab: keep 2 tabs open. After portal change confirm both tabs update correctly after:
   - [ ] manual Refresh button
   - [ ] focus/blur (tab switch)
@@ -84,7 +88,9 @@ Run in this order. Record results for **User1 / User2 / User3**.
 
 - [ ] Portal: cancel at period end
 - [ ] DB: `cancel_at_period_end=true` while `status` stays `active` until end
+  Notes: User1 is currently in cancel_at_period_end flow (Cancels badge + ends on date shown). Still run a clean cancel/resume test on a fresh org.
 - [ ] App: shows cancel message + end date
+  Notes: User1 is currently in cancel_at_period_end flow (Cancels badge + ends on date shown). Still run a clean cancel/resume test on a fresh org.
 - [ ] Pro access stays enabled until end
 
 #### Test 4 — Resume after cancel (if Stripe allows)
@@ -102,9 +108,9 @@ Run in this order. Record results for **User1 / User2 / User3**.
 
 #### Test 6 — Trial org behavior (User3 / trial org)
 
-- [ ] Confirm `status='trialing'` and `trial_ends_at` is future
-- [ ] App shows Pro (Trial) + correct end date
-- [ ] Members inherit access correctly
+- [x] Confirm `status='trialing'` and `trial_ends_at` is future
+- [x] App shows Pro (Trial) + correct end date
+- [x] Members inherit access correctly
 
 #### Test 7 — Org isolation
 
@@ -114,9 +120,10 @@ Run in this order. Record results for **User1 / User2 / User3**.
 
 #### Test 8 — Role enforcement (owner/admin/member)
 
-- [ ] owner can start checkout + open portal
-- [ ] admin can manage billing only if intended by design (confirm)
-- [ ] member cannot manage billing (read-only messaging)
+- [x] owner can start checkout + open portal
+- [x] admin cannot manage billing (read-only billing UI; no checkout/portal/cancel/plan-change actions)
+- [x] member cannot manage billing (read-only messaging)
+  Notes: UI hides billing action buttons for non-owners; Edge Functions enforce owner-only (403).
 
 #### Test 9 — Idempotency / replay
 
@@ -133,21 +140,34 @@ Run in this order. Record results for **User1 / User2 / User3**.
 ### P0.3 Billing UX/UI stability (no glitches, no mixed states)
 
 - [ ] Billing tab never shows wrong interval after refresh
+  Notes: Interval badges updated (Auto-renew vs Cancels); still validate after multiple portal changes + tab switching.
 - [ ] No “Free” flicker while Pro is active
-- [ ] Loading state is clear; tabs do not disappear
-- [ ] Errors are user-safe (no stack traces)
+- [x] Errors are user-safe (no stack traces)
+- [x] Trial UI uses relative days (no calendar date for trial end)
+- [x] Trial badge wins: only the trial badge is shown in the plan header (no redundant inline trial end text)
+- [x] Paid badge clarity: “Auto-renew” badge shown when cancel_at_period_end=false; “Cancels” shown when cancel_at_period_end=true
+- [x] Non-owner trial-expired modal CTA removed (non-owners only see Logout + support message)
 - [ ] Billing cache invalidates on org switch
 - [ ] Portal return to app triggers billing-status refetch
 
+### P0.4 Stripe Portal hardening (deterministic subscription selection)
+
+Goal: If a Stripe customer has multiple subscriptions, the portal session should always manage the org’s active subscription.
+
+- [x] Configure Stripe Customer Portal for plan switching (monthly/yearly prices allowed)
+- [x] Set STRIPE_PORTAL_CONFIGURATION_ID secret to the correct bpc_… id
+- [x] Portal session creation hardened to preselect org subscription when available (prevents “missing Update subscription” cases when customer has multiple subs)
+- [ ] Run regression test: user with multiple subs rows still sees Update subscription consistently
+
 ---
 
-## P0 — Step 1: Trial-expired normalization (small + safe)
+## P0 — Step 1: Trial-expired normalization (DONE)
 
 **Goal:** If trial is over and user never subscribed, UI must not keep showing “Pro (Trial)”.
 
 ### Backend: billing-status normalization
 
-- [ ] If `status='trialing'` AND `trial_ends_at < now()` then return:
+- [x] If `status='trialing'` AND `trial_ends_at < now()` then return:
   - `plan='free'`
   - `isPro=false`
   - `status='trial_expired'`
@@ -155,20 +175,21 @@ Run in this order. Record results for **User1 / User2 / User3**.
 
 ### UI: add one branch
 
-- [ ] Show: “Free (Trial ended on <date>)”
-- [ ] owner/admin: “Subscribe” CTA
-- [ ] member: “Ask owner/admin to subscribe”
+- [x] Owner: shows Subscribe CTA
+- [x] Admin/Member: shows “Ask your owner to upgrade this workspace or contact support: support@pxl360.com” (TODO: replace email later)
 
 ### Test
 
-- [ ] In a test org only, set `trial_ends_at` to yesterday
-- [ ] Confirm billing-status returns `trial_expired`
-- [ ] Confirm UI renders correct state
-- [ ] Confirm no impact on paid orgs
+- [x] In a test org only, set `trial_ends_at` to yesterday
+- [x] Confirm billing-status returns `trial_expired`
+- [x] Confirm UI renders correct state
+- [x] Confirm no impact on paid orgs
 
 ---
 
 ## P0 — Step 2: Past-due grace window (small + safe)
+
+Status: Deferred until after P0 billing transition matrix is fully green.
 
 **Goal:** Avoid instant lockout for payment issues while still showing a strong warning.
 
@@ -208,13 +229,39 @@ Run in this order. Record results for **User1 / User2 / User3**.
 
 ---
 
+## P1 — Workspaces (Organizations) lifecycle + safety
+
+### P1.0 Workspace creation + switching
+
+- [ ] Create workspace (owner) → billing status initializes correctly
+- [ ] Switch workspace A → B → A (no cache leakage)
+- [ ] Workspace rename + slug behavior (no broken links)
+- [ ] Workspace avatar/logo persistence
+
+### P1.1 Workspace limits (plan-based, later configurable)
+
+- [ ] Define Free vs Trial vs Pro limits for number of workspaces
+- [ ] Enforce workspace creation limits in UI + backend (fail-closed)
+- [ ] Add clear upgrade prompt when limit reached
+
+### P1.2 Workspace deletion + last-owner safety
+
+- [ ] Block deletion if user is last owner of any workspace
+- [ ] Define what happens when deleting a workspace with active subscription (policy + implementation)
+- [ ] Ensure webhook handlers handle “org missing” safely
+
+---
+
 ## P1 — Invitations + membership lifecycle
 
 - [ ] Invite email sends (deliverability + link correctness)
 - [ ] Accept invite flow works
 - [ ] Pending state looks correct
 - [ ] Invite expiration behavior
-- [ ] Role changes update permissions (member/admin/owner rules)
+- [ ] Role changes update permissions (owner/admin/member rules)
+  - [x] Only owner can grant/revoke Admin role
+  - [x] Admin can only invite Members (cannot invite Admins)
+  - [ ] Add/verify last-owner rule in member removal flow
 - [ ] Last owner safety rule (cannot remove last owner)
 - [ ] Ownership transfer (if supported) updates billing management rights
 - [ ] Removing member never changes billing state
@@ -229,6 +276,7 @@ Run in this order. Record results for **User1 / User2 / User3**.
 - [ ] Reset password email + link works
 - [ ] Account lockout/rate limits (login + reset + invites + billing actions)
 - [ ] Deleted account behavior is safe
+- [ ] Account deletion safety: block delete if last owner of any workspace; provide support path
 - [ ] Org deletion behavior is defined and safe:
   - [ ] If org has paid subscription: cancel subscription (policy + implementation)
   - [ ] Webhook handler handles “org missing” safely
@@ -361,7 +409,7 @@ This section is not for production launch until P0 is done, but it should be tra
 ## Pre‑Production Gate (must be all checked)
 
 - [ ] Billing transition tests (P0.2) passed for User1/User2/User3
-- [ ] Trial-expired normalization implemented + tested (P0 Step 1)
+- [x] Trial-expired normalization implemented + tested (P0 Step 1)
 - [ ] Past-due grace implemented + tested (P0 Step 2)
 - [ ] No stuck webhook events over 5 minutes across repeated testing
 - [ ] billing_customers complete for all paid orgs
@@ -369,6 +417,8 @@ This section is not for production launch until P0 is done, but it should be tra
 - [ ] Invite + membership lifecycle stable (P1)
 - [ ] Auth flows stable (login, reset password, session refresh)
 - [ ] No console errors in normal flows
+- [ ] Stripe Portal: Update subscription (upgrade/downgrade) consistently available for active paid orgs (including customers with multiple subscription rows)
+- [ ] Admin role hardening verified end-to-end (UI + Edge Function + RLS expectations)
 
 ---
 
@@ -379,6 +429,12 @@ This section is not for production launch until P0 is done, but it should be tra
 - Tests run:
 - Failures found:
 - Next actions:
+
+- Date: 2026-02-26
+  - What changed: Owner-only billing UI polish (trial relative days, non-owner support messaging), Auto-renew badge, admin role hardening, Stripe portal config id set + portal hardening for multi-sub customers.
+  - Tests run: billing-status checks, portal open, plan switch visibility, role UI verification.
+  - Failures found: Inconsistent portal plan-change UI for a customer with multiple subscriptions (addressed via portal hardening + config id).
+  - Next actions: finish P0.2 transition matrix + cross-tab + payment failure scenarios; then move into P1 Workspaces lifecycle + deletion safety.
 
 ---
 

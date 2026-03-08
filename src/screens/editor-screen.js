@@ -1329,15 +1329,31 @@ export function createEditorScreen({
 
       btnAutopack.addEventListener('click', async () => {
         btnAutopack.disabled = true;
-        await AutoPackEngine.pack();
-        btnAutopack.disabled = false;
-        render();
+        try {
+          await AutoPackEngine.pack();
+        } catch (err) {
+          console.error('[EditorScreen] AutoPack error:', err);
+          UIComponents.showToast('AutoPack failed. Please try again.', 'error');
+        } finally {
+          btnAutopack.disabled = false;
+          render();
+        }
       });
       if (btnUnpack) {
         btnUnpack.addEventListener('click', () => unpackAll());
       }
-      btnPng.addEventListener('click', () => ExportService.captureScreenshot());
-      btnPdf.addEventListener('click', () => ExportService.generatePDF());
+      btnPng.addEventListener('click', () => {
+        ExportService.captureScreenshot().catch(err => {
+          console.error('[EditorScreen] Screenshot error:', err);
+          UIComponents.showToast('Screenshot failed.', 'error');
+        });
+      });
+      btnPdf.addEventListener('click', () => {
+        ExportService.generatePDF().catch(err => {
+          console.error('[EditorScreen] PDF export error:', err);
+          UIComponents.showToast('PDF export failed.', 'error');
+        });
+      });
       if (btnShare) {
         btnShare.addEventListener('click', ev => {
           ev.stopPropagation();

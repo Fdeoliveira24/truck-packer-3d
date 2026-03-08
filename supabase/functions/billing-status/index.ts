@@ -322,11 +322,13 @@ Deno.serve(async (req) => {
         .eq("organization_id", resolvedOrgId)
         .maybeSingle();
       billingCustomer = billingCustomerRes.data ?? null;
-      console.log("billing_customers lookup", {
-        orgId: resolvedOrgId,
-        found: !!billingCustomer,
-        error: billingCustomerRes.error?.message || null,
-      });
+      if (debug) {
+        console.log("billing_customers lookup", {
+          orgId: resolvedOrgId,
+          found: !!billingCustomer,
+          error: billingCustomerRes.error?.message || null,
+        });
+      }
       if (billingCustomerRes.error) {
         return json(req, 500, {
           error: "billing_customers lookup failed",
@@ -687,6 +689,38 @@ Deno.serve(async (req) => {
           isTrial = false;
           isActive = false;
           trialEndsAtCandidate = billingCustomerTrialEndsAt;
+        }
+      }
+    }
+
+    // Handle billing_customers.status already set to "trial_expired" with no subscription row.
+    // Covers orgs where the trial expiry was recorded directly in billing_customers
+    // (e.g. bulk update) and no Stripe subscription exists yet.
+    if (!isActive && subStatus === "none" && resolvedOrgId && billingCustomerStatus === "trial_expired") {
+      subStatus = "trial_expired";
+      isTrial = false;
+      isActive = false;
+      trialEndsAtCandidate = billingCustomerTrialEndsAt ?? trialEndsAtCandidate;
+    }
+
+    // Synthesize trial_expired for Stripe-managed trials that expired without paid conversion.
+    // Guards: subscription exists, !isActive, not already trialing or trial_expired,
+    // trial_end is set and in the past, and no evidence of a paid billing cycle.
+    if (!isActive && subscription && subStatus !== "trialing" && subStatus !== "trial_expired") {
+      const stripeTrialEndRaw = subscription.trial_end ? String(subscription.trial_end) : null;
+      if (stripeTrialEndRaw) {
+        const stripeTrialEndMs = new Date(stripeTrialEndRaw).getTime();
+        if (Number.isFinite(stripeTrialEndMs) && stripeTrialEndMs < Date.now()) {
+          // If current_period_end is >3 days after trial_end the user converted to paid;
+          // do NOT emit trial_expired in that case (treat as a normal cancellation).
+          const periodEndRaw = subscription.current_period_end ? String(subscription.current_period_end) : null;
+          const periodEndMs = periodEndRaw ? new Date(periodEndRaw).getTime() : NaN;
+          const hadPaidConversion = Number.isFinite(periodEndMs) && (periodEndMs - stripeTrialEndMs) > 86400000 * 3;
+          if (!hadPaidConversion) {
+            subStatus = "trial_expired";
+            isTrial = false;
+            isActive = false;
+          }
         }
       }
     }

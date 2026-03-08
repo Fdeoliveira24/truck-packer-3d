@@ -12,7 +12,6 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
-import { getSession } from '../../auth/session.js';
 import {
   getSession as getSupabaseSession,
   getSessionSingleFlight as getSupabaseSessionSingleFlight,
@@ -42,6 +41,8 @@ function debugLog(context, ...args) {
   if (!_isDebug) return;
   console.log(`[billing-service:${context}]`, ...args);
 }
+
+let _billingServiceTraceSeq = 0;
 
 // ============================================================================
 // SECTION: AUTH HEADERS + FUNCTION URL
@@ -105,8 +106,9 @@ async function getFunctionAuthHeaders() {
   }
 
   debugLog('auth-headers', 'strategy=anonBearer+xUserJwt', {
-    tokenPrefix: token.slice(0, 12) + '…',
-    anonKeyPrefix: anonKey.slice(0, 12) + '…',
+    hasUserJwt: Boolean(token),
+    hasAnonKey: Boolean(anonKey),
+    authStrategy: 'anonBearer+xUserJwt',
   });
 
   return {
@@ -232,13 +234,32 @@ function normalizeBillingInterval(value) {
 }
 
 /**
+ * Stripe redirects must stay on Stripe-hosted HTTPS origins.
+ * Prevents open-redirect abuse if an upstream response is tampered with.
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isAllowedBillingRedirectUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'https:') return false;
+    const host = String(parsed.hostname || '').toLowerCase();
+    if (!host) return false;
+    return host === 'stripe.com' || host.endsWith('.stripe.com');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Resolve the active organization id from runtime session context.
  * Billing calls must wait for OrgContext resolution to avoid stale local/session fallbacks.
  * @returns {{ organizationId: string, reason: string|null, orgIdCandidate: string|null }}
  */
 function resolveActiveOrganizationId() {
   let rawContextOrgId = '';
-  let rawSessionOrgId = '';
   let rawLocalOrgId = '';
   let contextOrgId = '';
 
@@ -254,14 +275,6 @@ function resolveActiveOrganizationId() {
     // ignore
   }
   try {
-    const session = getSession();
-    rawSessionOrgId = String(
-      (session && session.currentOrg && (session.currentOrg.id || session.currentOrg.organization_id)) || '',
-    ).trim();
-  } catch (_) {
-    // ignore
-  }
-  try {
     if (typeof window !== 'undefined' && window.localStorage) {
       rawLocalOrgId = String(window.localStorage.getItem('tp3d:active-org-id') || '').trim();
     }
@@ -269,13 +282,11 @@ function resolveActiveOrganizationId() {
     // ignore
   }
 
-  const sessionOrgId = normalizeOrganizationId(rawSessionOrgId);
   const localOrgId = normalizeOrganizationId(rawLocalOrgId);
-  const orgIdCandidate = sessionOrgId || localOrgId || null;
+  const orgIdCandidate = localOrgId || null;
 
   let reason = 'org-context-not-ready';
   if (rawContextOrgId && !contextOrgId) reason = 'org-context-invalid';
-  else if (sessionOrgId) reason = 'session-only';
   else if (localOrgId) reason = 'localStorage-only';
 
   return { organizationId: '', reason, orgIdCandidate };
@@ -332,13 +343,74 @@ export const BillingService = {
  */
 export async function fetchBillingStatus() {
   try {
+    // ── BillingServiceTrace (debug-only) ──
+    if (_isDebug) {
+      _billingServiceTraceSeq += 1;
+      const _svcEntry = {
+        id: (typeof window !== 'undefined' && window.__TP3D_BILLING_TRACE_CURRENT_ID__) || null,
+        svcSeq: _billingServiceTraceSeq,
+      };
+      let _entryStack = null;
+      if (_billingServiceTraceSeq <= 8) {
+        try {
+          const st = (new Error()).stack || '';
+          const frames = st.split('\n').filter(l => l.trim()).slice(1, 5);
+          _entryStack = frames.map(f => f.trim());
+          _svcEntry.stack = _entryStack;
+        } catch { /* ignore */ }
+      }
+      console.info('[BillingServiceTrace] fetchBillingStatus() entry', _svcEntry);
+      if (_entryStack) {
+        console.info('[BillingServiceTrace] entry stack\n' + _entryStack.join('\n'));
+      }
+    }
     const resolution = resolveActiveOrganizationId();
-    const organizationId = resolution.organizationId;
+    let organizationId = resolution.organizationId;
+    // Resolve session once — reused by org-id promotion and debug trace below.
+    let _cachedSess = null;
+    try { _cachedSess = getSupabaseSession(); } catch { /* ignore */ }
+    // Promote orgIdCandidate to organizationId when OrgContext hasn't resolved yet but
+    // we have a validated UUID candidate AND a live user JWT.  The edge function enforces
+    // org-membership server-side, so proceeding here is safe for 'localStorage-only'.
+    if (!organizationId &&
+        resolution.reason === 'localStorage-only' &&
+        resolution.orgIdCandidate &&
+        _cachedSess && _cachedSess.access_token) {
+      organizationId = resolution.orgIdCandidate;
+      debugLog('billing pre-org fallback', { reason: resolution.reason, orgIdUsed: organizationId });
+    }
+    // ── BillingServiceTrace resolved (debug-only) ──
+    if (_isDebug) {
+      const _svcId = (typeof window !== 'undefined' && window.__TP3D_BILLING_TRACE_CURRENT_ID__) || null;
+      const _svcPayload = {
+        id: _svcId,
+        orgIdCandidate: resolution.orgIdCandidate || null,
+        orgIdUsed: organizationId || null,
+        strategy: resolution.reason || 'unknown',
+        hasUserJwt: Boolean(_cachedSess && _cachedSess.access_token),
+      };
+      if (_billingServiceTraceSeq <= 10) {
+        try {
+          const st = (new Error()).stack || '';
+          const frames = st.split('\n').filter(l => l.trim()).slice(1, 5);
+          _svcPayload.stack = frames.map(f => f.trim());
+        } catch { /* ignore */ }
+      }
+      console.info('[BillingServiceTrace] fetchBillingStatus() resolved', _svcPayload);
+    }
     if (!organizationId) {
       debugLog('billing pre-org fetch skipped', {
         reason: resolution.reason || 'org-context-not-ready',
         orgIdCandidate: resolution.orgIdCandidate || null,
       });
+      if (_isDebug) {
+        console.info('[BillingServiceTrace] fetchBillingStatus() exit:org-not-ready', {
+          id: (typeof window !== 'undefined' && window.__TP3D_BILLING_TRACE_CURRENT_ID__) || null,
+          svcSeq: _billingServiceTraceSeq,
+          reason: resolution.reason || 'org-context-not-ready',
+          orgIdCandidate: resolution.orgIdCandidate || null,
+        });
+      }
       return {
         ok: false,
         pending: true,
@@ -458,6 +530,10 @@ export async function createCheckoutSession(input) {
     if (!res.ok || !data || !data.url) {
       return { ok: false, url: null, error: (data && data.error) || 'Checkout failed (HTTP ' + res.status + ')' };
     }
+    if (!isAllowedBillingRedirectUrl(data.url)) {
+      debugLog('createCheckoutSession', 'blocked unsafe redirect URL', { url: String(data.url || '') });
+      return { ok: false, url: null, error: 'Unexpected checkout redirect URL.' };
+    }
 
     return { ok: true, url: data.url, error: null };
   } catch (err) {
@@ -494,6 +570,10 @@ export async function createPortalSession() {
 
     if (!res.ok || !data || !data.url) {
       return { ok: false, url: null, error: (data && data.error) || 'Portal session failed (HTTP ' + res.status + ')' };
+    }
+    if (!isAllowedBillingRedirectUrl(data.url)) {
+      debugLog('createPortalSession', 'blocked unsafe redirect URL', { url: String(data.url || '') });
+      return { ok: false, url: null, error: 'Unexpected billing portal redirect URL.' };
     }
 
     return { ok: true, url: data.url, error: null };

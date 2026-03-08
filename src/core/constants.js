@@ -1,6 +1,8 @@
 /**
  * • LEGACY / NOT USED BY CURRENT RUNTIME IMPORT CHAIN
  * • Do NOT import this file unless you also reconcile storage/session APIs and key strategy.
+ * • Runtime canonical storage key module: `src/core/storage.js`.
+ * • Runtime canonical event module: `src/core/events.js`.
  * • If applicable: This module expects readJson/writeJson/removeKey from storage, but current core storage does not export them.
  */
 
@@ -21,6 +23,7 @@ export const APP_NAME = 'Truck Packer 3D';
 export const APP_VERSION = '1.0.0';
 
 export const STORAGE_KEYS = {
+  // Legacy compatibility constants only (v2 repo/session). Do not use for runtime app state.
   legacyAppV1: 'truckPacker3d:v1',
   appData: 'truckPacker3d:v2:data',
   session: 'truckPacker3d:v2:session',

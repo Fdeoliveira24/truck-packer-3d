@@ -175,6 +175,17 @@ a {
   grid-template-rows: 100vh;
 }
 
+/* Auth gate: hide app until auth is confirmed signed_in */
+body[data-auth="signed_out"] #app {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+body[data-auth="signed_in"] #app {
+  visibility: visible;
+  pointer-events: auto;
+}
+
 /* ================================
   Sidebar & Navigation
 ================================== */
@@ -3946,9 +3957,10 @@ body.modal-open {
 ================================== */
 
 .auth-overlay {
-  background: rgba(15, 15, 20, 0.6);
+  background: rgba(15, 15, 20, 0.92);
   backdrop-filter: blur(4px);
 }
+
 
 .auth-modal {
   max-width: 420px;

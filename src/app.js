@@ -308,7 +308,20 @@ function _buildCrossTabBillingSig(orgId, state) {
     plan: (state && state.plan) || null,
     status: (state && state.status) || null,
     isActive: state && state.isActive === true,
+    interval: (state && state.interval) || null,
+    trialEndsAt: (state && state.trialEndsAt) || null,
+    currentPeriodEnd: (state && state.currentPeriodEnd) || null,
+    cancelAtPeriodEnd: state && state.cancelAtPeriodEnd === true,
+    cancelAt: (state && state.cancelAt) || null,
+    portalAvailable: state && state.portalAvailable === true,
   });
+}
+
+/** Returns true if this sig was already seen for this org (skip). Otherwise marks + returns false (process). */
+function _ctSigSeenOrMark(orgId, sig) {
+  if (_lastProcessedBillingSigByOrg.get(orgId) === sig) return true;
+  _lastProcessedBillingSigByOrg.set(orgId, sig);
+  return false;
 }
 
 function _handleCrossTabBillingResult(orgId, state, fromTabId) {
@@ -316,12 +329,12 @@ function _handleCrossTabBillingResult(orgId, state, fromTabId) {
   if (!currentOrgId || currentOrgId !== orgId) return;
   if (_billingState.loading) return; // don't overwrite an in-flight local fetch
 
-  // Per-org signature dedupe: skip if this exact payload was already processed for this org
+  // Callers MUST have called _ctSigSeenOrMark before reaching here.
+  // This is a safety net — if somehow called directly without pre-check, dedupe here too.
   const _ctSig = _buildCrossTabBillingSig(orgId, state);
-  if (_lastProcessedBillingSigByOrg.get(orgId) === _ctSig) return; // silent exit
-  _lastProcessedBillingSigByOrg.set(orgId, _ctSig);
+  if (_lastProcessedBillingSigByOrg.get(orgId) === _ctSig) return; // silent exit (already marked by caller)
 
-  // Log only after dedupe (truly new data)
+  // Log only after dedupe proves it's truly new data
   if (fromTabId === 'storage') {
     billingDebugLog('billing:cross-tab-storage:received', { orgId, localTabId: _billingTabId });
   } else {
@@ -358,9 +371,9 @@ function _handleCrossTabBillingStorageEvent(ev) {
     if (_billingState.loading) return;
     const state = _readSharedBillingResult(orgId);
     if (!state) return;
-    // Per-org signature dedupe: skip before any log or handler work
+    // Per-org signature dedupe: BEFORE any log or handler work
     const _storageSig = _buildCrossTabBillingSig(orgId, state);
-    if (_lastProcessedBillingSigByOrg.get(orgId) === _storageSig) return;
+    if (_ctSigSeenOrMark(orgId, _storageSig)) return; // seen → silent exit
     _handleCrossTabBillingResult(orgId, state, 'storage');
   } catch (_) { /* ignore */ }
 }
@@ -373,6 +386,9 @@ try {
       if (!ev || !ev.data || ev.data.type !== 'billing-result') return;
       const msg = ev.data;
       if (msg.orgId && msg.state && msg.tabId !== _billingTabId) {
+        // Per-org signature dedupe: BEFORE any log or handler work
+        const _bcSig = _buildCrossTabBillingSig(msg.orgId, msg.state);
+        if (_ctSigSeenOrMark(msg.orgId, _bcSig)) return; // seen → silent exit
         _handleCrossTabBillingResult(msg.orgId, msg.state, msg.tabId);
       }
     };
@@ -4322,9 +4338,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
     let orgContextInFlight = null;
     let orgContextQueued = false;
     let _orgBundleFetchInflightForOrg = null;
-    let _lastOrgChangeSyncAtMs = 0;
-    let _lastOrgChangeSyncOrgId = '';
-    const _ORG_CHANGE_GRACE_MS = 2000;
+    /** @type {Map<string, number>} orgId -> grace-until timestamp */
+    const _orgRoleHydrationGraceUntilByOrg = new Map();
+    const _ORG_ROLE_GRACE_MS = 1500;
     let lastAuthRehydrateAt = 0;
     const AUTH_REHYDRATE_COOLDOWN_MS = 750;
     const AUTH_REFRESH_DEBOUNCE_MS = 350;
@@ -4454,18 +4470,25 @@ const TP3D_BUILD_STAMP = Object.freeze({
           if (isTp3dDebugEnabled()) console.info('[authGate] signedOutCancelledBySignedIn (timer)');
         } else {
           // Fallback: lastSignedInAt exists but is older than signedOutCandidateAt.
-          // Guard: block if lastAuthEventSnapshot shows a recent signed_in (and no logout in progress).
+          // Guard: block if we have a recent signed-in signal (snapshot, gate, or wrapper).
           const _snapshotAgeMs = lastAuthEventSnapshot ? Date.now() - (lastAuthEventSnapshot.ts || 0) : Infinity;
           const _hasRecentSignedInSnapshot = Boolean(
             lastAuthEventSnapshot && lastAuthEventSnapshot.status === 'signed_in' && _snapshotAgeMs < FALLBACK_AUTH_TTL_MS
           );
+          const _gateSignedInAgeMs = _authGate.lastSignedInAt ? Date.now() - _authGate.lastSignedInAt : Infinity;
+          const _hasRecentGateSignedIn = _gateSignedInAgeMs < FALLBACK_AUTH_TTL_MS;
           const _logoutLatchActive = isLogoutInProgress();
-          const _authWrapperStatus = (() => { try { return getAuthTruthSnapshot().status; } catch { return null; } })();
-          if (_hasRecentSignedInSnapshot && !_logoutLatchActive) {
+          const _authTruth = (() => { try { return getAuthTruthSnapshot(); } catch { return null; } })();
+          const _authWrapperStatus = _authTruth ? _authTruth.status : null;
+          const _wrapperSignedIn = Boolean(_authTruth && _authTruth.isSignedIn);
+          const _hasRecentSignedIn = _hasRecentSignedInSnapshot || _hasRecentGateSignedIn || _wrapperSignedIn;
+          if (_hasRecentSignedIn && !_logoutLatchActive) {
             if (isTp3dDebugEnabled()) {
-              console.info('[authGate] signedOutFallback:block-recent-signed-in', {
+              console.info('[authGate] signedOutFallback:block', {
                 hasRecentSignedInSnapshot: _hasRecentSignedInSnapshot,
                 snapshotAgeMs: _snapshotAgeMs,
+                gateSignedInAgeMs: _gateSignedInAgeMs,
+                wrapperSignedIn: _wrapperSignedIn,
                 hasSessionIndicators,
                 authWrapperStatus: _authWrapperStatus,
                 logoutLatchActive: _logoutLatchActive,
@@ -4484,6 +4507,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
             console.info('[authGate] signedOutFallback:confirm', {
               hasRecentSignedInSnapshot: _hasRecentSignedInSnapshot,
               snapshotAgeMs: _snapshotAgeMs,
+              gateSignedInAgeMs: _gateSignedInAgeMs,
+              wrapperSignedIn: _wrapperSignedIn,
               hasSessionIndicators,
               authWrapperStatus: _authWrapperStatus,
               logoutLatchActive: _logoutLatchActive,
@@ -4929,15 +4954,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       applyOrgRequiredUi(true);
       queueOrgScopedRender(source);
-      _lastOrgChangeSyncAtMs = Date.now();
-      _lastOrgChangeSyncOrgId = incomingOrgId;
+      _orgRoleHydrationGraceUntilByOrg.set(incomingOrgId, Date.now() + _ORG_ROLE_GRACE_MS);
+      // Set inflight flag ASAP so hydration checker sees it immediately
+      _orgBundleFetchInflightForOrg = incomingOrgId;
       maybeScheduleBillingRefresh('org-changed');
 
       if (isLogoutInProgress() || !authGateIsSettled()) {
         orgContextQueued = true;
         return;
       }
-      _orgBundleFetchInflightForOrg = incomingOrgId;
       void refreshOrgContext(source, { force: true, forceEmit: false });
     }
 
@@ -5152,8 +5177,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       orgContextVersion = 0;
       lastAppliedOrgContextVersion = 0;
       _orgBundleFetchInflightForOrg = null;
-      _lastOrgChangeSyncAtMs = 0;
-      _lastOrgChangeSyncOrgId = '';
+      _orgRoleHydrationGraceUntilByOrg.clear();
       lastOrgIdNotified = null;
       lastOrgChangeAt = 0;
       if (clearLocalOrgHint || confirmedNoOrg) writeLocalOrgId(null);
@@ -6863,11 +6887,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // Check if bundle fetch is in-flight for this org
           const bundleInflight = _orgBundleFetchInflightForOrg === normalizedOrgId;
           const contextInflight = Boolean(orgContextInFlight);
-          // Grace window: right after org change, treat as inflight even if flags haven't been set yet
-          const inGraceWindow = _lastOrgChangeSyncOrgId === normalizedOrgId
-            && _lastOrgChangeSyncAtMs && (Date.now() - _lastOrgChangeSyncAtMs) < _ORG_CHANGE_GRACE_MS;
+          const authInflight = Boolean(authRehydratePromise);
+          // Grace window: treat as inflight for the first 1.5s after org change
+          const graceUntil = _orgRoleHydrationGraceUntilByOrg.get(normalizedOrgId) || 0;
+          const inGraceWindow = graceUntil > 0 && Date.now() < graceUntil;
 
-          if (bundleInflight || contextInflight || inGraceWindow) {
+          if (bundleInflight || contextInflight || authInflight || inGraceWindow) {
             // Track when inflight started for hard cap
             if (!_roleHydrationInflightSince) _roleHydrationInflightSince = Date.now();
             // Hard cap: if inflight > 8s, give up waiting and treat as unknown
@@ -7410,8 +7435,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // When inflight, force canManageBilling false so owner-only UI stays hidden until role arrives
           const canManageBilling = _hydrationState === 'inflight' ? false : _roleResult.canManageBilling;
           if (isTp3dDebugEnabled() && orgId && _hydrationState !== 'hydrated') {
-            console.info('[OrgRole]', _hydrationState === 'inflight' ? 'not-hydrated' : 'hydrated-no-role', {
-              orgId, hydration: _hydrationState === 'unknown' ? 'complete' : _hydrationState, roleSource: _roleResult.roleSource,
+            const _hydLabel = _hydrationState === 'inflight' ? 'not-hydrated' : 'hydrated-no-role';
+            const _hydDetail = _hydrationState === 'unknown' ? 'complete' : _hydrationState;
+            const _graceUntilTs = _orgRoleHydrationGraceUntilByOrg.get(orgId) || 0;
+            console.info('[OrgRole]', _hydLabel, {
+              orgId, hydration: _hydDetail, roleSource: _roleResult.roleSource,
+              reason: _hydrationState === 'inflight'
+                ? (_orgBundleFetchInflightForOrg === orgId ? 'bundle-inflight'
+                  : orgContextInFlight ? 'context-inflight'
+                  : authRehydratePromise ? 'auth-inflight'
+                  : (_graceUntilTs > Date.now() ? 'grace' : 'other'))
+                : undefined,
             });
           }
           const status = String((s && s.status) || '');

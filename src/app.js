@@ -126,6 +126,7 @@ let _billingLastFocusRefreshAt = 0;
 let _lastBillingKey = '';
 let _lastBillingKeyAt = 0;
 let _billingTraceSeq = 0;
+let _billingEpoch = 0; // incremented on sign-out; late refresh results are ignored when epoch changes
 const _bootStartedAtMs = Date.now();
 /** @type {null|((snapshot:any, meta?:{reason?:string, activeOrgId?:string|null})=>void)} */
 let _billingGateApplier = null;
@@ -139,6 +140,8 @@ let _billingTabId = '';
 /** @type {BroadcastChannel|null} */
 let _billingBroadcast = null;
 let _lastAppliedBillingLfa = 0; // dedupe: last cross-tab lastFetchedAt we applied
+/** @type {Map<string, string>} per-org dedupe: orgId -> JSON signature of last processed cross-tab snapshot */
+const _lastProcessedBillingSigByOrg = new Map();
 
 // Generate a unique per-tab ID
 try {
@@ -296,15 +299,34 @@ function _broadcastBillingResult(orgId, state) {
   } catch (_) { /* ignore */ }
 }
 
+function _buildCrossTabBillingSig(orgId, state) {
+  return JSON.stringify({
+    orgId: orgId || '',
+    lastFetchedAt: (state && Number(state.lastFetchedAt)) || 0,
+    ok: state && state.ok === true,
+    pending: state && state.pending === true,
+    plan: (state && state.plan) || null,
+    status: (state && state.status) || null,
+    isActive: state && state.isActive === true,
+  });
+}
+
 function _handleCrossTabBillingResult(orgId, state, fromTabId) {
+  const currentOrgId = getActiveOrgIdForBilling();
+  if (!currentOrgId || currentOrgId !== orgId) return;
+  if (_billingState.loading) return; // don't overwrite an in-flight local fetch
+
+  // Per-org signature dedupe: skip if this exact payload was already processed for this org
+  const _ctSig = _buildCrossTabBillingSig(orgId, state);
+  if (_lastProcessedBillingSigByOrg.get(orgId) === _ctSig) return; // silent exit
+  _lastProcessedBillingSigByOrg.set(orgId, _ctSig);
+
+  // Log only after dedupe (truly new data)
   if (fromTabId === 'storage') {
     billingDebugLog('billing:cross-tab-storage:received', { orgId, localTabId: _billingTabId });
   } else {
     billingDebugLog('billing:cross-tab-broadcast:received', { orgId, fromTabId, localTabId: _billingTabId });
   }
-  const currentOrgId = getActiveOrgIdForBilling();
-  if (!currentOrgId || currentOrgId !== orgId) return;
-  if (_billingState.loading) return; // don't overwrite an in-flight local fetch
 
   // Dedupe: skip if we already applied a snapshot with the same lastFetchedAt
   const incomingLfa = Number(state && state.lastFetchedAt) || 0;
@@ -336,7 +358,9 @@ function _handleCrossTabBillingStorageEvent(ev) {
     if (_billingState.loading) return;
     const state = _readSharedBillingResult(orgId);
     if (!state) return;
-    billingDebugLog('billing:cross-tab-storage:received', { orgId });
+    // Per-org signature dedupe: skip before any log or handler work
+    const _storageSig = _buildCrossTabBillingSig(orgId, state);
+    if (_lastProcessedBillingSigByOrg.get(orgId) === _storageSig) return;
     _handleCrossTabBillingResult(orgId, state, 'storage');
   } catch (_) { /* ignore */ }
 }
@@ -456,7 +480,7 @@ function subscribeBilling(fn) {
 
 function clearBillingState() {
   _billingState.loading = false;
-  _billingState.pending = true;
+  _billingState.pending = false;
   _billingState.ok = false;
   _billingState.plan = null;
   _billingState.status = null;
@@ -473,6 +497,10 @@ function clearBillingState() {
   _billingState.error = null;
   _billingState.lastFetchedAt = 0;
   _billingLastFocusRefreshAt = 0;
+  _lastAppliedBillingLfa = 0;
+  _billingRefreshQueued = false;
+  _lastProcessedBillingSigByOrg.clear();
+  _billingEpoch++;
   _notifyBilling();
   applyAccessGateFromBilling(getBillingState(), { reason: 'clear' });
 }
@@ -483,6 +511,8 @@ let _workspaceReadyInflight = false;
 let _authGateIsSettledAccessor = () => false;
 /** @type {() => {status:string,userId:string|null,hasToken:boolean,isSignedIn:boolean}|null} */
 let _authTruthSnapshotAccessor = () => null;
+/** @type {(orgId:string) => 'hydrated'|'inflight'|'unknown'} Module-level accessor for org role hydration state */
+let _getOrgRoleHydrationStateAccessor = () => 'unknown';
 async function ensureWorkspaceReadyForUI({ timeoutMs = 2500, pollMs = 80, forceFirst = true } = {}) {
   try {
     const mod = await import('./core/supabase-client.js');
@@ -666,6 +696,7 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
   }
 
   try {
+    const _epochAtStart = _billingEpoch;
     billingDebugLog('refresh:start', { reason, force, requestedOrgId: requestedOrgId || null });
     // ── BillingTrace (debug-only) ──
     if (isTp3dDebugEnabled()) {
@@ -749,6 +780,14 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
     }
 
     _billingState.loading = false;
+
+    // Epoch guard: if a sign-out (clearBillingState) happened while this fetch was in-flight,
+    // discard the result so we don't re-hydrate billing state for a signed-out user.
+    if (_billingEpoch !== _epochAtStart) {
+      billingDebugLog('refresh:discard-epoch', { reason, epochAtStart: _epochAtStart, currentEpoch: _billingEpoch });
+      return getBillingState();
+    }
+
     if (!(result && result.pending)) {
       _billingState.lastFetchedAt = Date.now();
     }
@@ -1079,6 +1118,15 @@ try {
       return payload;
     },
   };
+} catch (_) { /* ignore */ }
+
+// tp3dDebug-only: expose getBillingState on window for console diagnostics
+try {
+  if (isTp3dDebugEnabled()) {
+    window['getBillingState'] = () => (window.__TP3D_BILLING && typeof window.__TP3D_BILLING.getBillingState === 'function')
+      ? window.__TP3D_BILLING.getBillingState()
+      : null;
+  }
 } catch (_) { /* ignore */ }
 
 const TP3D_BUILD_STAMP = Object.freeze({
@@ -2442,6 +2490,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const _bs = window.__TP3D_BILLING && typeof window.__TP3D_BILLING.getBillingState === 'function'
             ? window.__TP3D_BILLING.getBillingState() : null;
           if (_bs && _bs.ok) {
+            // If org role is still inflight, defer with a neutral message instead of wrong owner/non-owner CTA
+            const _autopackOrgId = String((_bs && _bs.orgId) || '').trim();
+            const _autopackHydration = _autopackOrgId ? _getOrgRoleHydrationStateAccessor(_autopackOrgId) : 'unknown';
+            if (_autopackHydration === 'inflight') {
+              UIComponents.showToast('Loading billing\u2026 please try again in a moment.', 'info', { title: 'AutoPack' });
+              return;
+            }
             const _rules = getProRuleSet(_bs, window.OrgContext && typeof window.OrgContext.getActiveRole === 'function' ? window.OrgContext.getActiveRole() : null);
             if (!_rules.canUseProFeature) {
               UIComponents.showToast(_rules.uxMessage, 'info', { title: 'AutoPack' });
@@ -4266,6 +4321,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
     let lastOrgPersistAt = 0;
     let orgContextInFlight = null;
     let orgContextQueued = false;
+    let _orgBundleFetchInflightForOrg = null;
+    let _lastOrgChangeSyncAtMs = 0;
+    let _lastOrgChangeSyncOrgId = '';
+    const _ORG_CHANGE_GRACE_MS = 2000;
     let lastAuthRehydrateAt = 0;
     const AUTH_REHYDRATE_COOLDOWN_MS = 750;
     const AUTH_REFRESH_DEBOUNCE_MS = 350;
@@ -4308,6 +4367,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
       signedOutTimer: /** @type {ReturnType<typeof setTimeout>|null} */ (null),
       settled: false,
     };
+    // Settled dedupe: avoid repeated settled:set for the same status+user
+    let _settledStatus = /** @type {string|null} */ (null);
+    let _settledUserId = /** @type {string|null} */ (null);
 
     function authGateIsSettled() {
       return _authGate.settled;
@@ -4324,7 +4386,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (_authGate.signedOutCandidateAt) {
         _authGate.signedOutCandidateAt = 0;
       }
+      // Dedupe: skip if already settled with same status + user
+      const nextUserId = getSignedInUserIdStrict();
+      if (_authGate.settled && _settledStatus === 'signed_in' && _settledUserId === nextUserId) {
+        if (isTp3dDebugEnabled()) console.info('[authGate] settled:dedupe', { source: 'signedIn', status: 'signed_in', userIdTail: nextUserId ? nextUserId.slice(-6) : null });
+        return;
+      }
       _authGate.settled = true;
+      _settledStatus = 'signed_in';
+      _settledUserId = nextUserId;
+      if (isTp3dDebugEnabled()) console.info('[authGate] settled:set', { source: 'signedIn', status: 'signed_in', userIdTail: nextUserId ? nextUserId.slice(-6) : null });
     }
 
     /**
@@ -4370,14 +4441,55 @@ const TP3D_BUILD_STAMP = Object.freeze({
         _authGate.signedOutTimer = null;
         // Only confirm if no SIGNED_IN arrived in the interim
         if (_authGate.signedOutCandidateAt && !_authGate.lastSignedInAt) {
+          if (_authGate.settled && _settledStatus === 'signed_out' && _settledUserId === null) {
+            if (isTp3dDebugEnabled()) console.info('[authGate] settled:dedupe', { source: 'signedOutConfirmed', status: 'signed_out' });
+            return;
+          }
           _authGate.settled = true;
-          if (isTp3dDebugEnabled()) console.info('[authGate] signedOutConfirmed', { timeoutMs });
+          _settledStatus = 'signed_out';
+          _settledUserId = null;
+          if (isTp3dDebugEnabled()) console.info('[authGate] settled:set', { source: 'signedOutConfirmed', status: 'signed_out', timeoutMs });
           onConfirmed();
         } else if (_authGate.lastSignedInAt > _authGate.signedOutCandidateAt) {
           if (isTp3dDebugEnabled()) console.info('[authGate] signedOutCancelledBySignedIn (timer)');
         } else {
+          // Fallback: lastSignedInAt exists but is older than signedOutCandidateAt.
+          // Guard: block if lastAuthEventSnapshot shows a recent signed_in (and no logout in progress).
+          const _snapshotAgeMs = lastAuthEventSnapshot ? Date.now() - (lastAuthEventSnapshot.ts || 0) : Infinity;
+          const _hasRecentSignedInSnapshot = Boolean(
+            lastAuthEventSnapshot && lastAuthEventSnapshot.status === 'signed_in' && _snapshotAgeMs < FALLBACK_AUTH_TTL_MS
+          );
+          const _logoutLatchActive = isLogoutInProgress();
+          const _authWrapperStatus = (() => { try { return getAuthTruthSnapshot().status; } catch { return null; } })();
+          if (_hasRecentSignedInSnapshot && !_logoutLatchActive) {
+            if (isTp3dDebugEnabled()) {
+              console.info('[authGate] signedOutFallback:block-recent-signed-in', {
+                hasRecentSignedInSnapshot: _hasRecentSignedInSnapshot,
+                snapshotAgeMs: _snapshotAgeMs,
+                hasSessionIndicators,
+                authWrapperStatus: _authWrapperStatus,
+                logoutLatchActive: _logoutLatchActive,
+              });
+            }
+            return;
+          }
+          if (_authGate.settled && _settledStatus === 'signed_out' && _settledUserId === null) {
+            if (isTp3dDebugEnabled()) console.info('[authGate] settled:dedupe', { source: 'signedOutConfirmedFallback', status: 'signed_out' });
+            return;
+          }
           _authGate.settled = true;
-          if (isTp3dDebugEnabled()) console.info('[authGate] signedOutConfirmed (fallback)', { timeoutMs });
+          _settledStatus = 'signed_out';
+          _settledUserId = null;
+          if (isTp3dDebugEnabled()) {
+            console.info('[authGate] signedOutFallback:confirm', {
+              hasRecentSignedInSnapshot: _hasRecentSignedInSnapshot,
+              snapshotAgeMs: _snapshotAgeMs,
+              hasSessionIndicators,
+              authWrapperStatus: _authWrapperStatus,
+              logoutLatchActive: _logoutLatchActive,
+            });
+            console.info('[authGate] settled:set', { source: 'signedOutConfirmedFallback', status: 'signed_out', timeoutMs });
+          }
           onConfirmed();
         }
       }, timeoutMs);
@@ -4778,6 +4890,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return;
       }
 
+      if (isTp3dDebugEnabled()) {
+        console.info('[orgContext] sync-version', {
+          source,
+          incomingVersion,
+          lastAppliedVersion: lastAppliedOrgContextVersion,
+          applied: true,
+          incomingOrgId,
+          incomingUserId: payloadUserId,
+        });
+      }
+
       markOrgContextVersion(incomingVersion);
       writeLocalOrgId(incomingOrgId);
 
@@ -4806,12 +4929,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       applyOrgRequiredUi(true);
       queueOrgScopedRender(source);
+      _lastOrgChangeSyncAtMs = Date.now();
+      _lastOrgChangeSyncOrgId = incomingOrgId;
       maybeScheduleBillingRefresh('org-changed');
 
       if (isLogoutInProgress() || !authGateIsSettled()) {
         orgContextQueued = true;
         return;
       }
+      _orgBundleFetchInflightForOrg = incomingOrgId;
       void refreshOrgContext(source, { force: true, forceEmit: false });
     }
 
@@ -5025,6 +5151,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
       };
       orgContextVersion = 0;
       lastAppliedOrgContextVersion = 0;
+      _orgBundleFetchInflightForOrg = null;
+      _lastOrgChangeSyncAtMs = 0;
+      _lastOrgChangeSyncOrgId = '';
       lastOrgIdNotified = null;
       lastOrgChangeAt = 0;
       if (clearLocalOrgHint || confirmedNoOrg) writeLocalOrgId(null);
@@ -5266,6 +5395,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
         role: resolved.role || null,
         updatedAt: now,
       };
+      // Expose last bundle for sync role resolution (resolveCanManageBillingForOrg).
+      try { window.__TP3D_LAST_ACCOUNT_BUNDLE = bundle; } catch (_) { /* ignore */ }
       writeLocalOrgId(nextOrgIdStr);
 
       // Best-effort: persist current org to profile when we have a real profile row.
@@ -5331,7 +5462,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (changed || forceEmit) {
         queueOrgScopedRender(reason);
       }
+      if (_orgBundleFetchInflightForOrg === nextOrgIdStr) _orgBundleFetchInflightForOrg = null;
       maybeScheduleBillingRefresh('org-context');
+      // Re-apply access gate with current billing snapshot + fresh role.
+      // Handles: role resolved after billing already cached → modal upgrades in-place.
+      applyAccessGateFromBilling(getBillingState(), { reason: 'bundle-role-resolved' });
       return nextOrgIdStr;
     }
 
@@ -6191,10 +6326,23 @@ const TP3D_BUILD_STAMP = Object.freeze({
           }
           AuthOverlay.setPhase('form', { onRetry: bootstrapAuthGate });
           AuthOverlay.show();
+          // Ensure settled is true so auto-race guard doesn't block refreshes forever
+          if (!_authGate.settled && !_authGate.signedOutTimer) {
+            _authGate.settled = true;
+            _settledStatus = 'signed_out';
+            _settledUserId = null;
+            if (isTp3dDebugEnabled()) console.info('[authGate] settled:set', { source: 'bootstrap-no-session', status: 'signed_out' });
+          }
           return false;
         } catch (err) {
           AuthOverlay.setPhase('cantconnect', { error: err, onRetry: bootstrapAuthGate });
           AuthOverlay.show();
+          if (!_authGate.settled && !_authGate.signedOutTimer) {
+            _authGate.settled = true;
+            _settledStatus = 'signed_out';
+            _settledUserId = null;
+            if (isTp3dDebugEnabled()) console.info('[authGate] settled:set', { source: 'bootstrap-cantconnect', status: 'signed_out' });
+          }
           return false;
         }
       };
@@ -6432,10 +6580,19 @@ const TP3D_BUILD_STAMP = Object.freeze({
             if (document.hidden) return;
             requestAuthRefresh('tab-visible');
           });
+          let _legacyOrgSyncTimer = null;
           window.addEventListener('storage', ev => {
             const key = ev && ev.key ? String(ev.key) : '';
             if (!key) return;
             if (key === ORG_CONTEXT_SYNC_KEY && ev.newValue) {
+              // Canonical sync arrived — cancel any pending legacy hint
+              if (_legacyOrgSyncTimer) {
+                clearTimeout(_legacyOrgSyncTimer);
+                _legacyOrgSyncTimer = null;
+                if (isTp3dDebugEnabled()) {
+                  console.info('[orgSync] legacy-hint:cancelled', { reason: 'canonical-arrived' });
+                }
+              }
               const payload = parseOrgContextSyncPayload(ev.newValue);
               if (payload) {
                 handleIncomingOrgContextSync(payload, { source: 'org-sync-storage' });
@@ -6443,21 +6600,24 @@ const TP3D_BUILD_STAMP = Object.freeze({
               return;
             }
             if (key === ORG_CONTEXT_LS_KEY) {
+              // Legacy key — treat as hint only, debounce to let canonical win
               const nextOrgId = normalizeOrgIdForBilling(ev.newValue || '');
-              const currentUserId = getSignedInUserIdStrict();
-              if (nextOrgId && currentUserId) {
-                handleIncomingOrgContextSync(
-                  {
-                    orgId: nextOrgId,
-                    userId: currentUserId,
-                    ts: Date.now(),
-                    epoch: Date.now(),
-                    tabId: 'legacy-storage',
-                    reason: 'legacy-active-org-id',
-                  },
-                  { source: 'org-sync-legacy' }
-                );
+              if (!nextOrgId) return;
+              if (_legacyOrgSyncTimer) clearTimeout(_legacyOrgSyncTimer);
+              if (isTp3dDebugEnabled()) {
+                console.info('[orgSync] legacy-hint', { orgId: nextOrgId, startedMs: 100 });
               }
+              _legacyOrgSyncTimer = setTimeout(() => {
+                _legacyOrgSyncTimer = null;
+                // Canonical did not arrive within window — refresh org context as fallback
+                if (isLogoutInProgress()) return;
+                const uid = getSignedInUserIdStrict();
+                if (!uid) return;
+                if (isTp3dDebugEnabled()) {
+                  console.info('[orgSync] legacy-hint:fired', { orgId: nextOrgId });
+                }
+                void refreshOrgContext('org-sync-legacy', { force: true, forceEmit: false });
+              }, 100);
               return;
             }
             const isAuthKey =
@@ -6581,8 +6741,152 @@ const TP3D_BUILD_STAMP = Object.freeze({
         let trialExpiredModalOrgId = null;
         let trialExpiredLockedOrgId = null;
         let trialWelcomeShownOrgId = null;
+        let _trialModalCanManageBilling = null; // tracks the last canManageBilling value used for the open modal
+        let _trialModalLine1Ref = null;
+        let _trialModalRoleHintRef = null;
+        let _trialModalDeferTimer = null;
+        let _trialModalDeferOrgId = null;
+        let _trialModalDeferAttemptedForOrg = null;
+        const TRIAL_MODAL_ROLE_DEFER_MS = 900;
         /** @type {Map<string, string>} */
         const lastBillingStatusByOrg = new Map();
+
+        /**
+         * Resolve canManageBilling from a single source of truth: the membership
+         * role for the active org (from the account bundle), scoped by userId+orgId.
+         * Falls back to orgContext.role, then to OrgContext.getActiveRole().
+         * Returns resolved=false when role is not yet known (default: non-owner/support UI).
+         */
+        function resolveCanManageBillingForOrg(orgId) {
+          const normalizedOrgId = orgId ? String(orgId).trim() : '';
+          const userId = getSignedInUserIdStrict();
+
+          // Early-out: cannot resolve role without both orgId and userId
+          if (!normalizedOrgId || !userId) {
+            if (isTp3dDebugEnabled()) {
+              console.info('[resolveCanManageBillingForOrg]', {
+                orgId: normalizedOrgId, userId, resolved: false, membershipRole: null,
+                roleSource: 'none', reason: 'missing-identity',
+              });
+            }
+            return { canManageBilling: false, membershipRole: null, roleSource: 'none', resolved: false, userId, orgId: normalizedOrgId };
+          }
+
+          let membershipRole = '';
+          let roleSource = 'none';
+          let resolved = false;
+
+          // 1. Authoritative: orgContext.role (set by resolveOrgContextFromBundle, scoped to activeOrgId)
+          if (normalizedOrgId && orgContext && orgContext.activeOrgId && String(orgContext.activeOrgId) === normalizedOrgId) {
+            const ctxRole = typeof orgContext.role === 'string' ? orgContext.role.toLowerCase() : '';
+            if (ctxRole === 'owner' || ctxRole === 'admin' || ctxRole === 'member') {
+              membershipRole = ctxRole;
+              roleSource = 'orgContext.role';
+              resolved = true;
+            }
+          }
+
+          // 2. Fallback: OrgContext.getActiveRole() (same data, different accessor)
+          if (!resolved) {
+            const activeRole = typeof OrgContext.getActiveRole === 'function' ? OrgContext.getActiveRole() : '';
+            const normalized = typeof activeRole === 'string' ? activeRole.toLowerCase() : '';
+            if (normalized === 'owner' || normalized === 'admin' || normalized === 'member') {
+              membershipRole = normalized;
+              roleSource = 'OrgContext.getActiveRole';
+              resolved = true;
+            }
+          }
+
+          // 3. Fallback: cached bundle membership from SupabaseClient
+          if (!resolved && normalizedOrgId) {
+            try {
+              // Try the module-level bundle cache via window accessor
+              const bundleCache = window.__TP3D_LAST_ACCOUNT_BUNDLE || null;
+              if (bundleCache && bundleCache.membership) {
+                const memOrgId = bundleCache.membership.organization_id ? String(bundleCache.membership.organization_id).trim() : '';
+                const memUserId = bundleCache.user && bundleCache.user.id ? String(bundleCache.user.id) : '';
+                if (memOrgId === normalizedOrgId && (!userId || memUserId === userId)) {
+                  const memRole = typeof bundleCache.membership.role === 'string' ? bundleCache.membership.role.toLowerCase() : '';
+                  if (memRole === 'owner' || memRole === 'admin' || memRole === 'member') {
+                    membershipRole = memRole;
+                    roleSource = 'bundleCache.membership';
+                    resolved = true;
+                  }
+                }
+              }
+            } catch (_) { /* ignore */ }
+          }
+
+          const canManageBilling = resolved && membershipRole === 'owner';
+          const result = { canManageBilling, membershipRole, roleSource, resolved, userId, orgId: normalizedOrgId };
+          if (isTp3dDebugEnabled()) {
+            console.info('[resolveCanManageBillingForOrg]', {
+              orgId: normalizedOrgId, userId, resolved, membershipRole: membershipRole || null,
+              roleSource, ctxRole: orgContext && typeof orgContext.role === 'string' ? orgContext.role : null,
+              ctxActiveOrgId: orgContext && orgContext.activeOrgId ? String(orgContext.activeOrgId) : null,
+              bundleMembership: (function() { try { const _b = window.__TP3D_LAST_ACCOUNT_BUNDLE; return _b && _b.membership ? { role: _b.membership.role, orgId: _b.membership.organization_id } : null; } catch(_) { return null; } })(),
+            });
+          }
+          return result;
+        }
+
+        // ── Org Role Hydration State ──────────────────────────────────────
+        // Returns 3 states: 'hydrated' (role known or definitively absent),
+        // 'inflight' (bundle fetch still in-flight), 'unknown' (no fetch, no role).
+        // Used to defer owner-only UI decisions until role has arrived.
+        const _ROLE_HYDRATION_CAP_MS = 8000; // hard cap: treat as 'unknown' after 8s in-flight
+        let _roleHydrationInflightSince = 0;
+
+        /**
+         * @param {string} orgId
+         * @returns {'hydrated'|'inflight'|'unknown'}
+         */
+        function getOrgRoleHydrationState(orgId) {
+          const normalizedOrgId = orgId ? String(orgId).trim() : '';
+          if (!normalizedOrgId) return 'unknown';
+
+          // Check if role is already known for this org
+          if (orgContext && orgContext.activeOrgId && String(orgContext.activeOrgId) === normalizedOrgId) {
+            const ctxRole = typeof orgContext.role === 'string' ? orgContext.role.toLowerCase() : '';
+            if (ctxRole === 'owner' || ctxRole === 'admin' || ctxRole === 'member') {
+              return 'hydrated';
+            }
+          }
+          // Also check the accessor
+          if (typeof OrgContext.getActiveRole === 'function') {
+            const role = String(OrgContext.getActiveRole() || '').toLowerCase();
+            if (role === 'owner' || role === 'admin' || role === 'member') {
+              return 'hydrated';
+            }
+          }
+
+          // Check if bundle fetch is in-flight for this org
+          const bundleInflight = _orgBundleFetchInflightForOrg === normalizedOrgId;
+          const contextInflight = Boolean(orgContextInFlight);
+          // Grace window: right after org change, treat as inflight even if flags haven't been set yet
+          const inGraceWindow = _lastOrgChangeSyncOrgId === normalizedOrgId
+            && _lastOrgChangeSyncAtMs && (Date.now() - _lastOrgChangeSyncAtMs) < _ORG_CHANGE_GRACE_MS;
+
+          if (bundleInflight || contextInflight || inGraceWindow) {
+            // Track when inflight started for hard cap
+            if (!_roleHydrationInflightSince) _roleHydrationInflightSince = Date.now();
+            // Hard cap: if inflight > 8s, give up waiting and treat as unknown
+            if ((Date.now() - _roleHydrationInflightSince) > _ROLE_HYDRATION_CAP_MS) {
+              if (isTp3dDebugEnabled()) {
+                console.info('[OrgRole] inflight-cap-exceeded', { orgId: normalizedOrgId, elapsedMs: Date.now() - _roleHydrationInflightSince });
+              }
+              _roleHydrationInflightSince = 0;
+              return 'unknown';
+            }
+            return 'inflight';
+          }
+
+          // Not inflight anymore — reset timer
+          _roleHydrationInflightSince = 0;
+          // Bundle finished but no role found: definitively unknown (treat as non-owner)
+          return 'unknown';
+        }
+        _getOrgRoleHydrationStateAccessor = getOrgRoleHydrationState;
 
         const pickCheckoutInterval = ({ initialInterval = 'month', _title = 'Choose Plan', _continueLabel = 'Continue' } = {}) =>
           new Promise(resolve => {
@@ -6784,11 +7088,26 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // ignore
         }
 
+        const _clearTrialModalDeferTimer = (reason) => {
+          if (_trialModalDeferTimer !== null) {
+            clearTimeout(_trialModalDeferTimer);
+            _trialModalDeferTimer = null;
+            if (isTp3dDebugEnabled()) {
+              console.info('[TrialExpiredModal] defer:cancel', { orgId: _trialModalDeferOrgId, reason });
+            }
+          }
+          _trialModalDeferOrgId = null;
+        };
+
         const closeTrialExpiredModal = () => {
+          _clearTrialModalDeferTimer('modal-close');
+          _trialModalDeferAttemptedForOrg = null;
           if (!trialExpiredModalRef || typeof trialExpiredModalRef.close !== 'function') return;
           const ref = trialExpiredModalRef;
           trialExpiredModalRef = null;
           trialExpiredModalOrgId = null;
+          _trialModalLine1Ref = null;
+          _trialModalRoleHintRef = null;
           try {
             ref.close();
           } catch (_) {
@@ -6796,10 +7115,64 @@ const TP3D_BUILD_STAMP = Object.freeze({
           }
         };
 
+        const upgradeTrialModalToOwner = (snapshot, orgId) => {
+          // In-place upgrade: non-owner UI → owner UI (role resolved after modal opened)
+          if (_trialModalLine1Ref) {
+            _trialModalLine1Ref.textContent = 'Your free trial has ended. Start a subscription to continue using Truck Packer 3D.';
+          }
+          if (_trialModalRoleHintRef && _trialModalRoleHintRef.parentNode) {
+            _trialModalRoleHintRef.parentNode.removeChild(_trialModalRoleHintRef);
+            _trialModalRoleHintRef = null;
+          }
+          // Prepend "Start Subscription" button to footer (idempotent — skip if already present)
+          if (trialExpiredModalRef && trialExpiredModalRef.modal) {
+            const footer = trialExpiredModalRef.modal.querySelector('.modal-footer');
+            if (footer && !footer.querySelector('[data-trial-upgrade-btn]')) {
+              const btn = document.createElement('button');
+              btn.setAttribute('data-trial-upgrade-btn', '1');
+              btn.className = 'btn btn-primary';
+              btn.type = 'button';
+              btn.textContent = 'Start Subscription';
+              btn.addEventListener('click', () => {
+                pickCheckoutInterval({ _title: 'Choose Plan', _continueLabel: 'Continue' })
+                  .then(selection => {
+                    if (!selection || !selection.interval) return Promise.resolve();
+                    return startCheckout({ interval: selection.interval }).then((result) => {
+                      if (!result.ok) {
+                        UIComponents.showToast(result.error || 'Checkout failed', 'error', { title: 'Billing' });
+                      }
+                    });
+                  })
+                  .catch(() => {
+                    UIComponents.showToast('Checkout failed', 'error', { title: 'Billing' });
+                  });
+              });
+              footer.insertBefore(btn, footer.firstChild);
+            }
+          }
+          _trialModalCanManageBilling = true;
+          if (isTp3dDebugEnabled()) {
+            const _roleInfo = resolveCanManageBillingForOrg(orgId);
+            console.info('[TrialExpiredModal] upgrade', {
+              tabId: SupabaseClient && typeof SupabaseClient.getTabId === 'function' ? SupabaseClient.getTabId() : null,
+              orgId,
+              membershipRole: _roleInfo.membershipRole || null,
+              roleSource: _roleInfo.roleSource || null,
+            });
+          }
+        };
+
         const showTrialExpiredModal = (snapshot, canManageBilling) => {
           const orgId = String(snapshot && snapshot.orgId ? snapshot.orgId : (orgContext && orgContext.activeOrgId) || '').trim();
           if (!orgId) return;
-          if (trialExpiredModalRef && trialExpiredModalOrgId === orgId) return;
+          // If modal already open for this org: skip if same state, upgrade in-place if role resolved
+          if (trialExpiredModalRef && trialExpiredModalOrgId === orgId) {
+            if (_trialModalCanManageBilling === canManageBilling) return;
+            if (canManageBilling && !_trialModalCanManageBilling) {
+              upgradeTrialModalToOwner(snapshot, orgId);
+              return;
+            }
+          }
           closeTrialExpiredModal();
 
           const body = document.createElement('div');
@@ -6810,6 +7183,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
             line1.textContent = 'Your free trial has ended.';
           }
           body.appendChild(line1);
+          _trialModalLine1Ref = line1;
+          _trialModalRoleHintRef = null;
           if (!canManageBilling) {
             // TODO: replace support@pxl360.com with the real support email later.
             const roleHint = document.createElement('div');
@@ -6821,6 +7196,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             supportLink.textContent = 'support@pxl360.com';
             roleHint.appendChild(supportLink);
             body.appendChild(roleHint);
+            _trialModalRoleHintRef = roleHint;
           }
 
           const logoutAction = {
@@ -6859,6 +7235,22 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
           trialExpiredModalOrgId = orgId;
           trialExpiredLockedOrgId = orgId;
+          _trialModalCanManageBilling = canManageBilling;
+
+          // tp3dDebug: log modal render context for cross-tab diagnostics
+          if (isTp3dDebugEnabled()) {
+            const _roleInfo = resolveCanManageBillingForOrg(orgId);
+            console.info('[TrialExpiredModal] render', {
+              tabId: SupabaseClient && typeof SupabaseClient.getTabId === 'function' ? SupabaseClient.getTabId() : null,
+              userId: _roleInfo.userId || null,
+              orgId,
+              billingStatus: snapshot && snapshot.status ? snapshot.status : null,
+              membershipRole: _roleInfo.membershipRole || null,
+              canManageBilling,
+              roleSource: _roleInfo.roleSource || null,
+            });
+          }
+
           trialExpiredModalRef = UIComponents.showModal({
             title: 'Trial Ended',
             content: body,
@@ -6868,6 +7260,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
             onClose: () => {
               trialExpiredModalRef = null;
               trialExpiredModalOrgId = null;
+              _trialModalCanManageBilling = null;
+              _trialModalLine1Ref = null;
+              _trialModalRoleHintRef = null;
             },
           });
         };
@@ -7009,9 +7404,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
         };
 
         const updateSidebarNotice = (s) => {
-          const activeRole = String((orgContext && orgContext.role) || '').toLowerCase();
-          const canManageBilling = activeRole === 'owner';
           const orgId = String((s && s.orgId) || '').trim();
+          const _roleResult = resolveCanManageBillingForOrg(orgId);
+          const _hydrationState = orgId ? getOrgRoleHydrationState(orgId) : 'unknown';
+          // When inflight, force canManageBilling false so owner-only UI stays hidden until role arrives
+          const canManageBilling = _hydrationState === 'inflight' ? false : _roleResult.canManageBilling;
+          if (isTp3dDebugEnabled() && orgId && _hydrationState !== 'hydrated') {
+            console.info('[OrgRole]', _hydrationState === 'inflight' ? 'not-hydrated' : 'hydrated-no-role', {
+              orgId, hydration: _hydrationState === 'unknown' ? 'complete' : _hydrationState, roleSource: _roleResult.roleSource,
+            });
+          }
           const status = String((s && s.status) || '');
           const _storedStatus = orgId ? (() => { try { return sessionStorage.getItem('tp3d:billing:status:' + orgId) || ''; } catch (_) { return ''; } })() : '';
           const prevStatus = orgId ? String(lastBillingStatusByOrg.get(orgId) || _storedStatus) : '';
@@ -7028,7 +7430,52 @@ const TP3D_BUILD_STAMP = Object.freeze({
             (status === 'trial_expired' || (Number.isFinite(trialEndMs) && trialEndMs <= Date.now()))
           );
 
-          if (trialExpired) { showTrialExpiredModal(s, canManageBilling); }
+          if (trialExpired) {
+            // Cancel defer + latch if active org changed
+            if (_trialModalDeferOrgId && _trialModalDeferOrgId !== orgId) {
+              _clearTrialModalDeferTimer('org-changed');
+              _trialModalDeferAttemptedForOrg = null;
+            }
+
+            if (_roleResult.resolved || trialExpiredModalRef) {
+              // Role truly resolved OR modal already open — show/upgrade immediately
+              _clearTrialModalDeferTimer('role-resolved');
+              _trialModalDeferAttemptedForOrg = null;
+              showTrialExpiredModal(s, canManageBilling);
+            } else if (_trialModalDeferAttemptedForOrg === orgId) {
+              // Defer already fired once for this org, role still unresolved
+              if (_orgBundleFetchInflightForOrg === orgId) {
+                // Bundle fetch still in-flight — wait for bundle-role-resolved to re-trigger
+                if (isTp3dDebugEnabled()) {
+                  console.info('[TrialExpiredModal] defer:latch-wait-bundle', { orgId, roleSource: _roleResult.roleSource });
+                }
+              } else {
+                // Bundle arrived but role still unresolved (no membership) — show with safe CTA
+                if (isTp3dDebugEnabled()) {
+                  console.info('[TrialExpiredModal] defer:latch-show', { orgId, roleSource: _roleResult.roleSource });
+                }
+                showTrialExpiredModal(s, canManageBilling);
+              }
+            } else if (!_trialModalDeferTimer) {
+              // Role unresolved, no modal, no timer, no prior attempt — start bounded defer
+              _trialModalDeferOrgId = orgId;
+              _trialModalDeferAttemptedForOrg = orgId;
+              if (isTp3dDebugEnabled()) {
+                console.info('[TrialExpiredModal] defer', {
+                  orgId, ms: TRIAL_MODAL_ROLE_DEFER_MS, resolved: false, roleSource: _roleResult.roleSource,
+                });
+              }
+              _trialModalDeferTimer = setTimeout(() => {
+                _trialModalDeferTimer = null;
+                _trialModalDeferOrgId = null;
+                if (isTp3dDebugEnabled()) {
+                  console.info('[TrialExpiredModal] defer:fire', { orgId });
+                }
+                applyAccessGateFromBilling(getBillingState(), { reason: 'trial-modal-deferred' });
+              }, TRIAL_MODAL_ROLE_DEFER_MS);
+            }
+            // else: timer already running, role still unresolved — let it fire
+          }
           else if (!s || (!s.pending && !s.loading)) {
             const _authSnap = getCurrentAuthSnapshot();
             const _signedIn = _authSnap.status === 'signed_in';

@@ -1822,22 +1822,27 @@ tr:hover td {
   margin-top: var(--space-2);
 }
 
-/* Settings modal mobile improvements */
+/* Settings modal — tablet / small-screen (<=768px) */
 @media (max-width: 768px) {
   .tp3d-settings-modal {
     width: 100vw;
     height: 100vh;
+    height: 100dvh; /* iOS Safari: excludes URL-bar area */
     grid-template-columns: 1fr;
     grid-template-rows: auto 1fr;
     max-height: 100vh;
+    max-height: 100dvh;
+    border-radius: 0;
   }
 
   .tp3d-settings-left-pane {
     border-right: none;
     border-bottom: 1px solid var(--border-subtle);
     padding: var(--space-4);
+    padding-top: calc(var(--space-4) + env(safe-area-inset-top, 0px));
     overflow-x: auto;
     overflow-y: visible;
+    -webkit-overflow-scrolling: touch;
   }
 
   .tp3d-settings-nav-wrap {
@@ -1857,8 +1862,35 @@ tr:hover td {
     flex-shrink: 0;
   }
 
+  /* Right pane: header stays visible; only body scrolls */
   .tp3d-settings-right-pane {
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .tp3d-settings-right-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bg-secondary);
+    flex-shrink: 0;
+  }
+
+  /* Close button — minimum 44×44 touch target (WCAG / Apple HIG) */
+  .tp3d-settings-right-header > .btn-ghost {
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .tp3d-settings-right-body {
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain; /* prevent pull-to-refresh / overscroll bounce */
+    padding-bottom: calc(var(--space-6) + env(safe-area-inset-bottom, 0px));
   }
 }
 
@@ -1866,6 +1898,91 @@ tr:hover td {
 @media (max-width: 768px) {
   body.modal-open .sidebar {
     pointer-events: none;
+  }
+}
+
+/* Settings modal — phone (<=480px): tighter layout, stacked rows, safe-area */
+@media (max-width: 480px) {
+  /* Overlay: add safe-area margin so modal floats inside the viewport */
+  .modal-overlay {
+    padding: 12px;
+    padding-top: calc(12px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* Settings modal: bounded panel instead of full-bleed */
+  .tp3d-settings-modal {
+    width: 100%;
+    max-width: min(92vw, 520px);
+    height: auto;
+    max-height: calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    border-radius: var(--radius-lg);
+    grid-template-rows: auto auto 1fr; /* tabs row, header row, body */
+  }
+
+  /* Left pane: compact tab strip */
+  .tp3d-settings-left-pane {
+    padding: var(--space-3);
+    padding-top: var(--space-3); /* override tablet safe-area; overlay provides it */
+  }
+
+  /* Header: tighter padding */
+  .tp3d-settings-right-header {
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .tp3d-settings-right-title {
+    font-size: var(--text-xl);
+  }
+
+  .tp3d-settings-right-subtitle {
+    line-height: 1.5;
+  }
+
+  /* Body: tighter padding, readable line spacing */
+  .tp3d-settings-right-body {
+    padding: var(--space-4);
+    line-height: 1.5;
+  }
+
+  /* Stack two-column rows into single column */
+  .tp3d-settings-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding: 12px 0;
+  }
+
+  .tp3d-settings-danger-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 12px 0;
+  }
+
+  /* Buttons: allow text to wrap so nothing clips */
+  .tp3d-settings-right-body .btn {
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  /* Account delete input: full width */
+  .tp3d-account-delete-input {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .tp3d-account-delete-input-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  /* Account profile form: single column on phones */
+  .tp3d-account-field-row {
+    grid-template-columns: 1fr;
+  }
+
+  /* Billing card: allow wrapping */
+  .tp3d-settings-card-max {
+    max-width: 100%;
   }
 }
 
@@ -2106,6 +2223,10 @@ tr:hover td {
 
 body.modal-open {
   overflow: hidden;
+
+  /* Prevent iOS Safari background scroll & pull-to-refresh while modal is open */
+  touch-action: none;
+  -webkit-overflow-scrolling: none;
 }
 
 .toast {

@@ -7,6 +7,7 @@ const accountOverlayPath = new URL('../../src/ui/overlays/account-overlay.js', i
 const appPath = new URL('../../src/app.js', import.meta.url);
 const corsSharedPath = new URL('../../supabase/functions/_shared/cors.ts', import.meta.url);
 const supabasePath = new URL('../../src/core/supabase-client.js', import.meta.url);
+const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.meta.url);
 
 test('isAllowedBillingRedirectUrl only allows https stripe origins', async () => {
   const { isAllowedBillingRedirectUrl } = await import(
@@ -157,4 +158,257 @@ test('billing pump never runs without proven auth or usable session', async () =
 
   // Gate checks session expires_at for fallback when not proven
   assert.match(app, /maybeScheduleBillingRefresh[\s\S]*?expires_at \* 1000[\s\S]*?> Date\.now\(\)/);
+});
+
+test('TrialExpiredModal upgrades in-place when role resolves and never reads legacy session storage', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+
+  // upgradeTrialModalToOwner helper exists for in-place DOM upgrade
+  assert.match(app, /const upgradeTrialModalToOwner\s*=/);
+
+  // Guard logic upgrades in-place instead of close/reopen
+  assert.match(app, /if \(canManageBilling && !_trialModalCanManageBilling\)\s*\{\s*upgradeTrialModalToOwner\(/);
+
+  // applyOrgContextFromBundle re-applies billing gate after role resolves
+  assert.match(app, /applyAccessGateFromBilling\(getBillingState\(\),\s*\{\s*reason:\s*'bundle-role-resolved'\s*\}\)/);
+
+  // resolveCanManageBillingForOrg never reads truckPacker3d:session:v1
+  const fnMatch = app.match(/function resolveCanManageBillingForOrg\b[\s\S]*?return result;/);
+  assert.ok(fnMatch, 'resolveCanManageBillingForOrg function must exist');
+  assert.equal(fnMatch[0].includes('truckPacker3d:session:v1'), false,
+    'resolveCanManageBillingForOrg must not read legacy session storage');
+});
+
+test('upgradeTrialModalToOwner is idempotent — uses data-trial-upgrade-btn guard', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+
+  // The upgrade function checks for an existing button before inserting
+  assert.match(app, /data-trial-upgrade-btn/,
+    'upgradeTrialModalToOwner must use data-trial-upgrade-btn attribute');
+  assert.match(app, /querySelector\(\s*'\[data-trial-upgrade-btn\]'\s*\)/,
+    'upgradeTrialModalToOwner must query for existing upgrade button before inserting');
+});
+
+test('TrialExpiredModal defers display when role is unresolved', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+
+  // Defer state variables exist
+  assert.match(app, /let _trialModalDeferTimer\s*=\s*null/);
+  assert.match(app, /let _trialModalDeferOrgId\s*=\s*null/);
+  assert.match(app, /const TRIAL_MODAL_ROLE_DEFER_MS\s*=\s*900/);
+
+  // Defer fires trial-modal-deferred reason
+  assert.match(app, /reason:\s*'trial-modal-deferred'/);
+
+  // Defer timer is cleared on close
+  assert.match(app, /_clearTrialModalDeferTimer/);
+
+  // Four-branch structure: resolved → show, latch-hit → show, no timer → start, timer running → no-op
+  assert.match(app, /} else if \(!_trialModalDeferTimer\) \{/,
+    'defer must use else-if for timer-not-running guard (no-op when timer already running)');
+  // Comment confirming the no-op branch exists
+  assert.match(app, /\/\/ else: timer already running, role still unresolved/);
+});
+
+test('legacy org-sync handler is hint-only and does not call handleIncomingOrgContextSync', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+
+  // The legacy-active-org-id string must still exist (as a log label)
+  assert.match(app, /legacy-hint/,
+    'legacy handler must use hint-only pattern');
+
+  // Legacy handler must NOT build a synthetic payload with handleIncomingOrgContextSync
+  // Extract the ORG_CONTEXT_LS_KEY block — it's between "if (key === ORG_CONTEXT_LS_KEY)" and the next "return;"
+  const lsKeyIdx = app.indexOf('key === ORG_CONTEXT_LS_KEY');
+  assert.ok(lsKeyIdx > 0, 'ORG_CONTEXT_LS_KEY handler must exist');
+  const lsBlock = app.slice(lsKeyIdx, lsKeyIdx + 1200);
+  assert.equal(lsBlock.includes('handleIncomingOrgContextSync'), false,
+    'legacy LS_KEY handler must not call handleIncomingOrgContextSync directly');
+  assert.equal(lsBlock.includes('epoch: Date.now()'), false,
+    'legacy handler must not use epoch: Date.now()');
+  assert.equal(lsBlock.includes('nextOrgContextVersion()'), false,
+    'legacy handler must not call nextOrgContextVersion()');
+
+  // Must use refreshOrgContext as the fallback
+  assert.ok(lsBlock.includes('refreshOrgContext'),
+    'legacy handler must fall back to refreshOrgContext');
+});
+
+test('TrialExpiredModal defer latch prevents second timer cycle for same org', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+
+  // Latch variable exists
+  assert.match(app, /let _trialModalDeferAttemptedForOrg\s*=\s*null/,
+    'defer latch variable must exist');
+
+  // Latch is checked before starting a new timer
+  assert.match(app, /_trialModalDeferAttemptedForOrg === orgId/,
+    'defer must check latch before starting timer');
+
+  // Latch is set when starting the timer
+  assert.match(app, /_trialModalDeferAttemptedForOrg = orgId/,
+    'defer must set latch when starting timer');
+
+  // Latch is cleared on modal close
+  const closeBlock = app.slice(
+    app.indexOf('const closeTrialExpiredModal'),
+    app.indexOf('const closeTrialExpiredModal') + 500
+  );
+  assert.ok(closeBlock.includes('_trialModalDeferAttemptedForOrg = null'),
+    'latch must be cleared in closeTrialExpiredModal');
+});
+
+test('resolveCanManageBillingForOrg has early-out guard for missing orgId or userId', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+
+  // Extract the function body
+  const fnMatch = app.match(/function resolveCanManageBillingForOrg\b[\s\S]*?return result;/);
+  assert.ok(fnMatch, 'resolveCanManageBillingForOrg function must exist');
+  const fnBody = fnMatch[0];
+
+  // Early-out guard for missing identity
+  assert.ok(fnBody.includes("'missing-identity'"),
+    'must log missing-identity reason when orgId or userId is missing');
+  assert.ok(fnBody.includes('!normalizedOrgId || !userId'),
+    'must check both normalizedOrgId and userId before proceeding');
+
+  // Early return before Tier 1/2/3
+  const guardIdx = fnBody.indexOf('!normalizedOrgId || !userId');
+  const tier2Idx = fnBody.indexOf('OrgContext.getActiveRole');
+  assert.ok(guardIdx < tier2Idx,
+    'early-out guard must come before Tier 2 (OrgContext.getActiveRole) fallback');
+});
+
+test('bundle-inflight flag gates trial modal latch-show during cross-tab sync', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+
+  // Variable exists
+  assert.match(app, /let _orgBundleFetchInflightForOrg\s*=\s*null/,
+    '_orgBundleFetchInflightForOrg variable must exist');
+
+  // Set before refreshOrgContext in handleIncomingOrgContextSync
+  const syncFnMatch = app.match(/function handleIncomingOrgContextSync\b[\s\S]*?void refreshOrgContext/);
+  assert.ok(syncFnMatch, 'handleIncomingOrgContextSync must call refreshOrgContext');
+  assert.ok(syncFnMatch[0].includes('_orgBundleFetchInflightForOrg = incomingOrgId'),
+    'must set _orgBundleFetchInflightForOrg before refreshOrgContext');
+
+  // Cleared in applyOrgContextFromBundle
+  assert.match(app, /_orgBundleFetchInflightForOrg === nextOrgIdStr\) _orgBundleFetchInflightForOrg = null/,
+    'must clear inflight flag in applyOrgContextFromBundle');
+
+  // Cleared in clearOrgContext
+  const clearBlock = app.slice(
+    app.indexOf('function clearOrgContext'),
+    app.indexOf('function clearOrgContext') + 600
+  );
+  assert.ok(clearBlock.includes('_orgBundleFetchInflightForOrg = null'),
+    'must clear inflight flag in clearOrgContext');
+
+  // Latch branch checks inflight before rendering
+  assert.match(app, /defer:latch-wait-bundle/,
+    'must log defer:latch-wait-bundle when bundle is inflight');
+  assert.match(app, /_orgBundleFetchInflightForOrg === orgId/,
+    'latch branch must check _orgBundleFetchInflightForOrg');
+});
+
+test('tp3dDebug-only billing accessor is guarded by isTp3dDebugEnabled', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+
+  // window['getBillingState'] assignment must be inside isTp3dDebugEnabled guard
+  const debugAccessorMatch = app.match(/if \(isTp3dDebugEnabled\(\)\) \{[\s\S]*?window\['getBillingState'\]/);
+  assert.ok(debugAccessorMatch,
+    'window[getBillingState] must only be set when tp3dDebug is enabled');
+});
+
+// ── Login UI reliability ──────────────────────────────────────────────────────
+
+test('auth overlay render() preserves input values before innerHTML clear', async () => {
+  const src = await fs.readFile(authOverlayPath, 'utf8');
+
+  // render() must read current email input value before clearing
+  const renderFn = src.substring(
+    src.indexOf('function render('),
+    src.indexOf('function render(') + 600
+  );
+  assert.ok(renderFn.includes('input[type="email"]'),
+    'render() must query email input before innerHTML clear');
+  assert.ok(renderFn.includes('input[type="password"]'),
+    'render() must query password input before innerHTML clear');
+  // The save must occur BEFORE innerHTML = ''
+  const saveIdx = renderFn.indexOf('querySelector');
+  const clearIdx = renderFn.indexOf('innerHTML');
+  assert.ok(saveIdx < clearIdx,
+    'input value save must come before innerHTML clear');
+});
+
+test('auth overlay show() does not re-render when already open', async () => {
+  const src = await fs.readFile(authOverlayPath, 'utf8');
+
+  const showFn = src.substring(
+    src.indexOf('function show()'),
+    src.indexOf('function show()') + 400
+  );
+  // If isOpen, should return early without calling render
+  assert.ok(showFn.includes('if (isOpen) return'),
+    'show() must return early when already open');
+  // Should NOT have the old pattern: if (isOpen) { render(); return; }
+  assert.ok(!showFn.includes('if (isOpen) { render'),
+    'show() must NOT call render() when already open');
+});
+
+test('auth overlay setPhase skips re-render when form is already showing same phase', async () => {
+  const src = await fs.readFile(authOverlayPath, 'utf8');
+
+  const setPhaseFn = src.substring(
+    src.indexOf('function setPhase('),
+    src.indexOf('function setPhase(') + 600
+  );
+  assert.ok(setPhaseFn.includes('setPhase:skip'),
+    'setPhase must log skip when phase is unchanged and form is open');
+  assert.ok(setPhaseFn.includes('unchanged') && setPhaseFn.includes('isOpen'),
+    'setPhase must check unchanged + isOpen before skipping render');
+});
+
+test('auth overlay renderSignIn passes _fieldPassword as value to password field', async () => {
+  const src = await fs.readFile(authOverlayPath, 'utf8');
+
+  const signInFn = src.substring(
+    src.indexOf('function renderSignIn()'),
+    src.indexOf('function renderSignIn()') + 600
+  );
+  assert.ok(signInFn.includes('value: _fieldPassword'),
+    'renderSignIn must pass _fieldPassword to buildPasswordField');
+});
+
+// ── Auth settled state ────────────────────────────────────────────────────────
+
+test('authGate settled is set true on signedIn, signedOutConfirmed, and bootstrap-no-session', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+
+  // settled:set log must appear at every _authGate.settled = true site
+  const settledSetCount = (app.match(/settled:set/g) || []).length;
+  assert.ok(settledSetCount >= 4,
+    `expected at least 4 settled:set log sites, got ${settledSetCount}`);
+
+  // Bootstrap no-session path must set settled when no timer is pending
+  const bootstrapBlock = app.substring(
+    app.indexOf('bootstrapAuthGate = async'),
+    app.indexOf('bootstrapAuthGate = async') + 2500
+  );
+  assert.ok(bootstrapBlock.includes('bootstrap-no-session'),
+    'bootstrapAuthGate must set settled on no-session path');
+  assert.ok(bootstrapBlock.includes('bootstrap-cantconnect'),
+    'bootstrapAuthGate must set settled on cantconnect path');
+  // Guard: only set when no pending timer
+  assert.ok(bootstrapBlock.includes('!_authGate.signedOutTimer'),
+    'bootstrap settled must check for pending signedOutTimer');
+});
+
+test('auth settled is never set false after initialization', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+
+  // Only one place should have settled: false (the initial declaration)
+  const settledFalseCount = (app.match(/_authGate\.settled\s*=\s*false|settled:\s*false/g) || []).length;
+  assert.equal(settledFalseCount, 1,
+    `settled should only be false in the initial declaration, found ${settledFalseCount} sites`);
 });

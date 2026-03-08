@@ -198,7 +198,7 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
       backoffUntil > now ? backoffUntil - now : Infinity,
     ));
     if (nextTick < Infinity) {
-      cooldownTimer = setTimeout(() => { if (isOpen) render(); }, Math.min(nextTick + 100, 1500));
+      cooldownTimer = setTimeout(() => { if (isOpen) render('cooldown'); }, Math.min(nextTick + 100, 1500));
     }
   }
 
@@ -208,10 +208,17 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
    */
   function setPhase(nextPhase, { error, onRetry } = {}) {
     const p = String(nextPhase || '').toLowerCase();
-    phase = p === 'cantconnect' || p === 'form' ? p : 'checking';
+    const nextP = p === 'cantconnect' || p === 'form' ? p : 'checking';
+    const unchanged = nextP === phase && !error;
+    phase = nextP;
     lastBootstrapError = error || null;
     retryHandler = typeof onRetry === 'function' ? onRetry : retryHandler;
-    render();
+    if (unchanged && isOpen && phase === 'form') {
+      // Form is already showing this phase — skip destructive re-render
+      if (isDebugEnabled()) console.info('[AuthUI] setPhase:skip', { phase, page });
+      return;
+    }
+    render('setPhase');
   }
 
   function navigateTo(nextPage) {
@@ -219,7 +226,7 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
     _fieldPassword = '';
     _fieldPasswordConfirm = '';
     showPassword = false;
-    render();
+    render('navigateTo');
     // Focus first input after render
     requestAnimationFrame(() => {
       const first = modalEl?.querySelector('input:not([type="checkbox"])');
@@ -227,8 +234,16 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
     });
   }
 
-  function render() {
+  function render(reason) {
     if (!modalEl) return;
+    // Preserve in-progress input values before destroying DOM
+    try {
+      const curEmail = modalEl.querySelector('input[type="email"]');
+      const curPw = modalEl.querySelector('input[type="password"]');
+      if (curEmail && curEmail.value) fieldEmail = curEmail.value;
+      if (curPw && curPw.value) _fieldPassword = curPw.value;
+    } catch { /* ignore */ }
+    if (isDebugEnabled()) console.info('[AuthUI] render', { reason: reason || 'unknown', phase, page });
     modalEl.innerHTML = '';
 
     if (phase === 'checking') {
@@ -433,6 +448,7 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
     const pw = buildPasswordField('Password', {
       autocomplete: 'current-password',
       placeholder: 'Enter your password',
+      value: _fieldPassword,
     });
 
     if (forcedDisabledMessage) {
@@ -461,6 +477,9 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
         const emailVal = String(email.input.value || '').trim();
         const pwVal = String(pw.input.value || '');
         fieldEmail = emailVal;
+        _fieldPassword = pwVal;
+
+        if (isDebugEnabled()) console.info('[AuthUI] submit', { type: 'signin', defaultPrevented: true, emailLen: emailVal.length });
 
         if (!validateEmail(emailVal)) {
           showMessage(msgBox, 'Please enter a valid email address.', 'error');
@@ -613,7 +632,7 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
             // Email confirmation required
             pendingConfirmationEmail = emailVal;
             resetFailures();
-            render();
+            render('confirmation');
           } else {
             resetFailures();
             // Session created immediately - auth listener will close overlay
@@ -854,7 +873,7 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
           // Small delay then navigate to sign in (auth listener should auto-close)
           setTimeout(() => {
             page = 'signin';
-            render();
+            render('passwordUpdated');
           }, 1500);
         } catch (err) {
           showMessage(msgBox, mapAuthError(err, 'reset'), 'error');
@@ -906,12 +925,12 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
   function show() {
     ensureMounted();
     if (!overlayEl) return;
-    if (isOpen) { render(); return; }
+    if (isOpen) return; // Already visible — callers use setPhase() to trigger render
     isOpen = true;
     overlayEl.style.display = 'flex';
     installKeydownBlocker();
     try { document.body.style.overflow = 'hidden'; } catch { /* ignore */ }
-    render();
+    render('show');
     requestAnimationFrame(() => {
       const first = modalEl?.querySelector('input:not([type="checkbox"])');
       first?.focus();
@@ -959,7 +978,7 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
     }, { passive: true });
 
     window.addEventListener('offline', () => {
-      try { if (isOpen) render(); }
+      try { if (isOpen) render('offline'); }
       catch { /* ignore */ }
     }, { passive: true });
   } catch { /* ignore */ }

@@ -29,6 +29,7 @@ declare global {
     supabase?: { createClient?: any } | any;
     __TP3D_SUPABASE_CLIENT?: any;
     __TP3D_SUPABASE_API?: any;
+    __TP3D_LAST_ACCOUNT_BUNDLE?: any;
     __TP3D_SUPABASE?: any;
     SupabaseClient?: any;
     SettingsOverlay?: any;

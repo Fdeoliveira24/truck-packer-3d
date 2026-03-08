@@ -602,6 +602,7 @@ export function createSettingsOverlay({
   let accountBundleRequestId = 0; // "Last request wins" guard
   let accountBundleRefreshQueued = false;
   let accountBundleQueuedForce = false;
+  let _sameOrgRehydrateInflight = false; // single-flight guard for same-org forced rehydrate
 
   function getOrgIdFromOrgContext() {
     try {
@@ -951,8 +952,56 @@ export function createSettingsOverlay({
       const nextOrgId = normalizeOrgId(detail ? detail.orgId : '');
       if (!nextOrgId) return;
       if (nextOrgId === modalOrgId) {
-        if (_tabState.activeTabId === 'org-members' || _tabState.activeTabId === 'org-billing' || _tabState.activeTabId === 'org-general') {
+        // Same org but potentially updated role/membership — force bundle + render
+        const tab = _tabState.activeTabId;
+        const missingMembers = tab === 'org-members' && !orgMembersData;
+        const missingBilling = tab === 'org-billing' && !billingContextResolvedOrgId;
+        const missingOrgName = tab === 'org-general' && !hasOrgProfileForOrg(nextOrgId);
+        const hasMissingCritical = missingMembers || missingBilling || missingOrgName;
+
+        if (hasMissingCritical && !_sameOrgRehydrateInflight) {
+          debug('same-org:missing-critical', { tab, orgId: nextOrgId, missingMembers, missingBilling, missingOrgName });
+          _sameOrgRehydrateInflight = true;
+          // Bypass the 2s cooldown once: reset lastBundleRefreshAt so queueAccountBundleRefresh won't skip
+          lastBundleRefreshAt = 0;
+          debug('bundle-refresh:forced', { tab, orgId: nextOrgId, reason: 'same-org:missing-critical' });
+          queueAccountBundleRefresh({ force: true, source: 'settings:org-changed:same-org:forced' });
+          // After bundle loads, run tab-specific loader
+          const epoch = _renderEpoch;
+          const token = getTabActionToken();
+          const afterBundle = () => {
+            _sameOrgRehydrateInflight = false;
+            if (missingMembers) {
+              loadOrgMembers(nextOrgId)
+                .then(() => renderIfFresh(getCurrentActionId(), 'org-members:forced-rehydrate', epoch, undefined, token))
+                .catch(() => { });
+            } else if (missingBilling) {
+              ensureBillingContextHydrated(nextOrgId, { force: true, source: 'org-billing:forced-rehydrate' })
+                .then(() => renderIfFresh(getCurrentActionId(), 'org-billing:forced-rehydrate', epoch, undefined, token))
+                .catch(() => { });
+            } else {
+              renderIfFresh(getCurrentActionId(), 'org-general:forced-rehydrate', epoch, undefined, token);
+            }
+          };
+          // Wait for bundle to finish loading then trigger tab loader
+          const waitForBundle = () => {
+            if (!isLoadingAccountBundle) { afterBundle(); return; }
+            setTimeout(waitForBundle, 120);
+          };
+          setTimeout(waitForBundle, 80);
+        } else {
           queueAccountBundleRefresh({ force: true, source: 'settings:org-changed:same-org' });
+        }
+
+        if (settingsOverlay && settingsOverlay.isConnected) {
+          render({ source: 'org-changed:same-org' });
+        }
+        if (tab === 'org-members' && !hasMissingCritical) {
+          const epoch = _renderEpoch;
+          const token = getTabActionToken();
+          loadOrgMembers(nextOrgId)
+            .then(() => renderIfFresh(getCurrentActionId(), 'org-members:org-changed:same-org', epoch, undefined, token))
+            .catch(() => { });
         }
         return;
       }
@@ -1202,7 +1251,15 @@ export function createSettingsOverlay({
       return;
     }
     const now = Date.now();
-    if (now - lastBundleRefreshAt < 2000) return;
+    if (now - lastBundleRefreshAt < 2000) {
+      const missingCritical = !profileData || !orgData || !orgMembersData;
+      debug('queueAccountBundleRefresh:skip-fresh', {
+        source, ageMs: now - lastBundleRefreshAt,
+        profileNull: !profileData, orgNull: !orgData,
+        orgMembersNull: !orgMembersData, missingCritical,
+      });
+      return;
+    }
     lastBundleRefreshAt = now;
     const oEpoch = getOverlayEpoch();
     loadAccountBundle({ force })

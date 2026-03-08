@@ -1,0 +1,15 @@
+{
+  "summary": {
+    "url": "http://127.0.0.1:5500/index.html?tp3dDebug=1",
+    "maxClicks": 40,
+    "buttonsFound": 57,
+    "candidatesTried": 3,
+    "clicks": 3,
+    "failures": 0,
+    "skipped": 37,
+    "trialSkipped": 0,
+    "pageErrors": [],
+    "consoleErrors": []
+  },
+  "failures": []
+}

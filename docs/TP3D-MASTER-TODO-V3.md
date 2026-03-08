@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-02-28
+Last updated: 2026-03-07
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -215,9 +215,18 @@ Still required (release blocking):
   - Banner must NOT appear while signed_in.
   - No auto sign-out / auto sign-in loop.
   - getAccountBundleSingleFlight({force:true}) must return session+user in BOTH tabs when signed_in.
-- [ ] **Cross-tab auth/token churn hardening**
-  - React to tp3d:active-org-id storage changes (apply org context + refresh billing).
-  - Avoid clearing org context unless definitively signed out.
+- [x] **Cross-tab auth/token churn hardening** (code complete; live 2-tab sign-off pending)
+  - Added versioned org-context sync payload (`tp3d:org-context-sync`) with `userId`, `orgId`, `timestamp`, `epoch`.
+  - Storage listeners now apply org sync only for matching user + newer epoch; older payloads are ignored.
+  - `tp3d:active-org-id` legacy storage changes are handled as fallback and promoted into the same guarded sync path.
+  - Auth refresh auto-triggers are gated during auth-unsettled/logout/inflight windows to reduce cross-tab races.
+  - Org context is only cleared when auth is definitively signed out.
+- [x] **Cross-tab logout stability (no bounce)**
+  - User-initiated logout must await `signOut()` completion (no timed reload before sign-out finishes).
+  - Tab A logout must not briefly re-enter signed-in state.
+  - Tab B must receive sign-out and end signed out.
+  - Implemented with a canonical `performUserInitiatedLogout()` helper + logout-in-progress latch in `src/app.js`.
+  - Fallback auth snapshot TTL is bypassed while logout latch is active (prevents session resurrection during sign-out).
 
 #### Known issue (multi-tab)
 - Observed: in 2 tabs, auth is signed_in + hasToken=true, localOrgHint is set, but OrgContext activeOrgId becomes null and bundle returns session/user null; banner appears; billing stuck pending.
@@ -289,12 +298,55 @@ P0 is green only when ALL items here are checked:
 - [ ] P0.8 Payment failure rules implemented + tested (past_due / unpaid / incomplete)
 - [ ] P0 Workspace creation + switching tested (no org/billing leakage)
 - [ ] P0.9 Cross-user data isolation + 2-tab stability verified (no banner + orgId resolves in both tabs)
+- [x] Logout flow uses canonical helper only; no timed `reload()` immediately after `signOut()`
+- [ ] Cross-tab logout verified (no sign-out → sign-in bounce) — code fix merged; live 2-tab sign-off required
 - [ ] No console errors in normal flows (ignore debug mode + expected 404 favicon)
 - [x] "Manage billing" never 500
 
 ---
 
 ## Running log (keep updated)
+
+- Date: 2026-03-07
+- What changed:
+  - Cross-tab org/workspace drift hardening in `src/app.js` + `src/ui/overlays/settings-overlay.js`:
+    - Added guarded org-context sync payload with userId+epoch+timestamp.
+    - Added stale/mismatched-user ignore logic for `tp3d:org-changed` and storage sync.
+    - Added auth-truth guards so signed-in UI/actions only proceed with a usable session.
+    - Added stale response dropping for settings account/members/billing context loaders.
+  - Supabase auth truth hardening in `src/core/supabase-client.js`:
+    - `getUserSingleFlight()` now forces local signed-out on 401/403-style revoked auth errors.
+- Tests required (2 tabs):
+  - Tab A workspace switch updates Tab B members/billing/general to same workspace.
+  - Refresh stability in both tabs (no random signed-out flip while session is valid).
+  - 401/403 auth invalidation converges both tabs to signed-out quickly (no retry loops).
+
+- Date: 2026-03-07
+- What changed:
+  - Cross-tab logout regression identified: some logout paths call `SupabaseClient.signOut(...)` and then force `window.location.reload()` on a short timer, which can reload before sign-out finishes. That can cause a brief re-sign-in and then a later sign-out.
+  - Plan: centralize logout into a single helper that awaits `SupabaseClient.signOut()` and relies on the existing signed-out handler to show the signed-out UI. Remove any immediate timed reloads. Keep only a delayed, gated fallback reload if the signed-out UI fails to appear.
+- Tests required (2 tabs):
+  - Tab A logout must not bounce back to signed-in UI.
+  - Tab B must also sign out.
+  - Manual refresh after logout must remain signed out.
+  - No `SIGNED_IN` event should fire after user-initiated sign-out.
+- Next action:
+  - Audit and remove/replace every timed `location.reload()` that runs after calling `signOut()`.
+  - Add a regression checklist item to the release gate for cross-tab logout stability.
+
+- Date: 2026-03-07
+- What changed:
+  - Implemented canonical logout helper in `src/app.js` for explicit Logout UI actions (account switcher + trial-expired modal + trial welcome modal).
+  - Removed immediate timed reload logout paths; fallback reload is now delayed and gated (`signOut` completed, still not signed-out UI, and no session exists).
+  - Added logout-in-progress latch and disabled auth snapshot fallback TTL while latch is active (`getCurrentAuthSnapshot`, `runAuthRefresh`, `renderAuthState` transient guard).
+  - Added audit test to guard against reintroducing timed reload after `signOut`.
+- Tests run:
+  - `npm test` (pass)
+  - `npm run -s typecheck` (pass)
+  - `npm run -s lint` (pass with existing warnings only; no new errors)
+  - `TP3D_STRESS_URL=http://127.0.0.1:5500/index.html?tp3dDebug=1 npm run stress:ui` (pass)
+- Next action:
+  - Execute live two-tab manual sign-off checklist for logout bounce regression in production-like environment.
 
 - Date: 2026-03-05
 - Release process clarification (no-build static app):

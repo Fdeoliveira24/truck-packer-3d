@@ -479,10 +479,18 @@ function clearBillingState() {
 
 // ── Workspace readiness helper: prevents "create workspace" banner from sticking during auth wobble ──
 let _workspaceReadyInflight = false;
+/** @type {() => boolean} Module-level accessor, set by IIFE once auth gate is initialized. */
+let _authGateIsSettledAccessor = () => false;
+/** @type {() => {status:string,userId:string|null,hasToken:boolean,isSignedIn:boolean}|null} */
+let _authTruthSnapshotAccessor = () => null;
 async function ensureWorkspaceReadyForUI({ timeoutMs = 2500, pollMs = 80, forceFirst = true } = {}) {
   try {
     const mod = await import('./core/supabase-client.js');
     const start = Date.now();
+    const authTruth = typeof _authTruthSnapshotAccessor === 'function' ? _authTruthSnapshotAccessor() : null;
+    if (authTruth && authTruth.status === 'signed_out' && _authGateIsSettledAccessor()) {
+      return { ok: false, reason: 'signed-out' };
+    }
 
     // Optional: first try with force=true to prime caches quickly
     if (forceFirst) {
@@ -491,7 +499,19 @@ async function ensureWorkspaceReadyForUI({ timeoutMs = 2500, pollMs = 80, forceF
         const active0 = b0 && b0.activeOrgId ? String(b0.activeOrgId) : null;
         const orgCount0 = b0 && Number.isFinite(b0.orgCount) ? b0.orgCount : (b0 && b0.orgs ? b0.orgs.length : 0);
         if (active0) return { ok: true, activeOrgId: active0, orgCount: orgCount0, bundle: b0, source: 'force-first' };
-        if (orgCount0 === 0) return { ok: false, reason: 'no-org', orgCount: 0, bundle: b0, source: 'force-first' };
+        // Only return no-org when bundle is definitive (non-null) AND auth is settled.
+        // A null bundle means "couldn't fetch" — NOT "user has no org."
+        if (b0 && !b0.partial && orgCount0 === 0 && _authGateIsSettledAccessor()) {
+          return { ok: false, reason: 'no-org', orgCount: 0, bundle: b0, source: 'force-first' };
+        }
+        // Auth not settled OR bundle null → do NOT return no-org yet, fall through to polling
+        if (orgCount0 === 0) {
+          if (typeof isTp3dDebugEnabled === 'function' && isTp3dDebugEnabled()) {
+            console.info('[workspaceReady] defer-no-org:auth-not-settled (force-first)', {
+              bundle: b0 ? 'present' : 'null', settled: _authGateIsSettledAccessor(),
+            });
+          }
+        }
       } catch {
         // ignore and fall through to polling
       }
@@ -499,11 +519,25 @@ async function ensureWorkspaceReadyForUI({ timeoutMs = 2500, pollMs = 80, forceF
 
     while (Date.now() - start < timeoutMs) {
       const b = await mod.getAccountBundleSingleFlight({ force: false });
+      const loopAuthTruth = typeof _authTruthSnapshotAccessor === 'function' ? _authTruthSnapshotAccessor() : null;
+      if (loopAuthTruth && loopAuthTruth.status === 'signed_out' && _authGateIsSettledAccessor()) {
+        return { ok: false, reason: 'signed-out' };
+      }
       const activeOrgId = b && b.activeOrgId ? String(b.activeOrgId) : null;
       const orgCount = b && Number.isFinite(b.orgCount) ? b.orgCount : (b && b.orgs ? b.orgs.length : 0);
 
       if (activeOrgId) return { ok: true, activeOrgId, orgCount, bundle: b, source: 'poll' };
-      if (orgCount === 0) return { ok: false, reason: 'no-org', orgCount: 0, bundle: b, source: 'poll' };
+      // Only return no-org when bundle is definitive (non-null) AND auth is settled.
+      if (b && !b.partial && orgCount === 0 && _authGateIsSettledAccessor()) {
+        return { ok: false, reason: 'no-org', orgCount: 0, bundle: b, source: 'poll' };
+      }
+      if (orgCount === 0) {
+        if (typeof isTp3dDebugEnabled === 'function' && isTp3dDebugEnabled()) {
+          console.info('[workspaceReady] defer-no-org:auth-not-settled (poll)', {
+            bundle: b ? 'present' : 'null', settled: _authGateIsSettledAccessor(),
+          });
+        }
+      }
 
       await new Promise(r => setTimeout(r, pollMs));
     }
@@ -1343,6 +1377,128 @@ const TP3D_BUILD_STAMP = Object.freeze({
     });
     const AuthOverlay = createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 'tp3dDebug' });
 
+    let logoutActionPromise = null;
+    let logoutInProgress = false;
+    let logoutStartedAt = 0;
+    let logoutFallbackTimer = null;
+    const LOGOUT_FALLBACK_RELOAD_DELAY_MS = 2200;
+    let applyPostLogoutLocalStateReset = () => {
+      SessionManager.clear();
+      StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
+    };
+
+    function isLogoutInProgress() {
+      return logoutInProgress;
+    }
+
+    function setLogoutInProgress(next, { source = 'unknown', reason = '' } = {}) {
+      const active = Boolean(next);
+      if (logoutInProgress === active) return;
+      logoutInProgress = active;
+      logoutStartedAt = active ? Date.now() : 0;
+      if (!active && logoutFallbackTimer) {
+        clearTimeout(logoutFallbackTimer);
+        logoutFallbackTimer = null;
+      }
+      if (isTp3dDebugEnabled()) {
+        console.info('[authLogout] latch', { active, source, reason, startedAt: logoutStartedAt || null });
+      }
+    }
+
+    function scheduleLogoutFallbackReload(source = 'logout') {
+      if (logoutFallbackTimer) {
+        clearTimeout(logoutFallbackTimer);
+        logoutFallbackTimer = null;
+      }
+      logoutFallbackTimer = setTimeout(() => {
+        logoutFallbackTimer = null;
+        let hasSession = false;
+        try {
+          const authState =
+            SupabaseClient && typeof SupabaseClient.getAuthState === 'function' ? SupabaseClient.getAuthState() : null;
+          const session = authState && authState.session ? authState.session : null;
+          hasSession = Boolean(session && session.access_token);
+        } catch {
+          hasSession = false;
+        }
+        let signedOutUi = false;
+        try {
+          const bodySignedOut = document.body && document.body.getAttribute('data-auth') === 'signed_out';
+          const overlayOpen =
+            Boolean(AuthOverlay && typeof AuthOverlay.isOpen === 'function' && AuthOverlay.isOpen());
+          signedOutUi = Boolean(bodySignedOut && overlayOpen);
+        } catch {
+          signedOutUi = false;
+        }
+        if (isTp3dDebugEnabled()) {
+          console.info('[authLogout] fallback-check', {
+            source,
+            hasSession,
+            signedOutUi,
+            logoutInProgress,
+          });
+        }
+        if (!hasSession && !signedOutUi) {
+          if (isTp3dDebugEnabled()) console.info('[authLogout] fallback-reload', { source });
+          try { window.location.reload(); } catch (_) { /* ignore */ }
+          return;
+        }
+        if (!hasSession && signedOutUi) {
+          setLogoutInProgress(false, { source, reason: 'stable-signed-out-ui' });
+        }
+      }, LOGOUT_FALLBACK_RELOAD_DELAY_MS);
+    }
+
+    async function performUserInitiatedLogout({ source = 'logout' } = {}) {
+      if (logoutActionPromise) return logoutActionPromise;
+      logoutActionPromise = (async () => {
+        setLogoutInProgress(true, { source, reason: 'start' });
+        try {
+          UIComponents.closeAllDropdowns();
+          SettingsOverlay.close();
+          AccountOverlay.close();
+        } catch {
+          // ignore
+        }
+
+        let usedSupabaseSignOut = false;
+        try {
+          if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
+            usedSupabaseSignOut = true;
+            if (SupabaseClient.setAuthIntent) SupabaseClient.setAuthIntent('signOut');
+            const result = await SupabaseClient.signOut({ global: true, allowOffline: true, userInitiated: true });
+            if (isTp3dDebugEnabled()) {
+              console.info('[authLogout] signOut:completed', {
+                source,
+                ok: Boolean(result && result.ok),
+                offline: Boolean(result && result.offline),
+              });
+            }
+          }
+        } catch (err) {
+          if (isTp3dDebugEnabled()) {
+            console.info('[authLogout] signOut:error', {
+              source,
+              message: err && err.message ? String(err.message) : String(err),
+            });
+          }
+        }
+
+        applyPostLogoutLocalStateReset();
+
+        if (usedSupabaseSignOut) {
+          scheduleLogoutFallbackReload(source);
+          return;
+        }
+
+        setLogoutInProgress(false, { source, reason: 'local-fallback' });
+        UIComponents.showToast('Logged out', 'info');
+      })().finally(() => {
+        logoutActionPromise = null;
+      });
+      return logoutActionPromise;
+    }
+
     // Listen for auth signed-out events (including offline logout and cross-tab)
     window.addEventListener('tp3d:auth-signed-out', event => {
       const detail = /** @type {CustomEvent} */ (event).detail || {};
@@ -1355,6 +1511,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
           source: detail.source,
           offline: detail.offline,
         });
+      }
+
+      if (isLogoutInProgress()) {
+        setLogoutInProgress(false, { source: 'tp3d:auth-signed-out', reason: 'event' });
       }
 
       // Force signed-out UI state
@@ -1544,41 +1704,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       async function logout() {
-        try {
-          UIComponents.closeAllDropdowns();
-          SettingsOverlay.close();
-          AccountOverlay.close();
-        } catch {
-          // ignore
-        }
-
-        // If Supabase auth is active, signing out there is the real "logout".
-        // SessionManager.clear() only resets the local demo session.
-        try {
-          if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
-            if (SupabaseClient.setAuthIntent) SupabaseClient.setAuthIntent('signOut');
-            await SupabaseClient.signOut({ global: true, allowOffline: true });
-
-            SessionManager.clear();
-            // P0.9 – Don't wipe user-scoped storage (data should survive for next login).
-            // Instead, pause autosave → reset in-memory state → set scope to anon.
-            suspendAutoSave = true;
-            try { resetAppStateToEmpty(); Storage.setStorageScope('anon'); hasLoadedScopedState = false; } finally { suspendAutoSave = false; }
-            StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
-            // Success toast is handled by the auth state listener (user-initiated only).
-            return;
-          }
-        } catch (err) {
-          // Only ignore if it's not a critical error
-          console.warn('Logout error:', err);
-        }
-
-        SessionManager.clear();
-        // P0.9 – same scope-safe reset for non-Supabase fallback path
-        suspendAutoSave = true;
-        try { resetAppStateToEmpty(); Storage.setStorageScope('anon'); hasLoadedScopedState = false; } finally { suspendAutoSave = false; }
-        StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
-        UIComponents.showToast('Logged out', 'info');
+        await performUserInitiatedLogout({ source: 'account-switcher' });
       }
 
       function getAnchorKey(anchorEl) {
@@ -3923,6 +4049,21 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // boot before auth resolves, using the 'anon' scope.
     let hasLoadedScopedState = false;
 
+    applyPostLogoutLocalStateReset = () => {
+      SessionManager.clear();
+      // P0.9 – Don't wipe user-scoped storage (data should survive for next login).
+      // Instead, pause autosave → reset in-memory state → set scope to anon.
+      suspendAutoSave = true;
+      try {
+        resetAppStateToEmpty();
+        Storage.setStorageScope('anon');
+        hasLoadedScopedState = false;
+      } finally {
+        suspendAutoSave = false;
+      }
+      StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
+    };
+
     function seedIfEmpty() {
       const stored = Storage.load();
       if (stored && stored.caseLibrary && stored.packLibrary && stored.preferences) {
@@ -4088,6 +4229,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     let lastOrgChangeAt = 0;
     let lastOrgIdNotified = null;
     const ORG_CONTEXT_LS_KEY = 'tp3d:active-org-id';
+    const ORG_CONTEXT_SYNC_KEY = 'tp3d:org-context-sync';
     const ORG_CONTEXT_DEDUP_MS = 500;
     const ORG_PERSIST_COOLDOWN_MS = 2000;
     const orgContextMetrics = {
@@ -4104,6 +4246,23 @@ const TP3D_BUILD_STAMP = Object.freeze({
       role: null,
       updatedAt: 0,
     };
+    let orgContextVersion = 0;
+    let lastAppliedOrgContextVersion = 0;
+    const orgContextTabId = (() => {
+      try {
+        const existing = window.sessionStorage.getItem('tp3d:org-context-tab-id');
+        if (existing) return String(existing);
+      } catch {
+        // ignore
+      }
+      const generated = `orgtab_${Math.random().toString(36).slice(2, 10)}_${Date.now()}`;
+      try {
+        window.sessionStorage.setItem('tp3d:org-context-tab-id', generated);
+      } catch {
+        // ignore
+      }
+      return generated;
+    })();
     let lastOrgPersistAt = 0;
     let orgContextInFlight = null;
     let orgContextQueued = false;
@@ -4138,6 +4297,100 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // immediately after a genuine SIGNED_IN or TOKEN_REFRESHED event.
     let lastAuthEventSnapshot = null;
     const FALLBACK_AUTH_TTL_MS = 8000;
+
+    // ── Auth Stability Gate ──────────────────────────────────────────────
+    // Prevents transient INITIAL_SESSION(null) → SIGNED_OUT → SIGNED_IN boot
+    // sequences from triggering org-clearing and "no-org" banner flashes.
+    const AUTH_SIGNED_OUT_STABLE_MS = 2000;
+    const _authGate = {
+      lastSignedInAt: 0,
+      signedOutCandidateAt: 0,
+      signedOutTimer: /** @type {ReturnType<typeof setTimeout>|null} */ (null),
+      settled: false,
+    };
+
+    function authGateIsSettled() {
+      return _authGate.settled;
+    }
+
+    /** Mark auth as settled + signed-in. Cancels any pending signed-out candidate. */
+    function authGateSignedIn() {
+      _authGate.lastSignedInAt = Date.now();
+      if (_authGate.signedOutTimer) {
+        clearTimeout(_authGate.signedOutTimer);
+        _authGate.signedOutTimer = null;
+        if (isTp3dDebugEnabled()) console.info('[authGate] signedOutCancelledBySignedIn');
+      }
+      if (_authGate.signedOutCandidateAt) {
+        _authGate.signedOutCandidateAt = 0;
+      }
+      _authGate.settled = true;
+    }
+
+    /**
+     * Start signed-out candidate timer. Only confirms signed-out after
+     * AUTH_SIGNED_OUT_STABLE_MS with no intervening SIGNED_IN.
+     * @param {() => void} onConfirmed — called when signed-out is stable
+     */
+    function authGateSignedOutCandidate(onConfirmed) {
+      _authGate.signedOutCandidateAt = Date.now();
+      if (_authGate.signedOutTimer) clearTimeout(_authGate.signedOutTimer);
+
+      // During boot phase (never seen SIGNED_IN yet), ALWAYS wait the full FALLBACK_AUTH_TTL_MS.
+      // Reason: when Supabase fires SIGNED_OUT it has already cleared its own localStorage tokens,
+      // so checking for sb-*-auth-token or a cached org ID is unreliable — both can be absent even
+      // when a valid SIGNED_IN is imminent via cross-tab broadcast (which can take 2–5 s on slow
+      // connections). Using the short 2-second window during boot causes premature org-clearing and
+      // the "Create or join a workspace" banner flash on the secondary tab.
+      const isBootPhase = _authGate.lastSignedInAt === 0;
+      // Keep hasSessionIndicators for logging / future use, but do not use it to shorten the timeout.
+      let hasSessionIndicators = false;
+      if (isBootPhase) {
+        try {
+          hasSessionIndicators = Boolean(readLocalOrgId());
+          if (!hasSessionIndicators) {
+            for (let i = 0; i < localStorage.length; i++) {
+              const k = localStorage.key(i);
+              if (k && k.startsWith('sb-') && k.endsWith('-auth-token')) {
+                hasSessionIndicators = true;
+                break;
+              }
+            }
+          }
+        } catch { /* ignore */ }
+      }
+      // Boot phase: always 8s so cross-tab SIGNED_IN has time to arrive regardless of cache state.
+      // Post-boot: 2s is enough — a real sign-out from a live session should be stable quickly.
+      const timeoutMs = isBootPhase
+        ? FALLBACK_AUTH_TTL_MS   // 8s during any boot phase (SIGNED_IN may come from cross-tab)
+        : AUTH_SIGNED_OUT_STABLE_MS; // 2s for stable post-boot sign-out
+
+      if (isTp3dDebugEnabled()) console.info('[authGate] signedOutCandidate', { isBootPhase, hasSessionIndicators, timeoutMs });
+      _authGate.signedOutTimer = setTimeout(() => {
+        _authGate.signedOutTimer = null;
+        // Only confirm if no SIGNED_IN arrived in the interim
+        if (_authGate.signedOutCandidateAt && !_authGate.lastSignedInAt) {
+          _authGate.settled = true;
+          if (isTp3dDebugEnabled()) console.info('[authGate] signedOutConfirmed', { timeoutMs });
+          onConfirmed();
+        } else if (_authGate.lastSignedInAt > _authGate.signedOutCandidateAt) {
+          if (isTp3dDebugEnabled()) console.info('[authGate] signedOutCancelledBySignedIn (timer)');
+        } else {
+          _authGate.settled = true;
+          if (isTp3dDebugEnabled()) console.info('[authGate] signedOutConfirmed (fallback)', { timeoutMs });
+          onConfirmed();
+        }
+      }, timeoutMs);
+    }
+
+    /** INITIAL_SESSION with user===null: auth not settled yet. */
+    function authGateInitialSession() {
+      if (isTp3dDebugEnabled()) console.info('[authGate] initial-session');
+      // Do NOT set settled — wait for SIGNED_IN or stable SIGNED_OUT.
+    }
+    // ── end Auth Stability Gate ──────────────────────────────────────────
+    // Expose to module-level ensureWorkspaceReadyForUI
+    _authGateIsSettledAccessor = authGateIsSettled;
 
     function setAuthBlocked(message) {
       try {
@@ -4225,25 +4478,61 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
     }
 
-    function getCurrentAuthSnapshot() {
+    function getAuthTruthSnapshot() {
       const authState =
         SupabaseClient && typeof SupabaseClient.getAuthState === 'function' ? SupabaseClient.getAuthState() : null;
-      let status = authState && authState.status ? authState.status : 'unknown';
-      let session = authState && authState.session ? authState.session : null;
-      let user = authState && authState.user ? authState.user : session && session.user ? session.user : null;
-      let userId = user && user.id ? String(user.id) : null;
-      let hasToken = Boolean(session && session.access_token);
+      const status = authState && authState.status ? authState.status : 'unknown';
+      const session = authState && authState.session ? authState.session : null;
+      const user = authState && authState.user ? authState.user : session && session.user ? session.user : null;
+      const userId = user && user.id ? String(user.id) : null;
+      const hasToken = Boolean(session && session.access_token);
+      const isSignedIn = Boolean(status === 'signed_in' && hasToken && userId);
+      return { status, userId, hasToken, session, user, isSignedIn };
+    }
+
+    function shouldUseSignedInHint() {
+      if (isLogoutInProgress()) return false;
+      if (!lastAuthEventSnapshot) return false;
+      if (lastAuthEventSnapshot.status !== 'signed_in') return false;
+      if (!lastAuthEventSnapshot.hasToken || !lastAuthEventSnapshot.session) return false;
+      const age = Date.now() - (lastAuthEventSnapshot.ts || 0);
+      return age < FALLBACK_AUTH_TTL_MS;
+    }
+
+    function getSignedInUserIdStrict() {
+      const truth = getAuthTruthSnapshot();
+      return truth && truth.isSignedIn && truth.userId ? String(truth.userId) : null;
+    }
+
+    _authTruthSnapshotAccessor = () => {
+      const truth = getAuthTruthSnapshot();
+      return {
+        status: truth.status,
+        userId: truth.userId,
+        hasToken: truth.hasToken,
+        isSignedIn: truth.isSignedIn,
+      };
+    };
+
+    function getCurrentAuthSnapshot() {
+      const truth = getAuthTruthSnapshot();
+      let status = truth.status;
+      let session = truth.session;
+      let user = truth.user;
+      let userId = truth.userId;
+      let hasToken = truth.hasToken;
+      let hintOnly = false;
 
       // P0.7 – If the wrapper reports unknown/no-token but we have a recent real
       // auth event, trust the event snapshot instead (transient race window).
-      if ((status !== 'signed_in' || !hasToken) && lastAuthEventSnapshot) {
-        const age = Date.now() - (lastAuthEventSnapshot.ts || 0);
-        if (age < FALLBACK_AUTH_TTL_MS && lastAuthEventSnapshot.hasToken && lastAuthEventSnapshot.session) {
+      if ((status !== 'signed_in' || !hasToken) && shouldUseSignedInHint()) {
+        if (lastAuthEventSnapshot && lastAuthEventSnapshot.session) {
           status = lastAuthEventSnapshot.status;
           session = lastAuthEventSnapshot.session;
           user = session && session.user ? session.user : null;
           userId = user && user.id ? String(user.id) : null;
           hasToken = true;
+          hintOnly = true;
         }
       }
 
@@ -4252,6 +4541,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
         userId,
         hasToken,
         session,
+        authProof: Boolean(truth.isSignedIn),
+        hintOnly,
         activeOrgId: orgContext.activeOrgId,
         activeOrg: orgContext.activeOrg,
         role: orgContext.role,
@@ -4270,8 +4561,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const nextId = nextOrgId ? String(nextOrgId).trim() : '';
       if (!nextId) return null;
 
-      const snapshot = getCurrentAuthSnapshot();
-      if (snapshot.status !== 'signed_in' || !snapshot.hasToken) return null;
+      const truth = getAuthTruthSnapshot();
+      if (!truth.isSignedIn) return null;
 
       const prevId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
       if (prevId && prevId === nextId) return prevId;
@@ -4281,6 +4572,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       if (!activeOrg) {
         writeLocalOrgId(nextId);
+        dispatchOrgContextChanged({
+          orgId: nextId,
+          reason: source,
+          broadcast: true,
+          source: 'set-active-org',
+          userId: truth.userId,
+        });
         await refreshOrgContext(source, { force: true, forceEmit: true });
         return nextId;
       }
@@ -4303,7 +4601,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       try {
-        window.dispatchEvent(new CustomEvent('tp3d:org-changed', { detail: { orgId: nextId, reason: source } }));
+        dispatchOrgContextChanged({
+          orgId: nextId,
+          reason: source,
+          broadcast: true,
+          source: 'set-active-org',
+          userId: truth.userId,
+        });
         orgContextMetrics.orgChangedEmitted += 1;
       } catch {
         // ignore
@@ -4347,6 +4651,170 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
     }
 
+    function parseOrgContextVersion(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) return 0;
+      return Math.floor(n);
+    }
+
+    function nextOrgContextVersion() {
+      orgContextVersion = parseOrgContextVersion(orgContextVersion) + 1;
+      return orgContextVersion;
+    }
+
+    function markOrgContextVersion(version) {
+      const parsed = parseOrgContextVersion(version);
+      if (!parsed) return 0;
+      orgContextVersion = Math.max(orgContextVersion, parsed);
+      lastAppliedOrgContextVersion = Math.max(lastAppliedOrgContextVersion, parsed);
+      return parsed;
+    }
+
+    /**
+     * @param {{
+     *   orgId?: string|null,
+     *   reason?: string|null,
+     *   version?: number,
+     *   broadcast?: boolean,
+     *   source?: string|null,
+     *   ts?: number,
+     *   userId?: string|null,
+     * }} [options]
+     * @returns {number}
+     */
+    function dispatchOrgContextChanged(options = {}) {
+      const {
+        orgId,
+        reason = 'org-context',
+        version = 0,
+        broadcast = false,
+        source = 'local',
+        ts = Date.now(),
+        userId = null,
+      } = options || {};
+      const nextOrgId = orgId ? String(orgId).trim() : '';
+      if (!nextOrgId) return 0;
+      const signedInUserId = userId || getSignedInUserIdStrict();
+      if (!signedInUserId) return 0;
+      const nextVersion = markOrgContextVersion(version || nextOrgContextVersion());
+      const detail = {
+        orgId: nextOrgId,
+        reason: reason || null,
+        userId: signedInUserId,
+        ts: Number.isFinite(Number(ts)) ? Number(ts) : Date.now(),
+        timestamp: Number.isFinite(Number(ts)) ? Number(ts) : Date.now(),
+        epoch: nextVersion,
+        tabId: orgContextTabId,
+        source,
+      };
+
+      try {
+        window.dispatchEvent(new CustomEvent('tp3d:org-changed', { detail }));
+      } catch {
+        // ignore
+      }
+
+      if (broadcast) {
+        try {
+          window.localStorage.setItem(ORG_CONTEXT_SYNC_KEY, JSON.stringify(detail));
+          // Keep the key ephemeral so stale payloads are less likely to be replayed.
+          window.setTimeout(() => {
+            try {
+              const raw = window.localStorage.getItem(ORG_CONTEXT_SYNC_KEY);
+              if (!raw) return;
+              const parsed = JSON.parse(raw);
+              if (
+                parsed &&
+                parsed.tabId === orgContextTabId &&
+                parseOrgContextVersion(parsed.epoch) === nextVersion
+              ) {
+                window.localStorage.removeItem(ORG_CONTEXT_SYNC_KEY);
+              }
+            } catch {
+              // ignore
+            }
+          }, 1500);
+        } catch {
+          // ignore
+        }
+      }
+
+      return nextVersion;
+    }
+
+    function parseOrgContextSyncPayload(raw) {
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        return parsed;
+      } catch {
+        return null;
+      }
+    }
+
+    function handleIncomingOrgContextSync(payload, { source = 'org-sync-storage' } = {}) {
+      if (!payload || typeof payload !== 'object') return;
+      const incomingOrgId = payload.orgId ? String(payload.orgId).trim() : '';
+      if (!incomingOrgId || !ORG_UUID_RE.test(incomingOrgId)) return;
+
+      const payloadUserId = payload.userId ? String(payload.userId) : '';
+      const currentUserId = getSignedInUserIdStrict();
+      if (!currentUserId || !payloadUserId || payloadUserId !== currentUserId) return;
+
+      const incomingTabId = payload.tabId ? String(payload.tabId) : '';
+      if (incomingTabId && incomingTabId === orgContextTabId) return;
+
+      const incomingVersion = parseOrgContextVersion(payload.epoch || payload.version);
+      if (!incomingVersion) return;
+      if (incomingVersion <= lastAppliedOrgContextVersion) {
+        if (isTp3dDebugEnabled()) {
+          console.info('[orgContext] ignore-stale-sync', {
+            source,
+            incomingVersion,
+            lastAppliedOrgContextVersion,
+          });
+        }
+        return;
+      }
+
+      markOrgContextVersion(incomingVersion);
+      writeLocalOrgId(incomingOrgId);
+
+      const currentOrgId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
+      if (!currentOrgId || currentOrgId !== incomingOrgId) {
+        const knownOrgs = Array.isArray(orgContext.orgs) ? orgContext.orgs : [];
+        const incomingOrg = knownOrgs.find(o => o && String(o.id) === incomingOrgId) || null;
+        orgContext = {
+          ...orgContext,
+          activeOrgId: incomingOrgId,
+          activeOrg: incomingOrg || null,
+          role: incomingOrg && incomingOrg.role ? incomingOrg.role : orgContext.role,
+          updatedAt: Date.now(),
+        };
+      }
+
+      dispatchOrgContextChanged({
+        orgId: incomingOrgId,
+        reason: payload.reason || source,
+        version: incomingVersion,
+        broadcast: false,
+        source,
+        ts: payload.ts || payload.timestamp,
+        userId: currentUserId,
+      });
+
+      applyOrgRequiredUi(true);
+      queueOrgScopedRender(source);
+      maybeScheduleBillingRefresh('org-changed');
+
+      if (isLogoutInProgress() || !authGateIsSettled()) {
+        orgContextQueued = true;
+        return;
+      }
+      void refreshOrgContext(source, { force: true, forceEmit: false });
+    }
+
     // ── getActiveOrgIdNow: best-effort sync orgId with fallbacks ──
     function getActiveOrgIdNow() {
       // 1) window.OrgContext (canonical)
@@ -4382,6 +4850,24 @@ const TP3D_BUILD_STAMP = Object.freeze({
     let _billingPumpLastRunAtMs = 0;
 
     function maybeScheduleBillingRefresh(reason) {
+      // ── Auth gate: never pump billing without a proven or usable session ──
+      const _proven = typeof SupabaseClient.isAuthProven === 'function' && SupabaseClient.isAuthProven();
+      if (!_proven) {
+        const _truth = getAuthTruthSnapshot();
+        const _sessionUsable = Boolean(
+          _truth && _truth.session && _truth.session.access_token &&
+          _truth.session.expires_at && (_truth.session.expires_at * 1000) > Date.now()
+        );
+        if (!_sessionUsable) {
+          billingDebugLog('[BillingPump] skip:auth-not-proven', {
+            reason,
+            orgId: getActiveOrgIdNow() || null,
+            status: _truth ? _truth.status : null,
+          });
+          return;
+        }
+      }
+
       const activeOrgId = getActiveOrgIdNow();
       const now = Date.now();
 
@@ -4537,6 +5023,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
         role: null,
         updatedAt: Date.now(),
       };
+      orgContextVersion = 0;
+      lastAppliedOrgContextVersion = 0;
       lastOrgIdNotified = null;
       lastOrgChangeAt = 0;
       if (clearLocalOrgHint || confirmedNoOrg) writeLocalOrgId(null);
@@ -4641,7 +5129,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       // while auth/bundle is still resolving (prevents flash for returning users).
       const hasLocalOrgHint = Boolean(readLocalOrgId());
       const suppressUncertain = !isDefinitelySignedOut && !confirmedNoOrg && hasLocalOrgHint;
-      const showNoOrgBanner = !hasOrg && !suppressUncertain && !isTransientSignedOut && (isDefinitelySignedOut || confirmedNoOrg);
+      // Auth Stability Gate: never show banner while auth is still settling
+      const authNotSettled = !authGateIsSettled();
+      const showNoOrgBanner = !hasOrg && !suppressUncertain && !isTransientSignedOut && !authNotSettled && (isDefinitelySignedOut || confirmedNoOrg);
+      if (!hasOrg && authNotSettled && !confirmedNoOrg) {
+        if (isTp3dDebugEnabled()) console.info('[workspaceReady] defer-no-org:auth-not-settled (banner)');
+      }
       banner.hidden = !showNoOrgBanner;
 
       // Only disable buttons when we are certain there is no org.
@@ -4660,7 +5153,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
       // ── Async workspace-ready recovery ──
       // If we just set buttons to disabled (no org) but it's NOT confirmed, launch
       // a background poll to check if a workspace becomes ready and re-apply.
-      if (!hasOrg && !confirmedNoOrg && !_workspaceReadyInflight) {
+      const authTruthForPoll = getAuthTruthSnapshot();
+      const canPollWorkspaceReady = Boolean(
+        !hasOrg &&
+        !confirmedNoOrg &&
+        !_workspaceReadyInflight &&
+        authGateIsSettled() &&
+        authTruthForPoll &&
+        authTruthForPoll.isSignedIn
+      );
+      if (canPollWorkspaceReady) {
         _workspaceReadyInflight = true;
         ensureWorkspaceReadyForUI({ timeoutMs: 2500 }).then(async (result) => {
           if (isTp3dDebugEnabled()) {
@@ -4717,8 +5219,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (!bundle || !bundle.session || !bundle.user) {
         // Do NOT wipe org state when bundle is unavailable — it may just be loading or a transient
         // network error. Only clear if auth is definitively signed_out.
-        const _snap = getCurrentAuthSnapshot();
-        if (_snap && _snap.status === 'signed_out') {
+        const _truth = getAuthTruthSnapshot();
+        if (_truth && _truth.status === 'signed_out' && authGateIsSettled()) {
           clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: true });
         }
         return null;
@@ -4743,6 +5245,19 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const prevOrgId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
       const nextOrgIdStr = String(nextOrgId);
       const changed = !prevOrgId || prevOrgId !== nextOrgIdStr;
+
+      // Never let a partial bundle override a newer full bundle or a user-selected org.
+      if (bundle && bundle.partial === true && changed && prevOrgId) {
+        if (isTp3dDebugEnabled()) {
+          console.info('[orgContext] skip-partial-overwrite', {
+            prevOrgId,
+            nextOrgId: nextOrgIdStr,
+            reason,
+          });
+        }
+        maybeScheduleBillingRefresh('org-context:partial');
+        return prevOrgId;
+      }
 
       orgContext = {
         activeOrgId: nextOrgIdStr,
@@ -4792,11 +5307,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // Skip duplicate org-changed bursts for the same org within 500ms
           orgContextMetrics.orgChangedIgnoredSameId += 1;
         } else {
-          window.dispatchEvent(
-            new CustomEvent('tp3d:org-changed', {
-              detail: { orgId: nextOrgIdStr, reason: reason || null },
-            })
-          );
+          const shouldBroadcast =
+            changed &&
+            reason !== 'org-sync-storage' &&
+            reason !== 'org-sync-legacy' &&
+            reason !== 'org-sync-event';
+          dispatchOrgContextChanged({
+            orgId: nextOrgIdStr,
+            reason: reason || null,
+            broadcast: shouldBroadcast,
+            source: 'bundle-apply',
+            userId: bundle && bundle.user && bundle.user.id ? String(bundle.user.id) : null,
+          });
           lastOrgIdNotified = nextOrgIdStr;
           lastOrgChangeAt = now;
           orgContextMetrics.orgChangedEmitted += 1;
@@ -4825,9 +5347,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return null;
       }
 
-      const snapshot = getCurrentAuthSnapshot();
-      if (snapshot.status !== 'signed_in' || !snapshot.hasToken) {
-        if (snapshot.status === 'signed_out') clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: true });
+      const truth = getAuthTruthSnapshot();
+      if (!truth.isSignedIn) {
+        if (truth.status === 'signed_out' && authGateIsSettled()) {
+          clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: true });
+        }
         return null;
       }
 
@@ -4854,11 +5378,51 @@ const TP3D_BUILD_STAMP = Object.freeze({
     }
 
     function requestAuthRefresh(reason, opts = {}) {
-      if (reason) authRefreshReasons.add(String(reason));
+      const normalizedReason = String(reason || '').trim();
+      if (normalizedReason) authRefreshReasons.add(normalizedReason);
       if (opts && opts.force) authRefreshPending.force = true;
       if (opts && opts.forceBundle) authRefreshPending.forceBundle = true;
       if (opts && opts.sessionHint) {
         authRefreshPending.sessionHint = opts.sessionHint;
+      }
+      const autoReason = AUTH_REFRESH_AUTO_REASONS.has(normalizedReason);
+      const truth = getAuthTruthSnapshot();
+      if (isLogoutInProgress()) {
+        if (isTp3dDebugEnabled()) {
+          console.info('[authRefresh] skip-logout-in-progress', { reason: normalizedReason || null });
+        }
+        return;
+      }
+      if (
+        autoReason &&
+        (!authGateIsSettled() || authRehydratePromise || authRefreshInFlight || orgContextInFlight)
+      ) {
+        if (isTp3dDebugEnabled()) {
+          console.info('[authRefresh] skip-auto-race', {
+            reason: normalizedReason || null,
+            settled: authGateIsSettled(),
+            authRehydrateInFlight: Boolean(authRehydratePromise),
+            authRefreshInFlight: Boolean(authRefreshInFlight),
+            orgContextInFlight: Boolean(orgContextInFlight),
+          });
+        }
+        authRefreshQueued = true;
+        return;
+      }
+      if (autoReason && truth.status === 'signed_out') {
+        return;
+      }
+
+      // Auth proof fast-path: skip refresh when session is proven and bundle is cached
+      if (autoReason && !opts.force && !opts.forceBundle) {
+        const proven = typeof SupabaseClient.isAuthProven === 'function' && SupabaseClient.isAuthProven();
+        const cached = typeof SupabaseClient.hasValidBundleCache === 'function' && SupabaseClient.hasValidBundleCache();
+        if (proven && cached) {
+          if (isTp3dDebugEnabled()) {
+            console.info('[authRefresh] skip-proven-fresh', { reason: normalizedReason || null });
+          }
+          return;
+        }
       }
 
       let hidden = false;
@@ -4894,6 +5458,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
         authRefreshQueued = true;
         return authRefreshInFlight;
       }
+      if (isLogoutInProgress()) {
+        return null;
+      }
 
       let hidden = false;
       try {
@@ -4913,6 +5480,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
       if (!online) {
         authRefreshQueued = true;
+        return null;
+      }
+      const truthBeforeRefresh = getAuthTruthSnapshot();
+      if (truthBeforeRefresh.status === 'signed_out' && authGateIsSettled()) {
         return null;
       }
 
@@ -4943,15 +5514,21 @@ const TP3D_BUILD_STAMP = Object.freeze({
           SupabaseClient && typeof SupabaseClient.getAuthState === 'function' ? SupabaseClient.getAuthState() : null;
         let sessionHint = pending.sessionHint || (authState && authState.session ? authState.session : null);
 
-        // P0.7 – fall back to the cached auth-event session when the wrapper
-        // briefly returns null (transient unknown state after a real event).
-        if (!sessionHint && lastAuthEventSnapshot && lastAuthEventSnapshot.session && lastAuthEventSnapshot.hasToken) {
-          const age = Date.now() - (lastAuthEventSnapshot.ts || 0);
-          if (age < FALLBACK_AUTH_TTL_MS) sessionHint = lastAuthEventSnapshot.session;
-        }
-
         const hasTokens = Boolean(sessionHint && sessionHint.access_token && sessionHint.refresh_token);
         if (!hasTokens) {
+          if (shouldUseSignedInHint() && !pending.force) {
+            if (isTp3dDebugEnabled()) {
+              console.info('[authRefresh] signed-in-hint-retry', { reasons });
+            }
+            authRefreshQueued = true;
+            if (!authRefreshTimer) {
+              authRefreshTimer = setTimeout(() => {
+                authRefreshTimer = null;
+                void runAuthRefresh();
+              }, 250);
+            }
+            return null;
+          }
           if (!authMissingSessionShown) {
             authMissingSessionShown = true;
             await renderAuthState({
@@ -5135,6 +5712,31 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const isSignedOutEvent = event === 'SIGNED_OUT';
       const isInitialSessionEvent = event === 'INITIAL_SESSION';
       const treatAsSignedOut = isSignedOutEvent || (isInitialSessionEvent && !user);
+      const authTruth = getAuthTruthSnapshot();
+
+      if (!user && authTruth.isSignedIn && authTruth.user) {
+        user = authTruth.user;
+      }
+      if (user) {
+        const incomingUserId = user && user.id ? String(user.id) : null;
+        const authMatchesIncomingUser = Boolean(
+          authTruth.isSignedIn &&
+          authTruth.userId &&
+          (!incomingUserId || String(authTruth.userId) === incomingUserId)
+        );
+        if (!authMatchesIncomingUser) {
+          if (isTp3dDebugEnabled()) {
+            console.info('[authRender] drop-stale-signed-in-user', {
+              event: event || null,
+              incomingUserId,
+              authTruthUserId: authTruth.userId,
+              authTruthStatus: authTruth.status,
+              authTruthHasToken: authTruth.hasToken,
+            });
+          }
+          user = null;
+        }
+      }
 
       if (user) {
         const canProceed = await checkProfileStatus();
@@ -5211,16 +5813,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return;
       }
 
-      try { document.body.setAttribute('data-auth', 'signed_out'); } catch { /* ignore */ }
-
       // ── P0.9.1: If this is a transient cross-tab SIGNED_OUT (not user-initiated)
       //    and we have a recent signed-in snapshot, skip the destructive wipe.
       //    The follow-up SIGNED_IN / TOKEN_REFRESHED will rehydrate normally. ──
       const _isTransientSignedOut = !userInitiatedSignOut
-        && lastAuthEventSnapshot
-        && lastAuthEventSnapshot.status === 'signed_in'
-        && lastAuthEventSnapshot.hasToken === true
-        && (Date.now() - (lastAuthEventSnapshot.ts || 0)) < FALLBACK_AUTH_TTL_MS;
+        && !isLogoutInProgress()
+        && !authGateIsSettled()
+        && shouldUseSignedInHint();
 
       if (_isTransientSignedOut) {
         // Do NOT wipe state/storage/org — just request a forced refresh so the
@@ -5229,6 +5828,29 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return;
       }
       // ── end P0.9.1 ────────────────────────────────────────────────────────────────
+
+      // ── Auth Stability Gate: defer destructive actions for non-user-initiated sign-outs ──
+      // If the user didn't explicitly sign out, treat this SIGNED_OUT as a *candidate*
+      // and defer org-clearing / UI wipe until it's confirmed stable.
+      if (!userInitiatedSignOut && !authBlockState) {
+        authGateSignedOutCandidate(() => {
+          // This fires after AUTH_SIGNED_OUT_STABLE_MS with no intervening SIGNED_IN.
+          try { document.body.setAttribute('data-auth', 'signed_out'); } catch { /* ignore */ }
+          _executeSignedOutCleanup({ event, treatAsSignedOut, userInitiatedSignOut: false, onRetry });
+        });
+        // Don't set data-auth yet — keep signed_in appearance while gate is pending
+        return;
+      }
+      // ── end Auth Stability Gate ────────────────────────────────────────────────────
+
+      _executeSignedOutCleanup({ event, treatAsSignedOut, userInitiatedSignOut, onRetry });
+    }
+
+    /** Extracted destructive signed-out actions so the auth gate timer can call them. */
+    function _executeSignedOutCleanup({ event, treatAsSignedOut, userInitiatedSignOut, onRetry }) {
+      const isSignedOutEvent = event === 'SIGNED_OUT';
+      try { document.body.setAttribute('data-auth', 'signed_out'); } catch { /* ignore */ }
+      lastAuthEventSnapshot = { status: 'signed_out', userId: null, hasToken: false, session: null, ts: Date.now() };
 
       // ── P0.9: Reset scope to anon so autosave can't write to the old user's key ──
       suspendAutoSave = true;
@@ -5277,6 +5899,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
       renderSidebarBrandMarks();
       if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
         AccountSwitcher.refresh();
+      }
+      if (isLogoutInProgress()) {
+        setLogoutInProgress(false, { source: 'render-auth-state', reason: 'signed-out-cleanup' });
       }
     }
 
@@ -5698,6 +6323,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
             lastAuthEventSnapshot = { status: 'signed_out', userId: null, hasToken: false, session: null, ts: Date.now() };
           }
 
+          // ── Auth Stability Gate transitions ──
+          if (isSignedInEvent || (isTokenRefreshEvent && session && session.access_token)) {
+            authGateSignedIn();
+          } else if (isInitialSessionEvent && !userFromSession) {
+            authGateInitialSession();
+          }
+          // SIGNED_OUT is handled below after the transient-signed-out check in renderAuthState.
+          // We do NOT call authGateSignedOutCandidate here — it is called from renderAuthState
+          // only after the P0.9.1 transient-signed-out guard has been evaluated.
+
           // FIX: Detect cross-tab login with DIFFERENT user - this is the key bug fix.
           // When a different user logs in on another tab, we receive SIGNED_IN but lastAuthUserId
           // still holds the OLD user's ID. We must clear stale state BEFORE any re-hydration.
@@ -5736,15 +6371,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
             }
           }
 
-          // FIX: Get user from wrapper to ensure we have the latest data after rehydration
-          const user =
-            (() => {
-              try {
-                return SupabaseClient.getUser();
-              } catch {
-                return null;
-              }
-            })() || userFromSession;
+          const authTruthForEvent = getAuthTruthSnapshot();
+          // Never treat stale wrapper user as signed-in unless auth truth has a usable session.
+          const user = userFromSession || (authTruthForEvent.isSignedIn ? authTruthForEvent.user : null);
 
           // FIX: Reuse the already-consumed result instead of consuming again
           const userInitiatedSignIn = userIntentConsumed;
@@ -5806,6 +6435,31 @@ const TP3D_BUILD_STAMP = Object.freeze({
           window.addEventListener('storage', ev => {
             const key = ev && ev.key ? String(ev.key) : '';
             if (!key) return;
+            if (key === ORG_CONTEXT_SYNC_KEY && ev.newValue) {
+              const payload = parseOrgContextSyncPayload(ev.newValue);
+              if (payload) {
+                handleIncomingOrgContextSync(payload, { source: 'org-sync-storage' });
+              }
+              return;
+            }
+            if (key === ORG_CONTEXT_LS_KEY) {
+              const nextOrgId = normalizeOrgIdForBilling(ev.newValue || '');
+              const currentUserId = getSignedInUserIdStrict();
+              if (nextOrgId && currentUserId) {
+                handleIncomingOrgContextSync(
+                  {
+                    orgId: nextOrgId,
+                    userId: currentUserId,
+                    ts: Date.now(),
+                    epoch: Date.now(),
+                    tabId: 'legacy-storage',
+                    reason: 'legacy-active-org-id',
+                  },
+                  { source: 'org-sync-legacy' }
+                );
+              }
+              return;
+            }
             const isAuthKey =
               key === 'tp3d-logout-trigger' ||
               (key.startsWith('sb-') && (key.endsWith('-auth-token') || key.endsWith('-auth-token-code-verifier')));
@@ -5829,16 +6483,41 @@ const TP3D_BUILD_STAMP = Object.freeze({
             }
           }
           window.addEventListener('tp3d:org-changed', ev => {
-            const snapshot = getCurrentAuthSnapshot();
-            if (snapshot.status !== 'signed_in' || !snapshot.hasToken) {
+            const truth = getAuthTruthSnapshot();
+            if (!truth.isSignedIn) {
               orgContextMetrics.orgChangedIgnoredSignedOut += 1;
               return;
             }
 
-            const detailOrgId = ev && ev.detail && ev.detail.orgId ? String(ev.detail.orgId) : null;
-            const snapshotOrgId = snapshot.activeOrgId ? String(snapshot.activeOrgId) : null;
+            const detail = ev && ev.detail ? ev.detail : {};
+            const detailUserId = detail && detail.userId ? String(detail.userId) : null;
+            if (detailUserId && truth.userId && detailUserId !== truth.userId) {
+              if (isTp3dDebugEnabled()) {
+                console.info('[orgContext] ignore-user-mismatch', {
+                  detailUserId,
+                  currentUserId: truth.userId,
+                });
+              }
+              return;
+            }
+            const detailEpoch = parseOrgContextVersion(detail && detail.epoch ? detail.epoch : 0);
+            if (detailEpoch && detailEpoch < lastAppliedOrgContextVersion) {
+              if (isTp3dDebugEnabled()) {
+                console.info('[orgContext] ignore-older-epoch', {
+                  detailEpoch,
+                  lastAppliedOrgContextVersion,
+                });
+              }
+              return;
+            }
+            if (detailEpoch) {
+              markOrgContextVersion(detailEpoch);
+            }
+
+            const detailOrgId = detail && detail.orgId ? String(detail.orgId) : null;
+            const snapshotOrgId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
             const sameOrg = Boolean(detailOrgId && snapshotOrgId && snapshotOrgId === detailOrgId);
-            if (detailOrgId && snapshot.activeOrgId && String(snapshot.activeOrgId) === detailOrgId) {
+            if (detailOrgId && snapshotOrgId && snapshotOrgId === detailOrgId) {
               orgContextMetrics.orgChangedIgnoredSameId += 1;
             }
             if (sameOrg) {
@@ -5870,7 +6549,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
               // ignore
             }
             // Re-apply gating immediately for role/org context changes, then pump billing.
-            const nextOrgId = detailOrgId || (snapshot.activeOrgId ? String(snapshot.activeOrgId) : null);
+            const nextOrgId = detailOrgId || snapshotOrgId || null;
             applyAccessGateFromBilling(getBillingState(), {
               reason: 'org-changed',
               activeOrgId: nextOrgId,
@@ -6148,16 +6827,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             label: 'Logout',
             variant: 'ghost',
             onClick: () => {
-              try {
-                if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
-                  SupabaseClient.signOut({ global: true, allowOffline: true }).catch(() => { });
-                }
-              } catch (_) {
-                // ignore
-              }
-              setTimeout(() => {
-                try { window.location.reload(); } catch (_) { /* ignore */ }
-              }, 250);
+              void performUserInitiatedLogout({ source: 'trial-expired-modal' });
               return false;
             },
           };
@@ -6316,17 +6986,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           logoutBtn.className = 'tp3d-trial-welcome__logout';
           logoutBtn.textContent = 'Logout';
           logoutBtn.addEventListener('click', () => {
-            try {
-              if (SupabaseClient && typeof SupabaseClient.setAuthIntent === 'function') SupabaseClient.setAuthIntent('signOut');
-              if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
-                SupabaseClient.signOut({ global: true, allowOffline: true }).catch(() => { });
-              }
-            } catch (_) {
-              // ignore
-            }
-            setTimeout(() => {
-              try { window.location.reload(); } catch (_) { /* ignore */ }
-            }, 250);
+            void performUserInitiatedLogout({ source: 'trial-welcome' });
           });
           footerEl.appendChild(logoutBtn);
           wrap.appendChild(footerEl);

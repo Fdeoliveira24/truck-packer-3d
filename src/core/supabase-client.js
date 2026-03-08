@@ -54,7 +54,16 @@ let _authIntent = { type: null, ts: 0 };
 let _tabId = null;
 let _lastLogoutSignalAt = 0;
 let _profileAuthLogOnce = false;
+// Dedup key for repeated identical SIGNED_IN auth events (cross-tab storm prevention).
+// Cleared on signOut, forceLocalSignedOut, and user switch.
+let _lastSignedInEventKey = '';
 const _authState = { status: 'loading', session: null, user: null, updatedAt: 0 };
+
+// ── Auth proof fast-path: skip lock-based calls when session is recently proven ──
+const AUTH_PROOF_TTL_MS = 45000; // 45s after SIGNED_IN / TOKEN_REFRESHED
+let _authProvenUntil = 0;
+let _authGuardBackoff = 60000; // current guard interval (ms), grows on timeout
+const AUTH_GUARD_MAX_BACKOFF_MS = 300000; // 5 min cap
 
 /** In-memory cache for org logo signed URLs. Cleared on signOut and uploadOrgLogo. */
 const _orgLogoCache = new Map(); // key: logoPath|updatedAt, value: { url, expiresAt }
@@ -116,6 +125,17 @@ function isSessionExpired(session, skewSec = SESSION_EXPIRY_SKEW_SEC) {
 function isSessionUsable(session) {
   if (!session || !session.access_token) return false;
   return !isSessionExpired(session);
+}
+
+/**
+ * Returns true when the current tab has a recently-proven auth session.
+ * During this window, lock-based Supabase calls (getSession, getUser) are skipped
+ * to avoid cross-tab lock contention timeouts.
+ */
+function isAuthProven() {
+  if (!_authProvenUntil || Date.now() > _authProvenUntil) return false;
+  const s = _authState.session;
+  return isSessionUsable(s) && Boolean(_authState.user && _authState.user.id);
 }
 
 function normalizeUserId(id) {
@@ -191,6 +211,22 @@ export function getCurrentAuthKey() {
 
 export function getTabId() {
   return initTabId();
+}
+
+/**
+ * Exposed for external consumers (app.js refresh gating).
+ * Returns true when the current tab's auth session is recently proven valid.
+ */
+export { isAuthProven };
+
+/**
+ * Returns true when the account bundle cache exists and is within its TTL.
+ */
+export function hasValidBundleCache() {
+  if (!_accountCache.key || !_accountCache.ts || !_accountCache.data) return false;
+  const age = Date.now() - _accountCache.ts;
+  const effectiveTtl = _accountCache.data.authProofStale ? (ACCOUNT_TTL_MS / 2) : ACCOUNT_TTL_MS;
+  return age < effectiveTtl;
 }
 
 /**
@@ -480,6 +516,10 @@ function withTimeoutReject(promise, ms, label = 'timeout') {
 async function ensureClientSession() {
   const client = _client;
   if (!client) return false;
+  // Fast path: trust in-memory session set by Supabase auth events.
+  // Avoids Navigator Lock contention that causes cross-tab timeouts.
+  const existing = (_authState && _authState.session) || _session || null;
+  if (existing && isSessionUsable(existing)) return true;
   try {
     const session = await getSessionSingleFlightSafe(client, { force: true });
     return Boolean(session && session.access_token);
@@ -590,6 +630,9 @@ function updateAuthState(update = {}) {
     } else if (update.status === 'signed_in') {
       _signedOutCooldownUntil = 0;
     }
+    if (update.status === 'signed_out') {
+      _authProvenUntil = 0;
+    }
   }
 
   if (hasSession) {
@@ -618,6 +661,12 @@ function updateAuthState(update = {}) {
     bumpAuthEpoch();
     didBumpEpoch = true;
   }
+
+  // Refresh auth proof TTL when we have a valid signed-in session
+  if (_authState.status === 'signed_in' && newSessionToken && newUserId) {
+    _authProvenUntil = Date.now() + AUTH_PROOF_TTL_MS;
+  }
+
   return { didBumpEpoch };
 }
 
@@ -818,6 +867,16 @@ function getUserRawSingleFlight() {
     _getUserRawLastAt = now;
     return Promise.resolve(out);
   }
+  // Auth proof fast-path: skip network call when session was recently proven
+  if (isAuthProven()) {
+    const provenUser = (_authState && _authState.user) || (_session && _session.user) || null;
+    if (provenUser && provenUser.id) {
+      const out = { data: { user: provenUser }, error: null };
+      _getUserRawLastResult = out;
+      _getUserRawLastAt = now;
+      return Promise.resolve(out);
+    }
+  }
   if (_getUserRawPromise) return _getUserRawPromise;
   if (_signOutPromise) return Promise.resolve({ data: { user: null }, error: null });
   if (_getUserRawLastResult && Date.now() - _getUserRawLastAt < RAW_SESSION_COOLDOWN_MS) {
@@ -888,6 +947,16 @@ export async function getSessionSingleFlightSafe(client, { force = false } = {})
   if (!force && _authState && _authState.status === 'signed_out') return null;
   if (!force && _signedOutCooldownUntil && now < _signedOutCooldownUntil) return null;
   if (!force && _authInvalidatedAt && now - _authInvalidatedAt < 1500) return null;
+
+  // Auth proof fast-path: return in-memory session when recently proven
+  if (!force && isAuthProven()) {
+    const provenSession = _authState.session;
+    if (provenSession) {
+      _cachedSession = provenSession;
+      _cachedAt = now;
+      return provenSession;
+    }
+  }
 
   const c = client || requireClient();
 
@@ -1146,6 +1215,13 @@ export function getUserSingleFlight() {
         }
         return cachedUser;
       }
+      if (isAuthRevokedError(err)) {
+        forceLocalSignedOut({
+          reason: 'auth-revoked:getUserSingleFlight',
+          status: getErrorStatus(err),
+        });
+        return null;
+      }
       throw err;
     } finally {
       _getUserPromise = null;
@@ -1168,6 +1244,7 @@ function forceLocalSignedOut({ reason = 'auth-invalid', status = null } = {}) {
   }
   _cachedSession = null;
   _cachedAt = 0;
+  _lastSignedInEventKey = '';
   updateAuthState({ status: 'signed_out', session: null, user: null });
 
   // Best-effort local sign out (does not require network)
@@ -1213,6 +1290,9 @@ async function validateSessionOrSignOut({ source = 'unknown', silent = true } = 
 
   // Respect temporary cooldown after a stuck request
   if (_authCooldownUntil && Date.now() < _authCooldownUntil) return true;
+
+  // Auth proof fast-path: skip lock-based validation when session is recently proven
+  if (isAuthProven()) return true;
 
   // Avoid stacking hidden-tab validations; focus/visibility will retry.
   try {
@@ -1304,20 +1384,30 @@ function installAuthGuard() {
     }
   }
 
-  // Poll to catch cases like: user deleted in dashboard while a cached session exists
-  try {
-    _authGuardTimer = window.setInterval(() => {
-      try {
-        if (document && document.hidden) return;
-      } catch {
-        // ignore
-      }
-      if (_signOutPromise) return;
-      void validateSessionOrSignOut({ source: 'interval', silent: true });
-    }, 60 * 1000);
-  } catch {
-    _authGuardTimer = null;
+  // Poll to catch cases like: user deleted in dashboard while a cached session exists.
+  // Uses setTimeout recursion with exponential backoff on timeout failures.
+  function _scheduleGuardTick() {
+    try {
+      _authGuardTimer = window.setTimeout(async () => {
+        _authGuardTimer = null;
+        try {
+          if (document && document.hidden) { _scheduleGuardTick(); return; }
+        } catch { /* ignore */ }
+        if (_signOutPromise) { _scheduleGuardTick(); return; }
+        const ok = await validateSessionOrSignOut({ source: 'interval', silent: true });
+        // Backoff on failures (timeout/network), reset on success
+        if (ok) {
+          _authGuardBackoff = 60000; // reset to 60s on success
+        } else {
+          _authGuardBackoff = Math.min(_authGuardBackoff * 2, AUTH_GUARD_MAX_BACKOFF_MS);
+        }
+        _scheduleGuardTick();
+      }, _authGuardBackoff);
+    } catch {
+      _authGuardTimer = null;
+    }
   }
+  _scheduleGuardTick();
 
   void validateSessionOrSignOut({ source: 'install', silent: true });
 }
@@ -1449,6 +1539,24 @@ export function init({ url, anonKey }) {
       }
 
       _client.auth.onAuthStateChange((event, nextSession) => {
+        // ── Step 3: Strict dedup of repeated identical SIGNED_IN events ──
+        // Cross-tab storage changes cause Supabase to fire multiple SIGNED_IN
+        // events with the same session. Skip exact duplicates to prevent
+        // redundant updateAuthState calls and epoch churn.
+        // Only dedup SIGNED_IN; never dedup SIGNED_OUT/TOKEN_REFRESHED/USER_UPDATED.
+        if (event === 'SIGNED_IN' && nextSession && nextSession.access_token) {
+          const dedupUserId = nextSession.user && nextSession.user.id ? String(nextSession.user.id) : '';
+          const dedupKey = dedupUserId + '|' + nextSession.access_token;
+          if (dedupKey === _lastSignedInEventKey) {
+            // Exact duplicate — skip all processing
+            return;
+          }
+          _lastSignedInEventKey = dedupKey;
+        }
+        if (event === 'SIGNED_OUT') {
+          _lastSignedInEventKey = '';
+        }
+
         _session = nextSession || null;
         const epochBefore = _authEpoch;
         const { didBumpEpoch } = updateAuthState({
@@ -1480,8 +1588,11 @@ export function init({ url, anonKey }) {
           event === 'TOKEN_REFRESHED' ||
           event === 'USER_UPDATED'
         ) {
-          // Clear account cache but skip epoch bump if updateAuthState already bumped it.
-          resetAccountBundleCache(event, { skipEpochBump: didBumpEpoch });
+          // ── Step 1: Always skip epoch bump here ──
+          // updateAuthState already bumps epoch when user or token actually
+          // changes. The redundant bump was the sole cause of the epoch storm
+          // when repeated same-token events arrived cross-tab.
+          resetAccountBundleCache(event, { skipEpochBump: true });
         }
       });
       installAuthGuard();
@@ -1827,6 +1938,7 @@ export async function signOut(options = {}) {
     _getUserPromise = null;
     _getUserRawPromise = null;
     _sessionPromise = null;
+    _lastSignedInEventKey = '';
     updateAuthState({ status: 'signed_out', session: null, user: null });
 
     // Clear any known supabase storage key (defensive)
@@ -2269,7 +2381,9 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
   // Check cache (unless force refresh requested)
   if (!force && _accountCache.key === authKey && _accountCache.ts > 0) {
     const age = Date.now() - _accountCache.ts;
-    if (age < ACCOUNT_TTL_MS && _accountCache.data) {
+    // Use shorter TTL for bundles that had auth proof timeouts
+    const effectiveTtl = (_accountCache.data && _accountCache.data.authProofStale) ? (ACCOUNT_TTL_MS / 2) : ACCOUNT_TTL_MS;
+    if (age < effectiveTtl && _accountCache.data) {
       if (debugEnabled()) debugLog('log', '[SupabaseClient] Account bundle from cache, age:', age, 'ms');
       return _accountCache.data;
     }
@@ -2411,7 +2525,12 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
         };
       }
 
-      const partial = Boolean(hadTimeout || reasonParts.length > 0);
+      const authProofStale = Boolean(hadTimeout);
+      // partial = true ONLY when org context is incomplete.
+      // Timeouts on profile/membership alone don't make the bundle partial
+      // when we have a valid activeOrgId and at least one org.
+      const orgContextComplete = Boolean(activeOrgId && orgsSafe.length >= 1);
+      const partial = Boolean((hadTimeout || reasonParts.length > 0) && !orgContextComplete);
       const bundle = {
         key: authKey,
         canceled: false,
@@ -2425,11 +2544,13 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
         orgCount: orgsSafe.length,
         activeOrgId,
         partial,
+        authProofStale,
         reason: reasonParts.join('; '),
         fetchedAt: Date.now(),
       };
 
-      // Cache the result only if it completed without timeouts.
+      // Cache when org context is complete (even if auth proof was stale).
+      // Use shorter TTL for authProofStale bundles.
       if (!partial) {
         const liveKey = getCurrentAuthKey();
         if (liveKey === authKey && _authEpoch === startEpoch) {
@@ -2439,6 +2560,7 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
           debugLog('log', '[SupabaseClient] Account bundle cached', {
             hasAuthKey: Boolean(authKey),
             authEpoch: startEpoch,
+            authProofStale,
           });
         }
       } else if (debugEnabled()) {
@@ -3121,6 +3243,8 @@ try {
     getCurrentUserId,
     getCurrentAuthKey,
     getTabId,
+    isAuthProven,
+    hasValidBundleCache,
     awaitAuthReady,
     getSessionSingleFlight,
     getSessionSingleFlightSafe,

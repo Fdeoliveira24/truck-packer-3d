@@ -167,6 +167,8 @@ export function createSettingsOverlay({
   let _lastAuthChangeAtMs = 0;
   const _AUTH_CHANGE_DEDUPE_MS = 5000;
   let _lastAuthSnapshot = null;
+  let _lastOrgChangeEpochSeen = 0;
+  let _lastOrgChangeTsSeen = 0;
 
   /** Return the Supabase per-tab id for cross-tab debug correlation. */
   function getDebugTabId() {
@@ -341,6 +343,23 @@ export function createSettingsOverlay({
     const raw = String(value || '').trim();
     if (!raw || raw.toLowerCase() === 'personal') return '';
     return ORG_UUID_RE.test(raw) ? raw : '';
+  }
+
+  function parseEpochValue(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.floor(n);
+  }
+
+  function getCurrentAuthUserId() {
+    try {
+      const user = SupabaseClient && typeof SupabaseClient.getUser === 'function'
+        ? SupabaseClient.getUser()
+        : null;
+      return user && user.id ? String(user.id) : '';
+    } catch {
+      return '';
+    }
   }
 
   /**
@@ -581,6 +600,8 @@ export function createSettingsOverlay({
   // Account bundle loading state (single request for all account data)
   let isLoadingAccountBundle = false;
   let accountBundleRequestId = 0; // "Last request wins" guard
+  let accountBundleRefreshQueued = false;
+  let accountBundleQueuedForce = false;
 
   function getOrgIdFromOrgContext() {
     try {
@@ -844,6 +865,16 @@ export function createSettingsOverlay({
         }
       }
 
+      const currentModalOrgId = ensureModalOrgId();
+      if (currentModalOrgId && currentModalOrgId !== normalizedOrgId) {
+        debug('ensureBillingContextHydrated:drop-stale-org', {
+          source,
+          requestOrgId: normalizedOrgId,
+          currentModalOrgId,
+        });
+        return null;
+      }
+
       const hydrated = hasOrgProfileForOrg(normalizedOrgId) && isKnownOrgRole(getRoleForOrg(normalizedOrgId));
       billingContextResolvedOrgId = hydrated ? normalizedOrgId : '';
       return { ok: hydrated };
@@ -900,8 +931,31 @@ export function createSettingsOverlay({
   function ensureOrgChangedListener() {
     if (orgChangedHandler || typeof window === 'undefined') return;
     orgChangedHandler = ev => {
-      const nextOrgId = normalizeOrgId(ev && ev.detail ? ev.detail.orgId : '');
-      if (!nextOrgId || nextOrgId === modalOrgId) return;
+      const detail = ev && ev.detail ? ev.detail : {};
+      const eventUserId = detail && detail.userId ? String(detail.userId) : '';
+      const currentUserId = getCurrentAuthUserId();
+      if (eventUserId && currentUserId && eventUserId !== currentUserId) {
+        return;
+      }
+      const eventEpoch = parseEpochValue(detail && (detail.epoch || detail.version));
+      const eventTs = Number(detail && (detail.ts || detail.timestamp) ? detail.ts || detail.timestamp : 0) || 0;
+      if (eventEpoch && eventEpoch < _lastOrgChangeEpochSeen) {
+        return;
+      }
+      if (!eventEpoch && eventTs && _lastOrgChangeTsSeen && eventTs < _lastOrgChangeTsSeen) {
+        return;
+      }
+      if (eventEpoch) _lastOrgChangeEpochSeen = Math.max(_lastOrgChangeEpochSeen, eventEpoch);
+      if (eventTs) _lastOrgChangeTsSeen = Math.max(_lastOrgChangeTsSeen, eventTs);
+
+      const nextOrgId = normalizeOrgId(detail ? detail.orgId : '');
+      if (!nextOrgId) return;
+      if (nextOrgId === modalOrgId) {
+        if (_tabState.activeTabId === 'org-members' || _tabState.activeTabId === 'org-billing' || _tabState.activeTabId === 'org-general') {
+          queueAccountBundleRefresh({ force: true, source: 'settings:org-changed:same-org' });
+        }
+        return;
+      }
       modalOrgId = nextOrgId;
       clearOrgScopedCaches(nextOrgId);
       orgMembersRequestId += 1;
@@ -1041,24 +1095,42 @@ export function createSettingsOverlay({
    * @returns {Promise<Object|null>} The account bundle or null
    */
   async function loadAccountBundle({ force = false } = {}) {
-    if (isLoadingAccountBundle) return null;
+    if (isLoadingAccountBundle) {
+      accountBundleRefreshQueued = true;
+      accountBundleQueuedForce = accountBundleQueuedForce || Boolean(force);
+      return null;
+    }
 
     // Capture request ID for "last request wins" guard
     const thisRequestId = ++accountBundleRequestId;
+    const requestOverlayEpoch = getOverlayEpoch();
+    const requestOrgId = ensureModalOrgId() || getOrgIdFromOrgContext() || '';
     isLoadingAccountBundle = true;
+    let keepOrgLoading = false;
 
     try {
       const bundle = await SupabaseClient.getAccountBundleSingleFlight({ force });
 
-      // Check if this is still the latest request
-      if (thisRequestId !== accountBundleRequestId) {
-        // A newer request was made, discard this result
+      const currentOverlayEpoch = getOverlayEpoch();
+      const currentOrgId = ensureModalOrgId() || getOrgIdFromOrgContext() || '';
+      const staleByRequest = thisRequestId !== accountBundleRequestId;
+      const staleByEpoch = requestOverlayEpoch !== currentOverlayEpoch;
+      const staleByOrg = Boolean(requestOrgId && currentOrgId && requestOrgId !== currentOrgId);
+      if (staleByRequest || staleByEpoch || staleByOrg) {
+        debug('loadAccountBundle:drop-stale', {
+          staleByRequest,
+          staleByEpoch,
+          staleByOrg,
+          requestOrgId: requestOrgId || null,
+          currentOrgId: currentOrgId || null,
+          requestOverlayEpoch,
+          currentOverlayEpoch,
+        });
         return null;
       }
 
       // Check if bundle was canceled due to auth change
       if (bundle && bundle.canceled) {
-        isLoadingAccountBundle = false;
         return null;
       }
 
@@ -1071,8 +1143,7 @@ export function createSettingsOverlay({
           // Safe-write profile (not org-scoped); preserve existing org/membership data.
           if (bundle.profile) profileData = bundle.profile;
           debug('loadAccountBundle:skip-partial', { partial: true, activeOrgId: bundle.activeOrgId, hasExistingProfile: Boolean(profileData), hasExistingOrg: Boolean(orgData) });
-          isLoadingAccountBundle = false;
-          isLoadingOrg = true; // keep org panels in skeleton until the full bundle arrives
+          keepOrgLoading = true; // keep org panels in skeleton until the full bundle arrives
           // Schedule a retry to get the full bundle (max 3 retries, 800ms apart)
           if (!_bundlePartialRetryCount) _bundlePartialRetryCount = 0;
           if (_bundlePartialRetryCount < 3) {
@@ -1100,23 +1171,36 @@ export function createSettingsOverlay({
         }
       }
 
-      isLoadingAccountBundle = false;
-      isLoadingProfile = false;
-      isLoadingMembership = false;
-      isLoadingOrg = false;
-
       return bundle;
     } catch (err) {
       console.error('[SettingsOverlay] Failed to load account bundle:', err);
-      isLoadingAccountBundle = false;
-      isLoadingOrg = false;
       return null;
+    } finally {
+      isLoadingAccountBundle = false;
+      isLoadingProfile = false;
+      isLoadingMembership = false;
+      isLoadingOrg = keepOrgLoading ? true : false;
+      if (accountBundleRefreshQueued) {
+        const queuedForce = accountBundleQueuedForce;
+        accountBundleRefreshQueued = false;
+        accountBundleQueuedForce = false;
+        setTimeout(() => {
+          const queuedEpoch = getOverlayEpoch();
+          loadAccountBundle({ force: queuedForce })
+            .then(() => renderIfFresh(getCurrentActionId(), 'account-bundle-queued', undefined, queuedEpoch))
+            .catch(() => { });
+        }, 0);
+      }
     }
   }
 
   function queueAccountBundleRefresh({ force = true, source = 'account-bundle-refresh' } = {}) {
     _debugCallsite('queueAccountBundleRefresh', { force, source });
-    if (isLoadingAccountBundle) return;
+    if (isLoadingAccountBundle) {
+      accountBundleRefreshQueued = true;
+      accountBundleQueuedForce = accountBundleQueuedForce || Boolean(force);
+      return;
+    }
     const now = Date.now();
     if (now - lastBundleRefreshAt < 2000) return;
     lastBundleRefreshAt = now;
@@ -1168,16 +1252,27 @@ export function createSettingsOverlay({
 
   async function loadOrganization(orgId = null) {
     if (isLoadingOrg || !orgId) return null;
+    const normalizedOrgId = normalizeOrgId(orgId);
+    if (!normalizedOrgId) return null;
+    const requestTabEpoch = _getTabEpoch();
+    const requestToken = getTabActionToken();
     isLoadingOrg = true;
     try {
-      const org = await SupabaseClient.getOrganization(orgId);
+      const org = await SupabaseClient.getOrganization(normalizedOrgId);
+      if (requestTabEpoch !== _getTabEpoch() || requestToken !== getTabActionToken()) {
+        return null;
+      }
+      const currentModalOrgId = ensureModalOrgId();
+      if (currentModalOrgId && currentModalOrgId !== normalizedOrgId) {
+        return null;
+      }
       orgData = org;
-      isLoadingOrg = false;
       return org;
     } catch (err) {
-      isLoadingOrg = false;
       console.error('Failed to load organization:', err);
       return null;
+    } finally {
+      isLoadingOrg = false;
     }
   }
 
@@ -1237,6 +1332,8 @@ export function createSettingsOverlay({
       orgMembersRequestId += 1;
     }
     const thisRequestId = ++orgMembersRequestId;
+    const requestTabEpoch = _getTabEpoch();
+    const requestToken = getTabActionToken();
     isLoadingOrgMembers = true;
     orgMembersInflightOrgId = normalizedOrgId;
     orgMembersError = null;
@@ -1245,6 +1342,26 @@ export function createSettingsOverlay({
       try {
         const members = await SupabaseClient.getOrganizationMembers(normalizedOrgId);
         if (thisRequestId !== orgMembersRequestId) return null;
+        if (requestTabEpoch !== _getTabEpoch() || requestToken !== getTabActionToken()) {
+          debug('loadOrgMembers:drop-stale-token', {
+            orgId: normalizedOrgId,
+            requestId: thisRequestId,
+            requestTabEpoch,
+            currentTabEpoch: _getTabEpoch(),
+            requestToken,
+            currentToken: getTabActionToken(),
+          });
+          return null;
+        }
+        const currentModalOrgId = ensureModalOrgId();
+        if (currentModalOrgId && currentModalOrgId !== normalizedOrgId) {
+          debug('loadOrgMembers:drop-stale-org', {
+            orgId: normalizedOrgId,
+            currentModalOrgId,
+            requestId: thisRequestId,
+          });
+          return null;
+        }
         orgMembersData = Array.isArray(members) ? members : [];
         lastOrgMembersOrgId = String(normalizedOrgId);
         debug('loadOrgMembers:ok', { orgId: normalizedOrgId, count: orgMembersData.length });
@@ -4555,8 +4672,9 @@ export function createSettingsOverlay({
         (membershipOrgId && membershipOrgId === orgId && membershipData && membershipData.role) ||
         ''
       ).toLowerCase() || null;
+      const roleKnown = isKnownOrgRole(currentRole);
       const isOwner = currentRole === 'owner';
-      const canManage = canManageMembers(currentRole);
+      const canManage = roleKnown ? canManageMembers(currentRole) : false;
       const canManageAdmins = isOwner;
       const hasMembersForOrg = Boolean(
         orgId &&
@@ -4570,11 +4688,18 @@ export function createSettingsOverlay({
         String(lastOrgMembersOrgId) !== String(orgId)
       );
       const membersLoading = Boolean(isLoadingOrgMembers && (!hasMembersForOrg || membersStale));
+      const rolePending = Boolean(
+        orgId &&
+        !roleKnown &&
+        (isLoadingAccountBundle || isLoadingMembership || isLoadingOrg || membersStale)
+      );
       let membersDisabledReason = '';
       if (orgHydrating) {
         membersDisabledReason = 'Loading workspace…';
       } else if (!orgId) {
         membersDisabledReason = 'Select a workspace to manage members';
+      } else if (rolePending) {
+        membersDisabledReason = 'Loading permissions…';
       } else if (membersLoading || membersStale) {
         membersDisabledReason = 'Members are not available yet, please refresh';
       } else if (!canManage) {
@@ -5492,6 +5617,9 @@ export function createSettingsOverlay({
     lastOrgLogoKey = null;
     lastOrgLogoUrl = null;
     lastOrgLogoExpiresAt = 0;
+    _lastOrgChangeEpochSeen = 0;
+    _lastOrgChangeTsSeen = 0;
+    modalOrgId = '';
   }
 
   function handleAuthChange(_event) {

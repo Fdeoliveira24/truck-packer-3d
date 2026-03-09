@@ -2850,6 +2850,47 @@ export function createSettingsOverlay({
 
     subSection.appendChild(planCard);
 
+    // --- Payment problem warning card ---
+    if (!showSkeleton && !loading && !pending && state.ok && state.paymentProblem && status !== 'trial_expired') {
+      const payCard = doc.createElement('div');
+      payCard.className = 'tp3d-billing-payment-warning';
+
+      const payIcon = doc.createElement('span');
+      payIcon.textContent = '\u26A0\uFE0F'; // ⚠️
+      payCard.appendChild(payIcon);
+
+      const payBody = doc.createElement('div');
+      payBody.style.flex = '1';
+
+      const payTitle = doc.createElement('div');
+      payTitle.style.fontWeight = 'var(--font-semibold, 600)';
+      payTitle.textContent = 'Payment issue';
+      payBody.appendChild(payTitle);
+
+      const graceDays = Number(state.paymentGraceRemainingDays) || 0;
+      const graceText = graceDays > 0
+        ? graceDays + ' day' + (graceDays === 1 ? '' : 's') + ' remaining before Pro features are disabled.'
+        : 'Pro features have been disabled until payment is resolved.';
+      const payDesc = doc.createElement('div');
+      payDesc.className = 'muted';
+      payDesc.style.fontSize = 'var(--text-sm, 13px)';
+      payDesc.textContent = graceText;
+      payBody.appendChild(payDesc);
+
+      payCard.appendChild(payBody);
+
+      if (canManageBilling && portalAvailable && api && typeof api.openPortal === 'function') {
+        const fixBtn = doc.createElement('button');
+        fixBtn.type = 'button';
+        fixBtn.className = 'btn btn-primary';
+        fixBtn.textContent = 'Fix payment';
+        fixBtn.addEventListener('click', () => { api.openPortal(); });
+        payCard.appendChild(fixBtn);
+      }
+
+      subSection.appendChild(payCard);
+    }
+
     // Upgrade CTA card — shown for Free users and Trial users; hidden only for paid active Pro.
     const isActivePaidPro = isProOrTrial && !isTrial;
     if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && roleKnown && canManageBilling) {

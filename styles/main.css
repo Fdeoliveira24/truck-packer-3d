@@ -4643,3 +4643,59 @@ body.modal-open {
   display: flex;
   align-items: center;
 }
+
+/* ── Payment problem banner ─────────────────────────────── */
+.tp3d-payment-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3, 12px);
+  padding: var(--space-2, 8px) var(--space-4, 16px);
+  background: #f59e0b;
+  color: #1a1a1a;
+  font-size: var(--text-sm, 14px);
+  font-weight: var(--font-semibold, 600);
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.tp3d-payment-banner[hidden] {
+  display: none;
+}
+
+.tp3d-payment-banner-btn {
+  flex-shrink: 0;
+  padding: 4px 14px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+  background: #fff;
+  color: #1a1a1a;
+  font-size: var(--text-sm, 14px);
+  font-weight: var(--font-semibold, 600);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tp3d-payment-banner-btn:hover {
+  background: #f3f3f3;
+}
+
+/* ── Billing tab: payment warning card ─────────── */
+.tp3d-billing-payment-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3, 12px);
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  margin-top: var(--space-3, 12px);
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: var(--radius-md, 8px);
+  font-size: var(--text-sm, 13px);
+  line-height: 1.5;
+}

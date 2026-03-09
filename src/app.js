@@ -113,6 +113,10 @@ const _billingState = {
   cancelAtPeriodEnd: false,
   cancelAt: null,
   portalAvailable: false,
+  paymentProblem: false,
+  paymentGraceUntil: null,
+  paymentGraceRemainingDays: null,
+  action: null,
   data: null,
   error: null,
   lastFetchedAt: 0,
@@ -248,6 +252,8 @@ function _writeSharedBillingResult(orgId, state) {
       trialEndsAt: state.trialEndsAt, currentPeriodEnd: state.currentPeriodEnd,
       cancelAtPeriodEnd: state.cancelAtPeriodEnd, cancelAt: state.cancelAt,
       portalAvailable: state.portalAvailable, error: state.error,
+      paymentProblem: state.paymentProblem, paymentGraceUntil: state.paymentGraceUntil,
+      paymentGraceRemainingDays: state.paymentGraceRemainingDays, action: state.action,
       lastFetchedAt: fetchedAt,
     };
     const payload = JSON.stringify(mini);
@@ -277,6 +283,10 @@ function _applySharedBillingSnapshot(orgId, state, reason = 'cross-tab-shared') 
   _billingState.cancelAtPeriodEnd = Boolean(state.cancelAtPeriodEnd);
   _billingState.cancelAt = state.cancelAt || null;
   _billingState.portalAvailable = Boolean(state.portalAvailable);
+  _billingState.paymentProblem = Boolean(state.paymentProblem);
+  _billingState.paymentGraceUntil = state.paymentGraceUntil || null;
+  _billingState.paymentGraceRemainingDays = state.paymentGraceRemainingDays != null ? Number(state.paymentGraceRemainingDays) : null;
+  _billingState.action = state.action || null;
   _billingState.error = state.error || null;
   _billingState.data = null;
   _billingState.lastFetchedAt = Number(state.lastFetchedAt) || _getSharedBillingFreshness(orgId) || Date.now();
@@ -294,6 +304,8 @@ function _broadcastBillingResult(orgId, state) {
       trialEndsAt: state.trialEndsAt, currentPeriodEnd: state.currentPeriodEnd,
       cancelAtPeriodEnd: state.cancelAtPeriodEnd, cancelAt: state.cancelAt,
       portalAvailable: state.portalAvailable, error: state.error,
+      paymentProblem: state.paymentProblem, paymentGraceUntil: state.paymentGraceUntil,
+      paymentGraceRemainingDays: state.paymentGraceRemainingDays, action: state.action,
       lastFetchedAt: state.lastFetchedAt,
     }, tabId: _billingTabId });
   } catch (_) { /* ignore */ }
@@ -314,6 +326,8 @@ function _buildCrossTabBillingSig(orgId, state) {
     cancelAtPeriodEnd: state && state.cancelAtPeriodEnd === true,
     cancelAt: (state && state.cancelAt) || null,
     portalAvailable: state && state.portalAvailable === true,
+    paymentProblem: state && state.paymentProblem === true,
+    paymentGraceRemainingDays: (state && state.paymentGraceRemainingDays != null) ? Number(state.paymentGraceRemainingDays) : null,
   });
 }
 
@@ -483,6 +497,10 @@ function getBillingState() {
     cancelAtPeriodEnd: _billingState.cancelAtPeriodEnd,
     cancelAt: _billingState.cancelAt,
     portalAvailable: _billingState.portalAvailable,
+    paymentProblem: _billingState.paymentProblem,
+    paymentGraceUntil: _billingState.paymentGraceUntil,
+    paymentGraceRemainingDays: _billingState.paymentGraceRemainingDays,
+    action: _billingState.action,
     data: _billingState.data,
     error: _billingState.error,
     lastFetchedAt: _billingState.lastFetchedAt,
@@ -509,6 +527,10 @@ function clearBillingState() {
   _billingState.cancelAtPeriodEnd = false;
   _billingState.cancelAt = null;
   _billingState.portalAvailable = false;
+  _billingState.paymentProblem = false;
+  _billingState.paymentGraceUntil = null;
+  _billingState.paymentGraceRemainingDays = null;
+  _billingState.action = null;
   _billingState.data = null;
   _billingState.error = null;
   _billingState.lastFetchedAt = 0;
@@ -879,6 +901,10 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       _billingState.cancelAtPeriodEnd = Boolean(p.cancelAtPeriodEnd);
       _billingState.cancelAt = p.cancelAt ? String(p.cancelAt) : null;
       _billingState.portalAvailable = Boolean(p.portalAvailable);
+      _billingState.paymentProblem = Boolean(p.paymentProblem);
+      _billingState.paymentGraceUntil = p.paymentGraceUntil ? String(p.paymentGraceUntil) : null;
+      _billingState.paymentGraceRemainingDays = p.paymentGraceRemainingDays != null ? Number(p.paymentGraceRemainingDays) : null;
+      _billingState.action = p.action ? String(p.action) : null;
       _billingState.error = null;
     } else {
       _billingState.data = result ? result.data : null;
@@ -893,6 +919,10 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       _billingState.cancelAtPeriodEnd = false;
       _billingState.cancelAt = null;
       _billingState.portalAvailable = false;
+      _billingState.paymentProblem = false;
+      _billingState.paymentGraceUntil = null;
+      _billingState.paymentGraceRemainingDays = null;
+      _billingState.action = null;
       _billingState.error = result && result.error ? result.error : { message: 'Unknown error', status: null };
     }
 
@@ -963,6 +993,7 @@ function canUseProFeatures(billingSnapshot) {
  *   isProActive: boolean,
  *   isTrial: boolean,
  *   isTrialExpired: boolean,
+ *   isPaymentProblem: boolean,
  *   canUseProFeature: boolean,
  *   blockReason: string,
  *   uxMessage: string,
@@ -976,6 +1007,7 @@ function getProRuleSet(billingSnapshot, userRole) {
 
   const isTrial = Boolean(s.ok && s.isPro && s.isActive && s.status === 'trialing');
   const isTrialExpired = Boolean(s.ok && !s.isActive && s.status === 'trial_expired');
+  const isPaymentProblem = Boolean(s.ok && s.paymentProblem);
   const isProActive = Boolean(s.ok && s.isPro && s.isActive && !isTrial);
   const canUseProFeature = Boolean(s.ok && s.isPro && s.isActive); // trial OR paid Pro
 
@@ -990,6 +1022,11 @@ function getProRuleSet(billingSnapshot, userRole) {
     uxMessage = isOwner
       ? 'Your free trial has ended. Upgrade to Pro to continue.'
       : 'Ask your owner to upgrade this workspace or contact support: support@pxl360.com';
+  } else if (isPaymentProblem && !s.isActive) {
+    blockReason = 'payment_failed';
+    uxMessage = isOwner
+      ? 'Payment issue \u2014 fix your payment method to restore Pro features.'
+      : 'Payment issue \u2014 ask the workspace owner to update billing.';
   } else if (!canUseProFeature) {
     blockReason = 'not_pro';
     // TODO: replace support@pxl360.com with the real support email later.
@@ -998,7 +1035,7 @@ function getProRuleSet(billingSnapshot, userRole) {
       : 'Ask your owner to upgrade this workspace or contact support: support@pxl360.com';
   }
 
-  return { isProActive, isTrial, isTrialExpired, canUseProFeature, blockReason, uxMessage, isOwner };
+  return { isProActive, isTrial, isTrialExpired, isPaymentProblem, canUseProFeature, blockReason, uxMessage, isOwner };
 }
 
 /**
@@ -2516,7 +2553,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             const _rules = getProRuleSet(_bs, window.OrgContext && typeof window.OrgContext.getActiveRole === 'function' ? window.OrgContext.getActiveRole() : null);
             if (!_rules.canUseProFeature) {
               UIComponents.showToast(_rules.uxMessage, 'info', { title: 'AutoPack' });
-              if (_rules.isOwner && _rules.blockReason === 'trial_expired') {
+              if (_rules.isOwner && (_rules.blockReason === 'trial_expired' || _rules.blockReason === 'payment_failed')) {
                 try { openSettingsOverlay('billing'); } catch (_) { /* ignore */ }
               }
               return;
@@ -3183,7 +3220,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const _rules = getProRuleSet(_bs, window.OrgContext && typeof window.OrgContext.getActiveRole === 'function' ? window.OrgContext.getActiveRole() : null);
           if (!_rules.canUseProFeature) {
             UIComponents.showToast(_rules.uxMessage, 'info', { title: 'Export' });
-            if (_rules.isOwner && _rules.blockReason === 'trial_expired') {
+            if (_rules.isOwner && (_rules.blockReason === 'trial_expired' || _rules.blockReason === 'payment_failed')) {
               try { openSettingsOverlay('billing'); } catch (_) { /* ignore */ }
             }
             return;
@@ -7527,6 +7564,45 @@ const TP3D_BUILD_STAMP = Object.freeze({
           }
 
           maybeShowTrialWelcome(s, prevStatus);
+
+          // --- Payment problem banner ---
+          const paymentProblem = Boolean(
+            s && s.ok && !s.pending && s.paymentProblem && !trialExpired
+          );
+          let payBanner = document.getElementById('tp3d-payment-banner');
+          if (paymentProblem) {
+            if (!payBanner) {
+              payBanner = document.createElement('div');
+              payBanner.id = 'tp3d-payment-banner';
+              payBanner.className = 'tp3d-payment-banner';
+              document.body.prepend(payBanner);
+            }
+            const graceDays = Number(s.paymentGraceRemainingDays) || 0;
+            const graceText = graceDays > 0
+              ? ' (' + graceDays + ' day' + (graceDays === 1 ? '' : 's') + ' remaining)'
+              : '';
+            // Build banner content via DOM to avoid innerHTML
+            payBanner.textContent = '';
+            const msgSpan = document.createElement('span');
+            if (canManageBilling) {
+              msgSpan.textContent = 'Payment issue \u2014 your subscription needs attention.' + graceText;
+              payBanner.appendChild(msgSpan);
+              let fixBtn = payBanner.querySelector('.tp3d-payment-banner-btn');
+              if (!fixBtn) {
+                fixBtn = document.createElement('button');
+                fixBtn.className = 'tp3d-payment-banner-btn';
+                fixBtn.textContent = 'Fix payment';
+                fixBtn.addEventListener('click', () => { openPortal(); });
+                payBanner.appendChild(fixBtn);
+              }
+            } else {
+              msgSpan.textContent = 'Payment issue \u2014 ask the workspace owner to update billing.' + graceText;
+              payBanner.appendChild(msgSpan);
+            }
+            payBanner.hidden = false;
+          } else if (payBanner) {
+            payBanner.hidden = true;
+          }
 
           if (!upgradeEl) return;
           const upgradeCurrentlyVisible = Boolean(upgradeWrap ? !upgradeWrap.hidden : !upgradeEl.hidden);

@@ -1787,17 +1787,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (!name || !name.trim()) return;
         try {
           UIComponents.showToast('Creating workspace\u2026', 'info');
-          const { org, membership } = await SupabaseClient.createOrganization({ name: name.trim() });
+          const { org } = await SupabaseClient.createOrganization({ name: name.trim() });
           if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
+          await setActiveOrgId(org.id, { source: 'create-workspace' });
           UIComponents.showToast('Workspace "' + (org.name || name.trim()) + '" created!', 'success');
-          // Refresh org context to reflect new workspace
-          orgContext = {
-            activeOrgId: org.id,
-            activeOrg: { ...org, role: membership.role },
-            orgs: orgContext && orgContext.orgs ? [...orgContext.orgs, { ...org, role: membership.role }] : [{ ...org, role: membership.role }],
-            role: membership.role,
-            updatedAt: Date.now(),
-          };
           renderButton(document.getElementById('btn-account-switcher'));
         } catch (err) {
           UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
@@ -1831,6 +1824,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
           return;
         }
         closeDropdowns();
+        const allOrgs = orgContext && Array.isArray(orgContext.orgs) ? orgContext.orgs : [];
+        const activeOrgId = orgContext && orgContext.activeOrgId ? String(orgContext.activeOrgId) : '';
+        const otherOrgs = allOrgs.filter(o => o && o.id && String(o.id) !== activeOrgId);
         const items = [
           {
             label: `${display.accountName} (${display.role})`,
@@ -1838,6 +1834,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
             rightIcon: 'fa-solid fa-check',
             disabled: true,
           },
+          ...otherOrgs.map(o => ({
+            label: o.name || 'Workspace',
+            icon: 'fa-solid fa-building',
+            onClick: () => void setActiveOrgId(String(o.id), { source: 'account-switcher' }),
+          })),
           {
             label: 'New Workspace',
             icon: 'fa-solid fa-plus',

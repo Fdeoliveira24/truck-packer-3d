@@ -1,6 +1,13 @@
 import { getAllowedOrigin, json } from "../_shared/cors.ts";
 import { requireUser, serviceClient } from "../_shared/auth.ts";
-import { stripeClient, assertAllowedPrice, assertStripeEnv, buildReturnUrls } from "../_shared/stripe.ts";
+import {
+  stripeClient,
+  assertAllowedPrice,
+  assertStripeEnv,
+  buildReturnUrls,
+  isMissingPortalSubscriptionError,
+  isScheduleManagedPortalSubscriptionError,
+} from "../_shared/stripe.ts";
 
 const STRIPE_BLOCKING_STATUSES = new Set(["active", "trialing", "past_due", "unpaid"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -28,6 +35,7 @@ async function createPortalUrl(
   stripe: ReturnType<typeof stripeClient>,
   stripeCustomerId: string,
   origin: string,
+  organizationId: string,
   subscriptionId?: string,
 ): Promise<string> {
   const return_url = new URL(origin);
@@ -35,13 +43,14 @@ async function createPortalUrl(
   return_url.searchParams.set("billing", "portal_return");
 
   const portalConfigurationId = getPortalConfigurationId();
-  const sessionPayload: Record<string, unknown> = {
+  const fallbackPayload: Record<string, unknown> = {
     customer: stripeCustomerId,
     return_url: return_url.toString(),
   };
   if (portalConfigurationId) {
-    sessionPayload.configuration = portalConfigurationId;
+    fallbackPayload.configuration = portalConfigurationId;
   }
+  const sessionPayload: Record<string, unknown> = { ...fallbackPayload };
   if (subscriptionId) {
     sessionPayload.flow_data = {
       type: "subscription_update",
@@ -49,7 +58,36 @@ async function createPortalUrl(
     };
   }
 
-  const session = await stripe.billingPortal.sessions.create(sessionPayload as any);
+  let session: { url: string };
+  try {
+    session = await stripe.billingPortal.sessions.create(sessionPayload as any);
+  } catch (err) {
+    const isStaleSubscriptionErr = Boolean(
+      subscriptionId &&
+      isMissingPortalSubscriptionError(err)
+    );
+    const isScheduleErr = Boolean(
+      subscriptionId &&
+      isScheduleManagedPortalSubscriptionError(err)
+    );
+
+    if (isStaleSubscriptionErr) {
+      console.warn("billing:portal:fallback-stale-subscription", {
+        organization_id: organizationId,
+        stripe_customer_id: stripeCustomerId,
+        stripe_subscription_id: subscriptionId,
+      });
+      session = await stripe.billingPortal.sessions.create(fallbackPayload as any);
+    } else if (isScheduleErr) {
+      console.log("[portal-session] schedule-managed fallback", {
+        organization_id: organizationId,
+        stripe_subscription_id: subscriptionId,
+      });
+      session = await stripe.billingPortal.sessions.create(fallbackPayload as any);
+    } else {
+      throw err;
+    }
+  }
 
   return session.url;
 }
@@ -264,7 +302,13 @@ Deno.serve(async (req) => {
           billing_status: billingCustomerStatus,
         });
       }
-      const url = await createPortalUrl(stripe, stripeCustomerId, origin, billingCustomerSubscriptionId || undefined);
+      const url = await createPortalUrl(
+        stripe,
+        stripeCustomerId,
+        origin,
+        organizationId,
+        billingCustomerSubscriptionId || undefined,
+      );
       return json({ url }, { status: 200, origin });
     }
 
@@ -278,7 +322,13 @@ Deno.serve(async (req) => {
           status: String(existingSub.status || ""),
         });
       }
-      const url = await createPortalUrl(stripe, stripeCustomerId, origin, String(existingSub.stripe_subscription_id || "") || undefined);
+      const url = await createPortalUrl(
+        stripe,
+        stripeCustomerId,
+        origin,
+        organizationId,
+        String(existingSub.stripe_subscription_id || "") || undefined,
+      );
       return json({ url }, { status: 200, origin });
     }
 
@@ -299,7 +349,13 @@ Deno.serve(async (req) => {
             stripe_subscription_id: blockingSubId,
           });
         }
-        const url = await createPortalUrl(stripe, stripeCustomerId, origin, blockingSubId);
+        const url = await createPortalUrl(
+          stripe,
+          stripeCustomerId,
+          origin,
+          organizationId,
+          blockingSubId,
+        );
         return json({ url }, { status: 200, origin });
       }
     }

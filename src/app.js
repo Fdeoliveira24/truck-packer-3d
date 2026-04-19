@@ -1048,26 +1048,19 @@ function normalizeCheckoutInterval(value) {
 }
 
 function getCheckoutPlanOptions() {
-  const monthlyPriceId = typeof window !== 'undefined' && window.__TP3D_STRIPE_PRICE_MONTHLY
-    ? String(window.__TP3D_STRIPE_PRICE_MONTHLY).trim()
-    : '';
-  const yearlyPriceId = typeof window !== 'undefined' && window.__TP3D_STRIPE_PRICE_YEARLY
-    ? String(window.__TP3D_STRIPE_PRICE_YEARLY).trim()
-    : '';
+  // Stripe price IDs are resolved server-side from env-configured values.
   return {
     month: {
       interval: 'month',
       label: 'Pro (Monthly)',
       description: '$19.99/mo',
-      priceId: monthlyPriceId,
-      available: Boolean(monthlyPriceId),
+      available: true,
     },
     year: {
       interval: 'year',
       label: 'Pro (Yearly)',
       description: '$199/yr',
-      priceId: yearlyPriceId,
-      available: Boolean(yearlyPriceId),
+      available: true,
     },
   };
 }
@@ -1096,11 +1089,6 @@ async function startCheckout(input) {
     const rawPriceId = input.priceId || input.price_id;
     if (rawPriceId) priceId = String(rawPriceId).trim();
   }
-  if (!priceId) {
-    const plans = getCheckoutPlanOptions();
-    priceId = interval === 'year' ? plans.year.priceId : plans.month.priceId;
-  }
-
   /** @type {{interval?:'month'|'year', priceId?:string}} */
   const checkoutPayload = {};
   if (hasExplicitInterval) checkoutPayload.interval = /** @type {'month'|'year'} */ (interval);

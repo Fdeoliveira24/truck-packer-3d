@@ -2531,6 +2531,10 @@ export function createSettingsOverlay({
     const status = state.status ? String(state.status) : '';
     const isTrial = status === 'trialing';
     const isProOrTrial = state.isPro;
+    const isFreeWorkspaceState = Boolean(
+      !isProOrTrial &&
+      (status === '' || status === 'none' || status === 'canceled')
+    );
     const interval = state.interval ? String(state.interval) : '';
     const intervalLabel = interval === 'month' ? 'Monthly' : interval === 'year' ? 'Yearly' : null;
     const cancelAtPeriodEnd = Boolean(state.cancelAtPeriodEnd);
@@ -2839,6 +2843,8 @@ export function createSettingsOverlay({
         // days-left badge in header row is the single source of truth; no status line needed
       } else if (!isProOrTrial && status === 'trial_expired') {
         statusLine.textContent = 'Your free trial has ended.';
+      } else if (isFreeWorkspaceState) {
+        statusLine.textContent = 'No active subscription. This workspace is on the Free plan.';
       } else if (!isProOrTrial && status) {
         statusLine.textContent = 'Status: ' + status.replace(/_/g, ' ');
       }
@@ -2919,7 +2925,9 @@ export function createSettingsOverlay({
       ctaDesc.className = 'tp3d-billing-pro-cta__sub';
       ctaDesc.textContent = status === 'trial_expired'
         ? 'Your trial has ended. Subscribe to continue using Pro features.'
-        : 'Subscribe to keep using Truck Packer after your free trial ends, cancel anytime.';
+        : isTrial
+          ? 'Subscribe to keep using Truck Packer after your free trial ends, cancel anytime.'
+          : 'Upgrade this workspace to Pro. Cancel anytime.';
       ctaBody.appendChild(ctaDesc);
 
       ctaLeft.appendChild(ctaBody);
@@ -2996,7 +3004,7 @@ export function createSettingsOverlay({
     } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && !roleKnown) {
       const note = doc.createElement('div');
       note.className = 'muted tp3d-settings-mt-sm';
-      note.textContent = 'Loading permissions…';
+      note.textContent = 'Checking billing access…';
       subSection.appendChild(note);
     }
 
@@ -3005,9 +3013,9 @@ export function createSettingsOverlay({
     if (!lockedOrgId) {
       manageDisabledReason = 'Select a workspace to manage billing.';
     } else if (loading || pending || staleOrgState) {
-      manageDisabledReason = 'Loading billing info…';
+      manageDisabledReason = 'Refreshing billing details…';
     } else if (roleLoading) {
-      manageDisabledReason = 'Loading permissions…';
+      manageDisabledReason = 'Checking billing access…';
     } else if (roleKnown && !canManageBilling) {
       manageDisabledReason = 'Only the org owner can manage billing.';
     } else if (!state.ok || !portalAvailable || !isProOrTrial || !api || typeof api.openPortal !== 'function') {

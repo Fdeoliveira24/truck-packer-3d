@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-03-07
+Last updated: 2026-04-19
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -60,7 +60,7 @@ Completed:
 
 ---
 
-### P0.4 Portal "Manage" reliability (never 500) — DONE ✅
+### P0.4 Portal "Manage" reliability (never 500) — CODE COMPLETE / VERIFY MANUALLY
 Goal: Manage must always open portal. Never block the user with a 500.
 
 Completed:
@@ -70,9 +70,14 @@ Completed:
   - [x] No 500.
   - [x] Fall back to portal session without flow_data and return 200.
   - [x] Minimal logs added (org id + subscription id only).
-- [x] Verified:
+- [x] If Stripe rejects flow_data due to stale / missing stored subscription:
+  - [x] No 500.
+  - [x] Fall back to portal session without flow_data and return 200.
+  - [x] Minimal logs added (org id + customer id + stale subscription id only).
+- [ ] Verified:
   - User4: deep-link + Update Subscription works.
   - User1: schedule-managed sub triggers fallback (portal opens, no 500).
+  - test1 stale / missing stored subscription id falls back to plain customer portal session.
 
 Important note:
 - A schedule-managed subscription will not behave like a normal subscription inside portal. That's OK. This is an edge case and we now handle it safely.
@@ -306,11 +311,23 @@ P0 is green only when ALL items here are checked:
 - [x] Logout flow uses canonical helper only; no timed `reload()` immediately after `signOut()`
 - [ ] Cross-tab logout verified (no sign-out → sign-in bounce) — code complete; live 2-tab sign-off required
 - [ ] No console errors in normal flows (ignore debug mode + expected 404 favicon)
-- [x] "Manage billing" never 500
+- [ ] "Manage billing" never 500
 
 ---
 
 ## Running log (keep updated)
+
+- Date: 2026-04-19
+- What changed:
+  - Billing hardening work was applied.
+  - A stale Stripe subscription reference was found for test1.
+  - The billing row was reset to free/canceled.
+  - Portal fallback hardening for stale subscription references is now implemented in code.
+  - Checkout/portal client cleanup now routes monthly/yearly selection by interval only; server env remains the Stripe price source of truth.
+  - Stripe Node SDK pin was upgraded while keeping the Stripe API version pinned for behavior stability.
+- Tests required:
+  - Re-test "Manage billing" on test1 with a stale or missing stored subscription id; portal must return 200 via plain customer-session fallback.
+  - Re-test monthly and yearly checkout selection after the client-side price-id cleanup.
 
 - Date: 2026-03-08
 - What changed:

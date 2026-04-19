@@ -1,6 +1,11 @@
 import { getAllowedOrigin, json } from "../_shared/cors.ts";
 import { requireUser, serviceClient } from "../_shared/auth.ts";
-import { assertStripeEnv, stripeClient } from "../_shared/stripe.ts";
+import {
+  assertStripeEnv,
+  stripeClient,
+  isMissingPortalSubscriptionError,
+  isScheduleManagedPortalSubscriptionError,
+} from "../_shared/stripe.ts";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -165,13 +170,14 @@ Deno.serve(async (req) => {
     return_url.searchParams.set("billing", "portal_return");
 
     const portalConfigurationId = getPortalConfigurationId();
-    const sessionPayload: Record<string, unknown> = {
+    const fallbackPayload: Record<string, unknown> = {
       customer: stripeCustomerId,
       return_url: return_url.toString(),
     };
     if (portalConfigurationId) {
-      sessionPayload.configuration = portalConfigurationId;
+      fallbackPayload.configuration = portalConfigurationId;
     }
+    const sessionPayload: Record<string, unknown> = { ...fallbackPayload };
     // Pre-select the active subscription so the portal lands directly on
     // "Update subscription" and never shows an ambiguous multi-sub picker.
     if (stripeSubscriptionId) {
@@ -186,22 +192,26 @@ Deno.serve(async (req) => {
     // fall back to a plain session (no flow_data) so the portal still opens.
     let session: { url: string };
     let scheduleFallback = false;
+    let staleSubscriptionFallback = false;
     try {
       session = await stripe.billingPortal.sessions.create(sessionPayload as any);
     } catch (flowErr) {
-      const msg = String((flowErr as Error)?.message ?? "");
-      const isScheduleErr = msg.toLowerCase().includes("managed by a subscription schedule");
-      if (isScheduleErr && stripeSubscriptionId) {
+      const isStaleSubscriptionErr = stripeSubscriptionId && isMissingPortalSubscriptionError(flowErr);
+      const isScheduleErr = stripeSubscriptionId && isScheduleManagedPortalSubscriptionError(flowErr);
+      if (isStaleSubscriptionErr) {
+        console.warn("billing:portal:fallback-stale-subscription", {
+          organization_id: organizationId,
+          stripe_customer_id: stripeCustomerId,
+          stripe_subscription_id: stripeSubscriptionId,
+        });
+        staleSubscriptionFallback = true;
+        session = await stripe.billingPortal.sessions.create(fallbackPayload as any);
+      } else if (isScheduleErr && stripeSubscriptionId) {
         console.log("[portal-session] schedule-managed fallback", {
           organization_id: organizationId,
           stripe_subscription_id: stripeSubscriptionId,
         });
         scheduleFallback = true;
-        const fallbackPayload: Record<string, unknown> = {
-          customer: stripeCustomerId,
-          return_url: sessionPayload.return_url,
-        };
-        if (portalConfigurationId) fallbackPayload.configuration = portalConfigurationId;
         session = await stripe.billingPortal.sessions.create(fallbackPayload as any);
       } else {
         throw flowErr;
@@ -215,6 +225,7 @@ Deno.serve(async (req) => {
       stripe_subscription_id: stripeSubscriptionId || "none",
       portal_configuration_id: portalConfigurationId || null,
       schedule_fallback: scheduleFallback,
+      stale_subscription_fallback: staleSubscriptionFallback,
     });
 
     if (debug) {
@@ -225,6 +236,7 @@ Deno.serve(async (req) => {
         portal_configuration_id: portalConfigurationId || null,
         stripe_subscription_id: stripeSubscriptionId || "none",
         schedule_fallback: scheduleFallback,
+        stale_subscription_fallback: staleSubscriptionFallback,
       });
     }
 

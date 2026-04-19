@@ -16,8 +16,6 @@ declare global {
     __TP3D_BILLING_TRACE_CURRENT_ID__?: any;
     __TP3D_DIAG__?: any;
     __TP3D_ORG_METRICS__?: any;
-    __TP3D_STRIPE_PRICE_MONTHLY?: any;
-    __TP3D_STRIPE_PRICE_YEARLY?: any;
     __TP3D_BUILD_STAMP_LOGGED__?: any;
     __TP3D_DIAG_PERSIST_KEY__?: any;
     __TP3D_FORCE_DEBUG__?: any;

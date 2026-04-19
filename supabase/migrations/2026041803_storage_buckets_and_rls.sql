@@ -42,8 +42,10 @@ create policy "org_logos_insert_admin"
   for insert
   with check (
     bucket_id = 'org-logos'
+    and (storage.foldername(name))[1] = 'orgs'
+    and (storage.foldername(name))[2] ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
     and public.tp3d_is_org_admin_or_owner(
-      (storage.foldername(name))[2]::uuid
+      ((storage.foldername(name))[2])::uuid
     )
   );
 
@@ -53,8 +55,10 @@ create policy "org_logos_update_admin"
   for update
   using (
     bucket_id = 'org-logos'
+    and (storage.foldername(name))[1] = 'orgs'
+    and (storage.foldername(name))[2] ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
     and public.tp3d_is_org_admin_or_owner(
-      (storage.foldername(name))[2]::uuid
+      ((storage.foldername(name))[2])::uuid
     )
   );
 
@@ -65,8 +69,10 @@ create policy "org_logos_delete_owner"
   for delete
   using (
     bucket_id = 'org-logos'
+    and (storage.foldername(name))[1] = 'orgs'
+    and (storage.foldername(name))[2] ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
     and public.tp3d_is_org_owner(
-      (storage.foldername(name))[2]::uuid
+      ((storage.foldername(name))[2])::uuid
     )
   );
 

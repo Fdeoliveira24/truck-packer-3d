@@ -193,11 +193,11 @@ Notes:
 
 ---
 
-### P0.8 Payment failure rules (past_due / unpaid / incomplete) — NOT DONE (AFTER P0.7)
+### P0.8 Payment failure rules (past_due / unpaid / incomplete) — IMPLEMENTED
 Goal: predictable access during payment issues.
-- [ ] Define grace window behavior in `/billing-status` (ex: `past_due_grace`).
-- [ ] UI: warning banner + Owner-only "Fix payment" link to portal.
-- [ ] After grace: block Pro actions (but app still loads).
+- [x] Define grace window behavior in `/billing-status` (ex: `past_due_grace`).
+- [x] UI: warning banner + Owner-only "Fix payment" link to portal.
+- [x] After grace: block Pro actions (but app still loads).
 
 
 
@@ -215,12 +215,13 @@ Still required (release blocking):
   - Banner must NOT appear while signed_in.
   - No auto sign-out / auto sign-in loop.
   - getAccountBundleSingleFlight({force:true}) must return session+user in BOTH tabs when signed_in.
-- [x] **Cross-tab auth/token churn hardening** (code complete; live 2-tab sign-off pending)
+- [x] **Cross-tab auth/token churn hardening + logout/billing stability** (code complete; live 2-tab sign-off pending)
   - Added versioned org-context sync payload (`tp3d:org-context-sync`) with `userId`, `orgId`, `timestamp`, `epoch`.
   - Storage listeners now apply org sync only for matching user + newer epoch; older payloads are ignored.
   - `tp3d:active-org-id` legacy storage changes are handled as fallback and promoted into the same guarded sync path.
   - Auth refresh auto-triggers are gated during auth-unsettled/logout/inflight windows to reduce cross-tab races.
   - Org context is only cleared when auth is definitively signed out.
+  - **Extended:** Cross-tab billing dedupe now applies before any handler/log (storage and broadcast); per-org org-role hydration uses a grace window and inflight flags; authGate fallback guard blocks false signed_out during signed-in wobbles.
 - [x] **Cross-tab logout stability (no bounce)**
   - User-initiated logout must await `signOut()` completion (no timed reload before sign-out finishes).
   - Tab A logout must not briefly re-enter signed-in state.
@@ -228,10 +229,14 @@ Still required (release blocking):
   - Implemented with a canonical `performUserInitiatedLogout()` helper + logout-in-progress latch in `src/app.js`.
   - Fallback auth snapshot TTL is bypassed while logout latch is active (prevents session resurrection during sign-out).
 
-#### Known issue (multi-tab)
-- Observed: in 2 tabs, auth is signed_in + hasToken=true, localOrgHint is set, but OrgContext activeOrgId becomes null and bundle returns session/user null; banner appears; billing stuck pending.
-- Impact: P0 release block until resolved.
-- **Status (2026-02-28):** Multi-tab root-cause audit in progress (P0.9.1). Top culprit identified: transient SDK SIGNED_OUT during cross-tab token refresh triggers P0.9 state wipe + 1500ms cooldown blocks recovery. Fix plan drafted, not yet applied.
+#### Multi-tab status
+- Observed issues from late Feb are no longer reproducing in current debug logs (no repeated `billing:cross-tab-*:received` bursts; authGate fallback now blocks false signed_out during signed-in wobbles).
+- Release is still blocked until the 2-tab manual sign-off checklist is executed and documented.
+- Two-tabs test (same user) must verify:
+  - Tab A + Tab B both signed_in must converge to the same OrgContext (orgId not null).
+  - Banner must NOT appear while signed_in.
+  - No auto sign-out / auto sign-in loop.
+  - getAccountBundleSingleFlight({force:true}) must return session+user in BOTH tabs when signed_in.
 
 Future (do later):
 - [ ] Optional org-scoped local storage (`...:<userId>:<orgId>`) for same-user multi-workspace separation.
@@ -295,17 +300,33 @@ You ran lint and still have warnings.
 P0 is green only when ALL items here are checked:
 - [x] P0.6 DB health checks run and clean during tests (Q1–Q6 all 0 rows)
 - [x] P0.7 Trial-expired behavior implemented + tested (test3 locked; test1/test2/test4 ok)
-- [ ] P0.8 Payment failure rules implemented + tested (past_due / unpaid / incomplete)
+- [x] P0.8 Payment failure rules implemented + tested (past_due / unpaid / incomplete)
 - [ ] P0 Workspace creation + switching tested (no org/billing leakage)
 - [ ] P0.9 Cross-user data isolation + 2-tab stability verified (no banner + orgId resolves in both tabs)
 - [x] Logout flow uses canonical helper only; no timed `reload()` immediately after `signOut()`
-- [ ] Cross-tab logout verified (no sign-out → sign-in bounce) — code fix merged; live 2-tab sign-off required
+- [ ] Cross-tab logout verified (no sign-out → sign-in bounce) — code complete; live 2-tab sign-off required
 - [ ] No console errors in normal flows (ignore debug mode + expected 404 favicon)
 - [x] "Manage billing" never 500
 
 ---
 
 ## Running log (keep updated)
+
+- Date: 2026-03-08
+- What changed:
+  - Cross-tab billing dedupe now happens before any handler/log in both storage and broadcast paths, with an expanded signature to UI-relevant fields.
+  - Org-role hydration: per-org grace window and inflight flags are set early so hydration does not briefly report `hydrated-no-role` while bundle is inflight.
+  - authGate fallback: strengthened guard using three signals (snapshot age, authGate lastSignedInAt age, live wrapper signed-in state) to block false `signed_out` confirmation.
+- Validation:
+  - Lint: 0 errors
+  - Typecheck: clean
+  - Tests: 0 failures
+- Branch/PR note:
+  - `stabilize/auth-billing-hardening` pushed; PR #4 to main is open.
+- Next required test:
+  - Two-tab sign-off (same user): org context converges; no “Create or join workspace” banner; no auth flip to SIGNED_OUT during signed-in flows.
+  - Two-tab logout sign-off: Tab A logout signs out cleanly; Tab B follows; no signed-in bounce.
+  - Two-tab org switch: switch in Tab A updates Tab B billing/members/general to the same org.
 
 - Date: 2026-03-07
 - What changed:

@@ -55,7 +55,7 @@ begin
     update public.billing_customers bc
     set stripe_customer_id = r.stripe_customer_id,
         stripe_subscription_id = r.stripe_subscription_id,
-        status = r.status,
+        status = r.status::public.billing_status,
         plan_name = case when r.status in ('active', 'trialing', 'past_due') then 'pro' else bc.plan_name end,
         billing_interval = coalesce(r.billing_interval, bc.billing_interval),
         current_period_start = r.current_period_start,
@@ -104,7 +104,7 @@ begin
     update public.billing_customers bc
     set stripe_customer_id = r.stripe_customer_id,
         stripe_subscription_id = r.stripe_subscription_id,
-        status = r.status,
+        status = r.status::public.billing_status,
         plan_name = case when r.status in ('active', 'trialing', 'past_due') then 'pro' else bc.plan_name end,
         billing_interval = coalesce(r.billing_interval, bc.billing_interval),
         current_period_start = r.current_period_start,

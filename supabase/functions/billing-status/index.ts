@@ -728,6 +728,55 @@ Deno.serve(async (req) => {
     plan = isActive ? "pro" : "free";
     const trialEndsAt = subStatus === "trialing" ? trialEndsAtCandidate : null;
 
+    // ── P0.8: Payment failure grace rules ──
+    // Trial logic takes absolute priority — skip payment problem when trial-related.
+    const PAYMENT_GRACE_DAYS: Record<string, number> = {
+      past_due: 7,
+      unpaid: 3,
+      incomplete: 0,
+      incomplete_expired: 0,
+    };
+    let paymentProblem = false;
+    let paymentGraceUntil: string | null = null;
+    let paymentGraceRemainingDays: number | null = null;
+    let paymentAction: string | null = null;
+    if (
+      !isTrial &&
+      subStatus !== "trial_expired" &&
+      Object.prototype.hasOwnProperty.call(PAYMENT_GRACE_DAYS, subStatus)
+    ) {
+      paymentProblem = true;
+      paymentAction = "fix_payment";
+      const graceDays = PAYMENT_GRACE_DAYS[subStatus];
+      if (graceDays > 0 && currentPeriodEnd) {
+        const periodEndMs = new Date(currentPeriodEnd).getTime();
+        if (Number.isFinite(periodEndMs)) {
+          const graceEndMs = periodEndMs + graceDays * 86400000;
+          paymentGraceUntil = new Date(graceEndMs).toISOString();
+          paymentGraceRemainingDays = Math.max(0, Math.ceil((graceEndMs - Date.now()) / 86400000));
+          if (Date.now() < graceEndMs) {
+            // During grace: keep Pro access
+            isActive = true;
+            plan = "pro";
+          } else {
+            // Grace expired: revoke Pro access
+            isActive = false;
+            plan = "free";
+          }
+        } else {
+          // Can't compute grace without valid period end — treat as expired
+          isActive = false;
+          plan = "free";
+          paymentGraceRemainingDays = 0;
+        }
+      } else {
+        // 0-day grace (incomplete / incomplete_expired) — not active immediately
+        isActive = false;
+        plan = "free";
+        paymentGraceRemainingDays = 0;
+      }
+    }
+
     // Keep billing_customers state aligned when Stripe/subscriptions already resolved active.
     if (resolvedOrgId && subStatus === "active" && billingCustomerStatus === "trialing") {
       try {
@@ -777,6 +826,10 @@ Deno.serve(async (req) => {
       cancelAtPeriodEnd,
       cancelAt,
       portalAvailable,
+      paymentProblem,
+      paymentGraceUntil,
+      paymentGraceRemainingDays,
+      action: paymentAction,
     };
     if (responseDebugEnabled) {
       responsePayload.debug = {

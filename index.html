@@ -981,6 +981,18 @@
     <div id="modal-root"></div>
     <div id="toast-container" aria-live="polite" aria-atomic="true"></div>
 
+    <!-- ===== GLOBAL UI ROOT: ERROR OVERLAY (app-state errors: 404, 500, maintenance) ===== -->
+    <div class="system-overlay" id="error-overlay">
+      <div class="error-card">
+        <div id="error-icon" aria-hidden="true"></div>
+        <h2 id="error-title">Truck Packer 3D</h2>
+        <p id="error-body"></p>
+        <div id="error-actions">
+          <button class="btn btn-primary" type="button" onclick="window.location.reload()">Reload</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ===== GLOBAL UI ROOT: SYSTEM OVERLAY (runtime failures) ===== -->
     <div class="system-overlay" id="system-overlay">
       <div class="system-card">
@@ -1022,6 +1034,115 @@
       "
     ></script>
 
-    <script type="module" src="src/app.js"></script>
+    <!-- ===== FLAGS + BOOT HELPERS: Maintenance mode and preboot app-state overlay ===== -->
+    <script>
+      window.__TP3D_FLAGS__ = window.__TP3D_FLAGS__ || { maintenanceMode: false };
+      (function () {
+        window.__TP3D_BOOT = window.__TP3D_BOOT || {};
+        const boot = window.__TP3D_BOOT;
+        boot.fatalOverlayShown = Boolean(boot.fatalOverlayShown);
+        boot.maintenanceMode = Boolean(window.__TP3D_FLAGS__ && window.__TP3D_FLAGS__.maintenanceMode);
+
+        boot.showAppStatusOverlay = function (variant, opts) {
+          const options = opts && typeof opts === 'object' ? opts : {};
+          const overlay = document.getElementById('error-overlay');
+          const titleEl = document.getElementById('error-title');
+          const bodyEl = document.getElementById('error-body');
+          const actionsEl = document.getElementById('error-actions');
+          const iconEl = document.getElementById('error-icon');
+          if (!overlay) return;
+
+          const state = {
+            title: 'Something went wrong',
+            body: 'An unexpected error stopped the app from loading correctly.',
+            buttonLabel: 'Reload',
+            iconVariant: 'danger',
+            iconClass: 'fa-triangle-exclamation',
+          };
+
+          if (variant === 'maintenance') {
+            state.title = "We'll be back soon";
+            state.body = 'Truck Packer 3D is temporarily unavailable while maintenance is in progress.';
+            state.buttonLabel = 'Reload';
+            state.iconVariant = 'info';
+            state.iconClass = 'fa-clock';
+          } else if (options.message) {
+            state.body = String(options.message);
+          }
+
+          if (variant === 'fatal') {
+            if (boot.fatalOverlayShown) return;
+            boot.fatalOverlayShown = true;
+          }
+
+          if (iconEl) {
+            iconEl.className = 'error-icon error-icon--' + state.iconVariant;
+            iconEl.innerHTML = '<i class="fas ' + state.iconClass + '" aria-hidden="true"></i>';
+          }
+          if (titleEl) titleEl.textContent = state.title;
+          if (bodyEl) bodyEl.textContent = state.body;
+          if (actionsEl) {
+            actionsEl.innerHTML = '';
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-primary';
+            btn.textContent = state.buttonLabel;
+            btn.addEventListener('click', function () {
+              window.location.reload();
+            });
+            actionsEl.appendChild(btn);
+          }
+          overlay.classList.add('active');
+        };
+      })();
+    </script>
+
+    <!-- ===== PRE-BOOT: Fatal error listener (fires before app modules finish loading) ===== -->
+    <script>
+      (function () {
+        const boot = window.__TP3D_BOOT = window.__TP3D_BOOT || {};
+
+        function shouldIgnoreResourceError(ev) {
+          return Boolean(
+            ev &&
+            ev.target &&
+            ev.target !== window &&
+            (ev.target.tagName === 'SCRIPT' || ev.target.tagName === 'LINK')
+          );
+        }
+
+        // capture:true catches load errors on SCRIPT/LINK elements too
+        window.addEventListener('error', function (ev) {
+          if (boot.appReady || boot.maintenanceMode) return;
+          if (shouldIgnoreResourceError(ev)) return;
+          if (typeof boot.showAppStatusOverlay === 'function') {
+            boot.showAppStatusOverlay('fatal');
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function () {
+          if (boot.appReady || boot.maintenanceMode) return;
+          if (typeof boot.showAppStatusOverlay === 'function') {
+            boot.showAppStatusOverlay('fatal');
+          }
+        });
+      })();
+    </script>
+
+    <script type="module">
+      const boot = window.__TP3D_BOOT = window.__TP3D_BOOT || {};
+      if (boot.maintenanceMode) {
+        if (typeof boot.showAppStatusOverlay === 'function') {
+          boot.showAppStatusOverlay('maintenance');
+        }
+      } else {
+        import('./src/app.js').catch(err => {
+          console.error('[TruckPackerApp] app import failed:', err);
+          if (typeof boot.showAppStatusOverlay === 'function') {
+            boot.showAppStatusOverlay('fatal');
+          }
+        });
+      }
+    </script>
   </body>
 </html>

@@ -2526,6 +2526,80 @@ body.modal-open {
   color: var(--text-secondary);
 }
 
+.error-card {
+  width: min(400px, calc(100vw - var(--space-5)));
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.06),
+    0 12px 32px rgba(0, 0, 0, 0.14);
+  padding: var(--space-8) var(--space-6);
+  text-align: center;
+}
+
+.error-card h2 {
+  margin: 0 0 var(--space-2) 0;
+  font-size: var(--text-xl);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  line-height: var(--leading-tight);
+}
+
+.error-card p {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: var(--leading-relaxed);
+}
+
+.error-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto var(--space-5);
+  font-size: 1.25rem;
+  flex-shrink: 0;
+}
+
+.error-icon--warn {
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--warning);
+}
+
+.error-icon--danger {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--error);
+}
+
+.error-icon--info {
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--info);
+}
+
+#error-actions {
+  margin-top: var(--space-6);
+  display: flex;
+  gap: var(--space-3);
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 480px) {
+  .error-card {
+    padding: var(--space-6) var(--space-4);
+    border-radius: var(--radius-md);
+  }
+
+  #error-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
 /* ================================
    Responsive
 ================================== */

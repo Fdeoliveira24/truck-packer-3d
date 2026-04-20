@@ -11,6 +11,7 @@ declare global {
     TWEEN?: any;
     XLSX?: any;
     __TP3D_BOOT?: any;
+    __TP3D_FLAGS__?: { maintenanceMode: boolean; [key: string]: unknown };
     __TP3D_UI?: any;
     __TP3D_BILLING?: any;
     __TP3D_BILLING_TRACE_CURRENT_ID__?: any;

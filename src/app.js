@@ -50,6 +50,8 @@
 
 import { initTP3DDebugger } from './debugger.js';
 import { createSystemOverlay } from './ui/system-overlay.js';
+import { createErrorOverlay } from './ui/error-overlay.js';
+import { Router } from './router.js';
 import { createUIComponents } from './ui/ui-components.js';
 import { createTableFooter } from './ui/table-footer.js';
 import { TrailerPresets } from './data/trailer-presets.js';
@@ -1187,6 +1189,51 @@ const TP3D_BUILD_STAMP = Object.freeze({
   const UIComponents = createUIComponents();
   try { window.__TP3D_UI = UIComponents; } catch (_) { /* ignore */ }
   const SystemOverlay = createSystemOverlay();
+  const ErrorOverlay = createErrorOverlay();
+  const BootState = (() => {
+    window.__TP3D_BOOT = window.__TP3D_BOOT || {};
+    return window.__TP3D_BOOT;
+  })();
+
+  function markAppReady() {
+    try {
+      BootState.appReady = true;
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  function showFatalOverlay(opts = {}) {
+    /** @type {{ message?: string } | null} */
+    const config = opts && typeof opts === 'object' ? opts : null;
+    const message = config && typeof config.message === 'string' ? config.message : '';
+    if (BootState.maintenanceMode) return;
+    BootState.fatalOverlayShown = true;
+    ErrorOverlay.showFatal({ message });
+  }
+
+  function installRuntimeFatalHandlers() {
+    if (BootState.runtimeFatalHandlersInstalled) return;
+    BootState.runtimeFatalHandlersInstalled = true;
+
+    const handleFatal = ev => {
+      if (BootState.fatalOverlayShown || BootState.maintenanceMode) return;
+      if (
+        ev &&
+        ev.target &&
+        ev.target !== window &&
+        (ev.target.tagName === 'SCRIPT' || ev.target.tagName === 'LINK')
+      ) {
+        return;
+      }
+      showFatalOverlay();
+    };
+
+    window.addEventListener('error', handleFatal, true);
+    window.addEventListener('unhandledrejection', handleFatal);
+  }
+
+  installRuntimeFatalHandlers();
 
   // ============================================================================
   // SECTION: APP BOOTSTRAP ENTRY
@@ -4315,6 +4362,29 @@ const TP3D_BUILD_STAMP = Object.freeze({
       UpdatesUI.render();
       RoadmapUI.render();
       SettingsUI.loadForm();
+      syncRecoverableErrorOverlay();
+    }
+
+    let routeNotFoundActive = false;
+
+    function hasMissingEditorPack() {
+      if (StateStore.get('currentScreen') !== 'editor') return false;
+      const packId = StateStore.get('currentPackId');
+      if (!packId) return false;
+      return !PackLibrary.getById(packId);
+    }
+
+    function syncRecoverableErrorOverlay() {
+      if (BootState.fatalOverlayShown || BootState.maintenanceMode) return;
+      if (routeNotFoundActive) {
+        ErrorOverlay.showNotFound({ kind: 'route' });
+        return;
+      }
+      if (hasMissingEditorPack()) {
+        ErrorOverlay.showNotFound({ kind: 'pack' });
+        return;
+      }
+      ErrorOverlay.hide();
     }
 
     // ============================================================================
@@ -6226,7 +6296,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (initCompleted) return;
       console.info('[TruckPackerApp] init start');
       initInFlightPromise = (async () => {
-      if (!(await validateRuntime())) return;
+      if (!(await validateRuntime())) {
+        markAppReady();
+        return;
+      }
       installDevHelpers({ app: window.TruckPackerApp, stateStore: StateStore, Utils, documentRef: document });
       seedIfEmpty();
       try {
@@ -6272,6 +6345,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           onRetry: () => window.location.reload(),
         });
         AuthOverlay.show();
+        markAppReady();
         return;
       }
 
@@ -6294,6 +6368,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           },
         });
         AuthOverlay.show();
+        markAppReady();
         return;
       }
 
@@ -6337,11 +6412,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
             }
             AuthOverlay.setPhase('cantconnect', { error: retryErr, onRetry: () => window.location.reload() });
             AuthOverlay.show();
+            markAppReady();
             return;
           }
         } else {
           AuthOverlay.setPhase('cantconnect', { error: err, onRetry: () => window.location.reload() });
           AuthOverlay.show();
+          markAppReady();
           return;
         }
       }
@@ -6781,6 +6858,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
       AccountSwitcher.init();
       wireGlobalButtons();
       KeyboardManager.init();
+
+      ErrorOverlay.setOnBackToPacks(() => {
+        routeNotFoundActive = false;
+        const replaced = Router.replaceScreen('packs');
+        if (!replaced || StateStore.get('currentScreen') !== 'packs') {
+          AppShell.navigate('packs');
+        }
+        syncRecoverableErrorOverlay();
+      });
 
       // Sidebar upgrade notice subscriber
       try {
@@ -7823,11 +7909,46 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (changes.selectedInstanceIds) {
           EditorUI.render();
         }
+        if (
+          changes.currentScreen ||
+          changes.currentPackId ||
+          changes.packLibrary ||
+          changes._undo ||
+          changes._redo ||
+          changes._replace
+        ) {
+          syncRecoverableErrorOverlay();
+        }
       });
 
+      try {
+        Router.init({
+          onScreen: screen => {
+            routeNotFoundActive = false;
+            ErrorOverlay.hide();
+            AppShell.navigate(screen);
+            syncRecoverableErrorOverlay();
+          },
+          onNotFound: () => {
+            routeNotFoundActive = true;
+            syncRecoverableErrorOverlay();
+          },
+          onNeutral: () => {
+            routeNotFoundActive = false;
+            syncRecoverableErrorOverlay();
+          },
+        });
+      } catch (err) {
+        console.error('[TruckPackerApp] Router init error:', err);
+      }
+
       renderAll();
-      if (!supabaseInitOk) return;
+      if (!supabaseInitOk) {
+        markAppReady();
+        return;
+      }
       await bootstrapAuthGate();
+      markAppReady();
       })().finally(() => {
         initInFlightPromise = null;
         initCompleted = true;
@@ -7870,13 +7991,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
   }
 
   const boot = () => {
+    if (window.__TP3D_FLAGS__ && window.__TP3D_FLAGS__.maintenanceMode) return;
     if (!checkBrowserSupport()) {
       const msg =
         'Your browser version may not be fully supported. Please upgrade to Chrome 90+, Firefox 88+, Safari 13.1+, or Edge 90+ for the best experience.';
       console.warn('[TruckPackerApp]', msg);
     }
     console.info('[TruckPackerApp] boot -> init');
-    window.TruckPackerApp.init();
+    window.TruckPackerApp.init().catch(err => {
+      console.error('[TruckPackerApp] fatal boot error:', err);
+      showFatalOverlay();
+    });
   };
 
   if (document.readyState === 'loading') {

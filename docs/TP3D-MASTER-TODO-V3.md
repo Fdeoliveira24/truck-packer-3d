@@ -319,6 +319,13 @@ P0 is green only when ALL items here are checked:
 
 - Date: 2026-04-19
 - What changed:
+  - Fixed a release-blocking editor export regression where dropdown actions assumed export handlers always returned promises and crashed on `.catch` when they returned `undefined`.
+  - Fixed a release-blocking Settings modal regression where `Edit Profile` and `Edit Workspace` could no-op until the modal was reopened because edit-mode flags were missing from the render stable key.
+- Verification still required:
+  - Re-test `Edit Profile`, `Edit Workspace`, Screenshot, and Export PDF in the browser after this fix.
+
+- Date: 2026-04-19
+- What changed:
   - Billing hardening work was applied.
   - A stale Stripe subscription reference was found for test1.
   - The billing row was reset to free/canceled.

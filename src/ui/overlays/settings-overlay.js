@@ -694,6 +694,7 @@ export function createSettingsOverlay({
 
     if (tab === 'account') {
       key.account = {
+        editingProfile: Boolean(isEditingProfile),
         loadingBundle: Boolean(isLoadingAccountBundle),
         loadingProfile: Boolean(isLoadingProfile),
         savingProfile: Boolean(isSavingProfile),
@@ -732,6 +733,7 @@ export function createSettingsOverlay({
       };
     } else if (tab === 'org-general') {
       key.orgGeneral = {
+        editingOrg: Boolean(isEditingOrg),
         loadingBundle: Boolean(isLoadingAccountBundle),
         loadingOrg: Boolean(isLoadingOrg),
         loadingMembership: Boolean(isLoadingMembership),

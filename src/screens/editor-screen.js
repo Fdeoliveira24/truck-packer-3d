@@ -1343,16 +1343,20 @@ export function createEditorScreen({
         btnUnpack.addEventListener('click', () => unpackAll());
       }
       btnPng.addEventListener('click', () => {
-        ExportService.captureScreenshot().catch(err => {
-          console.error('[EditorScreen] Screenshot error:', err);
-          UIComponents.showToast('Screenshot failed.', 'error');
-        });
+        Promise.resolve()
+          .then(() => ExportService.captureScreenshot())
+          .catch(err => {
+            console.error('[EditorScreen] Screenshot error:', err);
+            UIComponents.showToast('Screenshot failed.', 'error');
+          });
       });
       btnPdf.addEventListener('click', () => {
-        ExportService.generatePDF().catch(err => {
-          console.error('[EditorScreen] PDF export error:', err);
-          UIComponents.showToast('PDF export failed.', 'error');
-        });
+        Promise.resolve()
+          .then(() => ExportService.generatePDF())
+          .catch(err => {
+            console.error('[EditorScreen] PDF export error:', err);
+            UIComponents.showToast('PDF export failed.', 'error');
+          });
       });
       if (btnShare) {
         btnShare.addEventListener('click', ev => {

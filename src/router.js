@@ -14,6 +14,22 @@
 const KNOWN_SCREENS = new Set(['packs', 'cases', 'editor', 'updates', 'roadmap', 'settings']);
 
 export const Router = {
+  /**
+   * Parse the current window hash and return a structured result.
+   * - Empty/bare hash ("", "#", "#/") → { screen: null, isNotFound: false } (no override)
+   * - Known screen (e.g. "#/cases")   → { screen: 'cases', isNotFound: false }
+   * - Unknown segment                 → { screen: null, isNotFound: true }
+   * @returns {{ screen: string | null, isNotFound: boolean }}
+   */
+  parseHash() {
+    const hash = String(window.location.hash || '');
+    if (!hash || hash === '#' || hash === '#/') return { screen: null, isNotFound: false };
+    const m = hash.match(/^#\/?([a-z0-9-]+)$/i);
+    const screen = m ? String(m[1]).toLowerCase() : '';
+    if (KNOWN_SCREENS.has(screen)) return { screen, isNotFound: false };
+    return { screen: null, isNotFound: true };
+  },
+
   getScreenFromHash(defaultScreen = 'packs') {
     const hash = String(window.location.hash || '');
     const m = hash.match(/^#\/?([a-z0-9-]+)$/i);
@@ -30,16 +46,44 @@ export const Router = {
     return true;
   },
 
+  replaceScreen(screen) {
+    const s = String(screen || '').toLowerCase();
+    if (!KNOWN_SCREENS.has(s)) return false;
+    const next = `#/${s}`;
+    if (window.location.hash === next) return false;
+    const url = new URL(window.location.href);
+    url.hash = next;
+    window.history.replaceState(window.history.state ?? null, '', url.toString());
+    return true;
+  },
+
   /**
-   * @param {{ onScreen?: (screen: string) => void, defaultScreen?: string }} [opts]
+   * @param {{ onScreen?: (screen: string) => void, onNotFound?: () => void, onNeutral?: () => void }} [opts]
    */
-  init({ onScreen, defaultScreen = 'packs' } = {}) {
+  init({ onScreen, onNotFound, onNeutral } = {}) {
     const handler = () => {
-      const screen = Router.getScreenFromHash(defaultScreen);
+      const { screen, isNotFound } = Router.parseHash();
+      if (isNotFound) {
+        try {
+          onNotFound && onNotFound();
+        } catch (err) {
+          console.error('[Router] onNotFound error', err);
+        }
+        return;
+      }
+      if (screen) {
+        // Explicit valid hash (e.g. #/cases) — navigate there
+        try {
+          onScreen && onScreen(screen);
+        } catch (err) {
+          console.error('[Router] onScreen error', err);
+        }
+        return;
+      }
       try {
-        onScreen && onScreen(screen);
+        onNeutral && onNeutral();
       } catch (err) {
-        console.error('[Router] onScreen error', err);
+        console.error('[Router] onNeutral error', err);
       }
     };
 

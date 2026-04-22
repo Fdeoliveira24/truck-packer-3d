@@ -3125,6 +3125,29 @@ export async function requestAccountDeletion() {
     }
   }
 
+  async function getInvokeErrorMessage(err) {
+    const fallback = err && err.message ? String(err.message) : '';
+    const context = err && err.context ? err.context : null;
+    if (!context || typeof context.clone !== 'function') return fallback;
+    try {
+      const res = context.clone();
+      const text = await res.text();
+      if (!text) return fallback;
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === 'object') {
+          if (parsed.error) return String(parsed.error);
+          if (parsed.message) return String(parsed.message);
+        }
+      } catch {
+        // ignore JSON parse errors
+      }
+      return String(text);
+    } catch {
+      return fallback;
+    }
+  }
+
   let data = null;
   let error = null;
 
@@ -3176,11 +3199,17 @@ export async function requestAccountDeletion() {
 
   // Error path: banning / global signout can revoke auth during the request.
   const status = Number.isFinite(error.status) ? error.status : null;
-  const msg = String(error && error.message ? error.message : '');
+  const msg = await getInvokeErrorMessage(error);
 
   // If we got 401/403, it often means the function ran and then auth got revoked.
   if (status === 401 || status === 403) {
     return { ok: true, inferred: true, reason: 'http-' + status };
+  }
+
+  if (status === 409) {
+    const conflictError = new Error(msg || 'Deletion request failed');
+    /** @type {any} */ (conflictError).status = 409;
+    throw conflictError;
   }
 
   // Some environments surface this as a generic "non-2xx" or network error.

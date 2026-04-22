@@ -1615,7 +1615,7 @@ export function createSettingsOverlay({
           },
         }]
         : undefined;
-      UIComponents.showToast('Invite sent to ' + email, 'success', { title: 'Invites', actions: copyInviteAction });
+      UIComponents.showToast('Invite link created for ' + email, 'success', { title: 'Invites', actions: copyInviteAction });
       // Refresh invites list
       await loadOrgInvites(orgId);
       renderIfFresh(getCurrentActionId(), 'invite:send', epoch);
@@ -1688,7 +1688,7 @@ export function createSettingsOverlay({
           },
         }]
         : undefined;
-      UIComponents.showToast('Invite resent to ' + invite.email, 'success', { title: 'Invites', actions: copyInviteAction });
+      UIComponents.showToast('Invite link refreshed for ' + invite.email, 'success', { title: 'Invites', actions: copyInviteAction });
       await loadOrgInvites(orgId);
       renderIfFresh(getCurrentActionId(), 'invite:resend', epoch);
       return result;
@@ -4149,7 +4149,7 @@ export function createSettingsOverlay({
                     ) {
                       errorMsg.textContent = 'You are offline. Reconnect to delete your account.';
                     } else {
-                      errorMsg.textContent = msg ? `Delete request failed: ${msg}` : 'Delete request failed.';
+                      errorMsg.textContent = msg || 'Delete request failed.';
                     }
 
                     confirmInput.disabled = false;
@@ -4533,7 +4533,7 @@ export function createSettingsOverlay({
 
             const noOrgEl = doc.createElement('div');
             noOrgEl.className = 'muted';
-            noOrgEl.textContent = 'Create a workspace to manage workspace details.';
+            noOrgEl.textContent = 'Create a workspace or join one with an invite link to manage workspace details.';
             wrap.appendChild(noOrgEl);
 
             const createBtn = doc.createElement('button');
@@ -4541,23 +4541,16 @@ export function createSettingsOverlay({
             createBtn.className = 'btn btn-primary';
             createBtn.textContent = '+ New Workspace';
             createBtn.addEventListener('click', () => {
-              const name = window.prompt('Workspace name:');
-              if (!name || !name.trim()) return;
-              createBtn.disabled = true;
-              createBtn.textContent = 'Creating\u2026';
-              SupabaseClient.createOrganization({ name: name.trim() })
-                .then(({ org, membership }) => {
-                  membershipData = membership;
-                  orgData = org;
-                  if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
-                  UIComponents.showToast('Workspace created!', 'success');
-                  render({ source: 'org-created' });
-                })
-                .catch(err => {
-                  UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
-                  createBtn.disabled = false;
-                  createBtn.textContent = '+ New Workspace';
-                });
+              const openCreateWorkspace = typeof window !== 'undefined'
+                && window.TruckPackerApp
+                && typeof window.TruckPackerApp.openCreateWorkspaceFlow === 'function'
+                ? window.TruckPackerApp.openCreateWorkspaceFlow
+                : null;
+              if (!openCreateWorkspace) {
+                UIComponents.showToast('Workspace creation is unavailable right now.', 'error');
+                return;
+              }
+              openCreateWorkspace({ source: 'settings-org-general' });
             });
             wrap.appendChild(createBtn);
 
@@ -4570,22 +4563,10 @@ export function createSettingsOverlay({
             retryBtn.className = 'btn btn-ghost';
             retryBtn.textContent = 'Retry';
             retryBtn.addEventListener('click', () => {
-              if (isLoadingMembership) return;
-              isLoadingMembership = true;
-              SupabaseClient.getMyMembership()
-                .then(mem => {
-                  membershipData = mem;
-                  isLoadingMembership = false;
-                  if (mem && mem.organization_id) {
-                    return loadOrganization(mem.organization_id);
-                  }
-                  return null;
-                })
-                .then(() => render({ source: 'membership-retry' }))
-                .catch(() => {
-                  isLoadingMembership = false;
-                  render({ source: 'membership-retry-err' });
-                });
+              if (isLoadingAccountBundle) return;
+              lastBundleRefreshAt = 0;
+              queueAccountBundleRefresh({ force: true, source: 'org-general:retry-no-workspace' });
+              render({ source: 'org-general:retry-no-workspace' });
             });
 
             retryRow.appendChild(retryBtn);
@@ -5037,6 +5018,11 @@ export function createSettingsOverlay({
             inviteSectionTitle.className = 'tp3d-org-members-section-title';
             inviteSectionTitle.textContent = 'Invitations';
             inviteSection.appendChild(inviteSectionTitle);
+
+            const inviteSectionHelper = doc.createElement('div');
+            inviteSectionHelper.className = 'muted tp3d-members-inline-helper';
+            inviteSectionHelper.textContent = 'Invites are shared as secure links. Use Copy Link after creating or resending one.';
+            inviteSection.appendChild(inviteSectionHelper);
 
             // Invite form
             const inviteForm = doc.createElement('div');

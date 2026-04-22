@@ -1744,6 +1744,149 @@ const TP3D_BUILD_STAMP = Object.freeze({
       requestAuthRefresh('account-open');
     }
 
+    function syncWorkspaceUiAfterOrgRefresh(source = 'workspace-refresh') {
+      try {
+        if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
+          AccountSwitcher.refresh();
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        if (SettingsOverlay && typeof SettingsOverlay.isOpen === 'function' && SettingsOverlay.isOpen()) {
+          if (typeof SettingsOverlay.requestRefreshAccountUI === 'function') {
+            SettingsOverlay.requestRefreshAccountUI(source);
+          }
+          if (typeof SettingsOverlay.render === 'function') {
+            SettingsOverlay.render({ source });
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    function openCreateWorkspaceFlow({ source = 'workspace-create' } = {}) {
+      closeDropdowns();
+
+      const content = document.createElement('div');
+      content.className = 'grid';
+
+      const intro = document.createElement('div');
+      intro.className = 'muted';
+      intro.textContent = 'Create a workspace to organize packs, cases, and billing for that workspace.';
+
+      const nameLabel = document.createElement('label');
+      nameLabel.className = 'muted';
+      nameLabel.textContent = 'Workspace name';
+
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.className = 'input';
+      nameInput.placeholder = 'Enter workspace name';
+      nameInput.autocomplete = 'organization';
+      nameInput.maxLength = 120;
+
+      const errorEl = document.createElement('div');
+      errorEl.className = 'muted';
+      errorEl.textContent = '';
+
+      content.appendChild(intro);
+      content.appendChild(nameLabel);
+      content.appendChild(nameInput);
+      content.appendChild(errorEl);
+
+      let modalRef = null;
+
+      const setBusy = busy => {
+        const createBtn = modalRef && modalRef.overlay
+          ? modalRef.overlay.querySelector('.modal-footer button.btn-primary')
+          : null;
+        if (createBtn) {
+          createBtn.disabled = busy;
+          createBtn.textContent = busy ? 'Creating…' : 'Create Workspace';
+        }
+        nameInput.disabled = busy;
+      };
+
+      const readName = () => String(nameInput.value || '').trim();
+      const validate = () => {
+        const name = readName();
+        if (!name) {
+          errorEl.textContent = 'Workspace name is required.';
+          return '';
+        }
+        errorEl.textContent = '';
+        return name;
+      };
+
+      const runCreate = () => {
+        if (!modalRef || modalRef._tp3dCreateWorkspaceInFlight) return false;
+        const name = validate();
+        if (!name) return false;
+
+        modalRef._tp3dCreateWorkspaceInFlight = true;
+        setBusy(true);
+
+        (async () => {
+          try {
+            UIComponents.showToast('Creating workspace…', 'info');
+            const { org } = await SupabaseClient.createOrganization({ name });
+            if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
+            await setActiveOrgId(org.id, { source: 'create-workspace' });
+            await refreshOrgContext('create-workspace', { force: true, forceEmit: true });
+            await refreshBilling({ force: true, reason: 'create-workspace' });
+            syncWorkspaceUiAfterOrgRefresh(source);
+            UIComponents.showToast(`Workspace "${org && org.name ? org.name : name}" created!`, 'success');
+            if (modalRef && typeof modalRef.close === 'function') modalRef.close();
+          } catch (err) {
+            const msg = err && err.message ? String(err.message) : 'Failed to create workspace.';
+            errorEl.textContent = msg;
+            setBusy(false);
+            if (modalRef) modalRef._tp3dCreateWorkspaceInFlight = false;
+            try {
+              nameInput.focus();
+              nameInput.select();
+            } catch {
+              // ignore
+            }
+          }
+        })();
+
+        return false;
+      };
+
+      modalRef = UIComponents.showModal({
+        title: 'Create Workspace',
+        content,
+        actions: [
+          { label: 'Cancel', variant: 'ghost' },
+          {
+            label: 'Create Workspace',
+            variant: 'primary',
+            onClick: runCreate,
+          },
+        ],
+      });
+
+      nameInput.addEventListener('input', () => {
+        if (errorEl.textContent) validate();
+      });
+      nameInput.addEventListener('keydown', ev => {
+        if (ev.key !== 'Enter') return;
+        ev.preventDefault();
+        runCreate();
+      });
+
+      setTimeout(() => {
+        try {
+          nameInput.focus();
+        } catch {
+          // ignore
+        }
+      }, 0);
+    }
+
     function getSidebarAvatarView() {
       let user = null;
       try {
@@ -1817,19 +1960,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
         UIComponents.showToast('Coming soon', 'info');
       }
 
-      async function createWorkspacePrompt() {
-        const name = window.prompt('Workspace name:');
-        if (!name || !name.trim()) return;
-        try {
-          UIComponents.showToast('Creating workspace\u2026', 'info');
-          const { org } = await SupabaseClient.createOrganization({ name: name.trim() });
-          if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
-          await setActiveOrgId(org.id, { source: 'create-workspace' });
-          UIComponents.showToast('Workspace "' + (org.name || name.trim()) + '" created!', 'success');
-          renderButton(document.getElementById('btn-account-switcher'));
-        } catch (err) {
-          UIComponents.showToast('Failed: ' + (err && err.message ? err.message : err), 'error');
-        }
+      function createWorkspacePrompt() {
+        openCreateWorkspaceFlow({ source: 'account-switcher' });
       }
 
       async function logout() {
@@ -4804,6 +4936,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const activeOrg = orgs.find(o => o && String(o.id) === nextId) || null;
 
       if (!activeOrg) {
+        resetWorkspaceScopedUiState(nextId);
         writeLocalOrgId(nextId);
         dispatchOrgContextChanged({
           orgId: nextId,
@@ -4823,6 +4956,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         role: activeOrg.role || orgContext.role || null,
         updatedAt: Date.now(),
       };
+      resetWorkspaceScopedUiState(nextId);
       writeLocalOrgId(nextId);
 
       try {
@@ -5037,6 +5171,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           updatedAt: Date.now(),
         };
       }
+      resetWorkspaceScopedUiState(incomingOrgId);
 
       dispatchOrgContextChanged({
         orgId: incomingOrgId,
@@ -5261,6 +5396,25 @@ const TP3D_BUILD_STAMP = Object.freeze({
     let _lastWorkspaceReadyDetail = null;
     let _lastWorkspaceReadyAt = 0;
     const WORKSPACE_READY_REPLAY_MS = 5000;
+    let lastWorkspaceUiResetKey = '';
+
+    function resetWorkspaceScopedUiState(targetOrgId) {
+      const resetKey = targetOrgId ? `org:${String(targetOrgId)}` : 'no-org';
+      if (lastWorkspaceUiResetKey === resetKey) return;
+      lastWorkspaceUiResetKey = resetKey;
+
+      const currentPackId = StateStore.get('currentPackId');
+      const selectedIds = StateStore.get('selectedInstanceIds') || [];
+      const currentScreen = StateStore.get('currentScreen');
+      const needsReset = Boolean(currentPackId) || selectedIds.length > 0 || currentScreen !== 'packs';
+      if (!needsReset) return;
+
+      StateStore.set({
+        currentScreen: 'packs',
+        currentPackId: null,
+        selectedInstanceIds: [],
+      }, { skipHistory: true });
+    }
 
     function clearOrgContext({ clearLocalOrgHint = false, confirmedNoOrg = false } = {}) {
       orgContext = {
@@ -5277,6 +5431,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       lastOrgIdNotified = null;
       lastOrgChangeAt = 0;
       if (clearLocalOrgHint || confirmedNoOrg) writeLocalOrgId(null);
+      if (confirmedNoOrg) resetWorkspaceScopedUiState(null);
       applyOrgRequiredUi(false, { confirmedNoOrg });
       queueOrgScopedRender('org-cleared');
     }
@@ -5319,7 +5474,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         <div class="tp3d-org-required-content">
           <div class="tp3d-org-required-title">Create or join a workspace</div>
           <div class="tp3d-org-required-sub muted">
-            You need a workspace to manage packs, cases, and editor data.
+            You need a workspace to manage packs, cases, and editor data. Open Settings to create one or join with an invite link.
           </div>
         </div>
         <div class="tp3d-org-required-actions">
@@ -5494,6 +5649,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const prevOrgId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
       const nextOrgIdStr = String(nextOrgId);
       const changed = !prevOrgId || prevOrgId !== nextOrgIdStr;
+      if (changed && prevOrgId) {
+        resetWorkspaceScopedUiState(nextOrgIdStr);
+      }
 
       // Never let a partial bundle override a newer full bundle or a user-selected org.
       if (bundle && bundle.partial === true && changed && prevOrgId) {
@@ -7959,6 +8117,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     return {
       init,
       maybeScheduleBillingRefresh,
+      openCreateWorkspaceFlow,
       EditorUI,
       ui: {
         showToast: UIComponents.showToast,

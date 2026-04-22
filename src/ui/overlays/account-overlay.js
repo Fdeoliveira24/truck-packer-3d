@@ -551,7 +551,7 @@ export function createAccountOverlay(opts = {}) {
           } catch (err) {
             const msg = err && err.message ? err.message : String(err);
             if (UIComponents && typeof UIComponents.showToast === 'function') {
-              UIComponents.showToast(`Delete request failed: ${msg}`, 'error');
+              UIComponents.showToast(msg || 'Delete request failed.', 'error');
             } else {
               console.error('[AccountOverlay] Delete request failed:', msg);
             }

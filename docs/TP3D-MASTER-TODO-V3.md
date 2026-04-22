@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-04-19
+Last updated: 2026-04-22
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -217,9 +217,9 @@ Completed:
 Still required (release blocking):
 - [ ] **Two-tabs test (same user)**
   - Tab A + Tab B both signed_in must converge to the same OrgContext (orgId not null).
-  - Banner must NOT appear while signed_in.
-  - No auto sign-out / auto sign-in loop.
-  - getAccountBundleSingleFlight({force:true}) must return session+user in BOTH tabs when signed_in.
+  - [x] Banner must NOT appear while signed_in.
+  - [ ] No auto sign-out / auto sign-in loop.
+  - [ ] getAccountBundleSingleFlight({force:true}) must return session+user in BOTH tabs when signed_in.
 - [x] **Cross-tab auth/token churn hardening + logout/billing stability** (code complete; live 2-tab sign-off pending)
   - Added versioned org-context sync payload (`tp3d:org-context-sync`) with `userId`, `orgId`, `timestamp`, `epoch`.
   - Storage listeners now apply org sync only for matching user + newer epoch; older payloads are ignored.
@@ -253,17 +253,20 @@ Future (do later):
 
 Goal: avoid "wrong hands" deleting accounts or breaking org billing.
 - [ ] Only Owner can delete the org (if you support org deletion).
-- [ ] Block "Delete Account" if user is last Owner of any org.
+- [x] Block "Delete Account" if user is last Owner of any org.
 - [ ] If org has active paid subscription:
   - define policy: must cancel first OR auto-cancel during delete flow (choose one).
   - Add "contact support" path (`support@pxl360.com` for now + TODO to replace later).
+Notes:
+- Exact block message now implemented in code:
+  - `You cannot delete your account while you are the last owner of a workspace. Transfer ownership or contact support first.`
 
 ---
 
-### P0 — Workspace ("+ Workspace") track — NOT DONE (ADD NOW)
+### P0 — Workspace ("+ Workspace") track — PARTIAL
 
 You asked to add this: it should be part of P0 because it touches org context + billing scope.
-- [ ] Define +Workspace creation flow:
+- [x] Define +Workspace creation flow:
   - Create org row
   - Add creator as Owner
   - Set profile `current_organization_id`
@@ -276,6 +279,10 @@ You asked to add this: it should be part of P0 because it touches org context + 
 - [ ] Billing for new workspace:
   - Trial starts correctly (if you do per-org trials)
   - Or Free by default (if trials are per-user instead)
+Notes:
+- Shared modal-based workspace creation is now the only creation path in code for the account switcher and Settings.
+- Workspace switching now clears stale editor-bound state and always falls back to Packs.
+- Org-scoped local storage is still deferred.
 
 ---
 
@@ -316,6 +323,21 @@ P0 is green only when ALL items here are checked:
 ---
 
 ## Running log (keep updated)
+
+- Date: 2026-04-22
+- What changed:
+  - Workspace creation now uses one shared modal flow from both the account switcher and Settings; `window.prompt` is no longer used.
+  - Successful workspace creation now follows one path: create org, invalidate account cache, switch active org, refresh org context, and refresh billing.
+  - Real org changes now clear stale workspace-bound UI state and fall back to Packs by resetting `currentPackId`, `selectedInstanceIds`, and stale editor screen state.
+  - No-workspace copy now explicitly guides users to create a workspace or join with an invite link.
+  - Invite UI copy now matches current truth: invites are link-based and surfaced via `Copy Link`.
+  - Account deletion is now blocked in code when the user is the last owner of any workspace, with a plain-language error message.
+- Verification still required:
+  - Create workspace from both entry points and confirm the new workspace becomes active in the account switcher, Settings org UI, and Billing without reopening the modal.
+  - Switch workspaces while on Packs, Cases, and Editor; confirm stale editor state always resets to Packs.
+  - Re-test signed-in invite acceptance.
+  - Signed-out invite handoff is still not fully verified.
+  - Re-test last-owner account deletion block in the browser and confirm the exact message is shown.
 
 - Date: 2026-04-19
 - What changed:
@@ -451,3 +473,458 @@ P0 is green only when ALL items here are checked:
 
 **Verification (paste in browser console after sign-in):**
 `document.querySelector('[data-org-name]')?.textContent` → should show org name, not "Personal Account".
+
+# Truck Packer 3D — Master TODO (V3)
+Last updated: 2026-04-19
+
+This is the live execution checklist for stabilizing the platform before the next product growth phase.
+
+Rules:
+- Keep changes small and testable.
+- If it touches auth, billing, orgs, roles, storage scope, or cross-tab behavior, treat it as P0 risk.
+- Do not mix structural cleanup with behavior changes unless a bug fix requires it.
+- No release until the P0 Gate is fully green.
+
+---
+
+## Current priority order
+
+1. **Phase 0 — Workspace Foundation Finalization**
+2. **Phase 0.1 — Runtime Safety / Error States**
+3. **Phase 1 — AutoPack correctness fixes**
+4. **Phase 1.1 — Quick product wins**
+5. **Phase 1.2 — Crew View / share flow**
+6. **Phase 2 — Runtime cleanup / modularization**
+
+---
+
+## P0 — Billing & Access (Stripe + Supabase + App)
+
+### P0.0 Non-negotiable invariants (contract) — DONE
+- [x] Stripe is the billing truth.
+- [x] `billing_customers` is a projection used by the app.
+- [x] UI trusts `/billing-status` (not local guessing).
+- [x] Money actions are owner-scoped.
+- [x] Local app storage is user-scoped.
+
+---
+
+### P0.1 Owner-only billing (view + manage) — DONE ✅
+Goal: Only Owner can perform money actions and view sensitive billing details.
+
+Completed:
+- [x] Only Owner can: start checkout, open portal, cancel, change plan.
+- [x] Admin/Member can still see safe plan state in UI (Trial/Pro/Free) but cannot see payment method details.
+- [x] Non-owner billing UI shows a support path.
+- [x] Non-owner billing action buttons hidden (no Manage / Subscribe).
+- [x] Trial-expired modal respects owner vs non-owner behavior.
+
+---
+
+### P0.2 Trial display cleanup (relative days + no redundancy) — DONE ✅
+Goal: Avoid date-heavy trial copy and redundant trial signals.
+
+Completed:
+- [x] Trial UI uses relative days.
+- [x] Trial badge strategy cleaned up.
+- [x] Sidebar trial card uses the same computed days value.
+
+---
+
+### P0.3 Paid status badges (renew/cancel clarity) — DONE ✅
+Goal: Make paid renewal/cancel state obvious.
+
+Completed:
+- [x] `cancel_at_period_end = true` → **Cancels** badge + end date.
+- [x] otherwise → **Auto-renew** badge + renew date.
+- [x] Paid date line stays visible.
+
+---
+
+### P0.4 Portal "Manage" reliability (never 500) — CODE COMPLETE / VERIFY MANUALLY
+Goal: Manage must always open portal. Never block the user with a 500.
+
+Completed in code:
+- [x] Portal config ID is set in Supabase secrets.
+- [x] Portal sessions preselect subscription for best UX when valid.
+- [x] Schedule-managed subscription fallback returns a plain customer portal session instead of 500.
+- [x] Stale / missing stored subscription fallback returns a plain customer portal session instead of 500.
+- [x] Minimal logs added for fallback paths.
+
+Manual verification still required:
+- [ ] User4: deep-link + Update Subscription works.
+- [ ] User1: schedule-managed sub triggers fallback and opens portal.
+- [ ] test1: stale / missing stored subscription id falls back to plain customer portal session.
+
+---
+
+### P0.5 Role hardening (Admin cannot manage Admin roles) — DONE ✅
+Goal: Only Owner can create/promote Admin roles.
+
+Completed:
+- [x] UI disables Admin option when actor is not Owner.
+- [x] Invite role dropdown cannot invite as Admin when actor is not Owner.
+- [x] Edge Function blocks non-owner admin promotion and editing of admin rows.
+
+---
+
+### P0.6 Baseline DB health checks — DONE ✅
+- [x] Q1–Q6 created and documented in `docs/P0.6-DB-HEALTH-CHECKLIST.md`.
+- [x] Ran against production.
+- [x] Results were all clean.
+
+---
+
+### P0.7 Guardrails (constraints + indexes) — DONE ✅
+- [x] Duplicate billing row issue identified and cleaned.
+- [x] Required uniqueness/index guardrails verified or applied.
+
+---
+
+### P0.7 Trial-expired business rule (soft lock + limits) — IMPLEMENTED + VERIFIED (doc follow-up still open)
+Completed:
+- [x] `billing-status` emits `trial_expired` correctly.
+- [x] Trial-expired modal blocks correctly.
+- [x] Sidebar subscribe card respects owner-only behavior.
+- [x] AutoPack gate blocks correctly.
+- [x] PDF export gate blocks correctly.
+
+Verified:
+- [x] Fresh trial org.
+- [x] Trial-expired org.
+- [x] Paid org.
+
+Still open:
+- [ ] Add screenshots + timestamps to running log for the 3-state verification.
+
+---
+
+### P0.7.1 Trial-expired lock persistence hotfix — DONE ✅
+- [x] Sticky latch added.
+- [x] Modal no longer dismisses on non-definitive billing states.
+
+### P0.7.2 Auth snapshot fallback hotfix — DONE ✅
+- [x] Added short-lived auth snapshot fallback.
+- [x] Prevents transient signed-out wobble from wiping org state or showing no-workspace banner.
+
+---
+
+### P0.8 Payment failure rules (past_due / unpaid / incomplete) — IMPLEMENTED
+- [x] Grace window behavior defined.
+- [x] Warning banner + owner portal path added.
+- [x] Pro actions block after grace.
+
+---
+
+### P0.9 Cross-user local data isolation (user-scoped storage) — IMPLEMENTED (live sign-off still required)
+Goal: prevent packs, cases, and preferences from leaking between different signed-in users on the same browser.
+
+Completed:
+- [x] Local app data is user-scoped.
+- [x] Legacy migration path exists.
+- [x] In-memory state resets on auth changes.
+- [x] Cross-tab auth/token churn hardening added.
+- [x] Cross-tab logout stability code path added.
+
+Release-blocking verification still required:
+- [ ] Two-tabs test (same user) passes.
+- [ ] No banner while signed in.
+- [ ] No auto sign-out / auto sign-in loop.
+- [ ] `getAccountBundleSingleFlight({ force: true })` returns session + user in both tabs.
+- [ ] Cross-tab logout verified live with no signed-in bounce.
+
+Future:
+- [ ] Optional org-scoped local storage for same-user multi-workspace separation.
+
+---
+
+### P0.9 Delete account safety — NOT DONE
+- [ ] Only Owner can delete org, if org deletion is supported.
+- [ ] Block delete account if user is last Owner of any org.
+- [ ] Define paid-subscription deletion policy.
+- [ ] Add support path for blocked destructive flows.
+
+---
+
+## Phase 0 — Workspace Foundation Finalization — ACTIVE NEXT
+
+Do this first.
+
+### Goals
+- [x] Finalize create workspace flow.
+- [ ] Finalize switch workspace flow.
+- [x] Finalize empty / no-workspace flow.
+- [ ] Finalize active workspace persistence.
+- [ ] Finalize org / billing relationship.
+- [x] Finalize invite / join expectations if in scope now.
+
+### Required outcomes
+- [x] Creating a workspace always:
+  - [x] creates org row
+  - [x] adds creator as Owner
+  - [x] sets `profiles.current_organization_id`
+  - [x] refreshes org context cleanly
+  - [x] hydrates billing state for the new org correctly
+- [ ] Switching workspace never leaks:
+  - [ ] billing plan/state
+  - [ ] members list
+  - [ ] invites list
+  - [ ] cases/packs view state
+  - [x] stale current pack/editor context
+- [x] No-workspace users see a clean guided state, not a broken/blank/ambiguous one.
+- [ ] Billing behavior for new workspace is explicitly confirmed:
+  - [ ] per-org trial, or
+  - [ ] free by default
+- [x] Invite/join behavior is clearly defined for current phase.
+
+### Notes
+- Freeze Stripe/Supabase internals unless workspace finalization truly requires touching them.
+- Do not start broad runtime refactors until this is stable.
+- Current invite truth for this phase is link-based invites plus signed-in acceptance on the existing flow.
+- Signed-out invite acceptance still needs live verification.
+- Cross-tab and no-leak verification remain release-blocking until they are tested in the browser.
+
+---
+
+## Phase 0.1 — Runtime Safety / Error States — PLANNED NEXT AFTER WORKSPACE
+
+Goal: add safe recovery surfaces before the next feature wave.
+
+### Scope
+- [ ] 404 for unknown hash routes.
+- [ ] 404 for missing/deleted current pack while editor is active.
+- [ ] 500 fatal error overlay for runtime failures.
+- [ ] Maintenance mode via inline config.
+- [ ] Pre-boot fatal fallback surface.
+
+### Agreed shape
+- [ ] Add one shared `#error-overlay` root in `index.html`.
+- [ ] Build controller in `src/ui/error-overlay.js`.
+- [ ] Keep `system-overlay` intact.
+- [ ] Router handles unknown hash only.
+- [ ] Missing-pack detection stays in app/editor render path.
+- [ ] Maintenance must block app boot before `src/app.js` loads.
+- [ ] Pre-boot fatal handler must include one-shot guard and CDN-failure guard.
+
+### Expected files
+- [ ] `index.html`
+- [ ] `styles/main.css`
+- [ ] `src/ui/error-overlay.js`
+- [ ] `src/router.js`
+- [ ] `src/app.js`
+- [ ] `src/types/global.d.ts` if needed
+
+---
+
+## P1 — Invitations + membership lifecycle — NOT DONE
+- [ ] Invite email delivery + link correctness.
+- [ ] Accept invite flow.
+- [ ] Expiration rules.
+- [ ] Removing member never changes billing.
+- [ ] Ownership transfer, if supported.
+
+---
+
+## P1 — AutoPack correctness — PLANNED
+
+### Highest-priority fixes
+- [ ] Fix stacking scoring balance.
+- [ ] Enforce `noStackOnTop` / stack-blocking rules in AutoPack.
+- [ ] Enforce `maxStackCount` in AutoPack.
+
+### Notes
+- Comparison work indicates these are correctness bugs, not just missing features.
+- Do these before bigger AutoPack feature expansion.
+
+---
+
+## P1.1 — Quick product wins from comparison research — PLANNED
+- [ ] Weight View.
+- [ ] Scale panel.
+- [ ] Case Browser Manufacturer tab.
+- [ ] PDF improvements:
+  - [ ] front view
+  - [ ] category color chips
+  - [ ] page numbers
+  - [ ] payload line in header
+
+---
+
+## P1.2 — Crew View / share flow — LATER
+- [ ] Public/read-only pack view.
+- [ ] Share token / public access rules.
+- [ ] Read-only checklist behavior.
+- [ ] View persistence rules.
+- [ ] RLS review for public share surface.
+
+---
+
+## P1.3 — Product backlog from comparison research — LATER
+- [ ] Packing Groups.
+- [ ] URL-based sharing beyond JSON import/export.
+- [ ] Folder system.
+- [ ] Weight heatmap refinements.
+- [ ] Additional manual measurement / snapping / view parity as needed.
+
+---
+
+## P1 — App hardening (lint + small safety fixes) — IN PROGRESS
+- [ ] Fix eslint warnings with no behavior change.
+- [ ] Fix html-validate warnings in the highest-impact UI first.
+- [ ] Keep replacing browser-native prompts/alerts in app flows with app UI patterns.
+
+---
+
+## Phase 2 — Runtime cleanup / modularization — DO AFTER WORKSPACE + RUNTIME SAFETY
+
+### Priority order
+- [ ] Thin down `src/app.js` by responsibility.
+- [ ] Isolate canonical vs legacy runtime files clearly.
+- [ ] Split `settings-overlay.js` by concern.
+- [ ] Add canonical runtime map doc.
+- [ ] Archive stale planning docs.
+- [ ] CSS cleanup only after runtime core is easier to reason about.
+
+### Do not do yet
+- [ ] Broad refactor before workspace finalization.
+- [ ] Broad Stripe/Supabase rewiring without a live bug.
+- [ ] Large CSS cleanup first.
+
+---
+
+## P0 Gate (release block)
+
+P0 is green only when ALL items here are checked:
+- [x] P0.6 DB health checks clean.
+- [x] P0.7 Trial-expired behavior implemented + tested.
+- [x] P0.8 Payment failure rules implemented + tested.
+- [ ] Phase 0 Workspace creation + switching tested with no org/billing leakage.
+- [ ] P0.9 Cross-user data isolation + 2-tab stability verified.
+- [x] Logout flow uses canonical helper only.
+- [ ] Cross-tab logout verified live.
+- [ ] No console errors in normal flows (ignore debug mode + expected favicon noise).
+- [ ] "Manage billing" never 500.
+
+---
+
+## Running log (keep updated)
+
+- Date: 2026-04-19
+- What changed:
+  - Workspace foundation finalization is now the first active priority.
+  - Runtime Safety / Error States is now the next planned platform-safety phase after workspace.
+  - Comparison research with TruckPacker is now detailed enough to drive AutoPack fixes and selected feature additions without more reverse-engineering.
+  - Near-term feature expansion should wait until workspace foundation and runtime safety are stable.
+
+- Date: 2026-04-19
+- What changed:
+  - Fixed a release-blocking editor export regression where dropdown actions assumed export handlers always returned promises and crashed on `.catch` when they returned `undefined`.
+  - Fixed a release-blocking Settings modal regression where `Edit Profile` and `Edit Workspace` could no-op until the modal was reopened because edit-mode flags were missing from the render stable key.
+- Verification still required:
+  - Re-test `Edit Profile`, `Edit Workspace`, Screenshot, and Export PDF in the browser after this fix.
+
+- Date: 2026-04-19
+- What changed:
+  - Billing hardening work was applied.
+  - A stale Stripe subscription reference was found for test1.
+  - The billing row was reset to free/canceled.
+  - Portal fallback hardening for stale subscription references is now implemented in code.
+  - Checkout/portal client cleanup now routes monthly/yearly selection by interval only; server env remains the Stripe price source of truth.
+  - Stripe Node SDK pin was upgraded while keeping the Stripe API version pinned for behavior stability.
+- Tests required:
+  - Re-test "Manage billing" on test1 with a stale or missing stored subscription id; portal must return 200 via plain customer-session fallback.
+  - Re-test monthly and yearly checkout selection after the client-side price-id cleanup.
+
+- Date: 2026-03-08
+- What changed:
+  - Cross-tab billing dedupe now happens before any handler/log in both storage and broadcast paths, with an expanded signature to UI-relevant fields.
+  - Org-role hydration: per-org grace window and inflight flags are set early so hydration does not briefly report `hydrated-no-role` while bundle is inflight.
+  - authGate fallback: strengthened guard using three signals (snapshot age, authGate lastSignedInAt age, live wrapper signed-in state) to block false `signed_out` confirmation.
+- Validation:
+  - Lint: 0 errors
+  - Typecheck: clean
+  - Tests: 0 failures
+- Branch/PR note:
+  - `stabilize/auth-billing-hardening` pushed; PR #4 to main is open.
+- Next required test:
+  - Two-tab sign-off (same user): org context converges; no “Create or join a workspace” banner; no auth flip to SIGNED_OUT during signed-in flows.
+  - Two-tab logout sign-off: Tab A logout signs out cleanly; Tab B follows; no signed-in bounce.
+  - Two-tab org switch: switch in Tab A updates Tab B billing/members/general to the same org.
+
+- Date: 2026-03-07
+- What changed:
+  - Cross-tab org/workspace drift hardening in `src/app.js` + `src/ui/overlays/settings-overlay.js`.
+  - Supabase auth truth hardening in `src/core/supabase-client.js`.
+- Tests required:
+  - Tab A workspace switch updates Tab B members/billing/general to same workspace.
+  - Refresh stability in both tabs.
+  - 401/403 auth invalidation converges both tabs to signed-out quickly.
+
+- Date: 2026-03-07
+- What changed:
+  - Cross-tab logout regression identified.
+  - Plan created to centralize logout into a single awaited helper.
+
+- Date: 2026-03-07
+- What changed:
+  - Implemented canonical logout helper in `src/app.js` for explicit Logout UI actions.
+  - Removed immediate timed reload logout paths.
+  - Added logout-in-progress latch.
+- Tests run:
+  - `npm test` (pass)
+  - `npm run -s typecheck` (pass)
+  - `npm run -s lint` (pass with existing warnings only)
+  - `TP3D_STRESS_URL=http://127.0.0.1:5500/index.html?tp3dDebug=1 npm run stress:ui` (pass)
+- Next action:
+  - Execute live two-tab manual sign-off checklist for logout bounce regression.
+
+- Date: 2026-03-05
+- Release process clarification (no-build static app):
+  - This repo is released as static assets; there is no `npm run build` step.
+  - Local run command: `python3 -m http.server 5500` then open `http://localhost:5500/index.html`.
+  - Release validation commands: `npm test`, `npm run -s typecheck`, `npm run lint`, optional `npm run stress:ui`.
+  - Expected console in normal flows: no blocking errors, no unhandled rejections, no token/JWT fragments logged.
+- Legacy module notes:
+  - Use `src/core/events.js` as the runtime event bus.
+  - Use `src/core/storage.js` as runtime storage authority.
+  - `src/core/constants.js` storage keys are legacy compatibility values, not runtime authority.
+
+- Date: 2026-02-27
+- What changed:
+  - Edge Function `/billing-status` maps no-subscription `billing_customers.status='trial_expired'` to `status='trial_expired'`.
+  - Trial-expired lock persistence hotfix applied.
+  - Auth snapshot fallback applied.
+  - `getAccountBundleSingleFlight` strengthened.
+  - User-scoped local storage applied.
+- Tests run:
+  - test3: `trial_expired` modal shown and persistent.
+  - test1/test2/test4: active paid Pro loads normally.
+- Next action:
+  - Start P0 Workspace track.
+
+---
+
+## Fix log — 2026-02-28 — P0 checkpoint commit (lint cleanup)
+
+**Commit:** `8bb5822` · branch `p0-checkpoint-20260228-0149` · pushed to origin
+
+**What changed (no behavior changes):**
+- 11 lint warnings fixed.
+- 19 warnings deferred.
+- Includes prior P0.7/P0.8/P0.9 work in a single checkpoint.
+
+**Checks:** SYNTAX OK · LINT 0 errors 19 warnings
+
+---
+
+## Fix log — 2026-02-27 — Account switcher org label (P0 UI)
+
+**Root cause:** `renderButton()` computed org display text but never wrote it to the DOM.
+
+**Fix — 2 files, 3-line diff:**
+- `index.html`: added `data-org-name` to the org label span.
+- `src/app.js`: writes display account/org name into that node.
+
+**Commit:** `958dab7` · branch `docs/master-todo-v3` · pushed to origin
+
+**Checks:** SYNTAX OK · LINT OK (0 errors)

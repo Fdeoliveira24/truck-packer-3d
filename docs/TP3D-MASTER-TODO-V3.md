@@ -640,13 +640,16 @@ Future:
 
 ### P0.9 Delete account safety — NOT DONE
 - [ ] Only Owner can delete org, if org deletion is supported.
-- [ ] Block delete account if user is last Owner of any org.
+- [x] Block delete account if user is last Owner of any org.
 - [ ] Define paid-subscription deletion policy.
 - [ ] Add support path for blocked destructive flows.
+Notes:
+- Exact block message now implemented in code:
+  - `You cannot delete your account while you are the last owner of a workspace. Transfer ownership or contact support first.`
 
 ---
 
-## Phase 0 — Workspace Foundation Finalization — ACTIVE NEXT
+## Phase 0 — Workspace Foundation Finalization — IN PROGRESS
 
 Do this first.
 

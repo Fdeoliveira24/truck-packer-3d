@@ -765,6 +765,9 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
     _billingState.error = null;
     if (!_billingState.orgId || _billingState.orgId !== (requestedOrgId || null)) {
       _billingState.pending = true;
+      _billingState.ok = false;
+      _billingState.lastFetchedAt = 0;
+      _billingState.data = null;
       _billingState.plan = null;
       _billingState.status = null;
       _billingState.isPro = false;
@@ -825,6 +828,20 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
     // discard the result so we don't re-hydrate billing state for a signed-out user.
     if (_billingEpoch !== _epochAtStart) {
       billingDebugLog('refresh:discard-epoch', { reason, epochAtStart: _epochAtStart, currentEpoch: _billingEpoch });
+      return getBillingState();
+    }
+
+    const _activeOrgIdAfterFetch = getActiveOrgIdForBilling();
+    if ((_activeOrgIdAfterFetch || '') !== (requestedOrgId || '')) {
+      billingDebugLog('refresh:discard-stale-org', {
+        reason,
+        requestedOrgId: requestedOrgId || null,
+        activeOrgId: _activeOrgIdAfterFetch || null,
+      });
+      _billingRefreshQueued = false;
+      setTimeout(() => {
+        refreshBilling({ force: true, reason: 'queued' }).catch(() => { });
+      }, 0);
       return getBillingState();
     }
 
@@ -1212,25 +1229,92 @@ const TP3D_BUILD_STAMP = Object.freeze({
     ErrorOverlay.showFatal({ message });
   }
 
+  function isResourceLoadErrorEvent(ev) {
+    const target = ev && ev.target ? ev.target : null;
+    const tagName =
+      target && typeof target.tagName === 'string'
+        ? String(target.tagName).toUpperCase()
+        : '';
+    return Boolean(
+      target &&
+      target !== window &&
+      (tagName === 'SCRIPT' ||
+        tagName === 'LINK' ||
+        tagName === 'IMG' ||
+        tagName === 'IMAGE' ||
+        tagName === 'VIDEO' ||
+        tagName === 'AUDIO' ||
+        tagName === 'SOURCE')
+    );
+  }
+
+  function normalizeFatalMessage(value) {
+    let message = '';
+    if (typeof value === 'string') {
+      message = value;
+    } else if (value instanceof Error) {
+      message = typeof value.message === 'string' ? value.message : '';
+    } else if (value && typeof value === 'object') {
+      const isEventLike =
+        'isTrusted' in value &&
+        (typeof value.type === 'string' || 'target' in value || 'currentTarget' in value);
+      if (isEventLike) {
+        message = '';
+      } else if (typeof value.message === 'string') {
+        message = value.message;
+      } else {
+        try {
+          const json = JSON.stringify(value);
+          if (json && json !== '{}') message = json;
+        } catch (_) {
+          message = '';
+        }
+      }
+    } else if (value != null) {
+      message = String(value);
+    }
+    message = String(message || '').trim();
+    if (!message) return '';
+    return message.length > 240 ? `${message.slice(0, 239)}…` : message;
+  }
+
   function installRuntimeFatalHandlers() {
     if (BootState.runtimeFatalHandlersInstalled) return;
     BootState.runtimeFatalHandlersInstalled = true;
 
-    const handleFatal = ev => {
+    const handleRuntimeError = ev => {
+      if (isResourceLoadErrorEvent(ev)) return;
+      const underlyingError =
+        ev && typeof ev === 'object' && 'error' in ev && ev.error
+          ? ev.error
+          : ev && typeof ev === 'object' && 'message' in ev
+            ? ev.message
+            : ev;
+      const message = normalizeFatalMessage(underlyingError);
+      console.error('[TruckPackerApp] runtime fatal error:', underlyingError || ev);
       if (BootState.fatalOverlayShown || BootState.maintenanceMode) return;
-      if (
-        ev &&
-        ev.target &&
-        ev.target !== window &&
-        (ev.target.tagName === 'SCRIPT' || ev.target.tagName === 'LINK')
-      ) {
-        return;
-      }
-      showFatalOverlay();
+      showFatalOverlay({ message });
     };
 
-    window.addEventListener('error', handleFatal, true);
-    window.addEventListener('unhandledrejection', handleFatal);
+    const handleRuntimeUnhandledRejection = ev => {
+      const reason =
+        ev && typeof ev === 'object' && 'reason' in ev
+          ? ev.reason
+          : ev;
+      const message = normalizeFatalMessage(reason);
+      console.error('[TruckPackerApp] runtime unhandled rejection:', reason);
+      if (BootState.appReady === true && ev && typeof ev.preventDefault === 'function') {
+        ev.preventDefault();
+      }
+      if (BootState.fatalOverlayShown || BootState.maintenanceMode) return;
+      if (BootState.appReady === true) {
+        return;
+      }
+      showFatalOverlay({ message });
+    };
+
+    window.addEventListener('error', handleRuntimeError, true);
+    window.addEventListener('unhandledrejection', handleRuntimeUnhandledRejection);
   }
 
   installRuntimeFatalHandlers();
@@ -1756,8 +1840,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (SettingsOverlay && typeof SettingsOverlay.isOpen === 'function' && SettingsOverlay.isOpen()) {
           if (typeof SettingsOverlay.requestRefreshAccountUI === 'function') {
             SettingsOverlay.requestRefreshAccountUI(source);
-          }
-          if (typeof SettingsOverlay.render === 'function') {
+          } else if (typeof SettingsOverlay.render === 'function') {
             SettingsOverlay.render({ source });
           }
         }
@@ -1964,6 +2047,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
         openCreateWorkspaceFlow({ source: 'account-switcher' });
       }
 
+      function switchWorkspace(orgId, { source = 'account-switcher' } = {}) {
+        return setActiveOrgId(String(orgId), { source }).catch(err => {
+          console.error('[AccountSwitcher] Failed to switch workspace:', err);
+          UIComponents.showToast(
+            err && err.message ? String(err.message) : 'Failed to switch workspace.',
+            'error'
+          );
+        });
+      }
+
       async function logout() {
         await performUserInitiatedLogout({ source: 'account-switcher' });
       }
@@ -2004,7 +2097,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           ...otherOrgs.map(o => ({
             label: o.name || 'Workspace',
             icon: 'fa-solid fa-building',
-            onClick: () => void setActiveOrgId(String(o.id), { source: 'account-switcher' }),
+            onClick: () => void switchWorkspace(String(o.id), { source: 'account-switcher' }),
           })),
           {
             label: 'New Workspace',
@@ -2550,6 +2643,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     const AutoPackEngine = (() => {
       let isRunning = false;
+      let workspaceGeneration = 0;
+
+      function bumpWorkspaceGeneration() {
+        workspaceGeneration += 1;
+        return workspaceGeneration;
+      }
 
       // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -2583,29 +2682,41 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const seen = new Set();
         const oris = [];
 
-        function tryOri(l, w, h, ry) {
+        // tryOri: l = size along truck X (depth), w = size along truck Z (width),
+        //         h = size along truck Y (height up).
+        // rotX/rotY/rotZ: Three.js Euler XYZ angles that make the mesh display
+        // correctly for this orientation.
+        //
+        // Rotation derivations (R = Rz*Ry*Rx in Three.js XYZ Euler):
+        //   Upright default (L,W,H):  no rotation needed → (0,0,0)
+        //   Upright rotated (W,L,H):  rotY=90° → (0,π/2,0)
+        //   On-side / flip (H,W,L):   rotZ=90° puts original H→X, L→Y → (0,0,π/2)
+        //   On-side rotated (W,H,L):  rotX=90°+rotZ=90° → (π/2,0,π/2)
+        //   Flip (L,H,W):             rotX=90° puts original W→Y, H→Z → (π/2,0,0)
+        //   Flip rotated (H,L,W):     rotX=90°+rotY=90° → (π/2,π/2,0)
+        function tryOri(l, w, h, rx, ry, rz) {
           const key = `${l}|${w}|${h}`;
           if (!seen.has(key)) {
             seen.add(key);
-            oris.push({ l, w, h, rotY: ry });
+            oris.push({ l, w, h, rotX: rx || 0, rotY: ry || 0, rotZ: rz || 0 });
           }
         }
 
         if (lock === 'upright' || lock === 'any') {
-          tryOri(L, W, H, 0);
-          tryOri(W, L, H, PI2);
+          tryOri(L, W, H, 0,   0,   0);    // upright default
+          tryOri(W, L, H, 0,   PI2, 0);    // rotated 90° in horizontal plane
         }
 
         if (lock === 'onside') {
-          tryOri(H, W, L, 0);
-          tryOri(W, H, L, PI2);
+          tryOri(H, W, L, 0,   0,   PI2);  // standing on H-W face, L is height
+          tryOri(W, H, L, PI2, 0,   PI2);  // same, rotated 90°
         }
 
         if (canFlip && lock !== 'onside') {
-          tryOri(H, W, L, 0);
-          tryOri(W, H, L, PI2);
-          tryOri(L, H, W, 0);
-          tryOri(H, L, W, PI2);
+          tryOri(H, W, L, 0,   0,   PI2);  // on H-W face
+          tryOri(W, H, L, PI2, 0,   PI2);  // on H-W face, rotated 90°
+          tryOri(L, H, W, PI2, 0,   0);    // on L-H face, W is height
+          tryOri(H, L, W, PI2, PI2, 0);    // on L-H face, rotated 90°
         }
 
         return oris;
@@ -2628,6 +2739,21 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
         let floor = 0;
         for (const p of packed) {
+          if (p.noStackOnTop || p.stackable === false) continue;
+          if (p.maxStackCount > 0) {
+            const topOfP = p.pos.y + p.dims.h / 2;
+            let countOnP = 0;
+            for (const q of packed) {
+              if (q === p) continue;
+              if (Math.abs((q.pos.y - q.dims.h / 2) - topOfP) > EPS * 10) continue;
+              if (q.pos.x - q.dims.l / 2 >= p.pos.x + p.dims.l / 2 - EPS) continue;
+              if (q.pos.x + q.dims.l / 2 <= p.pos.x - p.dims.l / 2 + EPS) continue;
+              if (q.pos.z - q.dims.w / 2 >= p.pos.z + p.dims.w / 2 - EPS) continue;
+              if (q.pos.z + q.dims.w / 2 <= p.pos.z - p.dims.w / 2 + EPS) continue;
+              countOnP++;
+            }
+            if (countOnP >= p.maxStackCount) continue;
+          }
           const pHL = p.dims.l / 2;
           const pHW = p.dims.w / 2;
           if (bMinX < p.pos.x + pHL - EPS && bMaxX > p.pos.x - pHL + EPS &&
@@ -2705,17 +2831,26 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       async function pack() {
         if (isRunning) { return; }
+        const runWorkspaceGeneration = workspaceGeneration;
+        const isWorkspaceRunStale = () => runWorkspaceGeneration !== workspaceGeneration;
 
         // Billing gate: AutoPack requires active Pro subscription
         try {
           const _bs = window.__TP3D_BILLING && typeof window.__TP3D_BILLING.getBillingState === 'function'
             ? window.__TP3D_BILLING.getBillingState() : null;
           if (_bs && _bs.ok) {
+            const _activeBillingOrgId = getActiveOrgIdForBilling();
+            const _billingSnapshotOrgId = normalizeOrgIdForBilling(_bs && _bs.orgId ? _bs.orgId : '');
+            if (_activeBillingOrgId && _billingSnapshotOrgId && _billingSnapshotOrgId !== _activeBillingOrgId) {
+              maybeScheduleBillingRefresh('autopack-org-mismatch');
+              UIComponents.showToast('Loading workspace billing... please try again in a moment.', 'info', { title: 'AutoPack' });
+              return;
+            }
             // If org role is still inflight, defer with a neutral message instead of wrong owner/non-owner CTA
-            const _autopackOrgId = String((_bs && _bs.orgId) || '').trim();
+            const _autopackOrgId = _activeBillingOrgId || _billingSnapshotOrgId;
             const _autopackHydration = _autopackOrgId ? _getOrgRoleHydrationStateAccessor(_autopackOrgId) : 'unknown';
             if (_autopackHydration === 'inflight') {
-              UIComponents.showToast('Loading billing\u2026 please try again in a moment.', 'info', { title: 'AutoPack' });
+              UIComponents.showToast('Loading billing... please try again in a moment.', 'info', { title: 'AutoPack' });
               return;
             }
             const _rules = getProRuleSet(_bs, window.OrgContext && typeof window.OrgContext.getActiveRole === 'function' ? window.OrgContext.getActiveRole() : null);
@@ -2758,7 +2893,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const mode = (truck && truck.shapeMode) ? truck.shapeMode : 'rect';
           const truckL = truck.length || 636;
           const truckW = truck.width || 102;
-          const truckH = truck.height || 110;
+          const truckH = truck.height || 98; // match pack-library default
           const zones = TrailerGeometry.getTrailerUsableZones(truck);
 
           // For frontBonus, pack front-to-rear (high X first)
@@ -2847,10 +2982,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // Prevent runaway loops without prematurely stopping as `remaining.length` shrinks.
           const maxIterations = Math.max(1, packItems.length * 2);
 
-          // Scoring weights (inches-based). Lower gravity weight encourages stacking.
-          const GRAVITY_WEIGHT = 15;
-          const X_TIGHTNESS_WEIGHT = 10;
-          const STACKING_BONUS = 1200;
+          // Scoring weights (inches-based).
+          const X_TIGHTNESS_WEIGHT = 0.8;
 
           function capXAnchorsSorted(arr, maxCount) {
             // X anchors are already sorted toward the loading end. Sampling evenly can
@@ -2993,16 +3126,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
                     slotStats.okPlace++;
 
-                    // Prefer width-filling placements first, then stacking, then volume.
+                    // Balanced scoring — no single term dominates:
+                    //   zFill:   gentle Z-width preference (wider is better, but not overriding)
+                    //   restY:   strongly prefer floor-first packing
+                    //   xDist:   prefer rear-first (loading end)
+                    //   volume:  large-item tiebreaker
                     const zFill = ori.w;
                     const xDist = loadFrontFirst ? (truckL - cx) : cx;
                     const score =
-                      zFill * 1000 +
-                      (result.restY > 0.1 ? STACKING_BONUS : 0) +
-                      -result.restY * GRAVITY_WEIGHT +
+                      zFill * 3 +
+                      -result.restY * 5 +
                       -xDist * X_TIGHTNESS_WEIGHT +
-                      ori.l * ori.w * ori.h * 0.001 +
-                      item.volume * 0.0001;
+                      item.volume * 0.001;
 
                     if (score > bestScore) {
                       bestScore = score;
@@ -3048,8 +3183,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
                 const item = remaining[chosenIndex];
                 placements.set(item.inst.id, chosenPos);
-                rotations.set(item.inst.id, { x: 0, y: chosenOri.rotY, z: 0 });
-                packed.push({ instanceId: item.inst.id, pos: chosenPos, dims: chosenDims });
+                rotations.set(item.inst.id, { x: chosenOri.rotX || 0, y: chosenOri.rotY || 0, z: chosenOri.rotZ || 0 });
+                packed.push({ instanceId: item.inst.id, pos: chosenPos, dims: chosenDims,
+                  noStackOnTop: item.caseData.noStackOnTop, stackable: item.caseData.stackable,
+                  maxStackCount: item.caseData.maxStackCount });
 
                 try {
                   if (diag && typeof diag.autopackSlot === 'function') {
@@ -3100,6 +3237,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
                 if (placementsSinceYield % 4 === 0) {
                   // eslint-disable-next-line no-await-in-loop
                   await sleep(0);
+                  if (isWorkspaceRunStale()) return;
                 }
 
                 // Recompute Z faces to include the new exact edge anchors, then restart
@@ -3111,6 +3249,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
               if (remaining.length === 0) break;
               if (placedOnThisX) {
+                // Recompute X faces to pick up exact edges of newly placed items,
+                // then restart from the loading end so tight columns fill completely.
                 liveX = computeLiveXFaces();
                 xi = 0;
               } else {
@@ -3135,7 +3275,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
           // ── Animate to final positions ──
           cancelAllTweens();
-          await animatePlacements(placements, rotations, orientedDimsMap);
+          const animationCompleted = await animatePlacements(
+            placements,
+            rotations,
+            orientedDimsMap,
+            isWorkspaceRunStale
+          );
+          if (!animationCompleted || isWorkspaceRunStale()) return;
 
           // Persist with position + rotation + orientedDims
           const nextCases = (packData.cases || []).map(inst => {
@@ -3187,10 +3333,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
           }
 
           window.setTimeout(() => {
+            if (isWorkspaceRunStale()) return;
             ExportService.capturePackPreview(packId, { source: 'auto' });
           }, 60);
 
         } catch (err) {
+          if (isWorkspaceRunStale()) return;
           console.error('[AutoPack] Error:', err);
           try {
             if (diag && typeof diag.autopackEnd === 'function') {
@@ -3233,9 +3381,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       // ── Animation ───────────────────────────────────────────────────────
 
-      async function animatePlacements(placements, rotations, orientedDimsMap) {
+      async function animatePlacements(placements, rotations, orientedDimsMap, shouldAbort = null) {
         cancelAllTweens();
         for (const [id, pos] of placements.entries()) {
+          if (typeof shouldAbort === 'function' && shouldAbort()) return false;
           const obj = CaseScene.getObject(id);
           if (!obj) { continue; }
 
@@ -3259,9 +3408,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
           // eslint-disable-next-line no-await-in-loop
           await tweenInstanceToPosition(id, pos, 200);
+          if (typeof shouldAbort === 'function' && shouldAbort()) return false;
           // eslint-disable-next-line no-await-in-loop
           await sleep(25);
+          if (typeof shouldAbort === 'function' && shouldAbort()) return false;
         }
+        return true;
       }
 
       function tweenInstanceToPosition(instanceId, positionInches, duration) {
@@ -3289,6 +3441,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       return {
         pack,
+        bumpWorkspaceGeneration,
         get running() {
           return isRunning;
         },
@@ -3423,10 +3576,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
           doc.text(`Generated: ${new Date().toLocaleString()}`, margin, y);
           y += 16;
 
+          const stats = PackLibrary.computeStats(pack);
           const details = [
             pack.client ? `Client: ${pack.client}` : null,
             pack.projectName ? `Project: ${pack.projectName}` : null,
             pack.drawnBy ? `Drawn by: ${pack.drawnBy}` : null,
+            stats.totalWeight ? `Weight: ${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}` : null,
           ].filter(Boolean);
           details.forEach(line => {
             doc.text(line, margin, y);
@@ -3555,7 +3710,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // Summary
           const includeStats = Boolean(prefs.export && prefs.export.pdfIncludeStats);
           if (includeStats) {
-            const stats = PackLibrary.computeStats(pack);
             if (y + 90 > pageHeight - margin) {
               doc.addPage();
               y = margin;
@@ -3579,6 +3733,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
             doc.text(`Truck (in): ${pack.truck.length}×${pack.truck.width}×${pack.truck.height}`, margin, y);
           }
 
+          const totalPages = doc.getNumberOfPages();
+          for (let i = 1; i <= totalPages; i++) {
+            doc.setPage(i);
+            doc.setFontSize(8);
+            doc.setFont('helvetica', 'normal');
+            doc.text(`Page ${i} of ${totalPages}`, pageWidth / 2, pageHeight - 20, { align: 'center' });
+          }
           doc.save(`${safeName(pack.title)}-plan.pdf`);
           UIComponents.showToast('PDF exported', 'success', { title: 'Export' });
         } catch (err) {
@@ -3989,6 +4150,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
     const KeyboardManager = (() => {
       let clipboard = null;
 
+      function clearClipboard() {
+        clipboard = null;
+      }
+
       function initKeyboardManager() {
         document.addEventListener('keydown', handleKeyDown);
       }
@@ -4235,7 +4400,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         },
       };
 
-      return { init: initKeyboardManager };
+      return { init: initKeyboardManager, clearClipboard };
     })();
 
     function openExportAppModal() {
@@ -4324,6 +4489,67 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // after auth identity was known.  Needed because seedIfEmpty() runs at
     // boot before auth resolves, using the 'anon' scope.
     let hasLoadedScopedState = false;
+    let lastLoadedWorkspaceStorageKey = '';
+    let lastWorkspaceUiResetKey = '';
+
+    function getWorkspaceStorageScope(targetOrgId) {
+      const orgId = targetOrgId ? String(targetOrgId).trim() : '';
+      return orgId || 'no-org';
+    }
+
+    function getWorkspaceStorageKey(targetOrgId) {
+      const userScope =
+        Storage && typeof Storage.getStorageScope === 'function'
+          ? Storage.getStorageScope()
+          : 'anon';
+      return `${userScope}|${getWorkspaceStorageScope(targetOrgId)}`;
+    }
+
+    function setWorkspaceStorageScope(targetOrgId) {
+      const scope = getWorkspaceStorageScope(targetOrgId);
+      if (Storage && typeof Storage.setWorkspaceScope === 'function') {
+        Storage.setWorkspaceScope(scope);
+      }
+      return scope;
+    }
+
+    function applyWorkspaceScopedLocalState(targetOrgId, { seedIfMissing = true, force = false } = {}) {
+      const nextStorageKey = getWorkspaceStorageKey(targetOrgId);
+      setWorkspaceStorageScope(targetOrgId);
+      const workspaceChanged = lastLoadedWorkspaceStorageKey !== nextStorageKey;
+      if (!force && !workspaceChanged) return false;
+      if (workspaceChanged) {
+        try {
+          if (KeyboardManager && typeof KeyboardManager.clearClipboard === 'function') {
+            KeyboardManager.clearClipboard();
+          }
+        } catch {
+          // ignore
+        }
+        try {
+          if (AutoPackEngine && typeof AutoPackEngine.bumpWorkspaceGeneration === 'function') {
+            AutoPackEngine.bumpWorkspaceGeneration();
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      suspendAutoSave = true;
+      try {
+        if (targetOrgId || seedIfMissing) {
+          loadScopedStateOrSeed({ seedIfMissing });
+        } else {
+          resetAppStateToEmpty();
+        }
+      } finally {
+        suspendAutoSave = false;
+      }
+
+      hasLoadedScopedState = true;
+      lastLoadedWorkspaceStorageKey = nextStorageKey;
+      return true;
+    }
 
     applyPostLogoutLocalStateReset = () => {
       SessionManager.clear();
@@ -4333,7 +4559,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
       try {
         resetAppStateToEmpty();
         Storage.setStorageScope('anon');
+        setWorkspaceStorageScope(null);
         hasLoadedScopedState = false;
+        lastLoadedWorkspaceStorageKey = '';
       } finally {
         suspendAutoSave = false;
       }
@@ -4342,20 +4570,26 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
     function seedIfEmpty() {
       const stored = Storage.load();
-      if (stored && stored.caseLibrary && stored.packLibrary && stored.preferences) {
+      if (stored && Array.isArray(stored.caseLibrary) && Array.isArray(stored.packLibrary)) {
         const storedCases = (stored.caseLibrary || []).map(applyCaseDefaultColor);
+        const storedPrefs = stored.preferences || Defaults.defaultPreferences;
+        const storedCurrentPackId =
+          stored.currentPackId && (stored.packLibrary || []).some(p => p && p.id === stored.currentPackId)
+            ? stored.currentPackId
+            : null;
         const initialState = {
           currentScreen: 'packs',
-          currentPackId: stored.currentPackId || null,
+          currentPackId: storedCurrentPackId,
           selectedInstanceIds: [],
           caseLibrary: storedCases,
           packLibrary: stored.packLibrary,
-          preferences: stored.preferences,
+          preferences: storedPrefs,
         };
         StateStore.init(initialState);
         return;
       }
 
+      const fallbackPreferences = stored && stored.preferences ? stored.preferences : Defaults.defaultPreferences;
       const cases = Defaults.seedCases();
       cases.forEach(c => {
         c.volume = Utils.volumeInCubicInches(c.dimensions);
@@ -4368,7 +4602,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         selectedInstanceIds: [],
         caseLibrary: cases,
         packLibrary: [demoPack],
-        preferences: Defaults.defaultPreferences,
+        preferences: fallbackPreferences,
       };
       StateStore.init(initialState);
       Storage.saveNow();
@@ -4396,20 +4630,26 @@ const TP3D_BUILD_STAMP = Object.freeze({
      * if no saved state exists for this scope).  Mirrors the logic in
      * seedIfEmpty but can be called at any time after scope changes.
      */
-    function loadScopedStateOrSeed() {
+    function loadScopedStateOrSeed({ seedIfMissing = true } = {}) {
       const stored = Storage.load();
-      if (stored && stored.caseLibrary && stored.packLibrary && stored.preferences) {
+      if (stored && Array.isArray(stored.caseLibrary) && Array.isArray(stored.packLibrary)) {
         const storedCases = (stored.caseLibrary || []).map(applyCaseDefaultColor);
+        const storedPrefs = stored.preferences || Defaults.defaultPreferences;
+        const storedCurrentPackId =
+          stored.currentPackId && (stored.packLibrary || []).some(p => p && p.id === stored.currentPackId)
+            ? stored.currentPackId
+            : null;
         StateStore.replace({
           currentScreen: 'packs',
-          currentPackId: stored.currentPackId || null,
+          currentPackId: storedCurrentPackId,
           selectedInstanceIds: [],
           caseLibrary: storedCases,
           packLibrary: stored.packLibrary,
-          preferences: stored.preferences,
+          preferences: storedPrefs,
         }, { skipHistory: true });
-      } else {
+      } else if (seedIfMissing) {
         // No saved data for this user – seed with demo data (same as initial boot).
+        const fallbackPreferences = stored && stored.preferences ? stored.preferences : Defaults.defaultPreferences;
         const cases = Defaults.seedCases();
         cases.forEach(c => { c.volume = Utils.volumeInCubicInches(c.dimensions); });
         const demoPack = Defaults.seedPack(cases);
@@ -4420,9 +4660,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
           selectedInstanceIds: [],
           caseLibrary: cases,
           packLibrary: [demoPack],
-          preferences: Defaults.defaultPreferences,
+          preferences: fallbackPreferences,
         }, { skipHistory: true });
         Storage.saveNow();
+      } else {
+        StateStore.replace({
+          currentScreen: 'packs',
+          currentPackId: null,
+          selectedInstanceIds: [],
+          caseLibrary: [],
+          packLibrary: [],
+          preferences: (stored && stored.preferences) || Defaults.defaultPreferences,
+        }, { skipHistory: true });
       }
     }
 
@@ -4922,6 +5171,27 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return refreshOrgContext('org-hydrate', { force: true, forceEmit: true });
     }
 
+    async function persistActiveOrgSelection(nextId) {
+      if (!nextId) return null;
+      if (!SupabaseClient || typeof SupabaseClient.updateProfile !== 'function') {
+        throw new Error('Active workspace persistence is unavailable.');
+      }
+
+      try {
+        await SupabaseClient.updateProfile({ current_organization_id: nextId });
+        if (typeof SupabaseClient.invalidateAccountCache === 'function') {
+          SupabaseClient.invalidateAccountCache();
+        }
+        return nextId;
+      } catch (err) {
+        console.error('[orgContext] Failed to persist active workspace:', {
+          nextOrgId: nextId,
+          error: err,
+        });
+        throw err;
+      }
+    }
+
     async function setActiveOrgId(nextOrgId, { source = 'org-switch' } = {}) {
       const nextId = nextOrgId ? String(nextOrgId).trim() : '';
       if (!nextId) return null;
@@ -4932,12 +5202,52 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const prevId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
       if (prevId && prevId === nextId) return prevId;
 
+      const previousOrgContext = {
+        ...orgContext,
+        orgs: Array.isArray(orgContext.orgs) ? [...orgContext.orgs] : [],
+      };
+      const previousLocalOrgId = readLocalOrgId();
+      const previousWorkspaceOrgId = prevId || previousLocalOrgId || null;
+      const previousWorkspaceUiResetKey = lastWorkspaceUiResetKey;
+
       const orgs = Array.isArray(orgContext.orgs) ? orgContext.orgs : [];
       const activeOrg = orgs.find(o => o && String(o.id) === nextId) || null;
 
-      if (!activeOrg) {
+      const applyLocalWorkspaceSelection = nextActiveOrg => {
+        orgContext = {
+          ...orgContext,
+          activeOrgId: nextId,
+          activeOrg: nextActiveOrg,
+          role: nextActiveOrg ? (nextActiveOrg.role || orgContext.role || null) : orgContext.role,
+          updatedAt: Date.now(),
+        };
+        applyWorkspaceScopedLocalState(nextId, { seedIfMissing: false });
         resetWorkspaceScopedUiState(nextId);
         writeLocalOrgId(nextId);
+        syncWorkspaceUiAfterOrgRefresh(source);
+        maybeScheduleBillingRefresh('org-changed');
+        queueOrgScopedRender('org-set');
+      };
+
+      const rollbackLocalWorkspaceSelection = () => {
+        orgContext = previousOrgContext;
+        lastWorkspaceUiResetKey = previousWorkspaceUiResetKey;
+        writeLocalOrgId(previousLocalOrgId);
+        applyWorkspaceScopedLocalState(previousWorkspaceOrgId, {
+          seedIfMissing: false,
+          force: true,
+        });
+        syncWorkspaceUiAfterOrgRefresh(`${source}:rollback`);
+      };
+
+      if (!activeOrg) {
+        applyLocalWorkspaceSelection(null);
+        try {
+          await persistActiveOrgSelection(nextId);
+        } catch (err) {
+          rollbackLocalWorkspaceSelection();
+          throw err;
+        }
         dispatchOrgContextChanged({
           orgId: nextId,
           reason: source,
@@ -4949,22 +5259,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return nextId;
       }
 
-      orgContext = {
-        ...orgContext,
-        activeOrgId: nextId,
-        activeOrg,
-        role: activeOrg.role || orgContext.role || null,
-        updatedAt: Date.now(),
-      };
-      resetWorkspaceScopedUiState(nextId);
-      writeLocalOrgId(nextId);
-
+      applyLocalWorkspaceSelection(activeOrg);
       try {
-        if (SupabaseClient && typeof SupabaseClient.updateProfile === 'function') {
-          SupabaseClient.updateProfile({ current_organization_id: nextId }).catch(() => { });
-        }
-      } catch {
-        // ignore
+        await persistActiveOrgSelection(nextId);
+      } catch (err) {
+        rollbackLocalWorkspaceSelection();
+        throw err;
       }
 
       try {
@@ -4979,8 +5279,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       } catch {
         // ignore
       }
-
-      queueOrgScopedRender('org-set');
       return nextId;
     }
 
@@ -5171,6 +5469,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           updatedAt: Date.now(),
         };
       }
+      applyWorkspaceScopedLocalState(incomingOrgId, { seedIfMissing: false });
       resetWorkspaceScopedUiState(incomingOrgId);
 
       dispatchOrgContextChanged({
@@ -5223,7 +5522,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     const BILLING_PUMP_FRESH_MS = 30000;
     const BILLING_PUMP_COOLDOWN_MS = 5000;
     const BILLING_PUMP_HARD_COOLDOWN_MS = 10000;
-    const _BILLING_PUMP_FORCE_REASONS = new Set(['org-changed', 'manual', 'org-context:partial']);
+    const _BILLING_PUMP_FORCE_REASONS = new Set(['org-changed', 'manual', 'org-context:partial', 'autopack-org-mismatch']);
     const _BILLING_PUMP_COOLDOWN_REASONS = new Set(['render-auth-state', 'org-context', 'tab-visible', 'settings-open', 'storage']);
     let _billingPumpTimer = null;
     let _billingPumpTries = 0;
@@ -5396,7 +5695,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
     let _lastWorkspaceReadyDetail = null;
     let _lastWorkspaceReadyAt = 0;
     const WORKSPACE_READY_REPLAY_MS = 5000;
-    let lastWorkspaceUiResetKey = '';
 
     function resetWorkspaceScopedUiState(targetOrgId) {
       const resetKey = targetOrgId ? `org:${String(targetOrgId)}` : 'no-org';
@@ -5430,8 +5728,19 @@ const TP3D_BUILD_STAMP = Object.freeze({
       _orgRoleHydrationGraceUntilByOrg.clear();
       lastOrgIdNotified = null;
       lastOrgChangeAt = 0;
+      lastWorkspaceUiResetKey = '';
+      setWorkspaceStorageScope(null);
+      lastLoadedWorkspaceStorageKey = '';
       if (clearLocalOrgHint || confirmedNoOrg) writeLocalOrgId(null);
-      if (confirmedNoOrg) resetWorkspaceScopedUiState(null);
+      if (confirmedNoOrg) {
+        suspendAutoSave = true;
+        try {
+          resetAppStateToEmpty();
+        } finally {
+          suspendAutoSave = false;
+        }
+        resetWorkspaceScopedUiState(null);
+      }
       applyOrgRequiredUi(false, { confirmedNoOrg });
       queueOrgScopedRender('org-cleared');
     }
@@ -5453,6 +5762,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
         try {
           EditorUI.render();
+        } catch {
+          // ignore
+        }
+        try {
+          syncWorkspaceUiAfterOrgRefresh(_reason);
         } catch {
           // ignore
         }
@@ -5649,9 +5963,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const prevOrgId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
       const nextOrgIdStr = String(nextOrgId);
       const changed = !prevOrgId || prevOrgId !== nextOrgIdStr;
-      if (changed && prevOrgId) {
-        resetWorkspaceScopedUiState(nextOrgIdStr);
-      }
 
       // Never let a partial bundle override a newer full bundle or a user-selected org.
       if (bundle && bundle.partial === true && changed && prevOrgId) {
@@ -5676,6 +5987,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       // Expose last bundle for sync role resolution (resolveCanManageBillingForOrg).
       try { window.__TP3D_LAST_ACCOUNT_BUNDLE = bundle; } catch (_) { /* ignore */ }
       writeLocalOrgId(nextOrgIdStr);
+      if (changed) {
+        applyWorkspaceScopedLocalState(nextOrgIdStr, { seedIfMissing: false });
+        resetWorkspaceScopedUiState(nextOrgIdStr);
+      }
 
       // Best-effort: persist current org to profile when we have a real profile row.
       if (resolved.profile && !resolved.profile._isDefault) {
@@ -6160,17 +6475,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
         // ── P0.9: Scope storage to this user and reload state ──────────
         const uid = user && user.id ? String(user.id) : 'anon';
         Storage.setStorageScope(uid);
+        const hintedOrgId = readLocalOrgId();
+        setWorkspaceStorageScope(hintedOrgId);
 
         if (isUserSwitch || !hasLoadedScopedState) {
-          // Pause autosave → wipe in-memory state → load user's storage (or seed)
-          suspendAutoSave = true;
-          try {
-            resetAppStateToEmpty();
-            loadScopedStateOrSeed();
-          } finally {
-            suspendAutoSave = false;
-          }
-          hasLoadedScopedState = true;
+          applyWorkspaceScopedLocalState(hintedOrgId, {
+            seedIfMissing: false,
+            force: true,
+          });
           // Re-render all screens with the new user's data
           try { renderAll(); } catch { /* ignore */ }
         }
@@ -6182,7 +6494,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           UIComponents.showToast(toastMsg, 'success', { title: 'Auth' });
         }
 
-        if (isSignedInEvent || isUserSwitch) {
+        if (isSignedInEvent || isUserSwitch || !orgContext.activeOrgId) {
           try { await refreshOrgContext('signed-in', { force: true, forceEmit: true }); } catch { /* ignore */ }
         }
 
@@ -6270,7 +6582,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
       try {
         resetAppStateToEmpty();
         Storage.setStorageScope('anon');
+        setWorkspaceStorageScope(null);
         hasLoadedScopedState = false;
+        lastLoadedWorkspaceStorageKey = '';
       } finally {
         suspendAutoSave = false;
       }
@@ -6962,10 +7276,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
             const detailOrgId = detail && detail.orgId ? String(detail.orgId) : null;
             const snapshotOrgId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
             const sameOrg = Boolean(detailOrgId && snapshotOrgId && snapshotOrgId === detailOrgId);
+            const sameTabLocalSwitch = sameOrg && detail && detail.source === 'set-active-org';
             if (detailOrgId && snapshotOrgId && snapshotOrgId === detailOrgId) {
               orgContextMetrics.orgChangedIgnoredSameId += 1;
             }
-            if (sameOrg) {
+            if (sameOrg && !sameTabLocalSwitch) {
               return;
             }
 
@@ -6984,14 +7299,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
             const overlayOpen = getOverlayOpen();
             requestAuthRefresh('org-changed', { forceBundle: Boolean(overlayOpen) });
 
-            orgContextMetrics.orgChangedHandled += 1;
-            queueOrgScopedRender('org-changed');
-            try {
-              if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
-                AccountSwitcher.refresh();
+            if (!sameTabLocalSwitch) {
+              orgContextMetrics.orgChangedHandled += 1;
+              queueOrgScopedRender('org-changed');
+              try {
+                if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
+                  AccountSwitcher.refresh();
+                }
+              } catch {
+                // ignore
               }
-            } catch {
-              // ignore
             }
             // Re-apply gating immediately for role/org context changes, then pump billing.
             const nextOrgId = detailOrgId || snapshotOrgId || null;
@@ -8015,17 +8332,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       StateStore.subscribe(changes => {
         // P0.9 – While swapping storage scope, skip autosave so we don't
-        // persist stale (old-user) data into the new-user's key.
-        if (suspendAutoSave) return;
-
+        // persist stale (old-user/workspace) data into the new scope.
         if (
-          changes.preferences ||
-          changes.caseLibrary ||
-          changes.packLibrary ||
-          changes.currentPackId ||
-          changes._undo ||
-          changes._redo ||
-          changes._replace
+          !suspendAutoSave &&
+          (
+            changes.preferences ||
+            changes.caseLibrary ||
+            changes.packLibrary ||
+            changes.currentPackId ||
+            changes._undo ||
+            changes._redo ||
+            changes._replace
+          )
         ) {
           Storage.saveSoon();
         }
@@ -8036,7 +8354,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           SettingsUI.loadForm();
         }
 
-        if (changes.currentScreen) {
+        if (changes.currentScreen || changes._replace) {
           const nextScreen = StateStore.get('currentScreen');
           if (prevScreen === 'editor' && nextScreen !== 'editor') {
             const packId = StateStore.get('currentPackId');
@@ -8159,7 +8477,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     console.info('[TruckPackerApp] boot -> init');
     window.TruckPackerApp.init().catch(err => {
       console.error('[TruckPackerApp] fatal boot error:', err);
-      showFatalOverlay();
+      showFatalOverlay({ message: normalizeFatalMessage(err) });
     });
   };
 

@@ -19,11 +19,10 @@ import { emit } from './events.js';
 
 export const STORAGE_KEY = 'truckPacker3d:v1';
 
-// P0.9 – Per-user storage scoping.
-// STORAGE_SCOPE is set to the authenticated user's id on sign-in so that
-// each user's packs/cases/preferences are stored under a unique key.
-// 'anon' is the default scope used before auth resolves and after sign-out.
+// Storage is scoped first by user, then by active workspace. Preferences stay
+// user-scoped while packs/cases/currentPackId live under the active workspace.
 let STORAGE_SCOPE = 'anon';
+let WORKSPACE_SCOPE = 'no-org';
 
 /** Set the current storage scope (typically the signed-in user id). */
 export function setStorageScope(scope) {
@@ -35,9 +34,56 @@ export function getStorageScope() {
   return STORAGE_SCOPE;
 }
 
-/** Build the localStorage key for the active scope. */
+/** Set the current workspace scope (typically the active org id). */
+export function setWorkspaceScope(scope) {
+  WORKSPACE_SCOPE = String(scope || 'no-org').trim() || 'no-org';
+}
+
+/** Return the current workspace scope value. */
+export function getWorkspaceScope() {
+  return WORKSPACE_SCOPE;
+}
+
+/** Build the localStorage key for the active user scope. */
 function getScopedKey() {
   return STORAGE_SCOPE === 'anon' ? STORAGE_KEY : `${STORAGE_KEY}:${STORAGE_SCOPE}`;
+}
+
+/** Build the localStorage key for the active workspace scope. */
+function getWorkspaceScopedKey() {
+  return `${getScopedKey()}:workspace:${WORKSPACE_SCOPE}`;
+}
+
+function readUserScopedRaw(scopedKey) {
+  let raw = window.localStorage.getItem(scopedKey);
+
+  // P0.9 – One-time migration: if the scoped key is empty but the legacy
+  // unscoped key has data, copy it over and remove the legacy key so a
+  // second user won't collide with it.
+  if (!raw && scopedKey !== STORAGE_KEY) {
+    try {
+      const legacyRaw = window.localStorage.getItem(STORAGE_KEY);
+      if (legacyRaw) {
+        window.localStorage.setItem(scopedKey, legacyRaw);
+        window.localStorage.removeItem(STORAGE_KEY);
+        raw = legacyRaw;
+      }
+    } catch (_migrationErr) {
+      // migration is best-effort; fall through to normal null return
+    }
+  }
+
+  return raw;
+}
+
+function parseStoredPayload(raw, key) {
+  if (!raw) return null;
+  const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(raw, null));
+  if (!parsed || typeof parsed !== 'object') {
+    emit('storage:load_error', { key, message: 'Invalid stored data' });
+    return null;
+  }
+  return parsed;
 }
 
 const saveDebounced = debounce(saveNow, 250);
@@ -84,35 +130,40 @@ export function removeKey(key) {
 
 export function load() {
   const scopedKey = getScopedKey();
+  const workspaceKey = getWorkspaceScopedKey();
   try {
-    let raw = window.localStorage.getItem(scopedKey);
+    const userRaw = readUserScopedRaw(scopedKey);
+    const userPayload = parseStoredPayload(userRaw, scopedKey);
 
-    // P0.9 – One-time migration: if the scoped key is empty but the legacy
-    // unscoped key has data, copy it over and remove the legacy key so a
-    // second user won't collide with it.
-    if (!raw && scopedKey !== STORAGE_KEY) {
-      try {
-        const legacyRaw = window.localStorage.getItem(STORAGE_KEY);
-        if (legacyRaw) {
-          window.localStorage.setItem(scopedKey, legacyRaw);
-          window.localStorage.removeItem(STORAGE_KEY);
-          raw = legacyRaw;
-        }
-      } catch (_migrationErr) {
-        // migration is best-effort; fall through to normal null return
-      }
-    }
+    const workspaceRaw = window.localStorage.getItem(workspaceKey);
+    const workspacePayload = parseStoredPayload(workspaceRaw, workspaceKey);
+    const hasWorkspaceData = Boolean(
+      workspacePayload &&
+        typeof workspacePayload === 'object' &&
+        Array.isArray(workspacePayload.caseLibrary) &&
+        Array.isArray(workspacePayload.packLibrary)
+    );
+    const preferences =
+      userPayload && userPayload.preferences && typeof userPayload.preferences === 'object'
+        ? userPayload.preferences
+        : null;
 
-    if (!raw) return null;
-    const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(raw, null));
-    if (!parsed || typeof parsed !== 'object') {
-      emit('storage:load_error', { key: scopedKey, message: 'Invalid stored data' });
-      return null;
-    }
-    if (parsed.version !== APP_VERSION) {
-      return parsed;
-    }
-    return parsed;
+    if (!preferences && !hasWorkspaceData) return null;
+
+    return {
+      version:
+        (workspacePayload && workspacePayload.version) ||
+        (userPayload && userPayload.version) ||
+        APP_VERSION,
+      savedAt:
+        (workspacePayload && workspacePayload.savedAt) ||
+        (userPayload && userPayload.savedAt) ||
+        0,
+      preferences,
+      caseLibrary: hasWorkspaceData ? workspacePayload.caseLibrary : null,
+      packLibrary: hasWorkspaceData ? workspacePayload.packLibrary : null,
+      currentPackId: hasWorkspaceData ? workspacePayload.currentPackId || null : null,
+    };
   } catch (err) {
     emit('storage:load_error', {
       key: scopedKey,
@@ -129,21 +180,27 @@ export function saveSoon() {
 
 export function saveNow() {
   const scopedKey = getScopedKey();
+  const workspaceKey = getWorkspaceScopedKey();
   try {
     const state = StateStore.get();
-    const payload = {
+    const userPayload = {
       version: APP_VERSION,
       savedAt: Date.now(),
+      preferences: state.preferences,
+    };
+    const workspacePayload = {
+      version: APP_VERSION,
+      savedAt: userPayload.savedAt,
       caseLibrary: state.caseLibrary,
       packLibrary: state.packLibrary,
-      preferences: state.preferences,
       currentPackId: state.currentPackId,
     };
-    window.localStorage.setItem(scopedKey, JSON.stringify(payload));
-    emit('storage:saved', { key: scopedKey, savedAt: payload.savedAt });
+    window.localStorage.setItem(scopedKey, JSON.stringify(userPayload));
+    window.localStorage.setItem(workspaceKey, JSON.stringify(workspacePayload));
+    emit('storage:saved', { key: workspaceKey, savedAt: workspacePayload.savedAt });
   } catch (err) {
     emit('storage:save_error', {
-      key: scopedKey,
+      key: workspaceKey,
       message: err && err.message ? err.message : 'Save failed',
       error: err,
     });
@@ -152,8 +209,15 @@ export function saveNow() {
 
 export function clearAll() {
   const scopedKey = getScopedKey();
+  const workspacePrefix = `${scopedKey}:workspace:`;
   try {
-    window.localStorage.removeItem(scopedKey);
+    const keysToRemove = [scopedKey];
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const key = window.localStorage.key(i);
+      if (!key || key === scopedKey) continue;
+      if (key.startsWith(workspacePrefix)) keysToRemove.push(key);
+    }
+    keysToRemove.forEach(key => window.localStorage.removeItem(key));
   } catch (err) {
     emit('storage:save_error', {
       key: scopedKey,

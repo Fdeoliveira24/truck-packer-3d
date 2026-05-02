@@ -62,6 +62,12 @@ export function createCaseScene({
       ctx.lineWidth = Math.max(2, w * 0.01);
       ctx.strokeRect(2, 2, w - 4, h - 4);
       if (faceIndex === 4 || faceIndex === 5) {
+        const faceDims = caseData.dimensions || {};
+        if ((faceDims.length || 0) < 3 || (faceDims.height || 0) < 3) {
+          const tex = new THREE.CanvasTexture(canvas);
+          tex.colorSpace = THREE.SRGBColorSpace;
+          return tex;
+        }
         ctx.fillStyle = '#FFFFFF';
         ctx.font = `bold ${Math.floor(h * 0.12)}px Arial, sans-serif`;
         ctx.textAlign = 'center';
@@ -1280,6 +1286,7 @@ export function createEditorScreen({
     let activationRaf = null;
     const caseFiltersStorageKey = 'tp3d.editor.caseBrowser.showFilters';
     let showCaseFilters = false;
+    let caseBrowserGroupBy = 'category';
     let viewportHintOpen = false;
 
     function setViewportHintOpen(open) {
@@ -1478,9 +1485,36 @@ export function createEditorScreen({
     }
 
     function renderCaseBrowser() {
+      if (caseListEl && caseListEl.parentElement && !caseListEl.parentElement.querySelector('.tp3d-editor-browser-tabs')) {
+        const tabsEl = document.createElement('div');
+        tabsEl.className = 'tp3d-editor-browser-tabs';
+        tabsEl.style.cssText = 'display:flex;gap:6px;padding:4px 0 8px';
+        const btnCat = document.createElement('button');
+        btnCat.type = 'button';
+        btnCat.className = 'btn btn-sm tp3d-browser-tab';
+        btnCat.dataset.groupBy = 'category';
+        btnCat.textContent = 'Category';
+        const btnMfg = document.createElement('button');
+        btnMfg.type = 'button';
+        btnMfg.className = 'btn btn-sm tp3d-browser-tab';
+        btnMfg.dataset.groupBy = 'manufacturer';
+        btnMfg.textContent = 'Manufacturer';
+        tabsEl.appendChild(btnCat);
+        tabsEl.appendChild(btnMfg);
+        caseListEl.parentElement.insertBefore(tabsEl, caseListEl);
+        tabsEl.addEventListener('click', ev => {
+          const btn = ev.target.closest('[data-group-by]');
+          if (!btn) return;
+          caseBrowserGroupBy = btn.dataset.groupBy;
+          renderCaseBrowser();
+        });
+      }
+      const tabBtns = document.querySelectorAll('.tp3d-browser-tab');
+      tabBtns.forEach(btn => btn.classList.toggle('btn-primary', btn.dataset.groupBy === caseBrowserGroupBy));
+
       const q = String(caseSearchEl.value || '').trim();
       const prefs = PreferencesManager.get ? PreferencesManager.get() : { units: { length: 'in', weight: 'lb' } };
-      const cases = CaseLibrary.search(q, Array.from(browserCats)).sort((a, b) =>
+      const cases = CaseLibrary.search(q, caseBrowserGroupBy === 'category' ? Array.from(browserCats) : []).sort((a, b) =>
         (a.name || '').localeCompare(b.name || '')
       );
       const counts = CategoryService.listWithCounts(CaseLibrary.getCases());
@@ -1517,6 +1551,50 @@ export function createEditorScreen({
       setCaseFiltersVisible(showCaseFilters, false);
 
       caseListEl.innerHTML = '';
+      if (caseBrowserGroupBy === 'manufacturer') {
+        if (caseChipsEl) { caseChipsEl.hidden = true; caseChipsEl.style.display = 'none'; }
+        const mfgGroups = new Map();
+        cases.forEach(c => {
+          const key = (c.manufacturer && c.manufacturer.trim()) || '(No manufacturer)';
+          if (!mfgGroups.has(key)) mfgGroups.set(key, []);
+          mfgGroups.get(key).push(c);
+        });
+        Array.from(mfgGroups.entries())
+          .sort(([a], [b]) => (a === '(No manufacturer)' ? 1 : b === '(No manufacturer)' ? -1 : a.localeCompare(b)))
+          .forEach(([groupName, groupCases]) => {
+            const hdr = document.createElement('div');
+            hdr.className = 'tp3d-editor-fw-semibold';
+            hdr.style.cssText = 'padding:8px 0 4px;color:var(--text-secondary,#9b9ba8);font-size:11px;text-transform:uppercase;letter-spacing:.04em';
+            hdr.textContent = groupName;
+            caseListEl.appendChild(hdr);
+            groupCases.forEach(c => {
+              const card = document.createElement('div');
+              card.className = 'card tp3d-editor-card-padding-12 tp3d-editor-card-grid-gap-8 tp3d-editor-case-browser-card';
+              card.draggable = true;
+              card.addEventListener('dragstart', ev => { ev.dataTransfer.setData('text/plain', c.id); ev.dataTransfer.effectAllowed = 'copy'; });
+              const header = document.createElement('div');
+              header.className = 'tp3d-editor-card-header';
+              const nameEl = document.createElement('div');
+              nameEl.classList.add('tp3d-editor-fw-semibold');
+              nameEl.textContent = c.name;
+              const addBtn = document.createElement('button');
+              addBtn.type = 'button';
+              addBtn.className = 'btn btn-primary tp3d-editor-btn-add';
+              addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> Add';
+              addBtn.addEventListener('click', () => addCaseToPack(c.id));
+              header.appendChild(nameEl);
+              header.appendChild(addBtn);
+              const hasDims = c && c.dimensions && Number.isFinite(c.dimensions.length) && Number.isFinite(c.dimensions.width) && Number.isFinite(c.dimensions.height);
+              const meta = document.createElement('div');
+              meta.className = 'tp3d-editor-card-dims tp3d-editor-case-meta-primary';
+              meta.textContent = hasDims ? `${c.dimensions.length}\u00d7${c.dimensions.width}\u00d7${c.dimensions.height} in` : '\u2014';
+              card.appendChild(header);
+              card.appendChild(meta);
+              caseListEl.appendChild(card);
+            });
+          });
+        return;
+      }
       cases.forEach(c => {
         const card = document.createElement('div');
         card.className = 'card';

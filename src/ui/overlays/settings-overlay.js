@@ -648,6 +648,47 @@ export function createSettingsOverlay({
     return modalOrgId;
   }
 
+  function shouldSuppressPreLockBillingTransition(stateOverride = null) {
+    const state = stateOverride || (
+      (() => {
+        try {
+          const api = getBillingApiSafely();
+          return api && typeof api.getBillingState === 'function' ? api.getBillingState() : null;
+        } catch {
+          return null;
+        }
+      })()
+    );
+    const lockedOrgId = ensureModalOrgId();
+    const currentOrgId = getOrgIdFromOrgContext();
+    const billingOrgId = normalizeOrgId(state && state.orgId ? state.orgId : '');
+    const loading = Boolean(state && state.loading);
+    const pending = Boolean(state && state.pending);
+    return Boolean(
+      lockedOrgId &&
+      currentOrgId &&
+      currentOrgId !== lockedOrgId &&
+      billingOrgId &&
+      billingOrgId === currentOrgId &&
+      (loading || pending)
+    );
+  }
+
+  function getTransientBillingOrgName(targetOrgId) {
+    const normalizedOrgId = normalizeOrgId(targetOrgId);
+    if (!normalizedOrgId || typeof window === 'undefined') return '';
+    try {
+      const bundle = window.__TP3D_LAST_ACCOUNT_BUNDLE || null;
+      const activeOrg = bundle && bundle.activeOrg ? bundle.activeOrg : null;
+      const activeOrgId = normalizeOrgId(activeOrg && activeOrg.id ? activeOrg.id : '');
+      const activeOrgName = activeOrg && activeOrg.name ? String(activeOrg.name).trim() : '';
+      if (activeOrgId && activeOrgId === normalizedOrgId && activeOrgName) return activeOrgName;
+    } catch {
+      // ignore
+    }
+    return '';
+  }
+
   function _safeAuthSnapshot(userId) {
     let hasUserJwt = false;
     try {
@@ -905,30 +946,12 @@ export function createSettingsOverlay({
     const api = getBillingApiSafely();
     if (!api) return;
 
-    if (typeof api.clearBillingState === 'function') {
-      try {
-        api.clearBillingState();
-      } catch {
-        // ignore
-      }
-    }
-
-    const billingWrap = doc.getElementById('tp3d-billing-wrap');
-    if (billingWrap) {
-      renderBillingInto(billingWrap);
-    }
-
     // Route through pump instead of direct call
     if (typeof window !== 'undefined' && window.TruckPackerApp && typeof window.TruckPackerApp.maybeScheduleBillingRefresh === 'function') {
       window.TruckPackerApp.maybeScheduleBillingRefresh('org-changed');
     } else {
       _callBillingPumpWithRetry('org-changed');
     }
-    // Re-render billing wrap after a short delay for pump to complete
-    setTimeout(() => {
-      const wrap = doc.getElementById('tp3d-billing-wrap');
-      if (wrap) renderBillingInto(wrap);
-    }, 300);
   }
 
   function ensureOrgChangedListener() {
@@ -1014,10 +1037,12 @@ export function createSettingsOverlay({
       orgMembersError = null;
       orgMembersData = null;
       lastOrgMembersOrgId = null;
-      queueAccountBundleRefresh({ force: true, source: 'settings:org-changed' });
-      refreshBillingForOrgChange(nextOrgId, 'settings:org-changed');
-      if (_tabState.activeTabId === 'org-billing') {
+      const isBillingTab = _tabState.activeTabId === 'org-billing';
+      if (isBillingTab) {
         ensureBillingContextHydrated(nextOrgId, { force: true, source: 'org-billing:org-changed' }).catch(() => { });
+      } else {
+        queueAccountBundleRefresh({ force: true, source: 'settings:org-changed' });
+        refreshBillingForOrgChange(nextOrgId, 'settings:org-changed');
       }
       if (settingsOverlay && settingsOverlay.isConnected) {
         render({ source: 'org-changed' });
@@ -2007,7 +2032,7 @@ export function createSettingsOverlay({
                   _pendingRepaintByTab.set('org-billing', { source: 'billing-delayed-refresh', token: _billingDelayToken });
                 }
               }
-            }, 3000);
+            }, 1200);
           } else {
             debug('setActiveTab:skip-billing-fresh', {
               plan: bs.plan,
@@ -2522,12 +2547,24 @@ export function createSettingsOverlay({
     const billingOrgId = normalizeOrgId(state.orgId || '');
     const loading = Boolean(state.loading);
     const pending = Boolean(state.pending);
+    if (shouldSuppressPreLockBillingTransition(state)) {
+      return;
+    }
     const staleOrgState = Boolean(lockedOrgId && billingOrgId && billingOrgId !== lockedOrgId);
     const billingMatchesLockedOrg = Boolean(lockedOrgId && billingOrgId && billingOrgId === lockedOrgId);
     const hasRenderableBillingState = Boolean(billingMatchesLockedOrg && state.lastFetchedAt);
+    const blankPendingState = Boolean(
+      billingMatchesLockedOrg &&
+      (loading || pending) &&
+      !state.plan &&
+      !state.status &&
+      !state.isActive &&
+      !state.isPro
+    );
     const showSkeleton = Boolean(
       !lockedOrgId ||
       staleOrgState ||
+      blankPendingState ||
       ((loading || pending) && !hasRenderableBillingState)
     );
     const status = state.status ? String(state.status) : '';
@@ -2586,7 +2623,7 @@ export function createSettingsOverlay({
       billingContextInflightOrgId === lockedOrgId
     );
     const billingContextLoading = billingContextInflightForOrg;
-    if (lockedOrgId && (!orgProfileLoaded || !roleKnown)) {
+    if (lockedOrgId && (!orgProfileLoaded || !roleKnown) && !billingContextInflightForOrg) {
       ensureBillingContextHydrated(lockedOrgId, { source: 'org-billing:render' }).catch(() => { });
     }
     const orgContextStalled = Boolean(
@@ -2602,9 +2639,10 @@ export function createSettingsOverlay({
 
     // --- Organization section ---
     const orgMatchesLocked = orgProfileLoaded;
+    const transientOrgName = !orgMatchesLocked ? getTransientBillingOrgName(lockedOrgId) : '';
     const orgName = orgMatchesLocked && orgData && orgData.name
       ? String(orgData.name)
-      : (lockedOrgId ? 'Workspace' : 'Personal Workspace');
+      : (lockedOrgId ? (transientOrgName || 'Loading workspace…') : 'Personal Workspace');
 
     const orgSection = doc.createElement('div');
     orgSection.className = 'tp3d-settings-billing';
@@ -5651,6 +5689,9 @@ export function createSettingsOverlay({
         return;
       }
       debug('refreshAccountUI:org-tab-override', { tab: _tabState.activeTabId, reason });
+    }
+    if (_tabState.activeTabId === 'org-billing' && shouldSuppressPreLockBillingTransition()) {
+      return;
     }
     render({ source: 'refreshAccountUI' });
   }

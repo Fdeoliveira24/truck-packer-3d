@@ -13,6 +13,30 @@ const SUBSCRIPTION_STATUS_PRIORITY: Record<string, number> = {
   incomplete_expired: 0,
 };
 
+type EntitlementStatus =
+  | "active"
+  | "trialing"
+  | "trial_expired"
+  | "included_in_plan"
+  | "workspace_limit_reached"
+  | "owner_subscription_required"
+  | "billing_unavailable";
+
+type OwnerWorkspace = {
+  id: string;
+  created_at: string | null;
+};
+
+type EntitlementCandidate = {
+  organization_id: string;
+  status: string;
+  price_id: string;
+  current_period_end: string | null;
+  trial_end: string | null;
+  created_at: string | null;
+  source: "subscription" | "billing_customer";
+};
+
 function json(req: Request, status: number, data: unknown) {
   return new Response(JSON.stringify(data), {
     status,
@@ -21,6 +45,53 @@ function json(req: Request, status: number, data: unknown) {
       "Content-Type": "application/json",
     },
   });
+}
+
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = String(Deno.env.get(name) || "").trim();
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getBusinessPriceIds(): string[] {
+  return uniq([
+    String(Deno.env.get("STRIPE_PRICE_BUSINESS_MONTHLY") || "").trim(),
+    String(Deno.env.get("STRIPE_PRICE_BUSINESS_YEARLY") || "").trim(),
+  ]);
+}
+
+function workspaceLimitForEntitlement(status: string, priceId: string): number {
+  if (status === "trialing") {
+    return parsePositiveIntEnv("TP3D_TRIAL_WORKSPACE_LIMIT", 1);
+  }
+  const businessPriceIds = getBusinessPriceIds();
+  if (businessPriceIds.length && priceId && businessPriceIds.includes(priceId)) {
+    return parsePositiveIntEnv("TP3D_BUSINESS_WORKSPACE_LIMIT", 10);
+  }
+  return parsePositiveIntEnv("TP3D_PRO_WORKSPACE_LIMIT", 3);
+}
+
+function paymentGraceActive(status: string, currentPeriodEnd: string | null): boolean {
+  const graceDaysByStatus: Record<string, number> = {
+    past_due: 7,
+    unpaid: 3,
+  };
+  const graceDays = graceDaysByStatus[status];
+  if (!graceDays || !currentPeriodEnd) return false;
+  const periodEndMs = new Date(currentPeriodEnd).getTime();
+  if (!Number.isFinite(periodEndMs)) return false;
+  return Date.now() < periodEndMs + graceDays * 86400000;
+}
+
+function isUsableEntitlementCandidate(row: EntitlementCandidate): boolean {
+  const status = String(row.status || "");
+  if (status === "active" || status === "trialing") return true;
+  return paymentGraceActive(status, row.current_period_end);
+}
+
+function pickBestEntitlementCandidate(rows: EntitlementCandidate[]): EntitlementCandidate | null {
+  const usable = rows.filter(isUsableEntitlementCandidate);
+  return usable.length ? pickBestSubscription(usable) : null;
 }
 
 function pickBestSubscription(rows: any[]) {
@@ -255,6 +326,16 @@ Deno.serve(async (req) => {
       auth: { persistSession: false },
     });
 
+    let billingOwnerUserId: string | null = null;
+    let workspaceIncluded = false;
+    let workspaceCount: number | null = null;
+    let workspaceLimit: number | null = null;
+    let canManageBilling = false;
+    let entitlementStatus: EntitlementStatus = "billing_unavailable";
+    let entitlementResolutionFailed = false;
+    let ownerWorkspaces: OwnerWorkspace[] = [];
+    let ownerEntitlementCandidate: EntitlementCandidate | null = null;
+    let activeOrgCreatedAt: string | null = null;
     let eligibleUserIds = [userId];
     let allowLegacyUserScopedFallback = false;
     let billingCustomer: Record<string, unknown> | null = null;
@@ -314,6 +395,60 @@ Deno.serve(async (req) => {
         allowLegacyUserScopedFallback = Number(orgCountRes.count || 0) === 1;
       } else if (debug) {
         console.warn("billing-status: org count lookup failed", orgCountRes.error);
+      }
+
+      const activeOrgRes = await admin
+        .from("organizations")
+        .select("id, owner_id, created_at")
+        .eq("id", resolvedOrgId)
+        .maybeSingle();
+
+      if (activeOrgRes.error || !activeOrgRes.data) {
+        entitlementResolutionFailed = true;
+        if (debug) {
+          console.warn("billing-status: active workspace owner lookup failed", activeOrgRes.error);
+        }
+      } else {
+        activeOrgCreatedAt = activeOrgRes.data?.created_at ? String(activeOrgRes.data.created_at) : null;
+        const ownerFromOrg = activeOrgRes.data?.owner_id ? String(activeOrgRes.data.owner_id) : "";
+        const ownerFromMembership = rows.find(r => String(r?.role || "").toLowerCase() === "owner")?.user_id;
+        billingOwnerUserId = ownerFromOrg || (ownerFromMembership ? String(ownerFromMembership) : null);
+        canManageBilling = Boolean(billingOwnerUserId && billingOwnerUserId === userId);
+      }
+
+      if (billingOwnerUserId) {
+        const ownerWorkspacesRes = await admin
+          .from("organizations")
+          .select("id, created_at")
+          .eq("owner_id", billingOwnerUserId)
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true });
+
+        if (ownerWorkspacesRes.error) {
+          entitlementResolutionFailed = true;
+          if (debug) {
+            console.warn("billing-status: owner workspace lookup failed", ownerWorkspacesRes.error);
+          }
+        } else {
+          ownerWorkspaces = (Array.isArray(ownerWorkspacesRes.data) ? ownerWorkspacesRes.data : [])
+            .map(row => ({
+              id: normalizeOrgId(row?.id ?? null) || "",
+              created_at: row?.created_at ? String(row.created_at) : null,
+            }))
+            .filter(row => Boolean(row.id));
+          if (!ownerWorkspaces.some(row => row.id === resolvedOrgId)) {
+            ownerWorkspaces.push({ id: resolvedOrgId, created_at: activeOrgCreatedAt });
+            ownerWorkspaces.sort((a, b) => {
+              const aMs = a.created_at ? new Date(a.created_at).getTime() : 0;
+              const bMs = b.created_at ? new Date(b.created_at).getTime() : 0;
+              if (aMs !== bMs) return aMs - bMs;
+              return a.id.localeCompare(b.id);
+            });
+          }
+          workspaceCount = ownerWorkspaces.length;
+        }
+      } else {
+        entitlementResolutionFailed = true;
       }
 
       const billingCustomerRes = await admin
@@ -596,6 +731,122 @@ Deno.serve(async (req) => {
       });
     }
 
+    if (resolvedOrgId && billingOwnerUserId && ownerWorkspaces.length) {
+      const ownerWorkspaceIds = ownerWorkspaces.map(row => row.id).filter(Boolean);
+      const entitlementCandidates: EntitlementCandidate[] = [];
+      try {
+        const ownerSubs = await admin
+          .from("subscriptions")
+          .select("organization_id, status, price_id, current_period_end, trial_end, created_at")
+          .in("organization_id", ownerWorkspaceIds);
+
+        if (ownerSubs.error) {
+          if (!isMissingColumnError(ownerSubs.error, "organization_id")) throw ownerSubs.error;
+          entitlementResolutionFailed = true;
+          if (debug) {
+            console.warn("billing-status: owner entitlement subscription lookup missing organization_id", ownerSubs.error);
+          }
+        } else {
+          (Array.isArray(ownerSubs.data) ? ownerSubs.data : []).forEach(row => {
+            const orgId = normalizeOrgId(row?.organization_id ?? null);
+            if (!orgId) return;
+            entitlementCandidates.push({
+              organization_id: orgId,
+              status: String(row?.status || "none"),
+              price_id: row?.price_id ? String(row.price_id) : "",
+              current_period_end: row?.current_period_end ? String(row.current_period_end) : null,
+              trial_end: row?.trial_end ? String(row.trial_end) : null,
+              created_at: row?.created_at ? String(row.created_at) : null,
+              source: "subscription",
+            });
+          });
+        }
+
+        const ownerBillingCustomers = await admin
+          .from("billing_customers")
+          .select("organization_id, status, plan_name, current_period_end, trial_ends_at, created_at")
+          .in("organization_id", ownerWorkspaceIds);
+
+        if (ownerBillingCustomers.error) {
+          throw ownerBillingCustomers.error;
+        }
+
+        (Array.isArray(ownerBillingCustomers.data) ? ownerBillingCustomers.data : []).forEach(row => {
+          const orgId = normalizeOrgId(row?.organization_id ?? null);
+          if (!orgId) return;
+          const status = String(row?.status || "none").toLowerCase();
+          const trialEnd = row?.trial_ends_at ? String(row.trial_ends_at) : null;
+          if (status === "trialing" && trialEnd) {
+            const trialEndMs = new Date(trialEnd).getTime();
+            if (Number.isFinite(trialEndMs) && trialEndMs <= Date.now()) return;
+          }
+          entitlementCandidates.push({
+            organization_id: orgId,
+            status,
+            price_id: "",
+            current_period_end: row?.current_period_end ? String(row.current_period_end) : null,
+            trial_end: trialEnd,
+            created_at: row?.created_at ? String(row.created_at) : null,
+            source: "billing_customer",
+          });
+        });
+
+        if (Deno.env.get("STRIPE_SECRET_KEY")) {
+          try {
+            const ownerCustomerRes = await admin
+              .from("stripe_customers")
+              .select("stripe_customer_id")
+              .eq("user_id", billingOwnerUserId)
+              .maybeSingle();
+            const ownerStripeCustomerId = ownerCustomerRes.data?.stripe_customer_id
+              ? String(ownerCustomerRes.data.stripe_customer_id)
+              : "";
+            if (!ownerCustomerRes.error && ownerStripeCustomerId) {
+              const stripe = stripeClient();
+              const stripeSubs = await stripe.subscriptions.list({
+                customer: ownerStripeCustomerId,
+                status: "all",
+                limit: 100,
+                expand: ["data.items.data.price"],
+              });
+              (Array.isArray(stripeSubs.data) ? stripeSubs.data : []).forEach((s: any) => {
+                const orgIdFromMetadata = metadataOrgId(s?.metadata ?? null);
+                if (!orgIdFromMetadata || !ownerWorkspaceIds.includes(orgIdFromMetadata)) return;
+                entitlementCandidates.push({
+                  organization_id: orgIdFromMetadata,
+                  status: s?.status ? String(s.status) : "none",
+                  price_id: s?.items?.data?.[0]?.price?.id ? String(s.items.data[0].price.id) : "",
+                  current_period_end: s?.current_period_end
+                    ? new Date(Number(s.current_period_end) * 1000).toISOString()
+                    : null,
+                  trial_end: s?.trial_end
+                    ? new Date(Number(s.trial_end) * 1000).toISOString()
+                    : null,
+                  created_at: s?.created
+                    ? new Date(Number(s.created) * 1000).toISOString()
+                    : null,
+                  source: "subscription",
+                });
+              });
+            }
+          } catch (stripeOwnerEntitlementErr) {
+            if (debug) {
+              console.warn("billing-status: owner Stripe entitlement fallback failed", stripeOwnerEntitlementErr);
+            }
+          }
+        }
+
+        ownerEntitlementCandidate = pickBestEntitlementCandidate(entitlementCandidates);
+      } catch (ownerEntitlementErr) {
+        entitlementResolutionFailed = true;
+        if (debug) {
+          console.warn("billing-status: owner entitlement lookup failed", ownerEntitlementErr);
+        }
+      }
+    } else if (resolvedOrgId) {
+      entitlementResolutionFailed = true;
+    }
+
     // Normalize into a flat, stable contract
     let subStatus = subscription ? String(subscription.status ?? "none") : "none";
     let isTrial = subStatus === "trialing";
@@ -727,6 +978,11 @@ Deno.serve(async (req) => {
 
     plan = isActive ? "pro" : "free";
     const trialEndsAt = subStatus === "trialing" ? trialEndsAtCandidate : null;
+    const currentPeriodEnd = subscription?.current_period_end
+      ? String(subscription.current_period_end)
+      : billingCustomer?.current_period_end
+        ? String(billingCustomer.current_period_end)
+        : null;
 
     // ── P0.8: Payment failure grace rules ──
     // Trial logic takes absolute priority — skip payment problem when trial-related.
@@ -791,12 +1047,6 @@ Deno.serve(async (req) => {
       }
     }
 
-    const currentPeriodEnd = subscription?.current_period_end
-      ? String(subscription.current_period_end)
-      : billingCustomer?.current_period_end
-        ? String(billingCustomer.current_period_end)
-      : null;
-
     const cancelAtPeriodEnd = Boolean(
       subscription?.cancel_at_period_end ??
       billingCustomer?.cancel_at_period_end ??
@@ -813,10 +1063,67 @@ Deno.serve(async (req) => {
       resolvedOrgId = normalizeOrgId((subscription as Record<string, unknown>).organization_id ?? null);
     }
 
+    if (!entitlementResolutionFailed && resolvedOrgId && billingOwnerUserId) {
+      if (ownerEntitlementCandidate) {
+        const resolvedWorkspaceLimit = workspaceLimitForEntitlement(
+          String(ownerEntitlementCandidate.status || ""),
+          String(ownerEntitlementCandidate.price_id || ""),
+        );
+        workspaceLimit = resolvedWorkspaceLimit;
+        const includedOrgIds: string[] = [];
+        const directOrgId = normalizeOrgId(ownerEntitlementCandidate.organization_id) || "";
+        if (directOrgId && resolvedWorkspaceLimit > 0) includedOrgIds.push(directOrgId);
+        for (const workspace of ownerWorkspaces) {
+          if (includedOrgIds.length >= resolvedWorkspaceLimit) break;
+          if (!workspace.id || workspace.id === directOrgId) continue;
+          includedOrgIds.push(workspace.id);
+        }
+        workspaceIncluded = includedOrgIds.includes(resolvedOrgId);
+        if (!workspaceIncluded) {
+          entitlementStatus = "workspace_limit_reached";
+          isActive = false;
+          plan = "pro";
+        } else if (directOrgId === resolvedOrgId) {
+          entitlementStatus = String(ownerEntitlementCandidate.status || "") === "trialing"
+            ? "trialing"
+            : "active";
+          isActive = true;
+          plan = "pro";
+        } else {
+          entitlementStatus = "included_in_plan";
+          isActive = true;
+          plan = "pro";
+        }
+      } else if (subStatus === "trial_expired") {
+        workspaceLimit = parsePositiveIntEnv("TP3D_TRIAL_WORKSPACE_LIMIT", 1);
+        workspaceIncluded = false;
+        entitlementStatus = "trial_expired";
+        isActive = false;
+        plan = "free";
+      } else {
+        workspaceIncluded = false;
+        entitlementStatus = "owner_subscription_required";
+        isActive = false;
+        plan = "free";
+      }
+    } else {
+      workspaceIncluded = false;
+      workspaceLimit = null;
+      entitlementStatus = "billing_unavailable";
+      isActive = false;
+      plan = "free";
+    }
+
     const responsePayload: Record<string, unknown> = {
       ok: true,
       userId,
       orgId: resolvedOrgId,
+      billingOwnerUserId,
+      entitlementStatus,
+      workspaceIncluded,
+      workspaceCount,
+      workspaceLimit,
+      canManageBilling,
       plan,
       status: subStatus,
       isActive,
@@ -838,6 +1145,13 @@ Deno.serve(async (req) => {
         billingCustomerTrialEndsAt,
         usedServiceRole,
         duplicateActiveCount,
+        entitlementStatus,
+        billingOwnerUserId,
+        workspaceIncluded,
+        workspaceCount,
+        workspaceLimit,
+        ownerEntitlementSource: ownerEntitlementCandidate?.source ?? null,
+        ownerEntitlementOrgId: ownerEntitlementCandidate?.organization_id ?? null,
       };
     }
     return json(req, 200, responsePayload);

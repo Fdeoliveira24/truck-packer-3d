@@ -7,6 +7,10 @@
  * @author Truck Packer 3D Team
  */
 
+// This file is not used by the current app runtime. Do not use canUseFeature()
+// for paid feature access. Use window.__TP3D_BILLING.getProRuleSet() /
+// entitlementStatus instead.
+
 // ============================================================================
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================

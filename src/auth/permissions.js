@@ -7,6 +7,9 @@
  * @author Truck Packer 3D Team
  */
 
+// This legacy permission helper is not used by the current runtime. Do not use
+// plan-string checks for Pro access. Use the entitlement billing path instead.
+
 // ============================================================================
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================

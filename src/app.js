@@ -106,6 +106,12 @@ const _billingState = {
   ok: false,
   plan: null,
   status: null,
+  entitlementStatus: null,
+  billingOwnerUserId: null,
+  workspaceIncluded: false,
+  workspaceCount: null,
+  workspaceLimit: null,
+  canManageBilling: null,
   orgId: null,
   isPro: false,
   isActive: false,
@@ -124,6 +130,15 @@ const _billingState = {
   lastFetchedAt: 0,
 };
 const _billingSubscribers = new Set();
+const BILLING_ENTITLEMENT_STATUSES = new Set([
+  'active',
+  'trialing',
+  'trial_expired',
+  'included_in_plan',
+  'workspace_limit_reached',
+  'owner_subscription_required',
+  'billing_unavailable',
+]);
 const BILLING_THROTTLE_MS = 30000;
 const BILLING_REQUEST_TIMEOUT_MS = 15000;
 const BILLING_FOCUS_REFRESH_COOLDOWN_MS = 300000; // 5 minutes — do not spam refresh on every focus
@@ -137,6 +152,41 @@ let _billingEpoch = 0; // incremented on sign-out; late refresh results are igno
 const _bootStartedAtMs = Date.now();
 /** @type {null|((snapshot:any, meta?:{reason?:string, activeOrgId?:string|null})=>void)} */
 let _billingGateApplier = null;
+
+function normalizeBillingEntitlementStatus(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  return BILLING_ENTITLEMENT_STATUSES.has(raw) ? raw : null;
+}
+
+function nullableFiniteNumber(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function resetBillingEntitlementFields(status = null) {
+  _billingState.entitlementStatus = normalizeBillingEntitlementStatus(status);
+  _billingState.billingOwnerUserId = null;
+  _billingState.workspaceIncluded = false;
+  _billingState.workspaceCount = null;
+  _billingState.workspaceLimit = null;
+  _billingState.canManageBilling = null;
+}
+
+function applyBillingEntitlementFields(source, fallbackStatus = null) {
+  const s = source && typeof source === 'object' ? source : {};
+  _billingState.entitlementStatus = normalizeBillingEntitlementStatus(s.entitlementStatus) || normalizeBillingEntitlementStatus(fallbackStatus);
+  _billingState.billingOwnerUserId = s.billingOwnerUserId ? String(s.billingOwnerUserId) : null;
+  _billingState.workspaceIncluded = Boolean(s.workspaceIncluded);
+  _billingState.workspaceCount = nullableFiniteNumber(s.workspaceCount);
+  _billingState.workspaceLimit = nullableFiniteNumber(s.workspaceLimit);
+  _billingState.canManageBilling = typeof s.canManageBilling === 'boolean' ? s.canManageBilling : null;
+}
+
+function isEntitlementAllowed(status) {
+  const normalized = normalizeBillingEntitlementStatus(status);
+  return normalized === 'active' || normalized === 'trialing' || normalized === 'included_in_plan';
+}
 
 // ============================================================================
 // SECTION: CROSS-TAB BILLING COORDINATION (Rule C)
@@ -252,6 +302,9 @@ function _writeSharedBillingResult(orgId, state) {
     // Write a minimal snapshot (avoid storing large data blobs)
     const mini = {
       ok: state.ok, plan: state.plan, status: state.status, orgId: state.orgId,
+      entitlementStatus: state.entitlementStatus, billingOwnerUserId: state.billingOwnerUserId,
+      workspaceIncluded: state.workspaceIncluded, workspaceCount: state.workspaceCount,
+      workspaceLimit: state.workspaceLimit, canManageBilling: state.canManageBilling,
       isPro: state.isPro, isActive: state.isActive, interval: state.interval,
       trialEndsAt: state.trialEndsAt, currentPeriodEnd: state.currentPeriodEnd,
       cancelAtPeriodEnd: state.cancelAtPeriodEnd, cancelAt: state.cancelAt,
@@ -294,6 +347,7 @@ function _applySharedBillingSnapshot(orgId, state, reason = 'cross-tab-shared') 
   _billingState.ok = Boolean(state.ok);
   _billingState.plan = state.plan || null;
   _billingState.status = state.status || null;
+  applyBillingEntitlementFields(state, state.ok ? null : 'billing_unavailable');
   _billingState.orgId = state.orgId || orgId;
   _billingState.isPro = Boolean(state.isPro);
   _billingState.isActive = Boolean(state.isActive);
@@ -335,6 +389,7 @@ function _clearBillingSnapshotForOrgTransition(orgId, reason = 'org-transition')
   _billingState.ok = false;
   _billingState.plan = null;
   _billingState.status = null;
+  resetBillingEntitlementFields(null);
   _billingState.orgId = targetOrgId;
   _billingState.isPro = false;
   _billingState.isActive = false;
@@ -374,6 +429,9 @@ function _broadcastBillingResult(orgId, state) {
   try {
     _billingBroadcast.postMessage({ type: 'billing-result', orgId, state: {
       ok: state.ok, plan: state.plan, status: state.status, orgId: state.orgId,
+      entitlementStatus: state.entitlementStatus, billingOwnerUserId: state.billingOwnerUserId,
+      workspaceIncluded: state.workspaceIncluded, workspaceCount: state.workspaceCount,
+      workspaceLimit: state.workspaceLimit, canManageBilling: state.canManageBilling,
       isPro: state.isPro, isActive: state.isActive, interval: state.interval,
       trialEndsAt: state.trialEndsAt, currentPeriodEnd: state.currentPeriodEnd,
       cancelAtPeriodEnd: state.cancelAtPeriodEnd, cancelAt: state.cancelAt,
@@ -393,6 +451,12 @@ function _buildCrossTabBillingSig(orgId, state) {
     pending: state && state.pending === true,
     plan: (state && state.plan) || null,
     status: (state && state.status) || null,
+    entitlementStatus: (state && state.entitlementStatus) || null,
+    billingOwnerUserId: (state && state.billingOwnerUserId) || null,
+    workspaceIncluded: state && state.workspaceIncluded === true,
+    workspaceCount: (state && state.workspaceCount != null) ? Number(state.workspaceCount) : null,
+    workspaceLimit: (state && state.workspaceLimit != null) ? Number(state.workspaceLimit) : null,
+    canManageBilling: (state && typeof state.canManageBilling === 'boolean') ? state.canManageBilling : null,
     isActive: state && state.isActive === true,
     interval: (state && state.interval) || null,
     trialEndsAt: (state && state.trialEndsAt) || null,
@@ -417,10 +481,8 @@ function _handleCrossTabBillingResult(orgId, state, fromTabId) {
   if (!currentOrgId || currentOrgId !== orgId) return;
   if (_billingState.loading) return; // don't overwrite an in-flight local fetch
 
-  // Callers MUST have called _ctSigSeenOrMark before reaching here.
-  // This is a safety net — if somehow called directly without pre-check, dedupe here too.
   const _ctSig = _buildCrossTabBillingSig(orgId, state);
-  if (_lastProcessedBillingSigByOrg.get(orgId) === _ctSig) return; // silent exit (already marked by caller)
+  if (_ctSigSeenOrMark(orgId, _ctSig)) return; // silent exit (already applied/processed)
 
   // Log only after dedupe proves it's truly new data
   if (fromTabId === 'storage') {
@@ -459,9 +521,6 @@ function _handleCrossTabBillingStorageEvent(ev) {
     if (_billingState.loading) return;
     const state = _readSharedBillingResult(orgId);
     if (!state) return;
-    // Per-org signature dedupe: BEFORE any log or handler work
-    const _storageSig = _buildCrossTabBillingSig(orgId, state);
-    if (_ctSigSeenOrMark(orgId, _storageSig)) return; // seen → silent exit
     _handleCrossTabBillingResult(orgId, state, 'storage');
   } catch (_) { /* ignore */ }
 }
@@ -474,9 +533,6 @@ try {
       if (!ev || !ev.data || ev.data.type !== 'billing-result') return;
       const msg = ev.data;
       if (msg.orgId && msg.state && msg.tabId !== _billingTabId) {
-        // Per-org signature dedupe: BEFORE any log or handler work
-        const _bcSig = _buildCrossTabBillingSig(msg.orgId, msg.state);
-        if (_ctSigSeenOrMark(msg.orgId, _bcSig)) return; // seen → silent exit
         _handleCrossTabBillingResult(msg.orgId, msg.state, msg.tabId);
       }
     };
@@ -561,6 +617,12 @@ function getBillingState() {
     ok: _billingState.ok,
     plan: _billingState.plan,
     status: _billingState.status,
+    entitlementStatus: _billingState.entitlementStatus,
+    billingOwnerUserId: _billingState.billingOwnerUserId,
+    workspaceIncluded: _billingState.workspaceIncluded,
+    workspaceCount: _billingState.workspaceCount,
+    workspaceLimit: _billingState.workspaceLimit,
+    canManageBilling: _billingState.canManageBilling,
     orgId: _billingState.orgId,
     pending: _billingState.pending,
     isPro: _billingState.isPro,
@@ -626,6 +688,7 @@ function settleBillingPendingRetryExhausted(requestedOrgId, reason) {
   _billingState.data = null;
   _billingState.plan = null;
   _billingState.status = null;
+  resetBillingEntitlementFields('billing_unavailable');
   _billingState.isPro = false;
   _billingState.isActive = false;
   _billingState.interval = null;
@@ -685,6 +748,7 @@ function clearBillingState() {
   _billingState.ok = false;
   _billingState.plan = null;
   _billingState.status = null;
+  resetBillingEntitlementFields(null);
   _billingState.orgId = null;
   _billingState.isPro = false;
   _billingState.isActive = false;
@@ -951,6 +1015,7 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       _billingState.data = null;
       _billingState.plan = null;
       _billingState.status = null;
+      resetBillingEntitlementFields(null);
       _billingState.isPro = false;
       _billingState.isActive = false;
       _billingState.interval = null;
@@ -1052,6 +1117,7 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       _billingState.data = null;
       _billingState.plan = null;
       _billingState.status = null;
+      resetBillingEntitlementFields(null);
       _billingState.isPro = false;
       _billingState.isActive = false;
       _billingState.interval = null;
@@ -1076,6 +1142,7 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       _billingState.ok = false;
       _billingState.plan = null;
       _billingState.status = null;
+      resetBillingEntitlementFields(null);
       _billingState.orgId = requestedOrgId || null;
       _billingState.isPro = false;
       _billingState.isActive = false;
@@ -1135,6 +1202,7 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
 
       _billingState.plan = plan;
       _billingState.status = p.status ? String(p.status) : null;
+      applyBillingEntitlementFields(p, null);
       _billingState.orgId = p.orgId ? String(p.orgId) : (requestedOrgId || null);
       _billingState.isPro = isPro;
       _billingState.isActive = isActive;
@@ -1153,6 +1221,7 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       _billingState.data = result ? result.data : null;
       _billingState.plan = null;
       _billingState.status = null;
+      resetBillingEntitlementFields('billing_unavailable');
       _billingState.orgId = requestedOrgId || null;
       _billingState.isPro = false;
       _billingState.isActive = false;
@@ -1175,7 +1244,11 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
     // Trial enforcement: if trial expired and not active, show upgrade notice
     try {
       const _bs = getBillingState();
-      if (_bs.ok && !_bs.isActive && _bs.trialEndsAt) {
+      const _entitlementStatus = normalizeBillingEntitlementStatus(_bs.entitlementStatus);
+      const _isTrueTrialExpired = _entitlementStatus
+        ? _entitlementStatus === 'trial_expired'
+        : Boolean(!_bs.isActive && _bs.trialEndsAt);
+      if (_bs.ok && _isTrueTrialExpired && _bs.trialEndsAt) {
         const endMs = new Date(_bs.trialEndsAt).getTime();
         if (Number.isFinite(endMs) && endMs < Date.now()) {
           // Trial has expired — show persistent upgrade notice (use global ref since refreshBilling is outside IIFE)
@@ -1224,7 +1297,7 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
 /** @param {object} billingSnapshot – from getBillingState() */
 function canUseProFeatures(billingSnapshot) {
   const s = billingSnapshot || getBillingState();
-  return Boolean(s.ok && s.isPro && s.isActive);
+  return Boolean(getProRuleSet(s).canUseProFeature);
 }
 
 /**
@@ -1240,23 +1313,38 @@ function canUseProFeatures(billingSnapshot) {
  *   canUseProFeature: boolean,
  *   blockReason: string,
  *   uxMessage: string,
- *   isOwner: boolean
+ *   isOwner: boolean,
+ *   isWorkspaceLimitReached: boolean,
+ *   isOwnerSubRequired: boolean,
+ *   isBillingUnavailable: boolean
  * }}
  */
 function getProRuleSet(billingSnapshot, userRole) {
   const s = billingSnapshot || getBillingState();
   const rawRole = String(userRole != null ? userRole : '').toLowerCase();
-  const isOwner = rawRole === 'owner';
+  const entitlementStatus = normalizeBillingEntitlementStatus(s.entitlementStatus);
+  const isOwner = typeof s.canManageBilling === 'boolean' ? s.canManageBilling : rawRole === 'owner';
 
-  const isTrial = Boolean(s.ok && s.isPro && s.isActive && s.status === 'trialing');
-  const isTrialExpired = Boolean(s.ok && !s.isActive && s.status === 'trial_expired');
+  const isTrial = entitlementStatus
+    ? entitlementStatus === 'trialing'
+    : Boolean(s.ok && s.isPro && s.isActive && s.status === 'trialing');
+  const isTrialExpired = entitlementStatus
+    ? entitlementStatus === 'trial_expired'
+    : Boolean(s.ok && !s.isActive && s.status === 'trial_expired');
   const isPaymentProblem = Boolean(s.ok && s.paymentProblem);
-  const isProActive = Boolean(s.ok && s.isPro && s.isActive && !isTrial);
-  const canUseProFeature = Boolean(s.ok && s.isPro && s.isActive); // trial OR paid Pro
+  const canUseProFeature = entitlementStatus
+    ? Boolean(s.ok && isEntitlementAllowed(entitlementStatus))
+    : Boolean(s.ok && s.isPro && s.isActive); // trial OR paid Pro
+  const isProActive = entitlementStatus
+    ? Boolean(s.ok && (entitlementStatus === 'active' || entitlementStatus === 'included_in_plan'))
+    : Boolean(s.ok && s.isPro && s.isActive && !isTrial);
+  const isWorkspaceLimitReached = entitlementStatus === 'workspace_limit_reached';
+  const isOwnerSubRequired = entitlementStatus === 'owner_subscription_required';
+  const isBillingUnavailable = entitlementStatus === 'billing_unavailable' || !s.ok;
 
   let blockReason = '';
   let uxMessage = '';
-  if (!s.ok) {
+  if (isBillingUnavailable) {
     blockReason = 'billing_unavailable';
     uxMessage = 'Billing unavailable. Please try again.';
   } else if (isTrialExpired) {
@@ -1270,6 +1358,16 @@ function getProRuleSet(billingSnapshot, userRole) {
     uxMessage = isOwner
       ? 'Payment issue \u2014 fix your payment method to restore Pro features.'
       : 'Payment issue \u2014 ask the workspace owner to update billing.';
+  } else if (isWorkspaceLimitReached) {
+    blockReason = 'workspace_limit_reached';
+    uxMessage = isOwner
+      ? 'Workspace limit reached. Upgrade your plan or free a workspace slot to use this Pro feature.'
+      : 'This workspace is not included in the owner plan. Ask the workspace owner to include it.';
+  } else if (isOwnerSubRequired) {
+    blockReason = 'owner_subscription_required';
+    uxMessage = isOwner
+      ? 'Start a subscription to use this Pro feature.'
+      : 'The workspace owner needs to start or restore a subscription before this Pro feature is available.';
   } else if (!canUseProFeature) {
     blockReason = 'not_pro';
     // TODO: replace support@pxl360.com with the real support email later.
@@ -1278,7 +1376,19 @@ function getProRuleSet(billingSnapshot, userRole) {
       : 'Ask your owner to upgrade this workspace or contact support: support@pxl360.com';
   }
 
-  return { isProActive, isTrial, isTrialExpired, isPaymentProblem, canUseProFeature, blockReason, uxMessage, isOwner };
+  return {
+    isProActive,
+    isTrial,
+    isTrialExpired,
+    isPaymentProblem,
+    canUseProFeature,
+    blockReason,
+    uxMessage,
+    isOwner,
+    isWorkspaceLimitReached,
+    isOwnerSubRequired,
+    isBillingUnavailable,
+  };
 }
 
 /**
@@ -1397,7 +1507,17 @@ try {
       const snapshot = getBillingState();
       const activeOrganizationId = getActiveOrgIdForBilling() || null;
       const proAllowed = canUseProFeatures(snapshot);
-      const payload = { ok: true, activeOrganizationId, billingSnapshot: snapshot, proAllowed };
+      const payload = {
+        ok: true,
+        activeOrganizationId,
+        entitlementStatus: snapshot.entitlementStatus || null,
+        workspaceIncluded: snapshot.workspaceIncluded === true,
+        workspaceCount: snapshot.workspaceCount,
+        workspaceLimit: snapshot.workspaceLimit,
+        canManageBilling: snapshot.canManageBilling,
+        billingSnapshot: snapshot,
+        proAllowed,
+      };
       console.info('[Billing][SelfTest]', payload);
       return payload;
     },
@@ -3076,30 +3196,35 @@ const TP3D_BUILD_STAMP = Object.freeze({
             UIComponents.showToast('Switching workspace... please try again in a moment.', 'info', { title: 'AutoPack' });
             return;
           }
-          if (_bs && _bs.ok) {
-            const _billingSnapshotOrgId = normalizeOrgIdForBilling(_bs && _bs.orgId ? _bs.orgId : '');
-            if (_activeBillingOrgId && _billingSnapshotOrgId && _billingSnapshotOrgId !== _activeBillingOrgId) {
-              maybeScheduleBillingRefresh('autopack-org-mismatch');
-              UIComponents.showToast('Refreshing billing for this workspace. AutoPack will be available shortly.', 'info', { title: 'AutoPack' });
-              return;
-            }
-            // If org role is still inflight, defer with a neutral message instead of wrong owner/non-owner CTA
-            const _autopackOrgId = _activeBillingOrgId || _billingSnapshotOrgId;
-            const _autopackHydration = _autopackOrgId ? _getOrgRoleHydrationStateAccessor(_autopackOrgId) : 'unknown';
-            if (_autopackHydration === 'inflight') {
-              UIComponents.showToast('Loading billing... please try again in a moment.', 'info', { title: 'AutoPack' });
-              return;
-            }
-            const _rules = getProRuleSet(_bs, window.OrgContext && typeof window.OrgContext.getActiveRole === 'function' ? window.OrgContext.getActiveRole() : null);
-            if (!_rules.canUseProFeature) {
-              UIComponents.showToast(_rules.uxMessage, 'info', { title: 'AutoPack' });
-              if (_rules.isOwner && (_rules.blockReason === 'trial_expired' || _rules.blockReason === 'payment_failed')) {
-                try { openSettingsOverlay('billing'); } catch (_) { /* ignore */ }
-              }
-              return;
-            }
+          if (!_bs || !_bs.ok) {
+            UIComponents.showToast('Billing unavailable. Please try again.', 'warning', { title: 'AutoPack' });
+            return;
           }
-        } catch (_) { /* billing gate must never break AutoPack flow */ }
+          const _billingSnapshotOrgId = normalizeOrgIdForBilling(_bs && _bs.orgId ? _bs.orgId : '');
+          if (_activeBillingOrgId && _billingSnapshotOrgId && _billingSnapshotOrgId !== _activeBillingOrgId) {
+            maybeScheduleBillingRefresh('autopack-org-mismatch');
+            UIComponents.showToast('Refreshing billing for this workspace. AutoPack will be available shortly.', 'info', { title: 'AutoPack' });
+            return;
+          }
+          // If org role is still inflight, defer with a neutral message instead of wrong owner/non-owner CTA
+          const _autopackOrgId = _activeBillingOrgId || _billingSnapshotOrgId;
+          const _autopackHydration = _autopackOrgId ? _getOrgRoleHydrationStateAccessor(_autopackOrgId) : 'unknown';
+          if (_autopackHydration === 'inflight') {
+            UIComponents.showToast('Loading billing... please try again in a moment.', 'info', { title: 'AutoPack' });
+            return;
+          }
+          const _rules = getProRuleSet(_bs, window.OrgContext && typeof window.OrgContext.getActiveRole === 'function' ? window.OrgContext.getActiveRole() : null);
+          if (!_rules.canUseProFeature) {
+            UIComponents.showToast(_rules.uxMessage, 'info', { title: 'AutoPack' });
+            if (_rules.isOwner && (_rules.blockReason === 'trial_expired' || _rules.blockReason === 'payment_failed')) {
+              try { openSettingsOverlay('billing'); } catch (_) { /* ignore */ }
+            }
+            return;
+          }
+        } catch (_) {
+          UIComponents.showToast('Billing unavailable. Please try again.', 'warning', { title: 'AutoPack' });
+          return;
+        }
 
         const packId = StateStore.get('currentPackId');
         const packData = PackLibrary.getById(packId);
@@ -3791,7 +3916,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
             }
             return;
           }
-        } catch (_) { /* billing gate must never break PDF flow */ }
+        } catch (_) {
+          UIComponents.showToast('Billing unavailable. Please try again.', 'warning', { title: 'Export' });
+          return;
+        }
 
         try {
           if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF not available');
@@ -5226,8 +5354,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const state = snapshot || getBillingState();
       const billingOrgId = normalizeOrgIdForBilling(state && state.orgId ? state.orgId : '');
       if (!billingOrgId || billingOrgId !== workspaceSwitchState.toOrgId) return;
-      const hasUsableTargetSnapshot = Boolean(state.ok && state.lastFetchedAt && !state.error);
-      const settled = !state.loading && !state.pending && Boolean(state.ok || state.lastFetchedAt || state.error);
+      const hasEntitlement = Boolean(normalizeBillingEntitlementStatus(state && state.entitlementStatus));
+      const hasUsableTargetSnapshot = Boolean(state.ok && state.lastFetchedAt && !state.error && hasEntitlement);
+      const settled = !state.loading && !state.pending && Boolean((state.ok && hasEntitlement) || state.error || (!state.ok && state.lastFetchedAt));
       if (settled || hasUsableTargetSnapshot) {
         markWorkspaceSwitchReady({ billingReady: true }, reason);
       }
@@ -8349,6 +8478,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
         };
 
         const showTrialExpiredModal = (snapshot, canManageBilling) => {
+          const entitlementStatus = normalizeBillingEntitlementStatus(snapshot && snapshot.entitlementStatus);
+          if (entitlementStatus && entitlementStatus !== 'trial_expired') return;
           const orgId = String(snapshot && snapshot.orgId ? snapshot.orgId : (orgContext && orgContext.activeOrgId) || '').trim();
           if (!orgId) return;
           // If modal already open for this org: skip if same state, upgrade in-place if role resolved
@@ -8593,8 +8724,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const orgId = String((s && s.orgId) || '').trim();
           const _roleResult = resolveCanManageBillingForOrg(orgId);
           const _hydrationState = orgId ? getOrgRoleHydrationState(orgId) : 'unknown';
+          const _backendCanManageBilling = s && typeof s.canManageBilling === 'boolean' ? s.canManageBilling : null;
           // When inflight, force canManageBilling false so owner-only UI stays hidden until role arrives
-          const canManageBilling = _hydrationState === 'inflight' ? false : _roleResult.canManageBilling;
+          const canManageBilling = _hydrationState === 'inflight'
+            ? false
+            : (_backendCanManageBilling !== null ? _backendCanManageBilling : _roleResult.canManageBilling);
           if (isTp3dDebugEnabled() && orgId && _hydrationState !== 'hydrated') {
             const _hydLabel = _hydrationState === 'inflight' ? 'not-hydrated' : 'hydrated-no-role';
             const _hydDetail = _hydrationState === 'unknown' ? 'complete' : _hydrationState;
@@ -8610,6 +8744,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             });
           }
           const status = String((s && s.status) || '');
+          const entitlementStatus = normalizeBillingEntitlementStatus(s && s.entitlementStatus);
           const _storedStatus = orgId ? (() => { try { return sessionStorage.getItem('tp3d:billing:status:' + orgId) || ''; } catch (_) { return ''; } })() : '';
           const prevStatus = orgId ? String(lastBillingStatusByOrg.get(orgId) || _storedStatus) : '';
           if (orgId && status) {
@@ -8617,13 +8752,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
             try { sessionStorage.setItem('tp3d:billing:status:' + orgId, status); } catch (_) { /* ignore */ }
           }
           const trialEndMs = s && s.trialEndsAt ? new Date(s.trialEndsAt).getTime() : NaN;
-          const trialExpired = Boolean(
-            s &&
-            s.ok &&
-            !s.pending &&
-            !s.isActive &&
-            (status === 'trial_expired' || (Number.isFinite(trialEndMs) && trialEndMs <= Date.now()))
-          );
+          const trialExpired = entitlementStatus
+            ? entitlementStatus === 'trial_expired'
+            : Boolean(
+                s &&
+                s.ok &&
+                !s.pending &&
+                !s.isActive &&
+                (status === 'trial_expired' || (Number.isFinite(trialEndMs) && trialEndMs <= Date.now()))
+              );
 
           if (trialExpired) {
             // Cancel defer + latch if active org changed
@@ -8676,7 +8813,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             const _signedIn = _authSnap.status === 'signed_in';
             const _activeOid = String(_authSnap.activeOrgId || '').trim();
             const _lockedForOrg = trialExpiredLockedOrgId && _signedIn && _activeOid === trialExpiredLockedOrgId;
-            const _defActive = s && s.ok && s.isActive;
+            const _defActive = s && s.ok && (entitlementStatus ? isEntitlementAllowed(entitlementStatus) : s.isActive);
             if (_lockedForOrg && !_defActive) {
               if (!trialExpiredModalRef) { try { showTrialExpiredModal(s, canManageBilling); } catch (_) { /* ignore */ } }
             } else {
@@ -8752,13 +8889,32 @@ const TP3D_BUILD_STAMP = Object.freeze({
             else upgradeEl.hidden = true;
             return;
           }
-          if (!canManageBilling) {
+          const isTrial = entitlementStatus ? entitlementStatus === 'trialing' : status === 'trialing';
+          const isIncludedInPlan = entitlementStatus === 'included_in_plan';
+          const isWorkspaceLimitReached = entitlementStatus === 'workspace_limit_reached';
+          const isOwnerSubscriptionRequired = entitlementStatus === 'owner_subscription_required';
+          const isBillingUnavailable = entitlementStatus === 'billing_unavailable';
+          const isEntitled = entitlementStatus
+            ? isEntitlementAllowed(entitlementStatus)
+            : Boolean(s.isActive && s.isPro);
+          const showInfoOnlyCard = Boolean(
+            isWorkspaceLimitReached ||
+            isOwnerSubscriptionRequired ||
+            isBillingUnavailable
+          );
+          if (isIncludedInPlan || (isEntitled && !isTrial)) {
             if (upgradeWrap) upgradeWrap.hidden = true;
             else upgradeEl.hidden = true;
             return;
           }
-          const isTrial = status === 'trialing';
-          const needsUpgrade = !s.isActive || !s.isPro;
+          if (!canManageBilling && !showInfoOnlyCard) {
+            if (upgradeWrap) upgradeWrap.hidden = true;
+            else upgradeEl.hidden = true;
+            return;
+          }
+          const needsUpgrade = entitlementStatus
+            ? !isEntitled
+            : (!s.isActive || !s.isPro);
           if (!isTrial && !needsUpgrade) {
             if (upgradeWrap) upgradeWrap.hidden = true;
             else upgradeEl.hidden = true;
@@ -8785,7 +8941,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
           iconEl.textContent = '\uD83D\uDCE6';
           const titleEl = document.createElement('div');
           titleEl.className = 'tp3d-sidebar-upgrade-title';
-          titleEl.textContent = 'Subscribe';
+          titleEl.textContent = isWorkspaceLimitReached
+            ? 'Workspace Limit'
+            : isBillingUnavailable
+              ? 'Billing'
+              : isOwnerSubscriptionRequired && !canManageBilling
+                ? 'Subscription Required'
+                : 'Subscribe';
           headerEl.appendChild(iconEl);
           headerEl.appendChild(titleEl);
           upgradeEl.appendChild(headerEl);
@@ -8793,38 +8955,51 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // Subtitle
           const subEl = document.createElement('div');
           subEl.className = 'tp3d-sidebar-upgrade-text';
-          subEl.textContent = isTrial && trialDays !== null
-            ? 'Your free trial ends in ' + trialDays + ' day' + (trialDays !== 1 ? 's' : '')
-            : 'Upgrade to Pro to unlock all features.';
+          subEl.textContent = isWorkspaceLimitReached
+            ? (canManageBilling
+              ? 'This workspace is over your plan limit.'
+              : "This workspace is over the owner's plan limit.")
+            : isOwnerSubscriptionRequired
+              ? (canManageBilling
+                ? 'Start a subscription to enable Pro features.'
+                : 'Ask the workspace owner to start or restore the subscription.')
+              : isBillingUnavailable
+                ? 'Billing is unavailable. Pro features may be unavailable until billing refreshes.'
+              : isTrial && trialDays !== null
+                ? 'Your free trial ends in ' + trialDays + ' day' + (trialDays !== 1 ? 's' : '')
+                : 'Start a subscription to enable Pro features.';
           upgradeEl.appendChild(subEl);
 
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'btn btn-primary tp3d-sidebar-upgrade-btn';
-          btn.textContent = 'Upgrade Plan';
-          btn.addEventListener('click', () => {
-            btn.disabled = true;
-            pickCheckoutInterval({ _title: 'Choose Plan', _continueLabel: 'Continue' }).then(selection => {
-              if (!selection || !selection.interval) {
-                btn.disabled = false;
-                return;
-              }
-              btn.textContent = 'Redirecting\u2026';
-              startCheckout({ interval: selection.interval }).then((r) => {
-                if (!r.ok) {
-                  UIComponents.showToast(r.error || 'Checkout failed', 'error', { title: 'Billing' });
+          const buttonLabel = isOwnerSubscriptionRequired ? 'Subscribe' : 'Upgrade Plan';
+          if (canManageBilling && !isBillingUnavailable) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-primary tp3d-sidebar-upgrade-btn';
+            btn.textContent = buttonLabel;
+            btn.addEventListener('click', () => {
+              btn.disabled = true;
+              pickCheckoutInterval({ _title: 'Choose Plan', _continueLabel: 'Continue' }).then(selection => {
+                if (!selection || !selection.interval) {
                   btn.disabled = false;
-                  btn.textContent = 'Upgrade Plan';
+                  return;
                 }
+                btn.textContent = 'Redirecting\u2026';
+                startCheckout({ interval: selection.interval }).then((r) => {
+                  if (!r.ok) {
+                    UIComponents.showToast(r.error || 'Checkout failed', 'error', { title: 'Billing' });
+                    btn.disabled = false;
+                    btn.textContent = buttonLabel;
+                  }
+                }).catch(() => {
+                  btn.disabled = false;
+                  btn.textContent = buttonLabel;
+                });
               }).catch(() => {
                 btn.disabled = false;
-                btn.textContent = 'Upgrade Plan';
               });
-            }).catch(() => {
-              btn.disabled = false;
             });
-          });
-          upgradeEl.appendChild(btn);
+            upgradeEl.appendChild(btn);
+          }
         };
         _billingGateApplier = updateSidebarNotice;
         subscribeBilling(snapshot => applyAccessGateFromBilling(snapshot, { reason: 'billing-subscriber' }));

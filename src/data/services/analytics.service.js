@@ -7,6 +7,10 @@
  * @author Truck Packer 3D Team
  */
 
+// This analytics service is dormant and not imported by the current runtime. Do
+// not use it for access gating. If analytics is implemented later, paid access
+// checks must use the entitlement billing path.
+
 // ============================================================================
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================

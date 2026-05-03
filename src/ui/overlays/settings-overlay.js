@@ -370,6 +370,19 @@ export function createSettingsOverlay({
     return String(value || '').trim().toLowerCase() === 'year' ? 'year' : 'month';
   }
 
+  function normalizeEntitlementStatus(value) {
+    const raw = String(value || '').trim().toLowerCase();
+    return [
+      'active',
+      'trialing',
+      'trial_expired',
+      'included_in_plan',
+      'workspace_limit_reached',
+      'owner_subscription_required',
+      'billing_unavailable',
+    ].includes(raw) ? raw : '';
+  }
+
   function _escapeHtml(value) {
     return String(value ?? '')
       .replace(/&/g, '&amp;')
@@ -790,6 +803,12 @@ export function createSettingsOverlay({
         ok: Boolean(bs && bs.ok),
         plan: bs && bs.plan ? String(bs.plan) : '',
         status: bs && bs.status ? String(bs.status) : '',
+        entitlementStatus: bs && bs.entitlementStatus ? String(bs.entitlementStatus) : '',
+        billingOwnerUserId: bs && bs.billingOwnerUserId ? String(bs.billingOwnerUserId) : '',
+        workspaceIncluded: Boolean(bs && bs.workspaceIncluded),
+        workspaceCount: bs && bs.workspaceCount != null ? Number(bs.workspaceCount) : null,
+        workspaceLimit: bs && bs.workspaceLimit != null ? Number(bs.workspaceLimit) : null,
+        canManageBilling: bs && typeof bs.canManageBilling === 'boolean' ? bs.canManageBilling : null,
         orgId: normalizeOrgId(bs && bs.orgId ? bs.orgId : ''),
         isPro: Boolean(bs && bs.isPro),
         isActive: Boolean(bs && bs.isActive),
@@ -2666,6 +2685,12 @@ export function createSettingsOverlay({
       loading: false,
       plan: null,
       status: null,
+      entitlementStatus: null,
+      billingOwnerUserId: null,
+      workspaceIncluded: false,
+      workspaceCount: null,
+      workspaceLimit: null,
+      canManageBilling: null,
       isActive: false,
       isPro: false,
       interval: null,
@@ -2735,10 +2760,19 @@ export function createSettingsOverlay({
       ((loading || pending) && !hasRenderableBillingState)
     );
     const status = state.status ? String(state.status) : '';
-    const isTrial = status === 'trialing';
-    const isProOrTrial = state.isPro;
+    const entitlementStatus = normalizeEntitlementStatus(state.entitlementStatus);
+    const isEntitlementAllowed = entitlementStatus === 'active' || entitlementStatus === 'trialing' || entitlementStatus === 'included_in_plan';
+    const isIncludedInPlan = entitlementStatus === 'included_in_plan';
+    const isWorkspaceLimitReached = entitlementStatus === 'workspace_limit_reached';
+    const isOwnerSubscriptionRequired = entitlementStatus === 'owner_subscription_required';
+    const isBillingUnavailable = entitlementStatus === 'billing_unavailable';
+    const isTrial = entitlementStatus ? entitlementStatus === 'trialing' : status === 'trialing';
+    const isProOrTrial = entitlementStatus ? isEntitlementAllowed : state.isPro;
     const isFreeWorkspaceState = Boolean(
       !isProOrTrial &&
+      !isWorkspaceLimitReached &&
+      !isOwnerSubscriptionRequired &&
+      !isBillingUnavailable &&
       (status === '' || status === 'none' || status === 'canceled')
     );
     const interval = state.interval ? String(state.interval) : '';
@@ -2782,7 +2816,7 @@ export function createSettingsOverlay({
     })();
     const billingRole = getRoleForOrg(lockedOrgId || billingOrgId);
     const roleKnown = isKnownOrgRole(billingRole);
-    const canManageBilling = billingRole === 'owner';
+    const canManageBilling = typeof state.canManageBilling === 'boolean' ? state.canManageBilling : billingRole === 'owner';
     const orgProfileLoaded = hasOrgProfileForOrg(lockedOrgId);
     const billingContextInflightForOrg = Boolean(
       lockedOrgId &&
@@ -2968,12 +3002,12 @@ export function createSettingsOverlay({
         <div class="tp3d-skel-line tp3d-skeleton-short"></div>
       `;
       planCard.appendChild(skeletonGroup);
-    } else if (!state.ok || state.error) {
+    } else if (!state.ok || state.error || isBillingUnavailable) {
       // Billing unavailable: covers error responses AND any non-success state (ok=false).
       // Do NOT fall through to plan info / Subscribe CTA when billing status is unknown.
       const errMsg = doc.createElement('div');
       errMsg.className = 'muted';
-      errMsg.textContent = 'Billing unavailable. The app continues to work normally.';
+      errMsg.textContent = 'Billing unavailable. Pro-only actions are temporarily disabled until billing refreshes.';
       planCard.appendChild(errMsg);
 
       const retryBtn = doc.createElement('button');
@@ -2995,6 +3029,10 @@ export function createSettingsOverlay({
       planName.className = 'tp3d-settings-billing-title';
       if (isTrial) {
         planName.textContent = 'Pro (Trial)';
+      } else if (isIncludedInPlan) {
+        planName.textContent = 'Pro';
+      } else if (isWorkspaceLimitReached) {
+        planName.textContent = 'Pro';
       } else if (isProOrTrial) {
         planName.textContent = intervalLabel ? `Pro (${intervalLabel})` : 'Pro';
       } else {
@@ -3004,7 +3042,11 @@ export function createSettingsOverlay({
 
       const planBadge = doc.createElement('span');
       planBadge.className = 'badge' + (isProOrTrial ? ' badge--active' : ' badge--free');
-      planBadge.textContent = 'Current Plan';
+      planBadge.textContent = isIncludedInPlan
+        ? 'Included'
+        : isWorkspaceLimitReached
+          ? 'Not Included'
+          : 'Current Plan';
       planHeader.appendChild(planBadge);
       let cancelEndText = '';
       if (isCancelScheduled) {
@@ -3056,7 +3098,22 @@ export function createSettingsOverlay({
       const statusLine = doc.createElement('div');
       statusLine.className = 'muted tp3d-settings-mt-xs';
 
-      if (isTrial) {
+      if (isIncludedInPlan) {
+        statusLine.textContent = canManageBilling
+          ? 'This workspace is included in your owner plan.'
+          : 'This workspace is covered by the workspace owner\u2019s plan.';
+      } else if (isWorkspaceLimitReached) {
+        const limitText = state.workspaceLimit
+          ? ` (${Number(state.workspaceCount || 0)}/${Number(state.workspaceLimit)} workspaces used)`
+          : '';
+        statusLine.textContent = canManageBilling
+          ? 'Workspace limit reached' + limitText + '. Upgrade your plan or remove another workspace to include this workspace.'
+          : 'This workspace is not in the owner’s plan. Ask the workspace owner to upgrade the plan or free a workspace slot.';
+      } else if (isOwnerSubscriptionRequired) {
+        statusLine.textContent = canManageBilling
+          ? 'Start a subscription to enable Pro features.'
+          : 'The workspace owner needs to start or restore a subscription before Pro features are available.';
+      } else if (isTrial) {
         // days-left badge in header row is the single source of truth; no status line needed
       } else if (!isProOrTrial && status === 'trial_expired') {
         statusLine.textContent = 'Your free trial has ended.';
@@ -3074,7 +3131,7 @@ export function createSettingsOverlay({
     subSection.appendChild(planCard);
 
     // --- Payment problem warning card ---
-    if (!showSkeleton && !loading && !pending && state.ok && state.paymentProblem && status !== 'trial_expired') {
+    if (!showSkeleton && !loading && !pending && state.ok && !isBillingUnavailable && state.paymentProblem && status !== 'trial_expired') {
       const payCard = doc.createElement('div');
       payCard.className = 'tp3d-billing-payment-warning';
 
@@ -3116,7 +3173,7 @@ export function createSettingsOverlay({
 
     // Upgrade CTA card — shown for Free users and Trial users; hidden only for paid active Pro.
     const isActivePaidPro = isProOrTrial && !isTrial;
-    if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && roleKnown && canManageBilling) {
+    if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isBillingUnavailable && !isActivePaidPro && roleKnown && canManageBilling) {
       const ctaCard = doc.createElement('div');
       ctaCard.className = 'tp3d-billing-pro-cta';
 
@@ -3140,11 +3197,17 @@ export function createSettingsOverlay({
 
       const ctaDesc = doc.createElement('div');
       ctaDesc.className = 'tp3d-billing-pro-cta__sub';
-      ctaDesc.textContent = status === 'trial_expired'
-        ? 'Your trial has ended. Subscribe to continue using Pro features.'
-        : isTrial
-          ? 'Subscribe to keep using Truck Packer after your free trial ends, cancel anytime.'
-          : 'Upgrade this workspace to Pro. Cancel anytime.';
+      if (isWorkspaceLimitReached) {
+        ctaDesc.textContent = 'Upgrade your plan or remove another workspace to include this workspace.';
+      } else if (isOwnerSubscriptionRequired) {
+        ctaDesc.textContent = 'Start a subscription to enable Pro features.';
+      } else if (status === 'trial_expired') {
+        ctaDesc.textContent = 'Your trial has ended. Subscribe to continue using Pro features.';
+      } else if (isTrial) {
+        ctaDesc.textContent = 'Subscribe to keep using Truck Packer after your free trial ends, cancel anytime.';
+      } else {
+        ctaDesc.textContent = 'Start a subscription to enable Pro features. Cancel anytime.';
+      }
       ctaBody.appendChild(ctaDesc);
 
       ctaLeft.appendChild(ctaBody);
@@ -3207,18 +3270,24 @@ export function createSettingsOverlay({
       ctaCard.appendChild(ctaRight);
 
       subSection.appendChild(ctaCard);
-    } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && roleKnown && !canManageBilling) {
-      // TODO: replace support@pxl360.com with the real support email later.
+    } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isBillingUnavailable && !isActivePaidPro && roleKnown && !canManageBilling) {
       const note = doc.createElement('div');
       note.className = 'muted tp3d-settings-mt-sm';
-      const noteText = doc.createTextNode('Ask your owner to upgrade this workspace or contact support: ');
-      note.appendChild(noteText);
-      const supportLink = doc.createElement('a');
-      supportLink.href = 'mailto:support@pxl360.com';
-      supportLink.textContent = 'support@pxl360.com';
-      note.appendChild(supportLink);
+      if (isWorkspaceLimitReached) {
+        note.textContent = 'Ask the workspace owner to upgrade the plan or free a workspace slot.';
+      } else if (isOwnerSubscriptionRequired) {
+        note.textContent = 'Ask the workspace owner to start or restore the subscription.';
+      } else {
+        // TODO: replace support@pxl360.com with the real support email later.
+        const noteText = doc.createTextNode('Ask the workspace owner to start or restore the subscription or contact support: ');
+        note.appendChild(noteText);
+        const supportLink = doc.createElement('a');
+        supportLink.href = 'mailto:support@pxl360.com';
+        supportLink.textContent = 'support@pxl360.com';
+        note.appendChild(supportLink);
+      }
       subSection.appendChild(note);
-    } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isActivePaidPro && !roleKnown) {
+    } else if (!showSkeleton && !loading && !pending && state.ok && !state.error && !isBillingUnavailable && !isActivePaidPro && !roleKnown) {
       const note = doc.createElement('div');
       note.className = 'muted tp3d-settings-mt-sm';
       note.textContent = 'Checking billing access…';
@@ -3235,6 +3304,8 @@ export function createSettingsOverlay({
       manageDisabledReason = 'Checking billing access…';
     } else if (roleKnown && !canManageBilling) {
       manageDisabledReason = 'Only the org owner can manage billing.';
+    } else if (isBillingUnavailable) {
+      manageDisabledReason = "Billing portal isn't available while billing is unavailable. Try Refresh.";
     } else if (!state.ok || !portalAvailable || !isProOrTrial || !api || typeof api.openPortal !== 'function') {
       manageDisabledReason = "Billing portal isn't available yet. Try Refresh.";
     }
@@ -3288,7 +3359,7 @@ export function createSettingsOverlay({
       });
       manageWrap.appendChild(manageBtn);
       // Manage is only relevant for active paid Pro users.
-      const showManage = isActivePaidPro;
+      const showManage = isActivePaidPro && portalAvailable;
       if (showManage) actionsRow.appendChild(manageWrap);
 
       const refreshBtn = doc.createElement('button');

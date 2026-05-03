@@ -1,0 +1,9 @@
+# Supabase database dumps — local only, never commit
+# These files contain real user data and must not be pushed to git.
+*.sql
+*.dump
+*.gz
+*.zip
+
+# Keep this gitignore itself
+!.gitignore

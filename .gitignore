@@ -7,6 +7,10 @@ cleanup/reports/*.txt
 cleanup/reports/*.log
 cleanup/reports/*.json
 !cleanup/reports/.gitkeep
+test-results/
+eslint-report.json
+grep_*.txt
+supabase_push_error.txt
 
 # Logs
 *.log
@@ -21,12 +25,22 @@ Thumbs.db
 # Local backups
 index-backup.html
 
+# Supabase database backups (local only — never commit)
+backups/*.sql
+backups/*.dump
+backups/*.gz
+backups/*.zip
+
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *.iml
+.agents/
+.windsurf/
+skills/
+skills-lock.json
 
 # Build outputs
 dist/

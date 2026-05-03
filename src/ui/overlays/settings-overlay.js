@@ -552,6 +552,9 @@ export function createSettingsOverlay({
   let isLoadingOrgInvites = false;
   let orgInvitesError = null;
   let orgInvitesRequestId = 0;
+  let orgInvitesInflightOrgId = null;
+  let orgInvitesInflightPromise = null;
+  let lastOrgInvitesOrgId = null;
   const orgInviteActions = new Set(); // invite IDs currently being acted on
   let lastKnownUserId = null;
   let lastBundleRefreshAt = 0;
@@ -561,6 +564,7 @@ export function createSettingsOverlay({
   let modalOrgId = '';
   let selectedInterval = 'month';
   let orgChangedHandler = null;
+  let workspaceSwitchHandler = null;
   let lastOrgLogoKey = null;
   let lastOrgLogoUrl = null;
   let lastOrgLogoExpiresAt = 0;
@@ -594,6 +598,7 @@ export function createSettingsOverlay({
   const BILLING_CONTEXT_RETRY_MS = 2500;
   let billingContextInflightPromise = null;
   let billingContextInflightOrgId = '';
+  let billingContextStartingOrgId = '';
   let billingContextLastAttemptAt = 0;
   let billingContextResolvedOrgId = '';
 
@@ -689,6 +694,26 @@ export function createSettingsOverlay({
     return '';
   }
 
+  function getWorkspaceSwitchStateSafely() {
+    try {
+      const getter = typeof window !== 'undefined' && window.TruckPackerApp
+        && typeof window.TruckPackerApp.getWorkspaceSwitchState === 'function'
+        ? window.TruckPackerApp.getWorkspaceSwitchState
+        : null;
+      const state = getter ? getter() : null;
+      return state && typeof state === 'object' ? state : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function isWorkspaceSwitchingForOrg(orgId, stateOverride = null) {
+    const normalizedOrgId = normalizeOrgId(orgId);
+    const state = stateOverride || getWorkspaceSwitchStateSafely();
+    const targetOrgId = normalizeOrgId(state && state.toOrgId ? state.toOrgId : '');
+    return Boolean(state && state.active && normalizedOrgId && targetOrgId && normalizedOrgId === targetOrgId);
+  }
+
   function _safeAuthSnapshot(userId) {
     let hasUserJwt = false;
     try {
@@ -758,6 +783,7 @@ export function createSettingsOverlay({
     } else if (tab === 'org-billing') {
       const api = getBillingApiSafely();
       const bs = api && typeof api.getBillingState === 'function' ? api.getBillingState() : null;
+      const workspaceSwitch = getWorkspaceSwitchStateSafely();
       key.billing = {
         loading: Boolean(bs && bs.loading),
         pending: Boolean(bs && bs.pending),
@@ -772,6 +798,14 @@ export function createSettingsOverlay({
         currentPeriodEnd: bs && bs.currentPeriodEnd ? String(bs.currentPeriodEnd) : '',
         error: bs && bs.error ? String(bs.error.message || bs.error.status || '1') : '',
       };
+      key.workspaceSwitch = workspaceSwitch ? {
+        active: Boolean(workspaceSwitch.active),
+        toOrgId: normalizeOrgId(workspaceSwitch.toOrgId || ''),
+        version: Number(workspaceSwitch.version || 0) || 0,
+        localStateReady: Boolean(workspaceSwitch.localStateReady),
+        orgReady: Boolean(workspaceSwitch.orgReady),
+        billingReady: Boolean(workspaceSwitch.billingReady),
+      } : null;
     } else if (tab === 'org-general') {
       key.orgGeneral = {
         editingOrg: Boolean(isEditingOrg),
@@ -803,9 +837,25 @@ export function createSettingsOverlay({
     const membershipOrgId = normalizeOrgId(
       membershipData && membershipData.organization_id ? membershipData.organization_id : ''
     );
+    let activeOrgContextRole = '';
+    try {
+      if (
+        typeof window !== 'undefined' &&
+        window.OrgContext &&
+        typeof window.OrgContext.getActiveOrgId === 'function' &&
+        typeof window.OrgContext.getActiveRole === 'function' &&
+        normalizeOrgId(window.OrgContext.getActiveOrgId()) === normalizedOrgId
+      ) {
+        const candidateRole = String(window.OrgContext.getActiveRole() || '').toLowerCase();
+        activeOrgContextRole = isKnownOrgRole(candidateRole) ? candidateRole : '';
+      }
+    } catch {
+      activeOrgContextRole = '';
+    }
     return String(
       (orgDataId && orgDataId === normalizedOrgId && orgData && orgData.role) ||
       (membershipOrgId && membershipOrgId === normalizedOrgId && membershipData && membershipData.role) ||
+      activeOrgContextRole ||
       ''
     ).toLowerCase();
   }
@@ -831,12 +881,25 @@ export function createSettingsOverlay({
       orgMembersInflightOrgId = null;
       orgMembersSearchQuery = '';
       orgMembersRoleFilter = 'all';
+    }
+    if (
+      (lastOrgInvitesOrgId && String(lastOrgInvitesOrgId) !== String(next)) ||
+      (orgInvitesInflightOrgId && String(orgInvitesInflightOrgId) !== String(next))
+    ) {
+      orgInvitesRequestId += 1;
       orgInvitesData = null;
       orgInvitesError = null;
+      isLoadingOrgInvites = false;
+      orgInvitesInflightPromise = null;
+      orgInvitesInflightOrgId = null;
+      lastOrgInvitesOrgId = null;
     }
     if (!next || billingContextInflightOrgId !== next) {
       billingContextInflightPromise = null;
       billingContextInflightOrgId = '';
+    }
+    if (!next || billingContextStartingOrgId !== next) {
+      billingContextStartingOrgId = '';
     }
     if (!next || billingContextResolvedOrgId !== next) {
       billingContextResolvedOrgId = '';
@@ -856,8 +919,14 @@ export function createSettingsOverlay({
     }
 
     // ── Inflight guard: avoid redundant auth-ready checks ──
-    if (!force && billingContextInflightPromise && billingContextInflightOrgId === normalizedOrgId) {
-      return billingContextInflightPromise;
+    if (
+      !force &&
+      (
+        (billingContextInflightPromise && billingContextInflightOrgId === normalizedOrgId) ||
+        billingContextStartingOrgId === normalizedOrgId
+      )
+    ) {
+      return billingContextInflightPromise || null;
     }
 
     const now = Date.now();
@@ -871,7 +940,11 @@ export function createSettingsOverlay({
     }
 
     // ── Auth-ready gate: skip when JWT is missing (cross-tab boot gap) ──
+    billingContextStartingOrgId = normalizedOrgId;
     const authCheck = await ensureAuthReadyForOrgOps('ensureBillingContextHydrated');
+    if (billingContextStartingOrgId === normalizedOrgId) {
+      billingContextStartingOrgId = '';
+    }
     if (!authCheck.ok) {
       debug('billingFetch:skip-no-token', { caller: source, orgId: normalizedOrgId, code: authCheck.code });
       _authGatePendingRetry = true;
@@ -897,11 +970,21 @@ export function createSettingsOverlay({
         }
       }
 
-      if (!isKnownOrgRole(getRoleForOrg(normalizedOrgId)) && SupabaseClient && typeof SupabaseClient.getMyMembership === 'function') {
+      if (!isKnownOrgRole(getRoleForOrg(normalizedOrgId)) && SupabaseClient && typeof SupabaseClient.getMyOrgRole === 'function') {
         try {
           isLoadingMembership = true;
-          const membership = await SupabaseClient.getMyMembership();
-          if (membership) membershipData = membership;
+          const orgRole = await SupabaseClient.getMyOrgRole(normalizedOrgId);
+          if (orgRole) {
+            const normalizedRole = String(orgRole).toLowerCase();
+            const existingMembershipOrgId = normalizeOrgId(
+              membershipData && membershipData.organization_id ? membershipData.organization_id : ''
+            );
+            membershipData = {
+              ...(existingMembershipOrgId === normalizedOrgId && membershipData ? membershipData : {}),
+              organization_id: normalizedOrgId,
+              role: normalizedRole,
+            };
+          }
         } catch {
           // ignore
         } finally {
@@ -924,6 +1007,9 @@ export function createSettingsOverlay({
       return { ok: hydrated };
     })()
       .finally(() => {
+        if (billingContextStartingOrgId === normalizedOrgId) {
+          billingContextStartingOrgId = '';
+        }
         if (billingContextInflightOrgId === normalizedOrgId) {
           billingContextInflightPromise = null;
           billingContextInflightOrgId = '';
@@ -938,20 +1024,6 @@ export function createSettingsOverlay({
 
     billingContextInflightPromise = request;
     return request;
-  }
-
-  function refreshBillingForOrgChange(nextOrgId, _source) {
-    const normalizedOrgId = normalizeOrgId(nextOrgId);
-    if (!normalizedOrgId) return;
-    const api = getBillingApiSafely();
-    if (!api) return;
-
-    // Route through pump instead of direct call
-    if (typeof window !== 'undefined' && window.TruckPackerApp && typeof window.TruckPackerApp.maybeScheduleBillingRefresh === 'function') {
-      window.TruckPackerApp.maybeScheduleBillingRefresh('org-changed');
-    } else {
-      _callBillingPumpWithRetry('org-changed');
-    }
   }
 
   function ensureOrgChangedListener() {
@@ -1033,16 +1105,24 @@ export function createSettingsOverlay({
       modalOrgId = nextOrgId;
       clearOrgScopedCaches(nextOrgId);
       orgMembersRequestId += 1;
-      isLoadingOrgMembers = true;
+      orgInvitesRequestId += 1;
+      // Do NOT set isLoadingOrgMembers = true here: no fetch is started yet.
+      // The render path will start the fetch when the Members tab is visible.
       orgMembersError = null;
       orgMembersData = null;
       lastOrgMembersOrgId = null;
+      orgInvitesData = null;
+      orgInvitesError = null;
+      isLoadingOrgInvites = false;
+      orgInvitesInflightPromise = null;
+      orgInvitesInflightOrgId = null;
+      lastOrgInvitesOrgId = null;
       const isBillingTab = _tabState.activeTabId === 'org-billing';
       if (isBillingTab) {
         ensureBillingContextHydrated(nextOrgId, { force: true, source: 'org-billing:org-changed' }).catch(() => { });
       } else {
         queueAccountBundleRefresh({ force: true, source: 'settings:org-changed' });
-        refreshBillingForOrgChange(nextOrgId, 'settings:org-changed');
+        // Billing refresh is owned by app.js tp3d:org-changed; no overlay-side pump needed.
       }
       if (settingsOverlay && settingsOverlay.isConnected) {
         render({ source: 'org-changed' });
@@ -1066,6 +1146,30 @@ export function createSettingsOverlay({
       // ignore
     }
     orgChangedHandler = null;
+  }
+
+  function ensureWorkspaceSwitchListener() {
+    if (workspaceSwitchHandler || typeof window === 'undefined') return;
+    workspaceSwitchHandler = () => {
+      if (!settingsOverlay || !isOpen() || _tabState.activeTabId !== 'org-billing') return;
+      const billingWrap = doc.getElementById('tp3d-billing-wrap');
+      if (billingWrap) {
+        renderBillingInto(billingWrap);
+        return;
+      }
+      render({ source: 'workspace-switch-state' });
+    };
+    window.addEventListener('tp3d:workspace-switch-state', workspaceSwitchHandler);
+  }
+
+  function removeWorkspaceSwitchListener() {
+    if (!workspaceSwitchHandler || typeof window === 'undefined') return;
+    try {
+      window.removeEventListener('tp3d:workspace-switch-state', workspaceSwitchHandler);
+    } catch {
+      // ignore
+    }
+    workspaceSwitchHandler = null;
   }
 
   // Static content for Updates and Roadmap (embedded to avoid external dependencies)
@@ -1584,25 +1688,58 @@ export function createSettingsOverlay({
   // ---- Organization invites ----
 
   async function loadOrgInvites(orgId) {
-    if (isLoadingOrgInvites || !orgId) return null;
+    if (!orgId) return null;
+    const normalizedOrgId = normalizeOrgId(orgId);
+    if (!normalizedOrgId) return null;
+    // Modal-org guard: don't load invites for a different org than the one currently open.
+    const currentModalOrgId = ensureModalOrgId();
+    if (currentModalOrgId && currentModalOrgId !== normalizedOrgId) return null;
+    const authCheck = await ensureAuthReadyForOrgOps('loadOrgInvites');
+    if (!authCheck.ok) {
+      debug('orgFetch:skip-no-token', { caller: 'loadOrgInvites', orgId: normalizedOrgId, code: authCheck.code });
+      orgInvitesError = { message: 'Reconnecting\u2026', _authPending: true };
+      _authGatePendingRetry = true;
+      return null;
+    }
+    // Inflight reuse: if already fetching the same org, piggyback on that promise.
+    if (isLoadingOrgInvites && orgInvitesInflightPromise && orgInvitesInflightOrgId === normalizedOrgId) {
+      return orgInvitesInflightPromise;
+    }
+    // Different-org inflight: bump request id to cancel the stale result.
+    if (isLoadingOrgInvites && orgInvitesInflightOrgId && orgInvitesInflightOrgId !== normalizedOrgId) {
+      orgInvitesRequestId += 1;
+    }
     const thisRequestId = ++orgInvitesRequestId;
     isLoadingOrgInvites = true;
+    orgInvitesInflightOrgId = normalizedOrgId;
     orgInvitesError = null;
-    try {
-      const invites = await SupabaseClient.getOrganizationInvites(orgId);
-      if (thisRequestId !== orgInvitesRequestId) return null;
-      orgInvitesData = Array.isArray(invites) ? invites : [];
-      return orgInvitesData;
-    } catch (err) {
-      if (thisRequestId !== orgInvitesRequestId) return null;
-      orgInvitesError = err;
-      orgInvitesData = Array.isArray(orgInvitesData) ? orgInvitesData : [];
-      return null;
-    } finally {
-      if (thisRequestId === orgInvitesRequestId) {
-        isLoadingOrgInvites = false;
+    const requestPromise = (async () => {
+      try {
+        const invites = await SupabaseClient.getOrganizationInvites(normalizedOrgId);
+        if (thisRequestId !== orgInvitesRequestId) return null;
+        // Second modal-org guard after await: org may have changed while fetch was in-flight.
+        const currentModal = ensureModalOrgId();
+        if (currentModal && currentModal !== normalizedOrgId) return null;
+        orgInvitesData = Array.isArray(invites) ? invites : [];
+        lastOrgInvitesOrgId = String(normalizedOrgId);
+        return orgInvitesData;
+      } catch (err) {
+        if (thisRequestId !== orgInvitesRequestId) return null;
+        orgInvitesError = err;
+        orgInvitesData = Array.isArray(orgInvitesData) ? orgInvitesData : [];
+        return null;
+      } finally {
+        if (thisRequestId === orgInvitesRequestId) {
+          isLoadingOrgInvites = false;
+        }
+        if (orgInvitesInflightOrgId === normalizedOrgId) {
+          orgInvitesInflightPromise = null;
+          orgInvitesInflightOrgId = null;
+        }
       }
-    }
+    })();
+    orgInvitesInflightPromise = requestPromise;
+    return requestPromise;
   }
 
   async function sendInvite(orgId, email, role) {
@@ -1796,6 +1933,7 @@ export function createSettingsOverlay({
     bumpEpoch('close');
     isUploadingAvatar = false;
     removeOrgChangedListener();
+    removeWorkspaceSwitchListener();
     if (billingUnsubscribe) {
       try {
         billingUnsubscribe();
@@ -2547,7 +2685,27 @@ export function createSettingsOverlay({
     const billingOrgId = normalizeOrgId(state.orgId || '');
     const loading = Boolean(state.loading);
     const pending = Boolean(state.pending);
-    if (shouldSuppressPreLockBillingTransition(state)) {
+    const workspaceSwitch = getWorkspaceSwitchStateSafely();
+    const workspaceSwitchTargetOrgId = normalizeOrgId(workspaceSwitch && workspaceSwitch.toOrgId ? workspaceSwitch.toOrgId : '');
+    const workspaceSwitchFromOrgId = normalizeOrgId(workspaceSwitch && workspaceSwitch.fromOrgId ? workspaceSwitch.fromOrgId : '');
+    const workspaceSwitchingForLockedOrg = isWorkspaceSwitchingForOrg(lockedOrgId, workspaceSwitch);
+    const workspaceSwitchingBeforeLock = Boolean(
+      workspaceSwitch &&
+      workspaceSwitch.active &&
+      workspaceSwitchTargetOrgId &&
+      lockedOrgId &&
+      lockedOrgId !== workspaceSwitchTargetOrgId &&
+      (
+        currentOrgId === workspaceSwitchTargetOrgId ||
+        currentOrgId === workspaceSwitchFromOrgId ||
+        lockedOrgId === workspaceSwitchFromOrgId
+      )
+    );
+    const workspaceSwitchPending = Boolean(
+      (workspaceSwitchingForLockedOrg || workspaceSwitchingBeforeLock) &&
+      !(workspaceSwitch && workspaceSwitch.localStateReady && workspaceSwitch.orgReady && workspaceSwitch.billingReady)
+    );
+    if (shouldSuppressPreLockBillingTransition(state) && !workspaceSwitchPending) {
       return;
     }
     const staleOrgState = Boolean(lockedOrgId && billingOrgId && billingOrgId !== lockedOrgId);
@@ -2561,9 +2719,18 @@ export function createSettingsOverlay({
       !state.isActive &&
       !state.isPro
     );
+    const workspaceSwitchHasUsableBilling = Boolean(
+      workspaceSwitchPending &&
+      billingMatchesLockedOrg &&
+      state.lastFetchedAt &&
+      (state.ok || state.error) &&
+      !blankPendingState
+    );
+    const workspaceSwitchNeedsSkeleton = Boolean(workspaceSwitchPending && !workspaceSwitchHasUsableBilling);
     const showSkeleton = Boolean(
       !lockedOrgId ||
       staleOrgState ||
+      workspaceSwitchNeedsSkeleton ||
       blankPendingState ||
       ((loading || pending) && !hasRenderableBillingState)
     );
@@ -2619,8 +2786,10 @@ export function createSettingsOverlay({
     const orgProfileLoaded = hasOrgProfileForOrg(lockedOrgId);
     const billingContextInflightForOrg = Boolean(
       lockedOrgId &&
-      billingContextInflightPromise &&
-      billingContextInflightOrgId === lockedOrgId
+      (
+        (billingContextInflightPromise && billingContextInflightOrgId === lockedOrgId) ||
+        billingContextStartingOrgId === lockedOrgId
+      )
     );
     const billingContextLoading = billingContextInflightForOrg;
     if (lockedOrgId && (!orgProfileLoaded || !roleKnown) && !billingContextInflightForOrg) {
@@ -2642,7 +2811,7 @@ export function createSettingsOverlay({
     const transientOrgName = !orgMatchesLocked ? getTransientBillingOrgName(lockedOrgId) : '';
     const orgName = orgMatchesLocked && orgData && orgData.name
       ? String(orgData.name)
-      : (lockedOrgId ? (transientOrgName || 'Loading workspace…') : 'Personal Workspace');
+      : (lockedOrgId ? (workspaceSwitchNeedsSkeleton ? 'Switching workspace...' : (transientOrgName || 'Loading workspace…')) : 'Personal Workspace');
 
     const orgSection = doc.createElement('div');
     orgSection.className = 'tp3d-settings-billing';
@@ -2663,7 +2832,7 @@ export function createSettingsOverlay({
     const orgValue = doc.createElement('div');
     orgValue.className = 'row';
 
-    if (lockedOrgId && !orgMatchesLocked && billingContextLoading) {
+    if (workspaceSwitchNeedsSkeleton || (lockedOrgId && !orgMatchesLocked && billingContextLoading)) {
       orgValue.classList.add('tp3d-billing-org-skeleton', 'tp3d-skel');
       const avatarSkel = doc.createElement('span');
       avatarSkel.className = 'tp3d-skel-line tp3d-billing-org-skeleton-avatar';
@@ -2783,6 +2952,14 @@ export function createSettingsOverlay({
     planCard.className = 'card';
 
     if (showSkeleton) {
+      const loadingText = doc.createElement('div');
+      loadingText.className = 'muted tp3d-members-inline-helper';
+      const billingLoadingTarget = orgName && orgName !== 'Switching workspace...' && orgName !== 'Loading workspace…'
+        ? ` for ${orgName}`
+        : '';
+      loadingText.textContent = `Loading billing${billingLoadingTarget}…`;
+      planCard.appendChild(loadingText);
+
       const skeletonGroup = doc.createElement('div');
       skeletonGroup.className = 'tp3d-skeleton-group tp3d-skel';
       skeletonGroup.innerHTML = `
@@ -3263,6 +3440,7 @@ export function createSettingsOverlay({
 
       const api = getBillingApiSafely();
       const bs = api && typeof api.getBillingState === 'function' ? api.getBillingState() : null;
+      const workspaceSwitch = _tabState.activeTabId === 'org-billing' ? getWorkspaceSwitchStateSafely() : null;
       const sigObj = {
         iid: settingsInstanceId,
         tab: _tabState.activeTabId,
@@ -3278,6 +3456,14 @@ export function createSettingsOverlay({
         lm: isLoadingMembership,
         lab: isLoadingAccountBundle,
         ho: Boolean(modalOrgId),
+        ws: workspaceSwitch ? {
+          active: Boolean(workspaceSwitch.active),
+          toOrgId: normalizeOrgId(workspaceSwitch.toOrgId || ''),
+          version: Number(workspaceSwitch.version || 0) || 0,
+          localStateReady: Boolean(workspaceSwitch.localStateReady),
+          orgReady: Boolean(workspaceSwitch.orgReady),
+          billingReady: Boolean(workspaceSwitch.billingReady),
+        } : null,
         // Members-related state
         lom: isLoadingOrgMembers,
         hm: Boolean(orgMembersData && Array.isArray(orgMembersData) && orgMembersData.length > 0),
@@ -4799,6 +4985,9 @@ export function createSettingsOverlay({
         (membershipOrgId && membershipOrgId === orgId && membershipData && membershipData.role) ||
         ''
       ).toLowerCase() || null;
+      const membersWorkspaceName = orgDataId && orgDataId === orgId && orgData && orgData.name
+        ? String(orgData.name)
+        : '';
       const roleKnown = isKnownOrgRole(currentRole);
       const isOwner = currentRole === 'owner';
       const canManage = roleKnown ? canManageMembers(currentRole) : false;
@@ -4809,10 +4998,21 @@ export function createSettingsOverlay({
         String(lastOrgMembersOrgId) === String(orgId) &&
         Array.isArray(orgMembersData)
       );
+      const hasInvitesForOrg = Boolean(
+        orgId &&
+        lastOrgInvitesOrgId &&
+        String(lastOrgInvitesOrgId) === String(orgId) &&
+        Array.isArray(orgInvitesData)
+      );
       const membersStale = Boolean(
         orgId &&
         lastOrgMembersOrgId &&
         String(lastOrgMembersOrgId) !== String(orgId)
+      );
+      const invitesStale = Boolean(
+        orgId &&
+        lastOrgInvitesOrgId &&
+        String(lastOrgInvitesOrgId) !== String(orgId)
       );
       const membersLoading = Boolean(isLoadingOrgMembers && (!hasMembersForOrg || membersStale));
       const rolePending = Boolean(
@@ -4918,8 +5118,11 @@ export function createSettingsOverlay({
           orgMembersError = null;
           orgMembersSearchQuery = '';
           orgMembersRoleFilter = 'all';
+        }
+        if (invitesStale) {
           orgInvitesData = null;
           orgInvitesError = null;
+          lastOrgInvitesOrgId = null;
         }
 
         const rolesHelp = doc.createElement('div');
@@ -4944,7 +5147,7 @@ export function createSettingsOverlay({
         }
 
         // Load invites in parallel (owner/admin only)
-        if (canManage && !membersDisabledReason && !orgInvitesData && !isLoadingOrgInvites) {
+        if (canManage && !membersDisabledReason && !hasInvitesForOrg && !isLoadingOrgInvites) {
           const epoch = _renderEpoch;
           const token = getTabActionToken();
           loadOrgInvites(orgId)
@@ -4953,6 +5156,13 @@ export function createSettingsOverlay({
         }
 
         if (membersLoading && !hasMembersForOrg) {
+          const membersLoadingText = doc.createElement('div');
+          membersLoadingText.className = 'muted tp3d-members-inline-helper';
+          membersLoadingText.textContent = membersWorkspaceName
+            ? `Loading members for ${membersWorkspaceName}…`
+            : 'Loading members…';
+          membersCard.appendChild(membersLoadingText);
+
           const skeletonGroup = doc.createElement('div');
           skeletonGroup.className = 'tp3d-skeleton-group tp3d-skel tp3d-members-skeleton';
           skeletonGroup.innerHTML = `
@@ -5134,21 +5344,33 @@ export function createSettingsOverlay({
             }
 
             // Pending invites table
-            const pendingInvites = Array.isArray(orgInvitesData)
+            const pendingInvites = hasInvitesForOrg && Array.isArray(orgInvitesData)
               ? orgInvitesData.filter(i => i && i.status === 'pending')
               : [];
 
-            if (isLoadingOrgInvites && !orgInvitesData) {
+            if (isLoadingOrgInvites && orgInvitesInflightOrgId === String(orgId || '') && !hasInvitesForOrg) {
+              const inviteLoadingText = doc.createElement('div');
+              inviteLoadingText.className = 'muted tp3d-members-inline-helper';
+              inviteLoadingText.textContent = 'Loading pending invites…';
+              inviteSection.appendChild(inviteLoadingText);
+
               const skeletonInvites = doc.createElement('div');
               skeletonInvites.className = 'tp3d-skeleton-group';
               skeletonInvites.innerHTML = '<div class="tp3d-skeleton tp3d-skeleton-short"></div>';
               inviteSection.appendChild(skeletonInvites);
-            } else if (orgInvitesError) {
-              const inviteError = doc.createElement('div');
-              inviteError.className = 'tp3d-org-feedback tp3d-org-feedback--error';
-              inviteError.textContent = `Failed to load invites. ${orgInvitesError && orgInvitesError.message ? orgInvitesError.message : 'Try again.'
-                }`;
-              inviteSection.appendChild(inviteError);
+            } else if (orgInvitesError && !hasInvitesForOrg) {
+              if (orgInvitesError._authPending) {
+                const reconnectMsg = doc.createElement('div');
+                reconnectMsg.className = 'muted tp3d-members-inline-helper';
+                reconnectMsg.textContent = 'Reconnecting before loading pending invites…';
+                inviteSection.appendChild(reconnectMsg);
+              } else {
+                const inviteError = doc.createElement('div');
+                inviteError.className = 'tp3d-org-feedback tp3d-org-feedback--error';
+                inviteError.textContent = `Failed to load invites. ${orgInvitesError && orgInvitesError.message ? orgInvitesError.message : 'Try again.'
+                  }`;
+                inviteSection.appendChild(inviteError);
+              }
             } else if (pendingInvites.length > 0) {
               const inviteLabel = doc.createElement('div');
               inviteLabel.className = 'tp3d-org-invite-label';
@@ -5552,6 +5774,7 @@ export function createSettingsOverlay({
     const nextTab = resolveInitialTab(tab);
     if (settingsOverlay && settingsOverlay.isConnected) {
       ensureOrgChangedListener();
+      ensureWorkspaceSwitchListener();
       setActiveTab(nextTab, { source: 'open', actionId: _tabState.lastActionId });
       debugSettingsModalSnapshot('open:reuse');
       debugTabSnapshot('open:reuse');
@@ -5650,6 +5873,7 @@ export function createSettingsOverlay({
     };
 
     ensureOrgChangedListener();
+    ensureWorkspaceSwitchListener();
     bindTabsOnce();
     setActiveTab(nextTab, { source: 'open', actionId: _tabState.lastActionId });
     debugSettingsModalSnapshot('open:created');
@@ -5745,6 +5969,10 @@ export function createSettingsOverlay({
     orgInvitesError = null;
     orgInvitesRequestId = 0;
     lastOrgMembersOrgId = null;
+    billingContextStartingOrgId = '';
+    billingContextInflightOrgId = '';
+    billingContextInflightPromise = null;
+    billingContextResolvedOrgId = '';
     orgMemberActions.clear();
     orgInviteActions.clear();
 

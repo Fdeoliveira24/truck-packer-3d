@@ -523,6 +523,17 @@ export function createPacksScreen({
       syncFooterState(pageMeta);
     }
 
+    function resetWorkspaceState() {
+      selectedIds.clear();
+      filteredPacks = [];
+      datasetKey = '';
+      packsListState.pageIndex = 0;
+      if (selectAllEl) {
+        selectAllEl.checked = false;
+        selectAllEl.indeterminate = false;
+      }
+    }
+
     function renderListView(packs) {
       const prefs = PreferencesManager.get();
       const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.packs) || {};
@@ -1293,7 +1304,7 @@ export function createPacksScreen({
       return { wrap, textarea };
     }
 
-    return { init: initPacksUI, render };
+    return { init: initPacksUI, render, resetWorkspaceState };
   })();
 
   return PacksUI;

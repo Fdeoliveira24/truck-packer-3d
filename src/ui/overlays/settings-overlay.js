@@ -2733,11 +2733,18 @@ export function createSettingsOverlay({
     if (shouldSuppressPreLockBillingTransition(state) && !workspaceSwitchPending) {
       return;
     }
-    const staleOrgState = Boolean(lockedOrgId && billingOrgId && billingOrgId !== lockedOrgId);
+    const billingMatchesSwitchTargetOrg = Boolean(
+      workspaceSwitchPending &&
+      workspaceSwitchTargetOrgId &&
+      billingOrgId &&
+      billingOrgId === workspaceSwitchTargetOrgId
+    );
     const billingMatchesLockedOrg = Boolean(lockedOrgId && billingOrgId && billingOrgId === lockedOrgId);
-    const hasRenderableBillingState = Boolean(billingMatchesLockedOrg && state.lastFetchedAt);
+    const billingMatchesRenderableOrg = Boolean(billingMatchesLockedOrg || billingMatchesSwitchTargetOrg);
+    const staleOrgState = Boolean(lockedOrgId && billingOrgId && !billingMatchesRenderableOrg);
+    const hasRenderableBillingState = Boolean(billingMatchesRenderableOrg && state.lastFetchedAt);
     const blankPendingState = Boolean(
-      billingMatchesLockedOrg &&
+      billingMatchesRenderableOrg &&
       (loading || pending) &&
       !state.plan &&
       !state.status &&
@@ -2746,7 +2753,7 @@ export function createSettingsOverlay({
     );
     const workspaceSwitchHasUsableBilling = Boolean(
       workspaceSwitchPending &&
-      billingMatchesLockedOrg &&
+      billingMatchesRenderableOrg &&
       state.lastFetchedAt &&
       (state.ok || state.error) &&
       !blankPendingState

@@ -361,6 +361,9 @@ Deno.serve(async (req) => {
     let ownerWorkspaces: OwnerWorkspace[] = [];
     let ownerEntitlementCandidate: EntitlementCandidate | null = null;
     let ownerEntitlementCandidateCount = 0;
+    let ownerHasStripeCustomerForPortal = false;
+    let ownerMetadataInterval: "month" | "year" | null = null;
+    let ownerMetadataCurrentPeriodEnd: string | null = null;
     let ownerSubscriptionRequiredReason: string | null = null;
     let includedOrgIds: string[] = [];
     let activeOrgCreatedAt: string | null = null;
@@ -797,6 +800,24 @@ Deno.serve(async (req) => {
         const ownerBillingCustomerByOrg = new Map<string, Record<string, unknown>>();
         const ownerBillingCustomerBySubscription = new Map<string, Record<string, unknown>>();
         const oldestOwnerWorkspaceId = ownerWorkspaces[0]?.id || "";
+        const recordOwnerPaymentMetadata = (row: Record<string, unknown>) => {
+          const stripeCustomerId = String(row?.stripe_customer_id || "").trim();
+          if (stripeCustomerId) ownerHasStripeCustomerForPortal = true;
+
+          const status = normalizePaymentStatus(row?.status ?? null);
+          const periodEnd = row?.current_period_end ? String(row.current_period_end) : null;
+          if (!status || (status !== "active" && status !== "trialing" && !paymentGraceActive(status, periodEnd))) {
+            return;
+          }
+
+          const rowInterval = normalizeInterval(row?.interval ?? row?.billing_interval ?? null);
+          if (!ownerMetadataInterval && rowInterval) {
+            ownerMetadataInterval = rowInterval;
+          }
+          if (!ownerMetadataCurrentPeriodEnd && periodEnd) {
+            ownerMetadataCurrentPeriodEnd = periodEnd;
+          }
+        };
         const mapSubscriptionToOwnerWorkspace = (
           stripeSubscriptionId: unknown,
           orgIdFromMetadata: string | null,
@@ -838,10 +859,15 @@ Deno.serve(async (req) => {
           };
           ownerSubscriptionCandidates.push(candidate);
           entitlementCandidates.push(candidate);
+          recordOwnerPaymentMetadata(candidate as unknown as Record<string, unknown>);
         };
         const subscriptionColumnsWithOrg =
+          "organization_id, status, price_id, current_period_end, trial_end, created_at, stripe_subscription_id, stripe_customer_id, interval";
+        const subscriptionColumnsWithOrgBasic =
           "organization_id, status, price_id, current_period_end, trial_end, created_at, stripe_subscription_id";
         const subscriptionColumnsNoOrg =
+          "status, price_id, current_period_end, trial_end, created_at, stripe_subscription_id, stripe_customer_id, interval";
+        const subscriptionColumnsNoOrgBasic =
           "status, price_id, current_period_end, trial_end, created_at, stripe_subscription_id";
 
         // Owner entitlement subscription lookup: tolerant of missing optional projection columns.
@@ -851,13 +877,26 @@ Deno.serve(async (req) => {
           .in("organization_id", ownerWorkspaceIds);
 
         if (ownerSubs.error && isMissingColumnError(ownerSubs.error, "organization_id")) {
-          const ownerSubsNoOrg = await admin
+          let ownerSubsNoOrg = await admin
             .from("subscriptions")
             .select(subscriptionColumnsNoOrg)
             .eq("user_id", billingOwnerUserId)
             .in("status", ["active", "trialing", "past_due", "unpaid"])
             .order("created_at", { ascending: false })
             .limit(10);
+          if (
+            ownerSubsNoOrg.error &&
+            (isMissingColumnError(ownerSubsNoOrg.error, "stripe_customer_id") ||
+              isMissingColumnError(ownerSubsNoOrg.error, "interval"))
+          ) {
+            ownerSubsNoOrg = await admin
+              .from("subscriptions")
+              .select(subscriptionColumnsNoOrgBasic)
+              .eq("user_id", billingOwnerUserId)
+              .in("status", ["active", "trialing", "past_due", "unpaid"])
+              .order("created_at", { ascending: false })
+              .limit(10);
+          }
           if (ownerSubsNoOrg.error) {
             if (debug) {
               console.warn("billing-status: optional owner org subscription retry skipped", ownerSubsNoOrg.error);
@@ -868,6 +907,40 @@ Deno.serve(async (req) => {
           }
           if (debug) {
             console.warn("billing-status: owner entitlement subscription lookup missing organization_id", ownerSubs.error);
+          }
+        } else if (
+          ownerSubs.error &&
+          (isMissingColumnError(ownerSubs.error, "stripe_customer_id") ||
+            isMissingColumnError(ownerSubs.error, "interval"))
+        ) {
+          ownerSubs = await admin
+            .from("subscriptions")
+            .select(subscriptionColumnsWithOrgBasic)
+            .in("organization_id", ownerWorkspaceIds);
+          if (ownerSubs.error) {
+            if (debug) {
+              console.warn("billing-status: owner entitlement subscription basic retry failed", ownerSubs.error);
+            }
+          } else {
+            (Array.isArray(ownerSubs.data) ? ownerSubs.data : []).forEach(row => {
+              const orgId = normalizeOrgId(row?.organization_id ?? null);
+              if (!orgId) return;
+              const candidate: EntitlementCandidate = {
+                organization_id: orgId,
+                status: String(row?.status || "none"),
+                price_id: row?.price_id ? String(row.price_id) : "",
+                current_period_end: row?.current_period_end ? String(row.current_period_end) : null,
+                trial_end: row?.trial_end ? String(row.trial_end) : null,
+                created_at: row?.created_at ? String(row.created_at) : null,
+                stripe_subscription_id: row?.stripe_subscription_id ? String(row.stripe_subscription_id) : null,
+                stripe_customer_id: null,
+                interval: null,
+                source: "subscription",
+              };
+              ownerSubscriptionCandidates.push(candidate);
+              entitlementCandidates.push(candidate);
+              recordOwnerPaymentMetadata(candidate as unknown as Record<string, unknown>);
+            });
           }
         } else if (ownerSubs.error) {
           if (debug) {
@@ -891,6 +964,7 @@ Deno.serve(async (req) => {
             };
             ownerSubscriptionCandidates.push(candidate);
             entitlementCandidates.push(candidate);
+            recordOwnerPaymentMetadata(candidate as unknown as Record<string, unknown>);
           });
         }
 
@@ -912,6 +986,7 @@ Deno.serve(async (req) => {
           if (stripeSubscriptionId) {
             ownerBillingCustomerBySubscription.set(stripeSubscriptionId, row as Record<string, unknown>);
           }
+          recordOwnerPaymentMetadata(row as Record<string, unknown>);
           const status = String(row?.status || "none").toLowerCase();
           const trialEnd = row?.trial_ends_at ? String(row.trial_ends_at) : null;
           if (status === "trialing" && trialEnd) {
@@ -950,6 +1025,19 @@ Deno.serve(async (req) => {
             .order("created_at", { ascending: false })
             .limit(10);
         }
+        if (
+          legacyOwnerSubs.error &&
+          (isMissingColumnError(legacyOwnerSubs.error, "stripe_customer_id") ||
+            isMissingColumnError(legacyOwnerSubs.error, "interval"))
+        ) {
+          legacyOwnerSubs = await admin
+            .from("subscriptions")
+            .select(subscriptionColumnsNoOrgBasic)
+            .eq("user_id", billingOwnerUserId)
+            .in("status", ["active", "trialing", "past_due", "unpaid"])
+            .order("created_at", { ascending: false })
+            .limit(10);
+        }
 
         if (legacyOwnerSubs.error) {
           if (debug) {
@@ -978,6 +1066,18 @@ Deno.serve(async (req) => {
             ownerSubsByStripeId = await admin
               .from("subscriptions")
               .select(subscriptionColumnsNoOrg)
+              .in("stripe_subscription_id", ownerStripeSubscriptionIds)
+              .in("status", ["active", "trialing", "past_due", "unpaid"])
+              .limit(20);
+          }
+          if (
+            ownerSubsByStripeId.error &&
+            (isMissingColumnError(ownerSubsByStripeId.error, "stripe_customer_id") ||
+              isMissingColumnError(ownerSubsByStripeId.error, "interval"))
+          ) {
+            ownerSubsByStripeId = await admin
+              .from("subscriptions")
+              .select(subscriptionColumnsNoOrgBasic)
               .in("stripe_subscription_id", ownerStripeSubscriptionIds)
               .in("status", ["active", "trialing", "past_due", "unpaid"])
               .limit(20);
@@ -1014,6 +1114,14 @@ Deno.serve(async (req) => {
               .in("status", ["active", "trialing", "past_due", "unpaid"])
               .limit(20);
           }
+          if (ownerSubsByCustomerId.error && isMissingColumnError(ownerSubsByCustomerId.error, "interval")) {
+            ownerSubsByCustomerId = await admin
+              .from("subscriptions")
+              .select(subscriptionColumnsNoOrgBasic)
+              .in("stripe_customer_id", ownerStripeCustomerIds)
+              .in("status", ["active", "trialing", "past_due", "unpaid"])
+              .limit(20);
+          }
 
           if (ownerSubsByCustomerId.error && isMissingColumnError(ownerSubsByCustomerId.error, "stripe_customer_id")) {
             if (debug) {
@@ -1029,6 +1137,27 @@ Deno.serve(async (req) => {
           }
         }
 
+        let ownerStripeCustomerId = "";
+        try {
+          const ownerCustomerRes = await admin
+            .from("stripe_customers")
+            .select("stripe_customer_id")
+            .eq("user_id", billingOwnerUserId)
+            .maybeSingle();
+          ownerStripeCustomerId = ownerCustomerRes.data?.stripe_customer_id
+            ? String(ownerCustomerRes.data.stripe_customer_id)
+            : "";
+          if (ownerStripeCustomerId) {
+            ownerHasStripeCustomerForPortal = true;
+          } else if (ownerCustomerRes.error && debug) {
+            console.warn("billing-status: owner stripe_customers lookup failed", ownerCustomerRes.error);
+          }
+        } catch (ownerCustomerLookupErr) {
+          if (debug) {
+            console.warn("billing-status: owner stripe_customers lookup threw", ownerCustomerLookupErr);
+          }
+        }
+
         if (Deno.env.get("STRIPE_SECRET_KEY")) {
           try {
             const stripe = stripeClient();
@@ -1038,7 +1167,7 @@ Deno.serve(async (req) => {
               const resolvedCandidateOrgId = mapSubscriptionToOwnerWorkspace(s?.id ?? null, orgIdFromMetadata);
               if (!resolvedCandidateOrgId) return;
               const intervalRaw = s?.items?.data?.[0]?.price?.recurring?.interval ?? null;
-              entitlementCandidates.push({
+              const candidate: EntitlementCandidate = {
                 organization_id: resolvedCandidateOrgId,
                 status: s?.status ? String(s.status) : "none",
                 price_id: s?.items?.data?.[0]?.price?.id ? String(s.items.data[0].price.id) : "",
@@ -1055,7 +1184,9 @@ Deno.serve(async (req) => {
                 stripe_customer_id: s?.customer ? String(s.customer) : null,
                 interval: normalizeInterval(intervalRaw),
                 source: "subscription",
-              });
+              };
+              entitlementCandidates.push(candidate);
+              recordOwnerPaymentMetadata(candidate as unknown as Record<string, unknown>);
             };
 
             for (const stripeSubscriptionId of ownerStripeSubscriptionIds) {
@@ -1072,15 +1203,7 @@ Deno.serve(async (req) => {
               }
             }
 
-            const ownerCustomerRes = await admin
-              .from("stripe_customers")
-              .select("stripe_customer_id")
-              .eq("user_id", billingOwnerUserId)
-              .maybeSingle();
-            const ownerStripeCustomerId = ownerCustomerRes.data?.stripe_customer_id
-              ? String(ownerCustomerRes.data.stripe_customer_id)
-              : "";
-            if (!ownerCustomerRes.error && ownerStripeCustomerId) {
+            if (ownerStripeCustomerId) {
               const stripeSubs = await stripe.subscriptions.list({
                 customer: ownerStripeCustomerId,
                 status: "all",
@@ -1438,11 +1561,15 @@ Deno.serve(async (req) => {
         subStatus = candidatePaymentStatus;
       }
       const candidateInterval = normalizeInterval(ownerEntitlementCandidate.interval ?? null);
-      if (interval === "unknown" && candidateInterval) {
-        interval = candidateInterval;
+      const ownerLevelInterval = candidateInterval || ownerMetadataInterval;
+      if (interval === "unknown" && ownerLevelInterval) {
+        interval = ownerLevelInterval;
       }
       if (!currentPeriodEnd && ownerEntitlementCandidate.current_period_end) {
         currentPeriodEnd = ownerEntitlementCandidate.current_period_end;
+      }
+      if (!currentPeriodEnd && ownerMetadataCurrentPeriodEnd) {
+        currentPeriodEnd = ownerMetadataCurrentPeriodEnd;
       }
       if (!trialEndsAt && subStatus === "trialing" && ownerEntitlementCandidate.trial_end) {
         trialEndsAt = ownerEntitlementCandidate.trial_end;
@@ -1450,6 +1577,7 @@ Deno.serve(async (req) => {
       const hasKnownStripeCustomerForPortal = Boolean(
         (subscription?.stripe_customer_id && String(subscription.stripe_customer_id).trim()) ||
         (billingCustomer?.stripe_customer_id && String(billingCustomer.stripe_customer_id).trim()) ||
+        ownerHasStripeCustomerForPortal ||
         (ownerEntitlementCandidate.stripe_customer_id && String(ownerEntitlementCandidate.stripe_customer_id).trim()),
       );
       if (!portalAvailable && canManageBilling && hasKnownStripeCustomerForPortal) {

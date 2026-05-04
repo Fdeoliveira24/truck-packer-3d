@@ -31,7 +31,7 @@ logistics. Built with Three.js for real-time 3D rendering and interactive packin
 ## Phase 1 (SaaS-Ready Foundation)
 
 Phase 1 introduces a session/org foundation, plan/role-aware feature flags, and hash routing. See
-`MIGRATION_PHASE1.md` for details.
+`docs/archive/2026-02-phase1/MIGRATION_PHASE1.md` for historical details.
 
 ## Keyboard Shortcuts
 

@@ -1,42 +1,38 @@
 # File Tree: Truck Packer 3D
 
-**Generated:** 4/22/2026, 10:43:31 AM
+**Generated:** 5/3/2026, 10:38:37 AM
 **Root Path:** `/Users/franciscooliveira/Library/CloudStorage/Dropbox/360Virtual Tour Solutions/Projects/Truck Packer 3D`
 
 ```
-├── 📁 .agents
-│   └── 📁 skills
-│       ├── 📁 stripe-best-practices
-│       │   ├── 📁 references
-│       │   │   ├── 📝 billing.md
-│       │   │   ├── 📝 connect.md
-│       │   │   ├── 📝 payments.md
-│       │   │   ├── 📝 security.md
-│       │   │   └── 📝 treasury.md
-│       │   └── 📝 SKILL.md
-│       ├── 📁 stripe-projects
-│       │   └── 📝 SKILL.md
-│       └── 📁 upgrade-stripe
-│           └── 📝 SKILL.md
-├── 📁 .windsurf
-│   └── 📁 skills
-│       ├── 📄 stripe-best-practices
-│       ├── 📄 stripe-projects
-│       └── 📄 upgrade-stripe
-├── 📁 cleanup-docs
-│   ├── 📁 reports
-│   │   └── ⚙️ .gitkeep
-│   ├── 📁 scripts
-│   │   └── 📄 eslint-report.mjs
-│   ├── 📝 AUDIT_APP_STRUCTURE.md
-│   ├── 📝 AUDIT_PACK_PREVIEW_AND_FILTERS.md
-│   ├── 📝 ESLINT_WARNINGS_SUMMARY.md
-│   ├── 📝 QUICKSTART.md
-│   ├── 📝 README.md
-│   ├── 📝 REPO_MAP_PACK_PREVIEW.md
-│   ├── 📝 SETUP_SUMMARY.md
-│   └── 📝 github-raw-urls.md
+├── 📁 backups
+│   ├── ⚙️ .gitignore
+│   ├── 📄 backup-20260502-2343.sql
+│   └── 📄 backup-20260502-2345.sql
 ├── 📁 docs
+│   ├── 📁 archive
+│   │   ├── 📁 2026-01-cleanup-docs
+│   │   │   ├── 📁 reports
+│   │   │   │   └── ⚙️ .gitkeep
+│   │   │   ├── 📁 scripts
+│   │   │   │   └── 📄 eslint-report.mjs
+│   │   │   ├── 📝 AUDIT_APP_STRUCTURE.md
+│   │   │   ├── 📝 AUDIT_PACK_PREVIEW_AND_FILTERS.md
+│   │   │   ├── 📝 ESLINT_WARNINGS_SUMMARY.md
+│   │   │   ├── 📝 QUICKSTART.md
+│   │   │   ├── 📝 README.md
+│   │   │   ├── 📝 REPO_MAP_PACK_PREVIEW.md
+│   │   │   ├── 📝 SETUP_SUMMARY.md
+│   │   │   └── 📝 github-raw-urls.md
+│   │   ├── 📁 2026-02-autopack
+│   │   │   └── 📝 autopack-logic.md
+│   │   ├── 📁 2026-02-phase1
+│   │   │   └── 📝 MIGRATION_PHASE1.md
+│   │   ├── 📁 2026-02-supabase-stripe
+│   │   │   ├── 📝 Supabase SQL migrations Stripe Setup v1 - 02-09-2026.md
+│   │   │   └── 📝 Supabase SQL migrations Stripe Setup v2 - 02-11-2026.md
+│   │   ├── 📁 2026-03-old-todos
+│   │   │   └── 📝 TP3D-MASTER-TODO-V2.md
+│   │   └── 📝 README.md
 │   ├── 📁 audits
 │   │   ├── 📝 ARCHITECTURE_DIAGRAM.md
 │   │   ├── 📝 CONTRADICTIONS_REPORT.md
@@ -51,36 +47,34 @@
 │   │   ├── 📝 RUNTIME_STABILITY_REPORT.md
 │   │   ├── 📝 SECURITY_REPORT.md
 │   │   ├── 📝 TEST_PLAN.md
+│   │   ├── 📝 account-deletion-audit.md
+│   │   ├── 📝 auth-session-race-audit-2026-02-05.md
 │   │   ├── 📝 css-audit-footer-overlay.md
 │   │   ├── 📝 phase1-resources-audit.md
+│   │   ├── 📝 settings-tab-desync-audit.md
 │   │   └── 📝 ui-rearrangement-audit.md
-│   ├── 📝 P0.6-DB-HEALTH-CHECKLIST.md
-│   ├── 📝 PROJECT_TREE.md
-│   ├── 📝 SUPABASE_CURRENT_STATE_02_07_2026-V1.md
-│   ├── 📝 Supabase SQL migrations Stripe Setup v1 - 02-09-2026.md
-│   ├── 📝 Supabase SQL migrations Stripe Setup v2 - 02-11-2026.md
-│   ├── 📝 TP3D-MASTER-TODO-V2.md
-│   ├── 📝 TP3D-MASTER-TODO-V3.md
-│   ├── 📝 TP3D_BILLING_FIXES_02_12_2026.md
-│   ├── 📝 account-deletion-audit.md
-│   ├── 📝 auth-session-race-audit-2026-02-05.md
-│   ├── 📝 autopack-logic-v2.md
-│   ├── 📝 autopack-logic.md
-│   ├── 📝 billing-status-curl.md
-│   ├── 📝 browser-diagnostics.md
-│   ├── 📝 local-supabase-setup.md
-│   ├── 📝 settings-tab-desync-audit.md
-│   ├── 📝 stripe-functions-secrets-checklist.md
-│   ├── 📝 tp3d-supabase-infra-record-2026-02-03.md
-│   ├── 📝 tp3d-supabase-issue-summary-2026-02-03.md
-│   ├── 📝 truck-packer-supabase-current-state.md
-│   ├── 📝 truck-packer3d-supabase-billing-status-setup.md
-│   ├── 📝 truckpacker-comparison-v1-2026-04-19.md
-│   └── 📝 ui-bug-fixes-2026-01-29.md
-├── 📁 skills
-│   ├── 📄 stripe-best-practices
-│   ├── 📄 stripe-projects
-│   └── 📄 upgrade-stripe
+│   ├── 📁 dev
+│   │   ├── 📝 billing-status-curl.md
+│   │   ├── 📝 billing-status-setup.md
+│   │   ├── 📝 local-supabase-setup.md
+│   │   └── 📝 stripe-functions-secrets-checklist.md
+│   ├── 📁 product
+│   │   ├── 📝 BILLING_ENTITLEMENT_RULES.md
+│   │   ├── 📝 TP3D-MASTER-TODO-V3.md
+│   │   ├── 📝 autopack-logic-v2.md
+│   │   └── 📝 truckpacker-comparison-v1-2026-04-19.md
+│   ├── 📁 review
+│   │   ├── 📝 P0.6-DB-HEALTH-CHECKLIST.md
+│   │   ├── 📝 PROJECT_TREE.md
+│   │   ├── 📝 README.md
+│   │   ├── 📝 SUPABASE_CURRENT_STATE_02_07_2026-V1.md
+│   │   ├── 📝 TP3D_BILLING_FIXES_02_12_2026.md
+│   │   ├── 📝 browser-diagnostics.md
+│   │   ├── 📝 tp3d-supabase-infra-record-2026-02-03.md
+│   │   ├── 📝 tp3d-supabase-issue-summary-2026-02-03.md
+│   │   ├── 📝 truck-packer-supabase-current-state.md
+│   │   └── 📝 ui-bug-fixes-2026-01-29.md
+│   └── 📝 README.md
 ├── 📁 src
 │   ├── 📁 auth
 │   │   ├── 📄 permissions.js
@@ -224,15 +218,13 @@
 │   │   ├── 📄 2026021912_fix_webhook_and_billing_projection.sql
 │   │   ├── 📄 2026041801_auto_org_on_signup.sql
 │   │   ├── 📄 2026041802_billing_rls.sql
-│   │   └── 📄 2026041803_storage_buckets_and_rls.sql
+│   │   ├── 📄 2026041803_storage_buckets_and_rls.sql
+│   │   ├── 📄 2026042201_organizations_rls.sql
+│   │   ├── 📄 2026042301_org_members_select_self.sql
+│   │   └── 📄 2026042901_stop_repeat_workspace_trials.sql
 │   ├── 📁 snippets
 │   ├── ⚙️ .gitignore
 │   └── ⚙️ config.toml
-├── 📁 test-results
-│   ├── ⚙️ stress-summary-1772685946304.json
-│   ├── ⚙️ stress-summary-1772685983151.json
-│   ├── ⚙️ stress-summary-1772858830523.json
-│   └── ⚙️ stress-summary-1772862542034.json
 ├── 📁 tests
 │   ├── 📁 audit
 │   │   ├── 📄 import-export.spec.mjs
@@ -257,21 +249,14 @@
 ├── ⚙️ .prettierrc
 ├── ⚙️ .stylelintignore
 ├── ⚙️ .stylelintrc.cjs
-├── 📝 MIGRATION_PHASE1.md
+├── 📝 CLAUDE.md
 ├── 📝 README.md
-├── ⚙️ eslint-report.json
 ├── 📄 eslint.config.js
-├── 📄 grep_createClient.txt
-├── 📄 grep_getClientAuth.txt
-├── 📄 grep_getSession.txt
-├── 📄 grep_getUser.txt
-├── 📄 grep_windowSupabase.txt
 ├── 🌐 index.html
 ├── ⚙️ knip.json
 ├── ⚙️ package.json
-├── ⚙️ skills-lock.json
-├── 📄 supabase_push_error.txt
 └── ⚙️ tsconfig.json
 ```
 
 ---
+*Generated by FileTree Pro Extension*

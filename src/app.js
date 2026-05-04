@@ -5490,6 +5490,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // Prevents transient INITIAL_SESSION(null) → SIGNED_OUT → SIGNED_IN boot
     // sequences from triggering org-clearing and "no-org" banner flashes.
     const AUTH_SIGNED_OUT_STABLE_MS = 2000;
+    const NO_ORG_BANNER_SIGNED_IN_GRACE_MS = 2500;
     const _authGate = {
       lastSignedInAt: 0,
       signedOutCandidateAt: 0,
@@ -6467,6 +6468,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
     const ORG_REQUIRED_BANNER_ID = 'tp3d-org-required-banner';
     let orgBannerRetryTimer = null;
+    let orgBannerSignedInGraceTimer = null;
     function ensureOrgRequiredBanner() {
       const container = document && document.querySelector ? document.querySelector('.content') : null;
       if (!container) return null;
@@ -6535,13 +6537,29 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const isTransientSignedOut = isDefinitelySignedOut && lastAuthEventSnapshot
         && lastAuthEventSnapshot.status === 'signed_in' && lastAuthEventSnapshot.hasToken
         && (Date.now() - (lastAuthEventSnapshot.ts || 0)) < FALLBACK_AUTH_TTL_MS;
+      const signedInSnapshotAgeMs = lastAuthEventSnapshot &&
+        lastAuthEventSnapshot.status === 'signed_in' &&
+        lastAuthEventSnapshot.hasToken
+        ? Date.now() - (lastAuthEventSnapshot.ts || 0)
+        : Infinity;
+      const suppressRecentSignedInNoOrg = signedInSnapshotAgeMs < NO_ORG_BANNER_SIGNED_IN_GRACE_MS;
       // A stored org hint means the user has (or recently had) an org — keep banner hidden
       // while auth/bundle is still resolving (prevents flash for returning users).
       const hasLocalOrgHint = Boolean(readLocalOrgId());
       const suppressUncertain = !isDefinitelySignedOut && !confirmedNoOrg && hasLocalOrgHint;
       // Auth Stability Gate: never show banner while auth is still settling
       const authNotSettled = !authGateIsSettled();
-      const showNoOrgBanner = !hasOrg && !suppressUncertain && !isTransientSignedOut && !authNotSettled && (isDefinitelySignedOut || confirmedNoOrg);
+      const showNoOrgBanner = !hasOrg && !suppressUncertain && !isTransientSignedOut && !suppressRecentSignedInNoOrg && !authNotSettled && (isDefinitelySignedOut || confirmedNoOrg);
+      if (orgBannerSignedInGraceTimer && (hasOrg || !confirmedNoOrg || !suppressRecentSignedInNoOrg)) {
+        window.clearTimeout(orgBannerSignedInGraceTimer);
+        orgBannerSignedInGraceTimer = null;
+      }
+      if (!hasOrg && suppressRecentSignedInNoOrg && confirmedNoOrg && !orgBannerSignedInGraceTimer) {
+        orgBannerSignedInGraceTimer = window.setTimeout(() => {
+          orgBannerSignedInGraceTimer = null;
+          applyOrgRequiredUi(hasOrg, { confirmedNoOrg });
+        }, Math.max(50, NO_ORG_BANNER_SIGNED_IN_GRACE_MS - signedInSnapshotAgeMs));
+      }
       if (!hasOrg && authNotSettled && !confirmedNoOrg) {
         if (isTp3dDebugEnabled()) console.info('[workspaceReady] defer-no-org:auth-not-settled (banner)');
       }
@@ -7732,6 +7750,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
       }
 
+      function clearSidebarBillingDomForUserSwitch() {
+        try {
+          const upgradeEl = document.getElementById('tp3d-sidebar-upgrade');
+          const upgradeWrap = document.getElementById('upgradeCardWrap');
+          if (upgradeEl) upgradeEl.innerHTML = '';
+          if (upgradeWrap) upgradeWrap.hidden = true;
+          else if (upgradeEl) upgradeEl.hidden = true;
+        } catch {
+          // Best-effort DOM hygiene only; normal billing rendering will rebuild it.
+        }
+      }
+
       if (!authListenerInstalled) {
         authListenerInstalled = true;
         SupabaseClient.onAuthStateChange(async (event, session) => {
@@ -7787,6 +7817,22 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
           // If this is a user switch (different user signed in), clear stale state immediately
           if (isUserSwitch) {
+            clearBillingState();
+            clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: false });
+            suspendAutoSave = true;
+            try {
+              resetAppStateToEmpty();
+            } finally {
+              suspendAutoSave = false;
+            }
+            try {
+              if (SupabaseClient.resetAccountBundleCache) {
+                SupabaseClient.resetAccountBundleCache('SIGNED_IN_USER_SWITCH', { skipEpochBump: true });
+              }
+            } catch {
+              // ignore
+            }
+            clearSidebarBillingDomForUserSwitch();
             lastAuthUserId = null; // Clear old user ID to prevent stale state leakage
           }
 

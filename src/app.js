@@ -2193,8 +2193,87 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
     }
 
+    function getWorkspaceCreationLimitBlock() {
+      let snapshot = null;
+      try {
+        snapshot = (window.__TP3D_BILLING && typeof window.__TP3D_BILLING.getBillingState === 'function')
+          ? window.__TP3D_BILLING.getBillingState()
+          : getBillingState();
+      } catch {
+        snapshot = getBillingState();
+      }
+      if (!snapshot || snapshot.ok !== true || snapshot.loading || snapshot.pending) return null;
+
+      const activeOrgId = getActiveOrgIdForBilling();
+      const billingOrgId = snapshot.orgId ? String(snapshot.orgId) : '';
+      if (activeOrgId && billingOrgId && String(activeOrgId) !== billingOrgId) return null;
+
+      const workspaceCount = Number(snapshot.workspaceCount);
+      const workspaceLimit = Number(snapshot.workspaceLimit);
+      if (!Number.isFinite(workspaceCount) || !Number.isFinite(workspaceLimit)) return null;
+      if (workspaceLimit <= 0 || workspaceCount < workspaceLimit) return null;
+
+      const canManageBilling = snapshot.canManageBilling === true;
+      return {
+        canManageBilling,
+        portalAvailable: snapshot.portalAvailable === true,
+        message: canManageBilling
+          ? `Workspace limit reached. Your current plan includes ${workspaceLimit} workspaces. Upgrade your plan or free a workspace slot before creating another workspace.`
+          : `Workspace limit reached. This owner's plan includes ${workspaceLimit} workspaces. Ask the workspace owner to upgrade or free a workspace slot before creating another workspace.`,
+      };
+    }
+
+    function showWorkspaceCreationLimitBlock(block) {
+      if (!block) return;
+      const content = document.createElement('div');
+      content.className = 'grid';
+
+      const messageEl = document.createElement('div');
+      messageEl.className = 'muted';
+      messageEl.textContent = block.message;
+      content.appendChild(messageEl);
+
+      const actions = [{ label: 'Close', variant: 'ghost' }];
+      if (block.canManageBilling) {
+        actions.push({
+          label: block.portalAvailable ? 'Manage Billing' : 'Open Billing',
+          variant: 'primary',
+          onClick: () => {
+            if (block.portalAvailable) {
+              openPortal().then(result => {
+                if (!result || !result.ok) {
+                  UIComponents.showToast(
+                    result && result.error ? result.error : 'Portal session failed',
+                    'error',
+                    { title: 'Billing' },
+                  );
+                }
+              }).catch(() => {
+                UIComponents.showToast('Portal session failed', 'error', { title: 'Billing' });
+              });
+              return false;
+            }
+            openSettingsOverlay('billing');
+            return true;
+          },
+        });
+      }
+
+      UIComponents.showModal({
+        title: 'Workspace Limit Reached',
+        content,
+        actions,
+      });
+    }
+
     function openCreateWorkspaceFlow({ source = 'workspace-create' } = {}) {
       closeDropdowns();
+
+      const initialLimitBlock = getWorkspaceCreationLimitBlock();
+      if (initialLimitBlock) {
+        showWorkspaceCreationLimitBlock(initialLimitBlock);
+        return;
+      }
 
       const content = document.createElement('div');
       content.className = 'grid';
@@ -2249,6 +2328,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       const runCreate = () => {
         if (!modalRef || modalRef._tp3dCreateWorkspaceInFlight) return false;
+        const submitLimitBlock = getWorkspaceCreationLimitBlock();
+        if (submitLimitBlock) {
+          errorEl.textContent = submitLimitBlock.message;
+          UIComponents.showToast(submitLimitBlock.message, 'warning', { title: 'Workspace' });
+          return false;
+        }
         const name = validate();
         if (!name) return false;
 

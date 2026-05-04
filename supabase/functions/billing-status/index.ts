@@ -79,6 +79,23 @@ function normalizeInterval(value: unknown): "month" | "year" | null {
   return raw === "month" || raw === "year" ? raw : null;
 }
 
+function normalizePaymentStatus(value: unknown): string | null {
+  const raw = String(value || "").trim().toLowerCase();
+  return [
+    "active",
+    "trialing",
+    "past_due",
+    "unpaid",
+    "canceled",
+    "incomplete",
+    "incomplete_expired",
+    "paused",
+    "none",
+  ].includes(raw)
+    ? raw
+    : null;
+}
+
 function paymentGraceActive(status: string, currentPeriodEnd: string | null): boolean {
   const graceDaysByStatus: Record<string, number> = {
     past_due: 7,
@@ -1244,7 +1261,7 @@ Deno.serve(async (req) => {
     }
 
     plan = isActive ? "pro" : "free";
-    const trialEndsAt = subStatus === "trialing" ? trialEndsAtCandidate : null;
+    let trialEndsAt = subStatus === "trialing" ? trialEndsAtCandidate : null;
     let currentPeriodEnd = subscription?.current_period_end
       ? String(subscription.current_period_end)
       : billingCustomer?.current_period_end
@@ -1412,9 +1429,14 @@ Deno.serve(async (req) => {
     if (
       ownerEntitlementCandidate &&
       (entitlementStatus === "active" ||
+        entitlementStatus === "trialing" ||
         entitlementStatus === "included_in_plan" ||
         entitlementStatus === "workspace_limit_reached")
     ) {
+      const candidatePaymentStatus = normalizePaymentStatus(ownerEntitlementCandidate.status);
+      if ((!subStatus || subStatus === "none") && candidatePaymentStatus && candidatePaymentStatus !== "none") {
+        subStatus = candidatePaymentStatus;
+      }
       const candidateInterval = normalizeInterval(ownerEntitlementCandidate.interval ?? null);
       if (interval === "unknown" && candidateInterval) {
         interval = candidateInterval;
@@ -1422,7 +1444,15 @@ Deno.serve(async (req) => {
       if (!currentPeriodEnd && ownerEntitlementCandidate.current_period_end) {
         currentPeriodEnd = ownerEntitlementCandidate.current_period_end;
       }
-      if (!portalAvailable && ownerEntitlementCandidate.stripe_customer_id) {
+      if (!trialEndsAt && subStatus === "trialing" && ownerEntitlementCandidate.trial_end) {
+        trialEndsAt = ownerEntitlementCandidate.trial_end;
+      }
+      const hasKnownStripeCustomerForPortal = Boolean(
+        (subscription?.stripe_customer_id && String(subscription.stripe_customer_id).trim()) ||
+        (billingCustomer?.stripe_customer_id && String(billingCustomer.stripe_customer_id).trim()) ||
+        (ownerEntitlementCandidate.stripe_customer_id && String(ownerEntitlementCandidate.stripe_customer_id).trim()),
+      );
+      if (!portalAvailable && canManageBilling && hasKnownStripeCustomerForPortal) {
         portalAvailable = true;
       }
     }

@@ -1503,14 +1503,18 @@ export function createEditorScreen({
         tabsEl.appendChild(btnMfg);
         caseListEl.parentElement.insertBefore(tabsEl, caseListEl);
         tabsEl.addEventListener('click', ev => {
+          if (!(ev.target instanceof Element)) return;
           const btn = ev.target.closest('[data-group-by]');
-          if (!btn) return;
+          if (!(btn instanceof HTMLElement)) return;
           caseBrowserGroupBy = btn.dataset.groupBy;
           renderCaseBrowser();
         });
       }
       const tabBtns = document.querySelectorAll('.tp3d-browser-tab');
-      tabBtns.forEach(btn => btn.classList.toggle('btn-primary', btn.dataset.groupBy === caseBrowserGroupBy));
+      tabBtns.forEach(btn => {
+        if (!(btn instanceof HTMLElement)) return;
+        btn.classList.toggle('btn-primary', btn.dataset.groupBy === caseBrowserGroupBy);
+      });
 
       const q = String(caseSearchEl.value || '').trim();
       const prefs = PreferencesManager.get ? PreferencesManager.get() : { units: { length: 'in', weight: 'lb' } };

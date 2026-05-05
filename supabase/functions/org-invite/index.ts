@@ -104,6 +104,9 @@ Deno.serve(async (req) => {
     if (!actorRole || !MANAGER_ROLES.has(actorRole)) {
       return json({ error: "Only owners/admins can invite members." }, { status: 403, origin });
     }
+    if (actorRole === "admin" && role === "admin") {
+      return json({ error: "Only workspace owners can invite admins." }, { status: 403, origin });
+    }
 
     const token = createInviteToken();
     const nowIso = new Date().toISOString();

@@ -1,10 +1,10 @@
 import { getAllowedOrigin, handleCors, json } from "../_shared/cors.ts";
 import { requireUser, serviceClient } from "../_shared/auth.ts";
 
-function normalizeRole(value: unknown): "owner" | "admin" | "member" {
-  const role = String(value || "member").toLowerCase();
-  if (role === "owner" || role === "admin") return role;
-  return "member";
+function normalizeAcceptedInviteRole(value: unknown): "admin" | "member" | null {
+  const role = String(value || "member").trim().toLowerCase();
+  if (role === "admin" || role === "member") return role;
+  return null;
 }
 
 Deno.serve(async (req) => {
@@ -52,6 +52,19 @@ Deno.serve(async (req) => {
       return json({ error: "Invite not found or expired." }, { status: 404, origin });
     }
 
+    const inviteEmail = String(invite.email || "").trim().toLowerCase();
+    if (!inviteEmail || inviteEmail !== userEmail) {
+      return json(
+        { error: "Invite email does not match the signed-in account." },
+        { status: 403, origin },
+      );
+    }
+
+    const role = normalizeAcceptedInviteRole(invite.role);
+    if (!role) {
+      return json({ error: "Invite role is no longer valid." }, { status: 409, origin });
+    }
+
     const inviteStatus = String(invite.status || "").toLowerCase();
     if (inviteStatus === "accepted") {
       return json(
@@ -66,16 +79,6 @@ Deno.serve(async (req) => {
     if (inviteStatus !== "pending" || invite.revoked_at) {
       return json({ error: "Invite is no longer valid." }, { status: 409, origin });
     }
-
-    const inviteEmail = String(invite.email || "").trim().toLowerCase();
-    if (!inviteEmail || inviteEmail !== userEmail) {
-      return json(
-        { error: "Invite email does not match the signed-in account." },
-        { status: 403, origin },
-      );
-    }
-
-    const role = normalizeRole(invite.role);
 
     // Insert membership if missing; keep existing role for existing members.
     const { error: memberErr } = await sb

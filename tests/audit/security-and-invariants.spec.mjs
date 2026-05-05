@@ -8,6 +8,9 @@ const appPath = new URL('../../src/app.js', import.meta.url);
 const corsSharedPath = new URL('../../supabase/functions/_shared/cors.ts', import.meta.url);
 const supabasePath = new URL('../../src/core/supabase-client.js', import.meta.url);
 const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.meta.url);
+const settingsOverlayPath = new URL('../../src/ui/overlays/settings-overlay.js', import.meta.url);
+const orgInvitePath = new URL('../../supabase/functions/org-invite/index.ts', import.meta.url);
+const orgInviteAcceptPath = new URL('../../supabase/functions/org-invite-accept/index.ts', import.meta.url);
 
 test('isAllowedBillingRedirectUrl only allows https stripe origins', async () => {
   const { isAllowedBillingRedirectUrl } = await import(
@@ -392,4 +395,115 @@ test('auth settled is never set false after initialization', async () => {
   const settledFalseCount = (app.match(/_authGate\.settled\s*=\s*false|settled:\s*false/g) || []).length;
   assert.equal(settledFalseCount, 1,
     `settled should only be false in the initial declaration, found ${settledFalseCount} sites`);
+});
+
+// ── Organization invite authorization invariants ─────────────────────────────
+
+test('org-invite rejects admin actors creating admin invites while preserving owner/admin role targets', async () => {
+  const src = await fs.readFile(orgInvitePath, 'utf8');
+
+  assert.match(src, /const VALID_ROLES = new Set\(\["admin", "member"\]\)/,
+    'invite creation must still allow owners to invite admins and members');
+  assert.match(src, /requestedRole === "owner"[\s\S]*Owner invites are not allowed/,
+    'owner-role invites must remain rejected at creation time');
+  assert.match(src, /actorRole === "admin" && role === "admin"[\s\S]*status:\s*403/,
+    'admin actors must get 403 when directly requesting an admin invite');
+  assert.doesNotMatch(src, /actorRole === "owner" && role === "admin"[\s\S]*status:\s*403/,
+    'owners must not be blocked from creating admin invites');
+  assert.doesNotMatch(src, /actorRole === "admin" && role === "member"[\s\S]*status:\s*403/,
+    'admins must not be blocked from creating member invites');
+});
+
+test('org-invite-accept only accepts member/admin roles and rejects legacy owner-role rows', async () => {
+  const src = await fs.readFile(orgInviteAcceptPath, 'utf8');
+
+  const roleFnMatch = src.match(/function normalizeAcceptedInviteRole\b[\s\S]*?^}/m);
+  assert.ok(roleFnMatch, 'org-invite-accept must use an accepted-invite role normalizer');
+  const roleFn = roleFnMatch[0];
+
+  assert.match(roleFn, /"admin" \|\| role === "member"/,
+    'accepted invites may create only admin or member memberships');
+  assert.doesNotMatch(roleFn, /role === "owner"/,
+    'accepted invites must never normalize owner as an accepted membership role');
+  assert.match(src, /const role = normalizeAcceptedInviteRole\(invite\.role\);[\s\S]*if \(!role\)[\s\S]*Invite role is no longer valid/,
+    'invalid or owner-role invite rows must be rejected before membership upsert');
+});
+
+test('org-invite-accept validates authenticated email before accepted-token success exposes organization_id', async () => {
+  const src = await fs.readFile(orgInviteAcceptPath, 'utf8');
+
+  const emailGuardIdx = src.indexOf('inviteEmail !== userEmail');
+  const acceptedBranchIdx = src.indexOf('inviteStatus === "accepted"');
+  const orgIdReturnIdx = src.indexOf('organization_id: invite.organization_id');
+
+  assert.ok(emailGuardIdx > 0, 'accepted invite flow must compare invite email to authenticated user email');
+  assert.ok(acceptedBranchIdx > emailGuardIdx,
+    'already-accepted tokens must not succeed until after the email match guard');
+  assert.ok(orgIdReturnIdx > emailGuardIdx,
+    'organization_id must not be returned before the email match guard');
+  assert.match(src, /inviteEmail !== userEmail[\s\S]*status:\s*403/,
+    'wrong signed-in account must receive a safe 403 before org context is exposed');
+});
+
+test('org-invite-accept remains idempotent for the same invited user after email and role validation', async () => {
+  const src = await fs.readFile(orgInviteAcceptPath, 'utf8');
+
+  const emailGuardIdx = src.indexOf('inviteEmail !== userEmail');
+  const roleGuardIdx = src.indexOf('if (!role)');
+  const acceptedBranchIdx = src.indexOf('inviteStatus === "accepted"');
+
+  assert.ok(acceptedBranchIdx > emailGuardIdx,
+    'idempotent accepted-token response must run after authenticated email validation');
+  assert.ok(acceptedBranchIdx > roleGuardIdx,
+    'idempotent accepted-token response must run after accepted role validation');
+  assert.match(src, /inviteStatus === "accepted"[\s\S]*already_accepted:\s*true[\s\S]*organization_id: invite\.organization_id/,
+    'same invited user should still get an idempotent already_accepted response');
+});
+
+test('settings members confirms sensitive role changes and restores dropdown value on cancel', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.match(src, /function isSensitiveRoleChange\b[\s\S]*previous === 'owner' \|\| previous === 'admin' \|\| next === 'owner' \|\| next === 'admin'/,
+    'owner/admin role changes must be classified as sensitive');
+  assert.match(src, /roleSelect\.addEventListener\('change', async ev =>[\s\S]*UIComponents\.confirm\(/,
+    'member role dropdown must confirm sensitive role changes before update');
+  assert.match(src, /if \(!confirmed\) \{[\s\S]*roleSelect\.value = role;[\s\S]*return;/,
+    'canceling role confirmation must restore the previous selected role');
+  assert.match(src, /roleSelect\.value = nextRole;[\s\S]*updateMemberRole\(orgId, member, nextRole, currentUserId\)/,
+    'confirmed role changes must proceed through the existing updateMemberRole path');
+});
+
+test('settings members confirms invite revoke with the existing danger modal path', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.match(src, /revokeBtn\.addEventListener\('click'[\s\S]*UIComponents\.confirm\(\{[\s\S]*title: 'Revoke invite'[\s\S]*danger: true/,
+    'pending invite revoke must use UIComponents.confirm with danger styling');
+  assert.match(src, /if \(ok\) revokeInvite\(orgId, invite\);/,
+    'revokeInvite must only run after confirmation succeeds');
+});
+
+test('settings members refreshes org and billing context after role or removal mutations', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.match(src, /function refreshMembershipContextAfterMutation\b[\s\S]*queueAccountBundleRefresh\(\{ force: true, source \}\)/,
+    'membership mutations must force an account/org bundle refresh');
+  assert.match(src, /refreshMembershipContextAfterMutation[\s\S]*maybeScheduleBillingRefresh\(source\)/,
+    'membership mutations must route billing refresh through the existing billing pump when available');
+  assert.match(src, /await loadOrgMembers\(orgId\);[\s\S]*refreshMembershipContextAfterMutation\(orgId, 'memberRole:update:refresh-context'\)/,
+    'role update success must refresh members first, then org/billing context');
+  assert.match(src, /await loadOrgMembers\(orgId\);[\s\S]*refreshMembershipContextAfterMutation\(orgId, 'memberRemove:refresh-context'\)/,
+    'member removal success must refresh members first, then org/billing context');
+});
+
+test('settings members permission loading has a local timeout error instead of indefinite loading', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.match(src, /const _MEMBERS_PERMISSION_TIMEOUT_MS = 10000/,
+    'members permission loading must have a bounded timeout');
+  assert.match(src, /rolePendingTimedOut = \(now - _membersPermissionPendingSince\) >= _MEMBERS_PERMISSION_TIMEOUT_MS/,
+    'role pending state must flip to a timeout after the configured interval');
+  assert.match(src, /Could not confirm your permissions\. Refresh and try again\./,
+    'permission timeout must show a clear error message');
+  assert.match(src, /tp3d-org-feedback tp3d-org-feedback--error/,
+    'permission timeout must use the existing error feedback styling');
 });

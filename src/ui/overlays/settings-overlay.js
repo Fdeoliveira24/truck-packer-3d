@@ -147,6 +147,9 @@ export function createSettingsOverlay({
   let _membersRetryTimer = null;
   const _MEMBERS_MAX_RETRIES = 3;
   const _MEMBERS_BACKOFF = [200, 600, 1500];
+  let _membersPermissionPendingSince = 0;
+  let _membersPermissionPendingOrgId = '';
+  const _MEMBERS_PERMISSION_TIMEOUT_MS = 10000;
   // ── Callsite tracing + dup-signal state ──
   let _callsiteLogCount = 0;
   const _dupSignalMap = new Map(); // key → lastTs
@@ -1630,6 +1633,38 @@ export function createSettingsOverlay({
     return role === 'owner' || role === 'admin';
   }
 
+  function isSensitiveRoleChange(previousRole, nextRole) {
+    const previous = String(previousRole || '').trim().toLowerCase();
+    const next = String(nextRole || '').trim().toLowerCase();
+    if (!previous || !next || previous === next) return false;
+    return previous === 'owner' || previous === 'admin' || next === 'owner' || next === 'admin';
+  }
+
+  function buildRoleChangeConfirmMessage(member, previousRole, nextRole) {
+    const memberName = getMemberDisplayName(member);
+    return `Change ${memberName}'s role from ${getRoleLabel(previousRole)} to ${getRoleLabel(nextRole)}?`;
+  }
+
+  function refreshMembershipContextAfterMutation(orgId, source) {
+    const normalizedOrgId = normalizeOrgId(orgId);
+    queueAccountBundleRefresh({ force: true, source });
+    try {
+      if (typeof window !== 'undefined' && window.TruckPackerApp && typeof window.TruckPackerApp.maybeScheduleBillingRefresh === 'function') {
+        window.TruckPackerApp.maybeScheduleBillingRefresh(source);
+      } else {
+        _callBillingPumpWithRetry(source);
+      }
+    } catch {
+      // non-fatal; the members list has already been refreshed by the caller
+    }
+    if (normalizedOrgId && _tabState.activeTabId === 'org-members') {
+      const token = getTabActionToken();
+      loadAccountBundle({ force: true })
+        .then(() => renderIfFresh(getCurrentActionId(), source, undefined, getOverlayEpoch(), token))
+        .catch(() => { });
+    }
+  }
+
   function formatMemberJoined(member) {
     const joined = member && member.joined_at ? String(member.joined_at) : '';
     if (!joined) return '—';
@@ -1658,6 +1693,7 @@ export function createSettingsOverlay({
         return null;
       }
       await loadOrgMembers(orgId);
+      refreshMembershipContextAfterMutation(orgId, 'memberRole:update:refresh-context');
       const updated = result.member || null;
       if (updated && currentUserId && currentUserId === userId && membershipData) {
         membershipData = { ...membershipData, role: updated.role || membershipData.role };
@@ -1691,6 +1727,7 @@ export function createSettingsOverlay({
         return false;
       }
       await loadOrgMembers(orgId);
+      refreshMembershipContextAfterMutation(orgId, 'memberRemove:refresh-context');
       UIComponents.showToast('Member removed', 'success');
       renderIfFresh(getCurrentActionId(), 'memberRemove', epoch);
       return true;
@@ -5162,11 +5199,25 @@ export function createSettingsOverlay({
         !roleKnown &&
         (isLoadingAccountBundle || isLoadingMembership || isLoadingOrg || membersStale)
       );
+      let rolePendingTimedOut = false;
+      if (rolePending) {
+        const now = Date.now();
+        if (_membersPermissionPendingOrgId !== orgId || !_membersPermissionPendingSince) {
+          _membersPermissionPendingOrgId = orgId;
+          _membersPermissionPendingSince = now;
+        }
+        rolePendingTimedOut = (now - _membersPermissionPendingSince) >= _MEMBERS_PERMISSION_TIMEOUT_MS;
+      } else {
+        _membersPermissionPendingSince = 0;
+        _membersPermissionPendingOrgId = '';
+      }
       let membersDisabledReason = '';
       if (orgHydrating) {
         membersDisabledReason = 'Loading workspace…';
       } else if (!orgId) {
         membersDisabledReason = 'Select a workspace to manage members';
+      } else if (rolePendingTimedOut) {
+        membersDisabledReason = 'Could not confirm your permissions. Refresh and try again.';
       } else if (rolePending) {
         membersDisabledReason = 'Loading permissions…';
       } else if (membersLoading || membersStale) {
@@ -5275,9 +5326,32 @@ export function createSettingsOverlay({
 
         if (membersDisabledReason) {
           const membersStateHelp = doc.createElement('div');
-          membersStateHelp.className = 'muted tp3d-members-inline-helper';
+          membersStateHelp.className = rolePendingTimedOut
+            ? 'tp3d-org-feedback tp3d-org-feedback--error'
+            : 'muted tp3d-members-inline-helper';
           membersStateHelp.textContent = membersDisabledReason;
           membersCard.appendChild(membersStateHelp);
+          if (rolePendingTimedOut) {
+            const permissionsRetryRow = doc.createElement('div');
+            permissionsRetryRow.className = 'row';
+            const permissionsRetryBtn = doc.createElement('button');
+            permissionsRetryBtn.type = 'button';
+            permissionsRetryBtn.className = 'btn btn-secondary';
+            permissionsRetryBtn.textContent = 'Refresh permissions';
+            permissionsRetryBtn.addEventListener('click', () => {
+              _membersPermissionPendingSince = 0;
+              _membersPermissionPendingOrgId = '';
+              queueAccountBundleRefresh({ force: true, source: 'org-members:permissions-timeout' });
+              const epoch = _renderEpoch;
+              const token = getTabActionToken();
+              loadOrgMembers(orgId)
+                .then(() => renderIfFresh(getCurrentActionId(), 'org-members:permissions-timeout', epoch, undefined, token))
+                .catch(() => { });
+              render({ source: 'members-permissions-timeout-refresh' });
+            });
+            permissionsRetryRow.appendChild(permissionsRetryBtn);
+            membersCard.appendChild(permissionsRetryRow);
+          }
         }
 
         if (!hasMembersForOrg && !isLoadingOrgMembers) {
@@ -5748,24 +5822,41 @@ export function createSettingsOverlay({
               }
               roleSelect.value = role;
               roleSelect.disabled = Boolean(membersDisabledReason || !canEditRole);
-              roleSelect.addEventListener('change', ev => {
+              roleSelect.addEventListener('change', async ev => {
                 const target = ev.target instanceof HTMLSelectElement ? ev.target : null;
                 const nextRole = target ? String(target.value) : role;
                 if (nextRole === role) return;
+                roleSelect.value = role;
                 if (nextRole === 'owner' && !isOwner) {
                   UIComponents.showToast('Only owners can promote members to owner.', 'warning');
-                  roleSelect.value = role;
                   return;
                 }
                 if (nextRole === 'admin' && !isOwner) {
                   UIComponents.showToast('Only owners can promote members to admin.', 'warning');
-                  roleSelect.value = role;
                   return;
                 }
                 if (membersDisabledReason || !canEditRole) {
-                  roleSelect.value = role;
                   return;
                 }
+                if (isSensitiveRoleChange(role, nextRole)) {
+                  let confirmed = false;
+                  try {
+                    confirmed = await UIComponents.confirm({
+                      title: 'Change member role',
+                      message: buildRoleChangeConfirmMessage(member, role, nextRole),
+                      okLabel: 'Change Role',
+                      cancelLabel: 'Cancel',
+                      danger: role === 'owner' || nextRole === 'owner',
+                    });
+                  } catch {
+                    confirmed = false;
+                  }
+                  if (!confirmed) {
+                    roleSelect.value = role;
+                    return;
+                  }
+                }
+                roleSelect.value = nextRole;
                 updateMemberRole(orgId, member, nextRole, currentUserId).catch(() => {
                   roleSelect.value = role;
                 });

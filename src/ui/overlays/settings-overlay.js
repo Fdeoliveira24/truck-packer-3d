@@ -580,6 +580,8 @@ export function createSettingsOverlay({
   let modalOrgId = '';
   let selectedInterval = 'month';
   let orgChangedHandler = null;
+  let orgAccessLostHandler = null;
+  let _orgAccessLostId = '';
   let workspaceSwitchHandler = null;
   let lastOrgLogoKey = null;
   let lastOrgLogoUrl = null;
@@ -667,6 +669,34 @@ export function createSettingsOverlay({
       modalOrgId = resolveInitialModalOrgId();
     }
     return modalOrgId;
+  }
+
+  function isLockedOrgAccessLost(orgId = ensureModalOrgId()) {
+    const lockedOrgId = normalizeOrgId(orgId);
+    return Boolean(lockedOrgId && _orgAccessLostId && _orgAccessLostId === lockedOrgId);
+  }
+
+  function appendOrgAccessLostNotice(targetEl, source = 'org-access-lost') {
+    if (!targetEl) return;
+    const lostMsg = doc.createElement('div');
+    lostMsg.className = 'tp3d-org-feedback tp3d-org-feedback--error';
+    lostMsg.textContent = 'You no longer have access to this workspace.';
+    targetEl.appendChild(lostMsg);
+
+    const lostRefreshRow = doc.createElement('div');
+    lostRefreshRow.className = 'row';
+    const lostRefreshBtn = doc.createElement('button');
+    lostRefreshBtn.type = 'button';
+    lostRefreshBtn.className = 'btn btn-secondary';
+    lostRefreshBtn.textContent = 'Refresh';
+    lostRefreshBtn.addEventListener('click', () => {
+      _orgAccessLostId = '';
+      lastBundleRefreshAt = 0;
+      queueAccountBundleRefresh({ force: true, source });
+      render({ source });
+    });
+    lostRefreshRow.appendChild(lostRefreshBtn);
+    targetEl.appendChild(lostRefreshRow);
   }
 
   function shouldSuppressPreLockBillingTransition(stateOverride = null) {
@@ -926,6 +956,9 @@ export function createSettingsOverlay({
     if (!next || billingContextResolvedOrgId !== next) {
       billingContextResolvedOrgId = '';
     }
+    if (_orgAccessLostId && _orgAccessLostId !== next) {
+      _orgAccessLostId = '';
+    }
   }
 
   async function ensureBillingContextHydrated(orgId, { force = false, source = 'org-billing:hydrate-context' } = {}) {
@@ -1168,6 +1201,40 @@ export function createSettingsOverlay({
       // ignore
     }
     orgChangedHandler = null;
+  }
+
+  function ensureOrgAccessLostListener() {
+    if (orgAccessLostHandler || typeof window === 'undefined') return;
+    orgAccessLostHandler = ev => {
+      const detail = ev && ev.detail ? ev.detail : {};
+      const eventUserId = detail && detail.userId ? String(detail.userId) : '';
+      const currentUserId = getCurrentAuthUserId();
+      if (!eventUserId || !currentUserId || eventUserId !== currentUserId) return;
+
+      const lostOrgId = normalizeOrgId(detail && detail.orgId ? detail.orgId : '');
+      const lockedOrgId = ensureModalOrgId();
+      if (!lostOrgId || !lockedOrgId || lostOrgId !== lockedOrgId) return;
+
+      _orgAccessLostId = lostOrgId;
+      isEditingOrg = false;
+      orgMemberActions.clear();
+      orgInviteActions.clear();
+      if (settingsOverlay && settingsOverlay.isConnected) {
+        renderIfFresh(getCurrentActionId(), 'org-access-lost');
+      }
+    };
+    window.addEventListener('tp3d:org-access-lost', orgAccessLostHandler);
+  }
+
+  function removeOrgAccessLostListener() {
+    if (!orgAccessLostHandler || typeof window === 'undefined') return;
+    try {
+      window.removeEventListener('tp3d:org-access-lost', orgAccessLostHandler);
+    } catch {
+      // ignore
+    }
+    orgAccessLostHandler = null;
+    _orgAccessLostId = '';
   }
 
   function ensureWorkspaceSwitchListener() {
@@ -2033,6 +2100,7 @@ export function createSettingsOverlay({
     bumpEpoch('close');
     isUploadingAvatar = false;
     removeOrgChangedListener();
+    removeOrgAccessLostListener();
     removeWorkspaceSwitchListener();
     if (billingUnsubscribe) {
       try {
@@ -2787,6 +2855,11 @@ export function createSettingsOverlay({
 
     const state = (api && typeof api.getBillingState === 'function' ? api.getBillingState() : null) || fallbackState;
     const lockedOrgId = ensureModalOrgId();
+    if (isLockedOrgAccessLost(lockedOrgId)) {
+      while (targetEl.firstChild) targetEl.removeChild(targetEl.firstChild);
+      appendOrgAccessLostNotice(targetEl, 'org-billing:lost-access:refresh');
+      return;
+    }
     const currentOrgId = getOrgIdFromOrgContext();
     const billingOrgId = normalizeOrgId(state.orgId || '');
     const loading = Boolean(state.loading);
@@ -4712,7 +4785,12 @@ export function createSettingsOverlay({
       ).toLowerCase();
       const isOwnerOrAdmin = orgRole === 'owner' || orgRole === 'admin';
 
-      if (isEditingOrg && orgData && isOwnerOrAdmin) {
+      if (isLockedOrgAccessLost(ensureModalOrgId())) {
+        isEditingOrg = false;
+        orgCard.appendChild(orgTitle);
+        orgCard.appendChild(orgDivider);
+        appendOrgAccessLostNotice(orgCard, 'org-general:lost-access:refresh');
+      } else if (isEditingOrg && orgData && isOwnerOrAdmin) {
         // Edit mode
         const form = doc.createElement('form');
         form.className = 'tp3d-account-profile-form';
@@ -5280,7 +5358,9 @@ export function createSettingsOverlay({
       const membersCard = doc.createElement('div');
       membersCard.className = 'card tp3d-settings-card-max';
 
-      if (!orgUserView.isAuthed) {
+      if (isLockedOrgAccessLost(orgId)) {
+        appendOrgAccessLostNotice(membersCard, 'org-members:lost-access:refresh');
+      } else if (!orgUserView.isAuthed) {
         const msg = doc.createElement('div');
         msg.className = 'muted';
         msg.textContent = 'Sign in to manage workspace members.';
@@ -6056,6 +6136,7 @@ export function createSettingsOverlay({
     const nextTab = resolveInitialTab(tab);
     if (settingsOverlay && settingsOverlay.isConnected) {
       ensureOrgChangedListener();
+      ensureOrgAccessLostListener();
       ensureWorkspaceSwitchListener();
       setActiveTab(nextTab, { source: 'open', actionId: _tabState.lastActionId });
       debugSettingsModalSnapshot('open:reuse');
@@ -6155,6 +6236,7 @@ export function createSettingsOverlay({
     };
 
     ensureOrgChangedListener();
+    ensureOrgAccessLostListener();
     ensureWorkspaceSwitchListener();
     bindTabsOnce();
     setActiveTab(nextTab, { source: 'open', actionId: _tabState.lastActionId });

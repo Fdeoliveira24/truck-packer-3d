@@ -584,3 +584,87 @@ test('settings members shows pending invite expiration state without new CSS', a
   assert.match(src, /getInviteExpirationView\(invite\.expires_at\)[\s\S]*statusBadge\.textContent = expirationView\.expired \? 'Expired' : 'Pending'/,
     'expired pending invites must not look like valid pending invites');
 });
+
+test('app access-loss handler is active-org 403 only and ignores transient billing states', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  assert.match(src, /function isConfirmedActiveOrgAccessDeniedResult\b/,
+    'app must have a narrow confirmed access-denied classifier');
+  assert.match(src, /if \(!requestOrgId \|\| !result \|\| result\.pending\) return false/,
+    'pending or missing billing results must not trigger access loss');
+  assert.match(src, /Number\(result\.status\) !== 403/,
+    'only HTTP 403 billing results should trigger access loss');
+  assert.match(src, /if \(resultOrgId && resultOrgId !== requestOrgId\) return false/,
+    'wrong-org result org ids must be ignored');
+  assert.match(src, /if \(resultDataOrgId && resultDataOrgId !== requestOrgId\) return false/,
+    'wrong-org payload org ids must be ignored');
+  assert.doesNotMatch(src, /status\) === 408[\s\S]*_orgAccessLossHandler/,
+    'billing timeout must not trigger access-loss handling');
+});
+
+test('app access-loss handler verifies auth and active org, rate-limits, dispatches event, and refreshes org context', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  assert.match(src, /let _orgAccessLossHandler = null/,
+    'module-level handler slot must exist for refreshBilling');
+  assert.match(src, /const _orgAccessLossLastAt = new Map\(\)/,
+    'access-loss handling must rate-limit per org');
+  assert.match(src, /const ORG_ACCESS_LOSS_COOLDOWN_MS = 30000/,
+    'access-loss rate limit must be bounded');
+  assert.match(src, /function handleOrgAccessLoss\(orgId, meta = \{\}\)[\s\S]*if \(!truth \|\| !truth\.isSignedIn \|\| !truth\.userId\) return false/,
+    'handler must require signed-in auth truth');
+  assert.match(src, /const activeOrgId = getActiveOrgIdNow\(\)[\s\S]*if \(!activeOrgId \|\| activeOrgId !== lostOrgId\) return false/,
+    'handler must confirm the lost org is still the active org');
+  assert.match(src, /_orgAccessLossLastAt\.set\(lostOrgId, now\)/,
+    'handler must record rate-limit state by org');
+  assert.match(src, /clearBillingState\(\)/,
+    'handler must clear stale billing state after confirmed active-org access loss');
+  assert.match(src, /new CustomEvent\('tp3d:org-access-lost'[\s\S]*detail: \{ orgId: lostOrgId, userId: truth\.userId, ts: now \}/,
+    'handler must dispatch tp3d:org-access-lost with org/user/timestamp');
+  assert.match(src, /refreshOrgContext\('access-loss-detected', \{ force: true, forceEmit: true \}\)/,
+    'handler must force existing org context refresh after access loss');
+  assert.doesNotMatch(src.match(/function handleOrgAccessLoss\(orgId, meta = \{\}\)[\s\S]*?return true;\n    \}/)?.[0] || '', /signOut|location\.reload|window\.location/,
+    'handler must not sign out or reload the page');
+});
+
+test('settings overlay locks lost workspace and hides workspace-scoped controls', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.match(src, /let orgAccessLostHandler = null/,
+    'settings overlay must track its access-loss event listener');
+  assert.match(src, /let _orgAccessLostId = ''/,
+    'settings overlay must track the locked lost org id locally');
+  assert.match(src, /function ensureOrgAccessLostListener\b[\s\S]*window\.addEventListener\('tp3d:org-access-lost', orgAccessLostHandler\)/,
+    'settings overlay must listen for tp3d:org-access-lost while open');
+  assert.match(src, /if \(!eventUserId \|\| !currentUserId \|\| eventUserId !== currentUserId\) return/,
+    'settings overlay must ignore access-loss events for other users');
+  assert.match(src, /if \(!lostOrgId \|\| !lockedOrgId \|\| lostOrgId !== lockedOrgId\) return/,
+    'settings overlay must only lock the matching modal org');
+  assert.match(src, /function removeOrgAccessLostListener\b[\s\S]*window\.removeEventListener\('tp3d:org-access-lost', orgAccessLostHandler\)/,
+    'settings overlay must remove the access-loss listener on close');
+  assert.match(src, /if \(_orgAccessLostId && _orgAccessLostId !== next\) \{[\s\S]*_orgAccessLostId = '';/,
+    'settings overlay must clear lost-access state on org switch');
+});
+
+test('settings lost-access state uses existing feedback and blocks general members and billing controls', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.match(src, /function appendOrgAccessLostNotice\b[\s\S]*You no longer have access to this workspace\./,
+    'settings must render the required lost-access copy');
+  assert.match(src, /tp3d-org-feedback tp3d-org-feedback--error/,
+    'lost-access message must use existing feedback classes');
+  assert.match(src, /if \(isLockedOrgAccessLost\(ensureModalOrgId\(\)\)\)[\s\S]*appendOrgAccessLostNotice\(orgCard, 'org-general:lost-access:refresh'\)[\s\S]*\} else if \(isEditingOrg/,
+    'org-general must render lost-access notice before workspace edit/view controls');
+  assert.match(src, /if \(isLockedOrgAccessLost\(orgId\)\) \{[\s\S]*appendOrgAccessLostNotice\(membersCard, 'org-members:lost-access:refresh'\)[\s\S]*\} else if \(!orgUserView\.isAuthed\)/,
+    'members tab must render lost-access notice before member/invite controls');
+  assert.match(src, /if \(isLockedOrgAccessLost\(lockedOrgId\)\) \{[\s\S]*appendOrgAccessLostNotice\(targetEl, 'org-billing:lost-access:refresh'\)[\s\S]*return;/,
+    'billing tab must early-exit before stale billing controls render');
+});
+
+test('phase 0.5D keeps native dialogs absent from Settings overlay', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.equal(src.includes('window.alert'), false);
+  assert.equal(src.includes('window.confirm'), false);
+  assert.equal(src.includes('window.prompt'), false);
+});

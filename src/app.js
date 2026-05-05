@@ -152,6 +152,10 @@ let _billingEpoch = 0; // incremented on sign-out; late refresh results are igno
 const _bootStartedAtMs = Date.now();
 /** @type {null|((snapshot:any, meta?:{reason?:string, activeOrgId?:string|null})=>void)} */
 let _billingGateApplier = null;
+/** @type {null|((orgId:string, meta?:{reason?:string,status?:number|null,message?:string|null})=>boolean)} */
+let _orgAccessLossHandler = null;
+const _orgAccessLossLastAt = new Map();
+const ORG_ACCESS_LOSS_COOLDOWN_MS = 30000;
 
 function normalizeBillingEntitlementStatus(value) {
   const raw = String(value || '').trim().toLowerCase();
@@ -774,6 +778,18 @@ function clearBillingState() {
   applyAccessGateFromBilling(getBillingState(), { reason: 'clear' });
 }
 
+function isConfirmedActiveOrgAccessDeniedResult(result, requestedOrgId) {
+  const requestOrgId = normalizeOrgIdForBilling(requestedOrgId || '');
+  if (!requestOrgId || !result || result.pending) return false;
+  if (Number(result.status) !== 403) return false;
+
+  const resultOrgId = normalizeOrgIdForBilling(result && result.orgId ? result.orgId : '');
+  const resultDataOrgId = normalizeOrgIdForBilling(result && result.data && result.data.orgId ? result.data.orgId : '');
+  if (resultOrgId && resultOrgId !== requestOrgId) return false;
+  if (resultDataOrgId && resultDataOrgId !== requestOrgId) return false;
+  return true;
+}
+
 // ── Workspace readiness helper: prevents "create workspace" banner from sticking during auth wobble ──
 let _workspaceReadyInflight = false;
 /** @type {() => boolean} Module-level accessor, set by IIFE once auth gate is initialized. */
@@ -1158,6 +1174,17 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       applyAccessGateFromBilling(getBillingState(), { reason: 'pending:' + reason, activeOrgId: requestedOrgId || null });
       scheduleBillingPendingRetry(requestedOrgId, reason);
       return getBillingState();
+    }
+
+    if (isConfirmedActiveOrgAccessDeniedResult(result, requestedOrgId)) {
+      const handled = _orgAccessLossHandler
+        ? _orgAccessLossHandler(requestedOrgId, {
+          reason,
+          status: result.status,
+          message: result && result.error && result.error.message ? String(result.error.message) : null,
+        })
+        : false;
+      if (handled) return getBillingState();
     }
 
     _billingState.pending = false;
@@ -6408,11 +6435,78 @@ const TP3D_BUILD_STAMP = Object.freeze({
       refreshBilling({ force: shouldForce, reason: 'pump:' + reason }).catch(() => { });
     }
 
+    function handleOrgAccessLoss(orgId, meta = {}) {
+      const lostOrgId = normalizeOrgIdForBilling(orgId || '');
+      if (!lostOrgId) return false;
+
+      const truth = getAuthTruthSnapshot();
+      if (!truth || !truth.isSignedIn || !truth.userId) return false;
+
+      const activeOrgId = getActiveOrgIdNow();
+      if (!activeOrgId || activeOrgId !== lostOrgId) return false;
+
+      const now = Date.now();
+      const lastAt = _orgAccessLossLastAt.get(lostOrgId) || 0;
+      if ((now - lastAt) < ORG_ACCESS_LOSS_COOLDOWN_MS) return true;
+      _orgAccessLossLastAt.set(lostOrgId, now);
+
+      clearBillingPendingRetry(lostOrgId);
+      const billingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
+      if (billingOrgId === lostOrgId) {
+        // _clearBillingSnapshotForOrgTransition() is for switching to a different org.
+        // Here the stale billing snapshot is the lost org itself, so use the existing full billing cleanup.
+        clearBillingState();
+      }
+
+      try {
+        window.dispatchEvent(new CustomEvent('tp3d:org-access-lost', {
+          detail: { orgId: lostOrgId, userId: truth.userId, ts: now },
+        }));
+      } catch {
+        // ignore
+      }
+
+      try {
+        const _uic = typeof window !== 'undefined' && window.__TP3D_UI ? window.__TP3D_UI : null;
+        if (_uic && typeof _uic.showToast === 'function') {
+          _uic.showToast(
+            'You no longer have access to this workspace.',
+            'warning',
+            { title: 'Workspace access', duration: 8000 },
+          );
+        }
+      } catch {
+        // ignore
+      }
+
+      try {
+        if (isTp3dDebugEnabled()) {
+          console.info('[orgContext] access-lost', {
+            orgId: lostOrgId,
+            reason: meta && meta.reason ? String(meta.reason) : null,
+            status: meta && meta.status != null ? Number(meta.status) : null,
+          });
+        }
+      } catch {
+        // ignore
+      }
+
+      window.setTimeout(() => {
+        const currentActiveOrgId = getActiveOrgIdNow();
+        if (!currentActiveOrgId || currentActiveOrgId !== lostOrgId) return;
+        refreshOrgContext('access-loss-detected', { force: true, forceEmit: true }).catch(() => { });
+      }, 0);
+
+      return true;
+    }
+
     // Expose billing pump globally for SettingsOverlay (avoids import coupling)
     try {
       window.TruckPackerApp = window.TruckPackerApp || {};
       window.TruckPackerApp.maybeScheduleBillingRefresh = maybeScheduleBillingRefresh;
       window.TruckPackerApp.getWorkspaceSwitchState = getWorkspaceSwitchState;
+      window.TruckPackerApp.notifyOrgAccessLoss = handleOrgAccessLoss;
+      _orgAccessLossHandler = handleOrgAccessLoss;
     } catch { /* ignore */ }
 
     function resolveOrgContextFromBundle(bundle) {

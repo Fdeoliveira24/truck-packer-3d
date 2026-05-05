@@ -11,6 +11,7 @@ const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.
 const settingsOverlayPath = new URL('../../src/ui/overlays/settings-overlay.js', import.meta.url);
 const orgInvitePath = new URL('../../supabase/functions/org-invite/index.ts', import.meta.url);
 const orgInviteAcceptPath = new URL('../../supabase/functions/org-invite-accept/index.ts', import.meta.url);
+const orgLeaveWorkspacePath = new URL('../../supabase/functions/org-leave-workspace/index.ts', import.meta.url);
 const orgInviteExpirationMigrationPath = new URL(
   '../../supabase/migrations/2026050501_organization_invites_expiration.sql',
   import.meta.url
@@ -667,4 +668,138 @@ test('phase 0.5D keeps native dialogs absent from Settings overlay', async () =>
   assert.equal(src.includes('window.alert'), false);
   assert.equal(src.includes('window.confirm'), false);
   assert.equal(src.includes('window.prompt'), false);
+});
+
+test('phase 0.6A org-leave-workspace edge function exists and requires auth', async () => {
+  const src = await fs.readFile(orgLeaveWorkspacePath, 'utf8');
+
+  assert.ok(src.length > 0, 'org-leave-workspace/index.ts must exist');
+  assert.match(src, /if \(req\.method !== "POST"\)/,
+    'leave-workspace must require POST');
+  assert.match(src, /requireUser\(req\)/,
+    'leave-workspace must require a signed-in user');
+  assert.match(src, /if \(!auth\.ok \|\| !auth\.user\)/,
+    'leave-workspace must reject unauthenticated requests');
+  assert.match(src, /body\.organization_id \|\| body\.org_id/,
+    'leave-workspace must accept organization_id with org_id fallback');
+  assert.match(src, /Missing organization_id/,
+    'leave-workspace must validate organization_id input');
+});
+
+test('phase 0.6A org-leave-workspace verifies membership and blocks unsafe owner leaves', async () => {
+  const src = await fs.readFile(orgLeaveWorkspacePath, 'utf8');
+
+  assert.match(src, /const membership = await getMembership\(sb, orgId, userId\)/,
+    'leave-workspace must verify the current user membership');
+  assert.match(src, /You are not a member of this workspace\./,
+    'leave-workspace must block non-members safely');
+  assert.match(src, /\.from\("organizations"\)[\s\S]*\.select\("owner_id"\)/,
+    'leave-workspace must read organizations.owner_id');
+  assert.match(src, /orgOwnerId && orgOwnerId === userId/,
+    'leave-workspace must compare organizations.owner_id to the current user');
+  assert.match(src, /You cannot leave this workspace because you are the primary owner\. Transfer ownership first\./,
+    'leave-workspace must block the primary owner with transfer copy');
+  assert.match(src, /You cannot leave this workspace because you are the last owner\. Transfer ownership or add another owner first\./,
+    'leave-workspace must block the last owner with clear copy');
+});
+
+test('phase 0.6A org-leave-workspace deletes only the current user membership row', async () => {
+  const src = await fs.readFile(orgLeaveWorkspacePath, 'utf8');
+
+  assert.match(src, /\.from\("organization_members"\)[\s\S]*\.delete\(\)[\s\S]*\.eq\("organization_id", orgId\)[\s\S]*\.eq\("user_id", userId\)/,
+    'leave-workspace must delete only the calling user membership row');
+  assert.doesNotMatch(src, /\.from\("organizations"\)\s*\n\s*\.delete\(\)/,
+    'leave-workspace must not delete the organization');
+  assert.match(src, /return json\(\{ ok: true, organization_id: orgId \}/,
+    'leave-workspace must return the removed organization_id');
+});
+
+test('phase 0.6A org-leave-workspace does not touch billing or Stripe', async () => {
+  const src = await fs.readFile(orgLeaveWorkspacePath, 'utf8');
+
+  assert.doesNotMatch(src, /billing_customers|subscriptions|stripe_customers|webhook_events/i,
+    'leave-workspace must not reference billing or webhook tables');
+  assert.doesNotMatch(src, /stripe|checkout|portal|billing-status/i,
+    'leave-workspace must not reference Stripe, checkout, portal, or billing-status');
+});
+
+test('phase 0.6A billing service exports leaveWorkspace wrapper', async () => {
+  const src = await fs.readFile(billingServiceUrl, 'utf8');
+
+  assert.match(src, /export async function leaveWorkspace\(orgId\)/,
+    'billing service must export leaveWorkspace');
+  assert.match(src, /postFn\('\/org-leave-workspace'[\s\S]*organization_id: orgId/,
+    'leaveWorkspace must POST organization_id to /org-leave-workspace');
+  assert.match(src, /return \{ ok: true, organization_id: organizationId \}/,
+    'leaveWorkspace must return normalized organization_id on success');
+});
+
+test('phase 0.6A app exposes handleWorkspaceLeft and refreshes org context without logout or reload', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function handleWorkspaceLeft(leftOrgId, options = {})');
+  const end = src.indexOf('// Expose billing pump globally', start);
+  const helper = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(helper, 'app must define handleWorkspaceLeft');
+  assert.match(src, /window\.TruckPackerApp\.handleWorkspaceLeft = handleWorkspaceLeft/,
+    'app must expose handleWorkspaceLeft on TruckPackerApp');
+  assert.match(helper, /const normalizedLeftOrgId = normalizeOrgIdForBilling\(leftOrgId \|\| ''\)/,
+    'handleWorkspaceLeft must normalize and guard leftOrgId');
+  assert.match(helper, /clearBillingPendingRetry\(normalizedLeftOrgId\)/,
+    'handleWorkspaceLeft must clear billing retry state for the left org');
+  assert.match(helper, /if \(billingOrgId === normalizedLeftOrgId\) \{[\s\S]*clearBillingState\(\)/,
+    'handleWorkspaceLeft must clear stale billing when scoped to the left org');
+  assert.match(helper, /refreshOrgContext\(source, \{ force: true, forceEmit: true \}\)/,
+    'handleWorkspaceLeft must force existing org context refresh');
+  assert.doesNotMatch(helper, /signOut|forceLocalSignedOut|location\.reload|window\.location/,
+    'handleWorkspaceLeft must not sign out or reload');
+});
+
+test('phase 0.6A settings general uses safe leave workspace UI', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+  const start = src.indexOf('async function leaveWorkspace(orgId, orgName)');
+  const end = src.indexOf('// ---- Organization invites ----', start);
+  const handler = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.match(src, /leaveWorkspace as leaveWorkspaceFn/,
+    'settings overlay must import leaveWorkspace');
+  assert.match(src, /let _leaveWorkspaceInFlight = false/,
+    'settings overlay must track leave in-flight state');
+  assert.match(handler, /leaveWorkspaceFn\(normalizedOrgId\)/,
+    'settings leave handler must call the service wrapper');
+  assert.match(handler, /TruckPackerApp\.handleWorkspaceLeft\(normalizedOrgId, \{ source: 'settings-leave-workspace' \}\)/,
+    'settings leave handler must call app post-leave helper');
+  assert.match(handler, /queueAccountBundleRefresh\(\{ force: true, source: 'settings-leave-workspace' \}\)/,
+    'settings leave handler must have an org/account refresh fallback');
+  assert.match(src, /UIComponents\.confirm\(\{[\s\S]*title: 'Leave Workspace'[\s\S]*danger: true/,
+    'leave action must use UIComponents.confirm with danger styling');
+  assert.match(src, /leaveBtn\.disabled = _leaveWorkspaceInFlight \|\| isPrimaryOwner/,
+    'leave button must disable while in flight and for primary owner');
+  assert.match(src, /Transfer ownership before leaving\. You are the primary owner\./,
+    'primary owner must see transfer-ownership helper copy');
+  assert.doesNotMatch(src, /window\.alert|window\.confirm|window\.prompt/,
+    'settings overlay must not use native browser dialogs');
+});
+
+test('phase 0.6A does not introduce archive restore transfer delete or export workspace flows', async () => {
+  const edgeSrc = await fs.readFile(orgLeaveWorkspacePath, 'utf8');
+  const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appStart = appSrc.indexOf('function handleWorkspaceLeft(leftOrgId, options = {})');
+  const appEnd = appSrc.indexOf('// Expose billing pump globally', appStart);
+  const helper = appStart >= 0 && appEnd > appStart ? appSrc.slice(appStart, appEnd) : '';
+  const settingsStart = settingsSrc.indexOf('async function leaveWorkspace(orgId, orgName)');
+  const settingsEnd = settingsSrc.indexOf('// ---- Organization invites ----', settingsStart);
+  const settingsHandler = settingsStart >= 0 && settingsEnd > settingsStart
+    ? settingsSrc.slice(settingsStart, settingsEnd)
+    : '';
+
+  for (const [label, src] of [
+    ['org-leave-workspace', edgeSrc],
+    ['handleWorkspaceLeft', helper],
+    ['settings leaveWorkspace', settingsHandler],
+  ]) {
+    assert.doesNotMatch(src, /archiveWorkspace|restoreWorkspace|transferOwnership|deleteWorkspace|exportWorkspace/,
+      `${label} must not add workspace lifecycle flows beyond Leave Workspace`);
+  }
 });

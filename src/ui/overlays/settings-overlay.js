@@ -38,6 +38,7 @@ import {
   sendOrgInvite,
   updateOrgMemberRole as updateOrgMemberRoleFn,
   removeOrgMember as removeOrgMemberFn,
+  leaveWorkspace as leaveWorkspaceFn,
 } from '../../data/services/billing.service.js';
 
 export function createSettingsOverlay({
@@ -552,6 +553,7 @@ export function createSettingsOverlay({
   let isLoadingOrg = false;
   let isLoadingMembership = false; // Track membership loading
   let isSavingOrg = false;
+  let _leaveWorkspaceInFlight = false;
   let orgMembersData = null;
   let isLoadingOrgMembers = false;
   let orgMembersError = null;
@@ -1849,6 +1851,61 @@ export function createSettingsOverlay({
     } finally {
       orgMemberActions.delete(userId);
       renderIfFresh(getCurrentActionId(), 'memberRemove:done', epoch);
+    }
+  }
+
+  async function leaveWorkspace(orgId, orgName) {
+    const normalizedOrgId = normalizeOrgId(orgId);
+    if (_leaveWorkspaceInFlight || !normalizedOrgId) return false;
+
+    _leaveWorkspaceInFlight = true;
+    const epoch = _renderEpoch;
+    renderIfFresh(getCurrentActionId(), 'workspaceLeave:begin', epoch);
+    try {
+      const result = await leaveWorkspaceFn(normalizedOrgId);
+      if (!result || !result.ok) {
+        UIComponents.showToast(
+          result && result.error ? result.error : 'Failed to leave workspace.',
+          'error',
+          { title: 'Leave Workspace' },
+        );
+        renderIfFresh(getCurrentActionId(), 'workspaceLeave:error', epoch);
+        return false;
+      }
+
+      const displayName = orgName ? String(orgName) : 'workspace';
+      UIComponents.showToast(`You left ${displayName}.`, 'success', {
+        title: 'Leave Workspace',
+        duration: 6000,
+      });
+
+      try {
+        if (
+          typeof window !== 'undefined' &&
+          window.TruckPackerApp &&
+          typeof window.TruckPackerApp.handleWorkspaceLeft === 'function'
+        ) {
+          window.TruckPackerApp.handleWorkspaceLeft(normalizedOrgId, { source: 'settings-leave-workspace' });
+        } else {
+          queueAccountBundleRefresh({ force: true, source: 'settings-leave-workspace' });
+        }
+      } catch {
+        queueAccountBundleRefresh({ force: true, source: 'settings-leave-workspace' });
+      }
+
+      close('workspace-left');
+      return true;
+    } catch (err) {
+      UIComponents.showToast(
+        `Failed to leave workspace: ${err && err.message ? err.message : err}`,
+        'error',
+        { title: 'Leave Workspace' },
+      );
+      renderIfFresh(getCurrentActionId(), 'workspaceLeave:error', epoch);
+      return false;
+    } finally {
+      _leaveWorkspaceInFlight = false;
+      if (isOpen()) renderIfFresh(getCurrentActionId(), 'workspaceLeave:done', epoch);
     }
   }
 
@@ -5245,6 +5302,68 @@ export function createSettingsOverlay({
             });
             editActions.appendChild(editBtn);
             viewContainer.appendChild(editActions);
+          }
+
+          const leaveOrgId = normalizeOrgId(
+            (orgData && orgData.id) ||
+            (membershipData && membershipData.organization_id) ||
+            ''
+          );
+          if (leaveOrgId && membershipData) {
+            const leaveDivider = doc.createElement('div');
+            leaveDivider.className = 'tp3d-settings-org-divider';
+            viewContainer.appendChild(leaveDivider);
+
+            const currentUserIdForLeave = orgUserView && orgUserView.userId ? String(orgUserView.userId) : '';
+            const isPrimaryOwner = Boolean(
+              orgData &&
+              orgData.owner_id &&
+              currentUserIdForLeave &&
+              String(orgData.owner_id) === currentUserIdForLeave
+            );
+            const leaveName = orgData && orgData.name ? String(orgData.name) : '';
+
+            const leaveIntro = doc.createElement('div');
+            leaveIntro.className = 'muted tp3d-settings-meta tp3d-settings-mt-md';
+            leaveIntro.textContent = 'Remove yourself from this workspace. You will need a new invite to rejoin.';
+            viewContainer.appendChild(leaveIntro);
+
+            if (isPrimaryOwner) {
+              const ownerWarning = doc.createElement('div');
+              ownerWarning.className = 'tp3d-org-feedback tp3d-org-feedback--warning';
+              ownerWarning.textContent = 'Transfer ownership before leaving. You are the primary owner.';
+              viewContainer.appendChild(ownerWarning);
+            }
+
+            const leaveActions = doc.createElement('div');
+            leaveActions.className = 'tp3d-account-actions';
+            const leaveBtn = doc.createElement('button');
+            leaveBtn.type = 'button';
+            leaveBtn.className = 'btn btn-danger';
+            leaveBtn.textContent = _leaveWorkspaceInFlight ? 'Leaving…' : 'Leave Workspace';
+            leaveBtn.disabled = _leaveWorkspaceInFlight || isPrimaryOwner;
+            leaveBtn.addEventListener('click', async () => {
+              if (_leaveWorkspaceInFlight || isPrimaryOwner) return;
+              const roleForLeave = String(
+                (orgData && orgData.role) ||
+                (membershipData && membershipData.role) ||
+                ''
+              ).toLowerCase();
+              const targetName = leaveName || 'this workspace';
+              const message = roleForLeave === 'owner'
+                ? `Leave ${targetName}? You will lose owner access and cannot rejoin without a new invite.`
+                : `Leave ${targetName}? You will lose access and cannot rejoin without a new invite.`;
+              const confirmed = await UIComponents.confirm({
+                title: 'Leave Workspace',
+                message,
+                okLabel: 'Leave Workspace',
+                cancelLabel: 'Cancel',
+                danger: true,
+              }).catch(() => false);
+              if (confirmed) await leaveWorkspace(leaveOrgId, leaveName);
+            });
+            leaveActions.appendChild(leaveBtn);
+            viewContainer.appendChild(leaveActions);
           }
         }
 

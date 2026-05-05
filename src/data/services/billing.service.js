@@ -693,3 +693,27 @@ export async function removeOrgMember(orgId, userId) {
     return { ok: false, error: err && err.message ? err.message : 'Network error' };
   }
 }
+
+/**
+ * Leave a workspace via Edge Function guardrails.
+ * Removes only the current user's organization_members row.
+ * @param {string} orgId
+ * @returns {Promise<{ok:boolean, organization_id?:string|null, error?:string}>}
+ */
+export async function leaveWorkspace(orgId) {
+  try {
+    debugLog('leaveWorkspace', { orgId });
+    const res = await postFn('/org-leave-workspace', {
+      organization_id: orgId,
+    });
+    const data = await readJsonSafe(res);
+    if (!res.ok) {
+      return { ok: false, error: resolveFnError(res, data, 'Leave workspace failed') };
+    }
+    const organizationId = data && data.organization_id ? String(data.organization_id) : null;
+    return { ok: true, organization_id: organizationId };
+  } catch (err) {
+    debugLog('leaveWorkspace:error', err && err.message);
+    return { ok: false, error: err && err.message ? err.message : 'Network error' };
+  }
+}

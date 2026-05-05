@@ -6500,12 +6500,33 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return true;
     }
 
+    function handleWorkspaceLeft(leftOrgId, options = {}) {
+      const normalizedLeftOrgId = normalizeOrgIdForBilling(leftOrgId || '');
+      if (!normalizedLeftOrgId) return false;
+
+      const activeOrgId = getActiveOrgIdNow();
+      const wasActiveOrg = activeOrgId === normalizedLeftOrgId;
+
+      clearBillingPendingRetry(normalizedLeftOrgId);
+      if (wasActiveOrg) {
+        const billingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
+        if (billingOrgId === normalizedLeftOrgId) {
+          clearBillingState();
+        }
+      }
+
+      const source = options && options.source ? String(options.source) : 'workspace-left';
+      refreshOrgContext(source, { force: true, forceEmit: true }).catch(() => { });
+      return true;
+    }
+
     // Expose billing pump globally for SettingsOverlay (avoids import coupling)
     try {
       window.TruckPackerApp = window.TruckPackerApp || {};
       window.TruckPackerApp.maybeScheduleBillingRefresh = maybeScheduleBillingRefresh;
       window.TruckPackerApp.getWorkspaceSwitchState = getWorkspaceSwitchState;
       window.TruckPackerApp.notifyOrgAccessLoss = handleOrgAccessLoss;
+      window.TruckPackerApp.handleWorkspaceLeft = handleWorkspaceLeft;
       _orgAccessLossHandler = handleOrgAccessLoss;
     } catch { /* ignore */ }
 

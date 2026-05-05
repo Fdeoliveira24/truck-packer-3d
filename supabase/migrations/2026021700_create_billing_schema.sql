@@ -73,6 +73,9 @@ create table if not exists public.subscriptions (
   updated_at timestamptz not null default now()
 );
 
+-- Ensure organization_id exists even if table was created without it (legacy prod schema).
+alter table public.subscriptions add column if not exists organization_id uuid references public.organizations(id) on delete cascade;
+
 create index if not exists subscriptions_org_id_idx on public.subscriptions(organization_id);
 create index if not exists subscriptions_user_id_idx on public.subscriptions(user_id);
 create index if not exists subscriptions_customer_id_idx on public.subscriptions(stripe_customer_id);

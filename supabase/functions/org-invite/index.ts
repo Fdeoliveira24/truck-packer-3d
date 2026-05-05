@@ -3,6 +3,7 @@ import { requireUser, serviceClient } from "../_shared/auth.ts";
 
 const VALID_ROLES = new Set(["admin", "member"]);
 const MANAGER_ROLES = new Set(["owner", "admin"]);
+const INVITE_EXPIRATION_DAYS = 7;
 
 function normalizeRole(value: unknown): "admin" | "member" | null {
   const role = String(value || "member").trim().toLowerCase();
@@ -43,6 +44,11 @@ function buildInviteLink(origin: string | null, token: string): string | null {
   } catch {
     return null;
   }
+}
+
+function inviteExpiresAt(now: Date): string {
+  const expiresAt = new Date(now.getTime() + INVITE_EXPIRATION_DAYS * 24 * 60 * 60 * 1000);
+  return expiresAt.toISOString();
 }
 
 async function getActorRole(sb: ReturnType<typeof serviceClient>, orgId: string, userId: string): Promise<string | null> {
@@ -109,7 +115,9 @@ Deno.serve(async (req) => {
     }
 
     const token = createInviteToken();
-    const nowIso = new Date().toISOString();
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const expiresAtIso = inviteExpiresAt(now);
 
     const { data: pendingRows, error: pendingErr } = await sb
       .from("organization_invites")
@@ -133,6 +141,7 @@ Deno.serve(async (req) => {
       token,
       invited_by: auth.user.id,
       invited_at: nowIso,
+      expires_at: expiresAtIso,
       accepted_at: null,
       revoked_at: null,
     };
@@ -144,7 +153,7 @@ Deno.serve(async (req) => {
         .from("organization_invites")
         .update(payload)
         .eq("id", String(existingPending.id))
-        .select("id, organization_id, email, role, status, invited_by, invited_at, accepted_at, revoked_at")
+        .select("id, organization_id, email, role, status, invited_by, invited_at, expires_at, accepted_at, revoked_at")
         .single();
       if (error) throw error;
       inviteRecord = data as Record<string, unknown>;
@@ -155,7 +164,7 @@ Deno.serve(async (req) => {
           organization_id: orgId,
           ...payload,
         })
-        .select("id, organization_id, email, role, status, invited_by, invited_at, accepted_at, revoked_at")
+        .select("id, organization_id, email, role, status, invited_by, invited_at, expires_at, accepted_at, revoked_at")
         .single();
       if (error) throw error;
       inviteRecord = data as Record<string, unknown>;

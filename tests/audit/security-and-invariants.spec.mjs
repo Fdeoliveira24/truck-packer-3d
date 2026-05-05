@@ -11,6 +11,10 @@ const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.
 const settingsOverlayPath = new URL('../../src/ui/overlays/settings-overlay.js', import.meta.url);
 const orgInvitePath = new URL('../../supabase/functions/org-invite/index.ts', import.meta.url);
 const orgInviteAcceptPath = new URL('../../supabase/functions/org-invite-accept/index.ts', import.meta.url);
+const orgInviteExpirationMigrationPath = new URL(
+  '../../supabase/migrations/2026050501_organization_invites_expiration.sql',
+  import.meta.url
+);
 
 test('isAllowedBillingRedirectUrl only allows https stripe origins', async () => {
   const { isAllowedBillingRedirectUrl } = await import(
@@ -506,4 +510,77 @@ test('settings members permission loading has a local timeout error instead of i
     'permission timeout must show a clear error message');
   assert.match(src, /tp3d-org-feedback tp3d-org-feedback--error/,
     'permission timeout must use the existing error feedback styling');
+});
+
+test('organization invite expiration migration adds expires_at and indexes pending expiry', async () => {
+  const sql = await fs.readFile(orgInviteExpirationMigrationPath, 'utf8');
+
+  assert.match(sql, /add column if not exists expires_at timestamptz/i,
+    'migration must add organization_invites.expires_at');
+  assert.match(sql, /set expires_at = coalesce\(invited_at, created_at, now\(\)\) \+ interval '7 days'/i,
+    'pending invite backfill must use invited_at/created_at plus 7 days');
+  assert.match(sql, /where status = 'pending'[\s\S]*accepted_at is null[\s\S]*revoked_at is null[\s\S]*expires_at is null/i,
+    'backfill must target only unaccepted/unrevoked pending invites without expiry');
+  assert.match(sql, /create index if not exists organization_invites_pending_expires_at_idx[\s\S]*on public\.organization_invites\(expires_at\)/i,
+    'migration must add a useful pending-expiry index');
+});
+
+test('supabase client invite list selects expires_at for Settings pending invite UI', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+
+  assert.match(src, /function getOrganizationInvites\b[\s\S]*\.select\('id, organization_id, email, role, status, invited_by, invited_at, expires_at, accepted_at, revoked_at'\)/,
+    'getOrganizationInvites must select expires_at so Settings can render real invite expiration');
+});
+
+test('org-invite sets and refreshes expires_at on invite create and resend', async () => {
+  const src = await fs.readFile(orgInvitePath, 'utf8');
+
+  assert.match(src, /const INVITE_EXPIRATION_DAYS = 7/,
+    'org-invite must use a 7-day invite lifetime');
+  assert.match(src, /function inviteExpiresAt\b[\s\S]*INVITE_EXPIRATION_DAYS \* 24 \* 60 \* 60 \* 1000/,
+    'org-invite must compute expires_at from now plus the configured lifetime');
+  assert.match(src, /const expiresAtIso = inviteExpiresAt\(now\)/,
+    'org-invite must compute one expires_at value per request');
+  assert.match(src, /expires_at: expiresAtIso/,
+    'org-invite payload must include expires_at for both insert and update paths');
+  assert.match(src, /\.update\(payload\)[\s\S]*\.select\("id, organization_id, email, role, status, invited_by, invited_at, expires_at, accepted_at, revoked_at"\)/,
+    'resend/update path must return refreshed expires_at');
+  assert.match(src, /\.insert\(\{[\s\S]*\.\.\.payload[\s\S]*\}\)[\s\S]*\.select\("id, organization_id, email, role, status, invited_by, invited_at, expires_at, accepted_at, revoked_at"\)/,
+    'create path must return expires_at');
+});
+
+test('org-invite-accept rejects expired pending invites before membership insert without exposing organization_id', async () => {
+  const src = await fs.readFile(orgInviteAcceptPath, 'utf8');
+
+  assert.match(src, /\.select\("id, organization_id, email, role, status, expires_at, accepted_at, revoked_at"\)/,
+    'org-invite-accept must fetch expires_at');
+  assert.match(src, /function isInviteExpired\b[\s\S]*expiresAt\.getTime\(\) <= Date\.now\(\)/,
+    'org-invite-accept must classify past expires_at as expired');
+
+  const expiryIdx = src.indexOf('isInviteExpired(invite.expires_at)');
+  const memberInsertIdx = src.indexOf('.from("organization_members")');
+  assert.ok(expiryIdx > 0, 'expired invite guard must exist');
+  assert.ok(memberInsertIdx > expiryIdx,
+    'expired invite guard must run before membership insert/upsert');
+
+  const expiredBranch = src.slice(expiryIdx, memberInsertIdx);
+  assert.match(expiredBranch, /This invite link has expired\. Please ask the workspace owner to send a new invite\./,
+    'expired invite response must be clear and safe');
+  assert.doesNotMatch(expiredBranch, /organization_id/,
+    'expired invite response must not expose organization_id');
+});
+
+test('settings members shows pending invite expiration state without new CSS', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.match(src, /function getInviteExpirationView\b/,
+    'settings members must format invite expiry state');
+  assert.match(src, /Expires in \$\{days\} days/,
+    'future invites must show Expires in X days');
+  assert.match(src, /Expires today/,
+    'near-expiry invites must show Expires today');
+  assert.match(src, /text: 'Expired'[\s\S]*tp3d-org-feedback tp3d-org-feedback--error/,
+    'expired pending invites must use existing error styling');
+  assert.match(src, /getInviteExpirationView\(invite\.expires_at\)[\s\S]*statusBadge\.textContent = expirationView\.expired \? 'Expired' : 'Pending'/,
+    'expired pending invites must not look like valid pending invites');
 });

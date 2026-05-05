@@ -2842,7 +2842,7 @@ export async function getOrganizationInvites(orgId) {
 
   const { data, error } = await client
     .from('organization_invites')
-    .select('id, organization_id, email, role, status, invited_by, invited_at, accepted_at, revoked_at')
+    .select('id, organization_id, email, role, status, invited_by, invited_at, expires_at, accepted_at, revoked_at')
     .eq('organization_id', id)
     .order('invited_at', { ascending: false });
 

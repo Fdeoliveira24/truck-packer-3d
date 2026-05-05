@@ -7,6 +7,13 @@ function normalizeAcceptedInviteRole(value: unknown): "admin" | "member" | null 
   return null;
 }
 
+function isInviteExpired(value: unknown): boolean {
+  if (!value) return false;
+  const expiresAt = new Date(String(value));
+  if (Number.isNaN(expiresAt.getTime())) return false;
+  return expiresAt.getTime() <= Date.now();
+}
+
 Deno.serve(async (req) => {
   const cors = handleCors(req);
   if (cors) return cors;
@@ -43,7 +50,7 @@ Deno.serve(async (req) => {
 
     const { data: invite, error: inviteErr } = await sb
       .from("organization_invites")
-      .select("id, organization_id, email, role, status, accepted_at, revoked_at")
+      .select("id, organization_id, email, role, status, expires_at, accepted_at, revoked_at")
       .eq("token", token)
       .maybeSingle();
 
@@ -78,6 +85,12 @@ Deno.serve(async (req) => {
     }
     if (inviteStatus !== "pending" || invite.revoked_at) {
       return json({ error: "Invite is no longer valid." }, { status: 409, origin });
+    }
+    if (isInviteExpired(invite.expires_at)) {
+      return json(
+        { error: "This invite link has expired. Please ask the workspace owner to send a new invite." },
+        { status: 409, origin },
+      );
     }
 
     // Insert membership if missing; keep existing role for existing members.

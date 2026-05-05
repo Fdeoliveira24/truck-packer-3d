@@ -1677,6 +1677,50 @@ export function createSettingsOverlay({
     }
   }
 
+  function getInviteExpirationView(expiresAtValue) {
+    const raw = expiresAtValue ? String(expiresAtValue) : '';
+    if (!raw) {
+      return {
+        text: 'Expiry unavailable',
+        expired: false,
+        className: 'tp3d-org-feedback tp3d-org-feedback--warning',
+      };
+    }
+
+    const expiresAt = new Date(raw);
+    if (Number.isNaN(expiresAt.getTime())) {
+      return {
+        text: 'Expiry unavailable',
+        expired: false,
+        className: 'tp3d-org-feedback tp3d-org-feedback--warning',
+      };
+    }
+
+    const diffMs = expiresAt.getTime() - Date.now();
+    if (diffMs <= 0) {
+      return {
+        text: 'Expired',
+        expired: true,
+        className: 'tp3d-org-feedback tp3d-org-feedback--error',
+      };
+    }
+
+    if (diffMs < 24 * 60 * 60 * 1000) {
+      return {
+        text: 'Expires today',
+        expired: false,
+        className: 'tp3d-org-feedback tp3d-org-feedback--warning',
+      };
+    }
+
+    const days = Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+    return {
+      text: `Expires in ${days} days`,
+      expired: false,
+      className: 'muted tp3d-members-inline-helper',
+    };
+  }
+
   async function updateMemberRole(orgId, member, nextRole, currentUserId) {
     if (!member || !member.user_id || !orgId) return null;
     const userId = String(member.user_id);
@@ -5638,10 +5682,15 @@ export function createSettingsOverlay({
                 tr.appendChild(invitedTd);
 
                 const statusTd = doc.createElement('td');
+                const expirationView = getInviteExpirationView(invite.expires_at);
                 const statusBadge = doc.createElement('span');
-                statusBadge.className = 'badge badge--pending';
-                statusBadge.textContent = 'Pending';
+                statusBadge.className = expirationView.expired ? 'badge' : 'badge badge--pending';
+                statusBadge.textContent = expirationView.expired ? 'Expired' : 'Pending';
                 statusTd.appendChild(statusBadge);
+                const expiresLine = doc.createElement('div');
+                expiresLine.className = expirationView.className;
+                expiresLine.textContent = expirationView.text;
+                statusTd.appendChild(expiresLine);
                 tr.appendChild(statusTd);
 
                 const actionsTd = doc.createElement('td');

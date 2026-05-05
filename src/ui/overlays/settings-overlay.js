@@ -2850,6 +2850,7 @@ export function createSettingsOverlay({
     // --- Organization section ---
     const orgMatchesLocked = orgProfileLoaded;
     const transientOrgName = !orgMatchesLocked ? getTransientBillingOrgName(lockedOrgId) : '';
+    const hasSafeFallbackOrgName = Boolean(lockedOrgId && transientOrgName);
     const orgName = orgMatchesLocked && orgData && orgData.name
       ? String(orgData.name)
       : (lockedOrgId ? (workspaceSwitchNeedsSkeleton ? 'Switching workspace...' : (transientOrgName || 'Loading workspace…')) : 'Personal Workspace');
@@ -2966,7 +2967,7 @@ export function createSettingsOverlay({
 
     orgSection.appendChild(orgRow);
 
-    if (orgContextStalled) {
+    if (orgContextStalled && !hasSafeFallbackOrgName) {
       const orgHelper = doc.createElement('div');
       orgHelper.className = 'muted tp3d-members-inline-helper';
       orgHelper.textContent = 'Workspace details are not available yet. Try Refresh.';
@@ -3013,7 +3014,7 @@ export function createSettingsOverlay({
       // Billing unavailable: covers error responses AND any non-success state (ok=false).
       // Do NOT fall through to plan info / Subscribe CTA when billing status is unknown.
       const errMsg = doc.createElement('div');
-      errMsg.className = 'muted';
+      errMsg.className = 'tp3d-org-feedback tp3d-org-feedback--error';
       errMsg.textContent = 'Billing unavailable. Pro-only actions are temporarily disabled until billing refreshes.';
       planCard.appendChild(errMsg);
 
@@ -3022,9 +3023,12 @@ export function createSettingsOverlay({
       retryBtn.className = 'btn tp3d-settings-mt-sm';
       retryBtn.textContent = 'Retry';
       retryBtn.addEventListener('click', () => {
-        if (api && typeof api.refreshBilling === 'function') {
-          api.refreshBilling({ force: true }).catch(() => { });
-        }
+        const refreshPromise = api && typeof api.refreshBilling === 'function'
+          ? api.refreshBilling({ force: true, reason: 'settings-billing-retry' })
+          : Promise.resolve();
+        Promise.resolve(refreshPromise)
+          .catch(() => { })
+          .finally(() => renderCurrentBillingTabAfterRefresh('settings-billing-retry'));
       });
       planCard.appendChild(retryBtn);
     } else {
@@ -3104,25 +3108,35 @@ export function createSettingsOverlay({
       // Status / cancellation info
       const statusLine = doc.createElement('div');
       statusLine.className = 'muted tp3d-settings-mt-xs';
+      const setStatusLineTone = tone => {
+        if (tone === 'warning') {
+          statusLine.className = 'tp3d-org-feedback tp3d-org-feedback--warning tp3d-settings-mt-xs';
+        } else if (tone === 'error') {
+          statusLine.className = 'tp3d-org-feedback tp3d-org-feedback--error tp3d-settings-mt-xs';
+        } else {
+          statusLine.className = 'muted tp3d-members-inline-helper tp3d-settings-mt-xs';
+        }
+      };
 
       if (isIncludedInPlan) {
+        setStatusLineTone('neutral');
         statusLine.textContent = canManageBilling
-          ? 'This workspace is included in your owner plan.'
+          ? 'This workspace is covered by your current plan.'
           : 'This workspace is covered by the workspace owner\u2019s plan.';
       } else if (isWorkspaceLimitReached) {
-        const limitText = state.workspaceLimit
-          ? ` (${Number(state.workspaceCount || 0)}/${Number(state.workspaceLimit)} workspaces used)`
-          : '';
+        setStatusLineTone('warning');
         statusLine.textContent = canManageBilling
-          ? 'Workspace limit reached' + limitText + '. Upgrade your plan or remove another workspace to include this workspace.'
+          ? `Your plan includes ${Number(state.workspaceLimit || 0)} workspaces, and ${Number(state.workspaceCount || 0)} are currently active. Upgrade your plan or remove another workspace to include this one.`
           : 'This workspace is not in the owner’s plan. Ask the workspace owner to upgrade the plan or free a workspace slot.';
       } else if (isOwnerSubscriptionRequired) {
+        setStatusLineTone('error');
         statusLine.textContent = canManageBilling
           ? 'Start a subscription to enable Pro features.'
           : 'The workspace owner needs to start or restore a subscription before Pro features are available.';
       } else if (isTrial) {
         // days-left badge in header row is the single source of truth; no status line needed
       } else if (!isProOrTrial && status === 'trial_expired') {
+        setStatusLineTone('error');
         statusLine.textContent = 'Your free trial has ended.';
       } else if (isFreeWorkspaceState) {
         statusLine.textContent = 'No active subscription. This workspace is on the Free plan.';
@@ -3227,8 +3241,28 @@ export function createSettingsOverlay({
       const subBtn = doc.createElement('button');
       subBtn.type = 'button';
       subBtn.className = 'btn btn-primary';
-      subBtn.textContent = 'Subscribe';
+      const overLimitManageBilling = Boolean(isWorkspaceLimitReached && canManageBilling && portalAvailable && api && typeof api.openPortal === 'function');
+      subBtn.textContent = overLimitManageBilling
+        ? 'Manage Billing'
+        : isWorkspaceLimitReached
+          ? 'Upgrade Plan'
+          : 'Subscribe';
       subBtn.addEventListener('click', () => {
+        if (overLimitManageBilling) {
+          subBtn.disabled = true;
+          subBtn.textContent = 'Redirecting\u2026';
+          api.openPortal().then((r) => {
+            if (!r.ok) {
+              if (UIComponents) UIComponents.showToast(r.error || 'Portal session failed', 'error', { title: 'Billing' });
+              subBtn.disabled = false;
+              subBtn.textContent = 'Manage Billing';
+            }
+          }).catch(() => {
+            subBtn.disabled = false;
+            subBtn.textContent = 'Manage Billing';
+          });
+          return;
+        }
         if (!api || typeof api.startCheckout !== 'function') {
           if (UIComponents) UIComponents.showToast('Checkout coming soon. Contact sales.', 'info', { title: 'Billing' });
           return;
@@ -3263,11 +3297,11 @@ export function createSettingsOverlay({
             if (!r.ok) {
               if (UIComponents) UIComponents.showToast(r.error || 'Checkout failed', 'error', { title: 'Billing' });
               subBtn.disabled = false;
-              subBtn.textContent = 'Subscribe';
+              subBtn.textContent = isWorkspaceLimitReached ? 'Upgrade Plan' : 'Subscribe';
             }
           }).catch(() => {
             subBtn.disabled = false;
-            subBtn.textContent = 'Subscribe';
+            subBtn.textContent = isWorkspaceLimitReached ? 'Upgrade Plan' : 'Subscribe';
           });
         }).catch(() => {
           if (UIComponents) UIComponents.showToast('Checkout failed', 'error', { title: 'Billing' });
@@ -3376,10 +3410,12 @@ export function createSettingsOverlay({
       refreshBtn.disabled = Boolean(loading || !lockedOrgId);
       refreshBtn.addEventListener('click', () => {
         if (!lockedOrgId) return;
-        ensureBillingContextHydrated(lockedOrgId, { force: true, source: 'org-billing:refresh' }).catch(() => { });
-        if (api && typeof api.refreshBilling === 'function') {
-          api.refreshBilling({ force: true }).catch(() => { });
-        }
+        const hydratePromise = ensureBillingContextHydrated(lockedOrgId, { force: true, source: 'org-billing:refresh' });
+        const refreshPromise = api && typeof api.refreshBilling === 'function'
+          ? api.refreshBilling({ force: true, reason: 'settings-billing-refresh' })
+          : Promise.resolve();
+        Promise.allSettled([hydratePromise, refreshPromise])
+          .then(() => renderCurrentBillingTabAfterRefresh('settings-billing-refresh'));
       });
       actionsRow.appendChild(refreshBtn);
       subSection.appendChild(actionsRow);
@@ -3418,6 +3454,23 @@ export function createSettingsOverlay({
     if (_perfBillingT0) {
       debug('renderBillingInto:perf', { ms: Number((performance.now() - _perfBillingT0).toFixed(1)) });
     }
+  }
+
+  function renderCurrentBillingTabAfterRefresh(source = 'billing-refresh') {
+    if (!settingsOverlay || !isOpen() || _tabState.activeTabId !== 'org-billing') return;
+    const schedule = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : fn => setTimeout(fn, 0);
+    schedule(() => {
+      if (!settingsOverlay || !isOpen() || _tabState.activeTabId !== 'org-billing') return;
+      const wrap = doc.getElementById('tp3d-billing-wrap');
+      if (!wrap) return;
+      try {
+        renderBillingInto(wrap);
+      } catch (err) {
+        debug('billing refresh repaint failed', { source, err });
+      }
+    });
   }
 
   function ensureBillingSubscription() {
@@ -5058,9 +5111,26 @@ export function createSettingsOverlay({
           (_overlayOpenedAtMs > 0 && (Date.now() - _overlayOpenedAtMs) < _ORG_READY_GRACE_MS))
       );
       const currentUserId = orgUserView && orgUserView.userId ? String(orgUserView.userId) : null;
+      const hasMembersForOrg = Boolean(
+        orgId &&
+        lastOrgMembersOrgId &&
+        String(lastOrgMembersOrgId) === String(orgId) &&
+        Array.isArray(orgMembersData)
+      );
+      const memberRoleForCurrentUser = (() => {
+        if (!hasMembersForOrg || !currentUserId) return '';
+        const selfMember = orgMembersData.find(member => {
+          const memberOrgId = normalizeOrgId(member && member.organization_id ? member.organization_id : '');
+          const memberUserId = member && member.user_id ? String(member.user_id) : '';
+          return memberOrgId === orgId && memberUserId === currentUserId;
+        });
+        const role = String(selfMember && selfMember.role ? selfMember.role : '').toLowerCase();
+        return isKnownOrgRole(role) ? role : '';
+      })();
       const currentRole = String(
         (orgDataId && orgDataId === orgId && orgData && orgData.role) ||
         (membershipOrgId && membershipOrgId === orgId && membershipData && membershipData.role) ||
+        memberRoleForCurrentUser ||
         ''
       ).toLowerCase() || null;
       const membersWorkspaceName = orgDataId && orgDataId === orgId && orgData && orgData.name
@@ -5070,12 +5140,6 @@ export function createSettingsOverlay({
       const isOwner = currentRole === 'owner';
       const canManage = roleKnown ? canManageMembers(currentRole) : false;
       const canManageAdmins = isOwner;
-      const hasMembersForOrg = Boolean(
-        orgId &&
-        lastOrgMembersOrgId &&
-        String(lastOrgMembersOrgId) === String(orgId) &&
-        Array.isArray(orgMembersData)
-      );
       const hasInvitesForOrg = Boolean(
         orgId &&
         lastOrgInvitesOrgId &&

@@ -8189,10 +8189,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
         let _trialModalCanManageBilling = null; // tracks the last canManageBilling value used for the open modal
         let _trialModalLine1Ref = null;
         let _trialModalRoleHintRef = null;
-        let _trialModalDeferTimer = null;
-        let _trialModalDeferOrgId = null;
-        let _trialModalDeferAttemptedForOrg = null;
-        const TRIAL_MODAL_ROLE_DEFER_MS = 900;
         /** @type {Map<string, string>} */
         const lastBillingStatusByOrg = new Map();
 
@@ -8534,20 +8530,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // ignore
         }
 
-        const _clearTrialModalDeferTimer = (reason) => {
-          if (_trialModalDeferTimer !== null) {
-            clearTimeout(_trialModalDeferTimer);
-            _trialModalDeferTimer = null;
-            if (isTp3dDebugEnabled()) {
-              console.info('[TrialExpiredModal] defer:cancel', { orgId: _trialModalDeferOrgId, reason });
-            }
-          }
-          _trialModalDeferOrgId = null;
-        };
-
         const closeTrialExpiredModal = () => {
-          _clearTrialModalDeferTimer('modal-close');
-          _trialModalDeferAttemptedForOrg = null;
           if (!trialExpiredModalRef || typeof trialExpiredModalRef.close !== 'function') return;
           const ref = trialExpiredModalRef;
           trialExpiredModalRef = null;
@@ -8894,50 +8877,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
               );
 
           if (trialExpired) {
-            // Cancel defer + latch if active org changed
-            if (_trialModalDeferOrgId && _trialModalDeferOrgId !== orgId) {
-              _clearTrialModalDeferTimer('org-changed');
-              _trialModalDeferAttemptedForOrg = null;
-            }
-
-            if (_roleResult.resolved || trialExpiredModalRef) {
-              // Role truly resolved OR modal already open — show/upgrade immediately
-              _clearTrialModalDeferTimer('role-resolved');
-              _trialModalDeferAttemptedForOrg = null;
-              showTrialExpiredModal(s, canManageBilling);
-            } else if (_trialModalDeferAttemptedForOrg === orgId) {
-              // Defer already fired once for this org, role still unresolved
-              if (_orgBundleFetchInflightForOrg === orgId) {
-                // Bundle fetch still in-flight — wait for bundle-role-resolved to re-trigger
-                if (isTp3dDebugEnabled()) {
-                  console.info('[TrialExpiredModal] defer:latch-wait-bundle', { orgId, roleSource: _roleResult.roleSource });
-                }
-              } else {
-                // Bundle arrived but role still unresolved (no membership) — show with safe CTA
-                if (isTp3dDebugEnabled()) {
-                  console.info('[TrialExpiredModal] defer:latch-show', { orgId, roleSource: _roleResult.roleSource });
-                }
-                showTrialExpiredModal(s, canManageBilling);
-              }
-            } else if (!_trialModalDeferTimer) {
-              // Role unresolved, no modal, no timer, no prior attempt — start bounded defer
-              _trialModalDeferOrgId = orgId;
-              _trialModalDeferAttemptedForOrg = orgId;
-              if (isTp3dDebugEnabled()) {
-                console.info('[TrialExpiredModal] defer', {
-                  orgId, ms: TRIAL_MODAL_ROLE_DEFER_MS, resolved: false, roleSource: _roleResult.roleSource,
-                });
-              }
-              _trialModalDeferTimer = setTimeout(() => {
-                _trialModalDeferTimer = null;
-                _trialModalDeferOrgId = null;
-                if (isTp3dDebugEnabled()) {
-                  console.info('[TrialExpiredModal] defer:fire', { orgId });
-                }
-                applyAccessGateFromBilling(getBillingState(), { reason: 'trial-modal-deferred' });
-              }, TRIAL_MODAL_ROLE_DEFER_MS);
-            }
-            // else: timer already running, role still unresolved — let it fire
+            showTrialExpiredModal(s, canManageBilling);
           }
           else if (!s || (!s.pending && !s.loading)) {
             const _authSnap = getCurrentAuthSnapshot();

@@ -189,25 +189,22 @@ test('upgradeTrialModalToOwner is idempotent — uses data-trial-upgrade-btn gua
     'upgradeTrialModalToOwner must query for existing upgrade button before inserting');
 });
 
-test('TrialExpiredModal defers display when role is unresolved', async () => {
+test('TrialExpiredModal shows immediately once billing confirms trial_expired', async () => {
   const app = await fs.readFile(appPath, 'utf8');
 
-  // Defer state variables exist
-  assert.match(app, /let _trialModalDeferTimer\s*=\s*null/);
-  assert.match(app, /let _trialModalDeferOrgId\s*=\s*null/);
-  assert.match(app, /const TRIAL_MODAL_ROLE_DEFER_MS\s*=\s*900/);
+  assert.doesNotMatch(app, /TRIAL_MODAL_ROLE_DEFER_MS/,
+    'confirmed trial_expired billing truth must not wait on a role-resolution timer');
+  assert.doesNotMatch(app, /trial-modal-deferred/,
+    'trial_expired modal should not use a deferred re-entry reason');
 
-  // Defer fires trial-modal-deferred reason
-  assert.match(app, /reason:\s*'trial-modal-deferred'/);
+  const trialExpiredBranchStart = app.indexOf('if (trialExpired) {');
+  assert.ok(trialExpiredBranchStart > 0, 'trialExpired branch must exist');
+  const trialExpiredBranch = app.slice(trialExpiredBranchStart, trialExpiredBranchStart + 220);
 
-  // Defer timer is cleared on close
-  assert.match(app, /_clearTrialModalDeferTimer/);
-
-  // Four-branch structure: resolved → show, latch-hit → show, no timer → start, timer running → no-op
-  assert.match(app, /} else if \(!_trialModalDeferTimer\) \{/,
-    'defer must use else-if for timer-not-running guard (no-op when timer already running)');
-  // Comment confirming the no-op branch exists
-  assert.match(app, /\/\/ else: timer already running, role still unresolved/);
+  assert.match(trialExpiredBranch, /showTrialExpiredModal\(s,\s*canManageBilling\);/,
+    'confirmed trial_expired billing truth must render the modal immediately');
+  assert.equal(trialExpiredBranch.includes('_roleResult.resolved'), false,
+    'trialExpired branch must not wait for role resolution before showing the modal');
 });
 
 test('legacy org-sync handler is hint-only and does not call handleIncomingOrgContextSync', async () => {
@@ -234,28 +231,15 @@ test('legacy org-sync handler is hint-only and does not call handleIncomingOrgCo
     'legacy handler must fall back to refreshOrgContext');
 });
 
-test('TrialExpiredModal defer latch prevents second timer cycle for same org', async () => {
+test('TrialExpiredModal no longer uses deferred latch state', async () => {
   const app = await fs.readFile(appPath, 'utf8');
 
-  // Latch variable exists
-  assert.match(app, /let _trialModalDeferAttemptedForOrg\s*=\s*null/,
-    'defer latch variable must exist');
-
-  // Latch is checked before starting a new timer
-  assert.match(app, /_trialModalDeferAttemptedForOrg === orgId/,
-    'defer must check latch before starting timer');
-
-  // Latch is set when starting the timer
-  assert.match(app, /_trialModalDeferAttemptedForOrg = orgId/,
-    'defer must set latch when starting timer');
-
-  // Latch is cleared on modal close
-  const closeBlock = app.slice(
-    app.indexOf('const closeTrialExpiredModal'),
-    app.indexOf('const closeTrialExpiredModal') + 500
-  );
-  assert.ok(closeBlock.includes('_trialModalDeferAttemptedForOrg = null'),
-    'latch must be cleared in closeTrialExpiredModal');
+  assert.doesNotMatch(app, /_trialModalDeferAttemptedForOrg/,
+    'trial_expired modal should not retain deferred latch state');
+  assert.doesNotMatch(app, /_trialModalDeferTimer/,
+    'trial_expired modal should not retain deferred timer state');
+  assert.doesNotMatch(app, /defer:latch/,
+    'trial_expired modal should not wait for bundle latch branches');
 });
 
 test('resolveCanManageBillingForOrg has early-out guard for missing orgId or userId', async () => {
@@ -279,7 +263,7 @@ test('resolveCanManageBillingForOrg has early-out guard for missing orgId or use
     'early-out guard must come before Tier 2 (OrgContext.getActiveRole) fallback');
 });
 
-test('bundle-inflight flag gates trial modal latch-show during cross-tab sync', async () => {
+test('bundle-inflight flag remains scoped to org context sync', async () => {
   const app = await fs.readFile(appPath, 'utf8');
 
   // Variable exists
@@ -304,11 +288,8 @@ test('bundle-inflight flag gates trial modal latch-show during cross-tab sync', 
   assert.ok(clearBlock.includes('_orgBundleFetchInflightForOrg = null'),
     'must clear inflight flag in clearOrgContext');
 
-  // Latch branch checks inflight before rendering
-  assert.match(app, /defer:latch-wait-bundle/,
-    'must log defer:latch-wait-bundle when bundle is inflight');
-  assert.match(app, /_orgBundleFetchInflightForOrg === orgId/,
-    'latch branch must check _orgBundleFetchInflightForOrg');
+  assert.doesNotMatch(app, /defer:latch-wait-bundle/,
+    'trial_expired modal should no longer wait for bundle latch branches');
 });
 
 test('tp3dDebug-only billing accessor is guarded by isTp3dDebugEnabled', async () => {

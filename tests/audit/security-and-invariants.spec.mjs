@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 const billingServiceUrl = new URL('../../src/data/services/billing.service.js', import.meta.url);
 const accountOverlayPath = new URL('../../src/ui/overlays/account-overlay.js', import.meta.url);
 const appPath = new URL('../../src/app.js', import.meta.url);
+const indexHtmlPath = new URL('../../index.html', import.meta.url);
 const corsSharedPath = new URL('../../supabase/functions/_shared/cors.ts', import.meta.url);
 const supabasePath = new URL('../../src/core/supabase-client.js', import.meta.url);
 const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.meta.url);
@@ -802,4 +803,74 @@ test('phase 0.6A does not introduce archive restore transfer delete or export wo
     assert.doesNotMatch(src, /archiveWorkspace|restoreWorkspace|transferOwnership|deleteWorkspace|exportWorkspace/,
       `${label} must not add workspace lifecycle flows beyond Leave Workspace`);
   }
+});
+
+test('phase 0.6A-2 handleWorkspaceLeft syncs UI around forced org refresh', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function handleWorkspaceLeft(leftOrgId, options = {})');
+  const end = src.indexOf('// Expose billing pump globally', start);
+  const helper = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(helper, 'handleWorkspaceLeft must exist');
+  assert.match(helper, /clearBillingPendingRetry\(normalizedLeftOrgId\)/,
+    'handleWorkspaceLeft must keep clearing billing pending retry for the left org');
+  assert.match(helper, /if \(billingOrgId === normalizedLeftOrgId\) \{[\s\S]*clearBillingState\(\)/,
+    'handleWorkspaceLeft must keep scoped stale billing cleanup for the left org');
+  assert.match(helper, /SupabaseClient\.invalidateAccountCache\(\)/,
+    'handleWorkspaceLeft must invalidate stale account bundle cache after membership self-removal');
+  assert.match(helper, /syncWorkspaceUiAfterOrgRefresh\(source\)[\s\S]*refreshOrgContext\(source, \{ force: true, forceEmit: true \}\)/,
+    'handleWorkspaceLeft must sync workspace UI before or alongside forced org refresh');
+  assert.match(helper, /const refreshPromise = refreshOrgContext\(source, \{ force: true, forceEmit: true \}\)[\s\S]*return refreshPromise/,
+    'handleWorkspaceLeft must return the forced org refresh promise');
+  assert.match(helper, /syncWorkspaceUiAfterOrgRefresh\(source \+ ':refreshed'\)/,
+    'handleWorkspaceLeft must sync workspace UI again after org refresh settles');
+  assert.doesNotMatch(helper, /signOut|forceLocalSignedOut|location\.reload|window\.location/,
+    'handleWorkspaceLeft must not sign out or reload');
+});
+
+test('phase 0.6A-2 account switcher chip uses workspace initials instead of user initials', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const displayStart = src.indexOf('function getDisplay()');
+  const displayEnd = src.indexOf('function renderButton(buttonEl)', displayStart);
+  const displayFn = displayStart >= 0 && displayEnd > displayStart ? src.slice(displayStart, displayEnd) : '';
+  const renderStart = src.indexOf('function renderButton(buttonEl)');
+  const renderEnd = src.indexOf('function _showComingSoon()', renderStart);
+  const renderFn = renderStart >= 0 && renderEnd > renderStart ? src.slice(renderStart, renderEnd) : '';
+
+  assert.match(src, /function getActiveWorkspaceInitials\(\)[\s\S]*orgContext && orgContext\.activeOrg[\s\S]*name\.charAt\(0\)\.toUpperCase\(\)/,
+    'app must derive switcher initials from active workspace name');
+  assert.match(displayFn, /orgInitials: getActiveWorkspaceInitials\(\)/,
+    'AccountSwitcher display object must expose workspace-derived initials');
+  assert.match(displayFn, /userName: displayName \|\| '—'/,
+    'AccountSwitcher must keep the secondary user/account display label');
+  assert.match(renderFn, /avatarEl\.textContent = display\.orgInitials \|\| ''/,
+    'AccountSwitcher chip avatar must render workspace initials');
+  assert.doesNotMatch(renderFn, /avatarEl\.textContent = display\.initials/,
+    'AccountSwitcher chip avatar must not render user/account initials');
+});
+
+test('phase 0.6A-2 bottom-left workspace chip avatar is circular', async () => {
+  const src = await fs.readFile(indexHtmlPath, 'utf8');
+  const btnIdx = src.indexOf('id="btn-account-switcher"');
+  const chipSnippet = btnIdx >= 0 ? src.slice(btnIdx, btnIdx + 700) : '';
+
+  assert.match(chipSnippet, /class="brand-mark tp3d-settings-account-avatar"[\s\S]*border-radius: 50%/,
+    'bottom-left workspace chip avatar must use circular border radius');
+  assert.doesNotMatch(chipSnippet, /border-radius: 12px/,
+    'bottom-left workspace chip avatar must not keep the old square-ish 12px radius');
+});
+
+test('phase 0.6A-2 chip sync patch does not add Stripe billing-status or reload behavior', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const start = appSrc.indexOf('function handleWorkspaceLeft(leftOrgId, options = {})');
+  const end = appSrc.indexOf('// Expose billing pump globally', start);
+  const helper = start >= 0 && end > start ? appSrc.slice(start, end) : '';
+  const renderStart = appSrc.indexOf('function renderButton(buttonEl)');
+  const renderEnd = appSrc.indexOf('function _showComingSoon()', renderStart);
+  const renderFn = renderStart >= 0 && renderEnd > renderStart ? appSrc.slice(renderStart, renderEnd) : '';
+
+  assert.doesNotMatch(helper + renderFn, /billing-status|billing_customers|subscriptions|stripe_customers|webhook_events|stripe|checkout|portal/i,
+    'chip sync patch must not add billing-status, Stripe, or billing table behavior');
+  assert.doesNotMatch(helper + renderFn, /signOut|forceLocalSignedOut|location\.reload|window\.location/,
+    'chip sync patch must not sign out or reload');
 });

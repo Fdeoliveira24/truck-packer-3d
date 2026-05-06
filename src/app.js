@@ -2445,10 +2445,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return Utils.getUserAvatarView({ user, sessionUser });
     }
 
-    function renderSidebarBrandMarks() {
-      const view = getSidebarAvatarView();
-      const initials = (view && view.initials) || '';
+    function getActiveWorkspaceInitials() {
+      // eslint-disable-next-line no-use-before-define -- orgContext is initialized later in the app bootstrap closure.
+      const activeOrg = orgContext && orgContext.activeOrg ? orgContext.activeOrg : null;
+      const name = activeOrg && activeOrg.name ? String(activeOrg.name).trim() : '';
+      return name ? name.charAt(0).toUpperCase() : '';
+    }
 
+    function renderSidebarBrandMarks() {
+      const initials = getActiveWorkspaceInitials();
       const switcherMark = document.querySelector('#btn-account-switcher .brand-mark');
       if (switcherMark) switcherMark.textContent = initials;
     }
@@ -2479,6 +2484,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           accountName,
           role,
           userName: displayName || '—',
+          orgInitials: getActiveWorkspaceInitials(),
           initials: (view && view.initials) || '',
         };
       }
@@ -2487,7 +2493,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (!buttonEl) return;
         const display = getDisplay();
         const avatarEl = buttonEl.querySelector('.brand-mark');
-        if (avatarEl) avatarEl.textContent = display.initials || '';
+        if (avatarEl) avatarEl.textContent = display.orgInitials || '';
         const nameEl = buttonEl.querySelector('[data-account-name]');
         if (nameEl) nameEl.textContent = display.userName;
         const orgNameEl = buttonEl.querySelector('[data-org-name]');
@@ -6516,8 +6522,24 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       const source = options && options.source ? String(options.source) : 'workspace-left';
-      refreshOrgContext(source, { force: true, forceEmit: true }).catch(() => { });
-      return true;
+      try {
+        if (SupabaseClient && typeof SupabaseClient.invalidateAccountCache === 'function') {
+          SupabaseClient.invalidateAccountCache();
+        }
+      } catch {
+        // ignore
+      }
+      syncWorkspaceUiAfterOrgRefresh(source);
+      const refreshPromise = refreshOrgContext(source, { force: true, forceEmit: true })
+        .then(result => {
+          syncWorkspaceUiAfterOrgRefresh(source + ':refreshed');
+          return result;
+        })
+        .catch(() => {
+          syncWorkspaceUiAfterOrgRefresh(source + ':refresh-error');
+          return null;
+        });
+      return refreshPromise;
     }
 
     // Expose billing pump globally for SettingsOverlay (avoids import coupling)

@@ -2858,26 +2858,12 @@ export async function getOrganizationInvites(orgId) {
 }
 
 /**
- * Revoke (cancel) a pending invite.
- * @param {string} inviteId
+ * Legacy direct browser-side invite revoke is disabled.
+ * Use the org-invite-revoke Edge Function through billing.service.js instead.
  * @returns {Promise<boolean>}
  */
-export async function revokeOrganizationInvite(inviteId) {
-  const client = requireClient();
-  const clientSessionOk = await ensureClientSession();
-  if (!clientSessionOk) throw new Error('Not authenticated');
-  await requireUserId();
-  const id = String(inviteId || '').trim();
-  if (!id) return false;
-
-  const { error } = await client
-    .from('organization_invites')
-    .update({ status: 'revoked', revoked_at: new Date().toISOString() })
-    .eq('id', id)
-    .eq('status', 'pending');
-
-  if (error) throw error;
-  return true;
+export async function revokeOrganizationInvite() {
+  throw new Error('Direct invite revocation is disabled. Use the org-invite-revoke Edge Function.');
 }
 
 /**

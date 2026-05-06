@@ -11,6 +11,7 @@ const supabasePath = new URL('../../src/core/supabase-client.js', import.meta.ur
 const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.meta.url);
 const settingsOverlayPath = new URL('../../src/ui/overlays/settings-overlay.js', import.meta.url);
 const orgInvitePath = new URL('../../supabase/functions/org-invite/index.ts', import.meta.url);
+const orgInviteRevokePath = new URL('../../supabase/functions/org-invite-revoke/index.ts', import.meta.url);
 const orgInviteAcceptPath = new URL('../../supabase/functions/org-invite-accept/index.ts', import.meta.url);
 const orgLeaveWorkspacePath = new URL('../../supabase/functions/org-leave-workspace/index.ts', import.meta.url);
 const orgInviteExpirationMigrationPath = new URL(
@@ -873,4 +874,138 @@ test('phase 0.6A-2 chip sync patch does not add Stripe billing-status or reload 
     'chip sync patch must not add billing-status, Stripe, or billing table behavior');
   assert.doesNotMatch(helper + renderFn, /signOut|forceLocalSignedOut|location\.reload|window\.location/,
     'chip sync patch must not sign out or reload');
+});
+
+test('phase 0.6B org-invite-revoke edge function exists and requires authenticated POST with invite_id', async () => {
+  const src = await fs.readFile(orgInviteRevokePath, 'utf8');
+
+  assert.ok(src.length > 0, 'org-invite-revoke/index.ts must exist');
+  assert.match(src, /if \(req\.method !== "POST"\)/,
+    'invite revoke must require POST');
+  assert.match(src, /requireUser\(req\)/,
+    'invite revoke must require an authenticated user');
+  assert.match(src, /if \(!auth\.ok \|\| !auth\.user\)/,
+    'invite revoke must reject unauthenticated requests');
+  assert.match(src, /const inviteId = String\(body\.invite_id \|\| body\.id \|\| ""\)\.trim\(\)/,
+    'invite revoke must validate invite_id input');
+  assert.match(src, /Missing invite_id/,
+    'invite revoke must return a clear missing invite_id error');
+});
+
+test('phase 0.6B org-invite-revoke loads invite before update and verifies actor role for invite org', async () => {
+  const src = await fs.readFile(orgInviteRevokePath, 'utf8');
+  const loadIdx = src.indexOf('const invite = await getInvite(sb, inviteId)');
+  const updateIdx = src.indexOf('.update({ status: "revoked", revoked_at: nowIso })');
+
+  assert.match(src, /function getInvite\b[\s\S]*\.from\("organization_invites"\)[\s\S]*\.select\("id, organization_id, role, status, accepted_at, revoked_at"\)/,
+    'invite revoke must load the invite row before authorizing or updating');
+  assert.ok(loadIdx > 0 && updateIdx > loadIdx,
+    'invite revoke must load invite details before issuing the revoke update');
+  assert.match(src, /function getActorRole\b[\s\S]*\.from\("organization_members"\)[\s\S]*\.eq\("organization_id", orgId\)[\s\S]*\.eq\("user_id", userId\)/,
+    'invite revoke must verify owner/admin membership for the invite organization');
+  assert.match(src, /Only workspace owners\/admins can revoke invites\./,
+    'non-manager actors must be rejected');
+});
+
+test('phase 0.6B org-invite-revoke enforces owner/admin invite role rules', async () => {
+  const src = await fs.readFile(orgInviteRevokePath, 'utf8');
+
+  assert.match(src, /const MANAGER_ROLES = new Set\(\["owner", "admin"\]\)/,
+    'owners and admins are the only manager roles');
+  assert.match(src, /const REVOKABLE_INVITE_ROLES = new Set\(\["admin", "member"\]\)/,
+    'only admin/member invite roles are normal revocation targets');
+  assert.match(src, /if \(inviteRole === "owner"\)[\s\S]*Owner-role invite rows are invalid and cannot be revoked\./,
+    'legacy owner-role invite rows must be rejected');
+  assert.match(src, /if \(actorRole === "admin" && inviteRole !== "member"\)[\s\S]*Only workspace owners can revoke admin invites\./,
+    'admins must only be able to revoke member invites');
+});
+
+test('phase 0.6B org-invite-revoke blocks accepted invites and makes already revoked idempotent', async () => {
+  const src = await fs.readFile(orgInviteRevokePath, 'utf8');
+
+  assert.match(src, /if \(invite\.status === "accepted" \|\| invite\.accepted_at\)[\s\S]*Accepted invites cannot be revoked\./,
+    'accepted invites must return a safe conflict instead of being revoked');
+  assert.match(src, /if \(invite\.status === "revoked" \|\| invite\.revoked_at\)[\s\S]*already_revoked: true[\s\S]*invite_id: invite\.id/,
+    'already revoked invites must return idempotent success');
+  assert.match(src, /if \(invite\.status !== "pending"\)[\s\S]*Only pending invites can be revoked\./,
+    'non-pending invite states must not be revoked as a normal path');
+});
+
+test('phase 0.6B org-invite-revoke updates revoked_at and status without deleting rows or touching billing', async () => {
+  const src = await fs.readFile(orgInviteRevokePath, 'utf8');
+  const actorStart = src.indexOf('async function getActorRole');
+  const actorEnd = src.indexOf('async function getInvite', actorStart);
+  const actorHelper = actorStart >= 0 && actorEnd > actorStart ? src.slice(actorStart, actorEnd) : '';
+
+  assert.match(src, /\.from\("organization_invites"\)[\s\S]*\.update\(\{ status: "revoked", revoked_at: nowIso \}\)/,
+    'invite revoke must set revoked_at and status=revoked');
+  assert.doesNotMatch(src, /\.from\("organization_invites"\)[\s\S]*\.delete\(\)/,
+    'invite revoke must not delete invite rows');
+  assert.doesNotMatch(src, /\.from\("organizations"\)[\s\S]*\.delete\(\)/,
+    'invite revoke must not delete organizations');
+  assert.doesNotMatch(actorHelper, /\.(insert|update|upsert|delete)\(/,
+    'invite revoke must not mutate organization_members');
+  assert.doesNotMatch(src, /billing_customers|subscriptions|stripe_customers|webhook_events|stripe|checkout|portal|billing-status/i,
+    'invite revoke must not reference Stripe, billing-status, or billing tables');
+});
+
+test('phase 0.6B billing service uses org-invite-revoke edge function and direct browser revoke is disabled', async () => {
+  const billingSrc = await fs.readFile(billingServiceUrl, 'utf8');
+  const supabaseSrc = await fs.readFile(supabasePath, 'utf8');
+
+  assert.match(billingSrc, /export async function revokeOrgInvite\(inviteId, orgId = ''\)/,
+    'billing service must export revokeOrgInvite');
+  assert.match(billingSrc, /postFn\('\/org-invite-revoke', payload\)/,
+    'revokeOrgInvite must POST to the revoke Edge Function');
+  assert.match(billingSrc, /payload\.organization_id = orgId/,
+    'revokeOrgInvite must include optional organization_id');
+  assert.match(billingSrc, /already_revoked: Boolean\(data && data\.already_revoked\)/,
+    'revokeOrgInvite must preserve idempotent already_revoked state');
+  assert.match(supabaseSrc, /Direct invite revocation is disabled\. Use the org-invite-revoke Edge Function\./,
+    'legacy Supabase client direct revoke must be disabled');
+  assert.doesNotMatch(supabaseSrc, /function revokeOrganizationInvite[\s\S]*\.from\('organization_invites'\)[\s\S]*\.update\(/,
+    'legacy browser client revoke must not update organization_invites directly');
+});
+
+test('phase 0.6B settings revoke keeps confirm modal and calls edge service wrapper', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+  const start = src.indexOf('async function revokeInvite(orgId, invite)');
+  const end = src.indexOf('async function resendInvite(orgId, invite)', start);
+  const handler = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.match(src, /revokeOrgInvite as revokeOrgInviteFn/,
+    'settings overlay must import the Edge Function revoke wrapper');
+  assert.match(handler, /revokeOrgInviteFn\(inviteId, orgId\)/,
+    'settings revoke handler must call the new service wrapper');
+  assert.doesNotMatch(handler, /SupabaseClient\.revokeOrganizationInvite/,
+    'settings revoke handler must not use direct browser DB update');
+  assert.match(handler, /await loadOrgInvites\(orgId\)/,
+    'settings revoke success must refresh pending invites');
+  assert.match(src, /UIComponents\.confirm\(\{[\s\S]*title: 'Revoke invite'[\s\S]*danger: true/,
+    'pending invite revoke must keep UIComponents.confirm with danger styling');
+  assert.doesNotMatch(src, /window\.alert|window\.confirm|window\.prompt/,
+    'settings overlay must not use native browser dialogs');
+});
+
+test('phase 0.6B does not introduce unrelated workspace lifecycle or billing code', async () => {
+  const edgeSrc = await fs.readFile(orgInviteRevokePath, 'utf8');
+  const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
+  const billingSrc = await fs.readFile(billingServiceUrl, 'utf8');
+  const revokeStart = settingsSrc.indexOf('async function revokeInvite(orgId, invite)');
+  const revokeEnd = settingsSrc.indexOf('async function resendInvite(orgId, invite)', revokeStart);
+  const settingsHandler = revokeStart >= 0 && revokeEnd > revokeStart ? settingsSrc.slice(revokeStart, revokeEnd) : '';
+  const serviceStart = billingSrc.indexOf('export async function revokeOrgInvite');
+  const serviceEnd = billingSrc.indexOf('/**', serviceStart + 1);
+  const serviceHandler = serviceStart >= 0 && serviceEnd > serviceStart ? billingSrc.slice(serviceStart, serviceEnd) : '';
+
+  for (const [label, src] of [
+    ['org-invite-revoke', edgeSrc],
+    ['settings revokeInvite', settingsHandler],
+    ['billing service revokeOrgInvite', serviceHandler],
+  ]) {
+    assert.doesNotMatch(src, /archiveWorkspace|restoreWorkspace|transferOwnership|deleteWorkspace|exportWorkspace/,
+      `${label} must not add archive/restore/transfer/delete/export workspace flows`);
+    assert.doesNotMatch(src, /billing_customers|subscriptions|stripe_customers|webhook_events|checkout|portal|billing-status/i,
+      `${label} must not add billing or Stripe behavior`);
+  }
 });

@@ -645,6 +645,36 @@ export async function acceptOrgInvite(token) {
 }
 
 /**
+ * Revoke a pending organization invite via Edge Function guardrails.
+ * @param {string} inviteId
+ * @param {string} [orgId]
+ * @returns {Promise<{ok:boolean, invite_id?:string|null, organization_id?:string|null, already_revoked?:boolean, error?:string}>}
+ */
+export async function revokeOrgInvite(inviteId, orgId = '') {
+  try {
+    debugLog('revokeOrgInvite', { inviteId, orgId });
+    const payload = { invite_id: inviteId };
+    if (orgId) payload.organization_id = orgId;
+    const res = await postFn('/org-invite-revoke', payload);
+    const data = await readJsonSafe(res);
+    if (!res.ok) {
+      return { ok: false, error: resolveFnError(res, data, 'Invite revoke failed') };
+    }
+    const normalizedInviteId = data && data.invite_id ? String(data.invite_id) : null;
+    const organizationId = data && data.organization_id ? String(data.organization_id) : null;
+    return {
+      ok: true,
+      invite_id: normalizedInviteId,
+      organization_id: organizationId,
+      already_revoked: Boolean(data && data.already_revoked),
+    };
+  } catch (err) {
+    debugLog('revokeOrgInvite:error', err && err.message);
+    return { ok: false, error: err && err.message ? err.message : 'Network error' };
+  }
+}
+
+/**
  * Update organization member role via Edge Function guardrails.
  * @param {string} orgId
  * @param {string} userId

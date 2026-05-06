@@ -36,6 +36,7 @@ import * as StateStore from '../../core/state-store.js';
 import * as CoreStorage from '../../core/storage.js';
 import {
   sendOrgInvite,
+  revokeOrgInvite as revokeOrgInviteFn,
   updateOrgMemberRole as updateOrgMemberRoleFn,
   removeOrgMember as removeOrgMemberFn,
   leaveWorkspace as leaveWorkspaceFn,
@@ -2021,8 +2022,14 @@ export function createSettingsOverlay({
     const epoch = _renderEpoch;
     renderIfFresh(getCurrentActionId(), 'invite:revoke:begin', epoch);
     try {
-      await SupabaseClient.revokeOrganizationInvite(inviteId);
+      const result = await revokeOrgInviteFn(inviteId, orgId);
+      if (!result || !result.ok) {
+        UIComponents.showToast(result && result.error ? result.error : 'Revoke failed', 'error', { title: 'Invites' });
+        renderIfFresh(getCurrentActionId(), 'invite:revoke:error', epoch);
+        return false;
+      }
       await loadOrgInvites(orgId);
+      refreshMembershipContextAfterMutation(orgId, 'inviteRevoke:refresh-context');
       UIComponents.showToast('Invite revoked', 'success', { title: 'Invites' });
       renderIfFresh(getCurrentActionId(), 'invite:revoke', epoch);
       return true;

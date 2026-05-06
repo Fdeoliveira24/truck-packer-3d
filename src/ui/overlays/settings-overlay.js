@@ -819,11 +819,22 @@ export function createSettingsOverlay({
         profileUpdatedAt: profileData && profileData.updated_at ? String(profileData.updated_at) : '',
       };
     } else if (tab === 'org-members') {
+      const pendingInviteRenderRows = Array.isArray(orgInvitesData)
+        ? orgInvitesData.filter(invite => invite && String(invite.status || '').toLowerCase() === 'pending')
+        : [];
       key.members = {
         loadingMembers: Boolean(isLoadingOrgMembers),
         loadingInvites: Boolean(isLoadingOrgInvites),
         membersCount: Array.isArray(orgMembersData) ? orgMembersData.length : 0,
-        invitesCount: Array.isArray(orgInvitesData) ? orgInvitesData.length : 0,
+        invitesCount: pendingInviteRenderRows.length,
+        invitesSignature: pendingInviteRenderRows
+          .map(invite => [
+            String(invite.id || ''),
+            String(invite.role || 'member').toLowerCase(),
+            String(invite.status || '').toLowerCase(),
+          ].join(':'))
+          .join('|'),
+        inviteActions: orgInviteActions.size,
         membersError: orgMembersError ? String(orgMembersError.message || orgMembersError.code || '1') : '',
         invitesError: orgInvitesError ? String(orgInvitesError.message || orgInvitesError.code || '1') : '',
         search: String(orgMembersSearchQuery || ''),
@@ -5865,9 +5876,12 @@ export function createSettingsOverlay({
               pendingInvites.forEach(invite => {
                 const inviteId = String(invite.id || '');
                 const isBusyInvite = orgInviteActions.has(inviteId);
+                const inviteRole = String(invite.role || 'member').toLowerCase();
+                const adminInviteActionBlocked = !canManageAdmins && inviteRole === 'admin';
+                const adminInviteActionTitle = 'Only workspace owners can manage admin invites.';
                 const tr = doc.createElement('tr');
                 tr.dataset.memberSearch = String(invite.email || '').toLowerCase();
-                tr.dataset.memberRole = String(invite.role || 'member').toLowerCase();
+                tr.dataset.memberRole = inviteRole;
 
                 const emailTd = doc.createElement('td');
                 emailTd.textContent = invite.email || '—';
@@ -5908,8 +5922,10 @@ export function createSettingsOverlay({
                 resendBtn.type = 'button';
                 resendBtn.className = 'btn btn-ghost';
                 resendBtn.textContent = 'Resend';
-                resendBtn.disabled = isBusyInvite || inviteControlsDisabled;
+                resendBtn.disabled = isBusyInvite || inviteControlsDisabled || adminInviteActionBlocked;
+                if (adminInviteActionBlocked) resendBtn.title = adminInviteActionTitle;
                 resendBtn.addEventListener('click', () => {
+                  if (adminInviteActionBlocked) return;
                   if (inviteControlsDisabled) return;
                   resendBtn.disabled = true;
                   resendBtn.textContent = 'Sending…';
@@ -5924,8 +5940,10 @@ export function createSettingsOverlay({
                 revokeBtn.type = 'button';
                 revokeBtn.className = 'btn btn-danger';
                 revokeBtn.textContent = 'Revoke';
-                revokeBtn.disabled = isBusyInvite || inviteControlsDisabled;
+                revokeBtn.disabled = isBusyInvite || inviteControlsDisabled || adminInviteActionBlocked;
+                if (adminInviteActionBlocked) revokeBtn.title = adminInviteActionTitle;
                 revokeBtn.addEventListener('click', () => {
+                  if (adminInviteActionBlocked) return;
                   if (inviteControlsDisabled) return;
                   UIComponents.confirm({
                     title: 'Revoke invite',

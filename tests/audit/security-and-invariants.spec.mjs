@@ -1009,3 +1009,84 @@ test('phase 0.6B does not introduce unrelated workspace lifecycle or billing cod
       `${label} must not add billing or Stripe behavior`);
   }
 });
+
+test('phase 0.6B-2 settings stable key uses pending-only invite state for revoke repaint', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+  const stableStart = src.indexOf('function _buildRenderStableKey()');
+  const stableEnd = src.indexOf("} else if (tab === 'org-billing')", stableStart);
+  const stableFn = stableStart >= 0 && stableEnd > stableStart ? src.slice(stableStart, stableEnd) : '';
+
+  assert.match(stableFn, /const pendingInviteRenderRows = Array\.isArray\(orgInvitesData\)[\s\S]*String\(invite\.status \|\| ''\)\.toLowerCase\(\) === 'pending'/,
+    'org-members stable key must derive invite state from pending invites only');
+  assert.match(stableFn, /invitesCount: pendingInviteRenderRows\.length/,
+    'stable key invite count must use pending-only rows');
+  assert.match(stableFn, /invitesSignature: pendingInviteRenderRows[\s\S]*String\(invite\.id \|\| ''\)[\s\S]*String\(invite\.role \|\| 'member'\)\.toLowerCase\(\)[\s\S]*String\(invite\.status \|\| ''\)\.toLowerCase\(\)/,
+    'stable key must include pending invite id, role, and status signature');
+  assert.doesNotMatch(stableFn, /invitesCount:\s*Array\.isArray\(orgInvitesData\)\s*\?\s*orgInvitesData\.length\s*:\s*0/,
+    'stable key must not use total all-status invite rows because revoked rows remain in orgInvitesData');
+});
+
+test('phase 0.6B-2 settings stable key includes invite action state for busy cleanup repaint', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+  const stableStart = src.indexOf('function _buildRenderStableKey()');
+  const stableEnd = src.indexOf("} else if (tab === 'org-billing')", stableStart);
+  const stableFn = stableStart >= 0 && stableEnd > stableStart ? src.slice(stableStart, stableEnd) : '';
+
+  assert.match(stableFn, /inviteActions: orgInviteActions\.size/,
+    'org-members stable key must include invite action state so revoke begin/done can repaint');
+});
+
+test('phase 0.6B-2 admins can see pending admin invites because pending list is not role-filtered', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+  const pendingStart = src.indexOf('const pendingInvites = hasInvitesForOrg');
+  const pendingEnd = src.indexOf('if (isLoadingOrgInvites', pendingStart);
+  const pendingSnippet = pendingStart >= 0 && pendingEnd > pendingStart ? src.slice(pendingStart, pendingEnd) : '';
+
+  assert.match(pendingSnippet, /orgInvitesData\.filter\(i => i && i\.status === 'pending'\)/,
+    'pending invite list should filter by pending status only');
+  assert.doesNotMatch(pendingSnippet, /role|admin|member/,
+    'pending invite list must not hide admin invite rows from admin users');
+});
+
+test('phase 0.6B-2 admin-on-admin invite actions are disabled with owner-only copy', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+  const loopStart = src.indexOf('pendingInvites.forEach(invite =>');
+  const loopEnd = src.indexOf('inviteRows.push(tr)', loopStart);
+  const rowRender = loopStart >= 0 && loopEnd > loopStart ? src.slice(loopStart, loopEnd) : '';
+
+  assert.match(rowRender, /const inviteRole = String\(invite\.role \|\| 'member'\)\.toLowerCase\(\)/,
+    'row render must normalize invite role once');
+  assert.match(rowRender, /const adminInviteActionBlocked = !canManageAdmins && inviteRole === 'admin'/,
+    'admin actors must be blocked from managing admin invite rows');
+  assert.match(rowRender, /Only workspace owners can manage admin invites\./,
+    'disabled admin invite controls must explain the owner-only rule');
+  assert.match(rowRender, /resendBtn\.disabled = isBusyInvite \|\| inviteControlsDisabled \|\| adminInviteActionBlocked/,
+    'admin-on-admin Resend must be disabled');
+  assert.match(rowRender, /revokeBtn\.disabled = isBusyInvite \|\| inviteControlsDisabled \|\| adminInviteActionBlocked/,
+    'admin-on-admin Revoke must be disabled');
+  assert.match(rowRender, /if \(adminInviteActionBlocked\) return;[\s\S]*resendInvite\(orgId, invite\)/,
+    'Resend click handler must guard admin-on-admin action');
+  assert.match(rowRender, /if \(adminInviteActionBlocked\) return;[\s\S]*UIComponents\.confirm\(/,
+    'Revoke click handler must guard admin-on-admin action before confirmation');
+});
+
+test('phase 0.6B-2 keeps revoke modal edge path and avoids native/direct revoke regressions', async () => {
+  const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
+  const supabaseSrc = await fs.readFile(supabasePath, 'utf8');
+  const revokeStart = settingsSrc.indexOf('async function revokeInvite(orgId, invite)');
+  const revokeEnd = settingsSrc.indexOf('async function resendInvite(orgId, invite)', revokeStart);
+  const revokeHandler = revokeStart >= 0 && revokeEnd > revokeStart ? settingsSrc.slice(revokeStart, revokeEnd) : '';
+
+  assert.match(settingsSrc, /UIComponents\.confirm\(\{[\s\S]*title: 'Revoke invite'[\s\S]*danger: true/,
+    'allowed revoke paths must keep the existing danger confirm modal');
+  assert.doesNotMatch(settingsSrc, /window\.alert|window\.confirm|window\.prompt/,
+    'settings overlay must not use native dialogs');
+  assert.match(revokeHandler, /revokeOrgInviteFn\(inviteId, orgId\)/,
+    'revoke handler must keep using the Edge Function service wrapper');
+  assert.doesNotMatch(revokeHandler, /SupabaseClient\.revokeOrganizationInvite/,
+    'revoke handler must not call the legacy direct browser revoke function');
+  assert.doesNotMatch(supabaseSrc, /function revokeOrganizationInvite[\s\S]*\.from\('organization_invites'\)[\s\S]*\.update\(/,
+    'direct Supabase browser-side invite revoke mutation must not be reintroduced');
+  assert.doesNotMatch(revokeHandler, /billing_customers|subscriptions|stripe_customers|webhook_events|billing-status|stripe|checkout|portal/i,
+    'Phase 0.6B-2 revoke changes must not add Stripe or billing behavior');
+});

@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-07 — Phase 0.6C Archive Workspace implemented and deployed; Phase 0.6C-3 frontend no-active-workspace stability implemented, browser re-validation pending
+Last updated: 2026-05-07 — Phase 0.6C Archive Workspace fallback switching stabilized; workspace-limit billing copy corrected; next priority is pre-Restore P0 hardening
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -908,7 +908,7 @@ Goal: add safe workspace lifecycle tools without data loss, billing mistakes, or
 - [x] Active workspace fallback after archiving the only active workspace.
 - [x] No-active-workspace state shown cleanly after archiving the only workspace.
 - [x] Settings does not show archived workspace as active after archive.
-- [ ] Billing copy explains if archived workspace still counts toward plan limit.
+- [x] Billing copy explains that archived workspaces still count toward plan/workspace limits.
 
 ### Phase 0.6C-2 / 0.6C-3 Archive no-active-workspace follow-up — IMPLEMENTED
 - [x] Fix frontend org-context fallback after archiving the only active workspace.
@@ -921,7 +921,7 @@ Goal: add safe workspace lifecycle tools without data loss, billing mistakes, or
 - [x] No-active-workspace state must appear only after settled auth/org state.
 - [x] No sign-out, reload, Stripe call, billing mutation, member deletion, invite deletion, pack/case deletion, storage deletion, CSS, router, or package changes.
 - [x] Add audit tests.
-- [ ] Browser-test one-workspace owner and multi-workspace owner after fix.
+- [x] Browser-tested archive fallback switching after fix: active workspace archives now switch immediately to a safe fallback workspace, and no-active state stays stable when all workspaces are archived.
 
 ### Restore workspace
 - [ ] Owner can restore archived workspace.
@@ -1155,6 +1155,25 @@ P0 is green only when ALL items here are checked:
 ---
 
 ## Running log (keep updated)
+
+- Date: 2026-05-07 — Phase 0.6C-4 archive fallback switching and workspace-limit copy follow-up
+- What changed:
+  - Stabilized archive fallback switching so archiving the active workspace immediately moves the app to another active workspace when one exists.
+  - Exposed `handleWorkspaceArchived` through the public app API so Settings archive success can force the full app org-context refresh path.
+  - Settings now resolves only active workspaces from the latest authoritative bundle and clears stale org/member/invite caches after archive fallback or no-active transitions.
+  - Corrected workspace-limit billing copy so it no longer says archived workspaces are “currently active.” The copy now states that archived workspaces count toward the workspace limit.
+  - Added audit tests for archive fallback switching, stale Settings cache prevention, and workspace-limit archived-count copy.
+- Validation:
+  - `npm test` passed 104/104.
+  - `npm run lint` passed with 0 errors and existing warnings only.
+  - `npm run -s typecheck` passed.
+  - `git diff --check` and `git diff --cached --check` passed.
+- Manual validation:
+  - `test4@test.com`: archiving an active workspace immediately switched the app to a fallback active workspace without tab switching, sign-out, or reload.
+  - `test5@test.com`: no-active state remains stable when all workspaces are archived; chip shows no active workspace state and Members/Billing remain disabled as expected.
+- Next action:
+  - Commit and push the copy-only workspace-limit follow-up.
+  - Start the pre-Restore Workspace P0 hardening punch list: legacy delete-account removal/stub, ban/unban CORS hardening or removal, Admin→Admin remove guard, RLS admin-delete guard, and billing-status archived-org guard.
 
 - Date: 2026-05-07 — Phase 0.6C-3 frontend stability after archive implemented
 - What changed:

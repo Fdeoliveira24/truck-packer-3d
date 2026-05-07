@@ -13,8 +13,14 @@ const settingsOverlayPath = new URL('../../src/ui/overlays/settings-overlay.js',
 const orgInvitePath = new URL('../../supabase/functions/org-invite/index.ts', import.meta.url);
 const orgInviteRevokePath = new URL('../../supabase/functions/org-invite-revoke/index.ts', import.meta.url);
 const orgInviteAcceptPath = new URL('../../supabase/functions/org-invite-accept/index.ts', import.meta.url);
+const orgMemberRemovePath = new URL('../../supabase/functions/org-member-remove/index.ts', import.meta.url);
 const orgLeaveWorkspacePath = new URL('../../supabase/functions/org-leave-workspace/index.ts', import.meta.url);
 const orgArchiveWorkspacePath = new URL('../../supabase/functions/org-archive-workspace/index.ts', import.meta.url);
+const deleteAccountPath = new URL('../../supabase/functions/delete-account/index.ts', import.meta.url);
+const banUserPath = new URL('../../supabase/functions/ban-user/index.ts', import.meta.url);
+const unbanUserPath = new URL('../../supabase/functions/unban-user/index.ts', import.meta.url);
+const requestAccountDeletionPath = new URL('../../supabase/functions/request-account-deletion/index.ts', import.meta.url);
+const supabaseFunctionsDir = new URL('../../supabase/functions/', import.meta.url);
 const orgInviteExpirationMigrationPath = new URL(
   '../../supabase/migrations/2026050501_organization_invites_expiration.sql',
   import.meta.url
@@ -27,6 +33,24 @@ const signupAutoOrgUuidMigrationPath = new URL(
   '../../supabase/migrations/2026050601_fix_signup_auto_org_uuid.sql',
   import.meta.url
 );
+const orgMemberAdminDeleteGuardMigrationPath = new URL(
+  '../../supabase/migrations/2026050702_org_member_admin_delete_guard.sql',
+  import.meta.url
+);
+
+async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
+  const entries = await fs.readdir(dirUrl, { withFileTypes: true });
+  const sources = [];
+  for (const entry of entries) {
+    const childUrl = new URL(`${entry.name}${entry.isDirectory() ? '/' : ''}`, dirUrl);
+    if (entry.isDirectory()) {
+      sources.push(...await readFunctionSources(childUrl));
+    } else if (entry.isFile() && entry.name.endsWith('.ts')) {
+      sources.push([childUrl.pathname, await fs.readFile(childUrl, 'utf8')]);
+    }
+  }
+  return sources;
+}
 
 test('isAllowedBillingRedirectUrl only allows https stripe origins', async () => {
   const { isAllowedBillingRedirectUrl } = await import(
@@ -56,6 +80,53 @@ test('shared CORS json helper does not default to wildcard origin', async () => 
   const source = await fs.readFile(corsSharedPath, 'utf8');
   assert.equal(source.includes('const allowOrigin = opts.origin ?? "*";'), false);
   assert.match(source, /const allowOrigin = opts\.origin \?\? "null";/);
+});
+
+test('phase 0.6D-pre legacy delete-account endpoint is retired safely', async () => {
+  const source = await fs.readFile(deleteAccountPath, 'utf8');
+
+  assert.match(source, /This endpoint has been retired\. Use request-account-deletion\./,
+    'delete-account must direct callers to request-account-deletion');
+  assert.match(source, /status:\s*410/,
+    'delete-account must return HTTP 410');
+  assert.doesNotMatch(source, /auth\.admin\.deleteUser/,
+    'delete-account must not delete auth users directly');
+  assert.doesNotMatch(source, /\.from\(['"](?:profiles|organizations|organization_members|billing_customers|subscriptions|packs|cases)['"]\)|storage\.from|stripe/i,
+    'retired delete-account must not mutate app data, storage, billing, or Stripe');
+  assert.doesNotMatch(source, /['"]Access-Control-Allow-Origin['"]\s*:\s*['"]\*['"]/,
+    'delete-account must not contain wildcard CORS');
+});
+
+test('phase 0.6D-pre ban-user and unban-user endpoints are retired without wildcard CORS', async () => {
+  for (const endpointPath of [banUserPath, unbanUserPath]) {
+    const source = await fs.readFile(endpointPath, 'utf8');
+    assert.match(source, /This endpoint has been retired\. Use request-account-deletion\./,
+      'legacy ban/unban endpoint must direct callers to request-account-deletion');
+    assert.match(source, /status:\s*410/,
+      'legacy ban/unban endpoint must return HTTP 410');
+    assert.doesNotMatch(source, /auth\.admin|updateUserById|ban_duration/,
+      'retired ban/unban endpoint must not call admin auth mutation APIs');
+    assert.doesNotMatch(source, /['"]Access-Control-Allow-Origin['"]\s*:\s*['"]\*['"]/,
+      'retired ban/unban endpoint must not contain wildcard CORS');
+  }
+});
+
+test('phase 0.6D-pre edge functions contain no literal wildcard CORS header', async () => {
+  const sources = await readFunctionSources();
+  for (const [filePath, source] of sources) {
+    assert.doesNotMatch(source, /['"]Access-Control-Allow-Origin['"]\s*:\s*['"]\*['"]/,
+      `${filePath} must not contain literal wildcard CORS`);
+  }
+});
+
+test('phase 0.6D-pre request-account-deletion remains present as the supported path', async () => {
+  const source = await fs.readFile(requestAccountDeletionPath, 'utf8');
+  assert.match(source, /request-account-deletion/,
+    'request-account-deletion function source must remain present');
+  assert.match(source, /deletion_status:\s*"requested"/,
+    'request-account-deletion must remain the supported account deletion request path');
+  assert.doesNotMatch(source, /This endpoint has been retired/,
+    'request-account-deletion must not be retired in this phase');
 });
 
 test('app init keeps explicit single-flight/idempotency guards', async () => {
@@ -679,6 +750,53 @@ test('phase 0.5D keeps native dialogs absent from Settings overlay', async () =>
   assert.equal(src.includes('window.alert'), false);
   assert.equal(src.includes('window.confirm'), false);
   assert.equal(src.includes('window.prompt'), false);
+});
+
+test('phase 0.6D-pre org-member-remove blocks admin actors removing admin targets', async () => {
+  const src = await fs.readFile(orgMemberRemovePath, 'utf8');
+  const targetRoleIndex = src.indexOf('const targetRole = target.role;');
+  const adminGuardIndex = src.indexOf('Only workspace owners can remove admins.');
+  const deleteIndex = src.indexOf('.from("organization_members")', adminGuardIndex);
+
+  assert.ok(targetRoleIndex >= 0, 'org-member-remove must load target role before removal checks');
+  assert.ok(adminGuardIndex > targetRoleIndex,
+    'org-member-remove must check admin target removal after target membership is loaded');
+  assert.ok(deleteIndex > adminGuardIndex,
+    'org-member-remove must reject admin-on-admin removal before any delete');
+  assert.match(src, /if \(targetRole === "admin" && actor\.role !== "owner"\) \{[\s\S]*Only workspace owners can remove admins\.[\s\S]*status: 403/,
+    'non-owner actors must receive 403 when removing an admin target');
+  assert.match(src, /if \(targetRole === "owner"\) \{[\s\S]*Only owners can remove owners\./,
+    'owner removal guard must remain intact');
+});
+
+test('phase 0.6D-pre org member delete policy lets admins delete members only', async () => {
+  const src = await fs.readFile(orgMemberAdminDeleteGuardMigrationPath, 'utf8');
+
+  assert.match(src, /drop policy if exists "org_members_delete_owner_admin" on public\.organization_members;/,
+    'migration must replace the existing delete policy');
+  assert.match(src, /create policy "org_members_delete_owner_admin"[\s\S]*for delete/,
+    'migration must recreate the delete policy');
+  assert.match(src, /public\.tp3d_is_org_owner\(organization_id\)[\s\S]*public\.tp3d_org_owner_count_excluding\(organization_id, user_id\) >= 1/,
+    'owner branch and last-owner protection must remain');
+  assert.match(src, /public\.tp3d_is_org_admin\(organization_id\)[\s\S]*role = 'member'::public\.org_member_role/,
+    'admin branch must be limited to deleting member rows');
+  assert.doesNotMatch(src, /public\.tp3d_is_org_admin\(organization_id\)[\s\S]{0,120}role <> 'owner'::public\.org_member_role/,
+    'admin branch must not allow deleting all non-owner rows');
+});
+
+test('phase 0.6D-pre admin removal guard avoids billing workspace and data scope creep', async () => {
+  const removeSrc = await fs.readFile(orgMemberRemovePath, 'utf8');
+  const migrationSrc = await fs.readFile(orgMemberAdminDeleteGuardMigrationPath, 'utf8');
+  const combined = `${removeSrc}\n${migrationSrc}`;
+
+  assert.doesNotMatch(combined, /stripe|checkout|portal|webhook|billing-status|billing_customers|subscriptions|stripe_customers|webhook_events/i,
+    'admin removal guard must not touch billing or Stripe scope');
+  assert.doesNotMatch(combined, /\.from\(["']organizations["']\)[\s\S]{0,120}\.delete\(|delete\s+from\s+public\.organizations/i,
+    'admin removal guard must not delete organizations');
+  assert.doesNotMatch(combined, /\.from\(["']organization_invites["']\)|delete\s+from\s+public\.organization_invites/i,
+    'admin removal guard must not mutate invites');
+  assert.doesNotMatch(combined, /\.from\(["'](?:packs|cases)["']\)|delete\s+from\s+public\.(?:packs|cases)|storage\.from/i,
+    'admin removal guard must not mutate packs, cases, or storage');
 });
 
 test('phase 0.6A org-leave-workspace edge function exists and requires auth', async () => {
@@ -1528,6 +1646,19 @@ test('phase 0.6C-3 Billing renders clean no-active state instead of stale org de
     'Billing must show a clean no-active workspace message');
   assert.match(fn, /targetEl\.appendChild\(noActiveMsg\);[\s\S]*return;/,
     'Billing must return before stale workspace detail rendering in confirmed no-active state');
+});
+
+test('phase 0.6C billing workspace limit copy includes archived workspaces', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+  const start = src.indexOf('function renderBillingInto(targetEl)');
+  const end = src.indexOf('function render(renderMeta)', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'renderBillingInto must be extractable');
+  assert.doesNotMatch(fn, /workspaceCount[\s\S]{0,180}currently active/,
+    'workspace limit count copy must not describe counted archived workspaces as currently active');
+  assert.match(fn, /including archived workspaces/,
+    'workspace limit copy must disclose that archived workspaces count toward the limit');
 });
 
 test('phase 0.6C-3 no-workspace banner remains gated by settled auth state', async () => {

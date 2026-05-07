@@ -3519,7 +3519,7 @@ export function createSettingsOverlay({
       } else if (isWorkspaceLimitReached) {
         setStatusLineTone('warning');
         statusLine.textContent = canManageBilling
-          ? `Your plan includes ${Number(state.workspaceLimit || 0)} workspaces, and ${Number(state.workspaceCount || 0)} are currently active. Upgrade your plan or remove another workspace to include this one.`
+          ? `Your plan includes ${Number(state.workspaceLimit || 0)} workspace(s). ${Number(state.workspaceCount || 0)} workspace(s) count toward that limit, including archived workspaces. Upgrade your plan to include this workspace.`
           : 'This workspace is not in the owner’s plan. Ask the workspace owner to upgrade the plan or free a workspace slot.';
       } else if (isOwnerSubscriptionRequired) {
         setStatusLineTone('error');

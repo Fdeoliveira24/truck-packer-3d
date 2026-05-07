@@ -2163,6 +2163,10 @@ export async function getMyProfileStatus() {
 export async function updateProfile(updates) {
   const client = requireClient();
   const userId = await requireUserId();
+  const blockedDeletionFields = ['deletion_status', 'deleted_at', 'purge_after'];
+  if (blockedDeletionFields.some(field => Object.prototype.hasOwnProperty.call(updates || {}, field))) {
+    throw new Error('Direct account deletion state updates are disabled. Use the account deletion flow.');
+  }
 
   const { data, error } = await client
     .from('profiles')
@@ -2896,6 +2900,9 @@ export async function updateOrganization(orgId, updates) {
   await requireUserId();
   if (Object.prototype.hasOwnProperty.call(updates || {}, 'archived_at')) {
     throw new Error('Direct workspace archive updates are disabled. Use the org-archive-workspace Edge Function.');
+  }
+  if (Object.prototype.hasOwnProperty.call(updates || {}, 'owner_id')) {
+    throw new Error('Direct ownership transfer is disabled. Use the org-transfer-ownership Edge Function.');
   }
 
   const { data, error } = await client

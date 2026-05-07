@@ -430,7 +430,7 @@ Deno.serve(async (req) => {
 
       const activeOrgRes = await admin
         .from("organizations")
-        .select("id, owner_id, created_at")
+        .select("id, owner_id, created_at, archived_at")
         .eq("id", resolvedOrgId)
         .maybeSingle();
 
@@ -445,6 +445,35 @@ Deno.serve(async (req) => {
         const ownerFromMembership = rows.find(r => String(r?.role || "").toLowerCase() === "owner")?.user_id;
         billingOwnerUserId = ownerFromOrg || (ownerFromMembership ? String(ownerFromMembership) : null);
         canManageBilling = Boolean(billingOwnerUserId && billingOwnerUserId === userId);
+        const archivedAt = activeOrgRes.data?.archived_at ? String(activeOrgRes.data.archived_at) : "";
+        if (archivedAt) {
+          return json(req, 200, {
+            ok: true,
+            userId,
+            orgId: resolvedOrgId,
+            archived: true,
+            billingOwnerUserId,
+            entitlementStatus: "billing_unavailable",
+            workspaceIncluded: false,
+            workspaceCount: null,
+            workspaceLimit: null,
+            canManageBilling: false,
+            plan: "free",
+            status: "none",
+            isActive: false,
+            isPro: false,
+            interval: "unknown",
+            trialEndsAt: null,
+            currentPeriodEnd: null,
+            cancelAtPeriodEnd: false,
+            cancelAt: null,
+            portalAvailable: false,
+            paymentProblem: false,
+            paymentGraceUntil: null,
+            paymentGraceRemainingDays: null,
+            action: null,
+          });
+        }
       }
 
       if (billingOwnerUserId) {

@@ -69,6 +69,10 @@ Deno.serve(async (req) => {
 
     const targetRole = target.role;
 
+    if (targetRole === "admin" && actor.role !== "owner") {
+      return json({ error: "Only workspace owners can remove admins." }, { status: 403, origin });
+    }
+
     if (targetRole === "owner") {
       if (actor.role !== "owner") {
         return json({ error: "Only owners can remove owners." }, { status: 403, origin });

@@ -10,6 +10,7 @@ const corsSharedPath = new URL('../../supabase/functions/_shared/cors.ts', impor
 const supabasePath = new URL('../../src/core/supabase-client.js', import.meta.url);
 const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.meta.url);
 const settingsOverlayPath = new URL('../../src/ui/overlays/settings-overlay.js', import.meta.url);
+const billingStatusPath = new URL('../../supabase/functions/billing-status/index.ts', import.meta.url);
 const orgInvitePath = new URL('../../supabase/functions/org-invite/index.ts', import.meta.url);
 const orgInviteRevokePath = new URL('../../supabase/functions/org-invite-revoke/index.ts', import.meta.url);
 const orgInviteAcceptPath = new URL('../../supabase/functions/org-invite-accept/index.ts', import.meta.url);
@@ -799,6 +800,53 @@ test('phase 0.6D-pre admin removal guard avoids billing workspace and data scope
     'admin removal guard must not mutate packs, cases, or storage');
 });
 
+test('phase 0.6D-pre billing-status treats archived resolved org as unavailable', async () => {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+  const activeLookupStart = src.indexOf('const activeOrgRes = await admin');
+  const ownerWorkspaceStart = src.indexOf('const ownerMembershipsRes = await admin', activeLookupStart);
+  const activeLookup = activeLookupStart >= 0 && ownerWorkspaceStart > activeLookupStart
+    ? src.slice(activeLookupStart, ownerWorkspaceStart)
+    : '';
+
+  assert.ok(activeLookup, 'billing-status active organization lookup block must be extractable');
+  assert.match(activeLookup, /\.from\("organizations"\)[\s\S]*\.select\("id, owner_id, created_at, archived_at"\)/,
+    'billing-status must read archived_at for the resolved organization');
+  assert.match(activeLookup, /const archivedAt = activeOrgRes\.data\?\.archived_at \? String\(activeOrgRes\.data\.archived_at\) : ""/,
+    'billing-status must detect archived resolved organizations');
+  assert.match(activeLookup, /if \(archivedAt\) \{[\s\S]*archived: true[\s\S]*entitlementStatus: "billing_unavailable"[\s\S]*workspaceIncluded: false[\s\S]*isActive: false[\s\S]*isPro: false/,
+    'archived resolved organizations must return a safe inactive billing response');
+});
+
+test('phase 0.6D-pre billing-status keeps archived workspaces counted toward limits', async () => {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+  const ownerWorkspacesStart = src.indexOf('const ownerWorkspacesRes = await admin');
+  const ownerWorkspacesEnd = src.indexOf('workspaceCount = ownerWorkspaces.length;', ownerWorkspacesStart);
+  const ownerWorkspaceBlock = ownerWorkspacesStart >= 0 && ownerWorkspacesEnd > ownerWorkspacesStart
+    ? src.slice(ownerWorkspacesStart, ownerWorkspacesEnd)
+    : '';
+
+  assert.ok(ownerWorkspaceBlock, 'owner workspace count block must be extractable');
+  assert.match(ownerWorkspaceBlock, /\.from\("organizations"\)[\s\S]*\.select\("id, created_at"\)[\s\S]*\.eq\("owner_id", billingOwnerUserId\)[\s\S]*\.in\("id", ownerMembershipOrgIds\)/,
+    'owner workspace count must still count owner organization rows from memberships');
+  assert.doesNotMatch(ownerWorkspaceBlock, /archived_at|\.is\(["']archived_at["']|\.not\(["']archived_at["']/,
+    'owner workspace count must not silently exclude archived workspaces');
+});
+
+test('phase 0.6D-pre billing-status archived guard avoids Stripe checkout portal webhook scope creep', async () => {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+  const activeLookupStart = src.indexOf('const activeOrgRes = await admin');
+  const ownerWorkspaceStart = src.indexOf('const ownerMembershipsRes = await admin', activeLookupStart);
+  const activeLookup = activeLookupStart >= 0 && ownerWorkspaceStart > activeLookupStart
+    ? src.slice(activeLookupStart, ownerWorkspaceStart)
+    : '';
+
+  assert.ok(activeLookup, 'billing-status archived guard block must be extractable');
+  assert.doesNotMatch(activeLookup, /stripeClient|checkout|webhook|billing_customers|subscriptions|stripe_customers|webhook_events/i,
+    'archived active-org guard must not add Stripe, checkout, portal, webhook, or billing table scope');
+  assert.doesNotMatch(activeLookup, /portalAvailable:\s*true|createBillingPortal|portalUrl/i,
+    'archived active-org guard must not enable billing portal behavior');
+});
+
 test('phase 0.6A org-leave-workspace edge function exists and requires auth', async () => {
   const src = await fs.readFile(orgLeaveWorkspacePath, 'utf8');
 
@@ -1296,6 +1344,52 @@ test('phase 0.6C Supabase client hides archived workspaces and disables direct a
     'direct browser-side archive mutation must be disabled');
   assert.match(src, /hasOwnProperty\.call\(updates \|\| \{\}, 'archived_at'\)[\s\S]*Direct workspace archive updates are disabled/,
     'generic organization profile updates must reject archived_at client-side');
+});
+
+test('phase 0.6D-pre Supabase client rejects direct ownership transfer updates', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const start = src.indexOf('export async function updateOrganization(orgId, updates)');
+  const end = src.indexOf('/**\n * Upload a user avatar', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'updateOrganization must be extractable');
+  assert.match(fn, /hasOwnProperty\.call\(updates \|\| \{\}, 'archived_at'\)[\s\S]*Direct workspace archive updates are disabled/,
+    'updateOrganization must keep rejecting archived_at');
+  assert.match(fn, /hasOwnProperty\.call\(updates \|\| \{\}, 'owner_id'\)[\s\S]*Direct ownership transfer is disabled\. Use the org-transfer-ownership Edge Function\./,
+    'updateOrganization must reject owner_id ownership transfer fields');
+});
+
+test('phase 0.6D-pre Supabase client rejects direct account deletion state updates', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const start = src.indexOf('export async function updateProfile(updates)');
+  const end = src.indexOf('export async function getUserOrganizations()', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'updateProfile must be extractable');
+  assert.match(fn, /const blockedDeletionFields = \['deletion_status', 'deleted_at', 'purge_after'\]/,
+    'updateProfile must list account deletion state fields as blocked');
+  assert.match(fn, /blockedDeletionFields\.some\(field => Object\.prototype\.hasOwnProperty\.call\(updates \|\| \{\}, field\)\)[\s\S]*Direct account deletion state updates are disabled\. Use the account deletion flow\./,
+    'updateProfile must reject direct account deletion state updates');
+});
+
+test('phase 0.6D-pre direct client mutation guards avoid lifecycle billing and reload scope creep', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const profileStart = src.indexOf('export async function updateProfile(updates)');
+  const profileEnd = src.indexOf('export async function getUserOrganizations()', profileStart);
+  const orgStart = src.indexOf('export async function updateOrganization(orgId, updates)');
+  const orgEnd = src.indexOf('/**\n * Upload a user avatar', orgStart);
+  const snippets = [
+    profileStart >= 0 && profileEnd > profileStart ? src.slice(profileStart, profileEnd) : '',
+    orgStart >= 0 && orgEnd > orgStart ? src.slice(orgStart, orgEnd) : '',
+  ].join('\n');
+
+  assert.ok(snippets.trim(), 'direct mutation guard snippets must be extractable');
+  assert.doesNotMatch(snippets, /signOut|forceLocalSignedOut|location\.reload|window\.location/i,
+    'direct client mutation guards must not sign out or reload');
+  assert.doesNotMatch(snippets, /stripe|checkout|portal|webhook|billing-status|billing_customers|subscriptions|stripe_customers|webhook_events/i,
+    'direct client mutation guards must not touch billing or Stripe scope');
+  assert.doesNotMatch(snippets, /org-transfer-ownership[\s\S]*postFn|request-account-deletion[\s\S]*postFn|archiveWorkspace|restoreWorkspace/i,
+    'direct client mutation guards must not introduce lifecycle flow calls');
 });
 
 test('phase 0.6C app exposes handleWorkspaceArchived and refreshes org context without logout or reload', async () => {

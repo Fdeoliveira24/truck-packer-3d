@@ -676,6 +676,28 @@ export function createSettingsOverlay({
     );
   }
 
+  function getOrgIdFromLastActiveBundle() {
+    try {
+      const bundle = typeof window !== 'undefined' ? window.__TP3D_LAST_ACCOUNT_BUNDLE || null : null;
+      if (!bundle || bundle.partial === true || !Array.isArray(bundle.orgs) || bundle.orgs.length === 0) {
+        return '';
+      }
+      const orgs = bundle.orgs;
+      const hasOrg = orgId => {
+        const normalizedOrgId = normalizeOrgId(orgId);
+        return Boolean(normalizedOrgId && orgs.some(org => org && String(org.id) === normalizedOrgId));
+      };
+      const activeOrgId = normalizeOrgId(bundle.activeOrgId || '');
+      if (hasOrg(activeOrgId)) return activeOrgId;
+      const localOrgId = getOrgIdFromLocalStorage();
+      if (hasOrg(localOrgId)) return localOrgId;
+      return normalizeOrgId(orgs[0] && orgs[0].id ? orgs[0].id : '');
+    } catch {
+      // ignore
+    }
+    return '';
+  }
+
   function resolveInitialModalOrgId() {
     try {
       if (typeof window !== 'undefined' && isConfirmedNoActiveWorkspaceBundle(window.__TP3D_LAST_ACCOUNT_BUNDLE || null)) {
@@ -684,7 +706,14 @@ export function createSettingsOverlay({
     } catch {
       // ignore
     }
-    return getOrgIdFromOrgContext() || getOrgIdFromBillingState() || getOrgIdFromLocalStorage() || '';
+    const bundleOrgId = getOrgIdFromLastActiveBundle();
+    if (bundleOrgId) return bundleOrgId;
+    const orgContextId = getOrgIdFromOrgContext();
+    if (orgContextId) return orgContextId;
+    const localOrgId = getOrgIdFromLocalStorage();
+    const billingOrgId = getOrgIdFromBillingState();
+    if (billingOrgId && localOrgId && billingOrgId === localOrgId) return billingOrgId;
+    return localOrgId || '';
   }
 
   function ensureModalOrgId() {
@@ -6441,8 +6470,27 @@ export function createSettingsOverlay({
     cleanupStaleSettingsModals('open');
     _overlayOpenedAtMs = Date.now();
     bumpEpoch('open');
+    const cachedOrgIdBeforeOpen = normalizeOrgId(
+      (orgData && orgData.id) ||
+      (membershipData && membershipData.organization_id) ||
+      ''
+    );
     if (!modalOrgId) {
       modalOrgId = resolveInitialModalOrgId();
+    }
+    const openingOrgId = normalizeOrgId(modalOrgId);
+    if (cachedOrgIdBeforeOpen && cachedOrgIdBeforeOpen !== openingOrgId) {
+      membershipData = null;
+      orgData = null;
+      orgMembersData = null;
+      orgInvitesData = null;
+      orgMembersError = null;
+      orgInvitesError = null;
+      isLoadingOrgMembers = false;
+      isLoadingOrgInvites = false;
+      isEditingOrg = false;
+      orgMemberActions.clear();
+      orgInviteActions.clear();
     }
     clearOrgScopedCaches(modalOrgId);
     const nextTab = resolveInitialTab(tab);

@@ -9576,6 +9576,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       init,
       maybeScheduleBillingRefresh,
       getWorkspaceSwitchState,
+      handleWorkspaceArchived,
       openCreateWorkspaceFlow,
       EditorUI,
       ui: {

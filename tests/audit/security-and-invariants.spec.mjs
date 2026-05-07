@@ -1189,6 +1189,13 @@ test('phase 0.6C app exposes handleWorkspaceArchived and refreshes org context w
   assert.ok(helper, 'app must define handleWorkspaceArchived');
   assert.match(src, /window\.TruckPackerApp\.handleWorkspaceArchived = handleWorkspaceArchived/,
     'app must expose handleWorkspaceArchived');
+  const publicApiStart = src.indexOf('return {\n      init,');
+  const publicApiEnd = src.indexOf('};\n  })();', publicApiStart);
+  const publicApi = publicApiStart >= 0 && publicApiEnd > publicApiStart
+    ? src.slice(publicApiStart, publicApiEnd)
+    : '';
+  assert.match(publicApi, /handleWorkspaceArchived,/,
+    'handleWorkspaceArchived must be exposed on the actual returned TruckPackerApp public API');
   assert.match(helper, /normalizeOrgIdForBilling\(archivedOrgId \|\| ''\)/,
     'handleWorkspaceArchived must normalize archived org id');
   assert.match(helper, /clearBillingPendingRetry\(normalizedArchivedOrgId\)/,
@@ -1567,6 +1574,78 @@ test('phase 0.6C-3 frontend stability fix avoids backend billing and destructive
     assert.doesNotMatch(snippet, /\.from\(['"]organization_members['"]\)|\.from\(['"]organization_invites['"]\)|\.delete\(\)|deletePack|deleteCase|storage\.from|router\./i,
       `${label} must not mutate members, invites, packs, cases, storage, or router state`);
   }
+});
+
+test('phase 0.6C-4 archive refresh fallback commits a remaining active workspace', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const helperStart = src.indexOf('function handleWorkspaceArchived(archivedOrgId, options = {})');
+  const helperEnd = src.indexOf('// Expose billing pump globally', helperStart);
+  const helper = helperStart >= 0 && helperEnd > helperStart ? src.slice(helperStart, helperEnd) : '';
+  const resolverStart = src.indexOf('function resolveOrgContextFromBundle(bundle)');
+  const resolverEnd = src.indexOf('// \u2500\u2500 Workspace-ready event replay buffer', resolverStart);
+  const resolver = resolverStart >= 0 && resolverEnd > resolverStart ? src.slice(resolverStart, resolverEnd) : '';
+  const applyStart = src.indexOf('async function applyOrgContextFromBundle');
+  const applyEnd = src.indexOf('async function refreshOrgContext', applyStart);
+  const applyFn = applyStart >= 0 && applyEnd > applyStart ? src.slice(applyStart, applyEnd) : '';
+  const publicApiStart = src.indexOf('return {\n      init,');
+  const publicApiEnd = src.indexOf('};\n  })();', publicApiStart);
+  const publicApi = publicApiStart >= 0 && publicApiEnd > publicApiStart
+    ? src.slice(publicApiStart, publicApiEnd)
+    : '';
+
+  assert.ok(helper, 'handleWorkspaceArchived must be extractable');
+  assert.ok(resolver, 'resolveOrgContextFromBundle must be extractable');
+  assert.ok(applyFn, 'applyOrgContextFromBundle must be extractable');
+  assert.match(publicApi, /handleWorkspaceArchived,/,
+    'Settings must be able to call handleWorkspaceArchived from the live TruckPackerApp public API');
+  assert.match(helper, /SupabaseClient\.invalidateAccountCache\(\)[\s\S]*refreshOrgContext\(source, \{ force: true, forceEmit: true \}\)/,
+    'archive success must invalidate account cache and force a fresh org-context refresh');
+  assert.match(resolver, /else if \(orgs\.length > 0\) orgId = String\(orgs\[0\]\.id\);/,
+    'when stale hints are invalid, resolver must fall back to an org from the fresh active org list');
+  assert.match(applyFn, /writeLocalOrgId\(nextOrgIdStr\)/,
+    'fallback active org must replace the stale local active-org hint');
+  assert.match(applyFn, /dispatchOrgContextChanged\(\{[\s\S]*orgId: nextOrgIdStr[\s\S]*source: 'bundle-apply'/,
+    'fallback active org commit must emit org-changed so chip and Settings can repaint');
+  assert.match(helper, /syncWorkspaceUiAfterOrgRefresh\(source \+ ':refreshed'\)/,
+    'archive refresh completion must sync account switcher and Settings UI after the forced org refresh settles');
+});
+
+test('phase 0.6C-4 settings open clears stale org caches after archive fallback switch', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+  const resolverStart = src.indexOf('function getOrgIdFromLastActiveBundle()');
+  const resolverEnd = src.indexOf('function resolveInitialModalOrgId()', resolverStart);
+  const resolver = resolverStart >= 0 && resolverEnd > resolverStart ? src.slice(resolverStart, resolverEnd) : '';
+  const initialStart = src.indexOf('function resolveInitialModalOrgId()');
+  const initialEnd = src.indexOf('function ensureModalOrgId()', initialStart);
+  const initialFn = initialStart >= 0 && initialEnd > initialStart ? src.slice(initialStart, initialEnd) : '';
+  const openStart = src.indexOf('function open(tab)');
+  const openEnd = src.indexOf('function init()', openStart);
+  const openFn = openStart >= 0 && openEnd > openStart ? src.slice(openStart, openEnd) : '';
+
+  assert.ok(resolver, 'last active bundle modal-org resolver must be extractable');
+  assert.match(resolver, /bundle\.partial === true/,
+    'Settings must not treat partial account bundles as authoritative modal-org sources');
+  assert.match(resolver, /const hasOrg = orgId =>[\s\S]*orgs\.some\(org => org && String\(org\.id\) === normalizedOrgId\)/,
+    'Settings must validate modal org candidates against active org rows from the last bundle');
+  assert.match(resolver, /if \(hasOrg\(activeOrgId\)\) return activeOrgId;[\s\S]*if \(hasOrg\(localOrgId\)\) return localOrgId;[\s\S]*orgs\[0\]/,
+    'Settings must prefer bundle activeOrgId, then valid local hint, then first active bundle org');
+  assert.match(initialFn, /const bundleOrgId = getOrgIdFromLastActiveBundle\(\);[\s\S]*if \(bundleOrgId\) return bundleOrgId;[\s\S]*const orgContextId = getOrgIdFromOrgContext\(\);[\s\S]*if \(orgContextId\) return orgContextId;/,
+    'Settings initial modal org must prefer the fresh active account bundle before stale org or billing hints');
+  assert.match(initialFn, /const localOrgId = getOrgIdFromLocalStorage\(\);[\s\S]*const billingOrgId = getOrgIdFromBillingState\(\);[\s\S]*if \(billingOrgId && localOrgId && billingOrgId === localOrgId\) return billingOrgId;[\s\S]*return localOrgId \|\| '';/,
+    'Settings initial modal org must not use stale billing state unless it matches the local active-org hint');
+  assert.ok(openFn, 'Settings open function must be extractable');
+  assert.match(openFn, /const cachedOrgIdBeforeOpen = normalizeOrgId\([\s\S]*orgData && orgData\.id[\s\S]*membershipData && membershipData\.organization_id/,
+    'Settings open must capture the cached org id before resolving the current modal org');
+  assert.match(openFn, /const openingOrgId = normalizeOrgId\(modalOrgId\)/,
+    'Settings open must normalize the newly resolved locked org');
+  assert.match(openFn, /cachedOrgIdBeforeOpen && cachedOrgIdBeforeOpen !== openingOrgId/,
+    'Settings open must detect stale cached org data when the active org changed or no active org is locked after archive fallback');
+  assert.match(openFn, /membershipData = null;[\s\S]*orgData = null;[\s\S]*orgMembersData = null;[\s\S]*orgInvitesData = null;/,
+    'Settings open must clear stale org, membership, members, and invites data before rendering');
+  assert.match(openFn, /orgMemberActions\.clear\(\);[\s\S]*orgInviteActions\.clear\(\);/,
+    'Settings open must clear stale member and invite action state for the previous org');
+  assert.match(openFn, /clearOrgScopedCaches\(modalOrgId\)/,
+    'Settings open must still run the existing org-scoped cache cleanup for the locked org');
 });
 
 test('signup auto-org trigger avoids restricted-search-path uuid calls and keeps billing seed non-blocking', async () => {

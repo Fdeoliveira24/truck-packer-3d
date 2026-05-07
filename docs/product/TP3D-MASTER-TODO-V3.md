@@ -369,6 +369,46 @@ P0 is green only when ALL items here are checked:
 
 ## Running log (keep updated)
 
+
+- Date: 2026-05-07 — Phase 0.6D-pre remote deploy verified
+- What changed:
+  - Applied migration `2026050702_org_member_admin_delete_guard.sql` to Supabase.
+  - Confirmed migration history is aligned through `2026050702`.
+  - Deployed Edge Functions: `delete-account`, `ban-user`, `unban-user`, `org-member-remove`, and `billing-status`.
+  - Verified SQL policy `org_members_delete_owner_admin` now limits Admin delete power to `role = 'member'`.
+  - Confirmed old broad Admin delete rule `role <> 'owner'` is no longer the Admin branch.
+- Validation:
+  - `npm test` passed: 117/117.
+  - `npm run lint` passed with 0 errors and existing warnings only.
+  - `npm run -s typecheck` passed.
+  - `git diff --check` and `git diff --cached --check` passed.
+- Still required:
+  - Live browser test: Admin cannot remove another Admin.
+  - Live browser test: Admin can still remove Member.
+  - Live browser test: archived workspace billing returns the safe unavailable state.
+  - Rotate Supabase DB password because it was pasted during setup.
+
+
+
+- Date: 2026-05-07 — Phase 0.6D-pre security hardening committed
+- What changed:
+  - Retired legacy `delete-account`, `ban-user`, and `unban-user` Edge Functions with 410 responses.
+  - Hardened `org-member-remove` so Admin cannot remove Admin.
+  - Added RLS migration `2026050702_org_member_admin_delete_guard.sql` so Admin can delete Member rows only.
+  - Hardened `billing-status` so archived resolved workspaces return `billing_unavailable`.
+  - Added direct client guards for `owner_id` and account deletion-state fields.
+  - Added audit tests for all changes.
+- Validation:
+  - `npm test` passed: 117/117.
+  - `npm run lint` passed with 0 errors and existing warnings only.
+  - `npm run -s typecheck` passed.
+  - `git diff --check` and `git diff --cached --check` passed.
+- Deployment still required:
+  - Apply `2026050702` migration to Supabase.
+  - Deploy changed Edge Functions.
+  - Run live Admin/Admin removal and archived billing checks.
+
+
 - Date: 2026-05-06 — Signup auto-org creation hotfix
 - What changed:
   - Fixed the live signup failure for new users where Supabase Auth returned `Database error saving new user`.
@@ -709,6 +749,42 @@ Future:
 ---
 
 ### P0.9 Delete account safety — NOT DONE
+
+### P0.10 Pre-Restore Workspace security hardening — IMPLEMENTED / DEPLOY VERIFY
+
+Goal: close the highest-risk security and role gaps before Restore Workspace.
+
+Completed:
+- [x] Retired legacy `delete-account` Edge Function with a 410 response.
+- [x] Retired legacy `ban-user` Edge Function with a 410 response.
+- [x] Retired legacy `unban-user` Edge Function with a 410 response.
+- [x] Removed wildcard CORS from the retired legacy account endpoints.
+- [x] Added tests proving legacy account endpoints cannot delete users or mutate auth.
+- [x] Added Admin-on-Admin removal protection in `org-member-remove`.
+- [x] Added migration `2026050702_org_member_admin_delete_guard.sql`.
+- [x] RLS delete policy now allows Admin to delete Member rows only, not Admin rows.
+- [x] `billing-status` now returns `billing_unavailable` for archived resolved workspaces.
+- [x] Archived workspaces still count toward workspace limits by policy.
+- [x] `updateOrganization()` blocks direct `owner_id` writes.
+- [x] `updateProfile()` blocks direct deletion-state writes.
+- [x] Added audit tests for all 0.6D-pre changes.
+
+Validation:
+- [x] `npm test` passed: 117/117.
+- [x] `npm run lint` passed with 0 errors and existing warnings only.
+- [x] `npm run -s typecheck` passed.
+- [x] `git diff --check` passed.
+- [x] `git diff --cached --check` passed.
+- [x] Committed and pushed: `fix(security): pre-restore workspace hardening`.
+
+Still required:
+- [x] Apply remote migration `2026050702_org_member_admin_delete_guard.sql`.
+- [x] Deploy Edge Functions: `delete-account`, `ban-user`, `unban-user`, `org-member-remove`, `billing-status`.
+- [ ] Verify Admin cannot remove Admin in live browser. *(Needs direct member-removal test; invite revoke was tested separately.)*
+- [ ] Verify Admin can still remove Member in live browser.
+- [ ] Verify archived workspace billing returns safe unavailable state.
+- [ ] Rotate the Supabase DB password after setup because it was pasted into terminal/chat history.
+
 - [ ] Only Owner can delete org, if org deletion is supported.
 - [x] Block delete account if user is last Owner of any org.
 - [ ] Define paid-subscription deletion policy.
@@ -1155,6 +1231,46 @@ P0 is green only when ALL items here are checked:
 ---
 
 ## Running log (keep updated)
+
+
+- Date: 2026-05-07 — Phase 0.6D-pre remote deploy verified
+- What changed:
+  - Applied migration `2026050702_org_member_admin_delete_guard.sql` to Supabase.
+  - Confirmed migration history is aligned through `2026050702`.
+  - Deployed Edge Functions: `delete-account`, `ban-user`, `unban-user`, `org-member-remove`, and `billing-status`.
+  - Verified SQL policy `org_members_delete_owner_admin` now limits Admin delete power to `role = 'member'`.
+  - Confirmed old broad Admin delete rule `role <> 'owner'` is no longer the Admin branch.
+- Validation:
+  - `npm test` passed: 117/117.
+  - `npm run lint` passed with 0 errors and existing warnings only.
+  - `npm run -s typecheck` passed.
+  - `git diff --check` and `git diff --cached --check` passed.
+- Still required:
+  - Live browser test: Admin cannot remove another Admin.
+  - Live browser test: Admin can still remove Member.
+  - Live browser test: archived workspace billing returns the safe unavailable state.
+  - Rotate Supabase DB password because it was pasted during setup.
+
+
+
+- Date: 2026-05-07 — Phase 0.6D-pre security hardening committed
+- What changed:
+  - Retired legacy `delete-account`, `ban-user`, and `unban-user` Edge Functions with 410 responses.
+  - Hardened `org-member-remove` so Admin cannot remove Admin.
+  - Added RLS migration `2026050702_org_member_admin_delete_guard.sql` so Admin can delete Member rows only.
+  - Hardened `billing-status` so archived resolved workspaces return `billing_unavailable`.
+  - Added direct client guards for `owner_id` and account deletion-state fields.
+  - Added audit tests for all changes.
+- Validation:
+  - `npm test` passed: 117/117.
+  - `npm run lint` passed with 0 errors and existing warnings only.
+  - `npm run -s typecheck` passed.
+  - `git diff --check` and `git diff --cached --check` passed.
+- Deployment still required:
+  - Apply `2026050702` migration to Supabase.
+  - Deploy changed Edge Functions.
+  - Run live Admin/Admin removal and archived billing checks.
+
 
 - Date: 2026-05-07 — Phase 0.6C-4 archive fallback switching and workspace-limit copy follow-up
 - What changed:

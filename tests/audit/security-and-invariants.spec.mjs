@@ -14,8 +14,17 @@ const orgInvitePath = new URL('../../supabase/functions/org-invite/index.ts', im
 const orgInviteRevokePath = new URL('../../supabase/functions/org-invite-revoke/index.ts', import.meta.url);
 const orgInviteAcceptPath = new URL('../../supabase/functions/org-invite-accept/index.ts', import.meta.url);
 const orgLeaveWorkspacePath = new URL('../../supabase/functions/org-leave-workspace/index.ts', import.meta.url);
+const orgArchiveWorkspacePath = new URL('../../supabase/functions/org-archive-workspace/index.ts', import.meta.url);
 const orgInviteExpirationMigrationPath = new URL(
   '../../supabase/migrations/2026050501_organization_invites_expiration.sql',
+  import.meta.url
+);
+const orgArchiveMigrationPath = new URL(
+  '../../supabase/migrations/2026050701_organization_archive.sql',
+  import.meta.url
+);
+const signupAutoOrgUuidMigrationPath = new URL(
+  '../../supabase/migrations/2026050601_fix_signup_auto_org_uuid.sql',
   import.meta.url
 );
 
@@ -783,7 +792,7 @@ test('phase 0.6A settings general uses safe leave workspace UI', async () => {
     'settings overlay must not use native browser dialogs');
 });
 
-test('phase 0.6A does not introduce archive restore transfer delete or export workspace flows', async () => {
+test('phase 0.6A does not introduce restore transfer delete or export workspace flows', async () => {
   const edgeSrc = await fs.readFile(orgLeaveWorkspacePath, 'utf8');
   const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
   const appSrc = await fs.readFile(appPath, 'utf8');
@@ -801,8 +810,8 @@ test('phase 0.6A does not introduce archive restore transfer delete or export wo
     ['handleWorkspaceLeft', helper],
     ['settings leaveWorkspace', settingsHandler],
   ]) {
-    assert.doesNotMatch(src, /archiveWorkspace|restoreWorkspace|transferOwnership|deleteWorkspace|exportWorkspace/,
-      `${label} must not add workspace lifecycle flows beyond Leave Workspace`);
+    assert.doesNotMatch(src, /restoreWorkspace|transferOwnership|deleteWorkspace|exportWorkspace/,
+      `${label} must not add restore/transfer/delete/export flows beyond Leave Workspace`);
   }
 });
 
@@ -1003,8 +1012,8 @@ test('phase 0.6B does not introduce unrelated workspace lifecycle or billing cod
     ['settings revokeInvite', settingsHandler],
     ['billing service revokeOrgInvite', serviceHandler],
   ]) {
-    assert.doesNotMatch(src, /archiveWorkspace|restoreWorkspace|transferOwnership|deleteWorkspace|exportWorkspace/,
-      `${label} must not add archive/restore/transfer/delete/export workspace flows`);
+    assert.doesNotMatch(src, /restoreWorkspace|transferOwnership|deleteWorkspace|exportWorkspace/,
+      `${label} must not add restore/transfer/delete/export workspace flows`);
     assert.doesNotMatch(src, /billing_customers|subscriptions|stripe_customers|webhook_events|checkout|portal|billing-status/i,
       `${label} must not add billing or Stripe behavior`);
   }
@@ -1089,4 +1098,188 @@ test('phase 0.6B-2 keeps revoke modal edge path and avoids native/direct revoke 
     'direct Supabase browser-side invite revoke mutation must not be reintroduced');
   assert.doesNotMatch(revokeHandler, /billing_customers|subscriptions|stripe_customers|webhook_events|billing-status|stripe|checkout|portal/i,
     'Phase 0.6B-2 revoke changes must not add Stripe or billing behavior');
+});
+
+test('phase 0.6C migration adds archived_at, index, direct-client guard, and active-org RPC filter', async () => {
+  const src = await fs.readFile(orgArchiveMigrationPath, 'utf8');
+
+  assert.match(src, /add column if not exists archived_at timestamptz/,
+    'archive migration must add organizations.archived_at');
+  assert.match(src, /create index if not exists organizations_archived_at_idx[\s\S]*on public\.organizations\(archived_at\)[\s\S]*where archived_at is not null/,
+    'archive migration must index archived workspace rows');
+  assert.match(src, /create or replace function public\.tp3d_guard_organizations_archived_at_update\(\)/,
+    'archive migration must install an archived_at guard function');
+  assert.match(src, /before update of archived_at on public\.organizations/,
+    'archive migration must protect archived_at from generic organization updates');
+  assert.match(src, /v_request_role <> 'service_role' and current_user <> 'service_role'/,
+    'archive guard must allow the service-role Edge Function while blocking direct client updates');
+  assert.match(src, /drop function if exists public\.get_user_organizations\(\);[\s\S]*create function public\.get_user_organizations\(\)[\s\S]*and o\.archived_at is null/,
+    'account bundle RPC must hide archived workspaces from normal active lists');
+});
+
+test('phase 0.6C org-archive-workspace edge function is owner-only and idempotent', async () => {
+  const src = await fs.readFile(orgArchiveWorkspacePath, 'utf8');
+
+  assert.ok(src.length > 0, 'org-archive-workspace/index.ts must exist');
+  assert.match(src, /if \(req\.method !== "POST"\)/,
+    'archive workspace must require POST');
+  assert.match(src, /requireUser\(req\)/,
+    'archive workspace must require auth');
+  assert.match(src, /body\.organization_id \|\| body\.org_id/,
+    'archive workspace must accept organization_id with org_id fallback');
+  assert.match(src, /\.from\("organizations"\)[\s\S]*\.select\("id, owner_id, archived_at"\)/,
+    'archive workspace must load the organization before update');
+  assert.match(src, /org\.owner_id !== auth\.user\.id/,
+    'archive workspace must use organizations.owner_id as the primary-owner authority');
+  assert.match(src, /already_archived: true/,
+    'archive workspace must be idempotent when already archived');
+  assert.match(src, /\.from\("organizations"\)[\s\S]*\.update\(\{ archived_at: nowIso \}\)[\s\S]*\.eq\("owner_id", auth\.user\.id\)/,
+    'archive workspace must update only archived_at and keep an owner_id race guard');
+  assert.match(src, /organization_id:[\s\S]*archived_at:/,
+    'archive workspace must return organization_id and archived_at');
+});
+
+test('phase 0.6C archive edge function preserves data and avoids billing or Stripe scope', async () => {
+  const src = await fs.readFile(orgArchiveWorkspacePath, 'utf8');
+
+  assert.doesNotMatch(src, /\.delete\(\)/,
+    'archive workspace must not delete any rows');
+  assert.doesNotMatch(src, /organization_members|organization_invites|packs|cases|preferences|storage/i,
+    'archive workspace must not mutate memberships, invites, packs, cases, preferences, or storage');
+  assert.doesNotMatch(src, /billing_customers|subscriptions|stripe_customers|webhook_events|billing-status|stripe|checkout|portal/i,
+    'archive workspace must not reference Stripe, billing-status, or billing tables');
+});
+
+test('phase 0.6C billing service exports archiveWorkspace edge wrapper', async () => {
+  const src = await fs.readFile(billingServiceUrl, 'utf8');
+
+  assert.match(src, /export async function archiveWorkspace\(orgId\)/,
+    'billing service must export archiveWorkspace');
+  assert.match(src, /postFn\('\/org-archive-workspace'[\s\S]*organization_id: orgId/,
+    'archiveWorkspace must POST organization_id to /org-archive-workspace');
+  assert.match(src, /already_archived: Boolean\(data && data\.already_archived\)/,
+    'archiveWorkspace must preserve idempotent already_archived state');
+  assert.doesNotMatch(src, /archiveWorkspace[\s\S]*billing_customers|archiveWorkspace[\s\S]*subscriptions|archiveWorkspace[\s\S]*stripe/i,
+    'archiveWorkspace wrapper must not add billing or Stripe behavior');
+});
+
+test('phase 0.6C Supabase client hides archived workspaces and disables direct archive mutation', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+
+  assert.match(src, /const isActiveOrgRow = org => Boolean\(org && !org\.archived_at\)/,
+    'getUserOrganizations must define an active-org safety filter');
+  assert.match(src, /client\.rpc\('get_user_organizations'\)[\s\S]*return data\.filter\(isActiveOrgRow\)/,
+    'RPC org rows must be client-side filtered as a safety net');
+  assert.match(src, /organizations \([\s\S]*archived_at[\s\S]*\)/,
+    'fallback organization join must include archived_at');
+  assert.match(src, /\.filter\(isActiveOrgRow\)/,
+    'fallback organization rows must exclude archived workspaces');
+  assert.match(src, /export async function archiveOrganization\(\)[\s\S]*Direct workspace archiving is disabled\. Use the org-archive-workspace Edge Function\./,
+    'direct browser-side archive mutation must be disabled');
+  assert.match(src, /hasOwnProperty\.call\(updates \|\| \{\}, 'archived_at'\)[\s\S]*Direct workspace archive updates are disabled/,
+    'generic organization profile updates must reject archived_at client-side');
+});
+
+test('phase 0.6C app exposes handleWorkspaceArchived and refreshes org context without logout or reload', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function handleWorkspaceArchived(archivedOrgId, options = {})');
+  const end = src.indexOf('// Expose billing pump globally', start);
+  const helper = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(helper, 'app must define handleWorkspaceArchived');
+  assert.match(src, /window\.TruckPackerApp\.handleWorkspaceArchived = handleWorkspaceArchived/,
+    'app must expose handleWorkspaceArchived');
+  assert.match(helper, /normalizeOrgIdForBilling\(archivedOrgId \|\| ''\)/,
+    'handleWorkspaceArchived must normalize archived org id');
+  assert.match(helper, /clearBillingPendingRetry\(normalizedArchivedOrgId\)/,
+    'handleWorkspaceArchived must clear pending retry for archived org');
+  assert.match(helper, /if \(billingOrgId === normalizedArchivedOrgId\) \{[\s\S]*clearBillingState\(\)/,
+    'handleWorkspaceArchived must clear stale billing only when scoped to archived org');
+  assert.match(helper, /SupabaseClient\.invalidateAccountCache\(\)/,
+    'handleWorkspaceArchived must invalidate stale account bundle cache');
+  assert.match(helper, /refreshOrgContext\(source, \{ force: true, forceEmit: true \}\)/,
+    'handleWorkspaceArchived must force existing org context refresh');
+  assert.doesNotMatch(helper, /signOut|forceLocalSignedOut|location\.reload|window\.location|billing-status|stripe|checkout|portal/i,
+    'handleWorkspaceArchived must not sign out, reload, call billing-status, or touch Stripe');
+});
+
+test('phase 0.6C Settings Archive UI is primary-owner-only and uses safe confirm flow', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+  const handlerStart = src.indexOf('async function archiveWorkspace(orgId, orgName)');
+  const handlerEnd = src.indexOf('// ---- Organization invites ----', handlerStart);
+  const handler = handlerStart >= 0 && handlerEnd > handlerStart ? src.slice(handlerStart, handlerEnd) : '';
+
+  assert.match(src, /archiveWorkspace as archiveWorkspaceFn/,
+    'settings overlay must import archiveWorkspace service wrapper');
+  assert.match(src, /let _archiveWorkspaceInFlight = false/,
+    'settings overlay must guard archive double clicks');
+  assert.match(handler, /archiveWorkspaceFn\(normalizedOrgId\)/,
+    'settings archive handler must call the Edge Function wrapper');
+  assert.match(handler, /TruckPackerApp\.handleWorkspaceArchived\(normalizedOrgId, \{ source: 'settings-archive-workspace' \}\)/,
+    'settings archive success must hand off active org recovery to the app helper');
+  assert.match(src, /if \(isPrimaryOwner\) \{[\s\S]*Archive Workspace[\s\S]*UIComponents\.confirm\(\{[\s\S]*title: 'Archive Workspace'[\s\S]*danger: true/,
+    'Archive Workspace UI must be gated to primary owner and use UIComponents.confirm');
+  assert.match(src, /Workspace data, members, invites, and billing records are preserved\. Stripe billing is not canceled\./,
+    'archive confirmation copy must explicitly preserve data and Stripe billing');
+  assert.doesNotMatch(src, /window\.alert|window\.confirm|window\.prompt/,
+    'settings overlay must not use native dialogs');
+});
+
+test('phase 0.6C does not add restore transfer permanent delete billing-status Stripe CSS router or package scope', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
+  const billingSrc = await fs.readFile(billingServiceUrl, 'utf8');
+  const appStart = appSrc.indexOf('function handleWorkspaceArchived(archivedOrgId, options = {})');
+  const appEnd = appSrc.indexOf('// Expose billing pump globally', appStart);
+  const settingsStart = settingsSrc.indexOf('async function archiveWorkspace(orgId, orgName)');
+  const settingsEnd = settingsSrc.indexOf('// ---- Organization invites ----', settingsStart);
+  const billingStart = billingSrc.indexOf('export async function archiveWorkspace(orgId)');
+  const sources = [
+    ['handleWorkspaceArchived', appStart >= 0 && appEnd > appStart ? appSrc.slice(appStart, appEnd) : ''],
+    ['settings archiveWorkspace', settingsStart >= 0 && settingsEnd > settingsStart ? settingsSrc.slice(settingsStart, settingsEnd) : ''],
+    ['billing service archiveWorkspace', billingStart >= 0 ? billingSrc.slice(billingStart) : ''],
+    ['org-archive-workspace', await fs.readFile(orgArchiveWorkspacePath, 'utf8')],
+  ];
+
+  for (const [label, src] of sources) {
+    assert.doesNotMatch(src, /restoreWorkspace|transferOwnership|permanentDelete|deleteWorkspace|exportWorkspace/,
+      `${label} must not introduce restore/transfer/delete/export lifecycle actions`);
+    assert.doesNotMatch(src, /billing-status|stripe-create-checkout|stripe-create-portal|stripe-webhook/i,
+      `${label} must not touch billing-status or Stripe functions`);
+  }
+});
+
+test('signup auto-org trigger avoids restricted-search-path uuid calls and keeps billing seed non-blocking', async () => {
+  const src = await fs.readFile(signupAutoOrgUuidMigrationPath, 'utf8');
+
+  assert.match(src, /create or replace function public\.tp3d_handle_new_user\(\)/,
+    'migration must replace the signup trigger function');
+  assert.match(src, /create or replace function public\.seed_billing_customer_trial_for_org\(\)/,
+    'migration must replace the billing seed trigger used by signup owner membership inserts');
+  assert.match(src, /set search_path = public/,
+    'signup trigger should keep a restricted search_path');
+  assert.match(src, /drop trigger if exists on_auth_user_create_default_org on auth\.users/,
+    'migration must remove the legacy duplicate auth signup trigger');
+  assert.doesNotMatch(src, /v_org_id\s*:=\s*gen_random_uuid\(\)/,
+    'signup trigger must not call unqualified gen_random_uuid at runtime');
+  assert.match(src, /a\.attname = 'email'[\s\S]*v_has_profile_email_column/,
+    'signup trigger must tolerate profile schemas without public.profiles.email');
+  assert.match(src, /a\.attname = 'updated_at'[\s\S]*v_has_member_updated_at_column/,
+    'signup trigger must tolerate organization_members schemas without updated_at');
+  assert.match(src, /select exists \([\s\S]*from public\.organization_members m[\s\S]*where m\.user_id = new\.id[\s\S]*into v_has_membership/,
+    'signup trigger must avoid duplicate workspaces if a legacy trigger already created membership');
+  assert.match(src, /if v_has_membership then[\s\S]*return new;[\s\S]*end if;/,
+    'signup trigger must exit after profile upsert when membership already exists');
+  assert.match(src, /insert into public\.organizations \(name, slug, owner_id, created_at, updated_at\)[\s\S]*returning id into v_org_id/,
+    'signup trigger must let organizations.id default generate the org id');
+  assert.match(src, /set slug = v_org_id::text/,
+    'signup trigger must preserve the historical org-id slug shape after insert');
+  assert.match(src, /insert into public\.organization_members[\s\S]*'owner'::public\.org_member_role/,
+    'signup trigger must still add the new user as workspace owner');
+  assert.match(src, /exception\s+when others[\s\S]*billing_customer trial seed skipped[\s\S]*return new;/,
+    'optional billing trial seed failures must not abort auth signup');
+  assert.match(src, /pg_catalog\.pg_attribute[\s\S]*a\.attname = 'user_id'[\s\S]*v_has_user_id_column/,
+    'billing seed should tolerate legacy billing_customers tables with user_id columns');
+  assert.match(src, /execute[\s\S]*insert into public\.billing_customers[\s\S]*user_id[\s\S]*using new\.organization_id, new\.user_id/,
+    'billing seed should populate legacy user_id when that column exists');
 });

@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-04-22
+Last updated: 2026-05-07 — Phase 0.6C Archive Workspace implemented and deployed; Phase 0.6C-3 frontend no-active-workspace stability implemented, browser re-validation pending
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -251,6 +251,46 @@ Future (do later):
 
 ### P0.9 Delete account safety — NOT DONE (IMPORTANT)
 
+---
+
+### P0.10 Signup auto-org creation stability — DONE ✅
+Goal: New Supabase auth signups must reliably create the required app records without duplicate workspace triggers or schema mismatch failures.
+
+Completed:
+- [x] Fixed the signup failure that showed `Sign up failed: Database error saving new user` for new users.
+- [x] Removed the duplicate legacy auth signup trigger `on_auth_user_create_default_org`.
+- [x] Hardened `tp3d_handle_new_user()` for live schema differences:
+  - [x] Does not depend on direct runtime `gen_random_uuid()` behavior.
+  - [x] Works when `public.profiles.email` is absent.
+  - [x] Works when `organization_members.updated_at` is absent.
+  - [x] Avoids duplicate workspace creation if a legacy membership already exists.
+- [x] Kept billing trial seed non-blocking so optional billing seed issues cannot abort auth signup.
+- [x] Added migration `2026050601_fix_signup_auto_org_uuid.sql`.
+- [x] Added audit test coverage in `tests/audit/security-and-invariants.spec.mjs`.
+
+Live verification:
+- [x] `test5@test.com` signup now succeeds in Chrome.
+- [x] App loads `test5's Workspace` after signup.
+- [x] Free-trial banner appears for the new workspace.
+- [x] Logout is available.
+- [x] DB confirms auth user exists.
+- [x] DB confirms profile exists.
+- [x] DB confirms one workspace exists.
+- [x] DB confirms owner membership exists.
+- [x] DB confirms `billing_customers` row exists with `trialing`.
+- [x] DB confirms the duplicate legacy auth trigger no longer exists.
+
+Validation:
+- [x] `npm test` passed: 76/76.
+- [x] `npm run lint` passed with 0 errors and existing warnings only.
+- [x] `npm run -s typecheck` passed.
+- [x] `git diff --check` passed.
+- [x] `git diff --cached --check` passed.
+
+Notes:
+- `test5@test.com` now exists. Future sign-up attempts with that email should return an already-registered/auth-existing response, not create another user.
+- Keep this fix separate from Archive Workspace work.
+
 Goal: avoid "wrong hands" deleting accounts or breaking org billing.
 - [ ] Only Owner can delete the org (if you support org deletion).
 - [x] Block "Delete Account" if user is last Owner of any org.
@@ -288,9 +328,10 @@ Notes:
 
 ## P1 — Invitations + membership lifecycle — NOT DONE
 - [ ] Invite email delivery + link correctness
-- [ ] Accept invite flow
-- [ ] Expiration rules
-- [ ] Removing member never changes billing
+- [x] Accept invite flow — code complete for signed-in users; live signed-out handoff still needs sign-off
+- [x] Expiration rules — `organization_invites.expires_at` added, shown, and enforced
+- [x] Invite revocation moved behind `org-invite-revoke` Edge Function — implemented, committed, deployed, audit-passed, and live-tested
+- [x] Removing member never changes billing
 - [ ] Ownership transfer (if supported)
 
 ---
@@ -313,16 +354,42 @@ P0 is green only when ALL items here are checked:
 - [x] P0.6 DB health checks run and clean during tests (Q1–Q6 all 0 rows)
 - [x] P0.7 Trial-expired behavior implemented + tested (test3 locked; test1/test2/test4 ok)
 - [x] P0.8 Payment failure rules implemented + tested (past_due / unpaid / incomplete)
-- [ ] P0 Workspace creation + switching tested (no org/billing leakage)
-- [ ] P0.9 Cross-user data isolation + 2-tab stability verified (no banner + orgId resolves in both tabs)
-- [x] Logout flow uses canonical helper only; no timed `reload()` immediately after `signOut()`
-- [ ] Cross-tab logout verified (no sign-out → sign-in bounce) — code complete; live 2-tab sign-off required
-- [ ] No console errors in normal flows (ignore debug mode + expected 404 favicon)
-- [ ] "Manage billing" never 500
+- [ ] Phase 0 Workspace creation + switching tested with no org/billing leakage.
+- [x] Phase 0.5 Membership + invite lifecycle audited and stabilized through invite revoke UI follow-up; remaining signed-out invite handoff checks stay tracked separately.
+- [ ] Phase 0.6 Workspace archive / restore / transfer / leave rules defined before implementation.
+- [ ] Phase 0.7 Workspace export rules defined before destructive lifecycle actions.
+- [ ] P0.9 Cross-user data isolation + 2-tab stability verified.
+- [x] Logout flow uses canonical helper only.
+- [ ] Cross-tab logout verified live.
+- [ ] No console errors in normal flows (ignore debug mode + expected favicon noise).
+- [ ] "Manage billing" never 500.
+  - [x] New-user signup creates auth user, profile, default workspace, owner membership, and billing trial row without DB trigger failure.
 
 ---
 
 ## Running log (keep updated)
+
+- Date: 2026-05-06 — Signup auto-org creation hotfix
+- What changed:
+  - Fixed the live signup failure for new users where Supabase Auth returned `Database error saving new user`.
+  - Added migration `2026050601_fix_signup_auto_org_uuid.sql`.
+  - Removed the duplicate legacy auth trigger `on_auth_user_create_default_org`.
+  - Hardened `tp3d_handle_new_user()` so it works with the live schema when optional columns differ from local assumptions.
+  - Made billing trial seed non-blocking so optional billing seed errors do not abort Auth signup.
+  - Added audit test coverage for the signup trigger migration.
+  - Live signup for `test5@test.com` succeeded in Chrome.
+  - DB verification confirmed auth user, profile, one workspace, owner membership, and trialing billing row.
+- Validation:
+  - `npm test` passed: 76/76.
+  - `npm run lint` passed with 0 errors and existing warnings only.
+  - `npm run -s typecheck` passed.
+  - `git diff --check` passed.
+  - `git diff --cached --check` passed.
+- Notes:
+  - `test5@test.com` now exists and should not be reused for fresh signup tests.
+  - This fix is separate from Phase 0.6C Archive Workspace.
+- Next action:
+  - Proceed with Phase 0.6C Archive Workspace audit only. No archive implementation until the audit confirms schema, UI, billing, and org-switching behavior.
 
 - Date: 2026-04-22
 - What changed:
@@ -490,11 +557,14 @@ Rules:
 ## Current priority order
 
 1. **Phase 0 — Workspace Foundation Finalization**
-2. **Phase 0.1 — Runtime Safety / Error States**
-3. **Phase 1 — AutoPack correctness fixes**
-4. **Phase 1.1 — Quick product wins**
-5. **Phase 1.2 — Crew View / share flow**
-6. **Phase 2 — Runtime cleanup / modularization**
+2. **Phase 0.5 — Membership + Invite Lifecycle**
+3. **Phase 0.6 — Workspace Lifecycle Actions**
+4. **Phase 0.7 — Workspace Data Export**
+5. **Phase 0.8 — Runtime Safety / Error States**
+6. **Phase 1 — AutoPack correctness fixes**
+7. **Phase 1.1 — Quick product wins**
+8. **Phase 1.2 — Crew View / share flow**
+9. **Phase 2 — Runtime cleanup / modularization**
 
 ---
 
@@ -660,6 +730,9 @@ Do this first.
 - [ ] Finalize active workspace persistence.
 - [ ] Finalize org / billing relationship.
 - [x] Finalize invite / join expectations if in scope now.
+- [ ] Confirm workspace lifecycle rules before adding destructive actions.
+- [ ] Confirm owner/member role rules for every workspace action.
+- [ ] Confirm billing behavior when a workspace is archived, restored, transferred, or left.
 
 ### Required outcomes
 - [x] Creating a workspace always:
@@ -679,6 +752,37 @@ Do this first.
   - [ ] per-org trial, or
   - [ ] free by default
 - [x] Invite/join behavior is clearly defined for current phase.
+- [ ] Workspace lifecycle actions are defined before implementation:
+  - [ ] Archive workspace.
+  - [ ] Restore workspace.
+  - [ ] Transfer ownership.
+  - [x] Leave workspace — implemented, deployed, tested with member leave path; chip sync hotfix completed
+  - [ ] Export workspace data.
+  - [ ] Permanent delete later with delayed deletion and recovery window.
+- [ ] Workspace archive behavior is safe:
+  - [ ] Existing workspace data is preserved.
+  - [ ] Archived workspace is hidden from normal active-workspace switching unless the user opens an archived view.
+  - [ ] Archived workspace does not unexpectedly cancel Stripe billing.
+  - [ ] Archived workspace still respects owner/account billing rules.
+- [ ] Workspace restore behavior is safe:
+  - [ ] Only allowed users can restore.
+  - [ ] Restored workspace reappears in the workspace switcher.
+  - [ ] Billing status refreshes cleanly after restore.
+- [ ] Transfer ownership behavior is safe:
+  - [ ] Only current Owner can transfer ownership.
+  - [ ] New Owner must already be a member of the workspace.
+  - [ ] Transfer updates `organizations.owner_id` and `organization_members` roles consistently.
+  - [ ] Billing ownership behavior is explicit and tested.
+- [x] Leave workspace behavior is safe:
+  - [x] Non-owner users can leave.
+  - [x] Primary `organizations.owner_id` is blocked until Transfer Ownership exists.
+  - [x] Last Owner cannot leave until ownership is transferred or the workspace is archived/deleted by policy.
+  - [x] Leaving a workspace never changes Stripe billing.
+  - [x] Bottom-left workspace chip syncs after leave and uses workspace initials with circular shape.
+- [ ] Export workspace data behavior is safe:
+  - [ ] Owner/Admin can export workspace data.
+  - [ ] Export includes packs, items, preferences, and member/invite summary where allowed.
+  - [ ] Export does not expose payment secrets or private tokens.
 
 ### Notes
 - Freeze Stripe/Supabase internals unless workspace finalization truly requires touching them.
@@ -689,7 +793,248 @@ Do this first.
 
 ---
 
-## Phase 0.1 — Runtime Safety / Error States — PLANNED NEXT AFTER WORKSPACE
+## Phase 0.5 — Membership + Invite Lifecycle — MOSTLY COMPLETE / LIVE SIGN-OFF REQUIRED
+
+Goal: make workspace access predictable, safe, and clean before adding archive, restore, transfer, leave, export, or delete actions.
+
+### Required audit first
+- [x] Audit all membership and invite code paths before editing.
+- [x] Identify every UI entry point for Members, Invites, Copy Link, role changes, remove member, accept invite, and signed-out invite handoff.
+- [x] Identify every Edge Function or Supabase query used by membership and invite flows.
+- [x] Confirm current role model: Owner, Admin, Member.
+- [x] Confirm owner-only actions vs admin actions vs member actions.
+- [x] Confirm billing is never changed by invite, accept invite, remove member, or access-loss recovery.
+
+### Membership rules
+- [x] Owner can invite, remove, and change roles within policy.
+- [x] Admin can invite members only under current product policy: Admin can invite Member, but cannot invite Admin or Owner.
+- [x] Admin cannot promote users to Admin or Owner.
+- [x] Member cannot invite, remove, or change roles.
+- [x] Last Owner cannot be removed.
+- [ ] Last Owner cannot leave. *(Phase 0.6A Leave Workspace will enforce this.)*
+- [x] Removing a member clears only that member's access, not workspace data or billing.
+- [x] Removed member access-loss recovery is implemented for the next billing/account refresh path and Settings lockout.
+- [ ] Live two-tab removed-member validation still required.
+
+### Invite rules
+- [x] Invite links have clear status: active, accepted, expired, revoked.
+- [x] Pending invite revocation is server-side via `org-invite-revoke`; legacy direct browser-side revoke path is disabled.
+- [x] Invite acceptance works for signed-in users.
+- [ ] Invite handoff works for signed-out users after login/signup. *(Needs live browser sign-off.)*
+- [x] Expired or revoked invite shows a clear message.
+- [x] Invite cannot grant access to the wrong workspace.
+- [x] Invite cannot change billing owner or Stripe customer.
+- [x] Invite acceptance creates one membership row only; no duplicate member rows.
+
+### UI/UX rules
+- [x] Members tab no longer hangs indefinitely on “Loading permissions...” because it has a timeout and refresh action.
+- [x] Role labels and permission copy are consistent across Settings and account/workspace UI for current membership flows.
+- [x] Dangerous membership and invite actions use confirmation modals, not browser alerts.
+- [x] Error messages are plain, clear, and role-aware.
+- [x] Empty invite/member states are helpful and not scary.
+
+### Validation
+- [ ] Owner invite → user accepts → member appears. *(Live sign-off required.)*
+- [ ] Signed-out invite → login/signup → invite resumes correctly. *(Live sign-off required.)*
+- [x] Expired/revoked invite blocked by Edge Function rules.
+- [x] Admin cannot promote Admin/Owner.
+- [x] Member cannot manage roles.
+- [x] Owner cannot remove the last Owner.
+- [ ] Removed user loses access to workspace, billing, members, and packs. *(Code implemented; live two-tab sign-off required.)*
+- [x] Billing status is unchanged after invite/remove/access-loss recovery.
+- [x] Billing status remains unchanged after Leave Workspace. *(Validated with `WS-test4-w-6`; `billing_customers` unchanged.)*
+- [x] Billing status remains unchanged after Invite Revocation. *(Live SQL check confirmed invite revoke changes only invite status/revoked_at; billing row unchanged.)*
+
+### Completed implementation checkpoints
+- [x] Phase 0.5C-1: Invite authorization hardening.
+  - Admin can invite Member only.
+  - Owner can invite Admin or Member.
+  - Owner-role invite rows are rejected during accept.
+  - Accepted-token success validates the signed-in user email before exposing `organization_id`.
+- [x] Phase 0.5C-2: Membership UI safety.
+  - Sensitive role changes require confirmation.
+  - Invite revoke uses confirmation.
+  - Role/member mutations refresh member list plus org/billing context.
+  - Permissions loading has a bounded timeout and refresh action.
+- [x] Phase 0.5C-3: Invite expiration.
+  - `organization_invites.expires_at` added and backfilled.
+  - New/resend invites refresh expiry.
+  - Expired invites are rejected before membership insert.
+  - Settings Pending Invites displays expiry state.
+- [x] Phase 0.5D: Access-loss and member-removal hardening.
+  - Active-org billing 403 triggers guarded access-loss recovery.
+  - Settings General, Members, and Billing lock the lost workspace and hide scoped controls.
+  - No sign-out, reload, Stripe mutation, or workspace data deletion occurs during access-loss recovery.
+- [x] Phase 0.6B: Invite revocation Edge Function.
+  - Added `org-invite-revoke` as the server-side boundary for invite revocation.
+  - Owner/Admin role checks happen server-side.
+  - Admin can revoke Member invites only; Admin cannot revoke Admin invites.
+  - Accepted invites are blocked from revoke; already-revoked invites are idempotent.
+  - Settings revoke flow now uses `revokeOrgInvite()` service wrapper.
+  - Legacy direct browser-side `SupabaseClient.revokeOrganizationInvite()` mutation path is disabled.
+  - No billing, Stripe, organization delete, or membership mutation occurs during invite revoke.
+
+### Still open before Phase 0.5 can be closed
+- [ ] Live owner invite → accept → member appears.
+- [ ] Live signed-out invite handoff after login/signup.
+- [ ] Live expired invite rejection after manually setting `expires_at` in the past.
+- [x] Live revoke pending invite via `org-invite-revoke` Edge Function.
+- [ ] Live already-revoked invite idempotency check.
+- [ ] Live accepted invite revoke rejection.
+- [x] Phase 0.6B-2: fix Settings invite render stable-key so revoked pending invites disappear immediately without tab switching.
+- [x] Phase 0.6B-2: show pending Admin invites to Admin users for transparency, but disable/guard Revoke/Resend for Admin-on-Admin rows with clear owner-only copy.
+- [ ] Live two-tab removed-member access-loss validation.
+- [ ] Confirm no billing or Stripe records change after invite, accept, remove, or access-loss recovery.
+
+---
+
+## Phase 0.6 — Workspace Lifecycle Actions — PLANNED AFTER MEMBERSHIP
+
+Goal: add safe workspace lifecycle tools without data loss, billing mistakes, or role leaks.
+
+- [x] Phase 0.6C Archive Workspace audit completed.
+- [x] Phase 0.6C Archive Workspace implemented, migration applied, Edge Function deployed, and partially live-tested.
+
+### Archive workspace
+- [x] `archived_at` column, index, guard trigger, and active-org RPC filtering added via `2026050701_organization_archive.sql`.
+- [x] Owner can archive workspace (owner-only `org-archive-workspace` Edge Function).
+- [x] Admin and Member do not see the Archive Workspace button in Settings.
+- [x] Archive preserves all members, invites, billing rows, Stripe state, packs, cases, and storage.
+- [x] Archive does not cancel Stripe subscription.
+- [x] Archived workspace is filtered from `getUserOrganizations` in both RPC and fallback paths.
+- [x] `org-archive-workspace` Edge Function deployed.
+- [x] `2026050601_fix_signup_auto_org_uuid.sql` and `2026050701_organization_archive.sql` pushed to production.
+- [x] Archived workspace is preserved and recoverable (data intact in DB).
+- [x] Active workspace fallback after archiving the only active workspace.
+- [x] No-active-workspace state shown cleanly after archiving the only workspace.
+- [x] Settings does not show archived workspace as active after archive.
+- [ ] Billing copy explains if archived workspace still counts toward plan limit.
+
+### Phase 0.6C-2 / 0.6C-3 Archive no-active-workspace follow-up — IMPLEMENTED
+- [x] Fix frontend org-context fallback after archiving the only active workspace.
+- [x] Do not reuse cached orgs when fresh active org list is empty.
+- [x] Do not let profile/local/membership org IDs become active unless they exist in active orgs.
+- [x] Clear stale local org hint when no active workspace is confirmed.
+- [x] Bottom-left chip must not show archived workspace or stay on `Loading...` after confirmed no-active state.
+- [x] Settings must not show archived workspace as active.
+- [x] Settings Billing must render a clean no-active message instead of requiring manual Refresh.
+- [x] No-active-workspace state must appear only after settled auth/org state.
+- [x] No sign-out, reload, Stripe call, billing mutation, member deletion, invite deletion, pack/case deletion, storage deletion, CSS, router, or package changes.
+- [x] Add audit tests.
+- [ ] Browser-test one-workspace owner and multi-workspace owner after fix.
+
+### Restore workspace
+- [ ] Owner can restore archived workspace.
+- [ ] Restored workspace appears in switcher again.
+- [ ] Org context and billing refresh after restore.
+- [ ] Restore respects workspace limit rules.
+
+### Transfer ownership
+- [ ] Only Owner can transfer ownership.
+- [ ] New Owner must already be a workspace member.
+- [ ] Transfer updates `organizations.owner_id` and membership roles in one safe server-side operation.
+- [ ] Old Owner becomes Admin or Member based on selected policy.
+- [ ] Transfer cannot leave workspace without an Owner.
+- [ ] Billing owner behavior must be clearly defined before enabling this.
+
+- [x] Implementation plan reviewed against current membership and billing rules.
+- [x] Decision confirmed: Leave Workspace is a separate Edge Function, not a modification of `org-member-remove`.
+- [x] Decision confirmed: current `organizations.owner_id` cannot leave in this phase; Transfer Ownership must happen first.
+- [x] Decision confirmed: Leave Workspace must not mutate Stripe, billing tables, workspace data, or `organizations.owner_id`.
+- [x] Add `supabase/functions/org-leave-workspace/index.ts`.
+- [x] Require authenticated `POST` with `{ organization_id }`.
+- [x] Verify the caller has a membership row for that workspace.
+- [x] Block the last Owner from leaving.
+- [x] Block the current `organizations.owner_id` from leaving in this phase, even if another Owner exists, because Transfer Ownership is not implemented yet.
+- [x] Delete only the caller's own `organization_members` row.
+- [x] Return `{ ok: true, organization_id }`.
+- [x] Add `leaveWorkspace(orgId)` service wrapper in `src/data/services/billing.service.js`.
+- [x] Add Settings > General “Leave Workspace” action using `UIComponents.confirm()`.
+- [x] Admin/member can leave.
+- [x] Owner UI shows clear blocked copy when the current user is `organizations.owner_id`.
+- [x] Last-owner protection remains server-authoritative, with clear 409 error copy returned from the Edge Function.
+- [x] On successful leave, show a toast, close Settings safely, force org/account context refresh, clear stale billing for the left org, and switch to a safe fallback workspace or no-workspace state.
+- [x] Leave action does not delete workspace data.
+- [x] Leave action does not change Stripe billing.
+- [x] Leave action does not transfer ownership.
+- [x] Leave action does not sign out or reload the app.
+- [x] Phase 0.6A-2 hotfix: bottom-left workspace chip invalidates account cache, syncs after leave, uses workspace initials instead of user initials, and is circular.
+
+- [x] Add `supabase/functions/org-invite-revoke/index.ts`.
+- [x] Require authenticated `POST` with `{ invite_id }` and optional `{ organization_id }` validation.
+- [x] Load invite server-side and use invite row `organization_id` as the source of truth.
+- [x] Verify actor role from `organization_members` for the invite workspace.
+- [x] Owner/Admin can revoke Member invites.
+- [x] Owner can revoke Admin invites.
+- [x] Admin cannot revoke Admin invites.
+- [x] Owner-role invite rows are rejected.
+- [x] Accepted invites cannot be revoked.
+- [x] Already-revoked invites return idempotent success.
+- [x] Revoke sets `status='revoked'` and `revoked_at` without deleting the invite row.
+- [x] Add `revokeOrgInvite()` service wrapper in `src/data/services/billing.service.js`.
+- [x] Settings revoke flow uses the Edge Function wrapper and keeps the existing confirmation modal.
+- [x] Legacy direct browser-side `SupabaseClient.revokeOrganizationInvite()` mutation path is disabled.
+- [x] Invite revoke does not change Stripe, billing tables, membership rows, workspace data, or organization rows.
+- [x] Run final local validation commands after implementation.
+- [x] Commit and push Phase 0.6B.
+- [x] Deploy `org-invite-revoke` to Supabase.
+- [x] Live owner/member/admin revoke checks started and confirmed server-side revoke behavior.
+- [x] Confirm billing/Stripe records unchanged after revocation.
+- [x] Phase 0.6B-2: fix delayed row removal after successful revoke.
+- [x] Phase 0.6B-2: add Admin-on-Admin invite row guard in Settings UI.
+
+- [x] Edit only `src/ui/overlays/settings-overlay.js` and `tests/audit/security-and-invariants.spec.mjs` unless validation proves another file is required.
+- [x] Fix render stable-key so invite status changes from `pending` to `revoked` trigger an immediate Members tab repaint.
+- [x] Stable key must track pending invite state, not total all-status `orgInvitesData.length` only.
+- [x] Revoke success should remove the pending invite row immediately without requiring tab switch, close/reopen, or waiting for unrelated refresh.
+- [x] Keep `getOrganizationInvites()` returning all statuses unless a separate audit says otherwise; this phase should fix UI rendering, not server data shape.
+- [x] Keep revoked invite rows in the database for audit/history.
+- [x] Admin users should see pending Admin invite rows for transparency.
+- [x] Admin users should not be able to revoke pending Admin invite rows from the UI; disable or clearly guard the Revoke action with owner-only copy.
+- [x] Owner users can still revoke pending Admin invites.
+- [x] Admin users can still revoke pending Member invites.
+- [x] Keep `UIComponents.confirm()` for allowed revoke paths.
+- [x] No native dialogs.
+- [x] No Edge Function, billing, Stripe, migration, CSS, AutoPack, PDF/export, package, router, or docs scope creep.
+- [x] Run final local validation commands after implementation.
+- [x] Commit and push Phase 0.6B-2.
+- [ ] Live Owner revokes pending Member invite and row disappears immediately without tab switching.
+- [ ] Live Owner revokes pending Admin invite and row disappears immediately without tab switching.
+- [ ] Live Admin can see pending Admin invite row but Revoke/Resend are disabled or clearly guarded with owner-only copy.
+- [ ] Live Admin can still revoke pending Member invites.
+- [ ] Confirm no billing, Stripe, sign-out, reload, backend, or DB-shape changes were introduced.
+
+### Permanent delete later
+- [ ] Permanent delete is not part of the first lifecycle release.
+- [ ] Later delete must use delayed deletion with recovery window.
+- [ ] Paid workspace delete policy must be defined first: cancel first, support-assisted, or scheduled cleanup.
+- [ ] Delete must never run as a simple client-side destructive action.
+
+---
+
+## Phase 0.7 — Workspace Data Export — PLANNED AFTER ARCHIVE/RESTORE BASELINE
+
+Goal: let users safely export workspace data before high-risk lifecycle actions.
+
+### Export scope
+- [ ] Export packs/projects.
+- [ ] Export item library.
+- [ ] Export categories/preferences where safe.
+- [ ] Export member/invite summary where allowed.
+- [ ] Export billing summary only as safe labels, never payment secrets.
+
+### Export rules
+- [ ] Owner/Admin can export workspace data.
+- [ ] Member export permission must be explicit; default should be no full workspace export.
+- [ ] Export is scoped to the active workspace only.
+- [ ] Export never includes Supabase JWTs, Stripe customer IDs, subscription IDs, service keys, or private tokens.
+- [ ] Export can be used before archive/transfer/delete as a safety step.
+
+---
+
+---
+
+## Phase 0.8 — Runtime Safety / Error States — PLANNED AFTER WORKSPACE LIFECYCLE BASELINE
 
 Goal: add safe recovery surfaces before the next feature wave.
 
@@ -719,12 +1064,8 @@ Goal: add safe recovery surfaces before the next feature wave.
 
 ---
 
-## P1 — Invitations + membership lifecycle — NOT DONE
-- [ ] Invite email delivery + link correctness.
-- [ ] Accept invite flow.
-- [ ] Expiration rules.
-- [ ] Removing member never changes billing.
-- [ ] Ownership transfer, if supported.
+## P1 — Invitations + membership lifecycle — MOVED TO PHASE 0.5
+Membership and invite lifecycle is now part of Phase 0.5 because it blocks archive, restore, transfer ownership, leave workspace, export workspace data, and future delayed permanent delete.
 
 ---
 
@@ -802,6 +1143,9 @@ P0 is green only when ALL items here are checked:
 - [x] P0.7 Trial-expired behavior implemented + tested.
 - [x] P0.8 Payment failure rules implemented + tested.
 - [ ] Phase 0 Workspace creation + switching tested with no org/billing leakage.
+- [ ] Phase 0.5 Membership + invite lifecycle audited and stabilized.
+- [ ] Phase 0.6 Workspace archive / restore / transfer / leave rules defined before implementation.
+- [ ] Phase 0.7 Workspace export rules defined before destructive lifecycle actions.
 - [ ] P0.9 Cross-user data isolation + 2-tab stability verified.
 - [x] Logout flow uses canonical helper only.
 - [ ] Cross-tab logout verified live.
@@ -811,6 +1155,130 @@ P0 is green only when ALL items here are checked:
 ---
 
 ## Running log (keep updated)
+
+- Date: 2026-05-07 — Phase 0.6C-3 frontend stability after archive implemented
+- What changed:
+  - Confirmed no-active workspace state now dispatches a local empty-org `tp3d:org-changed` event without broadcast, sign-out, or reload.
+  - Bottom-left workspace chip uses `orgContextResolved` so it stops showing `Loading...` after active-org or confirmed no-active resolution.
+  - Settings clears stale `modalOrgId`, org data, membership, members, invites, loading, edit, and action state on confirmed no-active events.
+  - Settings Billing renders a clean no-active workspace message instead of stale archived workspace details or the manual Refresh helper.
+  - Added Phase 0.6C-3 audit tests for cleared events, chip loading, Settings no-active clearing, Billing no-active rendering, banner gating, and scope boundaries.
+- Validation:
+  - `npm test` passed 98/98.
+  - `npm run lint` passed with 0 errors and existing warnings only.
+  - `npm run -s typecheck` passed.
+  - `git diff --check` and `git diff --cached --check` passed.
+- Manual validation still required:
+  - Browser-test one-workspace owner archive and multi-workspace active archive after this frontend patch.
+
+- Date: 2026-05-07 — Phase 0.6C Archive Workspace implemented and partially live-tested
+- What changed:
+  - Phase 0.6C Archive Workspace fully implemented in `src/app.js`, `src/core/supabase-client.js`, `src/data/services/billing.service.js`, `src/ui/overlays/settings-overlay.js`, and `tests/audit/security-and-invariants.spec.mjs`.
+  - Migration `2026050701_organization_archive.sql` added `archived_at` column, partial index, guard trigger (`tp3d_guard_organizations_archived_at_update`), and updated `get_user_organizations` RPC to exclude archived rows.
+  - `org-archive-workspace` Edge Function deployed; owner-only, idempotent, updates only `archived_at`, no billing or Stripe mutation.
+  - Supabase migration history repaired: `20260216_account_deletion.sql` renamed to `2026021600_account_deletion.sql` (identical SQL body) to resolve CLI version-string mismatch causing two-row history display.
+  - `db push` applied `2026050601_fix_signup_auto_org_uuid.sql` and `2026050701_organization_archive.sql` successfully.
+  - Local validation: `npm test` 84/84 passing; lint 0 errors; typecheck clean; `git diff --check` clean.
+- Live test:
+  - `test5@test.com` archived their only workspace. SQL confirmed `organizations.archived_at` set, `organization_members` preserved, `billing_customers` row unchanged.
+  - Bug found: archiving the only workspace does not fully move the UI into the no-active-workspace state. The stale local org hint and `profiles.current_organization_id` are treated as active org candidates by `resolveOrgContextFromBundle` even when the fresh `orgs` list is empty.
+  - Root cause: lines `else if (profileOrgId) orgId = profileOrgId` / `else if (membershipOrgId) orgId = membershipOrgId` in `resolveOrgContextFromBundle` fire without a `hasOrg()` guard, returning the archived org ID as `nextOrgId`, preventing `applyOrgContextFromBundle` from reaching `clearOrgContext({ confirmedNoOrg: true })`.
+- Next action:
+  - Phase 0.6C-2 frontend-only hotfix: add guard in `applyOrgContextFromBundle` to clear org state when `nextOrgId` is not in active orgs and bundle is non-partial. Then browser-test before Restore Workspace.
+
+- Date: 2026-05-05 — Phase 0.6B-2 invite revoke UI follow-up
+- What changed:
+  - Phase 0.6B-2 was implemented in `settings-overlay.js` and `security-and-invariants.spec.mjs` only.
+  - Members tab render stable-key now tracks pending-only invite state using pending invite count/signature and `orgInviteActions.size`.
+  - Revoked pending invite rows should repaint immediately after successful revoke instead of waiting for a tab switch.
+  - Pending Admin invites remain visible to Admin users for transparency.
+  - Admin-on-Admin invite Revoke/Resend actions are disabled or guarded with owner-only copy.
+  - No backend, Edge Function, Stripe, billing-status, migration, CSS, app-wide refresh, AutoPack, PDF/export, package, router, or docs scope creep was included in the implementation.
+  - Codex and Copilot validation both passed for the current repo state.
+  - Local validation passed: `npm test` reported 75/75 passing; lint/typecheck/diff checks passed with existing warnings only.
+  - `git status --short` was clean after validation.
+- Validation still required:
+  - Browser-test Owner revoke of pending Member and Admin invites.
+  - Browser-test Admin visibility of pending Admin invite with disabled/guarded Revoke/Resend.
+  - Browser-test Admin revoke of pending Member invite.
+  - Browser-test Owner/Admin resend behavior for Member/Admin invite rows.
+  - Confirm billing/Stripe data remains unchanged.
+
+
+- Date: 2026-05-05 — Phase 0.6B live-test follow-up
+- What changed:
+  - `org-invite-revoke` was deployed to Supabase and pushed to `main`.
+  - Local validation passed: `npm test` reported 70/70 passing; lint/typecheck/diff checks passed with existing warnings only.
+  - Live revoke tests confirmed the Edge Function updates `organization_invites.status='revoked'` and `revoked_at` while leaving billing/Stripe rows unchanged.
+  - Owner revoke of pending Member invite worked server-side.
+  - Owner revoke of pending Admin invite worked server-side.
+  - Admin revoke of pending Member invite worked server-side.
+- Issues found:
+  - After a successful revoke, the pending invite row does not disappear immediately in Settings; it disappears only after a tab switch or full render.
+  - Root cause: Members tab render stable-key tracks total invite count instead of pending invite state, while the invite fetch returns all statuses.
+  - Admin users can see pending Admin invites, which is good for transparency, but the Revoke button should be disabled/guarded before the Edge Function rejects it.
+- Next action:
+  - Implement Phase 0.6B-2 as a small frontend-only patch in Settings overlay plus audit tests.
+  - Do not touch Edge Functions, billing, Stripe, migrations, CSS, AutoPack, PDF/export, package files, or router for 0.6B-2.
+
+- Date: 2026-05-05
+- What changed:
+  - Phase 0.6A Leave Workspace was implemented, deployed, and browser-tested:
+    - `org-leave-workspace` removes only the caller's `organization_members` row.
+    - Primary owner is blocked until Transfer Ownership exists.
+    - Last-owner protection remains server-side.
+    - Leave Workspace does not touch Stripe, billing records, workspace data, or `organizations.owner_id`.
+    - Browser validation with `test2@test.com` leaving `WS-test4-w-6` succeeded.
+    - `billing_customers` for `WS-test4-w-6` remained unchanged after leave.
+  - Phase 0.6A-2 chip sync + workspace avatar hotfix was implemented:
+    - `handleWorkspaceLeft` invalidates account cache and forces org-context refresh.
+    - Bottom-left chip now uses workspace initials, not user initials.
+    - Bottom-left chip avatar is circular.
+  - Phase 0.6B Invite Revocation Edge Function was implemented and audit-passed:
+    - New `org-invite-revoke` Edge Function handles revoke server-side.
+    - Settings revoke flow now calls `revokeOrgInvite()`.
+    - Direct browser-side invite revocation was disabled.
+- Validation still required:
+  - Run local validation commands for Phase 0.6B and commit/push if clean.
+  - Deploy `org-invite-revoke`.
+  - Live owner/admin/member revoke checks.
+  - Live accepted-invite revoke rejection and already-revoked idempotency checks.
+  - Confirm billing/Stripe records remain unchanged after revoke.
+  - Continue live signed-out invite handoff and two-tab access-loss sign-off.
+
+- Date: 2026-05-05
+- What changed:
+  - Phase 0.5C invite hardening was completed and deployed:
+    - Admin cannot invite Admin through the Edge Function.
+    - Accepted invite token reuse validates signed-in email before returning `organization_id`.
+    - Legacy/corrupt Owner-role invite rows are rejected on accept.
+    - Invite expiration is now stored in `organization_invites.expires_at`, backfilled, shown in Settings, and enforced by `org-invite-accept`.
+  - Phase 0.5C membership UI safety was completed:
+    - Sensitive role changes require confirmation.
+    - Invite revoke uses confirmation.
+    - Members permission loading has a timeout and refresh action.
+  - Phase 0.5D access-loss hardening was completed:
+    - Active-org billing 403 now triggers guarded access-loss recovery.
+    - Settings General, Members, and Billing lock inaccessible workspaces and hide scoped controls.
+    - The flow does not sign out, reload, or touch Stripe/billing data.
+  - Phase 0.6A Leave Workspace is the next planned implementation.
+  - Phase 0.6A Leave Workspace plan reviewed:
+    - New `org-leave-workspace` Edge Function is the correct boundary.
+    - `org-member-remove` should stay blocked for self-removal.
+    - Primary owner leave is blocked until Transfer Ownership exists.
+    - Leave Workspace must remove only the caller's `organization_members` row.
+    - Leave Workspace must not sign out, reload, delete workspace data, or touch Stripe/billing records.
+- Validation still required:
+  - Live invite create/accept/revoke/expired checks.
+  - Live signed-out invite handoff check.
+  - Live two-tab removed-member access-loss check.
+  - Live Leave Workspace validation after Phase 0.6A is implemented.
+  - Validate Member/Admin leave success path.
+  - Validate primary owner blocked path.
+  - Validate last-owner server-side block path.
+  - Validate fallback workspace/no-workspace state after leave.
+  - Validate billing/Stripe records remain unchanged after leave.
+
 
 - Date: 2026-04-19
 - What changed:

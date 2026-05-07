@@ -665,7 +665,25 @@ export function createSettingsOverlay({
     return '';
   }
 
+  function isConfirmedNoActiveWorkspaceBundle(bundle) {
+    return Boolean(
+      bundle &&
+      bundle.user &&
+      bundle.partial !== true &&
+      Array.isArray(bundle.orgs) &&
+      bundle.orgs.length === 0 &&
+      !bundle.activeOrgId
+    );
+  }
+
   function resolveInitialModalOrgId() {
+    try {
+      if (typeof window !== 'undefined' && isConfirmedNoActiveWorkspaceBundle(window.__TP3D_LAST_ACCOUNT_BUNDLE || null)) {
+        return '';
+      }
+    } catch {
+      // ignore
+    }
     return getOrgIdFromOrgContext() || getOrgIdFromBillingState() || getOrgIdFromLocalStorage() || '';
   }
 
@@ -1118,7 +1136,38 @@ export function createSettingsOverlay({
       if (eventTs) _lastOrgChangeTsSeen = Math.max(_lastOrgChangeTsSeen, eventTs);
 
       const nextOrgId = normalizeOrgId(detail ? detail.orgId : '');
-      if (!nextOrgId) return;
+      if (!nextOrgId) {
+        const isCleared = Boolean(detail && detail.confirmedNoOrg) ||
+          isConfirmedNoActiveWorkspaceBundle(
+            (typeof window !== 'undefined' && window.__TP3D_LAST_ACCOUNT_BUNDLE) || null
+          );
+        if (!isCleared) return;
+        modalOrgId = '';
+        clearOrgScopedCaches('');
+        membershipData = null;
+        orgData = null;
+        orgMembersRequestId += 1;
+        orgInvitesRequestId += 1;
+        orgMembersData = null;
+        orgMembersError = null;
+        isLoadingOrgMembers = false;
+        orgMembersInflightPromise = null;
+        orgMembersInflightOrgId = null;
+        lastOrgMembersOrgId = null;
+        orgInvitesData = null;
+        orgInvitesError = null;
+        isLoadingOrgInvites = false;
+        orgInvitesInflightPromise = null;
+        orgInvitesInflightOrgId = null;
+        lastOrgInvitesOrgId = null;
+        isEditingOrg = false;
+        orgMemberActions.clear();
+        orgInviteActions.clear();
+        if (settingsOverlay && settingsOverlay.isConnected) {
+          render({ source: 'org-changed:no-active' });
+        }
+        return;
+      }
       if (nextOrgId === modalOrgId) {
         // Same org but potentially updated role/membership — force bundle + render
         const tab = _tabState.activeTabId;
@@ -1441,6 +1490,18 @@ export function createSettingsOverlay({
         }
         _bundlePartialRetryCount = 0;
 
+        if (isConfirmedNoActiveWorkspaceBundle(bundle)) {
+          profileData = bundle.profile || null;
+          membershipData = null;
+          orgData = null;
+          isEditingOrg = false;
+          modalOrgId = '';
+          clearOrgScopedCaches('');
+          orgMemberActions.clear();
+          orgInviteActions.clear();
+          return bundle;
+        }
+
         profileData = bundle.profile || null;
         membershipData = bundle.membership || null;
         orgData = bundle.activeOrg || null;
@@ -1464,7 +1525,7 @@ export function createSettingsOverlay({
       isLoadingAccountBundle = false;
       isLoadingProfile = false;
       isLoadingMembership = false;
-      isLoadingOrg = keepOrgLoading ? true : false;
+      isLoadingOrg = Boolean(keepOrgLoading);
       if (accountBundleRefreshQueued) {
         const queuedForce = accountBundleQueuedForce;
         accountBundleRefreshQueued = false;
@@ -2991,6 +3052,23 @@ export function createSettingsOverlay({
       while (targetEl.firstChild) targetEl.removeChild(targetEl.firstChild);
       appendOrgAccessLostNotice(targetEl, 'org-billing:lost-access:refresh');
       return;
+    }
+    if (!lockedOrgId) {
+      let confirmedNoActiveWorkspace = false;
+      try {
+        confirmedNoActiveWorkspace = typeof window !== 'undefined' &&
+          isConfirmedNoActiveWorkspaceBundle(window.__TP3D_LAST_ACCOUNT_BUNDLE || null);
+      } catch {
+        confirmedNoActiveWorkspace = false;
+      }
+      if (confirmedNoActiveWorkspace) {
+        const noActiveMsg = doc.createElement('div');
+        noActiveMsg.className = 'tp3d-org-feedback tp3d-org-feedback--warning';
+        noActiveMsg.textContent = 'No active workspace is selected. Create a new workspace or restore an archived workspace when restore is available.';
+        while (targetEl.firstChild) targetEl.removeChild(targetEl.firstChild);
+        targetEl.appendChild(noActiveMsg);
+        return;
+      }
     }
     const currentOrgId = getOrgIdFromOrgContext();
     const billingOrgId = normalizeOrgId(state.orgId || '');

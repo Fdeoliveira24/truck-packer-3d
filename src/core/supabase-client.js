@@ -2420,9 +2420,9 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
       }
 
       const orgsWrap = await withTimeout(
-        getUserOrganizations().catch(() => []),
+        getUserOrganizations().catch(() => null),
         ACCOUNT_FETCH_TIMEOUT_MS,
-        []
+        null
       );
       if (_authEpoch !== startEpoch) {
         return _safeFallbackBundle('Auth changed during account fetch', true, authKey, startEpoch);
@@ -2443,16 +2443,20 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
       const hadTimeout = Boolean(profileWrap.timedOut || orgsWrap.timedOut || membershipWrap.timedOut);
       const reasonParts = [];
       let usedCachedOrgs = false;
+      const orgsFetchReturnedArray = Array.isArray(orgsResult) && !orgsWrap.timedOut;
+      const orgsFetchUncertain = Boolean(orgsWrap.timedOut || !Array.isArray(orgsResult));
 
       if ((profileWrap.timedOut || !profileResult) && cachedProfile) {
         profileResult = cachedProfile;
         reasonParts.push('profile timeout, using cached');
       }
 
-      if ((!Array.isArray(orgsResult) || orgsResult.length === 0 || orgsWrap.timedOut) && cachedOrgs.length > 0) {
+      if (orgsFetchUncertain && cachedOrgs.length > 0) {
         orgsResult = cachedOrgs;
-        reasonParts.push('orgs timeout, using cached');
+        reasonParts.push('orgs unavailable, using cached');
         usedCachedOrgs = true;
+      } else if (orgsFetchUncertain) {
+        reasonParts.push('orgs unavailable');
       }
 
       if ((membershipWrap.timedOut || !membershipResult) && cachedMembership) {
@@ -2505,11 +2509,11 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
       const activeOrgId =
         activeOrgSafe && activeOrgSafe.id
           ? String(activeOrgSafe.id)
-          : profileOrgId || membershipOrgId || null;
+          : null;
 
       // Ensure membership in the bundle reflects the active org context.
       // getMyMembership() may be ambiguous for users who belong to multiple orgs.
-      let membershipSafe = membershipResult || null;
+      let membershipSafe = activeOrgId ? membershipResult || null : null;
       const activeRole =
         activeOrgSafe && activeOrgSafe.role ? String(activeOrgSafe.role).toLowerCase() : null;
       const membershipSafeOrgId = normalizeOrgId(
@@ -2528,11 +2532,12 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
       }
 
       const authProofStale = Boolean(hadTimeout);
+      const orgsAuthoritative = orgsFetchReturnedArray && !usedCachedOrgs;
       // partial = true ONLY when org context is incomplete.
       // Timeouts on profile/membership alone don't make the bundle partial
       // when we have a valid activeOrgId and at least one org.
       const orgContextComplete = Boolean(activeOrgId && orgsSafe.length >= 1);
-      const partial = Boolean((hadTimeout || reasonParts.length > 0) && !orgContextComplete);
+      const partial = Boolean(!orgsAuthoritative || ((hadTimeout || reasonParts.length > 0) && !orgContextComplete));
       const bundle = {
         key: authKey,
         canceled: false,

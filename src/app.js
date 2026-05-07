@@ -2470,21 +2470,29 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const isAuthed = Boolean(view && view.isAuthed);
         const displayName = (view && view.displayName) || (isAuthed ? 'User' : 'Guest');
         const activeOrg = orgContext && orgContext.activeOrg ? orgContext.activeOrg : null;
+        const activeOrgs = orgContext && Array.isArray(orgContext.orgs) ? orgContext.orgs : [];
+        const noActiveWorkspace = Boolean(isAuthed && !activeOrg && orgContextResolved && activeOrgs.length === 0);
         // Show 'Loading…' instead of generic 'Workspace' when user is authed
         // but org context hasn't arrived yet (cross-tab boot gap).
-        // eslint-disable-next-line no-use-before-define -- vars declared later in module scope
-        const orgHydrating = Boolean(isAuthed && !activeOrg && (orgContextInFlight || authRehydratePromise));
-        const accountName = activeOrg && activeOrg.name ? activeOrg.name : (orgHydrating ? 'Loading\u2026' : 'Workspace');
+        const orgHydrating = Boolean(
+          isAuthed && !activeOrg && !orgContextResolved && (orgContextInFlight || authRehydratePromise)
+        );
+        const accountName = activeOrg && activeOrg.name
+          ? activeOrg.name
+          : noActiveWorkspace
+            ? 'No workspace'
+            : (orgHydrating ? 'Loading\u2026' : 'Workspace');
         const role =
           (orgContext && orgContext.role ? String(orgContext.role) : null) ||
           (activeOrg && activeOrg.role ? String(activeOrg.role) : null) ||
+          (noActiveWorkspace ? 'No active workspace' : null) ||
           (isAuthed ? 'Owner' : 'Guest');
 
         return {
           accountName,
           role,
-          userName: displayName || '—',
-          orgInitials: getActiveWorkspaceInitials(),
+          userName: noActiveWorkspace ? 'Create or join' : displayName || '—',
+          orgInitials: noActiveWorkspace ? '' : getActiveWorkspaceInitials(),
           initials: (view && view.initials) || '',
         };
       }
@@ -5567,6 +5575,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
     let lastOrgPersistAt = 0;
     let orgContextInFlight = null;
+    let orgContextResolved = false;
     let orgContextQueued = false;
     let _orgBundleFetchInflightForOrg = null;
     /** @type {Map<string, number>} orgId -> grace-until timestamp */
@@ -6107,6 +6116,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
      *   source?: string|null,
      *   ts?: number,
      *   userId?: string|null,
+     *   allowEmpty?: boolean,
+     *   confirmedNoOrg?: boolean,
      * }} [options]
      * @returns {number}
      */
@@ -6119,9 +6130,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
         source = 'local',
         ts = Date.now(),
         userId = null,
+        allowEmpty = false,
+        confirmedNoOrg: dispatchConfirmedNoOrg = false,
       } = options || {};
       const nextOrgId = orgId ? String(orgId).trim() : '';
-      if (!nextOrgId) return 0;
+      if (!nextOrgId && !(allowEmpty && dispatchConfirmedNoOrg)) return 0;
       const signedInUserId = userId || getSignedInUserIdStrict();
       if (!signedInUserId) return 0;
       const nextVersion = markOrgContextVersion(version || nextOrgContextVersion());
@@ -6129,6 +6142,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         orgId: nextOrgId,
         reason: reason || null,
         userId: signedInUserId,
+        confirmedNoOrg: dispatchConfirmedNoOrg || undefined,
         ts: Number.isFinite(Number(ts)) ? Number(ts) : Date.now(),
         timestamp: Number.isFinite(Number(ts)) ? Number(ts) : Date.now(),
         epoch: nextVersion,
@@ -6621,8 +6635,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       else if (activeOrgHint && hasOrg(activeOrgHint)) orgId = activeOrgHint;
       else if (membershipOrgId && hasOrg(membershipOrgId)) orgId = membershipOrgId;
       else if (orgs.length > 0) orgId = String(orgs[0].id);
-      else if (profileOrgId) orgId = profileOrgId;
-      else if (membershipOrgId) orgId = membershipOrgId;
 
       const activeOrg = orgId ? orgs.find(o => o && String(o.id) === String(orgId)) || null : null;
       let role = null;
@@ -6639,6 +6651,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     let _lastWorkspaceReadyDetail = null;
     let _lastWorkspaceReadyAt = 0;
     const WORKSPACE_READY_REPLAY_MS = 5000;
+    let orgRequiredStateReason = '';
 
     function resetWorkspaceScopedUiState(targetOrgId) {
       const resetKey = targetOrgId ? `org:${String(targetOrgId)}` : 'no-org';
@@ -6665,7 +6678,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }, { skipHistory: true });
     }
 
-    function clearOrgContext({ clearLocalOrgHint = false, confirmedNoOrg = false } = {}) {
+    function clearOrgContext({ clearLocalOrgHint = false, confirmedNoOrg = false, reason = '' } = {}) {
       finishWorkspaceSwitch('org-cleared');
       orgContext = {
         activeOrgId: null,
@@ -6685,6 +6698,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       lastLoadedWorkspaceStorageKey = '';
       if (clearLocalOrgHint || confirmedNoOrg) writeLocalOrgId(null);
       if (confirmedNoOrg) {
+        orgRequiredStateReason = String(reason || '');
         suspendAutoSave = true;
         try {
           resetAppStateToEmpty();
@@ -6693,8 +6707,23 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
         resetWorkspaceScopedUiState(null);
       }
+      orgContextResolved = Boolean(confirmedNoOrg);
       applyOrgRequiredUi(false, { confirmedNoOrg });
       queueOrgScopedRender('org-cleared');
+      if (confirmedNoOrg) {
+        const clearedUserId = getSignedInUserIdStrict();
+        if (clearedUserId) {
+          dispatchOrgContextChanged({
+            orgId: '',
+            allowEmpty: true,
+            confirmedNoOrg: true,
+            reason: reason || 'org-cleared',
+            source: 'clear-org-context',
+            broadcast: false,
+            userId: clearedUserId,
+          });
+        }
+      }
     }
 
     let orgScopedRenderTimer = null;
@@ -6787,10 +6816,28 @@ const TP3D_BUILD_STAMP = Object.freeze({
         orgBannerRetryTimer = null;
       }
 
+      const titleEl = banner.querySelector('.tp3d-org-required-title');
+      const subEl = banner.querySelector('.tp3d-org-required-sub');
+      if (hasOrg) {
+        orgRequiredStateReason = '';
+      }
+      if (titleEl && subEl) {
+        if (orgRequiredStateReason === 'workspace-archived') {
+          titleEl.textContent = 'Workspace archived';
+          subEl.textContent = 'You do not have any active workspaces right now. Create a new workspace or restore an archived workspace when restore is available.';
+        } else {
+          titleEl.textContent = 'Create or join a workspace';
+          subEl.textContent = 'You need a workspace to manage packs, cases, and editor data. Open Settings to create one or join with an invite link.';
+        }
+      }
+
       const authSnapshot = getCurrentAuthSnapshot();
       // Use definitively signed-out (not 'unknown'/'checking') so we don't flash the banner
       // while auth is still resolving on slow connections.
       const isDefinitelySignedOut = Boolean(authSnapshot && authSnapshot.status === 'signed_out');
+      const isSignedInForNoOrgBanner = Boolean(
+        authSnapshot && authSnapshot.userId && authSnapshot.hasToken && authSnapshot.status !== 'signed_out'
+      );
       // P0.7 – If the wrapper says signed_out but the last real auth event was
       // signed_in within the fallback TTL, treat it as a transient glitch.
       const isTransientSignedOut = isDefinitelySignedOut && lastAuthEventSnapshot
@@ -6808,7 +6855,25 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const suppressUncertain = !isDefinitelySignedOut && !confirmedNoOrg && hasLocalOrgHint;
       // Auth Stability Gate: never show banner while auth is still settling
       const authNotSettled = !authGateIsSettled();
-      const showNoOrgBanner = !hasOrg && !suppressUncertain && !isTransientSignedOut && !suppressRecentSignedInNoOrg && !authNotSettled && (isDefinitelySignedOut || confirmedNoOrg);
+      const orgContextBusy = Boolean(orgContextInFlight || authRehydratePromise);
+      const hasResolvedNoActiveOrg = Boolean(
+        confirmedNoOrg &&
+        orgContextResolved &&
+        orgContext &&
+        !orgContext.activeOrgId &&
+        Array.isArray(orgContext.orgs) &&
+        orgContext.orgs.length === 0
+      );
+      const showNoOrgBanner = Boolean(
+        !hasOrg &&
+        isSignedInForNoOrgBanner &&
+        hasResolvedNoActiveOrg &&
+        !suppressUncertain &&
+        !isTransientSignedOut &&
+        !suppressRecentSignedInNoOrg &&
+        !authNotSettled &&
+        !orgContextBusy
+      );
       if (orgBannerSignedInGraceTimer && (hasOrg || !confirmedNoOrg || !suppressRecentSignedInNoOrg)) {
         window.clearTimeout(orgBannerSignedInGraceTimer);
         orgBannerSignedInGraceTimer = null;
@@ -6883,6 +6948,28 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
     }
 
+    function isConfirmedNoActiveOrgContext() {
+      return Boolean(
+        orgContextResolved &&
+        orgContext &&
+        !orgContext.activeOrgId &&
+        Array.isArray(orgContext.orgs) &&
+        orgContext.orgs.length === 0
+      );
+    }
+
+    function refreshConfirmedNoActiveOrgUi() {
+      if (!isConfirmedNoActiveOrgContext()) return;
+      applyOrgRequiredUi(false, { confirmedNoOrg: true });
+      try {
+        if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
+          AccountSwitcher.refresh();
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     // ── Install workspace-ready listener early (before any call site can fire) ──
     window.addEventListener('tp3d:workspace-ready', async (ev) => {
       try {
@@ -6915,7 +7002,21 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       const resolved = resolveOrgContextFromBundle(bundle);
       const nextOrgId = resolved.orgId;
+      const nextOrgInActiveList = Boolean(
+        nextOrgId &&
+        Array.isArray(resolved.orgs) &&
+        resolved.orgs.some(org => org && String(org.id) === String(nextOrgId))
+      );
       const now = Date.now();
+
+      if (nextOrgId && !nextOrgInActiveList && !(bundle && bundle.partial)) {
+        clearOrgContext({
+          clearLocalOrgHint: true,
+          confirmedNoOrg: true,
+          reason: String(reason || '').includes('archive') ? 'workspace-archived' : '',
+        });
+        return null;
+      }
 
       if (!nextOrgId) {
         if (bundle && bundle.partial && readLocalOrgId()) {
@@ -6923,8 +7024,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
           return null;
         }
         clearOrgContext({
-          clearLocalOrgHint: false,
+          clearLocalOrgHint: true,
           confirmedNoOrg: Boolean(!bundle?.partial && Array.isArray(resolved.orgs) && resolved.orgs.length === 0),
+          reason: String(reason || '').includes('archive') ? 'workspace-archived' : '',
         });
         return null;
       } 
@@ -6953,6 +7055,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         role: resolved.role || null,
         updatedAt: now,
       };
+      orgContextResolved = true;
       // Expose last bundle for sync role resolution (resolveCanManageBillingForOrg).
       try { window.__TP3D_LAST_ACCOUNT_BUNDLE = bundle; } catch (_) { /* ignore */ }
       writeLocalOrgId(nextOrgIdStr);
@@ -7063,6 +7166,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return null;
       })().finally(() => {
         orgContextInFlight = null;
+        refreshConfirmedNoActiveOrgUi();
         if (orgContextQueued) {
           orgContextQueued = false;
           window.setTimeout(() => {
@@ -7322,6 +7426,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           }
           if (lastAuthUserId && String(lastAuthUserId) !== String(user.id)) {
             lastAuthUserId = null;
+            orgContextResolved = false;
           }
         }
 
@@ -7388,6 +7493,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return user;
       })().finally(() => {
         authRehydratePromise = null;
+        refreshConfirmedNoActiveOrgUi();
       });
 
       return authRehydratePromise;
@@ -7592,6 +7698,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         AccountOverlay.handleAuthChange(event);
       }
       lastAuthUserId = null;
+      orgContextResolved = false;
       renderSidebarBrandMarks();
       if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
         AccountSwitcher.refresh();
@@ -8093,6 +8200,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             }
             clearSidebarBillingDomForUserSwitch();
             lastAuthUserId = null; // Clear old user ID to prevent stale state leakage
+            orgContextResolved = false;
           }
 
           // Rehydrate auth state for sign-in/session refresh events.
@@ -8278,6 +8386,22 @@ const TP3D_BUILD_STAMP = Object.freeze({
             }
 
             const detailOrgId = detail && detail.orgId ? String(detail.orgId) : null;
+            const isClearedEvent = !detailOrgId && Boolean(detail && detail.confirmedNoOrg);
+            if (isClearedEvent) {
+              orgContextMetrics.orgChangedHandled += 1;
+              try {
+                if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
+                  AccountSwitcher.refresh();
+                }
+              } catch {
+                // ignore
+              }
+              applyAccessGateFromBilling(getBillingState(), {
+                reason: 'org-cleared',
+                activeOrgId: null,
+              });
+              return;
+            }
             const snapshotOrgId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
             const sameOrg = Boolean(detailOrgId && snapshotOrgId && snapshotOrgId === detailOrgId);
             const sameTabLocalSwitch = sameOrg && detail && detail.source === 'set-active-org';

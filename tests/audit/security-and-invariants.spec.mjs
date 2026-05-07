@@ -849,10 +849,10 @@ test('phase 0.6A-2 account switcher chip uses workspace initials instead of user
 
   assert.match(src, /function getActiveWorkspaceInitials\(\)[\s\S]*orgContext && orgContext\.activeOrg[\s\S]*name\.charAt\(0\)\.toUpperCase\(\)/,
     'app must derive switcher initials from active workspace name');
-  assert.match(displayFn, /orgInitials: getActiveWorkspaceInitials\(\)/,
-    'AccountSwitcher display object must expose workspace-derived initials');
-  assert.match(displayFn, /userName: displayName \|\| '—'/,
-    'AccountSwitcher must keep the secondary user/account display label');
+  assert.match(displayFn, /orgInitials: noActiveWorkspace \? '' : getActiveWorkspaceInitials\(\)/,
+    'AccountSwitcher display object must expose workspace-derived initials when an active workspace exists');
+  assert.match(displayFn, /userName: noActiveWorkspace \? 'Create or join' : displayName \|\| '—'/,
+    'AccountSwitcher must keep the secondary user/account display label for active workspace states');
   assert.match(renderFn, /avatarEl\.textContent = display\.orgInitials \|\| ''/,
     'AccountSwitcher chip avatar must render workspace initials');
   assert.doesNotMatch(renderFn, /avatarEl\.textContent = display\.initials/,
@@ -1246,6 +1246,326 @@ test('phase 0.6C does not add restore transfer permanent delete billing-status S
       `${label} must not introduce restore/transfer/delete/export lifecycle actions`);
     assert.doesNotMatch(src, /billing-status|stripe-create-checkout|stripe-create-portal|stripe-webhook/i,
       `${label} must not touch billing-status or Stripe functions`);
+  }
+});
+
+test('phase 0.6C-2 account bundle treats fresh empty active org list as authoritative', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const start = src.indexOf('export async function getAccountBundleSingleFlight');
+  const end = src.indexOf('// Clean up in-flight promise when done', start);
+  const bundleFn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(bundleFn, 'getAccountBundleSingleFlight must be extractable');
+  assert.match(bundleFn, /getUserOrganizations\(\)\.catch\(\(\) => null\)/,
+    'org fetch errors must be represented as null so an empty array stays authoritative');
+  assert.match(bundleFn, /ACCOUNT_FETCH_TIMEOUT_MS,\s*null\s*\)/,
+    'org fetch timeout fallback must be null, not an empty array that looks successful');
+  assert.doesNotMatch(bundleFn, /orgsResult\.length === 0/,
+    'account bundle must not treat an authoritative empty org list as a cache miss');
+  assert.match(bundleFn, /const orgsFetchUncertain = Boolean\(orgsWrap\.timedOut \|\| !Array\.isArray\(orgsResult\)\)/,
+    'null, non-array, and timeout org results must be treated as uncertain');
+  assert.match(bundleFn, /if \(orgsFetchUncertain && cachedOrgs\.length > 0\)/,
+    'cached orgs may be reused only for invalid org results or timeouts');
+});
+
+test('phase 0.6C-3 account bundle marks failed org fetch as partial, not confirmed no-org', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const start = src.indexOf('export async function getAccountBundleSingleFlight');
+  const end = src.indexOf('// Clean up in-flight promise when done', start);
+  const bundleFn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(bundleFn, 'getAccountBundleSingleFlight must be extractable');
+  assert.match(bundleFn, /const orgsFetchReturnedArray = Array\.isArray\(orgsResult\) && !orgsWrap\.timedOut/,
+    'only an actual non-timeout array result may be authoritative');
+  assert.match(bundleFn, /const orgsFetchUncertain = Boolean\(orgsWrap\.timedOut \|\| !Array\.isArray\(orgsResult\)\)/,
+    'null, failed, timeout, or non-array org fetch results must be uncertain');
+  assert.match(bundleFn, /else if \(orgsFetchUncertain\) \{[\s\S]*reasonParts\.push\('orgs unavailable'\)/,
+    'failed org fetch with no cached orgs must carry an uncertainty reason');
+  assert.match(bundleFn, /const partial = Boolean\(!orgsAuthoritative \|\|/,
+    'a non-authoritative org fetch must force a partial bundle instead of confirmed no-org');
+});
+
+test('phase 0.6C-3 cached org rescue after failed org fetch remains partial', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const start = src.indexOf('export async function getAccountBundleSingleFlight');
+  const end = src.indexOf('// Clean up in-flight promise when done', start);
+  const bundleFn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(bundleFn, 'getAccountBundleSingleFlight must be extractable');
+  assert.match(bundleFn, /if \(orgsFetchUncertain && cachedOrgs\.length > 0\) \{[\s\S]*orgsResult = cachedOrgs;[\s\S]*usedCachedOrgs = true;/,
+    'cached orgs may rescue display state only after an uncertain org fetch');
+  assert.match(bundleFn, /const orgsAuthoritative = orgsFetchReturnedArray && !usedCachedOrgs/,
+    'cached org rescue must not be treated as an authoritative fresh org list');
+  assert.match(bundleFn, /const partial = Boolean\(!orgsAuthoritative \|\|/,
+    'cached org rescue must remain partial so it cannot confirm zero active workspaces');
+});
+
+test('phase 0.6C-2 account bundle does not expose stale profile or membership org ids as active', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const start = src.indexOf('export async function getAccountBundleSingleFlight');
+  const end = src.indexOf('// Clean up in-flight promise when done', start);
+  const bundleFn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(bundleFn, 'getAccountBundleSingleFlight must be extractable');
+  assert.match(bundleFn, /const hasOrg = id => id && orgsSafe\.some/,
+    'profile and membership org hints must be validated against active org rows');
+  assert.match(bundleFn, /const activeOrgId =[\s\S]*activeOrgSafe && activeOrgSafe\.id[\s\S]*\? String\(activeOrgSafe\.id\)[\s\S]*: null/,
+    'activeOrgId must come from an active org row or be null');
+  assert.doesNotMatch(bundleFn, /:\s*profileOrgId \|\| membershipOrgId \|\| null/,
+    'activeOrgId must not fall back to preserved profile or membership org ids');
+  assert.match(bundleFn, /let membershipSafe = activeOrgId \? membershipResult \|\| null : null/,
+    'membership data must not keep a stale org-scoped membership when no active org exists');
+});
+
+test('phase 0.6C-2 app clears org state when resolved org is not in active org rows', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const resolverStart = src.indexOf('function resolveOrgContextFromBundle(bundle)');
+  const resolverEnd = src.indexOf('// ── Workspace-ready event replay buffer', resolverStart);
+  const resolver = resolverStart >= 0 && resolverEnd > resolverStart ? src.slice(resolverStart, resolverEnd) : '';
+  const applyStart = src.indexOf('async function applyOrgContextFromBundle');
+  const applyEnd = src.indexOf('async function refreshOrgContext', applyStart);
+  const applyFn = applyStart >= 0 && applyEnd > applyStart ? src.slice(applyStart, applyEnd) : '';
+
+  assert.ok(resolver, 'resolveOrgContextFromBundle must be extractable');
+  assert.ok(applyFn, 'applyOrgContextFromBundle must be extractable');
+  assert.doesNotMatch(resolver, /else if \(profileOrgId\) orgId = profileOrgId/,
+    'profile org hints must not become active unless present in active org rows');
+  assert.doesNotMatch(resolver, /else if \(membershipOrgId\) orgId = membershipOrgId/,
+    'preserved membership org ids must not become active unless present in active org rows');
+  assert.match(applyFn, /const nextOrgInActiveList = Boolean\([\s\S]*resolved\.orgs\.some\(org => org && String\(org\.id\) === String\(nextOrgId\)\)[\s\S]*\)/,
+    'applyOrgContextFromBundle must validate resolved org id against active org rows');
+  assert.match(applyFn, /if \(nextOrgId && !nextOrgInActiveList && !\(bundle && bundle\.partial\)\) \{[\s\S]*clearOrgContext\(\{[\s\S]*clearLocalOrgHint: true,[\s\S]*confirmedNoOrg: true,[\s\S]*workspace-archived/,
+    'non-partial bundles with stale resolved org ids must clear org context as confirmed no-org');
+});
+
+test('phase 0.6C-2 Settings clears stale locked org state when no active workspace is confirmed', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.match(src, /function isConfirmedNoActiveWorkspaceBundle\(bundle\)/,
+    'settings overlay must detect definitive no-active-workspace bundles');
+  assert.match(src, /bundle\.partial !== true[\s\S]*Array\.isArray\(bundle\.orgs\)[\s\S]*bundle\.orgs\.length === 0[\s\S]*!bundle\.activeOrgId/,
+    'no-active-workspace detection must require a complete empty active org list');
+  assert.match(src, /isConfirmedNoActiveWorkspaceBundle\(window\.__TP3D_LAST_ACCOUNT_BUNDLE \|\| null\)[\s\S]*return ''/,
+    'settings must not initialize modalOrgId from stale local or billing hints after confirmed no-active-workspace');
+  assert.match(src, /isConfirmedNoActiveWorkspaceBundle\(bundle\)[\s\S]*membershipData = null;[\s\S]*orgData = null;[\s\S]*modalOrgId = '';[\s\S]*clearOrgScopedCaches\(''\)/,
+    'settings bundle load must clear stale org-scoped state when no active workspace is confirmed');
+});
+
+test('phase 0.6C-2 archive fallback avoids logout reload destructive data and billing scope', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
+  const applyStart = appSrc.indexOf('async function applyOrgContextFromBundle');
+  const applyEnd = appSrc.indexOf('async function refreshOrgContext', applyStart);
+  const clearStart = appSrc.indexOf('function clearOrgContext');
+  const clearEnd = appSrc.indexOf('let orgScopedRenderTimer', clearStart);
+  const settingsHelperStart = settingsSrc.indexOf('function isConfirmedNoActiveWorkspaceBundle');
+  const settingsHelperEnd = settingsSrc.indexOf('function ensureModalOrgId', settingsHelperStart);
+  const settingsBranchStart = settingsSrc.indexOf('if (isConfirmedNoActiveWorkspaceBundle(bundle))');
+  const settingsBranchEnd = settingsSrc.indexOf('profileData = bundle.profile || null;', settingsBranchStart);
+  const snippets = [
+    ['applyOrgContextFromBundle', applyStart >= 0 && applyEnd > applyStart ? appSrc.slice(applyStart, applyEnd) : ''],
+    ['clearOrgContext', clearStart >= 0 && clearEnd > clearStart ? appSrc.slice(clearStart, clearEnd) : ''],
+    ['settings no-active-workspace helper', settingsHelperStart >= 0 && settingsHelperEnd > settingsHelperStart ? settingsSrc.slice(settingsHelperStart, settingsHelperEnd) : ''],
+    ['settings no-active-workspace branch', settingsBranchStart >= 0 && settingsBranchEnd > settingsBranchStart ? settingsSrc.slice(settingsBranchStart, settingsBranchEnd) : ''],
+  ];
+
+  for (const [label, src] of snippets) {
+    assert.ok(src, `${label} snippet must be extractable`);
+    assert.doesNotMatch(src, /signOut|forceLocalSignedOut|location\.reload|window\.location/i,
+      `${label} must not sign out or reload`);
+    assert.doesNotMatch(src, /stripe|checkout|portal|billing-status|billing_customers|subscriptions|stripe_customers|webhook_events/i,
+      `${label} must not touch Stripe, billing-status, or billing tables`);
+    assert.doesNotMatch(src, /\.from\(['"]organization_members['"]\)|\.from\(['"]organization_invites['"]\)|\.delete\(\)|deletePack|deleteCase|storage\.from|router\./i,
+      `${label} must not mutate memberships, invites, packs, cases, storage, or router state`);
+  }
+});
+
+test('phase 0.6C-3 dispatchOrgContextChanged allows empty orgId only with confirmed opt-in', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function dispatchOrgContextChanged(options = {})');
+  const end = src.indexOf('function parseOrgContextSyncPayload', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'dispatchOrgContextChanged must be extractable');
+  assert.match(fn, /allowEmpty = false/,
+    'empty org dispatch opt-in must default to false');
+  assert.match(fn, /confirmedNoOrg: dispatchConfirmedNoOrg = false/,
+    'confirmedNoOrg opt-in must default to false');
+  assert.match(fn, /if \(!nextOrgId && !\(allowEmpty && dispatchConfirmedNoOrg\)\) return 0/,
+    'empty orgId must still be rejected unless allowEmpty and confirmedNoOrg are both true');
+  assert.match(fn, /confirmedNoOrg: dispatchConfirmedNoOrg \|\| undefined/,
+    'confirmedNoOrg must be included in the org-changed event detail');
+});
+
+test('phase 0.6C-3 clearOrgContext dispatches confirmed empty-org event', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function clearOrgContext(');
+  const end = src.indexOf('let orgScopedRenderTimer', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'clearOrgContext must be extractable');
+  assert.match(fn, /orgContextResolved = Boolean\(confirmedNoOrg\)/,
+    'clearOrgContext must mark confirmed no-org as a resolved org-context state');
+  assert.match(fn, /getSignedInUserIdStrict\(\)[\s\S]*dispatchOrgContextChanged/,
+    'confirmed no-active dispatch must require a signed-in user');
+  assert.match(fn, /dispatchOrgContextChanged\(\{[\s\S]*orgId: ''[\s\S]*allowEmpty: true[\s\S]*confirmedNoOrg: true[\s\S]*broadcast: false/,
+    'clearOrgContext must dispatch a local empty-org no-active event without broadcasting');
+});
+
+test('phase 0.6C-3 orgContextResolved is set on active apply and reset on uncertain auth clears', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const applyStart = src.indexOf('async function applyOrgContextFromBundle');
+  const applyEnd = src.indexOf('async function refreshOrgContext', applyStart);
+  const applyFn = applyStart >= 0 && applyEnd > applyStart ? src.slice(applyStart, applyEnd) : '';
+  const clearStart = src.indexOf('function clearOrgContext(');
+  const clearEnd = src.indexOf('let orgScopedRenderTimer', clearStart);
+  const clearFn = clearStart >= 0 && clearEnd > clearStart ? src.slice(clearStart, clearEnd) : '';
+
+  assert.match(src, /let orgContextResolved = false;/,
+    'orgContextResolved flag must be declared at module scope');
+  assert.match(applyFn, /orgContext = \{[\s\S]*activeOrgId: nextOrgIdStr[\s\S]*\};[\s\S]*orgContextResolved = true;/,
+    'active org bundle apply must mark org context resolved');
+  assert.match(clearFn, /orgContextResolved = Boolean\(confirmedNoOrg\)/,
+    'confirmed no-active clears must resolve, while uncertain clears must reset');
+  assert.match(src, /lastAuthUserId = null;[\s\S]{0,120}orgContextResolved = false;/,
+    'auth user change or signed-out cleanup must reset orgContextResolved');
+  assert.match(src, /lastAuthUserId = null; \/\/ Clear old user ID to prevent stale state leakage[\s\S]{0,120}orgContextResolved = false;/,
+    'cross-tab user switch cleanup must reset orgContextResolved');
+});
+
+test('phase 0.6C-3 AccountSwitcher loading state is gated by unresolved org context', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function getDisplay()');
+  const end = src.indexOf('function renderButton(buttonEl)', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'AccountSwitcher.getDisplay must be extractable');
+  assert.match(fn, /!orgContextResolved/,
+    'AccountSwitcher must stop showing Loading once org context has definitively resolved');
+  assert.match(fn, /isAuthed && !activeOrg && !orgContextResolved && \(orgContextInFlight \|\| authRehydratePromise\)/,
+    'Loading must require signed-in auth, no active org, unresolved org context, and active work in flight');
+});
+
+test('phase 0.6C-3 AccountSwitcher has neutral confirmed no-active workspace display', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function getDisplay()');
+  const end = src.indexOf('function renderButton(buttonEl)', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'AccountSwitcher.getDisplay must be extractable');
+  assert.match(fn, /const noActiveWorkspace = Boolean\(isAuthed && !activeOrg && orgContextResolved && activeOrgs\.length === 0\)/,
+    'AccountSwitcher must detect signed-in confirmed no-active workspace state explicitly');
+  assert.match(fn, /noActiveWorkspace[\s\S]*\? 'No workspace'/,
+    'confirmed no-active state must use neutral primary chip copy');
+  assert.match(fn, /userName: noActiveWorkspace \? 'Create or join' : displayName/,
+    'confirmed no-active state must not use account user identity as the chip secondary label');
+  assert.match(fn, /orgInitials: noActiveWorkspace \? '' : getActiveWorkspaceInitials\(\)/,
+    'confirmed no-active chip avatar must not reuse user/account initials');
+});
+
+test('phase 0.6C-3 org-changed listener handles confirmed no-active without auth refresh', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf("window.addEventListener('tp3d:org-changed', ev => {");
+  const end = src.indexOf('AppShell.init();', start);
+  const listener = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(listener, 'tp3d:org-changed listener must be extractable');
+  assert.match(listener, /isClearedEvent = !detailOrgId && Boolean\(detail && detail\.confirmedNoOrg\)/,
+    'listener must detect confirmed empty-org events');
+  assert.match(listener, /if \(isClearedEvent\) \{[\s\S]*AccountSwitcher[\s\S]*refresh\(\)/,
+    'confirmed no-active event must refresh the workspace chip');
+  assert.match(listener, /if \(isClearedEvent\) \{[\s\S]*applyAccessGateFromBilling\(getBillingState\(\), \{[\s\S]*reason: 'org-cleared'[\s\S]*activeOrgId: null/,
+    'confirmed no-active event must reapply access gate with no active org');
+
+  const branchStart = listener.indexOf('if (isClearedEvent) {');
+  const branchEnd = listener.indexOf('const snapshotOrgId', branchStart);
+  const branch = branchStart >= 0 && branchEnd > branchStart ? listener.slice(branchStart, branchEnd) : '';
+  assert.ok(branch, 'confirmed no-active branch must be extractable');
+  assert.doesNotMatch(branch, /requestAuthRefresh/,
+    'confirmed no-active event must not trigger auth refresh and re-enter Loading');
+});
+
+test('phase 0.6C-3 settings overlay clears stale org state on confirmed no-active event', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+  const start = src.indexOf('function ensureOrgChangedListener()');
+  const end = src.indexOf('function removeOrgChangedListener()', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'ensureOrgChangedListener must be extractable');
+  assert.doesNotMatch(fn, /if \(!nextOrgId\) return;/,
+    'settings orgChangedHandler must not blindly ignore empty org events');
+  assert.match(fn, /Boolean\(detail && detail\.confirmedNoOrg\)[\s\S]*isConfirmedNoActiveWorkspaceBundle/,
+    'settings orgChangedHandler must require confirmed no-active state before clearing');
+  assert.match(fn, /modalOrgId = '';[\s\S]*clearOrgScopedCaches\(''\)/,
+    'settings orgChangedHandler must clear the locked modal org id and org-scoped caches');
+  assert.match(fn, /membershipData = null;[\s\S]*orgData = null;[\s\S]*orgMembersData = null;[\s\S]*orgInvitesData = null;/,
+    'settings orgChangedHandler must clear stale org, membership, members, and invites data');
+  assert.match(fn, /isLoadingOrgMembers = false;[\s\S]*isLoadingOrgInvites = false;/,
+    'settings orgChangedHandler must clear members and invites loading state');
+  assert.match(fn, /orgMemberActions\.clear\(\);[\s\S]*orgInviteActions\.clear\(\);/,
+    'settings orgChangedHandler must clear member and invite action state');
+  assert.match(fn, /render\(\{ source: 'org-changed:no-active' \}\)/,
+    'settings orgChangedHandler must re-render connected overlay into no-active state');
+});
+
+test('phase 0.6C-3 Billing renders clean no-active state instead of stale org details', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+  const start = src.indexOf('function renderBillingInto(targetEl)');
+  const end = src.indexOf('function render(renderMeta)', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'renderBillingInto must be extractable');
+  assert.match(fn, /if \(!lockedOrgId\) \{[\s\S]*isConfirmedNoActiveWorkspaceBundle\(window\.__TP3D_LAST_ACCOUNT_BUNDLE \|\| null\)/,
+    'Billing must detect confirmed zero active workspaces when no modal org is locked');
+  assert.match(fn, /No active workspace is selected\. Create a new workspace or restore an archived workspace when restore is available\./,
+    'Billing must show a clean no-active workspace message');
+  assert.match(fn, /targetEl\.appendChild\(noActiveMsg\);[\s\S]*return;/,
+    'Billing must return before stale workspace detail rendering in confirmed no-active state');
+});
+
+test('phase 0.6C-3 no-workspace banner remains gated by settled auth state', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function applyOrgRequiredUi(');
+  const end = src.indexOf('// \u2500\u2500 Install workspace-ready listener early', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'applyOrgRequiredUi must be extractable');
+  assert.match(fn, /const authNotSettled = !authGateIsSettled\(\)/,
+    'no-workspace banner logic must remain gated by settled auth state');
+  assert.match(fn, /const orgContextBusy = Boolean\(orgContextInFlight \|\| authRehydratePromise\)/,
+    'no-workspace banner must know whether auth or org context work is still in flight');
+  assert.match(fn, /const hasResolvedNoActiveOrg = Boolean\([\s\S]*confirmedNoOrg[\s\S]*orgContextResolved[\s\S]*!orgContext\.activeOrgId[\s\S]*Array\.isArray\(orgContext\.orgs\)[\s\S]*orgContext\.orgs\.length === 0/,
+    'no-workspace banner must require a resolved confirmed zero-active-org context');
+  assert.match(fn, /const isSignedInForNoOrgBanner = Boolean\([\s\S]*authSnapshot\.userId[\s\S]*authSnapshot\.hasToken[\s\S]*authSnapshot\.status !== 'signed_out'/,
+    'no-workspace banner must still require signed-in user identity/token, without depending on a transient exact signed_in status');
+  assert.match(fn, /showNoOrgBanner = Boolean\([\s\S]*isSignedInForNoOrgBanner[\s\S]*hasResolvedNoActiveOrg[\s\S]*!authNotSettled[\s\S]*!orgContextBusy/,
+    'confirmed no-org banner must not render before auth gate settles or while auth/org work is in flight');
+});
+
+test('phase 0.6C-3 frontend stability fix avoids backend billing and destructive scope creep', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  const appSnippets = [
+    ['dispatchOrgContextChanged', appSrc.slice(appSrc.indexOf('function dispatchOrgContextChanged'), appSrc.indexOf('function parseOrgContextSyncPayload'))],
+    ['clearOrgContext', appSrc.slice(appSrc.indexOf('function clearOrgContext('), appSrc.indexOf('let orgScopedRenderTimer'))],
+    ['org-changed listener', appSrc.slice(appSrc.indexOf("window.addEventListener('tp3d:org-changed', ev => {"), appSrc.indexOf('AppShell.init();'))],
+  ];
+  const billingGuardStart = settingsSrc.indexOf('if (!lockedOrgId) {', settingsSrc.indexOf('function renderBillingInto(targetEl)'));
+  const billingGuardEnd = settingsSrc.indexOf('const currentOrgId = getOrgIdFromOrgContext();', billingGuardStart);
+  const settingsSnippets = [
+    ['settings orgChangedHandler', settingsSrc.slice(settingsSrc.indexOf('function ensureOrgChangedListener()'), settingsSrc.indexOf('function removeOrgChangedListener()'))],
+    ['settings billing no-active guard', settingsSrc.slice(billingGuardStart, billingGuardEnd)],
+  ];
+
+  for (const [label, snippet] of [...appSnippets, ...settingsSnippets]) {
+    assert.ok(snippet, `${label} snippet must be extractable`);
+    assert.doesNotMatch(snippet, /signOut|forceLocalSignedOut|location\.reload|window\.location/i,
+      `${label} must not sign out or reload`);
+    assert.doesNotMatch(snippet, /stripe|checkout|portal|billing-status|billing_customers|subscriptions|stripe_customers|webhook_events/i,
+      `${label} must not touch Stripe, billing-status, or billing tables`);
+    assert.doesNotMatch(snippet, /\.from\(['"]organization_members['"]\)|\.from\(['"]organization_invites['"]\)|\.delete\(\)|deletePack|deleteCase|storage\.from|router\./i,
+      `${label} must not mutate members, invites, packs, cases, storage, or router state`);
   }
 });
 

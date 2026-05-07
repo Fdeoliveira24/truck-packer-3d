@@ -747,3 +747,33 @@ export async function leaveWorkspace(orgId) {
     return { ok: false, error: err && err.message ? err.message : 'Network error' };
   }
 }
+
+/**
+ * Archive a workspace via Edge Function guardrails.
+ * Soft lifecycle action only; does not touch billing or Stripe state.
+ * @param {string} orgId
+ * @returns {Promise<{ok:boolean, organization_id?:string|null, archived_at?:string|null, already_archived?:boolean, error?:string}>}
+ */
+export async function archiveWorkspace(orgId) {
+  try {
+    debugLog('archiveWorkspace', { orgId });
+    const res = await postFn('/org-archive-workspace', {
+      organization_id: orgId,
+    });
+    const data = await readJsonSafe(res);
+    if (!res.ok) {
+      return { ok: false, error: resolveFnError(res, data, 'Archive workspace failed') };
+    }
+    const organizationId = data && data.organization_id ? String(data.organization_id) : null;
+    const archivedAt = data && data.archived_at ? String(data.archived_at) : null;
+    return {
+      ok: true,
+      organization_id: organizationId,
+      archived_at: archivedAt,
+      already_archived: Boolean(data && data.already_archived),
+    };
+  } catch (err) {
+    debugLog('archiveWorkspace:error', err && err.message);
+    return { ok: false, error: err && err.message ? err.message : 'Network error' };
+  }
+}

@@ -2181,11 +2181,12 @@ export async function getUserOrganizations() {
   if (!clientSessionOk) return [];
   const userId = await getAuthedUserId();
   if (!userId) return [];
+  const isActiveOrgRow = org => Boolean(org && !org.archived_at);
 
   // 1) Primary path: RPC (preferred when installed)
   try {
     const { data, error } = await client.rpc('get_user_organizations');
-    if (!error && Array.isArray(data)) return data;
+    if (!error && Array.isArray(data)) return data.filter(isActiveOrgRow);
 
     // If the RPC exists but RLS blocks it, we still try fallback.
     // If the function truly does not exist, Postgres will raise 42883.
@@ -2227,7 +2228,8 @@ export async function getUserOrganizations() {
           city,
           state,
           postal_code,
-          country
+          country,
+          archived_at
         )`,
       ].join(',')
     )
@@ -2252,7 +2254,7 @@ export async function getUserOrganizations() {
         joined_at: r.joined_at || null,
       };
     })
-    .filter(Boolean);
+    .filter(isActiveOrgRow);
 }
 
 /**
@@ -2675,7 +2677,7 @@ export async function getOrganization(orgId) {
   const { data, error } = await client
     .from('organizations')
     .select(
-      'id, name, slug, avatar_url, logo_path, owner_id, created_at, updated_at, phone, address_line1, address_line2, city, state, postal_code, country'
+      'id, name, slug, avatar_url, logo_path, owner_id, created_at, updated_at, phone, address_line1, address_line2, city, state, postal_code, country, archived_at'
     )
     .eq('id', id)
     .maybeSingle();
@@ -2867,6 +2869,15 @@ export async function revokeOrganizationInvite() {
 }
 
 /**
+ * Legacy direct browser-side workspace archive is disabled.
+ * Use the org-archive-workspace Edge Function through billing.service.js instead.
+ * @returns {Promise<boolean>}
+ */
+export async function archiveOrganization() {
+  throw new Error('Direct workspace archiving is disabled. Use the org-archive-workspace Edge Function.');
+}
+
+/**
  * Update organization details.
  * Only owners/admins can update organizations (enforced by RLS).
  * @param {string} orgId - The organization ID
@@ -2878,6 +2889,9 @@ export async function updateOrganization(orgId, updates) {
   const clientSessionOk = await ensureClientSession();
   if (!clientSessionOk) throw new Error('Not authenticated');
   await requireUserId();
+  if (Object.prototype.hasOwnProperty.call(updates || {}, 'archived_at')) {
+    throw new Error('Direct workspace archive updates are disabled. Use the org-archive-workspace Edge Function.');
+  }
 
   const { data, error } = await client
     .from('organizations')
@@ -3293,6 +3307,7 @@ try {
     updateOrganizationMemberRole,
     removeOrganizationMember,
     revokeOrganizationInvite,
+    archiveOrganization,
     updateOrganization,
     uploadAvatar,
     deleteAvatar,

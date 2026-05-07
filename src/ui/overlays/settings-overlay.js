@@ -40,6 +40,7 @@ import {
   updateOrgMemberRole as updateOrgMemberRoleFn,
   removeOrgMember as removeOrgMemberFn,
   leaveWorkspace as leaveWorkspaceFn,
+  archiveWorkspace as archiveWorkspaceFn,
 } from '../../data/services/billing.service.js';
 
 export function createSettingsOverlay({
@@ -555,6 +556,7 @@ export function createSettingsOverlay({
   let isLoadingMembership = false; // Track membership loading
   let isSavingOrg = false;
   let _leaveWorkspaceInFlight = false;
+  let _archiveWorkspaceInFlight = false;
   let orgMembersData = null;
   let isLoadingOrgMembers = false;
   let orgMembersError = null;
@@ -1918,6 +1920,61 @@ export function createSettingsOverlay({
     } finally {
       _leaveWorkspaceInFlight = false;
       if (isOpen()) renderIfFresh(getCurrentActionId(), 'workspaceLeave:done', epoch);
+    }
+  }
+
+  async function archiveWorkspace(orgId, orgName) {
+    const normalizedOrgId = normalizeOrgId(orgId);
+    if (_archiveWorkspaceInFlight || !normalizedOrgId) return false;
+
+    _archiveWorkspaceInFlight = true;
+    const epoch = _renderEpoch;
+    renderIfFresh(getCurrentActionId(), 'workspaceArchive:begin', epoch);
+    try {
+      const result = await archiveWorkspaceFn(normalizedOrgId);
+      if (!result || !result.ok) {
+        UIComponents.showToast(
+          result && result.error ? result.error : 'Failed to archive workspace.',
+          'error',
+          { title: 'Archive Workspace' },
+        );
+        renderIfFresh(getCurrentActionId(), 'workspaceArchive:error', epoch);
+        return false;
+      }
+
+      const displayName = orgName ? String(orgName) : 'workspace';
+      UIComponents.showToast(`Archived ${displayName}.`, 'success', {
+        title: 'Archive Workspace',
+        duration: 6000,
+      });
+
+      try {
+        if (
+          typeof window !== 'undefined' &&
+          window.TruckPackerApp &&
+          typeof window.TruckPackerApp.handleWorkspaceArchived === 'function'
+        ) {
+          window.TruckPackerApp.handleWorkspaceArchived(normalizedOrgId, { source: 'settings-archive-workspace' });
+        } else {
+          queueAccountBundleRefresh({ force: true, source: 'settings-archive-workspace' });
+        }
+      } catch {
+        queueAccountBundleRefresh({ force: true, source: 'settings-archive-workspace' });
+      }
+
+      close('workspace-archived');
+      return true;
+    } catch (err) {
+      UIComponents.showToast(
+        `Failed to archive workspace: ${err && err.message ? err.message : err}`,
+        'error',
+        { title: 'Archive Workspace' },
+      );
+      renderIfFresh(getCurrentActionId(), 'workspaceArchive:error', epoch);
+      return false;
+    } finally {
+      _archiveWorkspaceInFlight = false;
+      if (isOpen()) renderIfFresh(getCurrentActionId(), 'workspaceArchive:done', epoch);
     }
   }
 
@@ -5382,6 +5439,39 @@ export function createSettingsOverlay({
             });
             leaveActions.appendChild(leaveBtn);
             viewContainer.appendChild(leaveActions);
+
+            if (isPrimaryOwner) {
+              const archiveDivider = doc.createElement('div');
+              archiveDivider.className = 'tp3d-settings-org-divider';
+              viewContainer.appendChild(archiveDivider);
+
+              const archiveIntro = doc.createElement('div');
+              archiveIntro.className = 'muted tp3d-settings-meta tp3d-settings-mt-md';
+              archiveIntro.textContent = 'Archive this workspace. It will be hidden from normal workspace switching.';
+              viewContainer.appendChild(archiveIntro);
+
+              const archiveActions = doc.createElement('div');
+              archiveActions.className = 'tp3d-account-actions';
+              const archiveBtn = doc.createElement('button');
+              archiveBtn.type = 'button';
+              archiveBtn.className = 'btn btn-danger';
+              archiveBtn.textContent = _archiveWorkspaceInFlight ? 'Archiving…' : 'Archive Workspace';
+              archiveBtn.disabled = _archiveWorkspaceInFlight;
+              archiveBtn.addEventListener('click', async () => {
+                if (_archiveWorkspaceInFlight) return;
+                const targetName = leaveName || 'this workspace';
+                const confirmed = await UIComponents.confirm({
+                  title: 'Archive Workspace',
+                  message: `Archive "${targetName}"? This hides it from normal workspace switching. Workspace data, members, invites, and billing records are preserved. Stripe billing is not canceled.`,
+                  okLabel: 'Archive Workspace',
+                  cancelLabel: 'Cancel',
+                  danger: true,
+                }).catch(() => false);
+                if (confirmed) await archiveWorkspace(leaveOrgId, leaveName);
+              });
+              archiveActions.appendChild(archiveBtn);
+              viewContainer.appendChild(archiveActions);
+            }
           }
         }
 

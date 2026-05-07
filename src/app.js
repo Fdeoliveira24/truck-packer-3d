@@ -6542,6 +6542,42 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return refreshPromise;
     }
 
+    function handleWorkspaceArchived(archivedOrgId, options = {}) {
+      const normalizedArchivedOrgId = normalizeOrgIdForBilling(archivedOrgId || '');
+      if (!normalizedArchivedOrgId) return false;
+
+      const activeOrgId = getActiveOrgIdNow();
+      const wasActiveOrg = activeOrgId === normalizedArchivedOrgId;
+
+      clearBillingPendingRetry(normalizedArchivedOrgId);
+      if (wasActiveOrg) {
+        const billingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
+        if (billingOrgId === normalizedArchivedOrgId) {
+          clearBillingState();
+        }
+      }
+
+      const source = options && options.source ? String(options.source) : 'workspace-archived';
+      try {
+        if (SupabaseClient && typeof SupabaseClient.invalidateAccountCache === 'function') {
+          SupabaseClient.invalidateAccountCache();
+        }
+      } catch {
+        // ignore
+      }
+      syncWorkspaceUiAfterOrgRefresh(source);
+      const refreshPromise = refreshOrgContext(source, { force: true, forceEmit: true })
+        .then(result => {
+          syncWorkspaceUiAfterOrgRefresh(source + ':refreshed');
+          return result;
+        })
+        .catch(() => {
+          syncWorkspaceUiAfterOrgRefresh(source + ':refresh-error');
+          return null;
+        });
+      return refreshPromise;
+    }
+
     // Expose billing pump globally for SettingsOverlay (avoids import coupling)
     try {
       window.TruckPackerApp = window.TruckPackerApp || {};
@@ -6549,6 +6585,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       window.TruckPackerApp.getWorkspaceSwitchState = getWorkspaceSwitchState;
       window.TruckPackerApp.notifyOrgAccessLoss = handleOrgAccessLoss;
       window.TruckPackerApp.handleWorkspaceLeft = handleWorkspaceLeft;
+      window.TruckPackerApp.handleWorkspaceArchived = handleWorkspaceArchived;
       _orgAccessLossHandler = handleOrgAccessLoss;
     } catch { /* ignore */ }
 

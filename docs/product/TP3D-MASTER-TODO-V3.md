@@ -319,6 +319,20 @@ You asked to add this: it should be part of P0 because it touches org context + 
 - [ ] Billing for new workspace:
   - Trial starts correctly (if you do per-org trials)
   - Or Free by default (if trials are per-user instead)
+
+### Follow-up audit notes — Packs/Cases and org logos
+
+- [x] Packs/Cases RLS audit completed.
+- [x] Confirmed there are no Supabase packs/cases tables yet.
+- [x] Current Packs/Cases data is scoped in browser localStorage by user and workspace.
+- [ ] Future phase: move Packs/Cases to Supabase if shared workspace data and cross-device sync are required.
+- [ ] Cleanup: audit legacy packs/cases service/repository files and either delete them or mark as legacy.
+- [x] Org logos bucket reviewed.
+- [x] Product decision: keep org logos public because they are workspace branding assets.
+- [x] Add doc note that org-logos is intentionally public while upload/update/delete remains Owner/Admin gated.
+
+Org logos are intentionally public. Workspace logos are treated as display/brand assets, not private data; this keeps invite emails, shared links, public views, and branded surfaces simple. Upload, update, and delete remain restricted to workspace Owner/Admin through RLS. User avatars should remain private because they are closer to personal data.
+
 Notes:
 - Shared modal-based workspace creation is now the only creation path in code for the account switcher and Settings.
 - Workspace switching now clears stale editor-bound state and always falls back to Packs.
@@ -749,6 +763,22 @@ Future:
 ---
 
 ### P0.9 Delete account safety — NOT DONE
+
+#### Phase 0.6D-pre Batch 4B-1 — IMPLEMENTED
+
+- [x] `deletion_status = 'requested'` is now the authoritative login block, independent of Supabase `banned_until`.
+- [x] `getMyProfileStatus()` includes `deleted_at` with `deletion_status` and `purge_after`.
+- [x] `request-account-deletion` preserves `organization_members` during the 30-day deletion window.
+- [x] Repeated deletion requests do not extend a still-future `purge_after`.
+- [x] Last-owner account deletion protection remains in place.
+- [ ] Batch 4B-1B: decide and implement owner/billing-owner deletion block if needed.
+- [ ] Batch 4B-2: add `cancel-account-deletion` endpoint and UI.
+- [ ] Batch 4B-3: add `purge-deleted-accounts`, `purged` migration, and scheduling.
+
+Validation:
+- [x] `npm test` passed: 123/123.
+- [x] `npm run lint` passed with 0 errors and existing warnings only.
+- [x] `npm run -s typecheck` passed.
 
 ### P0.10 Pre-Restore Workspace security hardening — IMPLEMENTED / DEPLOY VERIFY
 

@@ -7805,22 +7805,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
         // User is not banned, check profile deletion status
         const profileStatus = await SupabaseClient.getMyProfileStatus();
         if (profileStatus && profileStatus.deletion_status === 'requested') {
-          // Profile marked for deletion but user might not be banned yet
-          // Only block if they're actually banned
-          if (fullUser && fullUser.banned_until) {
-            try {
-              await SupabaseClient.signOut({ global: false, allowOffline: true });
-            } catch {
-              // ignore
-            }
-            const delMsg =
-              fullUser && fullUser.banned_until
-                ? `Your account has been disabled until ${new Date(fullUser.banned_until).toLocaleString()}.`
-                : 'Your account has been disabled.';
-            setAuthBlocked(delMsg);
-            AuthOverlay.showAccountDisabled(delMsg);
-            return false;
+          try {
+            await SupabaseClient.signOut({ global: false, allowOffline: true });
+          } catch {
+            // ignore
           }
+          const delMsg = 'Your account is scheduled for deletion. Contact support to cancel this request.';
+          setAuthBlocked(delMsg);
+          AuthOverlay.showAccountDisabled(delMsg);
+          return false;
         }
 
         // Clear any previously set forced-disabled latch when user is allowed

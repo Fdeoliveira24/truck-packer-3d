@@ -65,6 +65,37 @@ Deno.serve(async (req) => {
       }
     }
 
+    const { data: existingProfile, error: existingProfileErr } = await sb
+      .from("profiles")
+      .select("deletion_status, deleted_at, purge_after")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (existingProfileErr && existingProfileErr.code !== "PGRST116") {
+      console.error("request-account-deletion: existing profile lookup failed", existingProfileErr);
+      return json({ error: "Failed to verify deletion status" }, { status: 500, origin });
+    }
+
+    const existingStatus = String(existingProfile?.deletion_status || "");
+    const existingPurgeAfter = existingProfile?.purge_after ? String(existingProfile.purge_after) : "";
+    const existingPurgeAfterMs = existingPurgeAfter ? Date.parse(existingPurgeAfter) : NaN;
+
+    if (
+      existingStatus === "requested" &&
+      Number.isFinite(existingPurgeAfterMs) &&
+      existingPurgeAfterMs > Date.now()
+    ) {
+      const existingDeletedAt = existingProfile?.deleted_at ? String(existingProfile.deleted_at) : null;
+      return json({
+        ok: true,
+        already_requested: true,
+        deletion_status: "requested",
+        requested_at: existingDeletedAt,
+        deleted_at: existingDeletedAt,
+        purge_after: existingPurgeAfter,
+      }, { status: 200, origin });
+    }
+
     const nowIso = new Date().toISOString();
     const purgeAfterIso = new Date(Date.now() + THIRTY_DAYS_MS).toISOString();
 
@@ -83,18 +114,8 @@ Deno.serve(async (req) => {
       return json({ error: "Failed to set deletion status" }, { status: 500, origin });
     }
 
-    // Best effort cleanup: table may not exist in every environment.
-    try {
-      const { error: memErr } = await sb
-        .from("organization_members")
-        .delete()
-        .eq("user_id", userId);
-      if (memErr && memErr.code !== "42P01") {
-        console.warn("request-account-deletion: membership cleanup warning", memErr);
-      }
-    } catch (err) {
-      console.warn("request-account-deletion: membership cleanup exception", err);
-    }
+    // Preserve memberships during the 30-day deletion window. They should be
+    // removed later by auth-user cascade during the purge phase.
 
     // Best effort login block while deletion is pending.
     try {

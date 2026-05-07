@@ -130,6 +130,101 @@ test('phase 0.6D-pre request-account-deletion remains present as the supported p
     'request-account-deletion must not be retired in this phase');
 });
 
+test('phase 0.6D-pre 4B login gate blocks deletion_status requested regardless of banned_until', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf("if (profileStatus && profileStatus.deletion_status === 'requested')");
+  const end = src.indexOf('// Clear any previously set forced-disabled latch', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block, 'requested deletion status block must be extractable');
+  assert.match(block, /SupabaseClient\.signOut\(\{ global: false, allowOffline: true \}\)/,
+    'requested deletion status must sign out locally');
+  assert.match(block, /setAuthBlocked\(delMsg\)/,
+    'requested deletion status must set auth blocked state');
+  assert.match(block, /AuthOverlay\.showAccountDisabled\(delMsg\)/,
+    'requested deletion status must show disabled auth overlay');
+  assert.match(block, /Your account is scheduled for deletion\. Contact support to cancel this request\./,
+    'requested deletion status must use the approved support copy');
+  assert.doesNotMatch(block, /banned_until/,
+    'requested deletion status block must not depend on banned_until');
+});
+
+test('phase 0.6D-pre 4B getMyProfileStatus selects deleted_at alongside deletion_status and purge_after', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const start = src.indexOf('export async function getMyProfileStatus()');
+  const end = src.indexOf('export async function updateProfile(updates)', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'getMyProfileStatus must be extractable');
+  assert.match(fn, /\.select\('deletion_status, deleted_at, purge_after'\)/,
+    'getMyProfileStatus must return deleted_at for account deletion UX and auditing');
+});
+
+test('phase 0.6D-pre 4B request-account-deletion does not immediately delete organization_members', async () => {
+  const src = await fs.readFile(requestAccountDeletionPath, 'utf8');
+
+  assert.doesNotMatch(src, /\.from\(["']organization_members["']\)[\s\S]{0,120}\.delete\(\)[\s\S]{0,120}\.eq\(["']user_id["'],\s*userId\)/,
+    'request-account-deletion must not delete organization_members during the 30-day deletion window');
+  assert.match(src, /Preserve memberships during the 30-day deletion window[\s\S]*auth-user cascade during the purge phase/,
+    'request-account-deletion must document deferred membership cleanup');
+});
+
+test('phase 0.6D-pre 4B request-account-deletion is idempotent on already-requested non-expired profile', async () => {
+  const src = await fs.readFile(requestAccountDeletionPath, 'utf8');
+  const branchStart = src.indexOf('existingStatus === "requested"');
+  const branchEnd = src.indexOf('const nowIso = new Date().toISOString();', branchStart);
+  const branch = branchStart >= 0 && branchEnd > branchStart ? src.slice(branchStart, branchEnd) : '';
+
+  assert.ok(branch, 'already-requested idempotency branch must be before fresh timestamp creation');
+  assert.match(src, /\.select\("deletion_status, deleted_at, purge_after"\)/,
+    'request-account-deletion must read existing deletion state');
+  assert.match(branch, /existingPurgeAfterMs > Date\.now\(\)/,
+    'idempotency branch must only apply when existing purge_after is still in the future');
+  assert.match(branch, /already_requested:\s*true/,
+    'idempotency branch must mark already requested response');
+  assert.match(branch, /purge_after:\s*existingPurgeAfter/,
+    'idempotency branch must return existing purge_after without extending it');
+  assert.doesNotMatch(branch, /THIRTY_DAYS_MS|Date\.now\(\) \+ THIRTY_DAYS_MS/,
+    'idempotency branch must not compute a new purge window');
+});
+
+test('phase 0.6D-pre 4B request-account-deletion still blocks last owner', async () => {
+  const src = await fs.readFile(requestAccountDeletionPath, 'utf8');
+
+  assert.match(src, /LAST_OWNER_DELETE_ERROR/,
+    'request-account-deletion must preserve the last-owner error');
+  assert.match(src, /const isLastOwner = ownedOrgIds\.some/,
+    'request-account-deletion must preserve last-owner detection');
+  assert.match(src, /if \(isLastOwner\)[\s\S]*status:\s*409/,
+    'request-account-deletion must keep returning 409 for last-owner requests');
+});
+
+test('phase 0.6D-pre 4B request deletion changes avoid Stripe billing workspace lifecycle and reload scope creep', async () => {
+  const requestSrc = await fs.readFile(requestAccountDeletionPath, 'utf8');
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const supabaseSrc = await fs.readFile(supabasePath, 'utf8');
+
+  const requestStart = requestSrc.indexOf('const { data: existingProfile');
+  const requestEnd = requestSrc.indexOf('// Best effort login block while deletion is pending.', requestStart);
+  const requestedBlockStart = appSrc.indexOf("if (profileStatus && profileStatus.deletion_status === 'requested')");
+  const requestedBlockEnd = appSrc.indexOf('// Clear any previously set forced-disabled latch', requestedBlockStart);
+  const profileStart = supabaseSrc.indexOf('export async function getMyProfileStatus()');
+  const profileEnd = supabaseSrc.indexOf('export async function updateProfile(updates)', profileStart);
+  const snippets = [
+    requestStart >= 0 && requestEnd > requestStart ? requestSrc.slice(requestStart, requestEnd) : '',
+    requestedBlockStart >= 0 && requestedBlockEnd > requestedBlockStart ? appSrc.slice(requestedBlockStart, requestedBlockEnd) : '',
+    profileStart >= 0 && profileEnd > profileStart ? supabaseSrc.slice(profileStart, profileEnd) : '',
+  ].join('\n');
+
+  assert.ok(snippets.trim(), '4B request deletion snippets must be extractable');
+  assert.doesNotMatch(snippets, /stripe|checkout|portal|webhook|billing-status|billing_customers|subscriptions|stripe_customers|webhook_events/i,
+    '4B request deletion changes must not touch billing or Stripe scope');
+  assert.doesNotMatch(snippets, /archiveWorkspace|restoreWorkspace|org-archive|org-restore|org-invite|org-member-remove|org-member-role-update/i,
+    '4B request deletion changes must not touch workspace lifecycle or invite/member Edge Function scope');
+  assert.doesNotMatch(snippets, /deletePack|deleteCase|storage\.from|router\.|window\.location\.reload|location\.reload/i,
+    '4B request deletion changes must not touch packs, cases, storage, router, or reload behavior');
+});
+
 test('app init keeps explicit single-flight/idempotency guards', async () => {
   const source = await fs.readFile(appPath, 'utf8');
   assert.match(source, /let\s+initInFlightPromise\s*=\s*null/);

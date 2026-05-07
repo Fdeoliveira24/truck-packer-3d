@@ -2124,7 +2124,7 @@ export async function getProfile(userId = null) {
 }
 
 /**
- * Get profile status (deletion_status, purge_after) for the current user.
+ * Get profile status (deletion_status, deleted_at, purge_after) for the current user.
  * Used to check if user is scheduled for deletion or has been banned.
  * Does NOT check actual Supabase auth ban status - only profile table flags.
  * @returns {Promise<Object|null>} Profile status object or null
@@ -2140,7 +2140,7 @@ export async function getMyProfileStatus() {
   try {
     const { data, error } = await client
       .from('profiles')
-      .select('deletion_status, purge_after')
+      .select('deletion_status, deleted_at, purge_after')
       .eq('id', userId)
       .limit(1);
 

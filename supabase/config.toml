@@ -415,6 +415,9 @@ verify_jwt = false
 [functions.purge-deleted-users]
 verify_jwt = false
 
+[functions.purge-deleted-accounts]
+verify_jwt = false
+
 [functions.org-invite]
 verify_jwt = false
 

@@ -775,7 +775,8 @@ Future:
 - [x] Batch 4B-2a: support-assisted `cancel-account-deletion` endpoint implemented.
 - [ ] Batch 4B-2b: self-service cancel UX/token model remains deferred.
 - [x] Batch 4B-orphan: remote orphan `purge-deleted-users` (deployed 2026-01-29, no local source) discovered, retired as a 410 Gone stub locally. Deploy this stub to replace the stale remote function before implementing 4B-3.
-- [ ] Batch 4B-3: add `purge-deleted-accounts`, `purged` migration, and scheduling. Prerequisites now resolved/known: (1) 4B-orphan 410 stub deployed, (2) owner deletion policy locked as block any `organizations.owner_id`, active or archived, (3) `profiles_deletion_status_check` still needs a migration to allow `'purged'`, (4) pg_cron is not available on this project — scheduling method TBD.
+- [x] Batch 4B-3A: source-controlled manual/support `purge-deleted-accounts` MVP added with support-secret invocation, service-role deletion, owner-reference skip, safe `purged` status migration, and aggregate-only result summary.
+- [ ] Batch 4B-3B: scheduling remains deferred. pg_cron is not available on this project; use manual support runs for MVP until Dashboard Scheduled Functions, external scheduler, or GitHub Actions cron is selected.
 
 Validation:
 - [x] `npm test` passed: 144/144.

@@ -771,14 +771,14 @@ Future:
 - [x] `request-account-deletion` preserves `organization_members` during the 30-day deletion window.
 - [x] Repeated deletion requests do not extend a still-future `purge_after`.
 - [x] Last-owner account deletion protection remains in place.
-- [ ] Batch 4B-1B: decide and implement owner/billing-owner deletion block if needed.
+- [x] Batch 4B-1B: account deletion now blocks any `organizations.owner_id` owner, active or archived. This prevents orphaned workspace owner references before purge; the existing UI surfaces the server block message without sign-out/reload on denial.
 - [x] Batch 4B-2a: support-assisted `cancel-account-deletion` endpoint implemented.
 - [ ] Batch 4B-2b: self-service cancel UX/token model remains deferred.
 - [x] Batch 4B-orphan: remote orphan `purge-deleted-users` (deployed 2026-01-29, no local source) discovered, retired as a 410 Gone stub locally. Deploy this stub to replace the stale remote function before implementing 4B-3.
 - [ ] Batch 4B-3: add `purge-deleted-accounts`, `purged` migration, and scheduling. Prerequisites: (1) deploy 4B-orphan 410 stub, (2) decide owner/billing-owner deletion policy, (3) widen `profiles_deletion_status_check` constraint to allow `'purged'`. pg_cron is not available on this project — scheduling method TBD.
 
 Validation:
-- [x] `npm test` passed: 123/123.
+- [x] `npm test` passed: 144/144.
 - [x] `npm run lint` passed with 0 errors and existing warnings only.
 
 #### Phase 0.6D-pre Batch 4B-2a — IMPLEMENTED

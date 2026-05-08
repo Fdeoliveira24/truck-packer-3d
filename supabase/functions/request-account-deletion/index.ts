@@ -2,6 +2,8 @@ import { getAllowedOrigin, json } from "../_shared/cors.ts";
 import { requireUser, serviceClient } from "../_shared/auth.ts";
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const OWNER_WORKSPACE_DELETE_ERROR =
+  "You cannot delete your account while you own a workspace. Transfer ownership or contact support first.";
 const LAST_OWNER_DELETE_ERROR =
   "You cannot delete your account while you are the last owner of a workspace. Transfer ownership or contact support first.";
 
@@ -22,6 +24,24 @@ Deno.serve(async (req) => {
     const sb = serviceClient();
     const userId = String(auth.user.id || "");
     if (!userId) return json({ error: "Missing user id" }, { status: 401, origin });
+
+    // Block if user is organizations.owner_id for any workspace, active or archived.
+    // organizations.owner_id has no auth.users FK cascade; deleting this auth user
+    // would orphan the workspace owner reference.
+    const { data: directOwnedOrgs, error: directOwnerErr } = await sb
+      .from("organizations")
+      .select("id")
+      .eq("owner_id", userId)
+      .limit(1);
+
+    if (directOwnerErr) {
+      console.error("request-account-deletion: organization owner lookup failed", directOwnerErr);
+      return json({ error: "Failed to verify workspace ownership" }, { status: 500, origin });
+    }
+
+    if (directOwnedOrgs && directOwnedOrgs.length > 0) {
+      return json({ error: OWNER_WORKSPACE_DELETE_ERROR }, { status: 409, origin });
+    }
 
     const { data: ownedMemberships, error: ownerMembershipsErr } = await sb
       .from("organization_members")

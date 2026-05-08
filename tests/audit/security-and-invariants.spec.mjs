@@ -228,6 +228,111 @@ test('phase 0.6D-pre 4B request deletion changes avoid Stripe billing workspace 
     '4B request deletion changes must not touch packs, cases, storage, router, or reload behavior');
 });
 
+test('phase 0.6D-pre 4B-1B request-account-deletion blocks if user is organizations.owner_id', async () => {
+  const src = await fs.readFile(requestAccountDeletionPath, 'utf8');
+
+  assert.match(src, /\.from\("organizations"\)[\s\S]{0,200}\.eq\("owner_id", userId\)/,
+    'request-account-deletion must query organizations.owner_id to block workspace owners');
+  assert.match(src, /OWNER_WORKSPACE_DELETE_ERROR/,
+    'request-account-deletion must define an owner-workspace block error constant');
+  assert.match(src, /You cannot delete your account while you own a workspace\. Transfer ownership or contact support first\./,
+    'request-account-deletion must include the approved owner workspace block message');
+});
+
+test('phase 0.6D-pre 4B-1B request-account-deletion owner block returns 409', async () => {
+  const src = await fs.readFile(requestAccountDeletionPath, 'utf8');
+  const blockStart = src.indexOf('OWNER_WORKSPACE_DELETE_ERROR');
+  const blockEnd = src.indexOf('const { data: ownedMemberships', blockStart);
+  const block = blockStart >= 0 && blockEnd > blockStart ? src.slice(blockStart, blockEnd) : '';
+
+  assert.ok(block, 'OWNER_WORKSPACE_DELETE_ERROR block must be extractable before organization_members last-owner check');
+  assert.match(block, /status:\s*409/,
+    'owner block must return HTTP 409');
+});
+
+test('phase 0.6D-pre 4B-1B request-account-deletion owner block does not exempt archived workspaces', async () => {
+  const src = await fs.readFile(requestAccountDeletionPath, 'utf8');
+  const blockStart = src.indexOf('.from("organizations")');
+  const blockEnd = src.indexOf('.from("organization_members")', blockStart);
+  const block = blockStart >= 0 && blockEnd > blockStart ? src.slice(blockStart, blockEnd) : '';
+
+  assert.ok(block, 'organizations owner check block must be extractable');
+  assert.doesNotMatch(block, /\.isNull\(['"]archived_at['"]\)|\.is\(['"]archived_at['"],\s*null\)|archived_at[\s\S]{0,40}is null/i,
+    'owner block must not filter out archived workspaces');
+});
+
+test('phase 0.6D-pre 4B-1B request-account-deletion still preserves last-owner protection', async () => {
+  const src = await fs.readFile(requestAccountDeletionPath, 'utf8');
+
+  assert.match(src, /LAST_OWNER_DELETE_ERROR/,
+    'last-owner error constant must still be present');
+  assert.match(src, /const isLastOwner = ownedOrgIds\.some/,
+    'last-owner detection via organization_members must still be present');
+  assert.match(src, /if \(isLastOwner\)[\s\S]*status:\s*409/,
+    'last-owner check must still return 409');
+});
+
+test('phase 0.6D-pre 4B-1B request deletion owner block avoids billing workspace lifecycle and destructive scope creep', async () => {
+  const src = await fs.readFile(requestAccountDeletionPath, 'utf8');
+  const blockStart = src.indexOf('OWNER_WORKSPACE_DELETE_ERROR');
+  const blockEnd = src.indexOf('const { data: ownedMemberships', blockStart);
+  const ownerBlock = blockStart >= 0 && blockEnd > blockStart ? src.slice(blockStart, blockEnd) : '';
+
+  assert.ok(ownerBlock, 'OWNER_WORKSPACE_DELETE_ERROR block must be extractable');
+  assert.doesNotMatch(ownerBlock, /stripe|checkout|portal|webhook|billing_customers|subscriptions|stripe_customers|billing-status/i,
+    '4B-1B owner block must not touch billing or Stripe');
+  assert.doesNotMatch(ownerBlock, /archiveWorkspace|restoreWorkspace|org-archive|org-restore|org-invite|org-member/i,
+    '4B-1B owner block must not touch workspace lifecycle or member/invite functions');
+  assert.doesNotMatch(ownerBlock, /storage\.from|deletePack|deleteCase|router\.|location\.reload|signOut/i,
+    '4B-1B owner block must not touch storage, packs, cases, router, reload, or signOut');
+});
+
+test('phase 0.6D-pre 4B-1B account deletion UI preserves server 409 message', async () => {
+  const accountSrc = await fs.readFile(accountOverlayPath, 'utf8');
+  const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  const accountCall = accountSrc.indexOf('await SupabaseClient.requestAccountDeletion();');
+  const accountCatch = accountSrc.indexOf('} catch (err) {', accountCall);
+  const accountFailure = accountCatch >= 0
+    ? accountSrc.slice(accountCatch, accountSrc.indexOf('}', accountCatch + 20))
+    : '';
+  assert.ok(accountFailure, 'account overlay deletion failure handler must be extractable');
+  assert.match(accountFailure, /err && err\.message \? err\.message : String\(err\)/,
+    'account overlay must preserve the server error message');
+  assert.match(accountFailure, /UIComponents\.showToast\(msg \|\| 'Delete request failed\.', 'error'\)/,
+    'account overlay must show server error message in existing toast feedback');
+  assert.doesNotMatch(accountFailure, /signOut|location\.reload|window\.location|close\(\)/,
+    'account overlay failure handler must not sign out, reload, or close before feedback');
+
+  const settingsCall = settingsSrc.indexOf('await SupabaseClient.requestAccountDeletion();');
+  const settingsCatch = settingsSrc.indexOf('} catch (err) {', settingsCall);
+  const settingsFailure = settingsCatch >= 0
+    ? settingsSrc.slice(settingsCatch, settingsSrc.indexOf('confirmInput.disabled = false;', settingsCatch) + 30)
+    : '';
+  assert.ok(settingsFailure, 'settings overlay deletion failure handler must be extractable');
+  assert.match(settingsFailure, /err && err\.message \? String\(err\.message\) : ''/,
+    'settings overlay must preserve the server error message');
+  assert.match(settingsFailure, /errorMsg\.textContent = msg \|\| 'Delete request failed\.'/,
+    'settings overlay must display server error message inline');
+  assert.doesNotMatch(settingsFailure, /signOut|location\.reload|window\.location|modalRef\.close/,
+    'settings overlay failure handler must not sign out, reload, or close before feedback');
+});
+
+test('phase 0.6D-pre 4B-1B cancel and legacy purge endpoints remain untouched', async () => {
+  const cancelSrc = await fs.readFile(cancelAccountDeletionPath, 'utf8');
+  const purgeSrc = await fs.readFile(purgeDeletedUsersPath, 'utf8');
+  const supabaseSrc = await fs.readFile(supabasePath, 'utf8');
+
+  assert.match(cancelSrc, /ACCOUNT_DELETION_SUPPORT_SECRET/,
+    'cancel-account-deletion must remain support-secret based');
+  assert.doesNotMatch(supabaseSrc, /cancelAccountDeletion/,
+    'no frontend cancelAccountDeletion wrapper should be added');
+  assert.match(purgeSrc, /status:\s*410/,
+    'purge-deleted-users must remain a retired 410 stub');
+  assert.doesNotMatch(purgeSrc, /auth\.admin\.deleteUser/,
+    'purge-deleted-users stub must not delete auth users');
+});
+
 test('phase 0.6D-pre 4B-2a cancel-account-deletion exists and requires support secret', async () => {
   const src = await fs.readFile(cancelAccountDeletionPath, 'utf8');
 

@@ -15,6 +15,7 @@ const orgInvitePath = new URL('../../supabase/functions/org-invite/index.ts', im
 const orgInviteRevokePath = new URL('../../supabase/functions/org-invite-revoke/index.ts', import.meta.url);
 const orgInviteAcceptPath = new URL('../../supabase/functions/org-invite-accept/index.ts', import.meta.url);
 const orgMemberRemovePath = new URL('../../supabase/functions/org-member-remove/index.ts', import.meta.url);
+const orgTransferOwnershipPath = new URL('../../supabase/functions/org-transfer-ownership/index.ts', import.meta.url);
 const orgLeaveWorkspacePath = new URL('../../supabase/functions/org-leave-workspace/index.ts', import.meta.url);
 const orgArchiveWorkspacePath = new URL('../../supabase/functions/org-archive-workspace/index.ts', import.meta.url);
 const deleteAccountPath = new URL('../../supabase/functions/delete-account/index.ts', import.meta.url);
@@ -39,6 +40,10 @@ const signupAutoOrgUuidMigrationPath = new URL(
 );
 const orgMemberAdminDeleteGuardMigrationPath = new URL(
   '../../supabase/migrations/2026050702_org_member_admin_delete_guard.sql',
+  import.meta.url
+);
+const transferOwnershipMigrationPath = new URL(
+  '../../supabase/migrations/2026050801_transfer_ownership_fn.sql',
   import.meta.url
 );
 
@@ -2327,4 +2332,214 @@ test('phase 0.6D-pre 4B-orphan purge-deleted-users contains no wildcard CORS hea
   const source = await fs.readFile(purgeDeletedUsersPath, 'utf8');
   assert.doesNotMatch(source, /['"]Access-Control-Allow-Origin['"]\s*:\s*['"]\*['"]/,
     'purge-deleted-users stub must not contain literal wildcard CORS');
+});
+
+// ── Phase 0.6D Batch C: Transfer Ownership ───────────────────────────────────
+
+test('phase 0.6D Batch C migration creates transfer ownership RPC with service-role-only execute', async () => {
+  const src = await fs.readFile(transferOwnershipMigrationPath, 'utf8');
+
+  assert.match(src, /create or replace function public\.tp3d_transfer_workspace_ownership\(/i,
+    'migration must create tp3d_transfer_workspace_ownership');
+  assert.match(src, /returns jsonb/i,
+    'transfer ownership RPC must return jsonb');
+  assert.match(src, /security definer/i,
+    'transfer ownership RPC must be security definer');
+  assert.match(src, /set search_path = public/i,
+    'transfer ownership RPC must set search_path');
+  assert.match(src, /for update/i,
+    'transfer ownership RPC must lock rows during transfer');
+  assert.match(src, /revoke execute on function public\.tp3d_transfer_workspace_ownership\(uuid, uuid, uuid\) from public/i,
+    'transfer ownership RPC must revoke public execute');
+  assert.match(src, /revoke execute on function public\.tp3d_transfer_workspace_ownership\(uuid, uuid, uuid\) from anon/i,
+    'transfer ownership RPC must revoke anon execute');
+  assert.match(src, /revoke execute on function public\.tp3d_transfer_workspace_ownership\(uuid, uuid, uuid\) from authenticated/i,
+    'transfer ownership RPC must revoke authenticated execute');
+  assert.match(src, /grant execute on function public\.tp3d_transfer_workspace_ownership\(uuid, uuid, uuid\) to service_role/i,
+    'transfer ownership RPC must grant execute to service_role only');
+});
+
+test('phase 0.6D Batch C RPC verifies primary owner target and actor membership', async () => {
+  const src = await fs.readFile(transferOwnershipMigrationPath, 'utf8');
+
+  assert.match(src, /v_org\.owner_id\s+is null or v_org\.owner_id <> p_actor_id/i,
+    'RPC must verify actor is organizations.owner_id');
+  assert.match(src, /TP3D_TRANSFER_NOT_PRIMARY_OWNER/,
+    'RPC must raise not-primary-owner sentinel');
+  assert.match(src, /p_new_owner_id = p_actor_id[\s\S]*TP3D_TRANSFER_TARGET_IS_ACTOR/i,
+    'RPC must reject transferring ownership to self');
+  assert.match(src, /from public\.organization_members m[\s\S]*m\.user_id = p_new_owner_id[\s\S]*for update/i,
+    'RPC must verify and lock target membership');
+  assert.match(src, /TP3D_TRANSFER_TARGET_NOT_MEMBER/,
+    'RPC must raise target-not-member sentinel');
+  assert.match(src, /from public\.organization_members m[\s\S]*m\.user_id = p_actor_id[\s\S]*for update/i,
+    'RPC must verify and lock actor membership');
+  assert.match(src, /TP3D_TRANSFER_ACTOR_MEMBERSHIP_MISSING/,
+    'RPC must raise actor-membership-missing sentinel');
+});
+
+test('phase 0.6D Batch C RPC updates owner_id and member roles atomically', async () => {
+  const src = await fs.readFile(transferOwnershipMigrationPath, 'utf8');
+
+  assert.match(src, /update public\.organizations[\s\S]*set owner_id = p_new_owner_id[\s\S]*where id = p_org_id/i,
+    'RPC must update organizations.owner_id');
+  assert.match(src, /update public\.organization_members[\s\S]*role = 'owner'::public\.org_member_role[\s\S]*user_id = p_new_owner_id/i,
+    'RPC must set new owner membership role to owner');
+  assert.match(src, /update public\.organization_members[\s\S]*role = 'admin'::public\.org_member_role[\s\S]*user_id = p_actor_id/i,
+    'RPC must set old owner membership role to admin');
+  assert.match(src, /jsonb_build_object\([\s\S]*'organization_id', p_org_id[\s\S]*'old_owner_id', p_actor_id[\s\S]*'new_owner_id', p_new_owner_id/i,
+    'RPC must return transfer result ids');
+});
+
+test('phase 0.6D Batch C Edge Function requires authenticated POST and validates UUIDs', async () => {
+  const src = await fs.readFile(orgTransferOwnershipPath, 'utf8');
+
+  assert.match(src, /if \(req\.method !== "POST"\)/,
+    'transfer Edge Function must require POST');
+  assert.match(src, /requireUser\(req\)/,
+    'transfer Edge Function must require authenticated user');
+  assert.match(src, /if \(!auth\.ok \|\| !auth\.user\)/,
+    'transfer Edge Function must reject unauthenticated requests');
+  assert.match(src, /const UUID_RE = \/\^\[0-9a-f\]/,
+    'transfer Edge Function must define UUID validation');
+  assert.match(src, /!UUID_RE\.test\(orgId\)/,
+    'transfer Edge Function must validate organization_id');
+  assert.match(src, /!UUID_RE\.test\(newOwnerId\)/,
+    'transfer Edge Function must validate new_owner_id');
+  assert.match(src, /newOwnerId === auth\.user\.id[\s\S]*Choose another workspace member as the new owner\./,
+    'transfer Edge Function must reject target equal to actor');
+});
+
+test('phase 0.6D Batch C Edge Function uses RPC and avoids direct table mutation', async () => {
+  const src = await fs.readFile(orgTransferOwnershipPath, 'utf8');
+
+  assert.match(src, /serviceClient\(\)/,
+    'transfer Edge Function must use service client');
+  assert.match(src, /\.rpc\("tp3d_transfer_workspace_ownership"/,
+    'transfer Edge Function must call the transfer RPC');
+  assert.doesNotMatch(src, /\.from\(["']organizations["']\)|\.from\(["']organization_members["']\)/,
+    'transfer Edge Function must not query or mutate org tables directly');
+  assert.doesNotMatch(src, /\.(insert|update|upsert|delete)\(/,
+    'transfer Edge Function must not directly mutate tables outside RPC');
+});
+
+test('phase 0.6D Batch C Edge Function maps transfer sentinel errors', async () => {
+  const src = await fs.readFile(orgTransferOwnershipPath, 'utf8');
+
+  assert.match(src, /TP3D_TRANSFER_NOT_PRIMARY_OWNER[\s\S]*status:\s*403/,
+    'not-primary-owner sentinel must map to 403');
+  assert.match(src, /TP3D_TRANSFER_ORG_NOT_FOUND[\s\S]*status:\s*404/,
+    'org-not-found sentinel must map to 404');
+  assert.match(src, /TP3D_TRANSFER_TARGET_NOT_MEMBER[\s\S]*status:\s*404/,
+    'target-not-member sentinel must map to 404');
+  assert.match(src, /TP3D_TRANSFER_TARGET_IS_ACTOR[\s\S]*status:\s*400/,
+    'target-is-actor sentinel must map to 400');
+  assert.match(src, /TP3D_TRANSFER_ACTOR_MEMBERSHIP_MISSING[\s\S]*status:\s*409/,
+    'actor-membership-missing sentinel must map to 409');
+});
+
+test('phase 0.6D Batch C config disables platform JWT verification for transfer Edge Function', async () => {
+  const src = await fs.readFile(supabaseConfigPath, 'utf8');
+  const start = src.indexOf('[functions.org-transfer-ownership]');
+  const end = src.indexOf('[functions.', start + 1);
+  const block = start >= 0 ? src.slice(start, end > start ? end : undefined) : '';
+
+  assert.ok(block, 'config must include org-transfer-ownership function block');
+  assert.match(block, /verify_jwt\s*=\s*false/,
+    'org-transfer-ownership must use app-level requireUser auth with verify_jwt=false');
+});
+
+test('phase 0.6D Batch C billing service exports transferOwnership wrapper', async () => {
+  const src = await fs.readFile(billingServiceUrl, 'utf8');
+
+  assert.match(src, /export async function transferOwnership\(orgId, newOwnerId\)/,
+    'billing service must export transferOwnership');
+  assert.match(src, /postFn\('\/org-transfer-ownership'[\s\S]*organization_id: orgId[\s\S]*new_owner_id: newOwnerId/,
+    'transferOwnership must POST organization_id and new_owner_id to Edge Function');
+  assert.match(src, /resolveFnError\(res, data, 'Transfer ownership failed'\)/,
+    'transferOwnership must preserve server error messages');
+});
+
+test('phase 0.6D Batch C app exposes handleOwnershipTransferred without signout or reload', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function handleOwnershipTransferred(orgId, options = {})');
+  const end = src.indexOf('// Expose billing pump globally', start);
+  const helper = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(helper, 'app must define handleOwnershipTransferred');
+  assert.match(src, /window\.TruckPackerApp\.handleOwnershipTransferred = handleOwnershipTransferred/,
+    'app must expose handleOwnershipTransferred');
+  assert.match(helper, /clearBillingPendingRetry\(normalizedOrgId\)/,
+    'ownership transfer handler must clear stale billing retry state');
+  assert.match(helper, /SupabaseClient\.invalidateAccountCache\(\)/,
+    'ownership transfer handler must invalidate account cache');
+  assert.match(helper, /refreshOrgContext\(source, \{ force: true, forceEmit: true \}\)/,
+    'ownership transfer handler must force org context refresh');
+  assert.match(helper, /maybeScheduleBillingRefresh\(source\)/,
+    'ownership transfer handler must refresh billing context');
+  assert.doesNotMatch(helper, /signOut|forceLocalSignedOut|location\.reload|window\.location/,
+    'ownership transfer handler must not sign out or reload');
+});
+
+test('phase 0.6D Batch C settings has primary-owner-only transfer ownership flow', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.match(src, /transferOwnership as transferOwnershipFn/,
+    'settings overlay must import transferOwnership wrapper');
+  assert.match(src, /let _transferOwnershipInFlight = false/,
+    'settings overlay must track transfer in-flight state');
+  assert.match(src, /async function showTransferOwnershipModal\(orgId, orgName, currentUserId\)/,
+    'settings overlay must define transfer ownership modal');
+  assert.match(src, /transferCandidates = \(Array\.isArray\(orgMembersData\)[\s\S]*String\(member\.user_id\) !== actorId/,
+    'transfer modal must use existing workspace members excluding current user');
+  assert.match(src, /if \(isPrimaryOwner\)[\s\S]*Transfer Ownership[\s\S]*showTransferOwnershipModal\(leaveOrgId, leaveName, currentUserIdForLeave\)/,
+    'Transfer Ownership action must be primary-owner-only in General tab');
+  assert.match(src, /UIComponents\.showModal\(\{[\s\S]*title: 'Transfer Ownership'/,
+    'transfer flow must use existing modal UI');
+  assert.match(src, /transferOwnership\(normalizedOrgId, selectedUserId, orgName\)/,
+    'transfer modal must call transferOwnership');
+  assert.match(src, /TruckPackerApp\.handleOwnershipTransferred\(normalizedOrgId/,
+    'transfer success must notify app lifecycle handler');
+});
+
+test('phase 0.6D Batch C updateOrganization direct owner_id guard remains', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const start = src.indexOf('export async function updateOrganization(orgId, updates)');
+  const end = src.indexOf('export async function uploadOrgLogo', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'updateOrganization must be extractable');
+  assert.match(fn, /hasOwnProperty\.call\(updates \|\| \{\}, 'owner_id'\)/,
+    'updateOrganization must keep blocking direct owner_id writes');
+  assert.match(fn, /Direct ownership transfer is disabled\. Use the org-transfer-ownership Edge Function\./,
+    'updateOrganization must point callers to org-transfer-ownership');
+});
+
+test('phase 0.6D Batch C transfer implementation avoids forbidden scope', async () => {
+  const billingSrc = await fs.readFile(billingServiceUrl, 'utf8');
+  const billingStart = billingSrc.indexOf('export async function transferOwnership(orgId, newOwnerId)');
+  const billingEnd = billingSrc.indexOf('/**\n * Leave a workspace', billingStart);
+  const billingWrapper = billingStart >= 0 && billingEnd > billingStart ? billingSrc.slice(billingStart, billingEnd) : '';
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appStart = appSrc.indexOf('function handleOwnershipTransferred(orgId, options = {})');
+  const appEnd = appSrc.indexOf('// Expose billing pump globally', appStart);
+  const appHandler = appStart >= 0 && appEnd > appStart ? appSrc.slice(appStart, appEnd) : '';
+  const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
+  const settingsStart = settingsSrc.indexOf('async function transferOwnership(orgId, newOwnerId, orgName)');
+  const settingsEnd = settingsSrc.indexOf('// ---- Organization invites ----', settingsStart);
+  const settingsTransferFlow = settingsStart >= 0 && settingsEnd > settingsStart ? settingsSrc.slice(settingsStart, settingsEnd) : '';
+  const sources = [
+    ['transfer migration', await fs.readFile(transferOwnershipMigrationPath, 'utf8')],
+    ['transfer edge', await fs.readFile(orgTransferOwnershipPath, 'utf8')],
+    ['billing wrapper', billingWrapper],
+    ['app ownership handler', appHandler],
+    ['settings transfer flow', settingsTransferFlow],
+  ];
+
+  for (const [label, src] of sources) {
+    assert.doesNotMatch(src, /stripe|checkout|portal|webhook|billing-status|billing_customers|subscriptions|stripe_customers|webhook_events/i,
+      `${label} must not touch Stripe, billing-status, or billing tables`);
+    assert.doesNotMatch(src, /org-invite|archiveWorkspace|restoreWorkspace|purge-deleted|deletePack|deleteCase|storage\.from|router\.|location\.reload|signOut/i,
+      `${label} must not touch invites, archive/restore, purge, packs/cases, storage, router, reload, or signOut`);
+  }
 });

@@ -6592,6 +6592,38 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return refreshPromise;
     }
 
+    function handleOwnershipTransferred(orgId, options = {}) {
+      const normalizedOrgId = normalizeOrgIdForBilling(orgId || '');
+      if (!normalizedOrgId) return false;
+
+      clearBillingPendingRetry(normalizedOrgId);
+      const billingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
+      if (billingOrgId === normalizedOrgId) {
+        clearBillingState();
+      }
+
+      const source = options && options.source ? String(options.source) : 'ownership-transferred';
+      try {
+        if (SupabaseClient && typeof SupabaseClient.invalidateAccountCache === 'function') {
+          SupabaseClient.invalidateAccountCache();
+        }
+      } catch {
+        // ignore
+      }
+      syncWorkspaceUiAfterOrgRefresh(source);
+      const refreshPromise = refreshOrgContext(source, { force: true, forceEmit: true })
+        .then(result => {
+          syncWorkspaceUiAfterOrgRefresh(source + ':refreshed');
+          maybeScheduleBillingRefresh(source);
+          return result;
+        })
+        .catch(() => {
+          syncWorkspaceUiAfterOrgRefresh(source + ':refresh-error');
+          return null;
+        });
+      return refreshPromise;
+    }
+
     // Expose billing pump globally for SettingsOverlay (avoids import coupling)
     try {
       window.TruckPackerApp = window.TruckPackerApp || {};
@@ -6600,6 +6632,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       window.TruckPackerApp.notifyOrgAccessLoss = handleOrgAccessLoss;
       window.TruckPackerApp.handleWorkspaceLeft = handleWorkspaceLeft;
       window.TruckPackerApp.handleWorkspaceArchived = handleWorkspaceArchived;
+      window.TruckPackerApp.handleOwnershipTransferred = handleOwnershipTransferred;
       _orgAccessLossHandler = handleOrgAccessLoss;
     } catch { /* ignore */ }
 

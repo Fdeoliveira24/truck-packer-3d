@@ -426,3 +426,6 @@ verify_jwt = false
 
 [functions.org-member-remove]
 verify_jwt = false
+
+[functions.org-transfer-ownership]
+verify_jwt = false

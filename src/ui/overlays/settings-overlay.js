@@ -39,6 +39,7 @@ import {
   revokeOrgInvite as revokeOrgInviteFn,
   updateOrgMemberRole as updateOrgMemberRoleFn,
   removeOrgMember as removeOrgMemberFn,
+  transferOwnership as transferOwnershipFn,
   leaveWorkspace as leaveWorkspaceFn,
   archiveWorkspace as archiveWorkspaceFn,
 } from '../../data/services/billing.service.js';
@@ -557,6 +558,7 @@ export function createSettingsOverlay({
   let isSavingOrg = false;
   let _leaveWorkspaceInFlight = false;
   let _archiveWorkspaceInFlight = false;
+  let _transferOwnershipInFlight = false;
   let orgMembersData = null;
   let isLoadingOrgMembers = false;
   let orgMembersError = null;
@@ -2074,6 +2076,185 @@ export function createSettingsOverlay({
   }
 
   // ---- Organization invites ----
+
+  async function transferOwnership(orgId, newOwnerId, orgName) {
+    const normalizedOrgId = normalizeOrgId(orgId);
+    const normalizedNewOwnerId = newOwnerId ? String(newOwnerId).trim() : '';
+    if (_transferOwnershipInFlight || !normalizedOrgId || !normalizedNewOwnerId) {
+      return { ok: false, error: 'Choose a workspace member to receive ownership.' };
+    }
+
+    _transferOwnershipInFlight = true;
+    const epoch = _renderEpoch;
+    renderIfFresh(getCurrentActionId(), 'ownershipTransfer:begin', epoch);
+    try {
+      const result = await transferOwnershipFn(normalizedOrgId, normalizedNewOwnerId);
+      if (!result || !result.ok) {
+        renderIfFresh(getCurrentActionId(), 'ownershipTransfer:error', epoch);
+        return { ok: false, error: result && result.error ? result.error : 'Failed to transfer ownership.' };
+      }
+
+      if (orgData && normalizeOrgId(orgData.id || '') === normalizedOrgId) {
+        orgData = {
+          ...orgData,
+          owner_id: result.new_owner_id || normalizedNewOwnerId,
+          role: orgData.role === 'owner' ? 'admin' : orgData.role,
+        };
+      }
+      if (membershipData && normalizeOrgId(membershipData.organization_id || '') === normalizedOrgId) {
+        membershipData = { ...membershipData, role: 'admin' };
+      }
+
+      await loadOrgMembers(normalizedOrgId);
+      queueAccountBundleRefresh({ force: true, source: 'settings-transfer-ownership' });
+      try {
+        if (
+          typeof window !== 'undefined' &&
+          window.TruckPackerApp &&
+          typeof window.TruckPackerApp.handleOwnershipTransferred === 'function'
+        ) {
+          window.TruckPackerApp.handleOwnershipTransferred(normalizedOrgId, {
+            source: 'settings-transfer-ownership',
+            newOwnerId: result.new_owner_id || normalizedNewOwnerId,
+          });
+        } else {
+          queueAccountBundleRefresh({ force: true, source: 'settings-transfer-ownership' });
+        }
+      } catch {
+        queueAccountBundleRefresh({ force: true, source: 'settings-transfer-ownership' });
+      }
+
+      const displayName = orgName ? String(orgName) : 'workspace';
+      UIComponents.showToast(`Ownership transferred for ${displayName}.`, 'success', {
+        title: 'Transfer Ownership',
+        duration: 6000,
+      });
+      renderIfFresh(getCurrentActionId(), 'ownershipTransfer:success', epoch);
+      return {
+        ok: true,
+        organization_id: result.organization_id || normalizedOrgId,
+        new_owner_id: result.new_owner_id || normalizedNewOwnerId,
+      };
+    } catch (err) {
+      renderIfFresh(getCurrentActionId(), 'ownershipTransfer:error', epoch);
+      return { ok: false, error: err && err.message ? err.message : 'Failed to transfer ownership.' };
+    } finally {
+      _transferOwnershipInFlight = false;
+      if (isOpen()) renderIfFresh(getCurrentActionId(), 'ownershipTransfer:done', epoch);
+    }
+  }
+
+  async function showTransferOwnershipModal(orgId, orgName, currentUserId) {
+    const normalizedOrgId = normalizeOrgId(orgId);
+    const actorId = currentUserId ? String(currentUserId).trim() : '';
+    if (!normalizedOrgId || !actorId) return false;
+
+    if (!Array.isArray(orgMembersData) || lastOrgMembersOrgId !== normalizedOrgId) {
+      await loadOrgMembers(normalizedOrgId);
+    }
+
+    const transferCandidates = (Array.isArray(orgMembersData) ? orgMembersData : [])
+      .filter(member => member && member.user_id && String(member.user_id) !== actorId);
+
+    if (!transferCandidates.length) {
+      UIComponents.showToast('Add another workspace member before transferring ownership.', 'warning', {
+        title: 'Transfer Ownership',
+      });
+      return false;
+    }
+
+    const content = doc.createElement('div');
+    const intro = doc.createElement('p');
+    intro.className = 'muted tp3d-settings-meta';
+    intro.textContent = 'Choose an existing workspace member to become the primary owner. You will become an Admin.';
+    content.appendChild(intro);
+
+    const label = doc.createElement('label');
+    label.className = 'form-label';
+    label.textContent = 'New owner';
+    content.appendChild(label);
+
+    const select = doc.createElement('select');
+    select.className = 'select';
+    select.setAttribute('aria-label', 'New workspace owner');
+    const placeholder = doc.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Select a member';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    select.appendChild(placeholder);
+    transferCandidates.forEach(member => {
+      const opt = doc.createElement('option');
+      opt.value = String(member.user_id);
+      const memberName = getMemberDisplayName(member);
+      const memberEmail = getMemberEmail(member);
+      const role = getRoleLabel(member.role);
+      opt.textContent = `${memberName}${memberEmail ? ` (${memberEmail})` : ''} - ${role}`;
+      select.appendChild(opt);
+    });
+    content.appendChild(select);
+
+    const errorMsg = doc.createElement('div');
+    errorMsg.className = 'muted tp3d-settings-meta tp3d-settings-mt-sm';
+    errorMsg.style.color = 'var(--danger, #dc2626)';
+    errorMsg.textContent = '';
+    content.appendChild(errorMsg);
+
+    let modalRef = null;
+    modalRef = UIComponents.showModal({
+      title: 'Transfer Ownership',
+      content,
+      actions: [
+        { label: 'Cancel', variant: 'ghost' },
+        {
+          label: 'Transfer Ownership',
+          variant: 'danger',
+          onClick: () => {
+            if (modalRef && modalRef._tp3dTransferOwnershipInFlight) return false;
+            const selectedUserId = String(select.value || '').trim();
+            if (!selectedUserId) {
+              errorMsg.textContent = 'Select a workspace member.';
+              return false;
+            }
+            if (selectedUserId === actorId) {
+              errorMsg.textContent = 'Choose another workspace member as the new owner.';
+              return false;
+            }
+
+            modalRef._tp3dTransferOwnershipInFlight = true;
+            const transferBtn =
+              modalRef && modalRef.overlay
+                ? modalRef.overlay.querySelector('.modal-footer button.btn-danger')
+                : null;
+            if (transferBtn) transferBtn.disabled = true;
+            select.disabled = true;
+            errorMsg.textContent = '';
+
+            (async () => {
+              const result = await transferOwnership(normalizedOrgId, selectedUserId, orgName);
+              if (result && result.ok) {
+                try {
+                  modalRef && typeof modalRef.close === 'function' && modalRef.close();
+                } catch {
+                  // ignore
+                }
+                return;
+              }
+
+              errorMsg.textContent = result && result.error ? result.error : 'Failed to transfer ownership.';
+              select.disabled = false;
+              if (transferBtn) transferBtn.disabled = false;
+              modalRef._tp3dTransferOwnershipInFlight = false;
+            })();
+
+            return false;
+          },
+        },
+      ],
+    });
+
+    return true;
+  }
 
   async function loadOrgInvites(orgId) {
     if (!orgId) return null;
@@ -5540,6 +5721,20 @@ export function createSettingsOverlay({
               ownerWarning.className = 'tp3d-org-feedback tp3d-org-feedback--warning';
               ownerWarning.textContent = 'Transfer ownership before leaving. You are the primary owner.';
               viewContainer.appendChild(ownerWarning);
+
+              const transferActions = doc.createElement('div');
+              transferActions.className = 'tp3d-account-actions';
+              const transferBtn = doc.createElement('button');
+              transferBtn.type = 'button';
+              transferBtn.className = 'btn btn-primary';
+              transferBtn.textContent = _transferOwnershipInFlight ? 'Transferring…' : 'Transfer Ownership';
+              transferBtn.disabled = _transferOwnershipInFlight;
+              transferBtn.addEventListener('click', async () => {
+                if (_transferOwnershipInFlight) return;
+                await showTransferOwnershipModal(leaveOrgId, leaveName, currentUserIdForLeave);
+              });
+              transferActions.appendChild(transferBtn);
+              viewContainer.appendChild(transferActions);
             }
 
             const leaveActions = doc.createElement('div');

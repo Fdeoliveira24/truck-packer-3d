@@ -725,6 +725,35 @@ export async function removeOrgMember(orgId, userId) {
 }
 
 /**
+ * Transfer primary workspace ownership via Edge Function guardrails.
+ * @param {string} orgId
+ * @param {string} newOwnerId
+ * @returns {Promise<{ok:boolean, organization_id?:string|null, old_owner_id?:string|null, new_owner_id?:string|null, error?:string}>}
+ */
+export async function transferOwnership(orgId, newOwnerId) {
+  try {
+    debugLog('transferOwnership', { orgId, newOwnerId });
+    const res = await postFn('/org-transfer-ownership', {
+      organization_id: orgId,
+      new_owner_id: newOwnerId,
+    });
+    const data = await readJsonSafe(res);
+    if (!res.ok) {
+      return { ok: false, error: resolveFnError(res, data, 'Transfer ownership failed') };
+    }
+    return {
+      ok: true,
+      organization_id: data && data.organization_id ? String(data.organization_id) : null,
+      old_owner_id: data && data.old_owner_id ? String(data.old_owner_id) : null,
+      new_owner_id: data && data.new_owner_id ? String(data.new_owner_id) : null,
+    };
+  } catch (err) {
+    debugLog('transferOwnership:error', err && err.message);
+    return { ok: false, error: err && err.message ? err.message : 'Network error' };
+  }
+}
+
+/**
  * Leave a workspace via Edge Function guardrails.
  * Removes only the current user's organization_members row.
  * @param {string} orgId

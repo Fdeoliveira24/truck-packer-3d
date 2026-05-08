@@ -771,7 +771,7 @@ Future:
 - [x] `request-account-deletion` preserves `organization_members` during the 30-day deletion window.
 - [x] Repeated deletion requests do not extend a still-future `purge_after`.
 - [x] Last-owner account deletion protection remains in place.
-- [x] Batch 4B-1B: account deletion now blocks any `organizations.owner_id` owner, active or archived. This prevents orphaned workspace owner references before purge; the existing UI surfaces the server block message without sign-out/reload on denial.
+- [x] Batch 4B-1B: account deletion now blocks any `organizations.owner_id` owner, active or archived. This prevents orphaned workspace owner references before purge; the client wrapper reads the Edge Function JSON error body so the UI shows the server block message without sign-out/reload on denial.
 - [x] Batch 4B-2a: support-assisted `cancel-account-deletion` endpoint implemented.
 - [ ] Batch 4B-2b: self-service cancel UX/token model remains deferred.
 - [x] Batch 4B-orphan: remote orphan `purge-deleted-users` (deployed 2026-01-29, no local source) discovered, retired as a 410 Gone stub locally. Deploy this stub to replace the stale remote function before implementing 4B-3.

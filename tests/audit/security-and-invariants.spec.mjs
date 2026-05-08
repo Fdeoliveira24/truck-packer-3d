@@ -287,6 +287,27 @@ test('phase 0.6D-pre 4B-1B request deletion owner block avoids billing workspace
     '4B-1B owner block must not touch storage, packs, cases, router, reload, or signOut');
 });
 
+test('phase 0.6D-pre 4B-1B requestAccountDeletion extracts Edge Function JSON message for 409 responses', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const fnStart = src.indexOf('export async function requestAccountDeletion()');
+  const fnEnd = src.indexOf('// ============================================================================\n// SECTION: ORG LOGO HELPER', fnStart);
+  const fn = fnStart >= 0 && fnEnd > fnStart ? src.slice(fnStart, fnEnd) : '';
+
+  assert.ok(fn, 'requestAccountDeletion must be extractable');
+  assert.doesNotMatch(fn, /client\.functions\.invoke\(['"]request-account-deletion['"]/,
+    'requestAccountDeletion must avoid Supabase functions.invoke generic FunctionError for this flow');
+  assert.match(fn, /fetch\(getFunctionUrl\(\),[\s\S]*method:\s*'POST'[\s\S]*headers:\s*await getFunctionHeaders\(\)/,
+    'requestAccountDeletion must call the Edge Function directly with current auth headers');
+  assert.match(fn, /async function readResponsePayload\(res\)[\s\S]*res\.clone\(\)\.text\(\)[\s\S]*JSON\.parse\(text\)[\s\S]*parsed\.error/,
+    'requestAccountDeletion must parse JSON response bodies from non-2xx Edge Function responses');
+  assert.match(fn, /const status = response \? Number\(response\.status\) : null;/,
+    'requestAccountDeletion must branch on the actual HTTP response status');
+  assert.match(fn, /if \(status === 409\)[\s\S]*new Error\(msg \|\| 'Deletion request failed'\)[\s\S]*throw conflictError/,
+    'requestAccountDeletion must throw the parsed server message for 409 conflicts');
+  assert.doesNotMatch(fn, /throw error|Edge Function returned a non-2xx status code/,
+    'requestAccountDeletion must not throw the raw generic FunctionError for 409 conflicts');
+});
+
 test('phase 0.6D-pre 4B-1B account deletion UI preserves server 409 message', async () => {
   const accountSrc = await fs.readFile(accountOverlayPath, 'utf8');
   const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');

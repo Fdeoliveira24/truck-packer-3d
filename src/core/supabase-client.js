@@ -3137,51 +3137,89 @@ export async function requestAccountDeletion() {
     }
   }
 
-  async function getInvokeErrorMessage(err) {
-    const fallback = err && err.message ? String(err.message) : '';
-    const context = err && err.context ? err.context : null;
-    if (!context || typeof context.clone !== 'function') return fallback;
+  function getFunctionUrl() {
+    const clientUrl =
+      client.supabaseUrl ||
+      client.url ||
+      (typeof window !== 'undefined' &&
+      window.__TP3D_SUPABASE &&
+      typeof window.__TP3D_SUPABASE === 'object'
+        ? window.__TP3D_SUPABASE.url
+        : '');
+    const base = String(clientUrl || '').replace(/\/+$/, '');
+    if (!base) throw new Error('Missing Supabase project URL. Reload and try again.');
+    return base + '/functions/v1/request-account-deletion';
+  }
+
+  async function getFunctionHeaders() {
+    const session = await getSessionSingleFlightSafe(client);
+    const token = session && session.access_token ? String(session.access_token) : '';
+    if (!token) throw new Error('Missing Authorization token. Sign in again and retry.');
+
+    const headers = {
+      Authorization: 'Bearer ' + token,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
+
     try {
-      const res = context.clone();
-      const text = await res.text();
-      if (!text) return fallback;
-      try {
-        const parsed = JSON.parse(text);
-        if (parsed && typeof parsed === 'object') {
-          if (parsed.error) return String(parsed.error);
-          if (parsed.message) return String(parsed.message);
-        }
-      } catch {
-        // ignore JSON parse errors
-      }
-      return String(text);
+      const cfg = typeof window !== 'undefined' ? window.__TP3D_SUPABASE : null;
+      const anonKey = cfg && cfg.anonKey ? String(cfg.anonKey) : '';
+      if (anonKey) headers.apikey = anonKey;
     } catch {
-      return fallback;
+      // apikey is optional for this user-JWT Edge Function path
+    }
+
+    return headers;
+  }
+
+  async function readResponsePayload(res) {
+    let text = '';
+    try {
+      text = await res.clone().text();
+    } catch {
+      text = '';
+    }
+    if (!text) return { data: null, message: '' };
+    try {
+      const parsed = JSON.parse(text);
+      const message =
+        parsed && typeof parsed === 'object'
+          ? String(parsed.error || parsed.message || '')
+          : '';
+      return { data: parsed, message };
+    } catch {
+      return { data: null, message: String(text) };
     }
   }
 
+  let response = null;
   let data = null;
-  let error = null;
+  let msg = '';
+
+  response = await fetch(getFunctionUrl(), {
+    method: 'POST',
+    headers: await getFunctionHeaders(),
+    body: '{}',
+  });
 
   try {
-    const res = await client.functions.invoke('request-account-deletion', {
-      method: 'POST',
-      body: {},
-    });
-    data = res ? res.data : null;
-    error = res ? res.error : null;
-  } catch (err) {
-    // Supabase may throw in some environments; normalize to { error }
+    const parsed = await readResponsePayload(response);
+    data = parsed.data;
+    msg = parsed.message;
+  } catch {
     data = null;
-    error = err;
+    msg = '';
   }
 
   // Debug (only when tp3dDebug=1)
   if (debugEnabled()) {
     try {
-      const st = error && Number.isFinite(error.status) ? error.status : null;
-      const msg = error && error.message ? String(error.message) : '';
-      debugLog('info', '[SupabaseClient] requestAccountDeletion result', { status: st, msg, data });
+      debugLog('info', '[SupabaseClient] requestAccountDeletion result', {
+        status: response ? response.status : null,
+        msg,
+        data,
+      });
     } catch {
       // ignore
     }
@@ -3189,7 +3227,7 @@ export async function requestAccountDeletion() {
 
   // No error: treat as success.
   // Some Edge Functions return an empty body even on success.
-  if (!error) {
+  if (response && response.ok) {
     if (data && typeof data === 'object') {
       // Explicit success
       if (data.ok === true || data.success === true) return data;
@@ -3210,8 +3248,7 @@ export async function requestAccountDeletion() {
   }
 
   // Error path: banning / global signout can revoke auth during the request.
-  const status = Number.isFinite(error.status) ? error.status : null;
-  const msg = await getInvokeErrorMessage(error);
+  const status = response ? Number(response.status) : null;
 
   // If we got 401/403, it often means the function ran and then auth got revoked.
   if (status === 401 || status === 403) {
@@ -3230,7 +3267,9 @@ export async function requestAccountDeletion() {
     if (revoked) return { ok: true, inferred: true, reason: 'non-2xx-auth-revoked' };
   }
 
-  throw error;
+  const requestError = new Error(msg || 'Deletion request failed');
+  /** @type {any} */ (requestError).status = status;
+  throw requestError;
 }
 
 // ============================================================================

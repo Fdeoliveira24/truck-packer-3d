@@ -778,6 +778,34 @@ export async function leaveWorkspace(orgId) {
 }
 
 /**
+ * Restore an archived workspace via Edge Function guardrails.
+ * Soft lifecycle action only; restores visibility without changing related data.
+ * @param {string} orgId
+ * @returns {Promise<{ok:boolean, organization_id?:string|null, already_restored?:boolean, error?:string}>}
+ */
+export async function restoreWorkspace(orgId) {
+  try {
+    debugLog('restoreWorkspace', { orgId });
+    const res = await postFn('/org-restore-workspace', {
+      organization_id: orgId,
+    });
+    const data = await readJsonSafe(res);
+    if (!res.ok) {
+      return { ok: false, error: resolveFnError(res, data, 'Restore workspace failed') };
+    }
+    const organizationId = data && data.organization_id ? String(data.organization_id) : null;
+    return {
+      ok: true,
+      organization_id: organizationId,
+      already_restored: Boolean(data && data.already_restored),
+    };
+  } catch (err) {
+    debugLog('restoreWorkspace:error', err && err.message);
+    return { ok: false, error: err && err.message ? err.message : 'Network error' };
+  }
+}
+
+/**
  * Archive a workspace via Edge Function guardrails.
  * Soft lifecycle action only; does not touch billing or Stripe state.
  * @param {string} orgId

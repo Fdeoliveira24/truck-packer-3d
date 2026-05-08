@@ -6592,6 +6592,52 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return refreshPromise;
     }
 
+    function handleWorkspaceRestored(restoredOrgId, options = {}) {
+      const normalizedRestoredOrgId = normalizeOrgIdForBilling(restoredOrgId || '');
+      if (!normalizedRestoredOrgId) return false;
+
+      const activeOrgIdBefore = getActiveOrgIdNow();
+      const hadActiveOrgBefore = Boolean(activeOrgIdBefore);
+
+      clearBillingPendingRetry(normalizedRestoredOrgId);
+      const billingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
+      if (billingOrgId === normalizedRestoredOrgId) {
+        clearBillingState();
+      }
+
+      const source = options && options.source ? String(options.source) : 'workspace-restored';
+      try {
+        if (SupabaseClient && typeof SupabaseClient.invalidateAccountCache === 'function') {
+          SupabaseClient.invalidateAccountCache();
+        }
+      } catch {
+        // ignore
+      }
+      syncWorkspaceUiAfterOrgRefresh(source);
+      const refreshPromise = refreshOrgContext(source, { force: true, forceEmit: true })
+        .then(async result => {
+          syncWorkspaceUiAfterOrgRefresh(source + ':refreshed');
+          if (!hadActiveOrgBefore && typeof setActiveOrgId === 'function') {
+            const refreshedOrgs = Array.isArray(result && result.orgs)
+              ? result.orgs
+              : (Array.isArray(orgContext && orgContext.orgs) ? orgContext.orgs : []);
+            const restoredOrgVisible = refreshedOrgs.some(org => (
+              org && normalizeOrgIdForBilling(org.id || '') === normalizedRestoredOrgId
+            ));
+            if (restoredOrgVisible) {
+              await setActiveOrgId(normalizedRestoredOrgId, { source: source + ':activate-restored' }).catch(() => null);
+            }
+          }
+          maybeScheduleBillingRefresh(source);
+          return result;
+        })
+        .catch(() => {
+          syncWorkspaceUiAfterOrgRefresh(source + ':refresh-error');
+          return null;
+        });
+      return refreshPromise;
+    }
+
     function handleOwnershipTransferred(orgId, options = {}) {
       const normalizedOrgId = normalizeOrgIdForBilling(orgId || '');
       if (!normalizedOrgId) return false;
@@ -6632,6 +6678,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       window.TruckPackerApp.notifyOrgAccessLoss = handleOrgAccessLoss;
       window.TruckPackerApp.handleWorkspaceLeft = handleWorkspaceLeft;
       window.TruckPackerApp.handleWorkspaceArchived = handleWorkspaceArchived;
+      window.TruckPackerApp.handleWorkspaceRestored = handleWorkspaceRestored;
       window.TruckPackerApp.handleOwnershipTransferred = handleOwnershipTransferred;
       _orgAccessLossHandler = handleOrgAccessLoss;
     } catch { /* ignore */ }
@@ -9608,6 +9655,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       maybeScheduleBillingRefresh,
       getWorkspaceSwitchState,
       handleWorkspaceArchived,
+      handleWorkspaceRestored,
       openCreateWorkspaceFlow,
       EditorUI,
       ui: {

@@ -429,3 +429,6 @@ verify_jwt = false
 
 [functions.org-transfer-ownership]
 verify_jwt = false
+
+[functions.org-restore-workspace]
+verify_jwt = false

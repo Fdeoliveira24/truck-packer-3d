@@ -18,6 +18,7 @@ const orgMemberRemovePath = new URL('../../supabase/functions/org-member-remove/
 const orgTransferOwnershipPath = new URL('../../supabase/functions/org-transfer-ownership/index.ts', import.meta.url);
 const orgLeaveWorkspacePath = new URL('../../supabase/functions/org-leave-workspace/index.ts', import.meta.url);
 const orgArchiveWorkspacePath = new URL('../../supabase/functions/org-archive-workspace/index.ts', import.meta.url);
+const orgRestoreWorkspacePath = new URL('../../supabase/functions/org-restore-workspace/index.ts', import.meta.url);
 const deleteAccountPath = new URL('../../supabase/functions/delete-account/index.ts', import.meta.url);
 const banUserPath = new URL('../../supabase/functions/ban-user/index.ts', import.meta.url);
 const unbanUserPath = new URL('../../supabase/functions/unban-user/index.ts', import.meta.url);
@@ -48,6 +49,10 @@ const transferOwnershipMigrationPath = new URL(
 );
 const transferOwnershipLiveFixMigrationPath = new URL(
   '../../supabase/migrations/2026050802_transfer_ownership_live_schema_fix.sql',
+  import.meta.url
+);
+const restoreWorkspaceMigrationPath = new URL(
+  '../../supabase/migrations/2026050803_restore_workspace.sql',
   import.meta.url
 );
 
@@ -1305,7 +1310,7 @@ test('phase 0.6A does not introduce restore transfer delete or export workspace 
   const appEnd = appSrc.indexOf('// Expose billing pump globally', appStart);
   const helper = appStart >= 0 && appEnd > appStart ? appSrc.slice(appStart, appEnd) : '';
   const settingsStart = settingsSrc.indexOf('async function leaveWorkspace(orgId, orgName)');
-  const settingsEnd = settingsSrc.indexOf('// ---- Organization invites ----', settingsStart);
+  const settingsEnd = settingsSrc.indexOf('async function restoreArchivedWorkspace(orgId, orgName)', settingsStart);
   const settingsHandler = settingsStart >= 0 && settingsEnd > settingsStart
     ? settingsSrc.slice(settingsStart, settingsEnd)
     : '';
@@ -2566,5 +2571,184 @@ test('phase 0.6D Batch C transfer implementation avoids forbidden scope', async 
       `${label} must not touch Stripe, billing-status, or billing tables`);
     assert.doesNotMatch(src, /org-invite|archiveWorkspace|restoreWorkspace|purge-deleted|deletePack|deleteCase|storage\.from|router\.|location\.reload|signOut/i,
       `${label} must not touch invites, archive/restore, purge, packs/cases, storage, router, reload, or signOut`);
+  }
+});
+
+test('phase 0.6D Batch B archived workspace RPC exists without changing active RPC', async () => {
+  const src = await fs.readFile(restoreWorkspaceMigrationPath, 'utf8');
+
+  assert.match(src, /create or replace function public\.get_user_archived_organizations\(\)/,
+    'restore migration must create get_user_archived_organizations');
+  assert.match(src, /o\.archived_at is not null/,
+    'archived workspace RPC must return archived rows only');
+  assert.match(src, /join public\.organization_members om[\s\S]*om\.user_id = auth\.uid\(\)/,
+    'archived workspace RPC must return rows where the user has membership');
+  assert.match(src, /grant execute on function public\.get_user_archived_organizations\(\) to authenticated/,
+    'archived workspace RPC must grant authenticated execute');
+  assert.doesNotMatch(src, /create or replace function public\.get_user_organizations\(\)/,
+    'restore migration must not alter active get_user_organizations behavior');
+});
+
+test('phase 0.6D Batch B restore Edge Function requires authenticated POST and UUID input', async () => {
+  const src = await fs.readFile(orgRestoreWorkspacePath, 'utf8');
+
+  assert.match(src, /if \(req\.method !== "POST"\)/,
+    'restore Edge Function must be POST-only');
+  assert.match(src, /requireUser\(req\)/,
+    'restore Edge Function must require authenticated user identity');
+  assert.match(src, /UUID_RE/,
+    'restore Edge Function must define UUID validation');
+  assert.match(src, /if \(!isUuid\(organizationId\)\)/,
+    'restore Edge Function must validate organization_id before DB work');
+});
+
+test('phase 0.6D Batch B restore Edge Function is owner-only and idempotent', async () => {
+  const src = await fs.readFile(orgRestoreWorkspacePath, 'utf8');
+
+  assert.match(src, /\.from\("organizations"\)[\s\S]*\.select\("id, owner_id, archived_at, created_at"\)/,
+    'restore Edge Function must load owner_id and archived_at from organizations');
+  assert.match(src, /String\(org\.owner_id \|\| ""\) !== String\(auth\.user\.id \|\| ""\)/,
+    'restore Edge Function must require organizations.owner_id to match actor');
+  assert.match(src, /status:\s*403/,
+    'non-primary-owner restore must return 403');
+  assert.match(src, /if \(!org\.archived_at\)[\s\S]*already_restored:\s*true/,
+    'restore Edge Function must be idempotent when the workspace is already active');
+});
+
+test('phase 0.6D Batch B restore updates only archived_at to null', async () => {
+  const src = await fs.readFile(orgRestoreWorkspacePath, 'utf8');
+  const updateStart = src.indexOf('.from("organizations")\n    .update({ archived_at: null })');
+  const updateEnd = src.indexOf('if (restoreErr)', updateStart);
+  const updateBlock = updateStart >= 0 && updateEnd > updateStart ? src.slice(updateStart, updateEnd) : '';
+
+  assert.ok(updateBlock, 'restore update block must be extractable');
+  assert.match(updateBlock, /\.update\(\{ archived_at: null \}\)/,
+    'restore must update only archived_at to null');
+  assert.match(updateBlock, /\.eq\("id", organizationId\)[\s\S]*\.eq\("owner_id", auth\.user\.id\)[\s\S]*\.not\("archived_at", "is", null\)/,
+    'restore update must be guarded by id, owner_id, and currently archived state');
+  assert.doesNotMatch(updateBlock, /organization_members|organization_invites|billing_customers|subscriptions|storage|packs|cases/i,
+    'restore update block must not mutate unrelated tables');
+});
+
+test('phase 0.6D Batch B restore has workspace limit protection without external billing calls', async () => {
+  const src = await fs.readFile(orgRestoreWorkspacePath, 'utf8');
+  const limitStart = src.indexOf('async function verifyRestoreFitsWorkspaceLimit');
+  const limitEnd = src.indexOf('Deno.serve', limitStart);
+  const limitFn = limitStart >= 0 && limitEnd > limitStart ? src.slice(limitStart, limitEnd) : '';
+
+  assert.ok(limitFn, 'workspace limit helper must be extractable');
+  assert.match(limitFn, /\.from\("organizations"\)[\s\S]*\.eq\("owner_id", ownerId\)/,
+    'workspace limit check must read owner workspaces');
+  assert.match(limitFn, /\.from\("subscriptions"\)[\s\S]*\.select\(/,
+    'workspace limit check may read subscription projection rows');
+  assert.match(limitFn, /\.from\("billing_customers"\)[\s\S]*\.select\(/,
+    'workspace limit check may read customer projection rows');
+  assert.match(src, /RESTORE_LIMIT_ERROR[\s\S]*status:\s*409/,
+    'workspace limit failures must return 409');
+  assert.doesNotMatch(limitFn, /\.from\("billing_customers"\)[\s\S]{0,180}\.(insert|update|upsert|delete)\(/,
+    'restore must not mutate customer projection rows');
+  assert.doesNotMatch(limitFn, /\.from\("subscriptions"\)[\s\S]{0,180}\.(insert|update|upsert|delete)\(/,
+    'restore must not mutate subscription projection rows');
+  assert.doesNotMatch(src, /stripe|billing-status/i,
+    'restore Edge Function must not call payment provider code or billing-status');
+});
+
+test('phase 0.6D Batch B config disables platform JWT verification for restore Edge Function', async () => {
+  const src = await fs.readFile(supabaseConfigPath, 'utf8');
+  const start = src.indexOf('[functions.org-restore-workspace]');
+  const end = src.indexOf('[functions.', start + 1);
+  const block = start >= 0 ? src.slice(start, end > start ? end : undefined) : '';
+
+  assert.ok(block, 'config must include org-restore-workspace function block');
+  assert.match(block, /verify_jwt\s*=\s*false/,
+    'org-restore-workspace must use app-level requireUser auth with verify_jwt=false');
+});
+
+test('phase 0.6D Batch B service and client expose restore/list wrappers', async () => {
+  const billingSrc = await fs.readFile(billingServiceUrl, 'utf8');
+  const clientSrc = await fs.readFile(supabasePath, 'utf8');
+
+  assert.match(billingSrc, /export async function restoreWorkspace\(orgId\)/,
+    'billing service must export restoreWorkspace');
+  assert.match(billingSrc, /postFn\('\/org-restore-workspace'[\s\S]*organization_id: orgId/,
+    'restoreWorkspace must POST organization_id to restore Edge Function');
+  assert.match(billingSrc, /resolveFnError\(res, data, 'Restore workspace failed'\)/,
+    'restoreWorkspace must preserve server error messages');
+  assert.match(clientSrc, /export async function getUserArchivedOrganizations\(\)/,
+    'Supabase client must export getUserArchivedOrganizations');
+  assert.match(clientSrc, /client\.rpc\('get_user_archived_organizations'\)/,
+    'getUserArchivedOrganizations must call archived workspace RPC');
+  assert.match(clientSrc, /getUserArchivedOrganizations,/,
+    'getUserArchivedOrganizations must be exposed on window.SupabaseClient API');
+});
+
+test('phase 0.6D Batch B app exposes handleWorkspaceRestored without signout or reload', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function handleWorkspaceRestored(restoredOrgId, options = {})');
+  const end = src.indexOf('function handleOwnershipTransferred', start);
+  const helper = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(helper, 'app must define handleWorkspaceRestored');
+  assert.match(src, /window\.TruckPackerApp\.handleWorkspaceRestored = handleWorkspaceRestored/,
+    'app must expose handleWorkspaceRestored');
+  assert.match(helper, /clearBillingPendingRetry\(normalizedRestoredOrgId\)/,
+    'restore handler must clear stale billing retry state');
+  assert.match(helper, /SupabaseClient\.invalidateAccountCache\(\)/,
+    'restore handler must invalidate account cache');
+  assert.match(helper, /refreshOrgContext\(source, \{ force: true, forceEmit: true \}\)/,
+    'restore handler must force org context refresh');
+  assert.match(helper, /setActiveOrgId\(normalizedRestoredOrgId/,
+    'restore handler must activate restored workspace when no active workspace existed');
+  assert.doesNotMatch(helper, /signOut|forceLocalSignedOut|location\.reload|window\.location/,
+    'restore handler must not sign out or reload');
+});
+
+test('phase 0.6D Batch B Settings UI has archived workspace restore flow', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.match(src, /restoreWorkspace as restoreWorkspaceFn/,
+    'settings overlay must import restoreWorkspace wrapper');
+  assert.match(src, /async function loadArchivedWorkspaces\(\{ force = false \} = \{\}\)/,
+    'settings overlay must load archived workspaces independently');
+  assert.match(src, /appendArchivedWorkspacesSection\(targetEl, currentUserId\)/,
+    'settings overlay must render an Archived Workspaces section');
+  assert.match(src, /Archived Workspaces/,
+    'settings overlay must show Archived Workspaces copy');
+  assert.match(src, /String\(org\.owner_id\) === String\(currentUserId\)/,
+    'restore button must be shown only for archived workspaces owned by the current user');
+  assert.match(src, /UIComponents\.confirm\(\{[\s\S]*title: 'Restore Workspace'/,
+    'restore flow must use existing confirm UI pattern');
+  assert.match(src, /restoreWorkspaceFn\(normalizedOrgId\)/,
+    'settings restore handler must call the restore service wrapper');
+  assert.match(src, /TruckPackerApp\.handleWorkspaceRestored\(normalizedOrgId/,
+    'restore success must notify app lifecycle handler');
+});
+
+test('phase 0.6D Batch B restore implementation avoids forbidden scope', async () => {
+  const edgeSrc = await fs.readFile(orgRestoreWorkspacePath, 'utf8');
+  const billingSrc = await fs.readFile(billingServiceUrl, 'utf8');
+  const billingStart = billingSrc.indexOf('export async function restoreWorkspace(orgId)');
+  const billingEnd = billingSrc.indexOf('/**\n * Archive a workspace', billingStart);
+  const billingWrapper = billingStart >= 0 && billingEnd > billingStart ? billingSrc.slice(billingStart, billingEnd) : '';
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appStart = appSrc.indexOf('function handleWorkspaceRestored(restoredOrgId, options = {})');
+  const appEnd = appSrc.indexOf('function handleOwnershipTransferred', appStart);
+  const appHandler = appStart >= 0 && appEnd > appStart ? appSrc.slice(appStart, appEnd) : '';
+  const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
+  const settingsStart = settingsSrc.indexOf('async function restoreArchivedWorkspace(orgId, orgName)');
+  const settingsEnd = settingsSrc.indexOf('async function archiveWorkspace(orgId, orgName)', settingsStart);
+  const settingsRestoreFlow = settingsStart >= 0 && settingsEnd > settingsStart ? settingsSrc.slice(settingsStart, settingsEnd) : '';
+  const sources = [
+    ['restore edge', edgeSrc],
+    ['billing wrapper', billingWrapper],
+    ['app restore handler', appHandler],
+    ['settings restore flow', settingsRestoreFlow],
+  ];
+
+  for (const [label, src] of sources) {
+    assert.doesNotMatch(src, /stripe|billing-status|stripe_customers|webhook_events|checkout|portal|webhook/i,
+      `${label} must not touch payment provider functions or billing-status`);
+    assert.doesNotMatch(src, /org-invite|org-member|request-account-deletion|cancel-account-deletion|purge-deleted|deletePack|deleteCase|storage\.from|router\.|location\.reload|signOut/i,
+      `${label} must not touch invite/member/account deletion/purge/packs/cases/storage/router/reload/signOut`);
   }
 });

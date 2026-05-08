@@ -41,6 +41,7 @@ import {
   removeOrgMember as removeOrgMemberFn,
   transferOwnership as transferOwnershipFn,
   leaveWorkspace as leaveWorkspaceFn,
+  restoreWorkspace as restoreWorkspaceFn,
   archiveWorkspace as archiveWorkspaceFn,
 } from '../../data/services/billing.service.js';
 
@@ -559,6 +560,11 @@ export function createSettingsOverlay({
   let _leaveWorkspaceInFlight = false;
   let _archiveWorkspaceInFlight = false;
   let _transferOwnershipInFlight = false;
+  const restoreWorkspaceActions = new Set();
+  let archivedWorkspacesData = null;
+  let isLoadingArchivedWorkspaces = false;
+  let archivedWorkspacesError = null;
+  let archivedWorkspacesRequestId = 0;
   let orgMembersData = null;
   let isLoadingOrgMembers = false;
   let orgMembersError = null;
@@ -934,6 +940,10 @@ export function createSettingsOverlay({
         savingOrg: Boolean(isSavingOrg),
         orgName: orgData && orgData.name ? String(orgData.name) : '',
         role: String(getRoleForOrg(key.orgId) || ''),
+        archivedLoading: Boolean(isLoadingArchivedWorkspaces),
+        archivedCount: Array.isArray(archivedWorkspacesData) ? archivedWorkspacesData.length : null,
+        archivedError: archivedWorkspacesError ? String(archivedWorkspacesError.message || archivedWorkspacesError.code || '1') : '',
+        restoreActions: restoreWorkspaceActions.size,
       };
     } else if (tab === 'resources') {
       key.resources = { view: String(resourcesSubView || 'root') };
@@ -1808,6 +1818,54 @@ export function createSettingsOverlay({
     return role ? role.charAt(0).toUpperCase() + role.slice(1) : 'Member';
   }
 
+  function getArchivedWorkspaceName(org) {
+    const name = org && org.name ? String(org.name).trim() : '';
+    return name || 'Archived workspace';
+  }
+
+  function getArchivedWorkspaceDate(org) {
+    const value = org && org.archived_at ? String(org.archived_at) : '';
+    if (!value) return '';
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return '';
+    try {
+      return date.toLocaleDateString();
+    } catch {
+      return '';
+    }
+  }
+
+  async function loadArchivedWorkspaces({ force = false } = {}) {
+    if (!force && Array.isArray(archivedWorkspacesData)) return archivedWorkspacesData;
+    if (isLoadingArchivedWorkspaces && !force) return archivedWorkspacesData || [];
+    if (!SupabaseClient || typeof SupabaseClient.getUserArchivedOrganizations !== 'function') {
+      archivedWorkspacesData = [];
+      archivedWorkspacesError = null;
+      return [];
+    }
+
+    const thisRequestId = ++archivedWorkspacesRequestId;
+    isLoadingArchivedWorkspaces = true;
+    archivedWorkspacesError = null;
+    try {
+      const rows = await SupabaseClient.getUserArchivedOrganizations();
+      if (thisRequestId !== archivedWorkspacesRequestId) return archivedWorkspacesData || [];
+      archivedWorkspacesData = (Array.isArray(rows) ? rows : [])
+        .filter(row => row && normalizeOrgId(row.id || '') && row.archived_at);
+      return archivedWorkspacesData;
+    } catch (err) {
+      if (thisRequestId === archivedWorkspacesRequestId) {
+        archivedWorkspacesError = err;
+        archivedWorkspacesData = Array.isArray(archivedWorkspacesData) ? archivedWorkspacesData : [];
+      }
+      return archivedWorkspacesData || [];
+    } finally {
+      if (thisRequestId === archivedWorkspacesRequestId) {
+        isLoadingArchivedWorkspaces = false;
+      }
+    }
+  }
+
   function canManageMembers(roleValue) {
     const role = String(roleValue || '').toLowerCase();
     return role === 'owner' || role === 'admin';
@@ -2020,6 +2078,186 @@ export function createSettingsOverlay({
     }
   }
 
+  async function restoreArchivedWorkspace(orgId, orgName) {
+    const normalizedOrgId = normalizeOrgId(orgId);
+    if (!normalizedOrgId || restoreWorkspaceActions.has(normalizedOrgId)) return false;
+
+    restoreWorkspaceActions.add(normalizedOrgId);
+    const epoch = _renderEpoch;
+    renderIfFresh(getCurrentActionId(), 'workspaceRestore:begin', epoch);
+    try {
+      const result = await restoreWorkspaceFn(normalizedOrgId);
+      if (!result || !result.ok) {
+        UIComponents.showToast(
+          result && result.error ? result.error : 'Failed to restore workspace.',
+          'error',
+          { title: 'Restore Workspace' },
+        );
+        renderIfFresh(getCurrentActionId(), 'workspaceRestore:error', epoch);
+        return false;
+      }
+
+      archivedWorkspacesData = (Array.isArray(archivedWorkspacesData) ? archivedWorkspacesData : [])
+        .filter(row => normalizeOrgId(row && row.id ? row.id : '') !== normalizedOrgId);
+
+      const displayName = orgName ? String(orgName) : 'workspace';
+      UIComponents.showToast(`Restored ${displayName}.`, 'success', {
+        title: 'Restore Workspace',
+        duration: 6000,
+      });
+
+      try {
+        if (
+          typeof window !== 'undefined' &&
+          window.TruckPackerApp &&
+          typeof window.TruckPackerApp.handleWorkspaceRestored === 'function'
+        ) {
+          await window.TruckPackerApp.handleWorkspaceRestored(normalizedOrgId, { source: 'settings-restore-workspace' });
+        } else {
+          queueAccountBundleRefresh({ force: true, source: 'settings-restore-workspace' });
+        }
+      } catch {
+        queueAccountBundleRefresh({ force: true, source: 'settings-restore-workspace' });
+      }
+
+      await loadArchivedWorkspaces({ force: true });
+      queueAccountBundleRefresh({ force: true, source: 'settings-restore-workspace:done' });
+      renderIfFresh(getCurrentActionId(), 'workspaceRestore:success', epoch);
+      return true;
+    } catch (err) {
+      UIComponents.showToast(
+        `Failed to restore workspace: ${err && err.message ? err.message : err}`,
+        'error',
+        { title: 'Restore Workspace' },
+      );
+      renderIfFresh(getCurrentActionId(), 'workspaceRestore:error', epoch);
+      return false;
+    } finally {
+      restoreWorkspaceActions.delete(normalizedOrgId);
+      if (isOpen()) renderIfFresh(getCurrentActionId(), 'workspaceRestore:done', epoch);
+    }
+  }
+
+  function appendArchivedWorkspacesSection(targetEl, currentUserId) {
+    if (!targetEl || !currentUserId) return;
+
+    if (archivedWorkspacesData === null && !isLoadingArchivedWorkspaces) {
+      const epoch = getOverlayEpoch();
+      loadArchivedWorkspaces()
+        .then(() => renderIfFresh(getCurrentActionId(), 'archived-workspaces:loaded', undefined, epoch))
+        .catch(() => renderIfFresh(getCurrentActionId(), 'archived-workspaces:error', undefined, epoch));
+    }
+
+    const divider = doc.createElement('div');
+    divider.className = 'tp3d-settings-org-divider';
+    targetEl.appendChild(divider);
+
+    const heading = doc.createElement('div');
+    heading.className = 'tp3d-settings-section-heading';
+    heading.textContent = 'Archived Workspaces';
+    targetEl.appendChild(heading);
+
+    const intro = doc.createElement('div');
+    intro.className = 'muted tp3d-settings-meta tp3d-settings-mt-md';
+    intro.textContent = 'Restore archived workspaces you own. Restoring only makes the workspace active again.';
+    targetEl.appendChild(intro);
+
+    if (isLoadingArchivedWorkspaces && archivedWorkspacesData === null) {
+      const loading = doc.createElement('div');
+      loading.className = 'muted tp3d-settings-meta';
+      loading.textContent = 'Loading archived workspaces…';
+      targetEl.appendChild(loading);
+      return;
+    }
+
+    if (archivedWorkspacesError) {
+      const error = doc.createElement('div');
+      error.className = 'tp3d-org-feedback tp3d-org-feedback--error';
+      error.textContent = 'Archived workspaces could not be loaded.';
+      targetEl.appendChild(error);
+
+      const retryActions = doc.createElement('div');
+      retryActions.className = 'tp3d-account-actions';
+      const retryBtn = doc.createElement('button');
+      retryBtn.type = 'button';
+      retryBtn.className = 'btn btn-ghost';
+      retryBtn.textContent = 'Retry';
+      retryBtn.addEventListener('click', () => {
+        if (isLoadingArchivedWorkspaces) return;
+        archivedWorkspacesData = null;
+        loadArchivedWorkspaces({ force: true })
+          .finally(() => render({ source: 'archived-workspaces:retry' }));
+        render({ source: 'archived-workspaces:retry:start' });
+      });
+      retryActions.appendChild(retryBtn);
+      targetEl.appendChild(retryActions);
+      return;
+    }
+
+    const rows = Array.isArray(archivedWorkspacesData) ? archivedWorkspacesData : [];
+    if (!rows.length) {
+      const empty = doc.createElement('div');
+      empty.className = 'muted tp3d-settings-meta';
+      empty.textContent = 'No archived workspaces.';
+      targetEl.appendChild(empty);
+      return;
+    }
+
+    rows.forEach(org => {
+      const orgId = normalizeOrgId(org && org.id ? org.id : '');
+      if (!orgId) return;
+
+      const row = doc.createElement('div');
+      row.className = 'tp3d-settings-row';
+
+      const left = doc.createElement('div');
+      const name = doc.createElement('div');
+      name.className = 'tp3d-settings-row-label';
+      name.textContent = getArchivedWorkspaceName(org);
+      left.appendChild(name);
+      const dateText = getArchivedWorkspaceDate(org);
+      if (dateText) {
+        const meta = doc.createElement('div');
+        meta.className = 'muted tp3d-settings-meta';
+        meta.textContent = `Archived ${dateText}`;
+        left.appendChild(meta);
+      }
+      row.appendChild(left);
+
+      const right = doc.createElement('div');
+      right.className = 'tp3d-account-actions';
+      const isOwner = Boolean(org && org.owner_id && String(org.owner_id) === String(currentUserId));
+      if (isOwner) {
+        const restoring = restoreWorkspaceActions.has(orgId);
+        const restoreBtn = doc.createElement('button');
+        restoreBtn.type = 'button';
+        restoreBtn.className = 'btn btn-primary';
+        restoreBtn.textContent = restoring ? 'Restoring…' : 'Restore';
+        restoreBtn.disabled = restoring;
+        restoreBtn.addEventListener('click', async () => {
+          if (restoreWorkspaceActions.has(orgId)) return;
+          const targetName = getArchivedWorkspaceName(org);
+          const confirmed = await UIComponents.confirm({
+            title: 'Restore Workspace',
+            message: `Restore "${targetName}"? It will appear in normal workspace switching again.`,
+            okLabel: 'Restore Workspace',
+            cancelLabel: 'Cancel',
+          }).catch(() => false);
+          if (confirmed) await restoreArchivedWorkspace(orgId, targetName);
+        });
+        right.appendChild(restoreBtn);
+      } else {
+        const ownerOnly = doc.createElement('div');
+        ownerOnly.className = 'muted tp3d-settings-meta';
+        ownerOnly.textContent = 'Only the primary owner can restore this workspace.';
+        right.appendChild(ownerOnly);
+      }
+
+      row.appendChild(right);
+      targetEl.appendChild(row);
+    });
+  }
+
   async function archiveWorkspace(orgId, orgName) {
     const normalizedOrgId = normalizeOrgId(orgId);
     if (_archiveWorkspaceInFlight || !normalizedOrgId) return false;
@@ -2044,6 +2282,9 @@ export function createSettingsOverlay({
         title: 'Archive Workspace',
         duration: 6000,
       });
+
+      archivedWorkspacesData = null;
+      loadArchivedWorkspaces({ force: true }).catch(() => null);
 
       try {
         if (
@@ -5800,6 +6041,14 @@ export function createSettingsOverlay({
               viewContainer.appendChild(archiveActions);
             }
           }
+
+        }
+
+        if (!isLoadingMembership && !isLoadingOrg && !isLoadingAccountBundle) {
+          appendArchivedWorkspacesSection(
+            viewContainer,
+            orgUserView && orgUserView.userId ? String(orgUserView.userId) : ''
+          );
         }
 
         orgCard.appendChild(orgTitle);
@@ -6911,6 +7160,11 @@ export function createSettingsOverlay({
     isLoadingOrgMembers = false;
     orgMembersError = null;
     orgMembersRequestId = 0;
+    archivedWorkspacesData = null;
+    isLoadingArchivedWorkspaces = false;
+    archivedWorkspacesError = null;
+    archivedWorkspacesRequestId = 0;
+    restoreWorkspaceActions.clear();
     orgInvitesData = null;
     isLoadingOrgInvites = false;
     orgInvitesError = null;

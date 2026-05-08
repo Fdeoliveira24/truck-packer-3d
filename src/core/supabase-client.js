@@ -2261,6 +2261,68 @@ export async function getUserOrganizations() {
     .filter(isActiveOrgRow);
 }
 
+export async function getUserArchivedOrganizations() {
+  const client = requireClient();
+  const clientSessionOk = await ensureClientSession();
+  if (!clientSessionOk) return [];
+  const userId = await getAuthedUserId();
+  if (!userId) return [];
+  const isArchivedOrgRow = org => Boolean(org && org.archived_at);
+
+  try {
+    const { data, error } = await client.rpc('get_user_archived_organizations');
+    if (!error && Array.isArray(data)) return data.filter(isArchivedOrgRow);
+  } catch (_e) {
+    // Ignore and try fallback.
+  }
+
+  const { data: rows, error: qErr } = await client
+    .from('organization_members')
+    .select(
+      [
+        'id',
+        'organization_id',
+        'role',
+        'joined_at',
+        'invited_by',
+        `organizations (
+          id,
+          name,
+          slug,
+          avatar_url,
+          logo_path,
+          owner_id,
+          created_at,
+          updated_at,
+          phone,
+          address_line1,
+          address_line2,
+          city,
+          state,
+          postal_code,
+          country,
+          archived_at
+        )`,
+      ].join(',')
+    )
+    .eq('user_id', userId);
+
+  if (qErr) return [];
+
+  return (Array.isArray(rows) ? rows : [])
+    .map(r => {
+      const orgRel = r.organizations;
+      const org = Array.isArray(orgRel) ? orgRel[0] : orgRel;
+      return {
+        ...(org || { id: r.organization_id }),
+        role: r.role || null,
+        joined_at: r.joined_at || null,
+        invited_by: r.invited_by || null,
+      };
+    })
+    .filter(isArchivedOrgRow);
+}
+
 /**
  * Get the current user's membership row.
  * Returns null if not logged in or if user has no org membership.
@@ -3349,6 +3411,7 @@ try {
     getMyProfileStatus,
     updateProfile,
     getUserOrganizations,
+    getUserArchivedOrganizations,
     getMyMembership,
     getOrganization,
     getCurrentOrganization,

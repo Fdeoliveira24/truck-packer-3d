@@ -21,6 +21,8 @@ const deleteAccountPath = new URL('../../supabase/functions/delete-account/index
 const banUserPath = new URL('../../supabase/functions/ban-user/index.ts', import.meta.url);
 const unbanUserPath = new URL('../../supabase/functions/unban-user/index.ts', import.meta.url);
 const requestAccountDeletionPath = new URL('../../supabase/functions/request-account-deletion/index.ts', import.meta.url);
+const cancelAccountDeletionPath = new URL('../../supabase/functions/cancel-account-deletion/index.ts', import.meta.url);
+const supabaseConfigPath = new URL('../../supabase/config.toml', import.meta.url);
 const supabaseFunctionsDir = new URL('../../supabase/functions/', import.meta.url);
 const orgInviteExpirationMigrationPath = new URL(
   '../../supabase/migrations/2026050501_organization_invites_expiration.sql',
@@ -223,6 +225,112 @@ test('phase 0.6D-pre 4B request deletion changes avoid Stripe billing workspace 
     '4B request deletion changes must not touch workspace lifecycle or invite/member Edge Function scope');
   assert.doesNotMatch(snippets, /deletePack|deleteCase|storage\.from|router\.|window\.location\.reload|location\.reload/i,
     '4B request deletion changes must not touch packs, cases, storage, router, or reload behavior');
+});
+
+test('phase 0.6D-pre 4B-2a cancel-account-deletion exists and requires support secret', async () => {
+  const src = await fs.readFile(cancelAccountDeletionPath, 'utf8');
+
+  assert.match(src, /ACCOUNT_DELETION_SUPPORT_SECRET/,
+    'cancel-account-deletion must read the support secret from env');
+  assert.match(src, /x-cancel-secret/,
+    'cancel-account-deletion must accept the support secret header');
+  assert.match(src, /authorization[\s\S]*bearer/i,
+    'cancel-account-deletion may accept Authorization bearer support-secret for non-browser tooling');
+  assert.match(src, /getRequestSecret\(req\) !== expectedSecret/,
+    'cancel-account-deletion must reject requests with the wrong secret');
+  assert.match(src, /status:\s*401/,
+    'cancel-account-deletion must return unauthorized for invalid support secret');
+  assert.match(src, /user_id[\s\S]*UUID_RE/,
+    'cancel-account-deletion must validate user_id shape');
+});
+
+test('phase 0.6D-pre 4B-2a cancel-account-deletion uses service role and lifts ban', async () => {
+  const src = await fs.readFile(cancelAccountDeletionPath, 'utf8');
+
+  assert.match(src, /serviceClient\(\)/,
+    'cancel-account-deletion must use the service client');
+  assert.match(src, /auth\.admin\.updateUserById\([\s\S]*ban_duration:\s*"none"/,
+    'cancel-account-deletion must lift the Supabase ban');
+  assert.doesNotMatch(src, /requireUser|auth\.getUser/,
+    'support-assisted cancel must not require the deletion-requested user JWT');
+});
+
+test('phase 0.6D-pre 4B-2a cancel-account-deletion clears deletion fields and is idempotent', async () => {
+  const src = await fs.readFile(cancelAccountDeletionPath, 'utf8');
+
+  assert.match(src, /\.select\("id, deletion_status, deleted_at, purge_after"\)/,
+    'cancel-account-deletion must read the profile deletion fields');
+  assert.match(src, /profile\.deletion_status !== "requested"[\s\S]*already_canceled:\s*true/,
+    'cancel-account-deletion must be idempotent when the profile is already not requested');
+  assert.match(src, /deletion_status:\s*"canceled"/,
+    'cancel-account-deletion must set deletion_status to canceled');
+  assert.match(src, /deleted_at:\s*null/,
+    'cancel-account-deletion must clear deleted_at');
+  assert.match(src, /purge_after:\s*null/,
+    'cancel-account-deletion must clear purge_after');
+});
+
+test('phase 0.6D-pre 4B-2a cancel-account-deletion idempotent branch repairs ban lift', async () => {
+  const src = await fs.readFile(cancelAccountDeletionPath, 'utf8');
+  const helperStart = src.indexOf('async function liftAccountBan(');
+  const helperEnd = src.indexOf('Deno.serve', helperStart);
+  const helper = helperStart >= 0 && helperEnd > helperStart ? src.slice(helperStart, helperEnd) : '';
+  const branchStart = src.indexOf('if (profile.deletion_status !== "requested")');
+  const branchEnd = src.indexOf('const { error: updateErr }', branchStart);
+  const branch = branchStart >= 0 && branchEnd > branchStart ? src.slice(branchStart, branchEnd) : '';
+
+  assert.ok(helper, 'liftAccountBan helper must be extractable');
+  assert.ok(branch, 'already-canceled branch must be extractable');
+  assert.match(helper, /auth\.admin\.updateUserById\([\s\S]*ban_duration:\s*"none"/,
+    'liftAccountBan must call auth.admin.updateUserById with ban_duration none');
+  assert.match(branch, /await liftAccountBan\(sb, userId\)/,
+    'already-canceled branch must retry ban lift before returning idempotent success');
+  assert.match(branch, /banLiftErr[\s\S]*status:\s*500/,
+    'already-canceled branch must fail safely if ban lift repair fails');
+  assert.match(branch, /already_canceled:\s*true/,
+    'already-canceled branch must still return idempotent success after ban lift succeeds');
+});
+
+test('phase 0.6D-pre 4B-2a cancel-account-deletion avoids forbidden scope', async () => {
+  const src = await fs.readFile(cancelAccountDeletionPath, 'utf8');
+
+  assert.doesNotMatch(src, /stripe|checkout|portal|webhook|billing-status|billing_customers|subscriptions|stripe_customers|webhook_events/i,
+    'cancel-account-deletion must not touch Stripe or billing');
+  assert.doesNotMatch(src, /organization_members|organizations|organization_invites|org-member|org-invite|archive|restore|transfer|leave/i,
+    'cancel-account-deletion must not touch workspace lifecycle, member, or invite data');
+  assert.doesNotMatch(src, /packs|cases|storage\.from|signOut|location\.reload|window\.location|router\./i,
+    'cancel-account-deletion must not touch packs, cases, storage, frontend signout/reload, or router flows');
+});
+
+test('phase 0.6D-pre 4B-2a cancel-account-deletion has verify_jwt disabled in config', async () => {
+  const src = await fs.readFile(supabaseConfigPath, 'utf8');
+  const start = src.indexOf('[functions.cancel-account-deletion]');
+  const end = src.indexOf('[functions.', start + 1);
+  const block = start >= 0
+    ? src.slice(start, end > start ? end : undefined)
+    : '';
+
+  assert.ok(block, 'supabase config must include cancel-account-deletion function block');
+  assert.match(block, /verify_jwt\s*=\s*false/,
+    'cancel-account-deletion must disable platform JWT verification and rely on support secret');
+});
+
+test('phase 0.6D-pre 4B-2a account deletion functions use no wildcard CORS', async () => {
+  for (const endpointPath of [
+    requestAccountDeletionPath,
+    cancelAccountDeletionPath,
+    deleteAccountPath,
+    banUserPath,
+    unbanUserPath,
+  ]) {
+    const src = await fs.readFile(endpointPath, 'utf8');
+    assert.doesNotMatch(src, /['"]Access-Control-Allow-Origin['"]\s*:\s*['"]\*['"]/,
+      `${endpointPath.pathname} must not contain literal wildcard CORS`);
+  }
+
+  const cancelSrc = await fs.readFile(cancelAccountDeletionPath, 'utf8');
+  assert.match(cancelSrc, /allowedOrigin === "\*" \? null : allowedOrigin/,
+    'cancel-account-deletion must normalize non-browser wildcard helper origin to null responses');
 });
 
 test('app init keeps explicit single-flight/idempotency guards', async () => {

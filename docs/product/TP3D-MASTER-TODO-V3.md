@@ -772,12 +772,26 @@ Future:
 - [x] Repeated deletion requests do not extend a still-future `purge_after`.
 - [x] Last-owner account deletion protection remains in place.
 - [ ] Batch 4B-1B: decide and implement owner/billing-owner deletion block if needed.
-- [ ] Batch 4B-2: add `cancel-account-deletion` endpoint and UI.
+- [x] Batch 4B-2a: support-assisted `cancel-account-deletion` endpoint implemented.
+- [ ] Batch 4B-2b: self-service cancel UX/token model remains deferred.
 - [ ] Batch 4B-3: add `purge-deleted-accounts`, `purged` migration, and scheduling.
 
 Validation:
 - [x] `npm test` passed: 123/123.
 - [x] `npm run lint` passed with 0 errors and existing warnings only.
+
+#### Phase 0.6D-pre Batch 4B-2a — IMPLEMENTED
+
+- [x] Added support/admin-only `cancel-account-deletion` Edge Function protected by `ACCOUNT_DELETION_SUPPORT_SECRET`.
+- [x] Cancellation accepts `user_id`, clears deletion fields to `canceled`, and lifts Supabase ban with `ban_duration = "none"`; idempotent retries also repair the ban lift.
+- [x] No self-service cancel button or frontend wrapper was added because banned/signed-out users cannot reliably call a JWT-protected cancel function.
+- [x] No membership restore/delete, Stripe, billing, workspace lifecycle, pack/case, storage, router, CSS, or package changes.
+- [ ] Self-service cancel remains a later product decision requiring a different token/session model.
+
+Validation:
+- [x] `npm test` passed: 129/129.
+- [x] `npm run lint` passed with 0 errors and existing warnings only.
+- [x] `npm run -s typecheck` passed.
 - [x] `npm run -s typecheck` passed.
 
 ### P0.10 Pre-Restore Workspace security hardening — IMPLEMENTED / DEPLOY VERIFY

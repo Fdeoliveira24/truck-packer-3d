@@ -46,6 +46,10 @@ const transferOwnershipMigrationPath = new URL(
   '../../supabase/migrations/2026050801_transfer_ownership_fn.sql',
   import.meta.url
 );
+const transferOwnershipLiveFixMigrationPath = new URL(
+  '../../supabase/migrations/2026050802_transfer_ownership_live_schema_fix.sql',
+  import.meta.url
+);
 
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
   const entries = await fs.readdir(dirUrl, { withFileTypes: true });
@@ -2389,6 +2393,27 @@ test('phase 0.6D Batch C RPC updates owner_id and member roles atomically', asyn
     'RPC must set old owner membership role to admin');
   assert.match(src, /jsonb_build_object\([\s\S]*'organization_id', p_org_id[\s\S]*'old_owner_id', p_actor_id[\s\S]*'new_owner_id', p_new_owner_id/i,
     'RPC must return transfer result ids');
+});
+
+test('phase 0.6D Batch C live schema fix repairs organization_members updated_at dependency', async () => {
+  const src = await fs.readFile(transferOwnershipLiveFixMigrationPath, 'utf8');
+  const fnStart = src.indexOf('create or replace function public.tp3d_transfer_workspace_ownership');
+  const functionBody = fnStart >= 0 ? src.slice(fnStart) : '';
+
+  assert.match(src, /alter table public\.organization_members[\s\S]*add column if not exists updated_at timestamptz/i,
+    'live schema fix must add the updated_at column expected by the existing organization_members trigger');
+  assert.match(src, /create or replace function public\.tp3d_transfer_workspace_ownership\(/i,
+    'live schema fix migration must replace the transfer RPC');
+  assert.match(functionBody, /update public\.organization_members[\s\S]*role = 'owner'::public\.org_member_role[\s\S]*user_id = p_new_owner_id/i,
+    'live schema fix must still set new owner role');
+  assert.match(functionBody, /update public\.organization_members[\s\S]*role = 'admin'::public\.org_member_role[\s\S]*user_id = p_actor_id/i,
+    'live schema fix must still set old owner role');
+  assert.doesNotMatch(functionBody, /update public\.organization_members[\s\S]{0,180}updated_at/i,
+    'transfer RPC role updates should rely on the existing trigger rather than manually setting organization_members.updated_at');
+  assert.doesNotMatch(functionBody, /update public\.organizations[\s\S]{0,120}updated_at/i,
+    'transfer RPC live fix must not require optional organizations.updated_at');
+  assert.match(src, /grant execute on function public\.tp3d_transfer_workspace_ownership\(uuid, uuid, uuid\) to service_role/i,
+    'live schema fix must preserve service_role-only execute');
 });
 
 test('phase 0.6D Batch C Edge Function requires authenticated POST and validates UUIDs', async () => {

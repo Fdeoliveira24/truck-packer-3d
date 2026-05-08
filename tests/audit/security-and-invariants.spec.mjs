@@ -25,6 +25,7 @@ const unbanUserPath = new URL('../../supabase/functions/unban-user/index.ts', im
 const requestAccountDeletionPath = new URL('../../supabase/functions/request-account-deletion/index.ts', import.meta.url);
 const cancelAccountDeletionPath = new URL('../../supabase/functions/cancel-account-deletion/index.ts', import.meta.url);
 const purgeDeletedUsersPath = new URL('../../supabase/functions/purge-deleted-users/index.ts', import.meta.url);
+const purgeDeletedAccountsPath = new URL('../../supabase/functions/purge-deleted-accounts/index.ts', import.meta.url);
 const supabaseConfigPath = new URL('../../supabase/config.toml', import.meta.url);
 const supabaseFunctionsDir = new URL('../../supabase/functions/', import.meta.url);
 const orgInviteExpirationMigrationPath = new URL(
@@ -53,6 +54,10 @@ const transferOwnershipLiveFixMigrationPath = new URL(
 );
 const restoreWorkspaceMigrationPath = new URL(
   '../../supabase/migrations/2026050803_restore_workspace.sql',
+  import.meta.url
+);
+const accountPurgeStatusMigrationPath = new URL(
+  '../../supabase/migrations/2026050804_account_purge_status.sql',
   import.meta.url
 );
 
@@ -2248,10 +2253,12 @@ test('phase 0.6C-4 settings open clears stale org caches after archive fallback 
     'Settings must validate modal org candidates against active org rows from the last bundle');
   assert.match(resolver, /if \(hasOrg\(activeOrgId\)\) return activeOrgId;[\s\S]*if \(hasOrg\(localOrgId\)\) return localOrgId;[\s\S]*orgs\[0\]/,
     'Settings must prefer bundle activeOrgId, then valid local hint, then first active bundle org');
-  assert.match(initialFn, /const bundleOrgId = getOrgIdFromLastActiveBundle\(\);[\s\S]*if \(bundleOrgId\) return bundleOrgId;[\s\S]*const orgContextId = getOrgIdFromOrgContext\(\);[\s\S]*if \(orgContextId\) return orgContextId;/,
-    'Settings initial modal org must prefer the fresh active account bundle before stale org or billing hints');
+  assert.match(initialFn, /const orgContextId = getOrgIdFromOrgContext\(\);[\s\S]*if \(orgContextId\) return orgContextId;[\s\S]*const localOrgId = getOrgIdFromLocalStorage\(\);/,
+    'Settings initial modal org must prefer the live active OrgContext before last bundle hints');
   assert.match(initialFn, /const localOrgId = getOrgIdFromLocalStorage\(\);[\s\S]*const billingOrgId = getOrgIdFromBillingState\(\);[\s\S]*if \(billingOrgId && localOrgId && billingOrgId === localOrgId\) return billingOrgId;[\s\S]*return localOrgId \|\| '';/,
     'Settings initial modal org must not use stale billing state unless it matches the local active-org hint');
+  assert.match(initialFn, /const bundleOrgId = getOrgIdFromLastActiveBundle\(\);[\s\S]*if \(bundleOrgId\) return bundleOrgId;[\s\S]*return localOrgId \|\| '';/,
+    'Settings initial modal org may use the last active bundle only after live OrgContext/local hints are checked');
   assert.ok(openFn, 'Settings open function must be extractable');
   assert.match(openFn, /const cachedOrgIdBeforeOpen = normalizeOrgId\([\s\S]*orgData && orgData\.id[\s\S]*membershipData && membershipData\.organization_id/,
     'Settings open must capture the cached org id before resolving the current modal org');
@@ -2751,4 +2758,132 @@ test('phase 0.6D Batch B restore implementation avoids forbidden scope', async (
     assert.doesNotMatch(src, /org-invite|org-member|request-account-deletion|cancel-account-deletion|purge-deleted|deletePack|deleteCase|storage\.from|router\.|location\.reload|signOut/i,
       `${label} must not touch invite/member/account deletion/purge/packs/cases/storage/router/reload/signOut`);
   }
+});
+
+test('phase 0.6D-pre 4B-3A account purge migration allows purged deletion status', async () => {
+  const src = await fs.readFile(accountPurgeStatusMigrationPath, 'utf8');
+
+  assert.match(src, /drop constraint if exists profiles_deletion_status_check/i,
+    'account purge migration must replace the existing deletion_status check');
+  assert.match(src, /add constraint profiles_deletion_status_check/i,
+    'account purge migration must recreate profiles_deletion_status_check');
+  assert.match(src, /deletion_status is null/i,
+    'account purge migration must continue allowing null deletion_status');
+  assert.match(src, /'requested'[\s\S]*'canceled'[\s\S]*'purged'/,
+    'account purge migration must allow requested, canceled, and purged statuses');
+});
+
+test('phase 0.6D-pre 4B-3A purge-deleted-accounts exists and requires invocation secret', async () => {
+  const src = await fs.readFile(purgeDeletedAccountsPath, 'utf8');
+
+  assert.match(src, /PURGE_ACCOUNTS_INVOCATION_SECRET/,
+    'purge-deleted-accounts must require an invocation secret');
+  assert.match(src, /getRequestSecret\(req\) !== expectedSecret/,
+    'purge-deleted-accounts must reject requests without the invocation secret');
+  assert.match(src, /x-purge-secret/,
+    'purge-deleted-accounts must accept x-purge-secret');
+  assert.match(src, /authorization[\s\S]*bearer/i,
+    'purge-deleted-accounts must accept Authorization: Bearer secret');
+  assert.match(src, /if \(req\.method !== "POST"\)/,
+    'purge-deleted-accounts must be POST-only');
+  assert.match(src, /serviceClient\(\)/,
+    'purge-deleted-accounts must use the service role client');
+  assert.doesNotMatch(src, /requireUser\(req\)|userClientFromRequest/,
+    'purge-deleted-accounts must not use a user JWT flow');
+});
+
+test('phase 0.6D-pre 4B-3A purge-deleted-accounts has verify_jwt disabled in config', async () => {
+  const src = await fs.readFile(supabaseConfigPath, 'utf8');
+  const start = src.indexOf('[functions.purge-deleted-accounts]');
+  const end = src.indexOf('[functions.', start + 1);
+  const block = start >= 0 ? src.slice(start, end > start ? end : undefined) : '';
+
+  assert.ok(block, 'config must include purge-deleted-accounts function block');
+  assert.match(block, /verify_jwt\s*=\s*false/,
+    'purge-deleted-accounts must use support-secret auth with verify_jwt=false');
+});
+
+test('phase 0.6D-pre 4B-3A purge-deleted-accounts queries due requested profiles', async () => {
+  const src = await fs.readFile(purgeDeletedAccountsPath, 'utf8');
+  const queryStart = src.indexOf('.from("profiles")');
+  const queryEnd = src.indexOf('if (candidatesErr)', queryStart);
+  const query = queryStart >= 0 && queryEnd > queryStart ? src.slice(queryStart, queryEnd) : '';
+
+  assert.ok(query, 'purge candidate query must be extractable');
+  assert.match(query, /\.eq\("deletion_status", "requested"\)/,
+    'purge must only select requested deletion profiles');
+  assert.match(query, /\.lte\("purge_after", nowIso\)/,
+    'purge must only select profiles whose purge_after is due');
+  assert.match(query, /\.order\("purge_after", \{ ascending: true \}\)/,
+    'purge should process oldest due requests first');
+  assert.match(query, /\.limit\(batchLimit\)/,
+    'purge must use a bounded batch limit');
+});
+
+test('phase 0.6D-pre 4B-3A purge-deleted-accounts skips users still owning workspaces', async () => {
+  const src = await fs.readFile(purgeDeletedAccountsPath, 'utf8');
+  const helperStart = src.indexOf('async function hasWorkspaceOwnerReference');
+  const helperEnd = src.indexOf('async function markProfilePurged', helperStart);
+  const helper = helperStart >= 0 && helperEnd > helperStart ? src.slice(helperStart, helperEnd) : '';
+
+  assert.ok(helper, 'workspace owner guard helper must be extractable');
+  assert.match(helper, /\.from\("organizations"\)[\s\S]*\.select\("id"\)[\s\S]*\.eq\("owner_id", userId\)/,
+    'purge must check organizations.owner_id before deletion');
+  assert.match(src, /if \(await hasWorkspaceOwnerReference\(sb, userId\)\)[\s\S]*skipped \+= 1[\s\S]*continue;/,
+    'purge must skip candidates that still own organizations');
+  assert.doesNotMatch(helper, /\.(update|insert|upsert|delete)\(/,
+    'workspace owner guard must not mutate organizations');
+});
+
+test('phase 0.6D-pre 4B-3A purge-deleted-accounts marks purged before deleteUser and reverts on failure', async () => {
+  const src = await fs.readFile(purgeDeletedAccountsPath, 'utf8');
+  const purgedIdx = src.indexOf('deletion_status: "purged"');
+  const deleteIdx = src.indexOf('auth.admin.deleteUser');
+  const revertStart = src.indexOf('async function revertProfileToRequested');
+  const revertEnd = src.indexOf('Deno.serve', revertStart);
+  const revert = revertStart >= 0 && revertEnd > revertStart ? src.slice(revertStart, revertEnd) : '';
+
+  assert.ok(purgedIdx >= 0, 'purge must write deletion_status=purged');
+  assert.ok(deleteIdx > purgedIdx, 'purge must mark profile purged before auth.admin.deleteUser');
+  assert.match(src, /const marked = await markProfilePurged\(sb, userId\);[\s\S]*auth\.admin\.deleteUser\(userId\)/,
+    'purge loop must call deleteUser only after markProfilePurged succeeds');
+  assert.match(revert, /deletion_status: "requested"/,
+    'purge must define a safe revert to requested');
+  assert.match(src, /if \(deleteErr\)[\s\S]*await revertProfileToRequested\(sb, userId\);[\s\S]*errors \+= 1/,
+    'purge must attempt safe revert when auth deletion fails');
+});
+
+test('phase 0.6D-pre 4B-3A purge-deleted-accounts returns safe summary only', async () => {
+  const src = await fs.readFile(purgeDeletedAccountsPath, 'utf8');
+
+  assert.match(src, /return json\(\{ ok: true, purged, skipped, errors \}/,
+    'purge must return only aggregate counts');
+  assert.doesNotMatch(src, /email|full_name|avatar_url|access_token|refresh_token|user_id|users:/i,
+    'purge response/source must not expose user PII, tokens, or full user ids');
+});
+
+test('phase 0.6D-pre 4B-3A purge-deleted-accounts avoids forbidden scope', async () => {
+  const src = await fs.readFile(purgeDeletedAccountsPath, 'utf8');
+
+  assert.doesNotMatch(src, /stripe|billing-status|billing_customers|subscriptions|stripe_customers|webhook_events|checkout|portal|webhook/i,
+    'purge must not touch Stripe, billing-status, or billing tables');
+  assert.doesNotMatch(src, /organization_invites|org-invite|org-member|archiveWorkspace|restoreWorkspace|transferOwnership|org-archive|org-restore|org-transfer|org-leave/i,
+    'purge must not touch invites, member functions, or workspace lifecycle functions');
+  assert.doesNotMatch(src, /packs|cases|deletePack|deleteCase|storage\.from|router\.|location\.reload|signOut|document\.|window\./i,
+    'purge must not touch packs, cases, storage, router, frontend, reload, or signOut');
+  assert.doesNotMatch(src, /\.from\("organizations"\)[\s\S]{0,260}\.(update|insert|upsert|delete)\(/,
+    'purge must not mutate organizations rows');
+  assert.doesNotMatch(src, /['"]Access-Control-Allow-Origin['"]\s*:\s*['"]\*['"]/,
+    'purge must not introduce wildcard CORS headers');
+});
+
+test('phase 0.6D-pre 4B-3A legacy purge-deleted-users remains retired 410', async () => {
+  const src = await fs.readFile(purgeDeletedUsersPath, 'utf8');
+
+  assert.match(src, /status:\s*410/,
+    'legacy purge-deleted-users must remain retired');
+  assert.match(src, /Account purge is not available through this legacy endpoint/,
+    'legacy purge-deleted-users must keep neutral retired copy');
+  assert.doesNotMatch(src, /auth\.admin\.deleteUser|serviceClient|createClient|\.from\(/,
+    'legacy purge-deleted-users must not perform purge work');
 });

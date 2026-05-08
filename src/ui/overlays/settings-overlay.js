@@ -716,13 +716,13 @@ export function createSettingsOverlay({
     } catch {
       // ignore
     }
-    const bundleOrgId = getOrgIdFromLastActiveBundle();
-    if (bundleOrgId) return bundleOrgId;
     const orgContextId = getOrgIdFromOrgContext();
     if (orgContextId) return orgContextId;
     const localOrgId = getOrgIdFromLocalStorage();
     const billingOrgId = getOrgIdFromBillingState();
     if (billingOrgId && localOrgId && billingOrgId === localOrgId) return billingOrgId;
+    const bundleOrgId = getOrgIdFromLastActiveBundle();
+    if (bundleOrgId) return bundleOrgId;
     return localOrgId || '';
   }
 

@@ -5,5 +5,5 @@ alter table public.profiles
   add constraint profiles_deletion_status_check
   check (
     deletion_status is null
-    or deletion_status in ('requested', 'canceled', 'purged')
+    or deletion_status in ('none', 'requested', 'canceled', 'purged')
   );

@@ -2760,7 +2760,7 @@ test('phase 0.6D Batch B restore implementation avoids forbidden scope', async (
   }
 });
 
-test('phase 0.6D-pre 4B-3A account purge migration allows purged deletion status', async () => {
+test('phase 0.6D-pre 4B-3A account purge migration allows none and purged deletion statuses', async () => {
   const src = await fs.readFile(accountPurgeStatusMigrationPath, 'utf8');
 
   assert.match(src, /drop constraint if exists profiles_deletion_status_check/i,
@@ -2769,8 +2769,10 @@ test('phase 0.6D-pre 4B-3A account purge migration allows purged deletion status
     'account purge migration must recreate profiles_deletion_status_check');
   assert.match(src, /deletion_status is null/i,
     'account purge migration must continue allowing null deletion_status');
-  assert.match(src, /'requested'[\s\S]*'canceled'[\s\S]*'purged'/,
-    'account purge migration must allow requested, canceled, and purged statuses');
+  assert.match(src, /'none'[\s\S]*'requested'[\s\S]*'canceled'[\s\S]*'purged'/,
+    'account purge migration must allow existing none plus requested, canceled, and purged statuses');
+  assert.doesNotMatch(src, /update\s+public\.profiles|set\s+deletion_status\s*=\s*null/i,
+    'account purge migration must not mutate existing non-deleted none rows');
 });
 
 test('phase 0.6D-pre 4B-3A purge-deleted-accounts exists and requires invocation secret', async () => {

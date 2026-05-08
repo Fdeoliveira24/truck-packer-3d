@@ -412,6 +412,9 @@ verify_jwt = false
 [functions.cancel-account-deletion]
 verify_jwt = false
 
+[functions.purge-deleted-users]
+verify_jwt = false
+
 [functions.org-invite]
 verify_jwt = false
 

@@ -22,6 +22,7 @@ const banUserPath = new URL('../../supabase/functions/ban-user/index.ts', import
 const unbanUserPath = new URL('../../supabase/functions/unban-user/index.ts', import.meta.url);
 const requestAccountDeletionPath = new URL('../../supabase/functions/request-account-deletion/index.ts', import.meta.url);
 const cancelAccountDeletionPath = new URL('../../supabase/functions/cancel-account-deletion/index.ts', import.meta.url);
+const purgeDeletedUsersPath = new URL('../../supabase/functions/purge-deleted-users/index.ts', import.meta.url);
 const supabaseConfigPath = new URL('../../supabase/config.toml', import.meta.url);
 const supabaseFunctionsDir = new URL('../../supabase/functions/', import.meta.url);
 const orgInviteExpirationMigrationPath = new URL(
@@ -2159,4 +2160,45 @@ test('signup auto-org trigger avoids restricted-search-path uuid calls and keeps
     'billing seed should tolerate legacy billing_customers tables with user_id columns');
   assert.match(src, /execute[\s\S]*insert into public\.billing_customers[\s\S]*user_id[\s\S]*using new\.organization_id, new\.user_id/,
     'billing seed should populate legacy user_id when that column exists');
+});
+
+// ── Phase 0.6D-pre 4B-orphan: retire legacy purge-deleted-users ───────────────
+
+test('phase 0.6D-pre 4B-orphan purge-deleted-users exists as a retired 410 stub', async () => {
+  const source = await fs.readFile(purgeDeletedUsersPath, 'utf8');
+  assert.match(source, /status:\s*410/,
+    'purge-deleted-users must return HTTP 410 Gone');
+  assert.match(source, /This endpoint has been retired\./,
+    'purge-deleted-users stub must contain a retired message');
+});
+
+test('phase 0.6D-pre 4B-orphan purge-deleted-users does not call auth.admin.deleteUser', async () => {
+  const source = await fs.readFile(purgeDeletedUsersPath, 'utf8');
+  assert.doesNotMatch(source, /auth\.admin\.deleteUser/,
+    'purge-deleted-users stub must not delete auth users');
+  assert.doesNotMatch(source, /auth\.admin\.updateUserById/,
+    'purge-deleted-users stub must not call any admin auth mutation');
+});
+
+test('phase 0.6D-pre 4B-orphan purge-deleted-users does not import or use Supabase clients', async () => {
+  const source = await fs.readFile(purgeDeletedUsersPath, 'utf8');
+  assert.doesNotMatch(source, /createClient|serviceClient|supabase-js|@supabase\/supabase-js/,
+    'purge-deleted-users stub must not import any Supabase client');
+  assert.doesNotMatch(source, /requireUser/,
+    'purge-deleted-users stub must not require user auth');
+});
+
+test('phase 0.6D-pre 4B-orphan purge-deleted-users does not touch app data tables', async () => {
+  const source = await fs.readFile(purgeDeletedUsersPath, 'utf8');
+  assert.doesNotMatch(
+    source,
+    /\.from\(['"](?:profiles|organization_members|organizations|billing_customers|subscriptions|packs|cases)['"]\)|storage\.from|stripe/i,
+    'purge-deleted-users stub must not touch profiles, org tables, billing, storage, Stripe, packs, or cases'
+  );
+});
+
+test('phase 0.6D-pre 4B-orphan purge-deleted-users contains no wildcard CORS header', async () => {
+  const source = await fs.readFile(purgeDeletedUsersPath, 'utf8');
+  assert.doesNotMatch(source, /['"]Access-Control-Allow-Origin['"]\s*:\s*['"]\*['"]/,
+    'purge-deleted-users stub must not contain literal wildcard CORS');
 });

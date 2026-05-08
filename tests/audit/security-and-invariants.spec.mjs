@@ -1760,17 +1760,67 @@ test('phase 0.6C-2 app clears org state when resolved org is not in active org r
     'non-partial bundles with stale resolved org ids must clear org context as confirmed no-org');
 });
 
+test('phase 0.6C-2 app exposes confirmed no-active bundle before clearing org context', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const applyStart = src.indexOf('async function applyOrgContextFromBundle');
+  const applyEnd = src.indexOf('async function refreshOrgContext', applyStart);
+  const applyFn = applyStart >= 0 && applyEnd > applyStart ? src.slice(applyStart, applyEnd) : '';
+
+  assert.ok(applyFn, 'applyOrgContextFromBundle must be extractable');
+  assert.match(applyFn, /try \{ window\.__TP3D_LAST_ACCOUNT_BUNDLE = null; \} catch/,
+    'signed-out cleanup must clear the exposed account bundle to avoid cross-user stale settings state');
+  assert.match(applyFn, /window\.__TP3D_LAST_ACCOUNT_BUNDLE = bundle;[\s\S]*const resolved = resolveOrgContextFromBundle\(bundle\)/,
+    'applyOrgContextFromBundle must expose the current bundle before no-active clear branches');
+  assert.match(applyFn, /window\.__TP3D_LAST_ACCOUNT_BUNDLE = bundle;[\s\S]*if \(nextOrgId && !nextOrgInActiveList[\s\S]*clearOrgContext\(/,
+    'stale resolved-org no-active clears must leave Settings with the authoritative empty bundle');
+  assert.match(applyFn, /window\.__TP3D_LAST_ACCOUNT_BUNDLE = bundle;[\s\S]*if \(!nextOrgId\) \{[\s\S]*clearOrgContext\(/,
+    'zero-active no-active clears must leave Settings with the authoritative empty bundle');
+});
+
 test('phase 0.6C-2 Settings clears stale locked org state when no active workspace is confirmed', async () => {
   const src = await fs.readFile(settingsOverlayPath, 'utf8');
 
   assert.match(src, /function isConfirmedNoActiveWorkspaceBundle\(bundle\)/,
     'settings overlay must detect definitive no-active-workspace bundles');
+  assert.match(src, /let accountBundleConfirmedNoActiveWorkspace = false;/,
+    'settings overlay must keep a local confirmed no-active flag for its own bundle loader');
   assert.match(src, /bundle\.partial !== true[\s\S]*Array\.isArray\(bundle\.orgs\)[\s\S]*bundle\.orgs\.length === 0[\s\S]*!bundle\.activeOrgId/,
     'no-active-workspace detection must require a complete empty active org list');
-  assert.match(src, /isConfirmedNoActiveWorkspaceBundle\(window\.__TP3D_LAST_ACCOUNT_BUNDLE \|\| null\)[\s\S]*return ''/,
+  assert.match(src, /accountBundleConfirmedNoActiveWorkspace\) return '';[\s\S]*isConfirmedNoActiveWorkspaceBundle\(window\.__TP3D_LAST_ACCOUNT_BUNDLE \|\| null\)[\s\S]*return ''/,
     'settings must not initialize modalOrgId from stale local or billing hints after confirmed no-active-workspace');
-  assert.match(src, /isConfirmedNoActiveWorkspaceBundle\(bundle\)[\s\S]*membershipData = null;[\s\S]*orgData = null;[\s\S]*modalOrgId = '';[\s\S]*clearOrgScopedCaches\(''\)/,
+  assert.match(src, /isConfirmedNoActiveWorkspaceBundle\(bundle\)[\s\S]*accountBundleConfirmedNoActiveWorkspace = true;[\s\S]*membershipData = null;[\s\S]*orgData = null;[\s\S]*modalOrgId = '';[\s\S]*clearOrgScopedCaches\(''\)/,
     'settings bundle load must clear stale org-scoped state when no active workspace is confirmed');
+  assert.match(src, /accountBundleConfirmedNoActiveWorkspace \|\|[\s\S]*isConfirmedNoActiveWorkspaceBundle\(window\.__TP3D_LAST_ACCOUNT_BUNDLE \|\| null\)/,
+    'settings Billing must use local no-active bundle state as well as the app-level bundle');
+  assert.match(src, /confirmedNoActiveWorkspace\) \{[\s\S]*setActiveTab\('org-general', \{ source: 'org-billing:no-active' \}\)/,
+    'settings Billing must redirect to General after confirmed no-active workspace state');
+  assert.match(src, /!hasOrg && !isOrgHydrating && \(_tabState\.activeTabId === 'org-members' \|\| _tabState\.activeTabId === 'org-billing'\)[\s\S]*_tabState\.activeTabId = 'org-general'/,
+    'settings must not leave Members or Billing selected after no active workspace is confirmed');
+});
+
+test('phase 0.6C-2 Settings re-resolves modal org on open to avoid stale cross-user billing display', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+  const start = src.indexOf('function open(tab)');
+  const end = src.indexOf('function init()', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+  const tabStart = src.indexOf('function resolveInitialTab(tab)');
+  const tabEnd = src.indexOf('/**\n   * Repro steps:', tabStart);
+  const tabFn = tabStart >= 0 && tabEnd > tabStart ? src.slice(tabStart, tabEnd) : '';
+
+  assert.ok(fn, 'settings open() must be extractable');
+  assert.ok(tabFn, 'resolveInitialTab() must be extractable');
+  assert.match(fn, /const resolvedModalOrgId = resolveInitialModalOrgId\(\);/,
+    'settings open() must re-resolve the authoritative modal org every time it opens');
+  assert.doesNotMatch(fn, /if \(!modalOrgId\) \{[\s\S]*modalOrgId = resolveInitialModalOrgId\(\);[\s\S]*\}/,
+    'settings open() must not preserve a stale modalOrgId just because it is non-empty');
+  assert.match(fn, /if \(modalOrgId !== resolvedModalOrgId\) \{[\s\S]*modalOrgId = resolvedModalOrgId;/,
+    'settings open() must replace stale modalOrgId with the current resolved org id');
+  assert.match(fn, /cachedOrgIdBeforeOpen && cachedOrgIdBeforeOpen !== openingOrgId[\s\S]*membershipData = null;[\s\S]*orgData = null;[\s\S]*orgMembersData = null;[\s\S]*orgInvitesData = null;/,
+    'settings open() must clear stale org-scoped caches when the resolved org changes');
+  assert.match(fn, /const openingUserView = getCurrentUserView\(profileData\);[\s\S]*if \(openingUserView\.isAuthed\) \{[\s\S]*queueAccountBundleRefresh\(\{ force: true, source: 'open:created-refresh' \}\)/,
+    'settings open() must refresh the account bundle for signed-in users even when caches are empty');
+  assert.match(tabFn, /candidate === 'org-members' \|\| candidate === 'org-billing'[\s\S]*!resolveInitialModalOrgId\(\)[\s\S]*return 'org-general'/,
+    'settings must not initially open disabled Members or Billing tabs when no modal org is resolved');
 });
 
 test('phase 0.6C-2 archive fallback avoids logout reload destructive data and billing scope', async () => {

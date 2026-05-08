@@ -6995,11 +6995,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
         // network error. Only clear if auth is definitively signed_out.
         const _truth = getAuthTruthSnapshot();
         if (_truth && _truth.status === 'signed_out' && authGateIsSettled()) {
+          try { window.__TP3D_LAST_ACCOUNT_BUNDLE = null; } catch (_) { /* ignore */ }
           clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: true });
         }
         return null;
       }
 
+      // Expose the authoritative bundle before no-active clear branches so Settings can
+      // distinguish confirmed zero active workspaces from transient billing/org loading.
+      try { window.__TP3D_LAST_ACCOUNT_BUNDLE = bundle; } catch (_) { /* ignore */ }
       const resolved = resolveOrgContextFromBundle(bundle);
       const nextOrgId = resolved.orgId;
       const nextOrgInActiveList = Boolean(
@@ -7680,6 +7684,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       } catch {
         // ignore
       }
+      try { window.__TP3D_LAST_ACCOUNT_BUNDLE = null; } catch (_) { /* ignore */ }
       try {
         clearOrgContext({ clearLocalOrgHint: Boolean(userInitiatedSignOut), confirmedNoOrg: Boolean(userInitiatedSignOut) });
       } catch {

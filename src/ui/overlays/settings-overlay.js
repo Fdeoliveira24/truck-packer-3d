@@ -630,6 +630,7 @@ export function createSettingsOverlay({
   let accountBundleRequestId = 0; // "Last request wins" guard
   let accountBundleRefreshQueued = false;
   let accountBundleQueuedForce = false;
+  let accountBundleConfirmedNoActiveWorkspace = false;
   let _sameOrgRehydrateInflight = false; // single-flight guard for same-org forced rehydrate
 
   function getOrgIdFromOrgContext() {
@@ -699,6 +700,7 @@ export function createSettingsOverlay({
   }
 
   function resolveInitialModalOrgId() {
+    if (accountBundleConfirmedNoActiveWorkspace) return '';
     try {
       if (typeof window !== 'undefined' && isConfirmedNoActiveWorkspaceBundle(window.__TP3D_LAST_ACCOUNT_BUNDLE || null)) {
         return '';
@@ -1502,6 +1504,7 @@ export function createSettingsOverlay({
       if (bundle) {
         const isPartialNoOrg = bundle.partial === true && !bundle.activeOrgId;
         if (isPartialNoOrg) {
+          accountBundleConfirmedNoActiveWorkspace = false;
           // Always block on partial-no-org — even on first load when all caches are null.
           // Safe-write profile (not org-scoped); preserve existing org/membership data.
           if (bundle.profile) profileData = bundle.profile;
@@ -1520,6 +1523,7 @@ export function createSettingsOverlay({
         _bundlePartialRetryCount = 0;
 
         if (isConfirmedNoActiveWorkspaceBundle(bundle)) {
+          accountBundleConfirmedNoActiveWorkspace = true;
           profileData = bundle.profile || null;
           membershipData = null;
           orgData = null;
@@ -1531,6 +1535,7 @@ export function createSettingsOverlay({
           return bundle;
         }
 
+        accountBundleConfirmedNoActiveWorkspace = false;
         profileData = bundle.profile || null;
         membershipData = bundle.membership || null;
         orgData = bundle.activeOrg || null;
@@ -2447,7 +2452,11 @@ export function createSettingsOverlay({
   function resolveInitialTab(tab) {
     const requested = typeof tab === 'string' && tab ? tab : null;
     const saved = readSavedTab();
-    return normalizeTab(requested || saved || _tabState.activeTabId);
+    const candidate = normalizeTab(requested || saved || _tabState.activeTabId);
+    if ((candidate === 'org-members' || candidate === 'org-billing') && !resolveInitialModalOrgId()) {
+      return 'org-general';
+    }
+    return candidate;
   }
 
   /**
@@ -3085,12 +3094,24 @@ export function createSettingsOverlay({
     if (!lockedOrgId) {
       let confirmedNoActiveWorkspace = false;
       try {
-        confirmedNoActiveWorkspace = typeof window !== 'undefined' &&
-          isConfirmedNoActiveWorkspaceBundle(window.__TP3D_LAST_ACCOUNT_BUNDLE || null);
+        confirmedNoActiveWorkspace = Boolean(
+          accountBundleConfirmedNoActiveWorkspace ||
+          (
+            typeof window !== 'undefined' &&
+            isConfirmedNoActiveWorkspaceBundle(window.__TP3D_LAST_ACCOUNT_BUNDLE || null)
+          )
+        );
       } catch {
-        confirmedNoActiveWorkspace = false;
+        confirmedNoActiveWorkspace = Boolean(accountBundleConfirmedNoActiveWorkspace);
       }
       if (confirmedNoActiveWorkspace) {
+        if (_tabState.activeTabId === 'org-billing') {
+          setTimeout(() => {
+            if (isOpen() && _tabState.activeTabId === 'org-billing') {
+              setActiveTab('org-general', { source: 'org-billing:no-active' });
+            }
+          }, 0);
+        }
         const noActiveMsg = doc.createElement('div');
         noActiveMsg.className = 'tp3d-org-feedback tp3d-org-feedback--warning';
         noActiveMsg.textContent = 'No active workspace is selected. Create a new workspace or restore an archived workspace when restore is available.';
@@ -4079,6 +4100,10 @@ export function createSettingsOverlay({
       (isLoadingAccountBundle || isLoadingMembership || isLoadingOrg ||
         (_overlayOpenedAtMs > 0 && (Date.now() - _overlayOpenedAtMs) < _ORG_READY_GRACE_MS))
     );
+    if (!hasOrg && !isOrgHydrating && (_tabState.activeTabId === 'org-members' || _tabState.activeTabId === 'org-billing')) {
+      _tabState.activeTabId = 'org-general';
+      persistTab('org-general');
+    }
     const accountBtn = doc.createElement('button');
     accountBtn.type = 'button';
     accountBtn.className = 'btn';
@@ -6475,8 +6500,9 @@ export function createSettingsOverlay({
       (membershipData && membershipData.organization_id) ||
       ''
     );
-    if (!modalOrgId) {
-      modalOrgId = resolveInitialModalOrgId();
+    const resolvedModalOrgId = resolveInitialModalOrgId();
+    if (modalOrgId !== resolvedModalOrgId) {
+      modalOrgId = resolvedModalOrgId;
     }
     const openingOrgId = normalizeOrgId(modalOrgId);
     if (cachedOrgIdBeforeOpen && cachedOrgIdBeforeOpen !== openingOrgId) {
@@ -6501,7 +6527,8 @@ export function createSettingsOverlay({
       setActiveTab(nextTab, { source: 'open', actionId: _tabState.lastActionId });
       debugSettingsModalSnapshot('open:reuse');
       debugTabSnapshot('open:reuse');
-      if (profileData || membershipData || orgData) {
+      const openingUserView = getCurrentUserView(profileData);
+      if (openingUserView.isAuthed) {
         queueAccountBundleRefresh({ force: true, source: 'open:reuse-refresh' });
       }
       return;
@@ -6602,7 +6629,8 @@ export function createSettingsOverlay({
     setActiveTab(nextTab, { source: 'open', actionId: _tabState.lastActionId });
     debugSettingsModalSnapshot('open:created');
     debugTabSnapshot('open:created');
-    if (profileData || membershipData || orgData) {
+    const openingUserView = getCurrentUserView(profileData);
+    if (openingUserView.isAuthed) {
       queueAccountBundleRefresh({ force: true, source: 'open:created-refresh' });
     }
 
@@ -6706,6 +6734,7 @@ export function createSettingsOverlay({
     lastOrgLogoExpiresAt = 0;
     _lastOrgChangeEpochSeen = 0;
     _lastOrgChangeTsSeen = 0;
+    accountBundleConfirmedNoActiveWorkspace = false;
     modalOrgId = '';
   }
 

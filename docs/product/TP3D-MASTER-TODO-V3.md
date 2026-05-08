@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-07 — Phase 0.6C Archive Workspace fallback switching stabilized; workspace-limit billing copy corrected; next priority is pre-Restore P0 hardening
+Last updated: 2026-05-08 — Phase 0.6D-pre account-deletion owner block validation in progress; legacy purge endpoint retired; next decision is purge-vs-restore sequencing
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -771,11 +771,11 @@ Future:
 - [x] `request-account-deletion` preserves `organization_members` during the 30-day deletion window.
 - [x] Repeated deletion requests do not extend a still-future `purge_after`.
 - [x] Last-owner account deletion protection remains in place.
-- [x] Batch 4B-1B: account deletion now blocks any `organizations.owner_id` owner, active or archived. This prevents orphaned workspace owner references before purge; the client wrapper reads the Edge Function JSON error body so the UI shows the server block message without sign-out/reload on denial.
+- [x] Batch 4B-1B: account deletion now blocks any `organizations.owner_id` owner, active or archived. This prevents orphaned workspace owner references before purge; the existing UI surfaces the server block message without sign-out/reload on denial. Browser/UI validation is required before deploying `request-account-deletion` again.
 - [x] Batch 4B-2a: support-assisted `cancel-account-deletion` endpoint implemented.
 - [ ] Batch 4B-2b: self-service cancel UX/token model remains deferred.
 - [x] Batch 4B-orphan: remote orphan `purge-deleted-users` (deployed 2026-01-29, no local source) discovered, retired as a 410 Gone stub locally. Deploy this stub to replace the stale remote function before implementing 4B-3.
-- [ ] Batch 4B-3: add `purge-deleted-accounts`, `purged` migration, and scheduling. Prerequisites: (1) deploy 4B-orphan 410 stub, (2) decide owner/billing-owner deletion policy, (3) widen `profiles_deletion_status_check` constraint to allow `'purged'`. pg_cron is not available on this project — scheduling method TBD.
+- [ ] Batch 4B-3: add `purge-deleted-accounts`, `purged` migration, and scheduling. Prerequisites now resolved/known: (1) 4B-orphan 410 stub deployed, (2) owner deletion policy locked as block any `organizations.owner_id`, active or archived, (3) `profiles_deletion_status_check` still needs a migration to allow `'purged'`, (4) pg_cron is not available on this project — scheduling method TBD.
 
 Validation:
 - [x] `npm test` passed: 144/144.
@@ -1276,6 +1276,22 @@ P0 is green only when ALL items here are checked:
 ---
 
 ## Running log (keep updated)
+
+
+- Date: 2026-05-08 — Phase 0.6D-pre account deletion owner-block checkpoint
+- What changed:
+  - Retired the orphan remote `purge-deleted-users` endpoint by source-controlling and deploying a 410 Gone stub.
+  - Verified the project does not expose `cron.job`; pg_cron scheduling is not currently available from SQL on this Supabase project.
+  - Support-assisted `cancel-account-deletion` is deployed and protected by `ACCOUNT_DELETION_SUPPORT_SECRET`; live curl returned `200` with `already_canceled:true` for a test user.
+  - Policy decision locked: users who are `organizations.owner_id` of any workspace, active or archived, must be blocked from self-service account deletion until ownership is transferred or support resolves it.
+- Validation:
+  - Latest local validation before owner-block UI validation passed with `npm test`, `npm run lint`, `npm run -s typecheck`, `git diff --check`, and `git diff --cached --check`.
+  - Retired legacy `purge-deleted-users` endpoint live curl returned HTTP 410 with neutral retired copy.
+- Still required:
+  - Validate Batch 4B-1B owner-block implementation in browser and terminal before deploy.
+  - Deploy `request-account-deletion` after 4B-1B validation passes.
+  - Decide the scheduling method for future `purge-deleted-accounts` because pg_cron is unavailable.
+  - Rotate the Supabase DB password because it was pasted during setup.
 
 
 - Date: 2026-05-07 — Phase 0.6D-pre remote deploy verified

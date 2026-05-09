@@ -2688,6 +2688,56 @@ body.modal-open {
   text-align: center;
 }
 
+.tp3d-packs-folder-btn {
+  min-height: 36px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+  gap: var(--space-2);
+}
+
+.tp3d-packs-folder-btn:hover {
+  background: var(--bg-hover);
+}
+
+.tp3d-packs-folder-btn:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+.tp3d-packs-folder-btn--active {
+  border-color: var(--accent-primary-25);
+  background: var(--accent-primary-12);
+  color: var(--text-primary);
+}
+
+.tp3d-packs-folder-btn__icon,
+.tp3d-packs-folder-btn__caret {
+  display: inline-flex;
+  align-items: center;
+  color: inherit;
+  line-height: 1;
+}
+
+.tp3d-packs-folder-btn__icon {
+  font-size: 0.9em;
+}
+
+.tp3d-packs-folder-btn__label {
+  max-width: 120px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tp3d-packs-folder-btn__caret {
+  color: var(--text-muted);
+  font-size: 0.75em;
+}
+
 .tp3d-packs-titlewrap {
   display: grid;
   gap: 4px;

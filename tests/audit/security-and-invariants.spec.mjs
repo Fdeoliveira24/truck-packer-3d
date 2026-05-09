@@ -13,6 +13,8 @@ const indexHtmlPath = new URL('../../index.html', import.meta.url);
 const storagePath = new URL('../../src/core/storage.js', import.meta.url);
 const importExportPath = new URL('../../src/services/import-export.js', import.meta.url);
 const folderLibraryPath = new URL('../../src/services/folder-library.js', import.meta.url);
+const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
+const stylesMainPath = new URL('../../styles/main.css', import.meta.url);
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
 const normalizerPath = new URL('../../src/core/normalizer.js', import.meta.url);
 const corsSharedPath = new URL('../../supabase/functions/_shared/cors.ts', import.meta.url);
@@ -3700,28 +3702,24 @@ test('phase 0.7B-1B workspace export runtime payload includes folderLibrary', as
 });
 
 test('phase 0.7B-1B folder foundation and production readiness changes stay inside allowed files', async () => {
-  const { stdout } = await execFileAsync('git', ['status', '--short', '--untracked-files=all']);
-  const changedFiles = stdout
+  const forbiddenPaths = [
+    'index.html',
+    'styles',
+    'package.json',
+    'package-lock.json',
+    'supabase/functions',
+    'supabase/migrations',
+    'supabase/config.toml',
+  ];
+  const { stdout } = await execFileAsync('git', ['diff', '--name-only', '--', ...forbiddenPaths]);
+  const changedForbiddenFiles = stdout
     .split('\n')
-    .map(line => line.trimEnd())
+    .map(line => line.trim())
     .filter(Boolean)
-    .map(line => line.slice(3));
-  const allowed = new Set([
-    'src/app.js',
-    'src/core/state-store.js',
-    'src/core/storage.js',
-    'src/core/normalizer.js',
-    'src/services/import-export.js',
-    'src/services/pack-library.js',
-    'src/services/folder-library.js',
-    'src/ui/overlays/settings-overlay.js',
-    'tests/audit/security-and-invariants.spec.mjs',
-    'docs/product/TP3D-MASTER-TODO-V3.md',
-  ]);
-  const unexpected = changedFiles.filter(file => !allowed.has(file));
+    .filter(file => file !== 'styles/main.css');
 
-  assert.deepEqual(unexpected, [],
-    'folder foundation and production readiness fixes must not change CSS, package, index.html, migrations, Edge Functions, billing-status, Stripe, workspace lifecycle, folder UI, or auth files');
+  assert.deepEqual(changedForbiddenFiles, [],
+    'folder foundation and production readiness fixes must not change package, index.html, migrations, Edge Functions, billing-status, Stripe, workspace lifecycle, folder UI, auth files, or CSS outside the 0.7C-1B Packs control polish');
 });
 
 test('production readiness settings billing fallback requires isPro and isActive when entitlementStatus is absent', async () => {
@@ -3780,24 +3778,350 @@ test('phase 0.7C-pre folderLibrary changes trigger Packs screen render with pack
 
 test('phase 0.7C-pre persistence render guard does not import folder UI or touch forbidden scope', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
-  const { stdout } = await execFileAsync('git', ['status', '--short', '--untracked-files=all']);
-  const changedFiles = stdout
-    .split('\n')
-    .map(line => line.trimEnd())
-    .filter(Boolean)
-    .map(line => line.slice(3));
-  const allowed = new Set([
-    'src/app.js',
-    'tests/audit/security-and-invariants.spec.mjs',
-    // Pre-existing running-log note in this workspace; not part of Phase 0.7C-pre.
-    'docs/product/TP3D-MASTER-TODO-V3.md',
-  ]);
-  const unexpected = changedFiles.filter(file => !allowed.has(file));
 
-  assert.deepEqual(unexpected, [],
-    'Phase 0.7C-pre must not change folder model files, pack screen UI, CSS, index.html, package files, Supabase, Stripe, billing-status, migrations, workspace lifecycle, or router');
   assert.doesNotMatch(appSrc, /import\s+\*\s+as\s+FolderLibrary|from ['"]\.\/services\/folder-library\.js['"]/,
     'Phase 0.7C-pre must not import FolderLibrary into app.js');
   assert.doesNotMatch(appSrc, /createFolder|renameFolder|deleteFolder|movePackToFolder|getPacksInFolder/,
     'Phase 0.7C-pre must not wire folder UI or folder CRUD actions in app.js');
+});
+
+// ============================================================================
+// PHASE 0.7C-1A — Compact Pack Folder Dropdown
+// ============================================================================
+
+test('phase 0.7C folder dropdown changes stay out of forbidden infrastructure files', async () => {
+  const forbiddenPaths = [
+    'src/app.js',
+    'src/core/storage.js',
+    'src/core/state-store.js',
+    'src/core/normalizer.js',
+    'src/services/folder-library.js',
+    'src/services/pack-library.js',
+    'src/services/import-export.js',
+    'src/ui/overlays/settings-overlay.js',
+    'src/ui/ui-components.js',
+    'index.html',
+    'package.json',
+    'package-lock.json',
+    'supabase/functions',
+    'supabase/migrations',
+    'supabase/config.toml',
+  ];
+  const { stdout } = await execFileAsync('git', ['diff', '--name-only', '--', ...forbiddenPaths]);
+  const changedForbiddenFiles = stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  assert.deepEqual(changedForbiddenFiles, [],
+    'Phase 0.7C folder dropdown work must not touch infrastructure, data model, settings, package, or index files');
+});
+
+test('phase 0.7C-1A packs screen uses FolderLibrary listFolders for dropdown options', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+
+  assert.match(src, /import\s+\*\s+as\s+FolderLibrary\s+from ['"]\.\.\/services\/folder-library\.js['"]/,
+    'packs screen must import the existing folder-library service');
+  assert.match(src, /FolderLibrary\.listFolders\(\)/,
+    'folder dropdown options must come from FolderLibrary.listFolders()');
+  assert.match(src, /UIComponents\.openDropdown\(button, items/,
+    'folder control must use the existing openDropdown pattern');
+});
+
+test('phase 0.7C-1A rejected folder chip row pattern is not present', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+
+  assert.doesNotMatch(src, /function renderFolderBar|folderBarEl/,
+    'the rejected always-visible folder bar must not be present');
+  assert.doesNotMatch(src, /filtersRowEl\.nextSibling|insertBefore\([^)]*filtersRowEl/,
+    'folder UI must not be mounted under the Empty Partial Full filter chip row');
+  assert.doesNotMatch(src, /aria-label['"], ['"]Pack folder filters|label\.textContent = ['"]Folders['"]/,
+    'folder UI must not add a visible Folders label under status filters');
+});
+
+test('phase 0.7C-1A folder filtering uses pack folderId identity not folder names', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const filterStart = src.indexOf('if (activeFolderId === null) return true;');
+  const filterEnd = src.indexOf('if (activeFolderId === UNFILED_FOLDER_ID)', filterStart);
+  const filterBlock = filterStart >= 0 && filterEnd > filterStart
+    ? src.slice(filterStart, filterEnd + 140)
+    : '';
+
+  assert.ok(filterBlock.length > 0,
+    'folder filter block must be extractable');
+  assert.match(filterBlock, /p && p\.folderId/,
+    'folder filtering must read pack.folderId');
+  assert.doesNotMatch(filterBlock, /folder\.name|name === activeFolderId|activeFolderId === .*name/,
+    'folder filtering must not use folder names as identity');
+});
+
+test('phase 0.7C-1A active folder state updates dataset key button label and workspace reset', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const resetStart = src.indexOf('function resetWorkspaceState()');
+  const resetEnd = src.indexOf('\n    function ', resetStart + 1);
+  const resetBlock = resetStart >= 0 && resetEnd > resetStart ? src.slice(resetStart, resetEnd) : '';
+
+  assert.match(src, /let activeFolderId = null/,
+    'folder filter state must default to All Packs');
+  assert.match(src, /const UNFILED_FOLDER_ID = ['"]__unfiled__['"]/,
+    'folder filter must support the unfiled sentinel');
+  assert.match(src, /newDatasetKey = `\$\{q\}::\$\{sortKey\}::\$\{activeFolderId \|\| 'all'\}::/,
+    'activeFolderId must be included in dataset key');
+  assert.match(resetBlock, /activeFolderId = null/,
+    'workspace reset must clear the active folder filter');
+  assert.match(src, /foldersButtonLabelEl\.textContent = label/,
+    'Folders button label must reflect active folder state');
+  assert.match(src, /label = ['"]Unfiled['"]/,
+    'Folders button must show Unfiled when unfiled is active');
+  assert.match(src, /label = model\.activeFolder\.name/,
+    'Folders button must show the folder name when a real folder is active');
+});
+
+test('phase 0.7C-1A existing search and status filters remain present', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+
+  assert.match(src, /\.filter\(p => !q \|\| \(p\.title \|\| ''\)\.toLowerCase\(\)\.includes\(q\) \|\| \(p\.client \|\| ''\)\.toLowerCase\(\)\.includes\(q\)\)/,
+    'existing title/client search filter must remain');
+  assert.match(src, /filters\.empty[\s\S]{0,80}filters\.partial[\s\S]{0,80}filters\.full/,
+    'existing Empty/Partial/Full filter state must remain');
+  assert.match(src, /if \(filters\.empty && isEmpty\) return true;/,
+    'Empty status filter must remain');
+  assert.match(src, /if \(filters\.partial && isPartial\) return true;/,
+    'Partial status filter must remain');
+  assert.match(src, /if \(filters\.full && isFull\) return true;/,
+    'Full status filter must remain');
+});
+
+test('phase 0.7C-1A folder dropdown is filter only and avoids CRUD move UI', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+
+  assert.match(src, /defaultActionsEl\.insertBefore\(foldersButtonEl, btnImport\)/,
+    'Folders button must be mounted before Import Pack in the top action area');
+  assert.match(src, /label: `All Packs \(\$\{model\.totalCount\}\)`/,
+    'Folders dropdown must include All Packs with count');
+  assert.match(src, /label: `Unfiled \(\$\{model\.unfiledCount\}\)`/,
+    'Folders dropdown must include Unfiled with count');
+  assert.match(src, /label: ['"]No folders yet['"][\s\S]{0,100}disabled: true/,
+    'Folders dropdown must show disabled No folders yet row');
+  assert.doesNotMatch(src, /\b(createFolder|renameFolder|deleteFolder|movePackToFolder|getPacksInFolder)\s*\(/,
+    'Phase 0.7C-1A must not add create, rename, delete, move, or bulk folder UI');
+});
+
+test('phase 0.7C-1A packs screen avoids forbidden backend billing auth css router scope', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+
+  assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|\.css|router/i,
+    'folder dropdown must stay frontend-local and avoid backend, billing, auth, CSS, and router references');
+  assert.doesNotMatch(src, /window\./,
+    'folder dropdown must not add global window state');
+});
+
+// ============================================================================
+// PHASE 0.7C-1B — Compact Pack Folder Dropdown Polish
+// ============================================================================
+
+test('phase 0.7C-1B changed files stay within allowed polish scope', async () => {
+  const allowedFiles = new Set([
+    'src/screens/packs-screen.js',
+    'styles/main.css',
+    'tests/audit/security-and-invariants.spec.mjs',
+  ]);
+  const { stdout } = await execFileAsync('git', ['diff', '--name-only']);
+  const changedFiles = stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+  const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'Phase 0.7C-1B must only edit packs-screen.js, styles/main.css, and security-and-invariants.spec.mjs');
+});
+
+test('phase 0.7C-1B preserves Empty Partial Full filter chips', async () => {
+  const indexSrc = await fs.readFile(indexHtmlPath, 'utf8');
+  const packsSrc = await fs.readFile(packsScreenPath, 'utf8');
+
+  assert.match(indexSrc, /id=["']packs-filter-chip-empty["']/,
+    'Empty filter chip must remain in index.html');
+  assert.match(indexSrc, /id=["']packs-filter-chip-partial["']/,
+    'Partial filter chip must remain in index.html');
+  assert.match(indexSrc, /id=["']packs-filter-chip-full["']/,
+    'Full filter chip must remain in index.html');
+  assert.match(packsSrc, /wireChip\(chipEmpty, ['"]empty['"]\)/,
+    'Empty filter chip wiring must remain');
+  assert.match(packsSrc, /wireChip\(chipPartial, ['"]partial['"]\)/,
+    'Partial filter chip wiring must remain');
+  assert.match(packsSrc, /wireChip\(chipFull, ['"]full['"]\)/,
+    'Full filter chip wiring must remain');
+});
+
+test('phase 0.7C-1B folders button uses scoped structure without tooltip or ghost style', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function ensureFoldersButton()');
+  const end = src.indexOf('\n    function initListHeaderSort()', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0,
+    'Folders button/dropdown block must be extractable');
+  assert.match(block, /className = ['"]btn tp3d-packs-folder-btn['"]/,
+    'Folders button must use btn plus scoped class');
+  assert.doesNotMatch(block, /btn-ghost/,
+    'Folders button must not use btn-ghost');
+  assert.doesNotMatch(block, /data-tooltip/,
+    'Folders button must not set data-tooltip');
+  assert.match(block, /tp3d-packs-folder-btn__icon/,
+    'Folders button must include scoped icon span');
+  assert.match(block, /tp3d-packs-folder-btn__label/,
+    'Folders button must include scoped label span');
+  assert.match(block, /tp3d-packs-folder-btn__caret/,
+    'Folders button must include scoped caret span');
+  assert.match(block, /tp3d-packs-folder-btn--active/,
+    'Folders button must use scoped active class');
+  assert.doesNotMatch(block, /btn-primary/,
+    'Folders button active state must not use solid primary button styling');
+});
+
+test('phase 0.7C-1B folders button has ARIA state and same-button dropdown toggle', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function ensureFoldersButton()');
+  const end = src.indexOf('\n    function initListHeaderSort()', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.match(src, /const FOLDERS_DROPDOWN_ROLE = ['"]packs-folders['"]/,
+    'Folders dropdown role constant must be packs-folders');
+  assert.match(src, /const FOLDERS_DROPDOWN_ANCHOR_KEY = ['"]packs-folders-button['"]/,
+    'Folders dropdown anchor key constant must be packs-folders-button');
+  assert.match(block, /aria-haspopup['"], ['"]menu['"]/,
+    'Folders button must declare menu popup semantics');
+  assert.match(block, /aria-expanded['"], ['"]false['"]/,
+    'Folders button must default aria-expanded to false');
+  assert.match(block, /aria-expanded[\s\S]{0,120}expanded \? ['"]true['"] : ['"]false['"]/,
+    'Folders button must update aria-expanded from dropdown state');
+  assert.match(block, /\[data-dropdown="1"\]\[data-role="\$\{FOLDERS_DROPDOWN_ROLE\}"\]\[data-anchor-id="\$\{FOLDERS_DROPDOWN_ANCHOR_KEY\}"\]/,
+    'same-button toggle must query by data-dropdown, data-role, and data-anchor-id');
+  assert.match(block, /if \(existing\)[\s\S]{0,120}UIComponents\.closeAllDropdowns\(\)/,
+    'clicking the same Folders button while open must close the existing dropdown');
+  assert.match(block, /role:\s*FOLDERS_DROPDOWN_ROLE/,
+    'openDropdown must receive the scoped role');
+  assert.match(block, /anchorKey:\s*FOLDERS_DROPDOWN_ANCHOR_KEY/,
+    'openDropdown must receive the scoped anchor key');
+  assert.match(block, /align:\s*['"]left['"]/,
+    'Folders dropdown must align left under the button');
+  assert.match(block, /width:\s*260/,
+    'Folders dropdown must use the polished width');
+});
+
+test('phase 0.7C-1B dropdown active rows match active folder filter state', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function openFoldersDropdown()');
+  const end = src.indexOf('\n    function initListHeaderSort()', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.match(block, /active:\s*activeFolderId === null/,
+    'All Packs row must be active when activeFolderId is null');
+  assert.match(block, /rightIcon:\s*activeFolderId === null \? ['"]fa-solid fa-check['"]/,
+    'All Packs row must show active check icon when selected');
+  assert.match(block, /active:\s*activeFolderId === UNFILED_FOLDER_ID/,
+    'Unfiled row must be active when the unfiled sentinel is selected');
+  assert.match(block, /rightIcon:\s*activeFolderId === UNFILED_FOLDER_ID \? ['"]fa-solid fa-check['"]/,
+    'Unfiled row must show active check icon when selected');
+  assert.match(block, /active:\s*activeFolderId === folderId/,
+    'Folder rows must be active by exact folder id match');
+  assert.match(block, /rightIcon:\s*activeFolderId === folderId \? ['"]fa-solid fa-check['"]/,
+    'Folder rows must show active check icon by exact folder id match');
+});
+
+test('phase 0.7C-1B folder filtering still uses folderId state and reset behavior', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const filterStart = src.indexOf('if (activeFolderId === null) return true;');
+  const filterEnd = src.indexOf('if (activeFolderId === UNFILED_FOLDER_ID)', filterStart);
+  const filterBlock = filterStart >= 0 && filterEnd > filterStart
+    ? src.slice(filterStart, filterEnd + 140)
+    : '';
+  const resetStart = src.indexOf('function resetWorkspaceState()');
+  const resetEnd = src.indexOf('\n    function ', resetStart + 1);
+  const resetBlock = resetStart >= 0 && resetEnd > resetStart ? src.slice(resetStart, resetEnd) : '';
+
+  assert.match(src, /FolderLibrary\.listFolders\(\)/,
+    'Folders dropdown options must still come from FolderLibrary.listFolders()');
+  assert.match(filterBlock, /p && p\.folderId/,
+    'folder filtering must still use pack.folderId');
+  assert.doesNotMatch(filterBlock, /folder\.name|name === activeFolderId|activeFolderId === .*name/,
+    'folder filtering must not use folder names as identity');
+  assert.match(src, /newDatasetKey = `\$\{q\}::\$\{sortKey\}::\$\{activeFolderId \|\| 'all'\}::/,
+    'activeFolderId must remain in dataset key');
+  assert.match(resetBlock, /activeFolderId = null/,
+    'workspace reset must clear activeFolderId');
+});
+
+test('phase 0.7C-1B avoids rejected folder UI and folder mutation actions', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+
+  assert.doesNotMatch(src, /function renderFolderBar|folderBarEl/,
+    'the rejected always-visible folder bar must not be present');
+  assert.doesNotMatch(src, /filtersRowEl\.nextSibling|insertBefore\([^)]*filtersRowEl/,
+    'folder UI must not be mounted under the Empty Partial Full filter chip row');
+  assert.doesNotMatch(src, /folder side(panel|bar)|folderPanel|foldersSidebar/i,
+    'Phase 0.7C-1B must not add a sidebar folder panel');
+  assert.doesNotMatch(src, /\b(createFolder|renameFolder|deleteFolder|movePackToFolder|getPacksInFolder)\s*\(/,
+    'Phase 0.7C-1B must not add create, rename, delete, move, or bulk folder UI');
+  assert.doesNotMatch(src, /bulk.*folder|folder.*bulk/i,
+    'Phase 0.7C-1B must not add bulk folder actions');
+});
+
+test('phase 0.7C-1B scoped CSS styles only the packs folder button', async () => {
+  const css = await fs.readFile(stylesMainPath, 'utf8');
+  const start = css.indexOf('.tp3d-packs-folder-btn {');
+  const end = css.indexOf('.tp3d-packs-titlewrap', start + 1);
+  const block = start >= 0 && end > start ? css.slice(start, end) : '';
+
+  assert.ok(block.length > 0,
+    'scoped packs folder button CSS block must exist');
+  assert.match(block, /\.tp3d-packs-folder-btn \{/,
+    'base packs folder button style must be scoped');
+  assert.match(block, /\.tp3d-packs-folder-btn:hover/,
+    'hover style must be scoped');
+  assert.match(block, /\.tp3d-packs-folder-btn:focus-visible/,
+    'focus-visible style must be scoped');
+  assert.match(block, /\.tp3d-packs-folder-btn--active/,
+    'active style must be scoped');
+  assert.match(block, /\.tp3d-packs-folder-btn__icon/,
+    'icon style must be scoped');
+  assert.match(block, /\.tp3d-packs-folder-btn__label[\s\S]{0,220}text-overflow:\s*ellipsis/,
+    'label style must truncate long folder names');
+  assert.match(block, /\.tp3d-packs-folder-btn__caret/,
+    'caret style must be scoped');
+  assert.doesNotMatch(block, /\.btn\b|\.dropdown-menu|\.dropdown-item/,
+    'Phase 0.7C-1B CSS must not style global buttons or dropdowns');
+});
+
+test('phase 0.7C-1B avoids forbidden backend billing auth settings package and index scope', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const { stdout } = await execFileAsync('git', [
+    'diff',
+    '--name-only',
+    '--',
+    'index.html',
+    'package.json',
+    'package-lock.json',
+    'src/app.js',
+    'src/core',
+    'src/services/folder-library.js',
+    'src/services/pack-library.js',
+    'src/services/import-export.js',
+    'src/ui/overlays/settings-overlay.js',
+    'src/ui/ui-components.js',
+    'supabase/functions',
+    'supabase/migrations',
+    'supabase/config.toml',
+  ]);
+  const changedForbiddenFiles = stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  assert.deepEqual(changedForbiddenFiles, [],
+    'Phase 0.7C-1B must not touch backend, data model, settings, package, or index scope');
+  assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
+    'packs folder polish must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
 });

@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-08 — Phase 0.6D-pre account-deletion owner block validation in progress; legacy purge endpoint retired; next decision is purge-vs-restore sequencing
+Last updated: 2026-05-08 — Phase 0.7A Workspace JSON Export committed on branch `phase-0-7a-workspace-export-safety`; next priority is merge/deploy decision and Phase 0.7B Folder System data-model audit
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -382,6 +382,27 @@ P0 is green only when ALL items here are checked:
 ---
 
 ## Running log (keep updated)
+
+
+- Date: 2026-05-08 — Phase 0.7A Workspace JSON Export MVP committed on feature branch
+- What changed:
+  - Added safe client-only Workspace JSON Export on branch `phase-0-7a-workspace-export-safety`.
+  - Export is active-workspace scoped and includes packs/projects plus case/item library data only.
+  - Export payload uses `exportType: "workspace"` and `schemaVersion: "workspace-export-v1"`.
+  - Pack thumbnails are stripped from the workspace export to keep files smaller and avoid carrying rendered canvas data across workspaces.
+  - Settings > General now shows owner/admin-gated “Export Workspace Data” and a reminder near Archive Workspace to export a JSON backup before major workspace changes.
+  - Existing App Export remains unchanged.
+- Validation:
+  - Codex reported Phase 0.7A local validation passed with `npm test` 200/200, lint 0 errors with existing warnings only, typecheck clean, and diff checks clean.
+  - Browser owner path was tested: Settings opened, Workspace Export was visible, modal opened, export path ran without sign-out, reload, crash, or console error.
+  - Payload shape was validated through `exportWorkspaceJSON()` with sample data: valid JSON, workspace schema fields present, arrays present, thumbnails null, and forbidden auth/billing/org fields absent.
+- Still required:
+  - Merge or fast-forward branch `phase-0-7a-workspace-export-safety` into `main` and push `main`.
+  - Deploy static frontend assets so the new browser JS is live.
+  - Run manual admin/member browser sign-off when safe accounts are available.
+  - Start Phase 0.7B Folder System data-model audit before adding folder code.
+
+
 
 
 - Date: 2026-05-07 — Phase 0.6D-pre remote deploy verified
@@ -1134,23 +1155,44 @@ Goal: add safe workspace lifecycle tools without data loss, billing mistakes, or
 
 ---
 
-## Phase 0.7 — Workspace Data Export — PLANNED AFTER ARCHIVE/RESTORE BASELINE
+## Phase 0.7 — Workspace Data Export — IN PROGRESS
 
 Goal: let users safely export workspace data before high-risk lifecycle actions.
 
+### Phase 0.7A — Workspace JSON Export Safety MVP — IMPLEMENTED / MERGE + DEPLOY PENDING
+
+Completed:
+- [x] Added client-only Workspace JSON Export for the active workspace.
+- [x] Export includes workspace packs/projects and item/case library data.
+- [x] Export uses `exportType: "workspace"` and `schemaVersion: "workspace-export-v1"`.
+- [x] Export strips pack thumbnails by setting `thumbnail` and `thumbnailUpdatedAt` to `null`.
+- [x] Export excludes preferences, current pack selection, auth/session data, Supabase keys, Stripe IDs, billing table IDs, raw organization/user IDs, private storage paths, and unrelated localStorage keys.
+- [x] Export reads from `StateStore`, not from raw localStorage scans.
+- [x] Added `buildWorkspaceExportJSON()` and `parseWorkspaceImportJSON()` support in import/export service.
+- [x] Settings > General now shows owner/admin-gated “Export Workspace Data”.
+- [x] Archive section now shows an optional reminder to export workspace data first; export is not forced.
+- [x] Existing App Export remains unchanged.
+- [x] Local validation passed at `npm test` 200/200 with lint 0 errors and typecheck clean.
+
+Still required:
+- [ ] Merge or fast-forward `phase-0-7a-workspace-export-safety` into `main` and push `main`.
+- [ ] Static frontend deploy required for the new browser JS export path.
+- [ ] Manual browser sign-off: owner sees export, admin sees export, member does not, modal opens, JSON downloads/parses, thumbnails are null, forbidden fields are absent, and existing App Export still works.
+- [ ] Workspace import UI is not wired yet; parser exists only as groundwork.
+
 ### Export scope
-- [ ] Export packs/projects.
-- [ ] Export item library.
-- [ ] Export categories/preferences where safe.
-- [ ] Export member/invite summary where allowed.
-- [ ] Export billing summary only as safe labels, never payment secrets.
+- [x] Export packs/projects.
+- [x] Export item/case library.
+- [ ] Export categories/preferences where safe. Current 0.7A export intentionally excludes user preferences; revisit only if workspace-safe category data becomes separate from user preferences.
+- [ ] Export member/invite summary where allowed. Deferred because it would require server reads and role decisions.
+- [ ] Export billing summary only as safe labels, never payment secrets. Deferred; current 0.7A export includes no billing data.
 
 ### Export rules
-- [ ] Owner/Admin can export workspace data.
-- [ ] Member export permission must be explicit; default should be no full workspace export.
-- [ ] Export is scoped to the active workspace only.
-- [ ] Export never includes Supabase JWTs, Stripe customer IDs, subscription IDs, service keys, or private tokens.
-- [ ] Export can be used before archive/transfer/delete as a safety step.
+- [x] Owner/Admin can export workspace data through Settings UI.
+- [x] Member export permission defaults to no full workspace export.
+- [x] Export is scoped to the active workspace only.
+- [x] Export never includes Supabase JWTs, Stripe customer IDs, subscription IDs, service keys, private tokens, raw org/user IDs, or private storage paths.
+- [x] Export can be used before archive/transfer/delete as a safety step.
 
 ---
 
@@ -1228,7 +1270,7 @@ Membership and invite lifecycle is now part of Phase 0.5 because it blocks archi
 ## P1.3 — Product backlog from comparison research — LATER
 - [ ] Packing Groups.
 - [ ] URL-based sharing beyond JSON import/export.
-- [ ] Folder system.
+- [ ] Folder system. Next step: Phase 0.7B data-model audit before implementation. Preferred starting point is pack-only folders with workspace-scoped `folderLibrary` and `pack.folderId` references, pending audit confirmation.
 - [ ] Weight heatmap refinements.
 - [ ] Additional manual measurement / snapping / view parity as needed.
 

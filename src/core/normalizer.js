@@ -33,6 +33,10 @@ function safeString(value, fallback = '') {
   return t || fallback;
 }
 
+function safeId(value) {
+  return safeString(value, '') || uuid();
+}
+
 export function normalizePreferences(prefs) {
   const base = CoreUtils.deepClone(CoreDefaults.defaultPreferences);
   const next = { ...base, ...(prefs && typeof prefs === 'object' ? prefs : {}) };
@@ -142,7 +146,7 @@ export function normalizeCase(c, now) {
   const category = safeString(c && c.category, 'default').toLowerCase();
   const color = safeString(c && c.color, '');
   return {
-    id: safeString(c && c.id, uuid()),
+    id: safeId(c && c.id),
     name: safeString(c && c.name, 'Unnamed Case'),
     manufacturer: safeString(c && c.manufacturer, ''),
     category,
@@ -190,7 +194,7 @@ export function normalizeInstance(inst, caseMap) {
   const halfY = caseData ? Math.max(1, (caseData.dimensions.height || 1) / 2) : 10;
 
   return {
-    id: safeString(inst && inst.id, uuid()),
+    id: safeId(inst && inst.id),
     caseId,
     transform: {
       position: {
@@ -214,10 +218,26 @@ export function normalizeInstance(inst, caseMap) {
   };
 }
 
+export function normalizeFolder(folder, now) {
+  const source = folder && typeof folder === 'object' ? folder : {};
+  const createdAt = finiteNumber(source.createdAt, now);
+  const updatedAt = finiteNumber(source.updatedAt, createdAt);
+  return {
+    id: safeId(source.id),
+    name: safeString(source.name, 'Untitled Folder'),
+    scope: 'pack',
+    parentFolderId: null,
+    sortOrder: Math.max(0, Math.trunc(finiteNumber(source.sortOrder, 0))),
+    createdAt,
+    updatedAt,
+  };
+}
+
 export function normalizePack(p, caseMap, now) {
   const truck = normalizeTruck(p && p.truck);
   const rawCases = Array.isArray(p && p.cases) ? p.cases : [];
   const instances = rawCases.map(i => normalizeInstance(i, caseMap)).filter(i => Boolean(i.caseId));
+  const folderId = safeString(p && p.folderId, '') || null;
   const thumbnail = typeof (p && p.thumbnail) === 'string' ? p.thumbnail : null;
   const thumbnailUpdatedAt = Number.isFinite(p && p.thumbnailUpdatedAt) ? p.thumbnailUpdatedAt : null;
   const thumbnailSource =
@@ -235,7 +255,7 @@ export function normalizePack(p, caseMap, now) {
   };
   const stats = p && p.stats && typeof p.stats === 'object' ? { ...baseStats, ...p.stats } : baseStats;
   return {
-    id: safeString(p && p.id, uuid()),
+    id: safeId(p && p.id),
     title: safeString(p && p.title, 'Untitled Pack'),
     client: safeString(p && p.client, ''),
     projectName: safeString(p && p.projectName, ''),
@@ -243,6 +263,7 @@ export function normalizePack(p, caseMap, now) {
     notes: safeString(p && p.notes, ''),
     truck,
     cases: instances,
+    folderId,
     groups: Array.isArray(p && p.groups) ? p.groups : [],
     stats,
     createdAt: finiteNumber(p && p.createdAt, now),
@@ -255,6 +276,19 @@ export function normalizePack(p, caseMap, now) {
 
 export function normalizeAppData(data) {
   const now = Date.now();
+  const rawFolders = Array.isArray(data && data.folderLibrary) ? data.folderLibrary : [];
+  const folders = rawFolders.map(folder => normalizeFolder(folder, now));
+  const seenFolderIds = new Set();
+  folders.forEach(folder => {
+    if (!seenFolderIds.has(folder.id)) {
+      seenFolderIds.add(folder.id);
+      return;
+    }
+    folder.id = uuid();
+    seenFolderIds.add(folder.id);
+  });
+  const folderIds = new Set(folders.map(folder => folder.id));
+
   const rawCases = Array.isArray(data && data.caseLibrary) ? data.caseLibrary : [];
   const cases = rawCases.map(c => normalizeCase(c, now));
 
@@ -269,11 +303,15 @@ export function normalizeAppData(data) {
   const caseMap = new Map(cases.map(c => [c.id, c]));
 
   const rawPacks = Array.isArray(data && data.packLibrary) ? data.packLibrary : [];
-  const packs = rawPacks.map(p => normalizePack(p, caseMap, now));
+  const packs = rawPacks.map(p => {
+    const pack = normalizePack(p, caseMap, now);
+    if (pack.folderId && !folderIds.has(pack.folderId)) pack.folderId = null;
+    return pack;
+  });
 
   const prefs = normalizePreferences(data && data.preferences);
   const currentPackId = safeString(data && data.currentPackId, '');
   const current = packs.some(p => p.id === currentPackId) ? currentPackId : packs[0] ? packs[0].id : null;
 
-  return { caseLibrary: cases, packLibrary: packs, preferences: prefs, currentPackId: current };
+  return { caseLibrary: cases, packLibrary: packs, folderLibrary: folders, preferences: prefs, currentPackId: current };
 }

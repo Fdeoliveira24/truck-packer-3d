@@ -242,12 +242,17 @@ export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
 }
 
 export function buildPackExportPayload(pack) {
+  const exportedPack = {
+    ...(pack || {}),
+    folderId: null,
+  };
+  const packCases = Array.isArray(pack && pack.cases) ? pack.cases : [];
   return {
     app: 'Truck Packer 3D',
     version: APP_VERSION,
     exportedAt: Date.now(),
-    pack,
-    bundledCases: (pack.cases || []).map(i => CaseLibrary.getById(i.caseId)).filter(Boolean),
+    pack: exportedPack,
+    bundledCases: packCases.map(i => CaseLibrary.getById(i.caseId)).filter(Boolean),
   };
 }
 
@@ -284,9 +289,13 @@ export function parseWorkspaceImportJSON(jsonText) {
   const data = parsed.data && typeof parsed.data === 'object' ? parsed.data : {};
   if (!Array.isArray(data.caseLibrary)) throw new Error('Missing caseLibrary in workspace export');
   if (!Array.isArray(data.packLibrary)) throw new Error('Missing packLibrary in workspace export');
+  if (data.folderLibrary != null && !Array.isArray(data.folderLibrary)) {
+    throw new Error('Invalid folderLibrary in workspace export');
+  }
   return {
     caseLibrary: data.caseLibrary,
     packLibrary: data.packLibrary,
+    folderLibrary: Array.isArray(data.folderLibrary) ? data.folderLibrary : [],
     workspaceName: parsed.workspaceName ? String(parsed.workspaceName) : '',
   };
 }

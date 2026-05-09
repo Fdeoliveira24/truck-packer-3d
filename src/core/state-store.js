@@ -24,12 +24,21 @@ function historySlice(s) {
   return deepClone({
     caseLibrary: s.caseLibrary,
     packLibrary: s.packLibrary,
+    folderLibrary: s.folderLibrary,
     preferences: s.preferences,
   });
 }
 
+function withWorkspaceDefaults(nextState) {
+  const next = nextState && typeof nextState === 'object' ? nextState : {};
+  return {
+    ...next,
+    folderLibrary: Array.isArray(next.folderLibrary) ? next.folderLibrary : [],
+  };
+}
+
 function init(initialState) {
-  state = deepClone(initialState);
+  state = deepClone(withWorkspaceDefaults(initialState));
   history = [historySlice(state)];
   historyPointer = 0;
 }
@@ -41,7 +50,7 @@ function get(key) {
 }
 
 function set(patch, options = {}) {
-  const next = { ...state, ...patch };
+  const next = withWorkspaceDefaults({ ...state, ...patch });
   const significant = options.skipHistory ? false : isSignificantChange(patch);
   state = next;
   if (significant) pushHistory(historySlice(next));
@@ -49,7 +58,7 @@ function set(patch, options = {}) {
 }
 
 function replace(nextState, options = {}) {
-  state = deepClone(nextState);
+  state = deepClone(withWorkspaceDefaults(nextState));
   if (!options.skipHistory) pushHistory(historySlice(state));
   notify({ _replace: true }, state);
 }
@@ -101,7 +110,7 @@ function notify(changes, nextState) {
 
 function isSignificantChange(patch) {
   const keys = Object.keys(patch || {});
-  const significant = ['caseLibrary', 'packLibrary', 'preferences'];
+  const significant = ['caseLibrary', 'packLibrary', 'folderLibrary', 'preferences'];
   return keys.some(k => significant.includes(k));
 }
 

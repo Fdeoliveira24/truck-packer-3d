@@ -15,6 +15,7 @@ import { APP_VERSION } from './version.js';
 import * as Utils from './utils/index.js';
 import { debounce } from './browser.js';
 import * as StateStore from './state-store.js';
+import { normalizeAppData } from './normalizer.js';
 import { emit } from './events.js';
 
 export const STORAGE_KEY = 'truckPacker3d:v1';
@@ -162,6 +163,8 @@ export function load() {
       preferences,
       caseLibrary: hasWorkspaceData ? workspacePayload.caseLibrary : null,
       packLibrary: hasWorkspaceData ? workspacePayload.packLibrary : null,
+      folderLibrary:
+        hasWorkspaceData && Array.isArray(workspacePayload.folderLibrary) ? workspacePayload.folderLibrary : [],
       currentPackId: hasWorkspaceData ? workspacePayload.currentPackId || null : null,
     };
   } catch (err) {
@@ -193,6 +196,7 @@ export function saveNow() {
       savedAt: userPayload.savedAt,
       caseLibrary: state.caseLibrary,
       packLibrary: state.packLibrary,
+      folderLibrary: Array.isArray(state.folderLibrary) ? state.folderLibrary : [],
       currentPackId: state.currentPackId,
     };
     window.localStorage.setItem(scopedKey, JSON.stringify(userPayload));
@@ -236,6 +240,7 @@ export function exportAppJSON() {
     data: {
       caseLibrary: state.caseLibrary,
       packLibrary: state.packLibrary,
+      folderLibrary: Array.isArray(state.folderLibrary) ? state.folderLibrary : [],
       preferences: state.preferences,
     },
   };
@@ -259,6 +264,7 @@ export function exportWorkspaceJSON(workspaceName) {
     data: {
       caseLibrary: Array.isArray(state.caseLibrary) ? state.caseLibrary : [],
       packLibrary: strippedPacks,
+      folderLibrary: Array.isArray(state.folderLibrary) ? state.folderLibrary : [],
     },
   };
   return JSON.stringify(payload, null, 2);
@@ -270,11 +276,13 @@ export function importAppJSON(jsonText) {
     if (!parsed || typeof parsed !== 'object') throw new Error('Invalid JSON');
     const data = parsed.data || parsed;
     if (!data.caseLibrary || !data.packLibrary || !data.preferences) throw new Error('Missing required keys');
-    return {
+    return normalizeAppData({
       caseLibrary: data.caseLibrary,
       packLibrary: data.packLibrary,
+      folderLibrary: Array.isArray(data.folderLibrary) ? data.folderLibrary : [],
       preferences: data.preferences,
-    };
+      currentPackId: data.currentPackId || null,
+    });
   } catch (err) {
     emit('storage:import_error', {
       message: err && err.message ? err.message : 'Import failed',

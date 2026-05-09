@@ -167,6 +167,7 @@ export function create(packData) {
     projectName: packData.projectName || '',
     drawnBy: packData.drawnBy || '',
     notes: packData.notes || '',
+    folderId: null,
     truck,
     cases: [],
     groups: [],
@@ -378,6 +379,7 @@ export function importPackPayload(payload) {
   const pack = Utils.deepClone(incomingPack);
   pack.id = currentPacks.some(p => p.id === pack.id) ? Utils.uuid() : pack.id || Utils.uuid();
   pack.title = pack.title ? `${pack.title} (Imported)` : 'Imported Pack';
+  pack.folderId = null;
   pack.createdAt = pack.createdAt || now;
   pack.lastEdited = now;
 

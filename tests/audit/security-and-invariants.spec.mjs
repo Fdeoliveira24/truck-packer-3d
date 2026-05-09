@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 const billingServiceUrl = new URL('../../src/data/services/billing.service.js', import.meta.url);
 const accountOverlayPath = new URL('../../src/ui/overlays/account-overlay.js', import.meta.url);
@@ -8,6 +12,9 @@ const appPath = new URL('../../src/app.js', import.meta.url);
 const indexHtmlPath = new URL('../../index.html', import.meta.url);
 const storagePath = new URL('../../src/core/storage.js', import.meta.url);
 const importExportPath = new URL('../../src/services/import-export.js', import.meta.url);
+const folderLibraryPath = new URL('../../src/services/folder-library.js', import.meta.url);
+const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
+const normalizerPath = new URL('../../src/core/normalizer.js', import.meta.url);
 const corsSharedPath = new URL('../../supabase/functions/_shared/cors.ts', import.meta.url);
 const supabasePath = new URL('../../src/core/supabase-client.js', import.meta.url);
 const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.meta.url);
@@ -2937,7 +2944,7 @@ test('phase 0.7A-1 exportAppJSON top-level payload keys remain limited', async (
     'exportAppJSON must not include workspace export or server identity top-level keys');
 });
 
-test('phase 0.7A-1 exportAppJSON data keys remain limited to cases packs and preferences', async () => {
+test('phase 0.7A-1 exportAppJSON data keys include local backup libraries only', async () => {
   const src = await fs.readFile(storagePath, 'utf8');
   const start = src.indexOf('export function exportAppJSON()');
   const end = src.indexOf('\nexport function', start + 1);
@@ -2948,12 +2955,14 @@ test('phase 0.7A-1 exportAppJSON data keys remain limited to cases packs and pre
     'exportAppJSON data must include caseLibrary');
   assert.match(fn, /packLibrary:\s*state\.packLibrary/,
     'exportAppJSON data must include packLibrary');
+  assert.match(fn, /folderLibrary:\s*Array\.isArray\(state\.folderLibrary\)/,
+    'exportAppJSON data must include folderLibrary once folders are live');
   assert.match(fn, /preferences:\s*state\.preferences/,
     'exportAppJSON data must include preferences');
   assert.doesNotMatch(fn, /currentPackId/,
     'exportAppJSON must not export transient currentPackId');
-  assert.doesNotMatch(fn, /folderLibrary|billing|members|invites/,
-    'exportAppJSON must not include folders, billing, members, or invites in baseline app export');
+  assert.doesNotMatch(fn, /billing|members|invites/,
+    'exportAppJSON must not include billing, members, or invites in app export');
 });
 
 test('phase 0.7A-1 exportAppJSON does not export auth session token fields', async () => {
@@ -3060,7 +3069,7 @@ test('phase 0.7A-2 exportWorkspaceJSON reads from StateStore and not raw storage
     'workspace export must not scan raw localStorage keys');
 });
 
-test('phase 0.7A-2 exportWorkspaceJSON data is limited to cases and packs', async () => {
+test('phase 0.7A-2 exportWorkspaceJSON data is limited to workspace libraries', async () => {
   const src = await fs.readFile(storagePath, 'utf8');
   const start = src.indexOf('export function exportWorkspaceJSON(');
   const end = src.indexOf('\nexport function', start + 1);
@@ -3071,8 +3080,10 @@ test('phase 0.7A-2 exportWorkspaceJSON data is limited to cases and packs', asyn
     'workspace export must include caseLibrary');
   assert.match(fn, /packLibrary:\s*strippedPacks/,
     'workspace export must include stripped packLibrary');
-  assert.doesNotMatch(fn, /preferences:\s*state\.preferences|currentPackId|folderLibrary/,
-    'workspace export must not include preferences, currentPackId, or folders');
+  assert.match(fn, /folderLibrary:\s*Array\.isArray\(state\.folderLibrary\)/,
+    'workspace export must include folderLibrary');
+  assert.doesNotMatch(fn, /preferences:\s*state\.preferences|currentPackId/,
+    'workspace export must not include preferences or currentPackId');
 });
 
 test('phase 0.7A-2 exportWorkspaceJSON strips pack thumbnails', async () => {
@@ -3209,4 +3220,504 @@ test('phase 0.7A-2 workspace export code avoids backend and lifecycle scope', as
     'workspace export must not touch Stripe, billing-status, or billing tables');
   assert.doesNotMatch(combined, /archiveWorkspace|restoreWorkspace|transferOwnership|leaveWorkspace|requestAccountDeletion|purge/i,
     'workspace export must not touch workspace lifecycle or account deletion/purge flows');
+});
+
+// ============================================================================
+// PHASE 0.7B-1B — Folder System Data Model Foundation
+// ============================================================================
+
+test('phase 0.7B-1B folderLibrary is a significant state key and history slice', async () => {
+  const src = await fs.readFile(stateStorePath, 'utf8');
+  const historyStart = src.indexOf('function historySlice(');
+  const historyEnd = src.indexOf('\nfunction withWorkspaceDefaults', historyStart + 1);
+  const historyFn = historyStart >= 0 && historyEnd > historyStart ? src.slice(historyStart, historyEnd) : '';
+  const start = src.indexOf('function isSignificantChange(');
+  const end = src.indexOf('\nexport {', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(historyFn, 'historySlice must be extractable');
+  assert.match(historyFn, /folderLibrary:\s*s\.folderLibrary/,
+    'folderLibrary must participate in StateStore history snapshots');
+  assert.ok(fn, 'isSignificantChange must be extractable');
+  assert.match(fn, /'folderLibrary'/,
+    'folderLibrary must be a significant state key');
+});
+
+test('phase 0.7B-1B normalizer defines pack folders and clears stale folderId', async () => {
+  const src = await fs.readFile(normalizerPath, 'utf8');
+  const folderStart = src.indexOf('export function normalizeFolder(');
+  const folderEnd = src.indexOf('\nexport function normalizePack', folderStart + 1);
+  const folderFn = folderStart >= 0 && folderEnd > folderStart ? src.slice(folderStart, folderEnd) : '';
+  const start = src.indexOf('export function normalizePack(');
+  const end = src.indexOf('\nexport function normalizeAppData', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+  const appStart = src.indexOf('export function normalizeAppData(');
+  const appFn = appStart >= 0 ? src.slice(appStart) : '';
+
+  assert.ok(folderFn, 'normalizeFolder must be extractable');
+  assert.match(folderFn, /scope:\s*'pack'/,
+    'normalizeFolder must keep folders pack-scoped');
+  assert.match(folderFn, /parentFolderId:\s*null/,
+    'normalizeFolder must keep parentFolderId null in this phase');
+  assert.ok(fn, 'normalizePack must be extractable');
+  assert.match(fn, /const folderId = safeString\(p && p\.folderId, ''\) \|\| null/,
+    'normalizePack must default folderId to null');
+  assert.match(fn, /folderId,/,
+    'normalizePack must include folderId in normalized packs');
+  assert.match(appFn, /folderLibrary:\s*folders/,
+    'normalizeAppData must return normalized folderLibrary');
+  assert.match(appFn, /if \(pack\.folderId && !folderIds\.has\(pack\.folderId\)\) pack\.folderId = null;/,
+    'normalizeAppData must clear stale pack folderId references');
+});
+
+test('phase 0.7B-1B normalizer returns safe pack-only folder shape and nulls stale folderId at runtime', async () => {
+  const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  const folder = Normalizer.normalizeFolder({
+    id: 'folder-1',
+    name: ' Client Work ',
+    scope: 'case',
+    parentFolderId: 'nested-folder',
+    sortOrder: '12',
+    createdAt: 100,
+    updatedAt: 200,
+    unexpected: 'drop-me',
+  }, 1);
+
+  assert.deepEqual(Object.keys(folder), ['id', 'name', 'scope', 'parentFolderId', 'sortOrder', 'createdAt', 'updatedAt'],
+    'normalizeFolder must return only the approved folder fields');
+  assert.equal(folder.name, 'Client Work',
+    'normalizeFolder must trim names');
+  assert.equal(folder.scope, 'pack',
+    'normalizeFolder must force pack-only scope');
+  assert.equal(folder.parentFolderId, null,
+    'normalizeFolder must keep nesting disabled in this phase');
+
+  const normalized = Normalizer.normalizeAppData({
+    caseLibrary: [],
+    folderLibrary: [folder],
+    packLibrary: [
+      { id: 'pack-1', title: 'Known', folderId: 'folder-1', cases: [] },
+      { id: 'pack-2', title: 'Stale', folderId: 'missing-folder', cases: [] },
+      { id: 'pack-3', title: 'Empty', cases: [] },
+    ],
+    preferences: {},
+  });
+
+  assert.equal(normalized.packLibrary[0].folderId, 'folder-1',
+    'normalizeAppData must preserve valid pack folderId');
+  assert.equal(normalized.packLibrary[1].folderId, null,
+    'normalizeAppData must null stale pack folderId');
+  assert.equal(normalized.packLibrary[2].folderId, null,
+    'normalizePack must default missing folderId to null');
+});
+
+test('phase 0.7B-1B storage saves and loads folderLibrary only in workspace payload', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const loadStart = src.indexOf('export function load()');
+  const loadEnd = src.indexOf('\nexport function saveSoon', loadStart + 1);
+  const loadFn = loadStart >= 0 && loadEnd > loadStart ? src.slice(loadStart, loadEnd) : '';
+  const start = src.indexOf('export function saveNow()');
+  const end = src.indexOf('\nexport function clearAll', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+  const userPayloadStart = fn.indexOf('const userPayload = {');
+  const workspacePayloadStart = fn.indexOf('const workspacePayload = {');
+  const userPayload = userPayloadStart >= 0 && workspacePayloadStart > userPayloadStart
+    ? fn.slice(userPayloadStart, workspacePayloadStart)
+    : '';
+
+  assert.ok(loadFn, 'load must be extractable');
+  assert.match(loadFn, /folderLibrary:[\s\S]{0,140}workspacePayload\.folderLibrary/,
+    'load must return folderLibrary from workspace payload');
+  assert.ok(fn, 'saveNow must be extractable');
+  assert.doesNotMatch(userPayload, /folderLibrary/,
+    'folderLibrary must not be saved in user-scoped preferences payload');
+  assert.match(fn, /folderLibrary:\s*Array\.isArray\(state\.folderLibrary\)/,
+    'saveNow workspace payload must include folderLibrary');
+});
+
+test('phase 0.7B-1B storage load defaults missing folderLibrary to empty workspace array', async () => {
+  const Storage = await import(`${storagePath.href}?t=${Date.now()}-${Math.random()}`);
+  const originalWindow = globalThis.window;
+  const values = new Map();
+  const localStorage = {
+    get length() {
+      return values.size;
+    },
+    getItem(key) {
+      return values.has(key) ? values.get(key) : null;
+    },
+    setItem(key, value) {
+      values.set(key, String(value));
+    },
+    removeItem(key) {
+      values.delete(key);
+    },
+    key(index) {
+      return Array.from(values.keys())[index] || null;
+    },
+  };
+
+  try {
+    globalThis.window = { localStorage };
+    Storage.setStorageScope('user-1');
+    Storage.setWorkspaceScope('org-1');
+    localStorage.setItem('truckPacker3d:v1:user-1', JSON.stringify({
+      version: 'test',
+      savedAt: 1,
+      preferences: {},
+    }));
+    localStorage.setItem('truckPacker3d:v1:user-1:workspace:org-1', JSON.stringify({
+      version: 'test',
+      savedAt: 2,
+      caseLibrary: [],
+      packLibrary: [],
+      currentPackId: null,
+    }));
+
+    const loaded = Storage.load();
+    assert.deepEqual(loaded.folderLibrary, [],
+      'load must default old workspace payloads without folderLibrary to []');
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test('phase 0.7B-1B exportWorkspaceJSON includes folderLibrary and preserves pack folderId', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportWorkspaceJSON(');
+  const end = src.indexOf('\nexport function importAppJSON', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportWorkspaceJSON must be extractable');
+  assert.match(fn, /folderLibrary:\s*Array\.isArray\(state\.folderLibrary\)/,
+    'workspace export must include folderLibrary');
+  assert.doesNotMatch(fn, /folderId:\s*null/,
+    'workspace export must not strip pack folderId');
+  assert.match(fn, /thumbnail:\s*null/,
+    'workspace export must keep thumbnail stripping');
+});
+
+test('phase 0.7B-1B parseWorkspaceImportJSON accepts optional folderLibrary arrays', async () => {
+  const src = await fs.readFile(importExportPath, 'utf8');
+  const start = src.indexOf('export function parseWorkspaceImportJSON(');
+  const fn = start >= 0 ? src.slice(start) : '';
+
+  assert.ok(fn, 'parseWorkspaceImportJSON must be extractable');
+  assert.match(fn, /data\.folderLibrary != null && !Array\.isArray\(data\.folderLibrary\)/,
+    'workspace import parser must reject non-array folderLibrary');
+  assert.match(fn, /folderLibrary:\s*Array\.isArray\(data\.folderLibrary\) \? data\.folderLibrary : \[\]/,
+    'workspace import parser must default missing folderLibrary to []');
+});
+
+test('phase 0.7B-1B workspace import parser accepts old exports and rejects malformed folderLibrary at runtime', async () => {
+  const ImportExport = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  const oldExport = JSON.stringify({
+    app: 'Truck Packer 3D',
+    exportType: 'workspace',
+    data: {
+      caseLibrary: [],
+      packLibrary: [],
+    },
+  });
+  const parsed = ImportExport.parseWorkspaceImportJSON(oldExport);
+
+  assert.deepEqual(parsed.folderLibrary, [],
+    'workspace import parser must default missing folderLibrary to []');
+  assert.throws(() => ImportExport.parseWorkspaceImportJSON(JSON.stringify({
+    exportType: 'workspace',
+    data: {
+      caseLibrary: [],
+      packLibrary: [],
+      folderLibrary: {},
+    },
+  })), /Invalid folderLibrary/,
+    'workspace import parser must reject non-array folderLibrary');
+});
+
+test('phase 0.7B-1B app export includes and imports normalized folderLibrary as full local backup', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const Storage = await import(`${storagePath.href}?t=${Date.now()}-${Math.random()}`);
+
+  StateStore.init({
+    caseLibrary: [],
+    packLibrary: [
+      { id: 'pack-1', title: 'Known', folderId: 'folder-1', cases: [] },
+      { id: 'pack-2', title: 'Stale', folderId: 'missing-folder', cases: [] },
+    ],
+    folderLibrary: [
+      {
+        id: 'folder-1',
+        name: 'Folder 1',
+        scope: 'pack',
+        parentFolderId: null,
+        sortOrder: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ],
+    preferences: {},
+  });
+
+  const exported = JSON.parse(Storage.exportAppJSON());
+  assert.equal(exported.data.folderLibrary.length, 1,
+    'App Export is the full local backup path and must include folderLibrary');
+
+  const imported = Storage.importAppJSON(JSON.stringify({
+    app: 'Truck Packer 3D',
+    data: {
+      caseLibrary: [],
+      packLibrary: exported.data.packLibrary,
+      folderLibrary: exported.data.folderLibrary,
+      preferences: {},
+    },
+  }));
+  assert.equal(imported.packLibrary[0].folderId, 'folder-1',
+    'App Import must preserve valid folderId references');
+  assert.equal(imported.packLibrary[1].folderId, null,
+    'App Import must normalize stale folderId references to null');
+});
+
+test('phase 0.7B-1B single pack export does not carry folder assignments', async () => {
+  const src = await fs.readFile(importExportPath, 'utf8');
+  const start = src.indexOf('export function buildPackExportPayload(');
+  const end = src.indexOf('\nexport function buildPackExportJSON', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'buildPackExportPayload must be extractable');
+  assert.match(fn, /folderId:\s*null/,
+    'single pack export must clear folderId until single-pack folder import exists');
+});
+
+test('phase 0.7B-1B single pack import clears folderId to null', async () => {
+  const src = await fs.readFile(new URL('../../src/services/pack-library.js', import.meta.url), 'utf8');
+  const start = src.indexOf('export function importPackPayload(');
+  const fn = start >= 0 ? src.slice(start) : '';
+
+  assert.ok(fn, 'importPackPayload must be extractable');
+  assert.match(fn, /pack\.folderId\s*=\s*null/,
+    'single pack import must clear folderId because folder import is workspace-level only');
+});
+
+test('phase 0.7B-1B folder-library service is local StateStore only', async () => {
+  const src = await fs.readFile(folderLibraryPath, 'utf8');
+
+  assert.match(src, /from '\.\.\/core\/state-store\.js'/,
+    'folder service must use StateStore');
+  assert.match(src, /from '\.\.\/core\/utils\/index\.js'/,
+    'folder service may use local utilities for UUIDs');
+  assert.doesNotMatch(src, /supabase|functions\.invoke|serviceClient|createClient|EdgeFunction/i,
+    'folder service must not use Supabase or Edge Functions');
+  assert.doesNotMatch(src, /stripe|billing|billing-status|checkout|portal|webhook/i,
+    'folder service must not touch Stripe or billing');
+  assert.doesNotMatch(src, /localStorage|window\.localStorage|signOut|location\.reload/i,
+    'folder service must not read raw storage, sign out, or reload');
+  assert.doesNotMatch(src, /organization_id|owner_id|user_id|auth\.users|organization_members/i,
+    'folder service must not use server identity or membership fields');
+});
+
+test('phase 0.7B-1B folder-library create list rename move use StateStore data only', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const FolderLibrary = await import(`${folderLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  StateStore.init({
+    caseLibrary: [],
+    packLibrary: [{ id: 'pack-1', title: 'Pack 1', folderId: null }],
+    folderLibrary: [],
+    preferences: {},
+  });
+
+  const a = FolderLibrary.createFolder('Beta');
+  const b = FolderLibrary.createFolder('Alpha');
+  assert.equal(a.scope, 'pack',
+    'createFolder must create pack-scoped folders');
+  assert.equal(a.parentFolderId, null,
+    'createFolder must not create nested folders in this phase');
+  assert.deepEqual(FolderLibrary.listFolders().map(folder => folder.name), ['Beta', 'Alpha'],
+    'listFolders must return StateStore folders in sort order');
+
+  const renamed = FolderLibrary.renameFolder(b.id, 'Alpha Renamed');
+  assert.equal(renamed.name, 'Alpha Renamed',
+    'renameFolder must update by id, not by name');
+  assert.equal(FolderLibrary.movePackToFolder('pack-1', b.id).folderId, b.id,
+    'movePackToFolder must assign a valid folder id');
+});
+
+test('phase 0.7B-1B deleteFolder nulls pack folder references without deleting packs or cases', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const FolderLibrary = await import(`${folderLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  StateStore.init({
+    caseLibrary: [{ id: 'case-1', name: 'Case 1' }],
+    packLibrary: [
+      { id: 'pack-1', title: 'Pack 1', folderId: 'folder-1', cases: [{ id: 'inst-1', caseId: 'case-1' }], thumbnail: 'preview' },
+      { id: 'pack-2', title: 'Pack 2', folderId: 'folder-1' },
+      { id: 'pack-3', title: 'Pack 3', folderId: null },
+    ],
+    folderLibrary: [
+      {
+        id: 'folder-1',
+        name: 'Folder 1',
+        scope: 'pack',
+        parentFolderId: null,
+        sortOrder: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ],
+    preferences: {},
+  });
+
+  assert.equal(FolderLibrary.deleteFolder('folder-1'), true);
+  const state = StateStore.get();
+
+  assert.equal(state.folderLibrary.length, 0,
+    'deleteFolder must remove the folder');
+  assert.equal(state.packLibrary.length, 3,
+    'deleteFolder must not delete packs');
+  assert.deepEqual(state.packLibrary.map(pack => pack.folderId), [null, null, null],
+    'deleteFolder must null affected pack folderId values');
+  assert.equal(state.caseLibrary.length, 1,
+    'deleteFolder must not touch cases');
+  assert.deepEqual(state.packLibrary[0].cases, [{ id: 'inst-1', caseId: 'case-1' }],
+    'deleteFolder must not delete pack contents');
+  assert.equal(state.packLibrary[0].thumbnail, 'preview',
+    'deleteFolder must not delete pack previews');
+});
+
+test('phase 0.7B-1B pack delete does not mutate folderLibrary', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${new URL('../../src/services/pack-library.js', import.meta.url).href}?t=${Date.now()}-${Math.random()}`);
+
+  StateStore.init({
+    caseLibrary: [],
+    packLibrary: [{ id: 'pack-1', title: 'Pack 1', folderId: 'folder-1' }],
+    folderLibrary: [
+      {
+        id: 'folder-1',
+        name: 'Folder 1',
+        scope: 'pack',
+        parentFolderId: null,
+        sortOrder: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ],
+    preferences: {},
+    currentPackId: 'pack-1',
+  });
+
+  PackLibrary.remove('pack-1');
+  const state = StateStore.get();
+
+  assert.equal(state.packLibrary.length, 0,
+    'PackLibrary.remove must delete the pack');
+  assert.equal(state.folderLibrary.length, 1,
+    'PackLibrary.remove must not mutate folderLibrary');
+  assert.equal(state.folderLibrary[0].id, 'folder-1',
+    'folder identity must survive pack deletion');
+});
+
+test('phase 0.7B-1B movePackToFolder requires existing folder identity and allows null', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const FolderLibrary = await import(`${folderLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  StateStore.init({
+    caseLibrary: [],
+    packLibrary: [{ id: 'pack-1', title: 'Pack 1', folderId: null, lastEdited: 1 }],
+    folderLibrary: [
+      {
+        id: 'folder-1',
+        name: 'Folder 1',
+        scope: 'pack',
+        parentFolderId: null,
+        sortOrder: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ],
+    preferences: {},
+  });
+
+  const moved = FolderLibrary.movePackToFolder('pack-1', 'folder-1');
+  assert.equal(moved.folderId, 'folder-1',
+    'movePackToFolder must assign an existing folder id');
+  assert.equal(FolderLibrary.movePackToFolder('pack-1', 'missing-folder'), null,
+    'movePackToFolder must reject unknown folder ids');
+  const removed = FolderLibrary.movePackToFolder('pack-1', null);
+  assert.equal(removed.folderId, null,
+    'movePackToFolder must allow moving a pack back to uncategorized');
+});
+
+test('phase 0.7B-1B partial StateStore updates preserve existing folderLibrary', async () => {
+  const StateStore = await import(stateStorePath.href);
+
+  StateStore.init({
+    caseLibrary: [],
+    packLibrary: [{ id: 'pack-1', title: 'Pack 1', folderId: 'folder-1' }],
+    folderLibrary: [{ id: 'folder-1', name: 'Folder 1' }],
+    preferences: {},
+  });
+
+  StateStore.set({ packLibrary: [{ id: 'pack-2', title: 'Pack 2', folderId: null }] });
+  assert.deepEqual(StateStore.get('folderLibrary'), [{ id: 'folder-1', name: 'Folder 1' }],
+    'StateStore.set partial updates must not wipe folderLibrary');
+
+  StateStore.set({ folderLibrary: [] });
+  assert.deepEqual(StateStore.get('folderLibrary'), [],
+    'StateStore.set must update folderLibrary only when explicitly provided');
+});
+
+test('phase 0.7B-1B workspace export runtime payload includes folderLibrary', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const Storage = await import(`${storagePath.href}?t=${Date.now()}-${Math.random()}`);
+
+  StateStore.init({
+    caseLibrary: [],
+    packLibrary: [{ id: 'pack-1', title: 'Pack 1', folderId: 'folder-1', thumbnail: 'data:image/jpeg;base64,x' }],
+    folderLibrary: [
+      {
+        id: 'folder-1',
+        name: 'Folder 1',
+        scope: 'pack',
+        parentFolderId: null,
+        sortOrder: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ],
+    preferences: {},
+  });
+
+  const payload = JSON.parse(Storage.exportWorkspaceJSON('Workspace A'));
+  assert.equal(payload.data.folderLibrary.length, 1,
+    'workspace export must include folderLibrary');
+  assert.equal(payload.data.packLibrary[0].folderId, 'folder-1',
+    'workspace export must preserve pack folderId');
+  assert.equal(payload.data.packLibrary[0].thumbnail, null,
+    'workspace export must keep thumbnail stripping');
+});
+
+test('phase 0.7B-1B folder foundation changes stay inside allowed non-UI local files', async () => {
+  const { stdout } = await execFileAsync('git', ['status', '--short', '--untracked-files=all']);
+  const changedFiles = stdout
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter(Boolean)
+    .map(line => line.slice(3));
+  const allowed = new Set([
+    'src/core/state-store.js',
+    'src/core/storage.js',
+    'src/core/normalizer.js',
+    'src/services/import-export.js',
+    'src/services/pack-library.js',
+    'src/services/folder-library.js',
+    'tests/audit/security-and-invariants.spec.mjs',
+    'docs/product/TP3D-MASTER-TODO-V3.md',
+  ]);
+  const unexpected = changedFiles.filter(file => !allowed.has(file));
+
+  assert.deepEqual(unexpected, [],
+    'folder foundation must not change UI, CSS, package, index.html, migrations, Edge Functions, billing, Stripe, or auth files');
 });

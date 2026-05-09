@@ -273,13 +273,7 @@ export function createPacksScreen({
       foldersButtonLabelEl.textContent = 'Folders';
       foldersButtonEl.appendChild(foldersButtonLabelEl);
 
-      const caretWrap = document.createElement('span');
-      caretWrap.className = 'tp3d-packs-folder-btn__caret';
-      caretWrap.setAttribute('aria-hidden', 'true');
-      const caret = document.createElement('i');
-      caret.className = 'fa-solid fa-chevron-down';
-      caretWrap.appendChild(caret);
-      foldersButtonEl.appendChild(caretWrap);
+      // caret removed: keep icon + label only (caret UI not needed for now)
 
       foldersButtonEl.addEventListener('click', ev => {
         ev.stopPropagation();

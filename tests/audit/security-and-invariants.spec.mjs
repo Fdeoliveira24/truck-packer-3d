@@ -3973,8 +3973,10 @@ test('phase 0.7C-1B folders button uses scoped structure without tooltip or ghos
     'Folders button must include scoped icon span');
   assert.match(block, /tp3d-packs-folder-btn__label/,
     'Folders button must include scoped label span');
-  assert.match(block, /tp3d-packs-folder-btn__caret/,
-    'Folders button must include scoped caret span');
+  assert.doesNotMatch(block, /tp3d-packs-folder-btn__caret/,
+    'Folders button must not include caret span (caret intentionally removed in 0.7C-1B)');
+  assert.doesNotMatch(block, /fa-chevron-down/,
+    'Folders button must not include fa-chevron-down (caret intentionally removed in 0.7C-1B)');
   assert.match(block, /tp3d-packs-folder-btn--active/,
     'Folders button must use scoped active class');
   assert.doesNotMatch(block, /btn-primary/,

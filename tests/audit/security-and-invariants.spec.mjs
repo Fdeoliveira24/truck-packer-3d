@@ -3699,7 +3699,7 @@ test('phase 0.7B-1B workspace export runtime payload includes folderLibrary', as
     'workspace export must keep thumbnail stripping');
 });
 
-test('phase 0.7B-1B folder foundation changes stay inside allowed non-UI local files', async () => {
+test('phase 0.7B-1B folder foundation and production readiness changes stay inside allowed files', async () => {
   const { stdout } = await execFileAsync('git', ['status', '--short', '--untracked-files=all']);
   const changedFiles = stdout
     .split('\n')
@@ -3713,11 +3713,30 @@ test('phase 0.7B-1B folder foundation changes stay inside allowed non-UI local f
     'src/services/import-export.js',
     'src/services/pack-library.js',
     'src/services/folder-library.js',
+    'src/ui/overlays/settings-overlay.js',
     'tests/audit/security-and-invariants.spec.mjs',
     'docs/product/TP3D-MASTER-TODO-V3.md',
   ]);
   const unexpected = changedFiles.filter(file => !allowed.has(file));
 
   assert.deepEqual(unexpected, [],
-    'folder foundation must not change UI, CSS, package, index.html, migrations, Edge Functions, billing, Stripe, or auth files');
+    'folder foundation and production readiness fixes must not change CSS, package, index.html, migrations, Edge Functions, billing-status, Stripe, workspace lifecycle, folder UI, or auth files');
+});
+
+test('production readiness settings billing fallback requires isPro and isActive when entitlementStatus is absent', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+  const billingRenderStart = src.indexOf('const entitlementStatus = normalizeEntitlementStatus(state.entitlementStatus);');
+  const billingRenderEnd = src.indexOf('const interval = state.interval ? String(state.interval) :', billingRenderStart);
+  const billingRender = billingRenderStart >= 0 && billingRenderEnd > billingRenderStart
+    ? src.slice(billingRenderStart, billingRenderEnd)
+    : '';
+
+  assert.ok(billingRender.length > 0,
+    'settings billing render block must be extractable');
+  assert.match(billingRender, /const isProOrTrial = entitlementStatus \? isEntitlementAllowed : Boolean\(state\.isPro && state\.isActive\);/,
+    'settings fallback must require both state.isPro and state.isActive when entitlementStatus is absent');
+  assert.match(billingRender, /entitlementStatus \? isEntitlementAllowed/,
+    'settings must keep entitlementStatus-present behavior based on isEntitlementAllowed');
+  assert.doesNotMatch(billingRender, /const isProOrTrial = entitlementStatus \? isEntitlementAllowed : state\.isPro;/,
+    'settings fallback must not treat raw state.isPro alone as usable');
 });

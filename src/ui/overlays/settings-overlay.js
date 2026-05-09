@@ -3611,7 +3611,7 @@ export function createSettingsOverlay({
     const isOwnerSubscriptionRequired = entitlementStatus === 'owner_subscription_required';
     const isBillingUnavailable = entitlementStatus === 'billing_unavailable';
     const isTrial = entitlementStatus ? entitlementStatus === 'trialing' : status === 'trialing';
-    const isProOrTrial = entitlementStatus ? isEntitlementAllowed : state.isPro;
+    const isProOrTrial = entitlementStatus ? isEntitlementAllowed : Boolean(state.isPro && state.isActive);
     const isFreeWorkspaceState = Boolean(
       !isProOrTrial &&
       !isWorkspaceLimitReached &&

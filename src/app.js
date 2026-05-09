@@ -1947,6 +1947,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       getAccountSwitcher: () => AccountSwitcher,
       SupabaseClient,
       onExportApp: openExportAppModal,
+      onExportWorkspace: openExportWorkspaceModal,
       onImportApp: openImportAppDialog,
       onHelp: openHelpModal,
       onUpdates: openUpdatesScreen,
@@ -4939,6 +4940,57 @@ const TP3D_BUILD_STAMP = Object.freeze({
                 const json = ImportExport.buildAppExportJSON();
                 Utils.downloadText(filename, json);
                 UIComponents.showToast('App JSON exported', 'success');
+              } catch (err) {
+                UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
+              }
+            },
+          },
+        ],
+      });
+    }
+
+    function openExportWorkspaceModal(workspaceName) {
+      const safeName = workspaceName ? String(workspaceName).trim() : 'workspace';
+      const slugName = safeName
+        .replace(/[^a-zA-Z0-9_-]/g, '-')
+        .replace(/-{2,}/g, '-')
+        .replace(/^-|-$/g, '') || 'workspace';
+      const filename = `${slugName}-workspace-${new Date().toISOString().slice(0, 10)}.json`;
+      const content = document.createElement('div');
+      content.style.display = 'grid';
+      content.style.gap = '12px';
+
+      const blurb = document.createElement('div');
+      blurb.className = 'muted';
+      blurb.style.fontSize = 'var(--text-sm)';
+      blurb.innerHTML =
+        '<div><strong>Workspace Export</strong> downloads a JSON backup of packs and cases for this workspace.</div>' +
+        '<div style="height:8px"></div>' +
+        '<div>Pack thumbnails are excluded. Account preferences and payment data are not included.</div>';
+
+      const meta = document.createElement('div');
+      meta.className = 'card';
+      meta.innerHTML = `
+              <div style="font-weight:var(--font-semibold);margin-bottom:6px">Export details</div>
+              <div class="muted" style="font-size:var(--text-sm)">File: ${Utils.escapeHtml(filename)}</div>
+            `;
+
+      content.appendChild(blurb);
+      content.appendChild(meta);
+
+      UIComponents.showModal({
+        title: 'Export Workspace Data',
+        content,
+        actions: [
+          { label: 'Cancel' },
+          {
+            label: 'Export',
+            variant: 'primary',
+            onClick: () => {
+              try {
+                const json = ImportExport.buildWorkspaceExportJSON(safeName);
+                Utils.downloadText(filename, json);
+                UIComponents.showToast('Workspace JSON exported', 'success');
               } catch (err) {
                 UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
               }

@@ -56,6 +56,7 @@ export function createSettingsOverlay({
   getAccountSwitcher,
   SupabaseClient,
   onExportApp: _onExportApp,
+  onExportWorkspace: _onExportWorkspace,
   onImportApp: _onImportApp,
   onHelp: _onHelp,
   onUpdates: _onUpdates,
@@ -5939,6 +5940,30 @@ export function createSettingsOverlay({
             ''
           );
           if (leaveOrgId && membershipData) {
+            if (isOwnerOrAdmin && typeof _onExportWorkspace === 'function') {
+              const exportWsDivider = doc.createElement('div');
+              exportWsDivider.className = 'tp3d-settings-org-divider';
+              viewContainer.appendChild(exportWsDivider);
+
+              const exportWsIntro = doc.createElement('div');
+              exportWsIntro.className = 'muted tp3d-settings-meta tp3d-settings-mt-md';
+              exportWsIntro.textContent = 'Download a JSON backup of this workspace\'s packs and cases.';
+              viewContainer.appendChild(exportWsIntro);
+
+              const exportWsActions = doc.createElement('div');
+              exportWsActions.className = 'tp3d-account-actions';
+              const exportWsBtn = doc.createElement('button');
+              exportWsBtn.type = 'button';
+              exportWsBtn.className = 'btn btn-ghost';
+              exportWsBtn.textContent = 'Export Workspace Data';
+              exportWsBtn.addEventListener('click', () => {
+                const wsName = orgData && orgData.name ? String(orgData.name) : '';
+                _onExportWorkspace(wsName);
+              });
+              exportWsActions.appendChild(exportWsBtn);
+              viewContainer.appendChild(exportWsActions);
+            }
+
             const leaveDivider = doc.createElement('div');
             leaveDivider.className = 'tp3d-settings-org-divider';
             viewContainer.appendChild(leaveDivider);
@@ -6017,6 +6042,12 @@ export function createSettingsOverlay({
               archiveIntro.className = 'muted tp3d-settings-meta tp3d-settings-mt-md';
               archiveIntro.textContent = 'Archive this workspace. It will be hidden from normal workspace switching.';
               viewContainer.appendChild(archiveIntro);
+
+              const archiveExportHint = doc.createElement('div');
+              archiveExportHint.className = 'muted tp3d-settings-meta tp3d-settings-mt-md';
+              archiveExportHint.textContent =
+                'Before archiving or making major workspace changes, you may export a workspace JSON backup.';
+              viewContainer.appendChild(archiveExportHint);
 
               const archiveActions = doc.createElement('div');
               archiveActions.className = 'tp3d-account-actions';

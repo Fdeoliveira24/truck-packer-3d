@@ -6,6 +6,8 @@ const billingServiceUrl = new URL('../../src/data/services/billing.service.js', 
 const accountOverlayPath = new URL('../../src/ui/overlays/account-overlay.js', import.meta.url);
 const appPath = new URL('../../src/app.js', import.meta.url);
 const indexHtmlPath = new URL('../../index.html', import.meta.url);
+const storagePath = new URL('../../src/core/storage.js', import.meta.url);
+const importExportPath = new URL('../../src/services/import-export.js', import.meta.url);
 const corsSharedPath = new URL('../../supabase/functions/_shared/cors.ts', import.meta.url);
 const supabasePath = new URL('../../src/core/supabase-client.js', import.meta.url);
 const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.meta.url);
@@ -2888,4 +2890,323 @@ test('phase 0.6D-pre 4B-3A legacy purge-deleted-users remains retired 410', asyn
     'legacy purge-deleted-users must keep neutral retired copy');
   assert.doesNotMatch(src, /auth\.admin\.deleteUser|serviceClient|createClient|\.from\(/,
     'legacy purge-deleted-users must not perform purge work');
+});
+
+// ── Phase 0.7A-1: Workspace export safety baseline ─────────────────────────
+
+test('phase 0.7A-1 exportAppJSON exists and returns JSON.stringify output', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportAppJSON()');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportAppJSON must be extractable');
+  assert.match(fn, /return JSON\.stringify\(payload,\s*null,\s*2\)/,
+    'exportAppJSON must return pretty JSON.stringify output');
+});
+
+test('phase 0.7A-1 exportAppJSON reads from StateStore and not raw localStorage scanning', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportAppJSON()');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportAppJSON must be extractable');
+  assert.match(fn, /StateStore\.get\(\)/,
+    'exportAppJSON must read the in-memory StateStore snapshot');
+  assert.doesNotMatch(fn, /localStorage|window\.localStorage|STORAGE_KEY|getScopedKey|getWorkspaceScopedKey/,
+    'exportAppJSON must not scan raw localStorage keys');
+});
+
+test('phase 0.7A-1 exportAppJSON top-level payload keys remain limited', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportAppJSON()');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportAppJSON must be extractable');
+  assert.match(fn, /app:\s*'Truck Packer 3D'/,
+    'exportAppJSON must include app');
+  assert.match(fn, /version:\s*APP_VERSION/,
+    'exportAppJSON must include version');
+  assert.match(fn, /exportedAt:\s*Date\.now\(\)/,
+    'exportAppJSON must include exportedAt');
+  assert.match(fn, /data:\s*\{/,
+    'exportAppJSON must include data object');
+  assert.doesNotMatch(fn, /exportType:|schemaVersion:|appVersion:|workspaceName:|organization_id:|owner_id:|user_id:|\bemail:/,
+    'exportAppJSON must not include workspace export or server identity top-level keys');
+});
+
+test('phase 0.7A-1 exportAppJSON data keys remain limited to cases packs and preferences', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportAppJSON()');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportAppJSON must be extractable');
+  assert.match(fn, /caseLibrary:\s*state\.caseLibrary/,
+    'exportAppJSON data must include caseLibrary');
+  assert.match(fn, /packLibrary:\s*state\.packLibrary/,
+    'exportAppJSON data must include packLibrary');
+  assert.match(fn, /preferences:\s*state\.preferences/,
+    'exportAppJSON data must include preferences');
+  assert.doesNotMatch(fn, /currentPackId/,
+    'exportAppJSON must not export transient currentPackId');
+  assert.doesNotMatch(fn, /folderLibrary|billing|members|invites/,
+    'exportAppJSON must not include folders, billing, members, or invites in baseline app export');
+});
+
+test('phase 0.7A-1 exportAppJSON does not export auth session token fields', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportAppJSON()');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportAppJSON must be extractable');
+  assert.doesNotMatch(fn, /access_token|refresh_token|id_token|bearer|authorization|service_role|apikey|apiKey/i,
+    'exportAppJSON must not export auth/session token or key fields');
+});
+
+test('phase 0.7A-1 exportAppJSON does not export Stripe or billing fields', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportAppJSON()');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportAppJSON must be extractable');
+  assert.doesNotMatch(fn, /stripe_customer_id|stripe_subscription_id|customer_id|subscription_id|billing_customers|subscriptions/i,
+    'exportAppJSON must not export Stripe or billing identifiers');
+});
+
+test('phase 0.7A-1 exportAppJSON does not export org server identity fields', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportAppJSON()');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportAppJSON must be extractable');
+  assert.doesNotMatch(fn, /organization_id|owner_id|user_id|\bemail\b|organization_members|auth\.users/i,
+    'exportAppJSON must not export org/server identity fields');
+});
+
+test('phase 0.7A-1 buildAppExportJSON delegates to CoreStorage.exportAppJSON', async () => {
+  const src = await fs.readFile(importExportPath, 'utf8');
+  const start = src.indexOf('export function buildAppExportJSON()');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'buildAppExportJSON must be extractable');
+  assert.match(fn, /CoreStorage\.exportAppJSON\(\)/,
+    'buildAppExportJSON must delegate to CoreStorage.exportAppJSON');
+  assert.doesNotMatch(fn, /organization_id|owner_id|user_id|stripe|billing|token|apikey|apiKey|localStorage/i,
+    'buildAppExportJSON wrapper must not inject unsafe fields');
+});
+
+test('phase 0.7A-1 baseline app export does not include exportType', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportAppJSON()');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportAppJSON must be extractable');
+  assert.doesNotMatch(fn, /exportType/,
+    'baseline app export must not include exportType yet');
+});
+
+// ── Phase 0.7A-2: Workspace JSON export MVP ────────────────────────────────
+
+test('phase 0.7A-2 exportWorkspaceJSON exists and returns JSON.stringify output', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportWorkspaceJSON(');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportWorkspaceJSON must be extractable');
+  assert.match(fn, /return JSON\.stringify\(payload,\s*null,\s*2\)/,
+    'exportWorkspaceJSON must return pretty JSON.stringify output');
+});
+
+test('phase 0.7A-2 exportWorkspaceJSON marks workspace export schema', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportWorkspaceJSON(');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportWorkspaceJSON must be extractable');
+  assert.match(fn, /app:\s*'Truck Packer 3D'/,
+    'workspace export must include app name');
+  assert.match(fn, /exportType:\s*'workspace'/,
+    'workspace export must set exportType to workspace');
+  assert.match(fn, /schemaVersion:\s*'workspace-export-v1'/,
+    'workspace export must set schemaVersion to workspace-export-v1');
+  assert.match(fn, /appVersion:\s*APP_VERSION/,
+    'workspace export must include appVersion from APP_VERSION');
+  assert.match(fn, /exportedAt:\s*Date\.now\(\)/,
+    'workspace export must include exportedAt');
+  assert.match(fn, /workspaceName:/,
+    'workspace export must include display-only workspaceName');
+});
+
+test('phase 0.7A-2 exportWorkspaceJSON reads from StateStore and not raw storage keys', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportWorkspaceJSON(');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportWorkspaceJSON must be extractable');
+  assert.match(fn, /StateStore\.get\(\)/,
+    'workspace export must read the in-memory StateStore snapshot');
+  assert.doesNotMatch(fn, /localStorage|window\.localStorage|STORAGE_KEY|getScopedKey|getWorkspaceScopedKey/,
+    'workspace export must not scan raw localStorage keys');
+});
+
+test('phase 0.7A-2 exportWorkspaceJSON data is limited to cases and packs', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportWorkspaceJSON(');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportWorkspaceJSON must be extractable');
+  assert.match(fn, /caseLibrary:/,
+    'workspace export must include caseLibrary');
+  assert.match(fn, /packLibrary:\s*strippedPacks/,
+    'workspace export must include stripped packLibrary');
+  assert.doesNotMatch(fn, /preferences:\s*state\.preferences|currentPackId|folderLibrary/,
+    'workspace export must not include preferences, currentPackId, or folders');
+});
+
+test('phase 0.7A-2 exportWorkspaceJSON strips pack thumbnails', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportWorkspaceJSON(');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportWorkspaceJSON must be extractable');
+  assert.match(fn, /thumbnail:\s*null/,
+    'workspace export must set pack thumbnail to null');
+  assert.match(fn, /thumbnailUpdatedAt:\s*null/,
+    'workspace export must set thumbnailUpdatedAt to null');
+});
+
+test('phase 0.7A-2 exportWorkspaceJSON does not expose auth billing or server identity fields', async () => {
+  const src = await fs.readFile(storagePath, 'utf8');
+  const start = src.indexOf('export function exportWorkspaceJSON(');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'exportWorkspaceJSON must be extractable');
+  assert.doesNotMatch(fn, /access_token|refresh_token|id_token|bearer|authorization|service_role|apikey|apiKey/i,
+    'workspace export must not include auth/session tokens or Supabase keys');
+  assert.doesNotMatch(fn, /stripe_customer_id|stripe_subscription_id|customer_id|subscription_id|billing_customers|subscriptions/i,
+    'workspace export must not include Stripe or billing identifiers');
+  assert.doesNotMatch(fn, /organization_id|owner_id|user_id|\bemail\b|organization_members|auth\.users|storage\.from/i,
+    'workspace export must not include server identity, membership, auth table, or private storage fields');
+});
+
+test('phase 0.7A-2 buildWorkspaceExportJSON delegates to CoreStorage.exportWorkspaceJSON', async () => {
+  const src = await fs.readFile(importExportPath, 'utf8');
+  const start = src.indexOf('export function buildWorkspaceExportJSON(');
+  const end = src.indexOf('\nexport function', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'buildWorkspaceExportJSON must be extractable');
+  assert.match(fn, /CoreStorage\.exportWorkspaceJSON\(workspaceName\)/,
+    'buildWorkspaceExportJSON must delegate to CoreStorage.exportWorkspaceJSON');
+  assert.doesNotMatch(fn, /organization_id|owner_id|user_id|stripe|billing|token|apikey|apiKey|localStorage/i,
+    'buildWorkspaceExportJSON wrapper must not inject unsafe fields');
+});
+
+test('phase 0.7A-2 parseWorkspaceImportJSON validates workspace export type', async () => {
+  const src = await fs.readFile(importExportPath, 'utf8');
+  const start = src.indexOf('export function parseWorkspaceImportJSON(');
+  const fn = start >= 0 ? src.slice(start) : '';
+
+  assert.ok(fn, 'parseWorkspaceImportJSON must be extractable');
+  assert.match(fn, /parsed\.exportType\s*!==\s*'workspace'/,
+    'workspace import parser must require exportType workspace');
+  assert.match(fn, /Not a workspace export file/,
+    'workspace import parser must throw a clear non-workspace error');
+});
+
+test('phase 0.7A-2 parseWorkspaceImportJSON validates case and pack arrays', async () => {
+  const src = await fs.readFile(importExportPath, 'utf8');
+  const start = src.indexOf('export function parseWorkspaceImportJSON(');
+  const fn = start >= 0 ? src.slice(start) : '';
+
+  assert.ok(fn, 'parseWorkspaceImportJSON must be extractable');
+  assert.match(fn, /Array\.isArray\(data\.caseLibrary\)/,
+    'workspace import parser must validate caseLibrary array');
+  assert.match(fn, /Array\.isArray\(data\.packLibrary\)/,
+    'workspace import parser must validate packLibrary array');
+  assert.match(fn, /workspaceName:\s*parsed\.workspaceName \? String\(parsed\.workspaceName\) : ''/,
+    'workspace import parser must return a safe workspaceName string');
+});
+
+test('phase 0.7A-2 app exposes workspace export modal using existing download path', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function openExportWorkspaceModal(');
+  const end = src.indexOf('\n    function openImportAppDialog', start + 1);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'openExportWorkspaceModal must be extractable');
+  assert.match(fn, /ImportExport\.buildWorkspaceExportJSON\(safeName\)/,
+    'workspace export modal must build workspace JSON through ImportExport');
+  assert.match(fn, /Utils\.downloadText\(filename, json\)/,
+    'workspace export modal must use existing downloadText path');
+  assert.match(fn, /UIComponents\.showModal\(/,
+    'workspace export modal must use existing modal pattern');
+  assert.match(fn, /UIComponents\.showToast\(/,
+    'workspace export modal must use existing toast pattern');
+  assert.doesNotMatch(fn, /signOut|location\.reload|stripe|organization_id|owner_id|user_id|auth\.users|organization_members/i,
+    'workspace export modal must not touch auth, reload, Stripe, or server identity data');
+});
+
+test('phase 0.7A-2 Settings General has Owner Admin gated Export Workspace Data action', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.match(src, /onExportWorkspace:\s*_onExportWorkspace/,
+    'settings overlay must accept onExportWorkspace callback');
+  assert.match(src, /if \(isOwnerOrAdmin && typeof _onExportWorkspace === 'function'\)/,
+    'workspace export action must fail closed unless owner/admin role and callback are available');
+  assert.match(src, /Export Workspace Data/,
+    'settings general must include Export Workspace Data action label');
+  assert.match(src, /_onExportWorkspace\(wsName\)/,
+    'settings general export button must call onExportWorkspace with workspace display name');
+});
+
+test('phase 0.7A-2 Settings includes archive export reminder without forcing archive export', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.match(src, /Before archiving or making major workspace changes, you may export a workspace JSON backup\./,
+    'archive section must include optional workspace export reminder');
+  assert.doesNotMatch(src, /await _onExportWorkspace|if \(confirmed\) await _onExportWorkspace/,
+    'archive flow must not force workspace export before archiving');
+});
+
+test('phase 0.7A-2 workspace export integration is wired into settings overlay only', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  assert.match(src, /onExportWorkspace:\s*openExportWorkspaceModal/,
+    'app must wire openExportWorkspaceModal into settings overlay');
+  assert.doesNotMatch(src, /window\.TruckPackerApp\.openExportWorkspace|window\.openExportWorkspace/,
+    'workspace export must not add global browser entry points');
+});
+
+test('phase 0.7A-2 workspace export code avoids backend and lifecycle scope', async () => {
+  const storageSrc = await fs.readFile(storagePath, 'utf8');
+  const storageStart = storageSrc.indexOf('export function exportWorkspaceJSON(');
+  const storageEnd = storageSrc.indexOf('\nexport function', storageStart + 1);
+  const storageFn = storageStart >= 0 && storageEnd > storageStart ? storageSrc.slice(storageStart, storageEnd) : '';
+
+  const importExportSrc = await fs.readFile(importExportPath, 'utf8');
+  const buildStart = importExportSrc.indexOf('export function buildWorkspaceExportJSON(');
+  const exportFns = buildStart >= 0 ? importExportSrc.slice(buildStart) : '';
+  const combined = `${storageFn}\n${exportFns}`;
+
+  assert.doesNotMatch(combined, /supabase\/functions|functions\.invoke|createClient|serviceClient|EdgeFunction|migration/i,
+    'workspace export must not add Edge Function or migration behavior');
+  assert.doesNotMatch(combined, /billing-status|stripe|checkout|portal|webhook|billing_customers|subscriptions/i,
+    'workspace export must not touch Stripe, billing-status, or billing tables');
+  assert.doesNotMatch(combined, /archiveWorkspace|restoreWorkspace|transferOwnership|leaveWorkspace|requestAccountDeletion|purge/i,
+    'workspace export must not touch workspace lifecycle or account deletion/purge flows');
 });

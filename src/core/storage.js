@@ -242,6 +242,28 @@ export function exportAppJSON() {
   return JSON.stringify(payload, null, 2);
 }
 
+export function exportWorkspaceJSON(workspaceName) {
+  const state = StateStore.get();
+  const strippedPacks = (Array.isArray(state.packLibrary) ? state.packLibrary : []).map(pack => ({
+    ...(pack || {}),
+    thumbnail: null,
+    thumbnailUpdatedAt: null,
+  }));
+  const payload = {
+    app: 'Truck Packer 3D',
+    exportType: 'workspace',
+    schemaVersion: 'workspace-export-v1',
+    appVersion: APP_VERSION,
+    exportedAt: Date.now(),
+    workspaceName: workspaceName ? String(workspaceName).trim() : '',
+    data: {
+      caseLibrary: Array.isArray(state.caseLibrary) ? state.caseLibrary : [],
+      packLibrary: strippedPacks,
+    },
+  };
+  return JSON.stringify(payload, null, 2);
+}
+
 export function importAppJSON(jsonText) {
   try {
     const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));

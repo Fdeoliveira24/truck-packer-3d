@@ -270,3 +270,23 @@ export function buildAppExportJSON() {
 export function parseAppImportJSON(jsonText) {
   return CoreStorage.importAppJSON(jsonText);
 }
+
+export function buildWorkspaceExportJSON(workspaceName) {
+  return CoreStorage.exportWorkspaceJSON(workspaceName);
+}
+
+export function parseWorkspaceImportJSON(jsonText) {
+  const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
+  if (!parsed || typeof parsed !== 'object') throw new Error('Invalid JSON');
+  if (parsed.exportType !== 'workspace') {
+    throw new Error('Not a workspace export file. Please use a file exported with "Export Workspace Data".');
+  }
+  const data = parsed.data && typeof parsed.data === 'object' ? parsed.data : {};
+  if (!Array.isArray(data.caseLibrary)) throw new Error('Missing caseLibrary in workspace export');
+  if (!Array.isArray(data.packLibrary)) throw new Error('Missing packLibrary in workspace export');
+  return {
+    caseLibrary: data.caseLibrary,
+    packLibrary: data.packLibrary,
+    workspaceName: parsed.workspaceName ? String(parsed.workspaceName) : '',
+  };
+}

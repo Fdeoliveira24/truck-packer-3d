@@ -3707,6 +3707,7 @@ test('phase 0.7B-1B folder foundation and production readiness changes stay insi
     .filter(Boolean)
     .map(line => line.slice(3));
   const allowed = new Set([
+    'src/app.js',
     'src/core/state-store.js',
     'src/core/storage.js',
     'src/core/normalizer.js',
@@ -3739,4 +3740,64 @@ test('production readiness settings billing fallback requires isPro and isActive
     'settings must keep entitlementStatus-present behavior based on isEntitlementAllowed');
   assert.doesNotMatch(billingRender, /const isProOrTrial = entitlementStatus \? isEntitlementAllowed : state\.isPro;/,
     'settings fallback must not treat raw state.isPro alone as usable');
+});
+
+test('phase 0.7C-pre folderLibrary changes participate in autosave with packLibrary changes', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const saveCall = 'Storage.saveSoon();';
+  const saveCallIndex = src.indexOf(saveCall);
+  const conditionStart = src.lastIndexOf('if (', saveCallIndex);
+  const autosaveBlock = conditionStart >= 0 && saveCallIndex > conditionStart
+    ? src.slice(conditionStart, saveCallIndex + saveCall.length)
+    : '';
+
+  assert.ok(autosaveBlock.length > 0,
+    'app StateStore autosave block must be extractable');
+  assert.match(autosaveBlock, /changes\.packLibrary/,
+    'autosave block must still include packLibrary');
+  assert.match(autosaveBlock, /changes\.folderLibrary/,
+    'folderLibrary changes must trigger the same autosave path as packLibrary');
+  assert.match(autosaveBlock, /!suspendAutoSave/,
+    'folderLibrary autosave must preserve existing suspendAutoSave guard');
+});
+
+test('phase 0.7C-pre folderLibrary changes trigger Packs screen render with packLibrary changes', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const renderCall = 'PacksUI.render();';
+  const renderCallIndex = src.indexOf(renderCall, src.indexOf('StateStore.subscribe(changes =>'));
+  const conditionStart = src.lastIndexOf('if (', renderCallIndex);
+  const renderBlock = conditionStart >= 0 && renderCallIndex > conditionStart
+    ? src.slice(conditionStart, renderCallIndex + renderCall.length)
+    : '';
+
+  assert.ok(renderBlock.length > 0,
+    'app StateStore packs render block must be extractable');
+  assert.match(renderBlock, /changes\.packLibrary/,
+    'packs render block must still include packLibrary');
+  assert.match(renderBlock, /changes\.folderLibrary/,
+    'folderLibrary changes must trigger the same PacksUI.render path as packLibrary');
+});
+
+test('phase 0.7C-pre persistence render guard does not import folder UI or touch forbidden scope', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const { stdout } = await execFileAsync('git', ['status', '--short', '--untracked-files=all']);
+  const changedFiles = stdout
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter(Boolean)
+    .map(line => line.slice(3));
+  const allowed = new Set([
+    'src/app.js',
+    'tests/audit/security-and-invariants.spec.mjs',
+    // Pre-existing running-log note in this workspace; not part of Phase 0.7C-pre.
+    'docs/product/TP3D-MASTER-TODO-V3.md',
+  ]);
+  const unexpected = changedFiles.filter(file => !allowed.has(file));
+
+  assert.deepEqual(unexpected, [],
+    'Phase 0.7C-pre must not change folder model files, pack screen UI, CSS, index.html, package files, Supabase, Stripe, billing-status, migrations, workspace lifecycle, or router');
+  assert.doesNotMatch(appSrc, /import\s+\*\s+as\s+FolderLibrary|from ['"]\.\/services\/folder-library\.js['"]/,
+    'Phase 0.7C-pre must not import FolderLibrary into app.js');
+  assert.doesNotMatch(appSrc, /createFolder|renameFolder|deleteFolder|movePackToFolder|getPacksInFolder/,
+    'Phase 0.7C-pre must not wire folder UI or folder CRUD actions in app.js');
 });

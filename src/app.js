@@ -9609,6 +9609,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             changes.preferences ||
             changes.caseLibrary ||
             changes.packLibrary ||
+            changes.folderLibrary ||
             changes.currentPackId ||
             changes._undo ||
             changes._redo ||
@@ -9642,7 +9643,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           if (StateStore.get('currentScreen') === 'editor') EditorUI.render();
         }
 
-        if (changes.caseLibrary || changes.packLibrary || changes._undo || changes._redo || changes._replace) {
+        if (changes.caseLibrary || changes.packLibrary || changes.folderLibrary || changes._undo || changes._redo || changes._replace) {
           PacksUI.render();
           CasesUI.render();
           EditorUI.render();

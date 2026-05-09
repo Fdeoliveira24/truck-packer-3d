@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-08 — Phase 0.7A Workspace JSON Export committed on branch `phase-0-7a-workspace-export-safety`; next priority is merge/deploy decision and Phase 0.7B Folder System data-model audit
+Last updated: 2026-05-08 — Phase 0.7A Workspace JSON Export, Phase 0.7B local pack-folder data model, and Settings billing fallback are merged/pushed; live billing-status P1 was not reproduced and is closed; next priority is Phase 0.7C Pack Folder UI planning
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -384,6 +384,34 @@ P0 is green only when ALL items here are checked:
 ## Running log (keep updated)
 
 
+- Date: 2026-05-08 — Live billing-status proof completed; final billing P1 closed
+- What changed:
+  - Completed read-only live verification against deployed Supabase project `yduzbvijzwczjapanxbd`.
+  - No code, database rows, deploys, Stripe records, migrations, Edge Functions, frontend files, workspace lifecycle code, or folder code were changed during the verification.
+  - Confirmed active Pro and inherited-plan workspaces now return usable billing fields.
+  - Confirmed archived workspaces return sentinel `billing_unavailable` values as expected and should not be treated as Pro billing bugs.
+- Validation:
+  - `test1 / test1-Workspace`: `status=active`, `entitlementStatus=active`, `isActive=true`, `isPro=true`, `workspaceIncluded=true`, `workspaceCount=2`, `workspaceLimit=3`, `canManageBilling=true`, `portalAvailable=true`, `interval=year`, `currentPeriodEnd=2027-05-02`.
+  - `test1 / WS-test1`: `status=active`, `entitlementStatus=included_in_plan`, `isActive=true`, `isPro=true`, `workspaceIncluded=true`, `workspaceCount=2`, `workspaceLimit=3`, `canManageBilling=true`, `portalAvailable=true`, `interval=year`, `currentPeriodEnd=2027-05-02`.
+  - `test2 / Test2 Workspace`: `status=active`, `entitlementStatus=active`, `isActive=true`, `isPro=true`, `workspaceIncluded=true`, `workspaceCount=3`, `workspaceLimit=3`, `canManageBilling=true`, `portalAvailable=true`, `interval=year`, `currentPeriodEnd=2027-02-23`.
+  - `test2 / WS-test2@test.com`: `status=active`, `entitlementStatus=included_in_plan`, `isActive=true`, `isPro=true`, `workspaceIncluded=true`, `workspaceCount=3`, `workspaceLimit=3`, `canManageBilling=true`, `portalAvailable=true`, `interval=year`, `currentPeriodEnd=2027-02-23`.
+  - `test2 / WS-Test2@test.com-ws2`: `status=active`, `entitlementStatus=included_in_plan`, `isActive=true`, `isPro=true`, `workspaceIncluded=true`, `workspaceCount=3`, `workspaceLimit=3`, `canManageBilling=true`, `portalAvailable=true`, `interval=year`, `currentPeriodEnd=2027-02-23`.
+  - `test4 / WS-test4-w-1`: `status=active`, `entitlementStatus=included_in_plan`, `isActive=true`, `isPro=true`, `workspaceIncluded=true`, `workspaceCount=7`, `workspaceLimit=3`, `canManageBilling=true`, `portalAvailable=true`, `interval=month`, `currentPeriodEnd=2026-05-26`.
+  - `test6 / test6 Workspace`: `status=trial_expired`, `entitlementStatus=trial_expired`, `isActive=false`, `isPro=false`, `workspaceIncluded=false`, `workspaceCount=2`, `workspaceLimit=1`, `canManageBilling=true`, `portalAvailable=false`, `interval=unknown`, `currentPeriodEnd=null`; this is the expected blocked state.
+  - `test6 / wspace-test6`: `status=none`, `entitlementStatus=owner_subscription_required`, `isActive=false`, `isPro=false`, `workspaceIncluded=false`, `workspaceCount=2`, `workspaceLimit=3`, `canManageBilling=true`, `portalAvailable=true`, `interval=unknown`, `currentPeriodEnd=null`; this is the expected blocked state.
+  - Archived samples returned `status=none` and `entitlementStatus=billing_unavailable`, which is expected sentinel behavior.
+- Result:
+  - Active Pro workspaces did not return `status=none`, `interval=unknown`, `currentPeriodEnd=null`, or `portalAvailable=false`.
+  - `included_in_plan` workspaces returned `isActive=true` and `isPro=true`, so AutoPack/PDF should be allowed by `getProRuleSet`.
+  - `trial_expired` returned `isActive=false` and `isPro=false`, so AutoPack/PDF should be blocked.
+  - No current active `workspace_limit_reached` workspace was available in this dataset; test6’s second workspace currently returns `owner_subscription_required`, not `workspace_limit_reached`.
+  - Test6 has 2 active workspaces from `get_user_organizations`, so the second workspace is visible at the API/switcher data level.
+  - Final billing-status P1 was not reproduced and is closed.
+- Still required:
+  - Keep future billing changes separate from folder UI work.
+  - Use Phase 0.7C as a planning-only pass before implementing pack-folder UI.
+
+
 - Date: 2026-05-08 — Phase 0.7A Workspace JSON Export MVP committed on feature branch
 - What changed:
   - Added safe client-only Workspace JSON Export on branch `phase-0-7a-workspace-export-safety`.
@@ -401,8 +429,6 @@ P0 is green only when ALL items here are checked:
   - Deploy static frontend assets so the new browser JS is live.
   - Run manual admin/member browser sign-off when safe accounts are available.
   - Start Phase 0.7B Folder System data-model audit before adding folder code.
-
-
 
 
 - Date: 2026-05-07 — Phase 0.6D-pre remote deploy verified
@@ -1155,7 +1181,7 @@ Goal: add safe workspace lifecycle tools without data loss, billing mistakes, or
 
 ---
 
-## Phase 0.7 — Workspace Data Export — IN PROGRESS
+## Phase 0.7 — Workspace Data Export and Folder Foundation — IN PROGRESS
 
 Goal: let users safely export workspace data before high-risk lifecycle actions.
 
@@ -1175,15 +1201,89 @@ Completed:
 - [x] Local validation passed at `npm test` 200/200 with lint 0 errors and typecheck clean.
 
 Still required:
-- [ ] Merge or fast-forward `phase-0-7a-workspace-export-safety` into `main` and push `main`.
-- [ ] Static frontend deploy required for the new browser JS export path.
-- [ ] Manual browser sign-off: owner sees export, admin sees export, member does not, modal opens, JSON downloads/parses, thumbnails are null, forbidden fields are absent, and existing App Export still works.
+- [x] Merged/fast-forwarded `phase-0-7a-workspace-export-safety` into `main` and pushed `main`.
+- [ ] Static frontend deploy required for the new browser JS export path and folder data-model code.
+- [ ] Manual browser sign-off remains for Workspace Export owner/admin/member visibility and actual host-browser file download inspection. Owner path was tested earlier; admin/member path still needs safe accounts.
 - [ ] Workspace import UI is not wired yet; parser exists only as groundwork.
+
+### Phase 0.7B — Local Pack-Folder Data Model Foundation — IMPLEMENTED / MERGED
+
+Completed:
+- [x] Added local pack-only folder data model foundation.
+- [x] Added workspace-scoped `folderLibrary` state/storage data.
+- [x] Added nullable `pack.folderId` support.
+- [x] Added `normalizeFolder()` and stale `pack.folderId` cleanup when referenced folders do not exist.
+- [x] Added UI-free `src/services/folder-library.js` with list/create/rename/delete/move/get-packs behavior.
+- [x] Folder deletion removes only folder metadata and nulls affected `pack.folderId` values; it does not delete packs or cases.
+- [x] Pack deletion does not mutate folder rows.
+- [x] Workspace Export now includes `folderLibrary` and preserves `pack.folderId` while still stripping thumbnails.
+- [x] Workspace Import parser accepts missing `folderLibrary` as `[]` and rejects malformed non-array folder data.
+- [x] Single-pack import/export defaults folder assignment to `null`.
+- [x] App Export is now treated as the full local backup path and includes `folderLibrary` safely through normalization.
+- [x] Added static/runtime audit coverage for folder storage, normalization, service behavior, export/import, and scope guards.
+- [x] Merged and pushed to `main` in commit `805f820`.
+- [x] Validation passed at `npm test` 219/219 before the Settings fallback fix.
+
+Still required:
+- [ ] No folder UI exists yet; browser folder workflows are not user-testable until Phase 0.7C+.
+- [ ] Plan Phase 0.7C Pack Folder UI before implementation.
+- [ ] Keep folder UI work separate from billing, auth, Stripe, Supabase, lifecycle, migrations, router, package files, and CSS unless a direct UI need is proven.
+
+
+### Production readiness billing re-validation — CLOSED
+
+Completed:
+- [x] Fixed Settings Billing fallback so missing `entitlementStatus` requires `Boolean(state.isPro && state.isActive)`, not raw `state.isPro`.
+- [x] Added audit test proving the Settings fallback requires both Pro and active when `entitlementStatus` is absent.
+- [x] Merged and pushed to `main` in commit `7579ab0`.
+- [x] Validation passed at `npm test` 220/220 with lint/typecheck clean and existing warnings only.
+- [x] Completed read-only live billing-status verification against deployed Supabase project `yduzbvijzwczjapanxbd`.
+- [x] Active Pro and `included_in_plan` workspaces returned good billing fields and portal availability.
+- [x] `trial_expired` and `owner_subscription_required` returned expected blocked states.
+- [x] Archived workspaces returned `billing_unavailable` sentinel values as expected.
+- [x] Final billing-status P1 was not reproduced and is closed.
+
+Current production-readiness status:
+- [x] No confirmed code-level P0 remains from the latest audit cycle.
+- [x] No confirmed billing-status P1 remains after live proof.
+- [ ] Data hygiene follow-up remains optional: review archived/test workspace counts and orphan owner rows only with read-only SQL first.
+
+
+### Phase 0.7C — Pack Folder UI — PLANNING NEXT
+
+Goal: add a small, safe UI on top of the completed local pack-folder data model.
+
+Planning rules:
+- [ ] Start with a read-only UI audit before implementation.
+- [ ] Reuse existing Packs screen patterns for filters, actions, buttons, and empty states.
+- [ ] Keep scope pack-only for the first UI release.
+- [ ] Do not add case folders in this phase.
+- [ ] Do not touch Supabase, Edge Functions, Stripe, billing-status, workspace lifecycle, migrations, router, package files, or `index.html`.
+- [ ] Avoid new CSS unless a direct UI gap is proven.
+- [ ] Do not change folder data model unless a real bug is found.
+
+Likely UI flows to plan:
+- [ ] Create folder.
+- [ ] Rename folder.
+- [ ] Delete folder and keep packs.
+- [ ] Move pack to folder.
+- [ ] Move pack back to Unfoldered.
+- [ ] Filter packs by folder.
+- [ ] Confirm workspace switch/reload does not leak folder state.
+- [ ] Confirm Workspace Export includes folders after UI use.
+
+
+### Current production-readiness blocker status — CURRENT
+
+Current confirmed P0 blockers: none.
+Current confirmed billing-status P1 blockers: none after read-only live verification on 2026-05-08.
+Remaining follow-ups are product work, UI planning, browser smoke checks, and optional data hygiene audits.
+
 
 ### Export scope
 - [x] Export packs/projects.
 - [x] Export item/case library.
-- [ ] Export categories/preferences where safe. Current 0.7A export intentionally excludes user preferences; revisit only if workspace-safe category data becomes separate from user preferences.
+- [ ] Export categories/preferences where safe. Current Workspace Export intentionally excludes user preferences; App Export is the full local backup path and includes preferences plus local libraries.
 - [ ] Export member/invite summary where allowed. Deferred because it would require server reads and role decisions.
 - [ ] Export billing summary only as safe labels, never payment secrets. Deferred; current 0.7A export includes no billing data.
 
@@ -1191,6 +1291,7 @@ Still required:
 - [x] Owner/Admin can export workspace data through Settings UI.
 - [x] Member export permission defaults to no full workspace export.
 - [x] Export is scoped to the active workspace only.
+- [x] Workspace Export includes `folderLibrary` once the local folder data model is live.
 - [x] Export never includes Supabase JWTs, Stripe customer IDs, subscription IDs, service keys, private tokens, raw org/user IDs, or private storage paths.
 - [x] Export can be used before archive/transfer/delete as a safety step.
 
@@ -1270,7 +1371,7 @@ Membership and invite lifecycle is now part of Phase 0.5 because it blocks archi
 ## P1.3 — Product backlog from comparison research — LATER
 - [ ] Packing Groups.
 - [ ] URL-based sharing beyond JSON import/export.
-- [ ] Folder system. Next step: Phase 0.7B data-model audit before implementation. Preferred starting point is pack-only folders with workspace-scoped `folderLibrary` and `pack.folderId` references, pending audit confirmation.
+- [ ] Folder system UI. Phase 0.7B local pack-folder data model is implemented and merged. Next step is Phase 0.7C Pack Folder UI planning before any UI implementation. Preferred UI scope: pack-only folders first, using existing Packs screen patterns and no billing/backend scope.
 - [ ] Weight heatmap refinements.
 - [ ] Additional manual measurement / snapping / view parity as needed.
 

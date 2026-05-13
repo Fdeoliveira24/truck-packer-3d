@@ -4093,8 +4093,8 @@ test('phase 0.7C-1B scoped CSS styles only the packs folder button', async () =>
     'icon style must be scoped');
   assert.match(block, /\.tp3d-packs-folder-btn__label[\s\S]{0,220}text-overflow:\s*ellipsis/,
     'label style must truncate long folder names');
-  assert.match(block, /\.tp3d-packs-folder-btn__caret/,
-    'caret style must be scoped');
+  assert.doesNotMatch(block, /\.tp3d-packs-folder-btn__caret/,
+    'caret CSS must stay removed because the Folders button no longer renders a caret');
   assert.doesNotMatch(block, /\.btn\b|\.dropdown-menu|\.dropdown-item/,
     'Phase 0.7C-1B CSS must not style global buttons or dropdowns');
 });
@@ -4137,6 +4137,7 @@ test('phase 0.7C-2 changed files stay within allowed create-folder scope', async
   const allowedFiles = new Set([
     'src/app.js',
     'src/screens/packs-screen.js',
+    'styles/main.css',
     'tests/audit/security-and-invariants.spec.mjs',
   ]);
   const { stdout } = await execFileAsync('git', ['diff', '--name-only']);
@@ -4148,7 +4149,7 @@ test('phase 0.7C-2 changed files stay within allowed create-folder scope', async
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
-    'Phase 0.7C-2 must only edit packs-screen.js and security-and-invariants.spec.mjs');
+    'Phase 0.7C-2/5 correction must only edit app.js, packs-screen.js, scoped packs CSS, and security-and-invariants.spec.mjs');
 });
 
 test('phase 0.7C-2 create folder uses existing modal and folder library create API', async () => {
@@ -4275,7 +4276,6 @@ test('phase 0.7C-2 avoids forbidden backend billing auth settings package and in
     'src/ui/ui-components.js',
     'src/data/services/billing.service.js',
     'src/router.js',
-    'styles/main.css',
     'supabase/functions',
     'supabase/migrations',
     'supabase/config.toml',
@@ -4286,7 +4286,7 @@ test('phase 0.7C-2 avoids forbidden backend billing auth settings package and in
     .filter(Boolean);
 
   assert.deepEqual(changedForbiddenFiles, [],
-    'Phase 0.7C-2 must not touch backend, data model, settings, CSS, package, router, or index scope');
+    'Phase 0.7C-2/5 correction must not touch backend, data model, settings, package, router, or index scope');
   assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
     'create folder UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
 });
@@ -4299,6 +4299,7 @@ test('phase 0.7C-3 changed files stay within allowed move-folder scope', async (
   const allowedFiles = new Set([
     'src/app.js',
     'src/screens/packs-screen.js',
+    'styles/main.css',
     'tests/audit/security-and-invariants.spec.mjs',
   ]);
   const { stdout } = await execFileAsync('git', ['diff', '--name-only']);
@@ -4310,7 +4311,7 @@ test('phase 0.7C-3 changed files stay within allowed move-folder scope', async (
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
-    'Phase 0.7C-3/4B must only edit app.js, packs-screen.js, and security-and-invariants.spec.mjs');
+    'Phase 0.7C-3/4B/5 must only edit app.js, packs-screen.js, scoped packs CSS, and security-and-invariants.spec.mjs');
 });
 
 test('phase 0.7C-3 move modal uses folder library move API', async () => {
@@ -4435,7 +4436,6 @@ test('phase 0.7C-3 avoids forbidden backend billing auth settings storage packag
     'src/ui/ui-components.js',
     'src/data/services/billing.service.js',
     'src/router.js',
-    'styles/main.css',
     'supabase/functions',
     'supabase/migrations',
     'supabase/config.toml',
@@ -4446,7 +4446,7 @@ test('phase 0.7C-3 avoids forbidden backend billing auth settings storage packag
     .filter(Boolean);
 
   assert.deepEqual(changedForbiddenFiles, [],
-    'Phase 0.7C-3 must not touch backend, storage/model, settings, CSS, package, router, or index scope');
+    'Phase 0.7C-3/5 correction must not touch backend, storage/model, settings, package, router, or index scope');
   assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
     'move folder UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
 });
@@ -4459,6 +4459,7 @@ test('phase 0.7C-4 changed files stay within allowed rename-delete scope', async
   const allowedFiles = new Set([
     'src/app.js',
     'src/screens/packs-screen.js',
+    'styles/main.css',
     'tests/audit/security-and-invariants.spec.mjs',
   ]);
   const { stdout } = await execFileAsync('git', ['diff', '--name-only']);
@@ -4470,7 +4471,7 @@ test('phase 0.7C-4 changed files stay within allowed rename-delete scope', async
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
-    'Phase 0.7C-4/4B must only edit app.js, packs-screen.js, and security-and-invariants.spec.mjs');
+    'Phase 0.7C-4/4B/5 must only edit app.js, packs-screen.js, scoped packs CSS, and security-and-invariants.spec.mjs');
 });
 
 test('phase 0.7C-4 rename folder uses existing modal and folder library rename API', async () => {
@@ -4595,7 +4596,6 @@ test('phase 0.7C-4 avoids forbidden backend billing auth storage package and ind
     'src/ui/ui-components.js',
     'src/data/services/billing.service.js',
     'src/router.js',
-    'styles/main.css',
     'supabase/functions',
     'supabase/migrations',
     'supabase/config.toml',
@@ -4606,7 +4606,7 @@ test('phase 0.7C-4 avoids forbidden backend billing auth storage package and ind
     .filter(Boolean);
 
   assert.deepEqual(changedForbiddenFiles, [],
-    'Phase 0.7C-4 must not touch backend, storage/model, overlays, CSS, package, router, or index scope');
+    'Phase 0.7C-4/5 correction must not touch backend, storage/model, overlays, package, router, or index scope');
   assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
     'rename delete folder UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
 });
@@ -4731,7 +4731,6 @@ test('phase 0.7C-4B avoids native dialogs and forbidden file scope', async () =>
     'src/ui/ui-components.js',
     'src/data/services/billing.service.js',
     'src/router.js',
-    'styles/main.css',
     'supabase/functions',
     'supabase/migrations',
     'supabase/config.toml',
@@ -4742,7 +4741,7 @@ test('phase 0.7C-4B avoids native dialogs and forbidden file scope', async () =>
     .filter(Boolean);
 
   assert.deepEqual(changedForbiddenFiles, [],
-    'Phase 0.7C-4B must not touch backend, storage service, folder service, overlays, CSS, package, router, or index scope');
+    'Phase 0.7C-4B/5 correction must not touch backend, storage service, folder service, overlays, package, router, or index scope');
   assert.doesNotMatch(src, /window\.prompt|window\.alert|window\.confirm/,
     'Packs screen must not use window prompt alert or confirm APIs');
   assert.doesNotMatch(src, /(^|[^\w.])prompt\s*\(|(^|[^\w.])alert\s*\(|(^|[^\w.])confirm\s*\(/,

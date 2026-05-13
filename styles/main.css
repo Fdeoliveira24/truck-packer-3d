@@ -2713,16 +2713,12 @@ body.modal-open {
   color: var(--text-primary);
 }
 
-.tp3d-packs-folder-btn__icon,
-.tp3d-packs-folder-btn__caret {
+.tp3d-packs-folder-btn__icon {
   display: inline-flex;
   align-items: center;
   color: inherit;
-  line-height: 1;
-}
-
-.tp3d-packs-folder-btn__icon {
   font-size: 0.9em;
+  line-height: 1;
 }
 
 .tp3d-packs-folder-btn__label {
@@ -2731,11 +2727,6 @@ body.modal-open {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.tp3d-packs-folder-btn__caret {
-  color: var(--text-muted);
-  font-size: 0.75em;
 }
 
 .tp3d-packs-titlewrap {

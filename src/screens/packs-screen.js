@@ -435,57 +435,65 @@ export function createPacksScreen({
     }
 
     function movePackToFolder(pack, folderIdOrNull) {
-      if (!pack || !pack.id) return;
+      if (!pack || !pack.id) return false;
       const moved = FolderLibrary.movePackToFolder(pack.id, folderIdOrNull);
       if (!moved) {
         UIComponents.showToast('Could not move pack to folder', 'warning');
-        return;
+        return false;
       }
       packsListState.pageIndex = 0;
       render();
       UIComponents.showToast(folderIdOrNull ? 'Pack moved to folder' : 'Pack moved to Unfiled', 'success');
+      return true;
     }
 
-    function buildMoveFolderItems(pack) {
-      if (!pack || !pack.id) return [];
+    function openMoveToFolderModal(pack) {
+      if (!pack || !pack.id) return;
       const folders = getSafeFolders();
       const currentFolderId = pack.folderId ? String(pack.folderId) : null;
-      const unfiledActive = currentFolderId === null;
-      const items = /** @type {any[]} */ ([
-        { type: 'divider' },
-        { type: 'header', label: 'Move to folder' },
-        {
-          label: 'Unfiled',
-          icon: 'fa-solid fa-folder-open',
-          active: unfiledActive,
-          disabled: unfiledActive,
-          rightIcon: unfiledActive ? 'fa-solid fa-check' : '',
-          onClick: () => movePackToFolder(pack, null),
-        },
-      ]);
+      const content = document.createElement('div');
+      content.classList.add('tp3d-packs-modal-grid');
+      let modalRef = null;
 
-      if (folders.length) {
+      const addMoveRow = (label, iconClass, folderIdOrNull, disabled = false) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-ghost tp3d-grid-span-full';
+        button.disabled = disabled;
+        const icon = document.createElement('i');
+        icon.className = iconClass;
+        icon.setAttribute('aria-hidden', 'true');
+        button.appendChild(icon);
+        button.appendChild(document.createTextNode(` ${label}${disabled ? ' (current)' : ''}`));
+        button.addEventListener('click', () => {
+          if (disabled) return;
+          const moved = movePackToFolder(pack, folderIdOrNull);
+          if (moved && modalRef && typeof modalRef.close === 'function') modalRef.close();
+        });
+        content.appendChild(button);
+      };
+
+      addMoveRow('Unfiled', 'fa-solid fa-folder-open', null, currentFolderId === null);
+
+      if (folders.length > 0) {
         folders.forEach(folder => {
           const folderId = String(folder.id);
-          const active = currentFolderId === folderId;
-          items.push({
-            label: folder.name || 'Untitled Folder',
-            icon: 'fa-solid fa-folder',
-            active,
-            disabled: active,
-            rightIcon: active ? 'fa-solid fa-check' : '',
-            onClick: () => movePackToFolder(pack, folderId),
-          });
+          addMoveRow(folder.name || 'Untitled Folder', 'fa-solid fa-folder', folderId, currentFolderId === folderId);
         });
       } else {
-        items.push({
-          label: 'No folders yet',
-          icon: 'fa-solid fa-folder',
-          disabled: true,
-        });
+        const empty = document.createElement('div');
+        empty.className = 'muted tp3d-grid-span-full';
+        empty.textContent = 'No folders yet';
+        content.appendChild(empty);
       }
 
-      return items;
+      modalRef = UIComponents.showModal({
+        title: 'Move to Folder',
+        content,
+        actions: [
+          { label: 'Close' },
+        ],
+      });
     }
 
     function openFoldersDropdown() {
@@ -1046,7 +1054,11 @@ export function createPacksScreen({
               onClick: () => ExportService.clearPackPreview(pack.id),
             },
             { label: 'Export Pack', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
-            ...buildMoveFolderItems(pack),
+            {
+              label: 'Move to Folder',
+              icon: 'fa-solid fa-folder-arrow-up',
+              onClick: () => openMoveToFolderModal(pack),
+            },
             {
               label: 'Delete',
               icon: 'fa-solid fa-trash-can',
@@ -1229,7 +1241,11 @@ export function createPacksScreen({
               onClick: () => ExportService.clearPackPreview(pack.id),
             },
             { label: 'Export Pack', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
-            ...buildMoveFolderItems(pack),
+            {
+              label: 'Move to Folder',
+              icon: 'fa-solid fa-folder-arrow-up',
+              onClick: () => openMoveToFolderModal(pack),
+            },
             {
               label: 'Delete',
               icon: 'fa-solid fa-trash-can',

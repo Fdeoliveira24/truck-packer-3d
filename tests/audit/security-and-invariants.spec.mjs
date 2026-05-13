@@ -3791,7 +3791,6 @@ test('phase 0.7C-pre persistence render guard does not import folder UI or touch
 
 test('phase 0.7C folder dropdown changes stay out of forbidden infrastructure files', async () => {
   const forbiddenPaths = [
-    'src/app.js',
     'src/core/storage.js',
     'src/core/state-store.js',
     'src/core/normalizer.js',
@@ -3925,6 +3924,7 @@ test('phase 0.7C-1A packs screen avoids forbidden backend billing auth css route
 
 test('phase 0.7C-1B changed files stay within allowed polish scope', async () => {
   const allowedFiles = new Set([
+    'src/app.js',
     'src/screens/packs-screen.js',
     'styles/main.css',
     'tests/audit/security-and-invariants.spec.mjs',
@@ -3962,7 +3962,7 @@ test('phase 0.7C-1B preserves Empty Partial Full filter chips', async () => {
 test('phase 0.7C-1B folders button uses scoped structure without tooltip or ghost style', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
   const start = src.indexOf('function ensureFoldersButton()');
-  const end = src.indexOf('\n    function initListHeaderSort()', start + 1);
+  const end = src.indexOf('\n    function getOpenFoldersDropdown()', start + 1);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(block.length > 0,
@@ -4108,7 +4108,6 @@ test('phase 0.7C-1B avoids forbidden backend billing auth settings package and i
     'index.html',
     'package.json',
     'package-lock.json',
-    'src/app.js',
     'src/core',
     'src/services/folder-library.js',
     'src/services/pack-library.js',
@@ -4136,6 +4135,7 @@ test('phase 0.7C-1B avoids forbidden backend billing auth settings package and i
 
 test('phase 0.7C-2 changed files stay within allowed create-folder scope', async () => {
   const allowedFiles = new Set([
+    'src/app.js',
     'src/screens/packs-screen.js',
     'tests/audit/security-and-invariants.spec.mjs',
   ]);
@@ -4267,7 +4267,6 @@ test('phase 0.7C-2 avoids forbidden backend billing auth settings package and in
     'index.html',
     'package.json',
     'package-lock.json',
-    'src/app.js',
     'src/core',
     'src/services/folder-library.js',
     'src/services/pack-library.js',
@@ -4298,6 +4297,7 @@ test('phase 0.7C-2 avoids forbidden backend billing auth settings package and in
 
 test('phase 0.7C-3 changed files stay within allowed move-folder scope', async () => {
   const allowedFiles = new Set([
+    'src/app.js',
     'src/screens/packs-screen.js',
     'tests/audit/security-and-invariants.spec.mjs',
   ]);
@@ -4310,53 +4310,53 @@ test('phase 0.7C-3 changed files stay within allowed move-folder scope', async (
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
-    'Phase 0.7C-3 must only edit packs-screen.js and security-and-invariants.spec.mjs');
+    'Phase 0.7C-3/4B must only edit app.js, packs-screen.js, and security-and-invariants.spec.mjs');
 });
 
-test('phase 0.7C-3 buildMoveFolderItems uses folder library move API', async () => {
+test('phase 0.7C-3 move modal uses folder library move API', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
   const start = src.indexOf('function movePackToFolder(');
   const end = src.indexOf('\n    function openFoldersDropdown()', start + 1);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(block.length > 0,
-    'movePackToFolder and buildMoveFolderItems helpers must be extractable');
-  assert.match(block, /function buildMoveFolderItems\(pack\)/,
-    'buildMoveFolderItems(pack) helper must exist');
+    'movePackToFolder and openMoveToFolderModal helpers must be extractable');
+  assert.match(block, /function openMoveToFolderModal\(pack\)/,
+    'openMoveToFolderModal(pack) helper must exist');
+  assert.match(block, /UIComponents\.showModal\(/,
+    'Move to Folder must use the existing modal path');
   assert.match(block, /FolderLibrary\.movePackToFolder\(pack\.id, folderIdOrNull\)/,
     'move helper must call FolderLibrary.movePackToFolder with pack id and target folder id');
   assert.match(block, /const folders = getSafeFolders\(\)/,
     'move helper must use folder options from the existing safe folder list');
   assert.match(src, /FolderLibrary\.listFolders\(\)/,
     'folder options must ultimately come from FolderLibrary.listFolders()');
+  assert.doesNotMatch(src, /function buildMoveFolderItems\(pack\)/,
+    'inline expanded buildMoveFolderItems helper must be removed');
 });
 
-test('phase 0.7C-3 move menu includes Unfiled folders and active checkmarks', async () => {
+test('phase 0.7C-3 move modal includes Unfiled folders and current state marker', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
-  const start = src.indexOf('function buildMoveFolderItems(pack)');
+  const start = src.indexOf('function openMoveToFolderModal(pack)');
   const end = src.indexOf('\n    function openFoldersDropdown()', start + 1);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
-  assert.match(block, /type:\s*['"]header['"], label:\s*['"]Move to folder['"]/,
-    'move menu must include Move to folder header');
-  assert.match(block, /label:\s*['"]Unfiled['"]/,
-    'move menu must include Unfiled option');
-  assert.match(block, /onClick:\s*\(\) => movePackToFolder\(pack, null\)/,
-    'Move to Unfiled must pass null target');
-  assert.match(block, /rightIcon:\s*unfiledActive \? ['"]fa-solid fa-check['"]/,
-    'current Unfiled state must show checkmark');
-  assert.match(block, /rightIcon:\s*active \? ['"]fa-solid fa-check['"]/,
-    'current folder state must show checkmark');
-  assert.match(block, /disabled:\s*active/,
-    'current folder row should be disabled to avoid no-op moves');
-  assert.match(block, /label:\s*['"]No folders yet['"][\s\S]{0,100}disabled:\s*true/,
-    'move menu must show disabled No folders yet row when no real folders exist');
+  assert.match(block, /addMoveRow\(['"]Unfiled['"], ['"]fa-solid fa-folder-open['"], null, currentFolderId === null\)/,
+    'Move modal must include an Unfiled option that passes null');
+  assert.match(block, /folders\.forEach\(folder =>[\s\S]{0,220}addMoveRow\(folder\.name \|\| ['"]Untitled Folder['"], ['"]fa-solid fa-folder['"], folderId, currentFolderId === folderId\)/,
+    'Move modal must include real folder options from getSafeFolders');
+  assert.match(block, /empty\.textContent = ['"]No folders yet['"]/,
+    'Move modal must show No folders yet when no real folders exist');
+  assert.match(block, /disabled \? ['"] \(current\)['"] : ['"]/,
+    'Move modal must visibly mark the current location');
+  assert.match(block, /if \(moved && modalRef && typeof modalRef\.close === ['"]function['"]\) modalRef\.close\(\)/,
+    'successful move must close the modal');
 });
 
 test('phase 0.7C-3 move helper handles success and failed moves safely', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
   const start = src.indexOf('function movePackToFolder(');
-  const end = src.indexOf('\n    function buildMoveFolderItems(pack)', start + 1);
+  const end = src.indexOf('\n    function openMoveToFolderModal(pack)', start + 1);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.match(block, /if \(!moved\)[\s\S]{0,120}UIComponents\.showToast\(['"]Could not move pack to folder['"], ['"]warning['"]\)/,
@@ -4367,9 +4367,11 @@ test('phase 0.7C-3 move helper handles success and failed moves safely', async (
     'successful move must re-render Packs screen');
   assert.match(block, /UIComponents\.showToast\([\s\S]{0,120}['"]success['"]\)/,
     'successful move must show success toast');
+  assert.match(block, /return true/,
+    'successful move must report success to modal row handlers');
 });
 
-test('phase 0.7C-3 list and grid pack menus include move section between export and delete', async () => {
+test('phase 0.7C-3 list and grid pack menus include compact move action between export and delete', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
   const listStart = src.indexOf('function renderListView(packs)');
   const listEnd = src.indexOf('\n    function renderGridView(packs)', listStart + 1);
@@ -4378,10 +4380,14 @@ test('phase 0.7C-3 list and grid pack menus include move section between export 
   const gridEnd = src.indexOf('\n    function buildPreview(', gridStart + 1);
   const gridBlock = gridStart >= 0 && gridEnd > gridStart ? src.slice(gridStart, gridEnd) : '';
 
-  assert.match(listBlock, /label:\s*['"]Export Pack['"][\s\S]{0,180}\.\.\.buildMoveFolderItems\(pack\)[\s\S]{0,220}label:\s*['"]Delete['"]/,
-    'list view pack menu must insert move section after Export Pack and before Delete');
-  assert.match(gridBlock, /label:\s*['"]Export Pack['"][\s\S]{0,180}\.\.\.buildMoveFolderItems\(pack\)[\s\S]{0,220}label:\s*['"]Delete['"]/,
-    'grid view pack menu must insert move section after Export Pack and before Delete');
+  assert.match(listBlock, /label:\s*['"]Export Pack['"][\s\S]{0,220}label:\s*['"]Move to Folder['"][\s\S]{0,220}openMoveToFolderModal\(pack\)[\s\S]{0,220}label:\s*['"]Delete['"]/,
+    'list view pack menu must insert one Move to Folder action after Export Pack and before Delete');
+  assert.match(gridBlock, /label:\s*['"]Export Pack['"][\s\S]{0,220}label:\s*['"]Move to Folder['"][\s\S]{0,220}openMoveToFolderModal\(pack\)[\s\S]{0,220}label:\s*['"]Delete['"]/,
+    'grid view pack menu must insert one Move to Folder action after Export Pack and before Delete');
+  assert.doesNotMatch(listBlock, /\.\.\.buildMoveFolderItems\(pack\)|type:\s*['"]header['"], label:\s*['"]Move to folder['"]/,
+    'list view pack menu must not inline every folder choice');
+  assert.doesNotMatch(gridBlock, /\.\.\.buildMoveFolderItems\(pack\)|type:\s*['"]header['"], label:\s*['"]Move to folder['"]/,
+    'grid view pack menu must not inline every folder choice');
 });
 
 test('phase 0.7C-3 move helper does not touch pack delete or case library code', async () => {
@@ -4421,7 +4427,6 @@ test('phase 0.7C-3 avoids forbidden backend billing auth settings storage packag
     'index.html',
     'package.json',
     'package-lock.json',
-    'src/app.js',
     'src/core',
     'src/services/folder-library.js',
     'src/services/pack-library.js',
@@ -4452,6 +4457,7 @@ test('phase 0.7C-3 avoids forbidden backend billing auth settings storage packag
 
 test('phase 0.7C-4 changed files stay within allowed rename-delete scope', async () => {
   const allowedFiles = new Set([
+    'src/app.js',
     'src/screens/packs-screen.js',
     'tests/audit/security-and-invariants.spec.mjs',
   ]);
@@ -4464,7 +4470,7 @@ test('phase 0.7C-4 changed files stay within allowed rename-delete scope', async
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
-    'Phase 0.7C-4 must only edit packs-screen.js and security-and-invariants.spec.mjs');
+    'Phase 0.7C-4/4B must only edit app.js, packs-screen.js, and security-and-invariants.spec.mjs');
 });
 
 test('phase 0.7C-4 rename folder uses existing modal and folder library rename API', async () => {
@@ -4581,7 +4587,6 @@ test('phase 0.7C-4 avoids forbidden backend billing auth storage package and ind
     'index.html',
     'package.json',
     'package-lock.json',
-    'src/app.js',
     'src/core',
     'src/services/folder-library.js',
     'src/services/pack-library.js',
@@ -4604,4 +4609,144 @@ test('phase 0.7C-4 avoids forbidden backend billing auth storage package and ind
     'Phase 0.7C-4 must not touch backend, storage/model, overlays, CSS, package, router, or index scope');
   assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
     'rename delete folder UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
+});
+
+// ============================================================================
+// PHASE 0.7C-4B — Folder Persistence + Compact Move Modal
+// ============================================================================
+
+test('phase 0.7C-4B app local state reload and reset paths preserve folderLibrary', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const seedStart = src.indexOf('function seedIfEmpty()');
+  const resetStart = src.indexOf('function resetAppStateToEmpty()');
+  const loadStart = src.indexOf('function loadScopedStateOrSeed');
+  const end = src.indexOf('\n    // ============================================================================', loadStart + 1);
+  const seedBlock = seedStart >= 0 && resetStart > seedStart ? src.slice(seedStart, resetStart) : '';
+  const resetBlock = resetStart >= 0 && loadStart > resetStart ? src.slice(resetStart, loadStart) : '';
+  const loadBlock = loadStart >= 0 && end > loadStart ? src.slice(loadStart, end) : '';
+
+  assert.match(seedBlock, /folderLibrary:\s*Array\.isArray\(stored\.folderLibrary\) \? stored\.folderLibrary : \[\]/,
+    'seedIfEmpty stored load path must initialize StateStore with stored folderLibrary');
+  assert.match(loadBlock, /folderLibrary:\s*Array\.isArray\(stored\.folderLibrary\) \? stored\.folderLibrary : \[\]/,
+    'loadScopedStateOrSeed stored load path must initialize StateStore with stored folderLibrary');
+  assert.match(resetBlock, /folderLibrary:\s*\[\]/,
+    'resetAppStateToEmpty must clear folderLibrary explicitly');
+  const fallbackCount = (src.match(/folderLibrary:\s*\[\]/g) || []).length;
+  assert.ok(fallbackCount >= 4,
+    'empty seed reset and no-workspace fallback state shapes must include folderLibrary: []');
+});
+
+test('phase 0.7C-4B compact move modal replaces inline folder menu section', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const modalStart = src.indexOf('function openMoveToFolderModal(pack)');
+  const modalEnd = src.indexOf('\n    function openFoldersDropdown()', modalStart + 1);
+  const modalBlock = modalStart >= 0 && modalEnd > modalStart ? src.slice(modalStart, modalEnd) : '';
+
+  assert.ok(modalBlock.length > 0,
+    'openMoveToFolderModal(pack) must exist');
+  assert.match(modalBlock, /UIComponents\.showModal\(/,
+    'Move to Folder choices must be shown in a modal');
+  assert.match(modalBlock, /addMoveRow\(['"]Unfiled['"], ['"]fa-solid fa-folder-open['"], null/,
+    'Move modal must include Unfiled target');
+  assert.match(modalBlock, /folders\.forEach\(folder =>/,
+    'Move modal must list real folders inside the modal');
+  assert.match(modalBlock, /empty\.textContent = ['"]No folders yet['"]/,
+    'Move modal must show disabled empty state when no folders exist');
+  assert.doesNotMatch(src, /function buildMoveFolderItems\(pack\)|\.\.\.buildMoveFolderItems\(pack\)/,
+    'main pack menus must no longer inline every folder through buildMoveFolderItems');
+});
+
+test('phase 0.7C-4B both pack menus contain one compact Move to Folder action', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const listStart = src.indexOf('function renderListView(packs)');
+  const listEnd = src.indexOf('\n    function renderGridView(packs)', listStart + 1);
+  const listBlock = listStart >= 0 && listEnd > listStart ? src.slice(listStart, listEnd) : '';
+  const gridStart = src.indexOf('function renderGridView(packs)');
+  const gridEnd = src.indexOf('\n    function buildPreview(', gridStart + 1);
+  const gridBlock = gridStart >= 0 && gridEnd > gridStart ? src.slice(gridStart, gridEnd) : '';
+
+  assert.equal((listBlock.match(/label:\s*['"]Move to Folder['"]/g) || []).length, 1,
+    'list menu must contain exactly one Move to Folder action');
+  assert.equal((gridBlock.match(/label:\s*['"]Move to Folder['"]/g) || []).length, 1,
+    'grid menu must contain exactly one Move to Folder action');
+  assert.match(listBlock, /label:\s*['"]Move to Folder['"][\s\S]{0,160}icon:\s*['"]fa-solid fa-folder-arrow-up['"][\s\S]{0,160}openMoveToFolderModal\(pack\)/,
+    'list Move to Folder action must open the modal helper');
+  assert.match(gridBlock, /label:\s*['"]Move to Folder['"][\s\S]{0,160}icon:\s*['"]fa-solid fa-folder-arrow-up['"][\s\S]{0,160}openMoveToFolderModal\(pack\)/,
+    'grid Move to Folder action must open the modal helper');
+  assert.doesNotMatch(listBlock + gridBlock, /type:\s*['"]header['"], label:\s*['"]Move to folder['"]|rightIcon:\s*active \? ['"]fa-solid fa-check['"]/,
+    'main pack menus must not contain inline folder choices');
+});
+
+test('phase 0.7C-4B folder CRUD and move APIs remain wired from Packs screen only', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const { stdout } = await execFileAsync('git', ['grep', '-n', 'FolderLibrary.movePackToFolder(', '--', 'src']);
+  const callers = stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  assert.ok(callers.length >= 1,
+    'FolderLibrary.movePackToFolder must be called from source');
+  assert.ok(callers.every(line => line.startsWith('src/screens/packs-screen.js:')),
+    'FolderLibrary.movePackToFolder must only be called by the Packs screen UI');
+  assert.match(src, /FolderLibrary\.createFolder\(folderName\)/,
+    'Create Folder must remain wired');
+  assert.match(src, /FolderLibrary\.renameFolder\(folderId, name\.input\.value\)/,
+    'Rename Folder must remain wired');
+  assert.match(src, /FolderLibrary\.deleteFolder\(folderId\)/,
+    'Delete Folder must remain wired');
+});
+
+test('phase 0.7C-4B rename delete stay guarded to active real folders only', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function openFoldersDropdown()');
+  const end = src.indexOf('\n    function initListHeaderSort()', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+  const actionsStart = block.indexOf('if (model.activeFolder && activeFolderId)');
+  const actionsEnd = block.indexOf("label: 'New Folder'", actionsStart + 1);
+  const actionsBlock = actionsStart >= 0 && actionsEnd > actionsStart ? block.slice(actionsStart, actionsEnd) : '';
+
+  assert.match(actionsBlock, /if \(model\.activeFolder && activeFolderId\)/,
+    'folder management actions must require a resolved active real folder');
+  assert.match(actionsBlock, /openRenameFolderModal\(model\.activeFolder\)/,
+    'Rename Folder action must target the active real folder');
+  assert.match(actionsBlock, /deleteFolderWithConfirm\(model\.activeFolder\)/,
+    'Delete Folder action must target the active real folder');
+});
+
+test('phase 0.7C-4B avoids native dialogs and forbidden file scope', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const { stdout } = await execFileAsync('git', [
+    'diff',
+    '--name-only',
+    '--',
+    'index.html',
+    'package.json',
+    'package-lock.json',
+    'src/core',
+    'src/services/folder-library.js',
+    'src/services/pack-library.js',
+    'src/services/import-export.js',
+    'src/ui/overlays',
+    'src/ui/ui-components.js',
+    'src/data/services/billing.service.js',
+    'src/router.js',
+    'styles/main.css',
+    'supabase/functions',
+    'supabase/migrations',
+    'supabase/config.toml',
+  ]);
+  const changedForbiddenFiles = stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  assert.deepEqual(changedForbiddenFiles, [],
+    'Phase 0.7C-4B must not touch backend, storage service, folder service, overlays, CSS, package, router, or index scope');
+  assert.doesNotMatch(src, /window\.prompt|window\.alert|window\.confirm/,
+    'Packs screen must not use window prompt alert or confirm APIs');
+  assert.doesNotMatch(src, /(^|[^\w.])prompt\s*\(|(^|[^\w.])alert\s*\(|(^|[^\w.])confirm\s*\(/,
+    'Packs screen must not use native prompt(), alert(), or confirm() calls');
+  assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
+    'folder persistence and compact move UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
 });

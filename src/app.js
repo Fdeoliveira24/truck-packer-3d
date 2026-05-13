@@ -5134,6 +5134,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           selectedInstanceIds: [],
           caseLibrary: storedCases,
           packLibrary: stored.packLibrary,
+          folderLibrary: Array.isArray(stored.folderLibrary) ? stored.folderLibrary : [],
           preferences: storedPrefs,
         };
         StateStore.init(initialState);
@@ -5153,6 +5154,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         selectedInstanceIds: [],
         caseLibrary: cases,
         packLibrary: [demoPack],
+        folderLibrary: [],
         preferences: fallbackPreferences,
       };
       StateStore.init(initialState);
@@ -5171,6 +5173,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         selectedInstanceIds: [],
         caseLibrary: [],
         packLibrary: [],
+        folderLibrary: [],
         preferences: Defaults.defaultPreferences,
       };
       StateStore.replace(emptyState, { skipHistory: true });
@@ -5196,6 +5199,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           selectedInstanceIds: [],
           caseLibrary: storedCases,
           packLibrary: stored.packLibrary,
+          folderLibrary: Array.isArray(stored.folderLibrary) ? stored.folderLibrary : [],
           preferences: storedPrefs,
         }, { skipHistory: true });
       } else if (seedIfMissing) {
@@ -5211,6 +5215,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           selectedInstanceIds: [],
           caseLibrary: cases,
           packLibrary: [demoPack],
+          folderLibrary: [],
           preferences: fallbackPreferences,
         }, { skipHistory: true });
         Storage.saveNow();
@@ -5221,6 +5226,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           selectedInstanceIds: [],
           caseLibrary: [],
           packLibrary: [],
+          folderLibrary: [],
           preferences: (stored && stored.preferences) || Defaults.defaultPreferences,
         }, { skipHistory: true });
       }

@@ -3934,7 +3934,7 @@ test('phase 0.7C-1B changed files stay within allowed polish scope', async () =>
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md');
+    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md');
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
@@ -4060,7 +4060,7 @@ test('phase 0.7C-1B folder filtering still uses folderId state and reset behavio
     'workspace reset must clear activeFolderId');
 });
 
-test('phase 0.7C-1B avoids rejected folder UI and folder mutation actions', async () => {
+test('phase 0.7C-1B avoids rejected folder UI and bulk folder actions', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
 
   assert.doesNotMatch(src, /function renderFolderBar|folderBarEl/,
@@ -4069,8 +4069,6 @@ test('phase 0.7C-1B avoids rejected folder UI and folder mutation actions', asyn
     'folder UI must not be mounted under the Empty Partial Full filter chip row');
   assert.doesNotMatch(src, /folder side(panel|bar)|folderPanel|foldersSidebar/i,
     'Phase 0.7C-1B must not add a sidebar folder panel');
-  assert.doesNotMatch(src, /\b(renameFolder|deleteFolder|getPacksInFolder)\s*\(/,
-    'Phase 0.7C-1B must not add rename, delete, or bulk folder UI');
   assert.doesNotMatch(src, /bulk.*folder|folder.*bulk/i,
     'Phase 0.7C-1B must not add bulk folder actions');
 });
@@ -4146,7 +4144,7 @@ test('phase 0.7C-2 changed files stay within allowed create-folder scope', async
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md');
+    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md');
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
@@ -4201,7 +4199,7 @@ test('phase 0.7C-2 folder dropdown includes New Folder action after filter rows'
     'New Folder action must use folder-plus icon');
   assert.match(block, /UIComponents\.closeAllDropdowns\(\)[\s\S]{0,120}setFoldersButtonExpanded\(false\)[\s\S]{0,120}openCreateFolderModal\(\)/,
     'New Folder action must close the dropdown, clear aria-expanded, and open the modal');
-  assert.match(block, /label:\s*['"]No folders yet['"][\s\S]{0,180}items\.push\(\s*\{\s*type:\s*['"]divider['"]\s*\}[\s\S]{0,180}label:\s*['"]New Folder['"]/,
+  assert.ok(block.indexOf("label: 'No folders yet'") < block.indexOf("label: 'New Folder'"),
     'New Folder action must come after No folders yet when no folders exist');
 });
 
@@ -4230,15 +4228,9 @@ test('phase 0.7C-2 preserves no-caret Folders button contract', async () => {
     'Folders button must not reintroduce btn-ghost');
 });
 
-test('phase 0.7C-2 does not add rename delete move bulk sidebar or chip-row folder UI', async () => {
+test('phase 0.7C-2 does not add bulk sidebar or chip-row folder UI', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
 
-  assert.doesNotMatch(src, /FolderLibrary\.renameFolder\(/,
-    'Phase 0.7C-2 must not add folder rename UI');
-  assert.doesNotMatch(src, /FolderLibrary\.deleteFolder\(/,
-    'Phase 0.7C-2 must not add folder delete UI');
-  assert.doesNotMatch(src, /getPacksInFolder\(/,
-    'Phase 0.7C-2 must not add folder pack-management UI');
   assert.doesNotMatch(src, /bulk.*folder|folder.*bulk/i,
     'Phase 0.7C-2 must not add bulk folder actions');
   assert.doesNotMatch(src, /function renderFolderBar|folderBarEl|folder side(panel|bar)|folderPanel|foldersSidebar/i,
@@ -4314,7 +4306,7 @@ test('phase 0.7C-3 changed files stay within allowed move-folder scope', async (
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md');
+    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md');
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
@@ -4452,4 +4444,164 @@ test('phase 0.7C-3 avoids forbidden backend billing auth settings storage packag
     'Phase 0.7C-3 must not touch backend, storage/model, settings, CSS, package, router, or index scope');
   assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
     'move folder UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
+});
+
+// ============================================================================
+// PHASE 0.7C-4 — Rename and Delete Folder from Packs Dropdown
+// ============================================================================
+
+test('phase 0.7C-4 changed files stay within allowed rename-delete scope', async () => {
+  const allowedFiles = new Set([
+    'src/screens/packs-screen.js',
+    'tests/audit/security-and-invariants.spec.mjs',
+  ]);
+  const { stdout } = await execFileAsync('git', ['diff', '--name-only']);
+  const changedFiles = stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md');
+  const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'Phase 0.7C-4 must only edit packs-screen.js and security-and-invariants.spec.mjs');
+});
+
+test('phase 0.7C-4 rename folder uses existing modal and folder library rename API', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function openRenameFolderModal(folder)');
+  const end = src.indexOf('\n    async function deleteFolderWithConfirm', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0,
+    'openRenameFolderModal(folder) must exist');
+  assert.match(block, /UIComponents\.showModal\(/,
+    'Rename Folder must use the existing modal path');
+  assert.match(block, /title:\s*['"]Rename Folder['"]/,
+    'Rename Folder modal title must be Rename Folder');
+  assert.match(block, /field\(['"]Folder name['"], ['"]text['"], ['"]e\.g\. Client A['"], false\)/,
+    'Rename Folder modal must use field() for optional folder name input');
+  assert.match(block, /name\.input\.value = folder\.name \|\| ['"]/,
+    'Rename Folder modal must pre-fill the current folder name');
+  assert.match(block, /FolderLibrary\.renameFolder\(folderId, name\.input\.value\)/,
+    'Rename Folder must call FolderLibrary.renameFolder with folder id and input value');
+  assert.match(block, /\brender\(\)/,
+    'Rename Folder must refresh the Packs screen through render()');
+  assert.match(block, /UIComponents\.showToast\(['"]Folder renamed['"], ['"]success['"]\)/,
+    'Rename Folder must show a success toast');
+});
+
+test('phase 0.7C-4 delete folder uses confirm and preserves packs', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('async function deleteFolderWithConfirm(folder)');
+  const end = src.indexOf('\n    function movePackToFolder(', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0,
+    'deleteFolderWithConfirm(folder) must exist');
+  assert.match(block, /UIComponents\.confirm\(/,
+    'Delete Folder must use the existing confirm path');
+  assert.match(block, /title:\s*['"]Delete folder\?['"]/,
+    'Delete Folder confirm title must be explicit');
+  assert.match(block, /will move to Unfiled/,
+    'Delete Folder confirm must state assigned packs move to Unfiled');
+  assert.match(block, /Packs will not be deleted/,
+    'Delete Folder confirm must state packs are not deleted');
+  assert.match(block, /PackLibrary\.getPacks\(\)\.filter/,
+    'Delete Folder must count affected packs without deleting them');
+  assert.match(block, /FolderLibrary\.deleteFolder\(folderId\)/,
+    'Delete Folder must call FolderLibrary.deleteFolder');
+  assert.doesNotMatch(block, /PackLibrary\.remove|CaseLibrary\.remove|CaseLibrary\./,
+    'Delete Folder path must not delete packs or touch cases');
+});
+
+test('phase 0.7C-4 delete active folder clears active filter and resets pagination', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('async function deleteFolderWithConfirm(folder)');
+  const end = src.indexOf('\n    function movePackToFolder(', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.match(block, /if \(activeFolderId === folderId\)[\s\S]{0,120}activeFolderId = null/,
+    'Deleting the active folder must clear activeFolderId to All Packs');
+  assert.match(block, /if \(activeFolderId === folderId\)[\s\S]{0,160}packsListState\.pageIndex = 0/,
+    'Deleting the active folder must reset pack pagination');
+  assert.match(block, /\brender\(\)/,
+    'Deleting a folder must refresh the Packs screen');
+  assert.match(block, /UIComponents\.showToast\(['"]Folder deleted['"], ['"]success['"]\)/,
+    'Deleting a folder must show a success toast');
+});
+
+test('phase 0.7C-4 Folders dropdown exposes rename delete only for active real folder', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function openFoldersDropdown()');
+  const end = src.indexOf('\n    function initListHeaderSort()', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+  const allStart = block.indexOf('label: `All Packs');
+  const allEnd = block.indexOf('label: `Unfiled', allStart + 1);
+  const allBlock = allStart >= 0 && allEnd > allStart ? block.slice(allStart, allEnd) : '';
+  const unfiledStart = block.indexOf('label: `Unfiled');
+  const unfiledEnd = block.indexOf('if (model.folders.length)', unfiledStart + 1);
+  const unfiledBlock = unfiledStart >= 0 && unfiledEnd > unfiledStart ? block.slice(unfiledStart, unfiledEnd) : '';
+  const actionsStart = block.indexOf('if (model.activeFolder && activeFolderId)');
+  const actionsEnd = block.indexOf("label: 'New Folder'", actionsStart + 1);
+  const actionsBlock = actionsStart >= 0 && actionsEnd > actionsStart ? block.slice(actionsStart, actionsEnd) : '';
+
+  assert.doesNotMatch(allBlock, /Rename Folder|Delete Folder|openRenameFolderModal|deleteFolderWithConfirm/,
+    'All Packs row must not expose folder rename or delete');
+  assert.doesNotMatch(unfiledBlock, /Rename Folder|Delete Folder|openRenameFolderModal|deleteFolderWithConfirm/,
+    'Unfiled row must not expose folder rename or delete');
+  assert.match(actionsBlock, /if \(model\.activeFolder && activeFolderId\)/,
+    'Rename and delete folder actions must be gated to an active real folder');
+  assert.match(actionsBlock, /label:\s*['"]Rename Folder['"][\s\S]{0,180}openRenameFolderModal\(model\.activeFolder\)/,
+    'Active real folder actions must include Rename Folder');
+  assert.match(actionsBlock, /label:\s*['"]Delete Folder['"][\s\S]{0,220}deleteFolderWithConfirm\(model\.activeFolder\)/,
+    'Active real folder actions must include Delete Folder');
+});
+
+test('phase 0.7C-4 avoids native dialogs and preserves no-caret folder button', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function ensureFoldersButton()');
+  const end = src.indexOf('\n    function renderFoldersButton(', start + 1);
+  const buttonBlock = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.doesNotMatch(src, /window\.prompt|window\.alert|window\.confirm/,
+    'Packs screen must not use window prompt alert or confirm APIs');
+  assert.doesNotMatch(src, /(^|[^\w.])prompt\s*\(|(^|[^\w.])alert\s*\(|(^|[^\w.])confirm\s*\(/,
+    'Packs screen must not use native prompt(), alert(), or confirm() calls');
+  assert.doesNotMatch(buttonBlock, /tp3d-packs-folder-btn__caret|fa-chevron-down/,
+    'Folders button must remain no-caret');
+});
+
+test('phase 0.7C-4 avoids forbidden backend billing auth storage package and index scope', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const { stdout } = await execFileAsync('git', [
+    'diff',
+    '--name-only',
+    '--',
+    'index.html',
+    'package.json',
+    'package-lock.json',
+    'src/app.js',
+    'src/core',
+    'src/services/folder-library.js',
+    'src/services/pack-library.js',
+    'src/services/import-export.js',
+    'src/ui/overlays',
+    'src/ui/ui-components.js',
+    'src/data/services/billing.service.js',
+    'src/router.js',
+    'styles/main.css',
+    'supabase/functions',
+    'supabase/migrations',
+    'supabase/config.toml',
+  ]);
+  const changedForbiddenFiles = stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  assert.deepEqual(changedForbiddenFiles, [],
+    'Phase 0.7C-4 must not touch backend, storage/model, overlays, CSS, package, router, or index scope');
+  assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
+    'rename delete folder UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
 });

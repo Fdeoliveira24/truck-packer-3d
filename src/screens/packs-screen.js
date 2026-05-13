@@ -375,6 +375,65 @@ export function createPacksScreen({
       });
     }
 
+    function openRenameFolderModal(folder) {
+      if (!folder || !folder.id) return;
+      const folderId = String(folder.id);
+      const content = document.createElement('div');
+      content.classList.add('tp3d-packs-modal-grid');
+
+      const name = field('Folder name', 'text', 'e.g. Client A', false);
+      name.input.value = folder.name || '';
+      name.wrap.classList.add('tp3d-grid-span-full');
+      content.appendChild(name.wrap);
+
+      UIComponents.showModal({
+        title: 'Rename Folder',
+        content,
+        actions: [
+          { label: 'Cancel' },
+          {
+            label: 'Save',
+            variant: 'primary',
+            onClick: () => {
+              const renamed = FolderLibrary.renameFolder(folderId, name.input.value);
+              if (!renamed) {
+                UIComponents.showToast('Could not rename folder', 'warning');
+                return;
+              }
+              render();
+              UIComponents.showToast('Folder renamed', 'success');
+            },
+          },
+        ],
+      });
+    }
+
+    async function deleteFolderWithConfirm(folder) {
+      if (!folder || !folder.id) return;
+      const folderId = String(folder.id);
+      const folderName = folder.name || 'Untitled Folder';
+      const affectedCount = PackLibrary.getPacks().filter(pack => pack && String(pack.folderId || '') === folderId).length;
+      const ok = await UIComponents.confirm({
+        title: 'Delete folder?',
+        message: `Delete "${folderName}"? ${affectedCount} pack(s) in this folder will move to Unfiled. Packs will not be deleted.`,
+        danger: true,
+        okLabel: 'Delete',
+      });
+      if (!ok) return;
+
+      const deleted = FolderLibrary.deleteFolder(folderId);
+      if (!deleted) {
+        UIComponents.showToast('Could not delete folder', 'warning');
+        return;
+      }
+      if (activeFolderId === folderId) {
+        activeFolderId = null;
+        packsListState.pageIndex = 0;
+      }
+      render();
+      UIComponents.showToast('Folder deleted', 'success');
+    }
+
     function movePackToFolder(pack, folderIdOrNull) {
       if (!pack || !pack.id) return;
       const moved = FolderLibrary.movePackToFolder(pack.id, folderIdOrNull);
@@ -475,6 +534,31 @@ export function createPacksScreen({
           icon: 'fa-solid fa-folder',
           disabled: true,
         });
+      }
+
+      if (model.activeFolder && activeFolderId) {
+        items.push(
+          { type: 'divider' },
+          {
+            label: 'Rename Folder',
+            icon: 'fa-solid fa-pen',
+            onClick: () => {
+              UIComponents.closeAllDropdowns();
+              setFoldersButtonExpanded(false);
+              openRenameFolderModal(model.activeFolder);
+            },
+          },
+          {
+            label: 'Delete Folder',
+            icon: 'fa-solid fa-trash-can',
+            danger: true,
+            onClick: () => {
+              UIComponents.closeAllDropdowns();
+              setFoldersButtonExpanded(false);
+              deleteFolderWithConfirm(model.activeFolder);
+            },
+          }
+        );
       }
 
       items.push(

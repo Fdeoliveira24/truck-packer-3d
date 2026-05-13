@@ -43,6 +43,27 @@ This repo expects structured work. Do not jump straight into edits. Follow the l
   - Scope (files, screens, user types)
 - Find the “owner area” in code (the most direct module for the behavior).
 
+### 1.1A Workflow: Keep audits scoped and token-safe
+
+Before reading large files, inspect the user request and the current git state. Do not read broad guide files, old docs, or unrelated source areas unless the task clearly needs them.
+
+For small phase work:
+
+- Read only the owner file, the related test file, and any direct service file already named by the task.
+- Do not read `CLAUDE.md`, docs, archived audits, or full `src/app.js` unless the task is about those files.
+- Prefer targeted `rg` searches over opening long files.
+- Use `git status -sb`, `git diff --name-only`, and focused diffs before broad inspection.
+- If a file is dirty but unrelated, report it and leave it alone.
+- Do not spend context budget proving facts already shown by terminal output in the current task.
+
+For Phase 0.7C folder UI work, the default scope is:
+
+- `src/screens/packs-screen.js`
+- `tests/audit/security-and-invariants.spec.mjs`
+- `styles/main.css` only for the polish/CSS phase
+
+Do not inspect or edit auth, billing, Supabase, Stripe, workspace lifecycle, storage, router, package files, or docs for 0.7C unless the user explicitly changes the scope.
+
 ### 1.2 Workflow: Locate the real source
 
 - Search for:
@@ -148,6 +169,15 @@ Examples:
 
 - `rg -n "functionName" src`
 - `grep -RIn "functionName" src`
+
+For token-heavy tasks, start with file lists and symbols, not full files:
+
+- `git status -sb`
+- `git diff --name-only`
+- `rg -n "symbolName|phaseName|functionName" src tests styles`
+- `sed -n 'START,ENDp' path/to/file`
+
+Only open the exact ranges needed for the change.
 
 ### 3.2 Runtime debug tools
 

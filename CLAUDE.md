@@ -275,3 +275,27 @@ When in doubt:
 - favor backend truth over UI guesswork
 - favor launch stability over elegance
 - document follow-up work instead of widening the patch
+
+---
+
+## 15. graphify — Knowledge Graph Navigation
+
+This project has a pre-built knowledge graph in `graphify-out/`.
+
+### Context Navigation
+When you need to understand the codebase, docs, or any files in this project:
+1. ALWAYS query the knowledge graph first: `/graphify query "your question"`
+2. Only read raw files if I explicitly say "read the file" or "look at the raw file"
+3. Use `graphify-out/wiki/index.md` as your navigation entrypoint for browsing structured community summaries
+
+### Quick reference
+- `graphify-out/wiki/index.md` — community index (start here for browsing)
+- `graphify-out/GRAPH_REPORT.md` — full audit report (god nodes, surprising connections)
+- `graphify-out/graph.json` — raw graph data for queries
+- `graphify-out/graph.html` — interactive visualization (open in browser)
+
+### Key graph facts (as of 2026-05-12)
+- **5,773 nodes · 12,250 edges · 230 communities**
+- God nodes: `js()` (444 edges), `copy()` (189), `Vector3` (77)
+- Key communities: `Core App Runtime`, `Supabase Client & Auth`, `Security & Invariant Specs`
+- Run `/graphify --update` after significant code changes to keep the graph current

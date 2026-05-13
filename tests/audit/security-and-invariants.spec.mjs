@@ -3903,8 +3903,8 @@ test('phase 0.7C-1A folder dropdown is filter only and avoids CRUD move UI', asy
     'Folders dropdown must include Unfiled with count');
   assert.match(src, /label: ['"]No folders yet['"][\s\S]{0,100}disabled: true/,
     'Folders dropdown must show disabled No folders yet row');
-  assert.doesNotMatch(src, /\b(createFolder|renameFolder|deleteFolder|movePackToFolder|getPacksInFolder)\s*\(/,
-    'Phase 0.7C-1A must not add create, rename, delete, move, or bulk folder UI');
+  assert.doesNotMatch(src, /\b(renameFolder|deleteFolder|movePackToFolder|getPacksInFolder)\s*\(/,
+    'Phase 0.7C folder UI must not add rename, delete, move, or bulk folder UI');
 });
 
 test('phase 0.7C-1A packs screen avoids forbidden backend billing auth css router scope', async () => {
@@ -3930,7 +3930,8 @@ test('phase 0.7C-1B changed files stay within allowed polish scope', async () =>
   const changedFiles = stdout
     .split('\n')
     .map(line => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter(file => file !== 'CLAUDE.md');
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
@@ -4065,8 +4066,8 @@ test('phase 0.7C-1B avoids rejected folder UI and folder mutation actions', asyn
     'folder UI must not be mounted under the Empty Partial Full filter chip row');
   assert.doesNotMatch(src, /folder side(panel|bar)|folderPanel|foldersSidebar/i,
     'Phase 0.7C-1B must not add a sidebar folder panel');
-  assert.doesNotMatch(src, /\b(createFolder|renameFolder|deleteFolder|movePackToFolder|getPacksInFolder)\s*\(/,
-    'Phase 0.7C-1B must not add create, rename, delete, move, or bulk folder UI');
+  assert.doesNotMatch(src, /\b(renameFolder|deleteFolder|movePackToFolder|getPacksInFolder)\s*\(/,
+    'Phase 0.7C-1B must not add rename, delete, move, or bulk folder UI');
   assert.doesNotMatch(src, /bulk.*folder|folder.*bulk/i,
     'Phase 0.7C-1B must not add bulk folder actions');
 });
@@ -4126,4 +4127,174 @@ test('phase 0.7C-1B avoids forbidden backend billing auth settings package and i
     'Phase 0.7C-1B must not touch backend, data model, settings, package, or index scope');
   assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
     'packs folder polish must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
+});
+
+// ============================================================================
+// PHASE 0.7C-2 — Create Folder from Packs Dropdown
+// ============================================================================
+
+test('phase 0.7C-2 changed files stay within allowed create-folder scope', async () => {
+  const allowedFiles = new Set([
+    'src/screens/packs-screen.js',
+    'tests/audit/security-and-invariants.spec.mjs',
+  ]);
+  const { stdout } = await execFileAsync('git', ['diff', '--name-only']);
+  const changedFiles = stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(file => file !== 'CLAUDE.md');
+  const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'Phase 0.7C-2 must only edit packs-screen.js and security-and-invariants.spec.mjs');
+});
+
+test('phase 0.7C-2 create folder uses existing modal and folder library create API', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function openCreateFolderModal()');
+  const end = src.indexOf('\n    function openFoldersDropdown()', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0,
+    'openCreateFolderModal must exist inside PacksUI');
+  assert.match(block, /UIComponents\.showModal\(/,
+    'Create Folder must use the existing modal path');
+  assert.match(block, /title:\s*['"]New Folder['"]/,
+    'Create Folder modal title must be New Folder');
+  assert.match(block, /field\(['"]Folder name['"], ['"]text['"], ['"]e\.g\. Client A['"], false\)/,
+    'Create Folder modal must use field() for optional folder name input');
+  assert.match(block, /FolderLibrary\.createFolder\(folderName\)/,
+    'Create Folder modal must call FolderLibrary.createFolder()');
+});
+
+test('phase 0.7C-2 create folder selects created folder and refreshes packs', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function openCreateFolderModal()');
+  const end = src.indexOf('\n    function openFoldersDropdown()', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.match(block, /if \(created && created\.id\)/,
+    'Create Folder must guard created folder id before selecting it');
+  assert.match(block, /activeFolderId = String\(created\.id\)/,
+    'Create Folder must select the newly created folder when an id is returned');
+  assert.match(block, /packsListState\.pageIndex = 0/,
+    'Create Folder must reset pack pagination when selecting the new folder');
+  assert.match(block, /\brender\(\)/,
+    'Create Folder must re-render the Packs screen');
+  assert.match(block, /UIComponents\.showToast\(['"]Folder created['"], ['"]success['"]\)/,
+    'Create Folder must show a success toast');
+});
+
+test('phase 0.7C-2 folder dropdown includes New Folder action after filter rows', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function openFoldersDropdown()');
+  const end = src.indexOf('\n    function initListHeaderSort()', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.match(block, /label:\s*['"]New Folder['"]/,
+    'Folders dropdown must include New Folder action');
+  assert.match(block, /icon:\s*['"]fa-solid fa-folder-plus['"]/,
+    'New Folder action must use folder-plus icon');
+  assert.match(block, /UIComponents\.closeAllDropdowns\(\)[\s\S]{0,120}setFoldersButtonExpanded\(false\)[\s\S]{0,120}openCreateFolderModal\(\)/,
+    'New Folder action must close the dropdown, clear aria-expanded, and open the modal');
+  assert.match(block, /label:\s*['"]No folders yet['"][\s\S]{0,180}items\.push\(\s*\{\s*type:\s*['"]divider['"]\s*\}[\s\S]{0,180}label:\s*['"]New Folder['"]/,
+    'New Folder action must come after No folders yet when no folders exist');
+});
+
+test('phase 0.7C-2 create folder avoids native dialogs', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+
+  assert.doesNotMatch(src, /window\.prompt|window\.alert|window\.confirm/,
+    'Packs screen must not use window prompt alert or confirm APIs');
+  assert.doesNotMatch(src, /(^|[^\w.])prompt\s*\(|(^|[^\w.])alert\s*\(|(^|[^\w.])confirm\s*\(/,
+    'Packs screen must not use native prompt(), alert(), or confirm() calls');
+});
+
+test('phase 0.7C-2 preserves no-caret Folders button contract', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function ensureFoldersButton()');
+  const end = src.indexOf('\n    function renderFoldersButton(', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.doesNotMatch(block, /tp3d-packs-folder-btn__caret/,
+    'Folders button must not reintroduce caret span');
+  assert.doesNotMatch(block, /fa-chevron-down/,
+    'Folders button must not reintroduce chevron icon');
+  assert.doesNotMatch(block, /data-tooltip/,
+    'Folders button must not reintroduce tooltip behavior');
+  assert.doesNotMatch(block, /btn-ghost/,
+    'Folders button must not reintroduce btn-ghost');
+});
+
+test('phase 0.7C-2 does not add rename delete move bulk sidebar or chip-row folder UI', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+
+  assert.doesNotMatch(src, /FolderLibrary\.renameFolder\(/,
+    'Phase 0.7C-2 must not add folder rename UI');
+  assert.doesNotMatch(src, /FolderLibrary\.deleteFolder\(/,
+    'Phase 0.7C-2 must not add folder delete UI');
+  assert.doesNotMatch(src, /FolderLibrary\.movePackToFolder\(/,
+    'Phase 0.7C-2 must not add move pack to folder UI');
+  assert.doesNotMatch(src, /getPacksInFolder\(/,
+    'Phase 0.7C-2 must not add folder pack-management UI');
+  assert.doesNotMatch(src, /bulk.*folder|folder.*bulk/i,
+    'Phase 0.7C-2 must not add bulk folder actions');
+  assert.doesNotMatch(src, /function renderFolderBar|folderBarEl|folder side(panel|bar)|folderPanel|foldersSidebar/i,
+    'Phase 0.7C-2 must not add folder bar, chip row, or sidebar panel');
+});
+
+test('phase 0.7C-2 preserves folder filtering identity and reset behavior', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const filterStart = src.indexOf('if (activeFolderId === null) return true;');
+  const filterEnd = src.indexOf('if (activeFolderId === UNFILED_FOLDER_ID)', filterStart);
+  const filterBlock = filterStart >= 0 && filterEnd > filterStart
+    ? src.slice(filterStart, filterEnd + 140)
+    : '';
+  const resetStart = src.indexOf('function resetWorkspaceState()');
+  const resetEnd = src.indexOf('\n    function ', resetStart + 1);
+  const resetBlock = resetStart >= 0 && resetEnd > resetStart ? src.slice(resetStart, resetEnd) : '';
+
+  assert.match(filterBlock, /p && p\.folderId/,
+    'folder filtering must still use pack.folderId');
+  assert.doesNotMatch(filterBlock, /folder\.name|name === activeFolderId|activeFolderId === .*name/,
+    'folder filtering must not use folder names as identity');
+  assert.match(src, /newDatasetKey = `\$\{q\}::\$\{sortKey\}::\$\{activeFolderId \|\| 'all'\}::/,
+    'activeFolderId must remain in dataset key');
+  assert.match(resetBlock, /activeFolderId = null/,
+    'workspace reset must clear activeFolderId');
+});
+
+test('phase 0.7C-2 avoids forbidden backend billing auth settings package and index scope', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const { stdout } = await execFileAsync('git', [
+    'diff',
+    '--name-only',
+    '--',
+    'index.html',
+    'package.json',
+    'package-lock.json',
+    'src/app.js',
+    'src/core',
+    'src/services/folder-library.js',
+    'src/services/pack-library.js',
+    'src/services/import-export.js',
+    'src/ui/overlays/settings-overlay.js',
+    'src/ui/ui-components.js',
+    'src/data/services/billing.service.js',
+    'src/router.js',
+    'styles/main.css',
+    'supabase/functions',
+    'supabase/migrations',
+    'supabase/config.toml',
+  ]);
+  const changedForbiddenFiles = stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  assert.deepEqual(changedForbiddenFiles, [],
+    'Phase 0.7C-2 must not touch backend, data model, settings, CSS, package, router, or index scope');
+  assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
+    'create folder UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
 });

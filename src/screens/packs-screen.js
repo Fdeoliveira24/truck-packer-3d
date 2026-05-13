@@ -344,6 +344,37 @@ export function createPacksScreen({
       setActiveFolderFilter(folderIdOrNull);
     }
 
+    function openCreateFolderModal() {
+      const content = document.createElement('div');
+      content.classList.add('tp3d-packs-modal-grid');
+
+      const name = field('Folder name', 'text', 'e.g. Client A', false);
+      name.wrap.classList.add('tp3d-grid-span-full');
+      content.appendChild(name.wrap);
+
+      UIComponents.showModal({
+        title: 'New Folder',
+        content,
+        actions: [
+          { label: 'Cancel' },
+          {
+            label: 'Create',
+            variant: 'primary',
+            onClick: () => {
+              const folderName = String(name.input.value || '').trim();
+              const created = FolderLibrary.createFolder(folderName);
+              if (created && created.id) {
+                activeFolderId = String(created.id);
+                packsListState.pageIndex = 0;
+              }
+              render();
+              UIComponents.showToast('Folder created', 'success');
+            },
+          },
+        ],
+      });
+    }
+
     function openFoldersDropdown() {
       const button = ensureFoldersButton();
       if (!button) return;
@@ -391,6 +422,19 @@ export function createPacksScreen({
           disabled: true,
         });
       }
+
+      items.push(
+        { type: 'divider' },
+        {
+          label: 'New Folder',
+          icon: 'fa-solid fa-folder-plus',
+          onClick: () => {
+            UIComponents.closeAllDropdowns();
+            setFoldersButtonExpanded(false);
+            openCreateFolderModal();
+          },
+        }
+      );
 
       setFoldersButtonExpanded(true);
       UIComponents.openDropdown(button, items, {

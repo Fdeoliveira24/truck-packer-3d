@@ -4095,6 +4095,10 @@ test('phase 0.7C-1B scoped CSS styles only the packs folder button', async () =>
     'label style must truncate long folder names');
   assert.doesNotMatch(block, /\.tp3d-packs-folder-btn__caret/,
     'caret CSS must stay removed because the Folders button no longer renders a caret');
+  assert.match(block, /\.tp3d-packs-folder-option-btn \{/,
+    'Move to Folder modal rows must use scoped folder option button styles');
+  assert.match(block, /\.tp3d-packs-folder-option-btn__label[\s\S]{0,220}text-overflow:\s*ellipsis/,
+    'Move to Folder modal row labels must truncate long folder names');
   assert.doesNotMatch(block, /\.btn\b|\.dropdown-menu|\.dropdown-item/,
     'Phase 0.7C-1B CSS must not style global buttons or dropdowns');
 });
@@ -4348,7 +4352,7 @@ test('phase 0.7C-3 move modal includes Unfiled folders and current state marker'
     'Move modal must include real folder options from getSafeFolders');
   assert.match(block, /empty\.textContent = ['"]No folders yet['"]/,
     'Move modal must show No folders yet when no real folders exist');
-  assert.match(block, /disabled \? ['"] \(current\)['"] : ['"]/,
+  assert.match(block, /currentEl\.className = ['"]tp3d-packs-folder-option-btn__meta['"][\s\S]{0,120}currentEl\.textContent = ['"]Current['"]/,
     'Move modal must visibly mark the current location');
   assert.match(block, /if \(moved && modalRef && typeof modalRef\.close === ['"]function['"]\) modalRef\.close\(\)/,
     'successful move must close the modal');
@@ -4634,6 +4638,36 @@ test('phase 0.7C-4B app local state reload and reset paths preserve folderLibrar
   const fallbackCount = (src.match(/folderLibrary:\s*\[\]/g) || []).length;
   assert.ok(fallbackCount >= 4,
     'empty seed reset and no-workspace fallback state shapes must include folderLibrary: []');
+});
+
+test('phase 0.7C-4B folder mutations flush workspace persistence immediately', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const packsSrc = await fs.readFile(packsScreenPath, 'utf8');
+  const createStart = packsSrc.indexOf('function openCreateFolderModal()');
+  const createEnd = packsSrc.indexOf('\n    function openRenameFolderModal', createStart + 1);
+  const createBlock = createStart >= 0 && createEnd > createStart ? packsSrc.slice(createStart, createEnd) : '';
+  const renameStart = packsSrc.indexOf('function openRenameFolderModal(folder)');
+  const renameEnd = packsSrc.indexOf('\n    async function deleteFolderWithConfirm', renameStart + 1);
+  const renameBlock = renameStart >= 0 && renameEnd > renameStart ? packsSrc.slice(renameStart, renameEnd) : '';
+  const deleteStart = packsSrc.indexOf('async function deleteFolderWithConfirm(folder)');
+  const deleteEnd = packsSrc.indexOf('\n    function movePackToFolder(', deleteStart + 1);
+  const deleteBlock = deleteStart >= 0 && deleteEnd > deleteStart ? packsSrc.slice(deleteStart, deleteEnd) : '';
+  const moveStart = packsSrc.indexOf('function movePackToFolder(');
+  const moveEnd = packsSrc.indexOf('\n    function openMoveToFolderModal(pack)', moveStart + 1);
+  const moveBlock = moveStart >= 0 && moveEnd > moveStart ? packsSrc.slice(moveStart, moveEnd) : '';
+
+  assert.match(appSrc, /persistNow:\s*\(\) => Storage\.saveNow\(\)/,
+    'app.js must pass an immediate workspace save callback into the Packs screen');
+  assert.match(packsSrc, /function persistFolderStateNow\(\)[\s\S]{0,180}persistNow\(\)/,
+    'Packs screen must expose a narrow immediate persistence helper');
+  assert.match(createBlock, /FolderLibrary\.createFolder\(folderName\)[\s\S]{0,80}persistFolderStateNow\(\)/,
+    'Create Folder must flush persistence immediately after StateStore mutation');
+  assert.match(renameBlock, /FolderLibrary\.renameFolder\(folderId, name\.input\.value\)[\s\S]{0,180}persistFolderStateNow\(\)/,
+    'Rename Folder must flush persistence immediately after StateStore mutation');
+  assert.match(deleteBlock, /FolderLibrary\.deleteFolder\(folderId\)[\s\S]{0,180}persistFolderStateNow\(\)/,
+    'Delete Folder must flush persistence immediately after StateStore mutation');
+  assert.match(moveBlock, /FolderLibrary\.movePackToFolder\(pack\.id, folderIdOrNull\)[\s\S]{0,180}persistFolderStateNow\(\)/,
+    'Move Pack to Folder must flush persistence immediately after StateStore mutation');
 });
 
 test('phase 0.7C-4B compact move modal replaces inline folder menu section', async () => {

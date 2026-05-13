@@ -4443,6 +4443,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       ExportService,
       CardDisplayOverlay,
       featureFlags,
+      persistNow: () => Storage.saveNow(),
       toast,
       toAscii,
     });

@@ -30,6 +30,7 @@ export function createPacksScreen({
   ExportService,
   CardDisplayOverlay,
   featureFlags,
+  persistNow,
   toast,
   toAscii: _toAscii,
 }) {
@@ -213,6 +214,15 @@ export function createPacksScreen({
       }
     }
 
+    function persistFolderStateNow() {
+      if (typeof persistNow !== 'function') return;
+      try {
+        persistNow();
+      } catch (_err) {
+        // Autosave remains the fallback; this only closes the immediate-reload gap.
+      }
+    }
+
     function getFolderFilterModel(allPacks) {
       const packs = Array.isArray(allPacks) ? allPacks : [];
       const folders = getSafeFolders();
@@ -363,6 +373,7 @@ export function createPacksScreen({
             onClick: () => {
               const folderName = String(name.input.value || '').trim();
               const created = FolderLibrary.createFolder(folderName);
+              persistFolderStateNow();
               if (created && created.id) {
                 activeFolderId = String(created.id);
                 packsListState.pageIndex = 0;
@@ -400,6 +411,7 @@ export function createPacksScreen({
                 UIComponents.showToast('Could not rename folder', 'warning');
                 return;
               }
+              persistFolderStateNow();
               render();
               UIComponents.showToast('Folder renamed', 'success');
             },
@@ -426,6 +438,7 @@ export function createPacksScreen({
         UIComponents.showToast('Could not delete folder', 'warning');
         return;
       }
+      persistFolderStateNow();
       if (activeFolderId === folderId) {
         activeFolderId = null;
         packsListState.pageIndex = 0;
@@ -441,6 +454,7 @@ export function createPacksScreen({
         UIComponents.showToast('Could not move pack to folder', 'warning');
         return false;
       }
+      persistFolderStateNow();
       packsListState.pageIndex = 0;
       render();
       UIComponents.showToast(folderIdOrNull ? 'Pack moved to folder' : 'Pack moved to Unfiled', 'success');
@@ -458,13 +472,23 @@ export function createPacksScreen({
       const addMoveRow = (label, iconClass, folderIdOrNull, disabled = false) => {
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = 'btn btn-ghost tp3d-grid-span-full';
+        button.className = 'btn tp3d-packs-folder-option-btn tp3d-grid-span-full';
         button.disabled = disabled;
         const icon = document.createElement('i');
         icon.className = iconClass;
         icon.setAttribute('aria-hidden', 'true');
+        icon.classList.add('tp3d-packs-folder-option-btn__icon');
         button.appendChild(icon);
-        button.appendChild(document.createTextNode(` ${label}${disabled ? ' (current)' : ''}`));
+        const labelEl = document.createElement('span');
+        labelEl.className = 'tp3d-packs-folder-option-btn__label';
+        labelEl.textContent = label;
+        button.appendChild(labelEl);
+        if (disabled) {
+          const currentEl = document.createElement('span');
+          currentEl.className = 'tp3d-packs-folder-option-btn__meta';
+          currentEl.textContent = 'Current';
+          button.appendChild(currentEl);
+        }
         button.addEventListener('click', () => {
           if (disabled) return;
           const moved = movePackToFolder(pack, folderIdOrNull);

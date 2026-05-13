@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-12 — Phase 0.7C Pack Folder UI branch is pushed and paused before 0.7C-2; next work is Create Folder only, followed by Move Pack to Folder, Rename/Delete Folder, folder UI polish, M0 modularization proof tests, and then broader workspace/billing/runtime safety follow-ups.
+Last updated: 2026-05-13 — Phase 0.7C Pack Folder UI is complete, merged to `main`, pushed to `origin/main`, browser-validated, and closed. Next work is Phase 1 Release Gate Verification: browser-first SaaS readiness verification for billing, membership, workspace switching, Stripe, account deletion safety, invite links/email readiness, and cross-tab behavior. No `app.js` modularization until the release gate is green.
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -364,6 +364,16 @@ You ran lint and still have warnings.
 
 ## P0 Gate (release block)
 
+### Current release-gate focus — Phase 1
+Phase 0.7C is complete. The next work is not modularization. The next work is release-gate verification and targeted fixes only.
+
+Phase 1 rules:
+- Start with browser verification and API/DB proof before writing new code.
+- Separate stale audit notes from real reproduced bugs.
+- Keep each fix small and tied to one verified failure or one confirmed backend gap.
+- Do not do broad `src/app.js` cleanup, UI redesign, CSS cleanup, or runtime modularization during Phase 1.
+- If a task touches auth, billing, workspace switching, account deletion, Stripe, or Supabase Edge Functions, treat it as P0-risk and validate with browser/API checks.
+
 P0 is green only when ALL items here are checked:
 - [x] P0.6 DB health checks run and clean during tests (Q1–Q6 all 0 rows)
 - [x] P0.7 Trial-expired behavior implemented + tested (test3 locked; test1/test2/test4 ok)
@@ -382,6 +392,22 @@ P0 is green only when ALL items here are checked:
 ---
 
 ## Running log (keep updated)
+
+- Date: 2026-05-13 — Phase 0.7C Pack Folder UI merged and closed
+- What changed:
+  - Completed Pack Folder UI: compact Folders dropdown, Create Folder, Move Pack to Folder modal, Rename Folder, Delete Folder, folder reload persistence, and stale caret CSS cleanup.
+  - Fixed the folder persistence reload issue by ensuring `folderLibrary` survives app boot/init state and by flushing folder changes immediately through `Storage.saveNow()` from the Packs screen dependency boundary.
+  - Merged `phase-0-7c-pack-folder-ui` into `main` with merge commit `962745a` and pushed `main` to origin.
+- Validation:
+  - `npm test` passed: 271/271.
+  - `npm run lint` passed with 0 errors and existing warnings only.
+  - `npm run -s typecheck` passed.
+  - Browser validation passed for create folder, empty-name folder, long-name folder, immediate reload after create/rename/move, move to Unfiled, rename/delete protection for All Packs and Unfiled, search + folder filter, status chips + folder filter, grid/list stability, and no console errors.
+- Result:
+  - Phase 0.7C is closed.
+  - Next active phase is Phase 1 Release Gate Verification First.
+- Still required:
+  - Run Phase 1 browser/API/DB/Stripe release-gate verification before any broad `src/app.js` modularization.
 
 
 - Date: 2026-05-08 — Live billing-status proof completed; final billing P1 closed
@@ -1249,9 +1275,16 @@ Current production-readiness status:
 - [ ] Data hygiene follow-up remains optional: review archived/test workspace counts and orphan owner rows only with read-only SQL first.
 
 
-### Phase 0.7C — Pack Folder UI — IN PROGRESS ON FEATURE BRANCH
+### Phase 0.7C — Pack Folder UI — DONE ✅
 
-Goal: add a small, safe, pack-only folder UI on top of the completed local pack-folder data model. Current feature branch: `phase-0-7c-pack-folder-ui`. The branch is pushed to origin, is clean, and is not merged to `main` yet.
+Goal: add a small, safe, pack-only folder UI on top of the completed local pack-folder data model.
+
+Status:
+- Completed on branch `phase-0-7c-pack-folder-ui`.
+- Merged into `main` with merge commit `962745a`.
+- Pushed to `origin/main`.
+- Browser validated after merge.
+- Final validation passed with `npm test` at 271/271, lint with 0 errors, and clean typecheck.
 
 Planning rules:
 - [x] Read-only UI audit completed before implementation.
@@ -1262,61 +1295,105 @@ Planning rules:
 - [x] Direct UI gap was proven for the compact folder filter button; scoped CSS was added in `styles/main.css` only for `.tp3d-packs-folder-btn`.
 - [x] Do not change folder data model unless a real bug is found.
 
-Current 0.7C branch status:
+Completed 0.7C implementation sequence:
 - [x] Phase 0.7C-1A: Compact Folders dropdown added to the Packs top action row before Import Pack.
 - [x] Phase 0.7C-1A: Dropdown filters packs by `pack.folderId` using All Packs, Unfiled, and named folders.
 - [x] Phase 0.7C-1A: Folder filter state is included in the Packs dataset key and clears on workspace reset.
 - [x] Phase 0.7C-1B: Folder button styling is scoped in `styles/main.css`.
 - [x] Phase 0.7C-1B: Folder button tooltip removed.
 - [x] Phase 0.7C-1B: Folder button visible caret removed and tests aligned with the no-caret design.
-- [x] Phase 0.7C-1B: Existing Empty / Partial / Full status chips remain unchanged.
-- [x] Phase 0.7C-1B: No backend, Supabase, Stripe, billing-status, auth, workspace lifecycle, router, package, or `index.html` scope introduced.
+- [x] Phase 0.7C-2: Create Folder.
+  - Added `New Folder` action inside the existing Folders dropdown.
+  - Used the existing app modal pattern, not `window.prompt`.
+  - Created folders through `FolderLibrary.createFolder(name)` from `src/screens/packs-screen.js`.
+  - After create, the new folder becomes the active filter and Packs pagination resets.
+- [x] Phase 0.7C-3: Move Pack to Folder.
+  - Added one compact `Move to Folder` action in the existing pack menu patterns for both grid and list views.
+  - The action opens a modal instead of expanding a long inline folder list inside the pack action menu.
+  - Moves use `FolderLibrary.movePackToFolder(packId, folderIdOrNull)` only.
+- [x] Phase 0.7C-4: Rename/Delete Folder.
+  - Rename/Delete appear only for real named folders, not All Packs or Unfiled.
+  - Rename uses `FolderLibrary.renameFolder()`.
+  - Delete uses `FolderLibrary.deleteFolder()` and moves affected packs to Unfiled without deleting packs or cases.
+- [x] Phase 0.7C-4B: Folder reload persistence + compact move UX fix.
+  - Fixed folder persistence on immediate reload by flushing folder changes with `Storage.saveNow()` from the Packs screen dependency boundary.
+  - Ensured app boot/init state includes `folderLibrary` in all relevant StateStore init/replace paths.
+  - Reworked Move to Folder into one compact menu item with a modal for folder choices.
+- [x] Phase 0.7C-5: Folder UI polish + stale CSS cleanup.
+  - Removed stale `.tp3d-packs-folder-btn__caret` CSS after the no-caret design was stable.
+  - Kept CSS scoped to Packs folder UI.
+- [x] Confirmed Workspace Export includes `folderLibrary` and preserves `pack.folderId` after folder UI use.
+- [x] Confirmed App Export remains the full local backup path and includes `folderLibrary` safely through normalization.
+- [x] Confirmed reload preserves folder names and pack-folder assignment after create, rename, and move.
+- [x] Confirmed active folder filter does not persist as a stale UI state after reload.
 
-Remaining 0.7C implementation sequence:
-- [ ] Phase 0.7C-2: Create Folder only.
-  - Add a `New Folder` / `Create Folder` action inside the existing Folders dropdown.
-  - Use `UIComponents.showModal()` or the app's existing modal pattern, not `window.prompt`.
-  - Call `FolderLibrary.createFolder(name)` from `src/screens/packs-screen.js` only.
-  - After create, set the new folder as the active filter, reset Packs pagination, render, and show a success toast.
-  - Keep current compact no-caret behavior.
-  - Do not add Rename, Delete, Move, sidebar panels, permanent folder rows, backend changes, CSS cleanup, or app modularization in this phase.
-- [ ] Phase 0.7C-3: Move Pack to Folder.
-  - Add Move to Folder / Move to Unfiled actions to the existing pack action menu patterns for both grid and list views.
-  - Call `FolderLibrary.movePackToFolder(packId, folderIdOrNull)` only.
-  - Preserve existing search, status filters, selection behavior, pagination, and thumbnail behavior.
-  - Do not modify folder data model, storage, import/export, billing, auth, Supabase, or workspace lifecycle.
-- [ ] Phase 0.7C-4: Rename/Delete Folder.
-  - Add rename and delete actions for named folders only.
-  - Use existing confirmation/modal patterns.
-  - `renameFolder()` updates folder metadata only.
-  - `deleteFolder()` removes the folder row and nulls affected `pack.folderId` references; it must not delete packs or cases.
-  - Keep All Packs and Unfiled protected; they are filters, not real folders.
-- [ ] Phase 0.7C-5: Folder UI polish + stale CSS cleanup.
-  - Remove stale `.tp3d-packs-folder-btn__caret` CSS only after the no-caret design is stable.
-  - Check narrow-width action row wrapping.
-  - Check empty folder states, long folder names, active folder labels, and dropdown active row state.
-  - Keep CSS scoped to Packs folder UI.
-- [ ] Confirm Workspace Export includes `folderLibrary` and `pack.folderId` after folder UI use.
-- [ ] Confirm App Export remains the full local backup path and includes `folderLibrary` safely through normalization.
-- [ ] Confirm workspace switch/reload does not leak active folder filter state.
+### Phase 1 — Release Gate Verification First — NEXT
+
+Goal: prove the SaaS foundation in the browser and through API/DB checks before adding more product features or modularizing `src/app.js`.
+
+Why this is next:
+- Recent audits had conflicting findings. Some reported issues were already fixed, while other gaps are real.
+- The safest next step is to verify real behavior with three browser sessions, Supabase table checks, Edge Function checks, and Stripe test-mode checks where needed.
+- Code changes should only follow reproduced bugs or confirmed backend gaps.
+
+#### Phase 1A — Browser-first release-gate verification
+- [ ] Same-tab different-user sign-in: sign in as User A, sign out, sign in as User B, and confirm no stale billing, workspace, folders, packs, members, settings, or sidebar state appears.
+- [ ] Cross-tab logout: sign out in Tab A and confirm Tab B clears session, shows sign-in, and does not bounce back to signed-in UI.
+- [ ] Two-tab same-user workspace switch: switch workspace in Tab A and confirm Tab B converges to the same active org without stale Billing/Members/General data.
+- [ ] Billing tab after workspace switch: confirm billing belongs to the active workspace, not the previous workspace.
+- [ ] Members tab after workspace switch: confirm the members/invites belong to the active workspace.
+- [ ] Over-limit workspace visibility: verify an over-limit workspace still appears in the switcher and can be opened, while Pro actions remain blocked.
+- [ ] Folder data after workspace switch: confirm folders and pack-folder assignments do not leak across workspaces.
+- [ ] Console/network check: no blocking console errors, unhandled promise rejections, failed Edge Function calls, token leaks, or wrong-org network payloads during the above flows.
+
+#### Phase 1B — Billing and Stripe targeted checks
+- [ ] Verify checkout idempotency behavior and fix `stripe-create-checkout-session` so the idempotency key includes `organizationId` if still missing.
+- [ ] Verify `/billing-status` workspace count against known DB rows and product policy. Do not blindly exclude archived workspaces because archived workspaces currently count toward plan limits by policy.
+- [ ] Confirm Supabase secrets needed for launch are present, including Stripe secrets, workspace-limit secrets, `SITE_URL`, and later email-provider secrets.
+- [ ] Run portal manual checks: deep-link update subscription, schedule-managed fallback, stale/missing stored subscription fallback.
+
+#### Phase 1C — Workspace and account safety checks
+- [ ] Verify server-side workspace creation enforcement. Current UI gating is not enough for paid-scale SaaS if direct insert can bypass limits.
+- [ ] Verify account deletion safety end to end: owner block, last-owner block, cancellation path, purge safety, and active paid subscription policy.
+- [ ] Define and implement ownership-transfer billing policy before exposing transfer broadly to paid users.
+- [ ] Align restore workspace limit behavior with the same workspace-count truth used by `/billing-status`.
+
+#### Phase 1D — Invite/email readiness
+- [ ] Confirm current invite copy-link flow works: create, resend, copy link, accept signed in, accept after signed-out handoff, expired, revoked, wrong-email.
+- [ ] Confirm `SITE_URL` is set so invite links use the production domain.
+- [ ] Treat real email delivery as P1 if public team onboarding is part of launch. Implement email delivery only after the release-gate verification and critical billing/workspace/account safety fixes are stable.
+- [ ] Keep manual invite-link fallback even after email delivery is added.
+
+#### Phase 1 output
+- [ ] Add a dated Running log entry with pass/fail results, accounts used, screenshots/timestamps where helpful, and any confirmed bugs.
+- [ ] If bugs are found, create a small implementation phase for each bug. Do not combine unrelated fixes.
 
 ### Post-0.7C Plan — Big Picture Roadmap
 
 This plan exists to prevent scope drift. Folder UI work, billing/workspace safety work, runtime proof tests, and future modularization must stay in separate phases.
 
-#### Step A — Merge and deploy 0.7C safely
-- [ ] Finish 0.7C-2 through 0.7C-5 on `phase-0-7c-pack-folder-ui`.
-- [ ] Run `npm test`, `npm run lint`, `npm run -s typecheck`, `git diff --check`, and `git diff --cached --check` after each phase.
-- [ ] Browser-test Packs folder flows: All Packs, Unfiled, create folder, move pack, rename folder, delete folder, reload, and workspace switch.
-- [ ] Open a PR for `phase-0-7c-pack-folder-ui` after local checks are green.
-- [ ] Merge to `main` only after the folder branch is clean and reviewed.
-- [ ] Deploy static frontend assets after merge because this app ships as static files.
+#### Step A — Close 0.7C safely — DONE
+- [x] Finished 0.7C-2 through 0.7C-5 on `phase-0-7c-pack-folder-ui`.
+- [x] Ran `npm test`, `npm run lint`, `npm run -s typecheck`, `git diff --check`, and `git diff --cached --check` during the phase work.
+- [x] Browser-tested Packs folder flows: All Packs, Unfiled, create folder, move pack, rename folder, delete folder, reload, and active-filter behavior.
+- [x] Merged to `main` with merge commit `962745a`.
+- [x] Pushed `main` to origin.
 
 Why this matters:
-- Folder UI is product-facing but local-only. It should be finished and merged without touching auth, billing, Supabase, Stripe, workspace lifecycle, or runtime architecture.
-- A clean 0.7C merge gives the next work a stable baseline.
+- Folder UI is closed and no longer the active planning area.
+- The next active work is Phase 1 Release Gate Verification, not app modularization.
+
+#### Step A2 — Phase 1 Release Gate Verification — ACTIVE NEXT
+- [ ] Run the browser/API/DB/Stripe verification matrix in Phase 1A through Phase 1D above.
+- [ ] Fix only confirmed issues, one small patch at a time.
+- [ ] Keep `src/app.js` broad cleanup and modularization out of this phase.
+
+Why this matters:
+- `src/app.js` still owns auth timing, org context, workspace switching, billing refresh, feature gates, storage scope, overlays, and cross-tab behavior.
+- The release gate must prove those contracts before any runtime extraction.
 
 #### Step B — M0 modularization proof tests, no production code moves
+- [ ] Start only after Phase 1 Release Gate Verification is green or all Phase 1 blockers are converted into small tracked fixes.
 - [ ] Add focused tests for `getProRuleSet()` before extracting it.
 - [ ] Cover owner/member behavior and billing states such as active, trialing, trial_expired, payment issue, included_in_plan, workspace_limit_reached, owner_subscription_required, billing_unavailable, and unknown/missing status.
 - [ ] Add or preserve tests proving `folderLibrary` changes trigger autosave and Packs render.

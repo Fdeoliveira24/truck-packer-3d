@@ -375,6 +375,60 @@ export function createPacksScreen({
       });
     }
 
+    function movePackToFolder(pack, folderIdOrNull) {
+      if (!pack || !pack.id) return;
+      const moved = FolderLibrary.movePackToFolder(pack.id, folderIdOrNull);
+      if (!moved) {
+        UIComponents.showToast('Could not move pack to folder', 'warning');
+        return;
+      }
+      packsListState.pageIndex = 0;
+      render();
+      UIComponents.showToast(folderIdOrNull ? 'Pack moved to folder' : 'Pack moved to Unfiled', 'success');
+    }
+
+    function buildMoveFolderItems(pack) {
+      if (!pack || !pack.id) return [];
+      const folders = getSafeFolders();
+      const currentFolderId = pack.folderId ? String(pack.folderId) : null;
+      const unfiledActive = currentFolderId === null;
+      const items = /** @type {any[]} */ ([
+        { type: 'divider' },
+        { type: 'header', label: 'Move to folder' },
+        {
+          label: 'Unfiled',
+          icon: 'fa-solid fa-folder-open',
+          active: unfiledActive,
+          disabled: unfiledActive,
+          rightIcon: unfiledActive ? 'fa-solid fa-check' : '',
+          onClick: () => movePackToFolder(pack, null),
+        },
+      ]);
+
+      if (folders.length) {
+        folders.forEach(folder => {
+          const folderId = String(folder.id);
+          const active = currentFolderId === folderId;
+          items.push({
+            label: folder.name || 'Untitled Folder',
+            icon: 'fa-solid fa-folder',
+            active,
+            disabled: active,
+            rightIcon: active ? 'fa-solid fa-check' : '',
+            onClick: () => movePackToFolder(pack, folderId),
+          });
+        });
+      } else {
+        items.push({
+          label: 'No folders yet',
+          icon: 'fa-solid fa-folder',
+          disabled: true,
+        });
+      }
+
+      return items;
+    }
+
     function openFoldersDropdown() {
       const button = ensureFoldersButton();
       if (!button) return;
@@ -908,6 +962,7 @@ export function createPacksScreen({
               onClick: () => ExportService.clearPackPreview(pack.id),
             },
             { label: 'Export Pack', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+            ...buildMoveFolderItems(pack),
             {
               label: 'Delete',
               icon: 'fa-solid fa-trash-can',
@@ -1090,6 +1145,7 @@ export function createPacksScreen({
               onClick: () => ExportService.clearPackPreview(pack.id),
             },
             { label: 'Export Pack', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+            ...buildMoveFolderItems(pack),
             {
               label: 'Delete',
               icon: 'fa-solid fa-trash-can',

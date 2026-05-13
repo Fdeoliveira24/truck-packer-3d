@@ -3894,17 +3894,20 @@ test('phase 0.7C-1A existing search and status filters remain present', async ()
 
 test('phase 0.7C-1A folder dropdown is filter only and avoids CRUD move UI', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function openFoldersDropdown()');
+  const end = src.indexOf('\n    function initListHeaderSort()', start + 1);
+  const dropdownBlock = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.match(src, /defaultActionsEl\.insertBefore\(foldersButtonEl, btnImport\)/,
     'Folders button must be mounted before Import Pack in the top action area');
-  assert.match(src, /label: `All Packs \(\$\{model\.totalCount\}\)`/,
+  assert.match(dropdownBlock, /label: `All Packs \(\$\{model\.totalCount\}\)`/,
     'Folders dropdown must include All Packs with count');
-  assert.match(src, /label: `Unfiled \(\$\{model\.unfiledCount\}\)`/,
+  assert.match(dropdownBlock, /label: `Unfiled \(\$\{model\.unfiledCount\}\)`/,
     'Folders dropdown must include Unfiled with count');
-  assert.match(src, /label: ['"]No folders yet['"][\s\S]{0,100}disabled: true/,
+  assert.match(dropdownBlock, /label: ['"]No folders yet['"][\s\S]{0,100}disabled: true/,
     'Folders dropdown must show disabled No folders yet row');
-  assert.doesNotMatch(src, /\b(renameFolder|deleteFolder|movePackToFolder|getPacksInFolder)\s*\(/,
-    'Phase 0.7C folder UI must not add rename, delete, move, or bulk folder UI');
+  assert.doesNotMatch(dropdownBlock, /\b(renameFolder|deleteFolder|movePackToFolder|getPacksInFolder)\s*\(/,
+    'Folders filter dropdown must not add rename, delete, move, or bulk folder UI');
 });
 
 test('phase 0.7C-1A packs screen avoids forbidden backend billing auth css router scope', async () => {
@@ -4066,8 +4069,8 @@ test('phase 0.7C-1B avoids rejected folder UI and folder mutation actions', asyn
     'folder UI must not be mounted under the Empty Partial Full filter chip row');
   assert.doesNotMatch(src, /folder side(panel|bar)|folderPanel|foldersSidebar/i,
     'Phase 0.7C-1B must not add a sidebar folder panel');
-  assert.doesNotMatch(src, /\b(renameFolder|deleteFolder|movePackToFolder|getPacksInFolder)\s*\(/,
-    'Phase 0.7C-1B must not add rename, delete, move, or bulk folder UI');
+  assert.doesNotMatch(src, /\b(renameFolder|deleteFolder|getPacksInFolder)\s*\(/,
+    'Phase 0.7C-1B must not add rename, delete, or bulk folder UI');
   assert.doesNotMatch(src, /bulk.*folder|folder.*bulk/i,
     'Phase 0.7C-1B must not add bulk folder actions');
 });
@@ -4234,8 +4237,6 @@ test('phase 0.7C-2 does not add rename delete move bulk sidebar or chip-row fold
     'Phase 0.7C-2 must not add folder rename UI');
   assert.doesNotMatch(src, /FolderLibrary\.deleteFolder\(/,
     'Phase 0.7C-2 must not add folder delete UI');
-  assert.doesNotMatch(src, /FolderLibrary\.movePackToFolder\(/,
-    'Phase 0.7C-2 must not add move pack to folder UI');
   assert.doesNotMatch(src, /getPacksInFolder\(/,
     'Phase 0.7C-2 must not add folder pack-management UI');
   assert.doesNotMatch(src, /bulk.*folder|folder.*bulk/i,
@@ -4297,4 +4298,158 @@ test('phase 0.7C-2 avoids forbidden backend billing auth settings package and in
     'Phase 0.7C-2 must not touch backend, data model, settings, CSS, package, router, or index scope');
   assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
     'create folder UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
+});
+
+// ============================================================================
+// PHASE 0.7C-3 — Move Pack to Folder from Pack Menus
+// ============================================================================
+
+test('phase 0.7C-3 changed files stay within allowed move-folder scope', async () => {
+  const allowedFiles = new Set([
+    'src/screens/packs-screen.js',
+    'tests/audit/security-and-invariants.spec.mjs',
+  ]);
+  const { stdout } = await execFileAsync('git', ['diff', '--name-only']);
+  const changedFiles = stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(file => file !== 'CLAUDE.md');
+  const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'Phase 0.7C-3 must only edit packs-screen.js and security-and-invariants.spec.mjs');
+});
+
+test('phase 0.7C-3 buildMoveFolderItems uses folder library move API', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function movePackToFolder(');
+  const end = src.indexOf('\n    function openFoldersDropdown()', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0,
+    'movePackToFolder and buildMoveFolderItems helpers must be extractable');
+  assert.match(block, /function buildMoveFolderItems\(pack\)/,
+    'buildMoveFolderItems(pack) helper must exist');
+  assert.match(block, /FolderLibrary\.movePackToFolder\(pack\.id, folderIdOrNull\)/,
+    'move helper must call FolderLibrary.movePackToFolder with pack id and target folder id');
+  assert.match(block, /const folders = getSafeFolders\(\)/,
+    'move helper must use folder options from the existing safe folder list');
+  assert.match(src, /FolderLibrary\.listFolders\(\)/,
+    'folder options must ultimately come from FolderLibrary.listFolders()');
+});
+
+test('phase 0.7C-3 move menu includes Unfiled folders and active checkmarks', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function buildMoveFolderItems(pack)');
+  const end = src.indexOf('\n    function openFoldersDropdown()', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.match(block, /type:\s*['"]header['"], label:\s*['"]Move to folder['"]/,
+    'move menu must include Move to folder header');
+  assert.match(block, /label:\s*['"]Unfiled['"]/,
+    'move menu must include Unfiled option');
+  assert.match(block, /onClick:\s*\(\) => movePackToFolder\(pack, null\)/,
+    'Move to Unfiled must pass null target');
+  assert.match(block, /rightIcon:\s*unfiledActive \? ['"]fa-solid fa-check['"]/,
+    'current Unfiled state must show checkmark');
+  assert.match(block, /rightIcon:\s*active \? ['"]fa-solid fa-check['"]/,
+    'current folder state must show checkmark');
+  assert.match(block, /disabled:\s*active/,
+    'current folder row should be disabled to avoid no-op moves');
+  assert.match(block, /label:\s*['"]No folders yet['"][\s\S]{0,100}disabled:\s*true/,
+    'move menu must show disabled No folders yet row when no real folders exist');
+});
+
+test('phase 0.7C-3 move helper handles success and failed moves safely', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function movePackToFolder(');
+  const end = src.indexOf('\n    function buildMoveFolderItems(pack)', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.match(block, /if \(!moved\)[\s\S]{0,120}UIComponents\.showToast\(['"]Could not move pack to folder['"], ['"]warning['"]\)/,
+    'failed move must show a warning toast and not throw');
+  assert.match(block, /packsListState\.pageIndex = 0/,
+    'successful move must reset pack pagination');
+  assert.match(block, /\brender\(\)/,
+    'successful move must re-render Packs screen');
+  assert.match(block, /UIComponents\.showToast\([\s\S]{0,120}['"]success['"]\)/,
+    'successful move must show success toast');
+});
+
+test('phase 0.7C-3 list and grid pack menus include move section between export and delete', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const listStart = src.indexOf('function renderListView(packs)');
+  const listEnd = src.indexOf('\n    function renderGridView(packs)', listStart + 1);
+  const listBlock = listStart >= 0 && listEnd > listStart ? src.slice(listStart, listEnd) : '';
+  const gridStart = src.indexOf('function renderGridView(packs)');
+  const gridEnd = src.indexOf('\n    function buildPreview(', gridStart + 1);
+  const gridBlock = gridStart >= 0 && gridEnd > gridStart ? src.slice(gridStart, gridEnd) : '';
+
+  assert.match(listBlock, /label:\s*['"]Export Pack['"][\s\S]{0,180}\.\.\.buildMoveFolderItems\(pack\)[\s\S]{0,220}label:\s*['"]Delete['"]/,
+    'list view pack menu must insert move section after Export Pack and before Delete');
+  assert.match(gridBlock, /label:\s*['"]Export Pack['"][\s\S]{0,180}\.\.\.buildMoveFolderItems\(pack\)[\s\S]{0,220}label:\s*['"]Delete['"]/,
+    'grid view pack menu must insert move section after Export Pack and before Delete');
+});
+
+test('phase 0.7C-3 move helper does not touch pack delete or case library code', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function movePackToFolder(');
+  const end = src.indexOf('\n    function openFoldersDropdown()', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.doesNotMatch(block, /PackLibrary\.remove|CaseLibrary\./,
+    'move helper must not delete packs or touch case library');
+  assert.doesNotMatch(block, /FolderLibrary\.renameFolder\(|FolderLibrary\.deleteFolder\(/,
+    'move helper must not add rename or delete folder behavior');
+  assert.doesNotMatch(block, /bulk.*folder|folder.*bulk/i,
+    'move helper must not add bulk folder behavior');
+});
+
+test('phase 0.7C-3 avoids native dialogs and preserves no-caret folder button', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function ensureFoldersButton()');
+  const end = src.indexOf('\n    function renderFoldersButton(', start + 1);
+  const buttonBlock = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.doesNotMatch(src, /window\.prompt|window\.alert|window\.confirm/,
+    'Packs screen must not use window prompt alert or confirm APIs');
+  assert.doesNotMatch(src, /(^|[^\w.])prompt\s*\(|(^|[^\w.])alert\s*\(|(^|[^\w.])confirm\s*\(/,
+    'Packs screen must not use native prompt(), alert(), or confirm() calls');
+  assert.doesNotMatch(buttonBlock, /tp3d-packs-folder-btn__caret|fa-chevron-down/,
+    'Folders button must remain no-caret');
+});
+
+test('phase 0.7C-3 avoids forbidden backend billing auth settings storage package and index scope', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const { stdout } = await execFileAsync('git', [
+    'diff',
+    '--name-only',
+    '--',
+    'index.html',
+    'package.json',
+    'package-lock.json',
+    'src/app.js',
+    'src/core',
+    'src/services/folder-library.js',
+    'src/services/pack-library.js',
+    'src/services/import-export.js',
+    'src/ui/overlays/settings-overlay.js',
+    'src/ui/ui-components.js',
+    'src/data/services/billing.service.js',
+    'src/router.js',
+    'styles/main.css',
+    'supabase/functions',
+    'supabase/migrations',
+    'supabase/config.toml',
+  ]);
+  const changedForbiddenFiles = stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  assert.deepEqual(changedForbiddenFiles, [],
+    'Phase 0.7C-3 must not touch backend, storage/model, settings, CSS, package, router, or index scope');
+  assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
+    'move folder UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
 });

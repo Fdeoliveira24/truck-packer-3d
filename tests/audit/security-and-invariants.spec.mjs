@@ -4669,9 +4669,9 @@ test('phase 0.7C-4B both pack menus contain one compact Move to Folder action', 
     'list menu must contain exactly one Move to Folder action');
   assert.equal((gridBlock.match(/label:\s*['"]Move to Folder['"]/g) || []).length, 1,
     'grid menu must contain exactly one Move to Folder action');
-  assert.match(listBlock, /label:\s*['"]Move to Folder['"][\s\S]{0,160}icon:\s*['"]fa-solid fa-folder-arrow-up['"][\s\S]{0,160}openMoveToFolderModal\(pack\)/,
+  assert.match(listBlock, /label:\s*['"]Move to Folder['"][\s\S]{0,160}icon:\s*['"]fa-solid fa-folder-open['"][\s\S]{0,160}openMoveToFolderModal\(pack\)/,
     'list Move to Folder action must open the modal helper');
-  assert.match(gridBlock, /label:\s*['"]Move to Folder['"][\s\S]{0,160}icon:\s*['"]fa-solid fa-folder-arrow-up['"][\s\S]{0,160}openMoveToFolderModal\(pack\)/,
+  assert.match(gridBlock, /label:\s*['"]Move to Folder['"][\s\S]{0,160}icon:\s*['"]fa-solid fa-folder-open['"][\s\S]{0,160}openMoveToFolderModal\(pack\)/,
     'grid Move to Folder action must open the modal helper');
   assert.doesNotMatch(listBlock + gridBlock, /type:\s*['"]header['"], label:\s*['"]Move to folder['"]|rightIcon:\s*active \? ['"]fa-solid fa-check['"]/,
     'main pack menus must not contain inline folder choices');

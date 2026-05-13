@@ -1,6 +1,6 @@
 # File Tree: Truck Packer 3D
 
-**Generated:** 5/3/2026, 10:38:37 AM
+**Generated:** 5/12/2026, 10:22:49 PM
 **Root Path:** `/Users/franciscooliveira/Library/CloudStorage/Dropbox/360Virtual Tour Solutions/Projects/Truck Packer 3D`
 
 ```
@@ -51,6 +51,7 @@
 │   │   ├── 📝 auth-session-race-audit-2026-02-05.md
 │   │   ├── 📝 css-audit-footer-overlay.md
 │   │   ├── 📝 phase1-resources-audit.md
+│   │   ├── 📝 qa-billing-entitlement-2026-05-04.md
 │   │   ├── 📝 settings-tab-desync-audit.md
 │   │   └── 📝 ui-rearrangement-audit.md
 │   ├── 📁 dev
@@ -60,16 +61,17 @@
 │   │   └── 📝 stripe-functions-secrets-checklist.md
 │   ├── 📁 product
 │   │   ├── 📝 BILLING_ENTITLEMENT_RULES.md
+│   │   ├── 📝 PROJECT_TREE.md
 │   │   ├── 📝 TP3D-MASTER-TODO-V3.md
 │   │   ├── 📝 autopack-logic-v2.md
 │   │   └── 📝 truckpacker-comparison-v1-2026-04-19.md
 │   ├── 📁 review
 │   │   ├── 📝 P0.6-DB-HEALTH-CHECKLIST.md
-│   │   ├── 📝 PROJECT_TREE.md
 │   │   ├── 📝 README.md
 │   │   ├── 📝 SUPABASE_CURRENT_STATE_02_07_2026-V1.md
 │   │   ├── 📝 TP3D_BILLING_FIXES_02_12_2026.md
 │   │   ├── 📝 browser-diagnostics.md
+│   │   ├── 📝 orphan-owner-workspace-cleanup.md
 │   │   ├── 📝 tp3d-supabase-infra-record-2026-02-03.md
 │   │   ├── 📝 tp3d-supabase-issue-summary-2026-02-03.md
 │   │   ├── 📝 truck-packer-supabase-current-state.md
@@ -134,6 +136,7 @@
 │   │   ├── 📄 case-library.js
 │   │   ├── 📄 category-service.js
 │   │   ├── 📄 cog-service.js
+│   │   ├── 📄 folder-library.js
 │   │   ├── 📄 import-export.js
 │   │   ├── 📄 oog-service.js
 │   │   ├── 📄 pack-library.js
@@ -182,17 +185,33 @@
 │   │   │   └── 📄 index.ts
 │   │   ├── 📁 billing-status
 │   │   │   └── 📄 index.ts
+│   │   ├── 📁 cancel-account-deletion
+│   │   │   └── 📄 index.ts
 │   │   ├── 📁 delete-account
 │   │   │   ├── ⚙️ .npmrc
 │   │   │   ├── ⚙️ deno.json
+│   │   │   └── 📄 index.ts
+│   │   ├── 📁 org-archive-workspace
 │   │   │   └── 📄 index.ts
 │   │   ├── 📁 org-invite
 │   │   │   └── 📄 index.ts
 │   │   ├── 📁 org-invite-accept
 │   │   │   └── 📄 index.ts
+│   │   ├── 📁 org-invite-revoke
+│   │   │   └── 📄 index.ts
+│   │   ├── 📁 org-leave-workspace
+│   │   │   └── 📄 index.ts
 │   │   ├── 📁 org-member-remove
 │   │   │   └── 📄 index.ts
 │   │   ├── 📁 org-member-role-update
+│   │   │   └── 📄 index.ts
+│   │   ├── 📁 org-restore-workspace
+│   │   │   └── 📄 index.ts
+│   │   ├── 📁 org-transfer-ownership
+│   │   │   └── 📄 index.ts
+│   │   ├── 📁 purge-deleted-accounts
+│   │   │   └── 📄 index.ts
+│   │   ├── 📁 purge-deleted-users
 │   │   │   └── 📄 index.ts
 │   │   ├── 📁 request-account-deletion
 │   │   │   └── 📄 index.ts
@@ -208,8 +227,8 @@
 │   │   └── ⚙️ .env.example
 │   ├── 📁 migrations
 │   │   ├── 📄 2026021501_create_profiles.sql
+│   │   ├── 📄 2026021600_account_deletion.sql
 │   │   ├── 📄 2026021601_create_org_schema.sql
-│   │   ├── 📄 20260216_account_deletion.sql
 │   │   ├── 📄 2026021700_create_billing_schema.sql
 │   │   ├── 📄 2026021701_org_member_rls_hardening.sql
 │   │   ├── 📄 2026021702_stripe_webhook_reliability.sql
@@ -221,7 +240,15 @@
 │   │   ├── 📄 2026041803_storage_buckets_and_rls.sql
 │   │   ├── 📄 2026042201_organizations_rls.sql
 │   │   ├── 📄 2026042301_org_members_select_self.sql
-│   │   └── 📄 2026042901_stop_repeat_workspace_trials.sql
+│   │   ├── 📄 2026042901_stop_repeat_workspace_trials.sql
+│   │   ├── 📄 2026050501_organization_invites_expiration.sql
+│   │   ├── 📄 2026050601_fix_signup_auto_org_uuid.sql
+│   │   ├── 📄 2026050701_organization_archive.sql
+│   │   ├── 📄 2026050702_org_member_admin_delete_guard.sql
+│   │   ├── 📄 2026050801_transfer_ownership_fn.sql
+│   │   ├── 📄 2026050802_transfer_ownership_live_schema_fix.sql
+│   │   ├── 📄 2026050803_restore_workspace.sql
+│   │   └── 📄 2026050804_account_purge_status.sql
 │   ├── 📁 snippets
 │   ├── ⚙️ .gitignore
 │   └── ⚙️ config.toml
@@ -259,4 +286,3 @@
 ```
 
 ---
-*Generated by FileTree Pro Extension*

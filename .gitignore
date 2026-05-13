@@ -62,3 +62,7 @@ build/
 *.env.local
 supabase/functions/.env.local
 .claude/
+
+# Local knowledge graph / Obsidian tooling
+.obsidian/
+graphify-out/

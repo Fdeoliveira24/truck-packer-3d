@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-08 — Phase 0.7A Workspace JSON Export, Phase 0.7B local pack-folder data model, and Settings billing fallback are merged/pushed; live billing-status P1 was not reproduced and is closed; next priority is Phase 0.7C Pack Folder UI planning
+Last updated: 2026-05-12 — Phase 0.7C Pack Folder UI branch is pushed and paused before 0.7C-2; next work is Create Folder only, followed by Move Pack to Folder, Rename/Delete Folder, folder UI polish, M0 modularization proof tests, and then broader workspace/billing/runtime safety follow-ups.
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -1249,28 +1249,206 @@ Current production-readiness status:
 - [ ] Data hygiene follow-up remains optional: review archived/test workspace counts and orphan owner rows only with read-only SQL first.
 
 
-### Phase 0.7C — Pack Folder UI — PLANNING NEXT
+### Phase 0.7C — Pack Folder UI — IN PROGRESS ON FEATURE BRANCH
 
-Goal: add a small, safe UI on top of the completed local pack-folder data model.
+Goal: add a small, safe, pack-only folder UI on top of the completed local pack-folder data model. Current feature branch: `phase-0-7c-pack-folder-ui`. The branch is pushed to origin, is clean, and is not merged to `main` yet.
 
 Planning rules:
-- [ ] Start with a read-only UI audit before implementation.
-- [ ] Reuse existing Packs screen patterns for filters, actions, buttons, and empty states.
-- [ ] Keep scope pack-only for the first UI release.
-- [ ] Do not add case folders in this phase.
-- [ ] Do not touch Supabase, Edge Functions, Stripe, billing-status, workspace lifecycle, migrations, router, package files, or `index.html`.
-- [ ] Avoid new CSS unless a direct UI gap is proven.
-- [ ] Do not change folder data model unless a real bug is found.
+- [x] Read-only UI audit completed before implementation.
+- [x] Reuse existing Packs screen patterns for filters, actions, buttons, and empty states.
+- [x] Keep scope pack-only for the first UI release.
+- [x] Do not add case folders in this phase.
+- [x] Do not touch Supabase, Edge Functions, Stripe, billing-status, workspace lifecycle, migrations, router, package files, or `index.html`.
+- [x] Direct UI gap was proven for the compact folder filter button; scoped CSS was added in `styles/main.css` only for `.tp3d-packs-folder-btn`.
+- [x] Do not change folder data model unless a real bug is found.
 
-Likely UI flows to plan:
-- [ ] Create folder.
-- [ ] Rename folder.
-- [ ] Delete folder and keep packs.
-- [ ] Move pack to folder.
-- [ ] Move pack back to Unfoldered.
-- [ ] Filter packs by folder.
-- [ ] Confirm workspace switch/reload does not leak folder state.
-- [ ] Confirm Workspace Export includes folders after UI use.
+Current 0.7C branch status:
+- [x] Phase 0.7C-1A: Compact Folders dropdown added to the Packs top action row before Import Pack.
+- [x] Phase 0.7C-1A: Dropdown filters packs by `pack.folderId` using All Packs, Unfiled, and named folders.
+- [x] Phase 0.7C-1A: Folder filter state is included in the Packs dataset key and clears on workspace reset.
+- [x] Phase 0.7C-1B: Folder button styling is scoped in `styles/main.css`.
+- [x] Phase 0.7C-1B: Folder button tooltip removed.
+- [x] Phase 0.7C-1B: Folder button visible caret removed and tests aligned with the no-caret design.
+- [x] Phase 0.7C-1B: Existing Empty / Partial / Full status chips remain unchanged.
+- [x] Phase 0.7C-1B: No backend, Supabase, Stripe, billing-status, auth, workspace lifecycle, router, package, or `index.html` scope introduced.
+
+Remaining 0.7C implementation sequence:
+- [ ] Phase 0.7C-2: Create Folder only.
+  - Add a `New Folder` / `Create Folder` action inside the existing Folders dropdown.
+  - Use `UIComponents.showModal()` or the app's existing modal pattern, not `window.prompt`.
+  - Call `FolderLibrary.createFolder(name)` from `src/screens/packs-screen.js` only.
+  - After create, set the new folder as the active filter, reset Packs pagination, render, and show a success toast.
+  - Keep current compact no-caret behavior.
+  - Do not add Rename, Delete, Move, sidebar panels, permanent folder rows, backend changes, CSS cleanup, or app modularization in this phase.
+- [ ] Phase 0.7C-3: Move Pack to Folder.
+  - Add Move to Folder / Move to Unfiled actions to the existing pack action menu patterns for both grid and list views.
+  - Call `FolderLibrary.movePackToFolder(packId, folderIdOrNull)` only.
+  - Preserve existing search, status filters, selection behavior, pagination, and thumbnail behavior.
+  - Do not modify folder data model, storage, import/export, billing, auth, Supabase, or workspace lifecycle.
+- [ ] Phase 0.7C-4: Rename/Delete Folder.
+  - Add rename and delete actions for named folders only.
+  - Use existing confirmation/modal patterns.
+  - `renameFolder()` updates folder metadata only.
+  - `deleteFolder()` removes the folder row and nulls affected `pack.folderId` references; it must not delete packs or cases.
+  - Keep All Packs and Unfiled protected; they are filters, not real folders.
+- [ ] Phase 0.7C-5: Folder UI polish + stale CSS cleanup.
+  - Remove stale `.tp3d-packs-folder-btn__caret` CSS only after the no-caret design is stable.
+  - Check narrow-width action row wrapping.
+  - Check empty folder states, long folder names, active folder labels, and dropdown active row state.
+  - Keep CSS scoped to Packs folder UI.
+- [ ] Confirm Workspace Export includes `folderLibrary` and `pack.folderId` after folder UI use.
+- [ ] Confirm App Export remains the full local backup path and includes `folderLibrary` safely through normalization.
+- [ ] Confirm workspace switch/reload does not leak active folder filter state.
+
+### Post-0.7C Plan — Big Picture Roadmap
+
+This plan exists to prevent scope drift. Folder UI work, billing/workspace safety work, runtime proof tests, and future modularization must stay in separate phases.
+
+#### Step A — Merge and deploy 0.7C safely
+- [ ] Finish 0.7C-2 through 0.7C-5 on `phase-0-7c-pack-folder-ui`.
+- [ ] Run `npm test`, `npm run lint`, `npm run -s typecheck`, `git diff --check`, and `git diff --cached --check` after each phase.
+- [ ] Browser-test Packs folder flows: All Packs, Unfiled, create folder, move pack, rename folder, delete folder, reload, and workspace switch.
+- [ ] Open a PR for `phase-0-7c-pack-folder-ui` after local checks are green.
+- [ ] Merge to `main` only after the folder branch is clean and reviewed.
+- [ ] Deploy static frontend assets after merge because this app ships as static files.
+
+Why this matters:
+- Folder UI is product-facing but local-only. It should be finished and merged without touching auth, billing, Supabase, Stripe, workspace lifecycle, or runtime architecture.
+- A clean 0.7C merge gives the next work a stable baseline.
+
+#### Step B — M0 modularization proof tests, no production code moves
+- [ ] Add focused tests for `getProRuleSet()` before extracting it.
+- [ ] Cover owner/member behavior and billing states such as active, trialing, trial_expired, payment issue, included_in_plan, workspace_limit_reached, owner_subscription_required, billing_unavailable, and unknown/missing status.
+- [ ] Add or preserve tests proving `folderLibrary` changes trigger autosave and Packs render.
+- [ ] Create a written inventory of app globals, storage keys, BroadcastChannels, custom events, and exported surfaces before splitting `src/app.js`.
+
+Why this matters:
+- `src/app.js` is not just a boot file. It owns auth timing, org context, workspace switching, billing refresh, feature gates, storage scope, overlays, and cross-tab behavior.
+- Tests must be added before moving code so future developers and AI tools do not split load-bearing runtime contracts blindly.
+
+#### Step C — First safe modularization only after 0.7C is merged and M0 is green
+- [ ] Extract only `getProRuleSet()` to `src/runtime/feature-gates.js` as the first production code move.
+- [ ] Keep `canUseProFeatures()`, `refreshBilling()`, `_billingState`, subscribers, checkout/portal functions, and `window.__TP3D_BILLING` in `src/app.js`.
+- [ ] Preserve the exact `getProRuleSet(billingSnapshot, userRole)` signature and return shape.
+- [ ] Verify AutoPack gate, PDF gate, trial expired UI, payment issue UI, owner/member behavior, and Settings Billing after extraction.
+
+Why this matters:
+- `getProRuleSet()` is one of the few clean functions because it takes explicit inputs.
+- `canUseProFeatures()` is not the same risk level because it reads runtime globals and must stay in `src/app.js` for now.
+
+#### Step D — Workspace foundation live sign-off
+- [ ] Complete live workspace switching checks with no org/billing/member/pack/case leakage.
+- [ ] Verify Billing tab always matches the active workspace.
+- [ ] Verify Members and Pending Invites always match the active workspace.
+- [ ] Verify Packs/Cases local state is scoped to the active user/workspace path.
+- [ ] Verify no-workspace state, archived workspace fallback, and active workspace persistence.
+- [ ] Complete live two-tab checks for same user, cross-tab logout, cross-tab org switch, and removed-member access loss.
+
+Why this matters:
+- Workspace switching is the center of the app. If this is wrong, billing, members, packs, cases, and export can all show the wrong workspace.
+- This remains release-blocking until the manual checks are documented.
+
+#### Step E — Membership and invite live sign-off
+- [ ] Owner invite -> user accepts -> member appears.
+- [ ] Signed-out invite -> login/signup -> invite resumes correctly.
+- [ ] Expired invite rejection live check.
+- [ ] Already-revoked invite idempotency live check.
+- [ ] Accepted invite revoke rejection live check.
+- [ ] Removed member loses access in the current tab and another open tab.
+- [ ] Confirm no billing or Stripe records change after invite, accept, remove, revoke, or access-loss recovery.
+
+Why this matters:
+- Membership controls who can access shared workspace data.
+- Invite and removal paths must be correct before expanding collaboration, server-side Packs/Cases, or public sharing.
+
+#### Step F — Workspace lifecycle completion
+- [ ] Restore Workspace browser sign-off.
+- [ ] Transfer Ownership browser sign-off.
+- [ ] Confirm Leave Workspace remains safe after Transfer Ownership exists.
+- [ ] Decide and document billing owner behavior after workspace ownership transfer.
+- [ ] Keep permanent workspace delete deferred until export, ownership transfer, and retention policy are clear.
+
+Why this matters:
+- Archive, restore, transfer, and leave are high-risk lifecycle actions.
+- Transfer Ownership is about workspace authority; it should not silently transfer Stripe billing unless a separate billing-transfer policy is designed.
+
+#### Step G — Workspace export/import next layer
+- [ ] Finish Workspace Export browser sign-off for Owner/Admin/Member visibility.
+- [ ] Inspect downloaded Workspace Export files after folder UI use.
+- [ ] Decide whether Workspace Import UI should be enabled, and under which roles.
+- [ ] Keep billing, Stripe IDs, raw org/user IDs, JWTs, service keys, and private storage paths out of exports.
+- [ ] Consider selective folder export/import only after folder CRUD and move flows are stable.
+
+Why this matters:
+- Export is the safety path before destructive lifecycle actions.
+- Import can overwrite or duplicate data if ID remapping and role rules are not planned carefully.
+
+#### Step H — Account deletion and purge completion
+- [ ] Finish paid-subscription deletion policy.
+- [ ] Decide whether account deletion requires subscription cancellation first or support-assisted handling.
+- [ ] Keep account deletion blocked when the user owns any workspace through `organizations.owner_id` until transfer/support policy is clear.
+- [ ] Keep purge support/manual for MVP; scheduling remains deferred.
+- [ ] Add self-service cancel-deletion UX only after the token/session model is designed.
+
+Why this matters:
+- Account deletion can orphan workspaces, memberships, billing rows, and Stripe relationships.
+- It must stay separate from folder UI and modularization.
+
+#### Step I — Runtime safety and user-facing error states
+- [ ] Add unknown-route fallback.
+- [ ] Add missing/deleted current pack fallback while Editor is active.
+- [ ] Add fatal runtime error overlay checks.
+- [ ] Add maintenance mode handling.
+- [ ] Add pre-boot vendor/CDN failure fallback.
+- [ ] Keep `system-overlay` intact and do not mix runtime safety with app modularization.
+
+Why this matters:
+- The app should fail clearly instead of showing a blank or stale screen.
+- Runtime safety helps before launch and before larger refactors.
+
+#### Step J — Server-backed Packs/Cases planning
+- [ ] Audit the current local Pack/Case/Folder model and decide when to move workspace data to Supabase.
+- [ ] Design server tables with `organization_id`, `created_by`, timestamps, and role-aware RLS.
+- [ ] Decide local draft/autosave behavior after server persistence exists.
+- [ ] Plan migration from local workspace data to server workspace data.
+- [ ] Keep local export/import as backup even after server persistence.
+
+Why this matters:
+- Current Packs/Cases are local browser data scoped by user/workspace. Real team collaboration and cross-device use require server-backed workspace data later.
+- The folder model should remain compatible with future server rows by using IDs and references, not nested full data inside folder records.
+
+#### Step K — Product correctness and quick wins
+- [ ] Fix AutoPack stacking scoring balance.
+- [ ] Enforce `noStackOnTop` / stack-blocking rules in AutoPack.
+- [ ] Enforce `maxStackCount` in AutoPack.
+- [ ] Add Weight View.
+- [ ] Add Scale panel.
+- [ ] Add Case Browser Manufacturer tab.
+- [ ] Improve PDF output with front view, category color chips, page numbers, and payload summary.
+
+Why this matters:
+- These are user-value improvements, but they should not be mixed into billing/workspace/runtime safety phases.
+- AutoPack correctness comes before larger AutoPack feature expansion.
+
+#### Step L — Later modularization phases
+- [ ] After M0 and `getProRuleSet()` extraction, consider extracting pure billing helpers only if they take explicit values and do not move `_billingState`.
+- [ ] Do not move `refreshBilling()` until cross-tab billing, stale org, epoch, freshness, retry, focus/visibility, and access-loss tests exist.
+- [ ] Do not move auth/org/workspace runtime until the full regression matrix is stable.
+- [ ] Consider `AutoPackEngine`, `ExportService`, and `KeyboardManager` later only with explicit dependency injection and no direct new reads of `window.__TP3D_BILLING`, `window.OrgContext`, or IIFE-local state.
+
+Why this matters:
+- Broad modularization is needed, but doing it too early can recreate the auth/billing/workspace bugs already fixed.
+- The safe path is proof first, then tiny moves, then larger DI-based moves.
+
+#### Step M — Documentation cleanup and Project Source sync
+- [ ] Update this TODO after each completed phase.
+- [ ] Archive stale planning docs only after the new current-truth docs exist.
+- [ ] Add or update a runtime map showing which files are canonical and which are legacy.
+- [ ] Keep the Project Source updated with the current TODO, current tree, key runtime files, key tests, and latest audits.
+
+Why this matters:
+- Future developers and AI tools need a single current source of truth.
+- Wrong or stale docs cause wrong audits and unsafe code changes.
 
 
 ### Current production-readiness blocker status — CURRENT
@@ -1387,12 +1565,15 @@ Membership and invite lifecycle is now part of Phase 0.5 because it blocks archi
 ## Phase 2 — Runtime cleanup / modularization — DO AFTER WORKSPACE + RUNTIME SAFETY
 
 ### Priority order
-- [ ] Thin down `src/app.js` by responsibility.
+- [ ] Thin down `src/app.js` by responsibility only after M0 proof tests are green and after 0.7C folder UI is merged.
 - [ ] Isolate canonical vs legacy runtime files clearly.
 - [ ] Split `settings-overlay.js` by concern.
 - [ ] Add canonical runtime map doc.
 - [ ] Archive stale planning docs.
 - [ ] CSS cleanup only after runtime core is easier to reason about.
+- [ ] First allowed extraction target: `getProRuleSet()` only, to `src/runtime/feature-gates.js`, with tests first.
+- [ ] Keep `refreshBilling()`, auth lifecycle, org/workspace switching, StateStore boot/load/save, settings overlay integration, and cross-tab runtime in `src/app.js` until dedicated tests exist.
+- [ ] Track known drift for later cleanup: malformed `src/app.js` header JSDoc, stale build stamp, possible `debugger-old.js`, duplicated geometry/default-color helpers, and stale no-caret CSS.
 
 ### Do not do yet
 - [ ] Broad refactor before workspace finalization.

@@ -13,6 +13,8 @@
 
 // Packs screen (extracted from src/app.js; behavior preserved)
 
+import * as FolderLibrary from '../services/folder-library.js';
+
 export function createPacksScreen({
   Utils,
   UIComponents,
@@ -28,6 +30,7 @@ export function createPacksScreen({
   ExportService,
   CardDisplayOverlay,
   featureFlags,
+  persistNow,
   toast,
   toAscii: _toAscii,
 }) {
@@ -55,8 +58,12 @@ export function createPacksScreen({
     const bulkCountEl = /** @type {HTMLElement} */ (document.getElementById('packs-selected-count'));
     const btnBulkDelete = document.getElementById('btn-packs-bulk-delete');
 
+    const UNFILED_FOLDER_ID = '__unfiled__';
+    const FOLDERS_DROPDOWN_ROLE = 'packs-folders';
+    const FOLDERS_DROPDOWN_ANCHOR_KEY = 'packs-folders-button';
     const filters = { empty: false, partial: false, full: false };
     const selectedIds = new Set();
+    let activeFolderId = null;
     let datasetKey = '';
     let sortKey = 'edited-desc';
     const packsListState = {
@@ -67,6 +74,8 @@ export function createPacksScreen({
     let footerMountEl = null;
     let filteredPacks = [];
     const filtersRowEl = chipEmpty ? chipEmpty.parentElement : null;
+    let foldersButtonEl = null;
+    let foldersButtonLabelEl = null;
 
     function formatTruckDims(truck, lengthUnit) {
       const unit = lengthUnit || 'in';
@@ -112,6 +121,7 @@ export function createPacksScreen({
       wireChip(chipFull, 'full');
       btnNew.addEventListener('click', () => openNewPackModal());
       btnImport.addEventListener('click', () => openImportPackDialog());
+      ensureFoldersButton();
       btnViewGrid.addEventListener('click', () => setViewMode('grid'));
       btnViewList.addEventListener('click', () => setViewMode('list'));
       if (!featureFlags.trailerPresetsEnabled && btnTrailerPresets) btnTrailerPresets.style.display = 'none';
@@ -193,6 +203,417 @@ export function createPacksScreen({
       const visible = PreferencesManager.get().packsFiltersVisible !== false;
       filtersRowEl.style.display = visible ? '' : 'none';
       btnFiltersToggle && btnFiltersToggle.classList.toggle('btn-primary', visible);
+    }
+
+    function getSafeFolders() {
+      try {
+        const folders = FolderLibrary.listFolders();
+        return Array.isArray(folders) ? folders.filter(folder => folder && folder.id) : [];
+      } catch (_err) {
+        return [];
+      }
+    }
+
+    function persistFolderStateNow() {
+      if (typeof persistNow !== 'function') return;
+      try {
+        persistNow();
+      } catch (_err) {
+        // Autosave remains the fallback; this only closes the immediate-reload gap.
+      }
+    }
+
+    function getFolderFilterModel(allPacks) {
+      const packs = Array.isArray(allPacks) ? allPacks : [];
+      const folders = getSafeFolders();
+      const folderIds = new Set(folders.map(folder => String(folder.id)));
+      if (activeFolderId && activeFolderId !== UNFILED_FOLDER_ID && !folderIds.has(activeFolderId)) {
+        activeFolderId = null;
+      }
+
+      const counts = new Map();
+      let unfiledCount = 0;
+      packs.forEach(pack => {
+        const folderId = pack && pack.folderId ? String(pack.folderId) : null;
+        if (!folderId) {
+          unfiledCount += 1;
+          return;
+        }
+        counts.set(folderId, (counts.get(folderId) || 0) + 1);
+      });
+
+      return {
+        folders,
+        totalCount: packs.length,
+        unfiledCount,
+        counts,
+        activeFolder: activeFolderId
+          ? folders.find(folder => String(folder.id) === activeFolderId) || null
+          : null,
+      };
+    }
+
+    function setActiveFolderFilter(folderIdOrNull) {
+      activeFolderId = folderIdOrNull == null ? null : String(folderIdOrNull);
+      packsListState.pageIndex = 0;
+      render();
+    }
+
+    function ensureFoldersButton() {
+      if (foldersButtonEl && foldersButtonEl.isConnected) return foldersButtonEl;
+      if (!defaultActionsEl) return null;
+
+      foldersButtonEl = document.createElement('button');
+      foldersButtonEl.type = 'button';
+      foldersButtonEl.className = 'btn tp3d-packs-folder-btn';
+      foldersButtonEl.setAttribute('aria-label', 'Filter packs by folder');
+      foldersButtonEl.setAttribute('aria-haspopup', 'menu');
+      foldersButtonEl.setAttribute('aria-expanded', 'false');
+
+      const iconWrap = document.createElement('span');
+      iconWrap.className = 'tp3d-packs-folder-btn__icon';
+      iconWrap.setAttribute('aria-hidden', 'true');
+      const icon = document.createElement('i');
+      icon.className = 'fa-solid fa-folder';
+      iconWrap.appendChild(icon);
+      foldersButtonEl.appendChild(iconWrap);
+
+      foldersButtonLabelEl = document.createElement('span');
+      foldersButtonLabelEl.className = 'tp3d-packs-folder-btn__label';
+      foldersButtonLabelEl.textContent = 'Folders';
+      foldersButtonEl.appendChild(foldersButtonLabelEl);
+
+      // caret removed: keep icon + label only (caret UI not needed for now)
+
+      foldersButtonEl.addEventListener('click', ev => {
+        ev.stopPropagation();
+        openFoldersDropdown();
+      });
+
+      if (btnImport && btnImport.parentElement === defaultActionsEl) {
+        defaultActionsEl.insertBefore(foldersButtonEl, btnImport);
+      } else {
+        defaultActionsEl.insertBefore(foldersButtonEl, defaultActionsEl.firstChild);
+      }
+      return foldersButtonEl;
+    }
+
+    function renderFoldersButton(allPacks) {
+      const button = ensureFoldersButton();
+      if (!button || !foldersButtonLabelEl) return;
+      const model = getFolderFilterModel(allPacks);
+      let label = 'Folders';
+      if (activeFolderId === UNFILED_FOLDER_ID) {
+        label = 'Unfiled';
+      } else if (activeFolderId && model.activeFolder) {
+        label = model.activeFolder.name || 'Untitled Folder';
+      }
+      foldersButtonLabelEl.textContent = label;
+      button.classList.toggle('tp3d-packs-folder-btn--active', Boolean(activeFolderId));
+    }
+
+    function getOpenFoldersDropdown() {
+      return document.querySelector(
+        `[data-dropdown="1"][data-role="${FOLDERS_DROPDOWN_ROLE}"][data-anchor-id="${FOLDERS_DROPDOWN_ANCHOR_KEY}"]`
+      );
+    }
+
+    function setFoldersButtonExpanded(expanded) {
+      const button = ensureFoldersButton();
+      if (!button) return;
+      button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    }
+
+    function syncFoldersButtonExpandedFromDom() {
+      if (!getOpenFoldersDropdown()) setFoldersButtonExpanded(false);
+    }
+
+    function handleFoldersDropdownEscape(ev) {
+      if (ev.key !== 'Escape') return;
+      document.removeEventListener('keydown', handleFoldersDropdownEscape);
+      setTimeout(syncFoldersButtonExpandedFromDom, 0);
+    }
+
+    function bindFoldersDropdownCloseSync() {
+      document.removeEventListener('keydown', handleFoldersDropdownEscape);
+      document.addEventListener('keydown', handleFoldersDropdownEscape);
+      setTimeout(() => {
+        document.addEventListener(
+          'click',
+          () => {
+            document.removeEventListener('keydown', handleFoldersDropdownEscape);
+            setTimeout(syncFoldersButtonExpandedFromDom, 0);
+          },
+          { once: true }
+        );
+      }, 0);
+    }
+
+    function selectFolderFilter(folderIdOrNull) {
+      setFoldersButtonExpanded(false);
+      setActiveFolderFilter(folderIdOrNull);
+    }
+
+    function openCreateFolderModal() {
+      const content = document.createElement('div');
+      content.classList.add('tp3d-packs-modal-grid');
+
+      const name = field('Folder name', 'text', 'e.g. Client A', false);
+      name.wrap.classList.add('tp3d-grid-span-full');
+      content.appendChild(name.wrap);
+
+      UIComponents.showModal({
+        title: 'New Folder',
+        content,
+        actions: [
+          { label: 'Cancel' },
+          {
+            label: 'Create',
+            variant: 'primary',
+            onClick: () => {
+              const folderName = String(name.input.value || '').trim();
+              const created = FolderLibrary.createFolder(folderName);
+              persistFolderStateNow();
+              if (created && created.id) {
+                activeFolderId = String(created.id);
+                packsListState.pageIndex = 0;
+              }
+              render();
+              UIComponents.showToast('Folder created', 'success');
+            },
+          },
+        ],
+      });
+    }
+
+    function openRenameFolderModal(folder) {
+      if (!folder || !folder.id) return;
+      const folderId = String(folder.id);
+      const content = document.createElement('div');
+      content.classList.add('tp3d-packs-modal-grid');
+
+      const name = field('Folder name', 'text', 'e.g. Client A', false);
+      name.input.value = folder.name || '';
+      name.wrap.classList.add('tp3d-grid-span-full');
+      content.appendChild(name.wrap);
+
+      UIComponents.showModal({
+        title: 'Rename Folder',
+        content,
+        actions: [
+          { label: 'Cancel' },
+          {
+            label: 'Save',
+            variant: 'primary',
+            onClick: () => {
+              const renamed = FolderLibrary.renameFolder(folderId, name.input.value);
+              if (!renamed) {
+                UIComponents.showToast('Could not rename folder', 'warning');
+                return;
+              }
+              persistFolderStateNow();
+              render();
+              UIComponents.showToast('Folder renamed', 'success');
+            },
+          },
+        ],
+      });
+    }
+
+    async function deleteFolderWithConfirm(folder) {
+      if (!folder || !folder.id) return;
+      const folderId = String(folder.id);
+      const folderName = folder.name || 'Untitled Folder';
+      const affectedCount = PackLibrary.getPacks().filter(pack => pack && String(pack.folderId || '') === folderId).length;
+      const ok = await UIComponents.confirm({
+        title: 'Delete folder?',
+        message: `Delete "${folderName}"? ${affectedCount} pack(s) in this folder will move to Unfiled. Packs will not be deleted.`,
+        danger: true,
+        okLabel: 'Delete',
+      });
+      if (!ok) return;
+
+      const deleted = FolderLibrary.deleteFolder(folderId);
+      if (!deleted) {
+        UIComponents.showToast('Could not delete folder', 'warning');
+        return;
+      }
+      persistFolderStateNow();
+      if (activeFolderId === folderId) {
+        activeFolderId = null;
+        packsListState.pageIndex = 0;
+      }
+      render();
+      UIComponents.showToast('Folder deleted', 'success');
+    }
+
+    function movePackToFolder(pack, folderIdOrNull) {
+      if (!pack || !pack.id) return false;
+      const moved = FolderLibrary.movePackToFolder(pack.id, folderIdOrNull);
+      if (!moved) {
+        UIComponents.showToast('Could not move pack to folder', 'warning');
+        return false;
+      }
+      persistFolderStateNow();
+      packsListState.pageIndex = 0;
+      render();
+      UIComponents.showToast(folderIdOrNull ? 'Pack moved to folder' : 'Pack moved to Unfiled', 'success');
+      return true;
+    }
+
+    function openMoveToFolderModal(pack) {
+      if (!pack || !pack.id) return;
+      const folders = getSafeFolders();
+      const currentFolderId = pack.folderId ? String(pack.folderId) : null;
+      const content = document.createElement('div');
+      content.classList.add('tp3d-packs-modal-grid');
+      let modalRef = null;
+
+      const addMoveRow = (label, iconClass, folderIdOrNull, disabled = false) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn tp3d-packs-folder-option-btn tp3d-grid-span-full';
+        button.disabled = disabled;
+        const icon = document.createElement('i');
+        icon.className = iconClass;
+        icon.setAttribute('aria-hidden', 'true');
+        icon.classList.add('tp3d-packs-folder-option-btn__icon');
+        button.appendChild(icon);
+        const labelEl = document.createElement('span');
+        labelEl.className = 'tp3d-packs-folder-option-btn__label';
+        labelEl.textContent = label;
+        button.appendChild(labelEl);
+        if (disabled) {
+          const currentEl = document.createElement('span');
+          currentEl.className = 'tp3d-packs-folder-option-btn__meta';
+          currentEl.textContent = 'Current';
+          button.appendChild(currentEl);
+        }
+        button.addEventListener('click', () => {
+          if (disabled) return;
+          const moved = movePackToFolder(pack, folderIdOrNull);
+          if (moved && modalRef && typeof modalRef.close === 'function') modalRef.close();
+        });
+        content.appendChild(button);
+      };
+
+      addMoveRow('Unfiled', 'fa-solid fa-folder-open', null, currentFolderId === null);
+
+      if (folders.length > 0) {
+        folders.forEach(folder => {
+          const folderId = String(folder.id);
+          addMoveRow(folder.name || 'Untitled Folder', 'fa-solid fa-folder', folderId, currentFolderId === folderId);
+        });
+      } else {
+        const empty = document.createElement('div');
+        empty.className = 'muted tp3d-grid-span-full';
+        empty.textContent = 'No folders yet';
+        content.appendChild(empty);
+      }
+
+      modalRef = UIComponents.showModal({
+        title: 'Move to Folder',
+        content,
+        actions: [
+          { label: 'Close' },
+        ],
+      });
+    }
+
+    function openFoldersDropdown() {
+      const button = ensureFoldersButton();
+      if (!button) return;
+      const existing = getOpenFoldersDropdown();
+      if (existing) {
+        UIComponents.closeAllDropdowns();
+        setFoldersButtonExpanded(false);
+        return;
+      }
+      const model = getFolderFilterModel(PackLibrary.getPacks().slice());
+      const items = /** @type {any[]} */ ([
+        { type: 'header', label: 'Folders' },
+        {
+          label: `All Packs (${model.totalCount})`,
+          icon: 'fa-solid fa-layer-group',
+          active: activeFolderId === null,
+          rightIcon: activeFolderId === null ? 'fa-solid fa-check' : '',
+          onClick: () => selectFolderFilter(null),
+        },
+        {
+          label: `Unfiled (${model.unfiledCount})`,
+          icon: 'fa-solid fa-folder-open',
+          active: activeFolderId === UNFILED_FOLDER_ID,
+          rightIcon: activeFolderId === UNFILED_FOLDER_ID ? 'fa-solid fa-check' : '',
+          onClick: () => selectFolderFilter(UNFILED_FOLDER_ID),
+        },
+      ]);
+
+      if (model.folders.length) {
+        items.push({ type: 'divider' });
+        model.folders.forEach(folder => {
+          const folderId = String(folder.id);
+          items.push({
+            label: `${folder.name || 'Untitled Folder'} (${model.counts.get(folderId) || 0})`,
+            icon: 'fa-solid fa-folder',
+            active: activeFolderId === folderId,
+            rightIcon: activeFolderId === folderId ? 'fa-solid fa-check' : '',
+            onClick: () => selectFolderFilter(folderId),
+          });
+        });
+      } else {
+        items.push({
+          label: 'No folders yet',
+          icon: 'fa-solid fa-folder',
+          disabled: true,
+        });
+      }
+
+      if (model.activeFolder && activeFolderId) {
+        items.push(
+          { type: 'divider' },
+          {
+            label: 'Rename Folder',
+            icon: 'fa-solid fa-pen',
+            onClick: () => {
+              UIComponents.closeAllDropdowns();
+              setFoldersButtonExpanded(false);
+              openRenameFolderModal(model.activeFolder);
+            },
+          },
+          {
+            label: 'Delete Folder',
+            icon: 'fa-solid fa-trash-can',
+            danger: true,
+            onClick: () => {
+              UIComponents.closeAllDropdowns();
+              setFoldersButtonExpanded(false);
+              deleteFolderWithConfirm(model.activeFolder);
+            },
+          }
+        );
+      }
+
+      items.push(
+        { type: 'divider' },
+        {
+          label: 'New Folder',
+          icon: 'fa-solid fa-folder-plus',
+          onClick: () => {
+            UIComponents.closeAllDropdowns();
+            setFoldersButtonExpanded(false);
+            openCreateFolderModal();
+          },
+        }
+      );
+
+      setFoldersButtonExpanded(true);
+      UIComponents.openDropdown(button, items, {
+        role: FOLDERS_DROPDOWN_ROLE,
+        anchorKey: FOLDERS_DROPDOWN_ANCHOR_KEY,
+        align: 'left',
+        width: 260,
+      });
+      bindFoldersDropdownCloseSync();
     }
 
     function initListHeaderSort() {
@@ -453,9 +874,16 @@ export function createPacksScreen({
         'weight-desc': (a, b) => compareWeight(b, a),
       };
       allPacks.sort(sorters[sortKey] || sorters['edited-desc']);
+      renderFoldersButton(allPacks);
 
       const packs = allPacks
         .filter(p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q))
+        .filter(p => {
+          if (activeFolderId === null) return true;
+          const folderId = p && p.folderId ? String(p.folderId) : null;
+          if (activeFolderId === UNFILED_FOLDER_ID) return folderId === null;
+          return folderId === activeFolderId;
+        })
         .filter(p => {
           if (!filters.empty && !filters.partial && !filters.full) return true;
           const total = (p.cases || []).length;
@@ -472,7 +900,7 @@ export function createPacksScreen({
 
       filteredPacks = packs;
 
-      const newDatasetKey = `${q}::${sortKey}::${filters.empty}${filters.partial}${filters.full}`;
+      const newDatasetKey = `${q}::${sortKey}::${activeFolderId || 'all'}::${filters.empty}${filters.partial}${filters.full}`;
       if (datasetKey !== newDatasetKey) {
         selectedIds.clear();
         datasetKey = newDatasetKey;
@@ -526,6 +954,7 @@ export function createPacksScreen({
     function resetWorkspaceState() {
       selectedIds.clear();
       filteredPacks = [];
+      activeFolderId = null;
       datasetKey = '';
       packsListState.pageIndex = 0;
       if (selectAllEl) {
@@ -649,6 +1078,11 @@ export function createPacksScreen({
               onClick: () => ExportService.clearPackPreview(pack.id),
             },
             { label: 'Export Pack', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+            {
+              label: 'Move to Folder',
+              icon: 'fa-solid fa-folder-open',
+              onClick: () => openMoveToFolderModal(pack),
+            },
             {
               label: 'Delete',
               icon: 'fa-solid fa-trash-can',
@@ -831,6 +1265,11 @@ export function createPacksScreen({
               onClick: () => ExportService.clearPackPreview(pack.id),
             },
             { label: 'Export Pack', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+            {
+              label: 'Move to Folder',
+              icon: 'fa-solid fa-folder-open',
+              onClick: () => openMoveToFolderModal(pack),
+            },
             {
               label: 'Delete',
               icon: 'fa-solid fa-trash-can',

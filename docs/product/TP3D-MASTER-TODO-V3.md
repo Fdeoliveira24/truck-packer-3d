@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-13 — Phase 0.7C Pack Folder UI is complete, merged to `main`, pushed to `origin/main`, browser-validated, and closed. Next work is Phase 1 Release Gate Verification: browser-first SaaS readiness verification for billing, membership, workspace switching, Stripe, account deletion safety, invite links/email readiness, and cross-tab behavior. No `app.js` modularization until the release gate is green.
+Last updated: 2026-05-14 — Phase 1 Release Gate remains PARTIAL. Same-tab different-user isolation, same-profile two-tab workspace switch/logout, billing/members/folder isolation after workspace switch, trial-expired owner gate, owner invite wrong-email guard, and invite revoke cleanup have passed. The two high-value remaining release-gate checks are true separate-profile logout and a real UI-visible over-limit workspace fixture. No `app.js` modularization until those two checks are closed or a confirmed bug/fix is logged.
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -215,11 +215,18 @@ Completed:
 - [x] App resets + reloads in-memory StateStore on sign-in, sign-out, and user switch so autosave can’t re-persist stale data
 
 Still required (release blocking):
-- [ ] **Two-tabs test (same user)**
+- [x] **Two-tabs test (same user, same Chrome profile)**
   - Tab A + Tab B both signed_in must converge to the same OrgContext (orgId not null).
   - [x] Banner must NOT appear while signed_in.
-  - [ ] No auto sign-out / auto sign-in loop.
-  - [ ] getAccountBundleSingleFlight({force:true}) must return session+user in BOTH tabs when signed_in.
+  - [x] No auto sign-out / auto sign-in loop.
+  - [ ] getAccountBundleSingleFlight({force:true}) must return session+user in BOTH tabs when signed_in. *(Still needs explicit console/API proof if required; UI convergence passed.)*
+- [ ] **True separate-profile logout verification**
+  - Sign into the same account in two separate Chrome profiles/windows.
+  - Logout in Profile A.
+  - Profile B must end signed out without bounce-back, stale workspace/sidebar DOM, or auth/session resurrection.
+- [x] **Same-tab different-user isolation**
+  - Verified `test1@test.com` → logout → `test2@test.com` in the same browser tab.
+  - Confirmed workspace, billing, members, packs, folders, and sidebar changed to test2 state with no stale test1 data.
 - [x] **Cross-tab auth/token churn hardening + logout/billing stability** (code complete; live 2-tab sign-off pending)
   - Added versioned org-context sync payload (`tp3d:org-context-sync`) with `userId`, `orgId`, `timestamp`, `epoch`.
   - Storage listeners now apply org sync only for matching user + newer epoch; older payloads are ignored.
@@ -367,12 +374,70 @@ You ran lint and still have warnings.
 ### Current release-gate focus — Phase 1
 Phase 0.7C is complete. The next work is not modularization. The next work is release-gate verification and targeted fixes only.
 
+
 Phase 1 rules:
 - Start with browser verification and API/DB proof before writing new code.
 - Separate stale audit notes from real reproduced bugs.
 - Keep each fix small and tied to one verified failure or one confirmed backend gap.
 - Do not do broad `src/app.js` cleanup, UI redesign, CSS cleanup, or runtime modularization during Phase 1.
 - If a task touches auth, billing, workspace switching, account deletion, Stripe, or Supabase Edge Functions, treat it as P0-risk and validate with browser/API checks.
+
+### Phase 1 — Immediate closure plan (next two high-value items)
+
+Do these before any new feature work, CSS cleanup, broad UI cleanup, or `app.js` modularization.
+
+#### 1. True separate-profile logout verification — OPEN
+Goal: prove that logout propagates safely across two separate Chrome profiles/windows, not only two tabs in the same Chrome profile.
+
+Required setup:
+- Chrome Profile A signed into `test1@test.com` at `http://localhost:8080/index.html`.
+- Chrome Profile B signed into the same `test1@test.com` account at `http://localhost:8080/index.html`.
+- Both profiles must be visible to the browser automation before the test begins.
+
+Pass criteria:
+- Profile A triggers Logout from the app UI.
+- Profile A ends on the signed-out/auth screen and does not bounce back to signed-in UI.
+- Profile B also ends signed out without manual refresh, stale workspace/sidebar DOM, auth resurrection, or reload loop.
+- Local auth storage/token state is absent in both profiles after logout.
+- No blocking console errors, failed auth loops, or token/JWT fragments appear in console/network logs.
+
+If PASS:
+- Mark `True separate-profile logout verification` done in this file.
+- Add a dated Running log entry with browser/profile setup, account used, timing, and console/network result.
+
+If FAIL:
+- Do not proceed to modularization.
+- Record exact browser steps, console/network evidence, and affected files before fixing.
+
+#### 2. Real UI-visible over-limit workspace fixture — OPEN
+Goal: prove the app handles a real `workspace_limit_reached` workspace that is visible/switchable in the UI.
+
+Current known state:
+- `wspace-test6` is visible and switchable, but it showed `Subscription Free`, not `workspace_limit_reached`; it is not a valid over-limit fixture.
+- Existing active/included billing states passed for `test1` and `test2`.
+- `trial_expired` passed for `test3`.
+
+Required setup:
+- Create or identify a test account/workspace where `/billing-status` returns `entitlementStatus: "workspace_limit_reached"`.
+- The over-limit workspace must appear in the account/workspace switcher.
+- The user must be able to switch into that workspace in the browser.
+
+Pass criteria:
+- Workspace appears in the switcher and can be selected.
+- Billing tab shows over-limit/workspace-limit copy for that exact workspace.
+- AutoPack is blocked.
+- PDF export is blocked.
+- Settings/Billing does not show stale plan data from a different workspace.
+- Packs/folders/members remain scoped to the selected workspace.
+- No blocking console/network errors.
+
+If PASS:
+- Mark `Real UI-visible over-limit workspace fixture` done in this file.
+- Add a dated Running log entry with account, workspace id/name, billing-status result, browser behavior, and console/network result.
+
+If FAIL:
+- Decide whether the issue is fixture/data, switcher visibility, billing-status classification, or frontend gate copy.
+- Fix only the confirmed failing area and validate with browser/API checks.
 
 P0 is green only when ALL items here are checked:
 - [x] P0.6 DB health checks run and clean during tests (Q1–Q6 all 0 rows)
@@ -382,16 +447,56 @@ P0 is green only when ALL items here are checked:
 - [x] Phase 0.5 Membership + invite lifecycle audited and stabilized through invite revoke UI follow-up; remaining signed-out invite handoff checks stay tracked separately.
 - [ ] Phase 0.6 Workspace archive / restore / transfer / leave rules defined before implementation.
 - [ ] Phase 0.7 Workspace export rules defined before destructive lifecycle actions.
-- [ ] P0.9 Cross-user data isolation + 2-tab stability verified.
+- [ ] P0.9 Cross-user data isolation + 2-tab stability verified. *(Partial: same-tab different-user and same-profile two-tab checks passed; true separate-profile logout remains.)*
 - [x] Logout flow uses canonical helper only.
-- [ ] Cross-tab logout verified live.
-- [ ] No console errors in normal flows (ignore debug mode + expected favicon noise).
+- [ ] True separate-profile logout verified live. *(Same-profile two-tab logout passed; separate Chrome profile/window logout remains the release-gate proof.)*
+- [ ] Real UI-visible over-limit workspace fixture verified. *(A workspace must be visible/switchable, return `workspace_limit_reached`, block AutoPack/PDF, and show correct billing copy.)*
+- [x] No blocking console/network errors in the tested Phase 1 flows (ignore debug mode + expected favicon noise).
 - [ ] "Manage billing" never 500.
   - [x] New-user signup creates auth user, profile, default workspace, owner membership, and billing trial row without DB trigger failure.
 
 ---
 
-## Running log (keep updated)
+- Date: 2026-05-14 — Phase 1 release-gate next closure plan locked
+- Verdict:
+  - PARTIAL. Phase 1 is not green yet.
+- What is now closed enough to avoid retesting unless regressions appear:
+  - Same-tab different-user isolation passed with `test1@test.com` → `test2@test.com`.
+  - Same-profile two-tab workspace switch passed.
+  - Same-profile two-tab logout passed.
+  - Billing tab, Members tab, Packs/folders, and trial-expired owner gate passed in the tested browser flows.
+  - Owner-created invite, wrong-email accept rejection, and invite revoke cleanup passed.
+- Two high-value remaining checks:
+  - True separate-profile logout using two separate Chrome profiles/windows signed into the same account.
+  - Real UI-visible over-limit workspace fixture that returns `workspace_limit_reached`, appears in the switcher, blocks Pro actions, and shows correct billing copy.
+- Execution rule:
+  - Do not start `app.js` modularization, broad CSS cleanup, broad UI cleanup, email invite delivery, or new feature work until these two checks are closed or the failure is logged with a targeted fix plan.
+- Code state:
+  - Documentation-only planning update. No app code change intended.
+
+- Date: 2026-05-14 — Phase 1 release-gate browser partial pass — same-tab user switch, trial-expired, and workspace isolation
+- Verdict:
+  - PARTIAL. Do not treat Phase 1 as PASS yet.
+- What passed:
+  - Same-tab different-user isolation passed: signed in as `test1@test.com`, confirmed `test1-Workspace`, Pro Yearly billing, and test1 packs/folders; after logout and login as `test2@test.com`, UI showed `Test2 Workspace`, Pro Yearly billing, test2 pack data, and test2 member row only.
+  - Two-tab same-user workspace switch passed in one Chrome profile: `test1-Workspace` to `WS-test1` converged in the second tab; switching back restored the original packs/folders.
+  - Billing tab after workspace switch passed: `WS-test1` showed Pro Included and did not show stale `test1-Workspace` billing data.
+  - Members tab after workspace switch passed: `WS-test1` showed the correct owner row and no stale pending invite data.
+  - Folder data isolation after workspace switch passed: `WS-test1` showed empty packs/folders, and switching back restored `test1-Workspace` data.
+  - Trial-expired owner gate passed on `test3@test.com`: UI showed Trial Ended / Free, Subscribe CTA, and AutoPack/PDF attempts routed to upgrade/settings context instead of executing.
+  - `wspace-test6` is visible and switchable, but it showed `Subscription Free`, not `workspace_limit_reached`; it is not a valid over-limit fixture.
+- What remains blocked:
+  - True separate-profile logout.
+  - Real UI-visible `workspace_limit_reached` / over-limit workspace fixture.
+  - Admin/member invite restriction browser pass.
+  - Portal stale-subscription fallback.
+  - Portal schedule-managed fallback.
+- Next high-value actions:
+  - Prepare two separate Chrome profiles/windows signed into the same test account and run the true separate-profile logout test.
+  - Create or identify a real UI-visible over-limit workspace fixture and verify it appears in the switcher, returns `workspace_limit_reached`, blocks Pro actions, and shows correct billing copy.
+- Code state:
+  - No code files changed during this browser pass.
+  - No confirmed app bug was reproduced in the completed checks.
 
 - Date: 2026-05-13 — Phase 1 release-gate browser partial pass — same-profile two-tab checks
 - Verdict:
@@ -406,10 +511,8 @@ P0 is green only when ALL items here are checked:
   - Wrong-email invite accept returned HTTP 403 with message: `Invite email does not match the signed-in account.`
   - Invite revoke cleanup passed after disposable invite tests.
 - What remains blocked:
-  - Same-tab different-user isolation.
   - True separate-profile cross-tab logout.
   - Admin/member invite restrictions.
-  - Trial-expired account/workspace gate.
   - Over-limit workspace behavior.
   - Portal stale-subscription fallback.
   - Portal schedule-managed fallback.

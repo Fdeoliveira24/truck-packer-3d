@@ -393,6 +393,32 @@ P0 is green only when ALL items here are checked:
 
 ## Running log (keep updated)
 
+- Date: 2026-05-13 — Phase 1 release-gate browser partial pass — same-profile two-tab checks
+- Verdict:
+  - PARTIAL. Do not treat Phase 1 as PASS yet.
+- What passed:
+  - Cross-tab logout was verified in one Chrome profile with two app tabs: logout triggered in one tab; after 5s and 10s both tabs showed sign-in UI only; `tp3d:active-org-id` was `null`; Supabase auth token was absent in both tabs.
+  - Two-tab same-user workspace switch was verified in one Chrome profile with two app tabs: switching `test1-Workspace` to `WS-test1` in one tab made the other tab converge to `WS-test1`.
+  - Billing tab after workspace switch showed `WS-test1`, Pro Included, renewal `5/2/2027`, Manage/Refresh, and no stale `test1-Workspace` billing DOM.
+  - Members tab after workspace switch showed `WS-test1` member data, `test1-Owner-D` owner row, and no stale pending invites.
+  - Folder data after workspace switch stayed scoped: `WS-test1` showed no packs/folders, and switching back restored `test1-Workspace` packs/folders.
+  - Owner-created member invite link flow basic check passed with a disposable invite.
+  - Wrong-email invite accept returned HTTP 403 with message: `Invite email does not match the signed-in account.`
+  - Invite revoke cleanup passed after disposable invite tests.
+- What remains blocked:
+  - Same-tab different-user isolation.
+  - True separate-profile cross-tab logout.
+  - Admin/member invite restrictions.
+  - Trial-expired account/workspace gate.
+  - Over-limit workspace behavior.
+  - Portal stale-subscription fallback.
+  - Portal schedule-managed fallback.
+- Why it remains blocked:
+  - Automation still saw only one Chrome window/profile, and the required trial-expired, over-limit, admin/member, and portal fallback test data were not available in the active session.
+- Code state:
+  - No code files changed during this browser pass.
+  - No confirmed app bug was reproduced.
+  - No blocking console/network bug was found in the tested same-profile flows.
 
 - Date: 2026-05-13 — Phase 1 Release Gate checkout idempotency fix completed
 - What changed:
@@ -1362,19 +1388,23 @@ Why this is next:
 
 #### Phase 1A — Browser-first release-gate verification
 - [ ] Same-tab different-user sign-in: sign in as User A, sign out, sign in as User B, and confirm no stale billing, workspace, folders, packs, members, settings, or sidebar state appears.
-- [ ] Cross-tab logout: sign out in Tab A and confirm Tab B clears session, shows sign-in, and does not bounce back to signed-in UI.
-- [ ] Two-tab same-user workspace switch: switch workspace in Tab A and confirm Tab B converges to the same active org without stale Billing/Members/General data.
-- [ ] Billing tab after workspace switch: confirm billing belongs to the active workspace, not the previous workspace.
-- [ ] Members tab after workspace switch: confirm the members/invites belong to the active workspace.
+- [x] Cross-tab logout verified in same Chrome profile / two tabs: sign out in one tab and confirm both app tabs clear session, show sign-in, and do not bounce back to signed-in UI.
+- [ ] True separate-profile cross-tab logout: repeat logout verification with separate Chrome profiles/windows.
+- [x] Two-tab same-user workspace switch verified in same Chrome profile / two tabs: switch workspace in Tab A and confirm Tab B converges to the same active org without stale Billing/Members/General data.
+- [x] Billing tab after workspace switch: confirm billing belongs to the active workspace, not the previous workspace.
+- [x] Members tab after workspace switch: confirm the members/invites belong to the active workspace.
 - [ ] Over-limit workspace visibility: verify an over-limit workspace still appears in the switcher and can be opened, while Pro actions remain blocked.
-- [ ] Folder data after workspace switch: confirm folders and pack-folder assignments do not leak across workspaces.
+- [x] Folder data after workspace switch: confirm folders and pack-folder assignments do not leak across workspaces.
 - [ ] Console/network check: no blocking console errors, unhandled promise rejections, failed Edge Function calls, token leaks, or wrong-org network payloads during the above flows.
 
 #### Phase 1B — Billing and Stripe targeted checks
 - [x] Verify checkout idempotency behavior and fix `stripe-create-checkout-session` so the idempotency key includes `organizationId` if still missing.
 - [ ] Verify `/billing-status` workspace count against known DB rows and product policy. Do not blindly exclude archived workspaces because archived workspaces currently count toward plan limits by policy.
+- [ ] Trial-expired gate live check: confirm `billing-status` returns `trial_expired`, Pro actions are blocked, owners see upgrade CTA, and non-owners see owner/support copy only.
 - [ ] Confirm Supabase secrets needed for launch are present, including Stripe secrets, workspace-limit secrets, `SITE_URL`, and later email-provider secrets.
 - [ ] Run portal manual checks: deep-link update subscription, schedule-managed fallback, stale/missing stored subscription fallback.
+  - [ ] Portal stale-subscription fallback opens plain portal with no 500.
+  - [ ] Portal schedule-managed fallback opens portal with no 500.
 
 #### Phase 1C — Workspace and account safety checks
 - [ ] Verify server-side workspace creation enforcement. Current UI gating is not enough for paid-scale SaaS if direct insert can bypass limits.
@@ -1384,6 +1414,11 @@ Why this is next:
 
 #### Phase 1D — Invite/email readiness
 - [ ] Confirm current invite copy-link flow works: create, resend, copy link, accept signed in, accept after signed-out handoff, expired, revoked, wrong-email.
+  - [x] Owner invite member link flow basic check passed with a disposable invite.
+  - [x] Wrong-email invite accept rejection returned expected HTTP 403.
+  - [x] Invite revoke cleanup passed after disposable invite tests.
+  - [ ] Admin/member invite restrictions live check.
+  - [ ] Expired invite live rejection check.
 - [ ] Confirm `SITE_URL` is set so invite links use the production domain.
 - [ ] Treat real email delivery as P1 if public team onboarding is part of launch. Implement email delivery only after the release-gate verification and critical billing/workspace/account safety fixes are stable.
 - [ ] Keep manual invite-link fallback even after email delivery is added.

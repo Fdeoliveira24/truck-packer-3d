@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-14 — Phase 1 Release Gate remains PARTIAL. Same-tab different-user isolation, same-profile two-tab workspace switch/logout, billing/members/folder isolation after workspace switch, trial-expired owner gate, owner invite wrong-email guard, and invite revoke cleanup have passed. The two high-value remaining release-gate checks are true separate-profile logout and a real UI-visible over-limit workspace fixture. No `app.js` modularization until those two checks are closed or a confirmed bug/fix is logged.
+Last updated: 2026-05-14 — Phase 1 Release Gate remains PARTIAL. Same-tab different-user isolation, same-profile two-tab workspace switch/logout, true separate-profile logout, billing/members/folder isolation after workspace switch, trial-expired owner gate, owner invite wrong-email guard, and invite revoke cleanup have passed. The remaining high-value release-gate check is a real UI-visible over-limit workspace fixture. No `app.js` modularization until that check is closed or a confirmed bug/fix is logged.
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -220,7 +220,7 @@ Still required (release blocking):
   - [x] Banner must NOT appear while signed_in.
   - [x] No auto sign-out / auto sign-in loop.
   - [ ] getAccountBundleSingleFlight({force:true}) must return session+user in BOTH tabs when signed_in. *(Still needs explicit console/API proof if required; UI convergence passed.)*
-- [ ] **True separate-profile logout verification**
+- [x] **True separate-profile logout verification**
   - Sign into the same account in two separate Chrome profiles/windows.
   - Logout in Profile A.
   - Profile B must end signed out without bounce-back, stale workspace/sidebar DOM, or auth/session resurrection.
@@ -386,7 +386,7 @@ Phase 1 rules:
 
 Do these before any new feature work, CSS cleanup, broad UI cleanup, or `app.js` modularization.
 
-#### 1. True separate-profile logout verification — OPEN
+#### 1. True separate-profile logout verification — DONE
 Goal: prove that logout propagates safely across two separate Chrome profiles/windows, not only two tabs in the same Chrome profile.
 
 Required setup:
@@ -447,15 +447,31 @@ P0 is green only when ALL items here are checked:
 - [x] Phase 0.5 Membership + invite lifecycle audited and stabilized through invite revoke UI follow-up; remaining signed-out invite handoff checks stay tracked separately.
 - [ ] Phase 0.6 Workspace archive / restore / transfer / leave rules defined before implementation.
 - [ ] Phase 0.7 Workspace export rules defined before destructive lifecycle actions.
-- [ ] P0.9 Cross-user data isolation + 2-tab stability verified. *(Partial: same-tab different-user and same-profile two-tab checks passed; true separate-profile logout remains.)*
+- [x] P0.9 Cross-user data isolation + 2-tab stability verified. *(Same-tab different-user isolation, same-profile two-tab checks, and true separate-profile logout passed.)*
 - [x] Logout flow uses canonical helper only.
-- [ ] True separate-profile logout verified live. *(Same-profile two-tab logout passed; separate Chrome profile/window logout remains the release-gate proof.)*
+- [x] True separate-profile logout verified live. *(Separate Chrome profiles/windows signed into `test1@test.com`; Profile A logout caused Profile B to show signed-out UI by the 5s sample with no stale workspace DOM, auth keys, or token leaks.)*
 - [ ] Real UI-visible over-limit workspace fixture verified. *(A workspace must be visible/switchable, return `workspace_limit_reached`, block AutoPack/PDF, and show correct billing copy.)*
 - [x] No blocking console/network errors in the tested Phase 1 flows (ignore debug mode + expected favicon noise).
 - [ ] "Manage billing" never 500.
   - [x] New-user signup creates auth user, profile, default workspace, owner membership, and billing trial row without DB trigger failure.
 
 ---
+
+- Date: 2026-05-14 — Phase 1 release-gate browser pass — true separate-profile logout
+- Verdict:
+  - PARTIAL. True separate-profile logout is now closed; the real UI-visible over-limit workspace fixture remains open.
+- Browser/profile setup:
+  - Chrome Profile A used isolated debug profile on port `9342`.
+  - Chrome Profile B used isolated debug profile on port `9343`.
+  - Both profiles were signed into `test1@test.com` at `http://localhost:8080/index.html`.
+- Evidence:
+  - Before logout, both profiles showed `test1-Workspace` with active org `010bda14-fd69-4be1-98ee-21d3051a7144`.
+  - Profile A logout was triggered through the app UI and ended on signed-out/auth UI with `tp3d:active-org-id=null`, no workspace DOM, and no auth session/token.
+  - Profile B samples at 5s, 10s, 20s, and 35s all showed signed-out/auth UI, no stale `test1-Workspace` DOM, `tp3d:active-org-id=null`, no Supabase auth keys, and no session/token.
+  - Console/network observation showed no auth loop, no bounce-back, no reload loop, and `tokenLeakEvents=0`; only non-blocking resource 404/403 entries were observed.
+- Code state:
+  - Auth/session fix committed as `e0b5e05` (`fix(auth): validate stale session after cross-profile logout`).
+  - This entry is documentation-only and does not close the over-limit workspace fixture.
 
 - Date: 2026-05-14 — Phase 1 release-gate next closure plan locked
 - Verdict:
@@ -467,7 +483,6 @@ P0 is green only when ALL items here are checked:
   - Billing tab, Members tab, Packs/folders, and trial-expired owner gate passed in the tested browser flows.
   - Owner-created invite, wrong-email accept rejection, and invite revoke cleanup passed.
 - Two high-value remaining checks:
-  - True separate-profile logout using two separate Chrome profiles/windows signed into the same account.
   - Real UI-visible over-limit workspace fixture that returns `workspace_limit_reached`, appears in the switcher, blocks Pro actions, and shows correct billing copy.
 - Execution rule:
   - Do not start `app.js` modularization, broad CSS cleanup, broad UI cleanup, email invite delivery, or new feature work until these two checks are closed or the failure is logged with a targeted fix plan.
@@ -966,7 +981,7 @@ Still open:
 
 ---
 
-### P0.9 Cross-user local data isolation (user-scoped storage) — IMPLEMENTED (live sign-off still required)
+### P0.9 Cross-user local data isolation (user-scoped storage) — IMPLEMENTED (Phase 1 auth sign-off complete)
 Goal: prevent packs, cases, and preferences from leaking between different signed-in users on the same browser.
 
 Completed:
@@ -1492,7 +1507,7 @@ Why this is next:
 #### Phase 1A — Browser-first release-gate verification
 - [ ] Same-tab different-user sign-in: sign in as User A, sign out, sign in as User B, and confirm no stale billing, workspace, folders, packs, members, settings, or sidebar state appears.
 - [x] Cross-tab logout verified in same Chrome profile / two tabs: sign out in one tab and confirm both app tabs clear session, show sign-in, and do not bounce back to signed-in UI.
-- [ ] True separate-profile cross-tab logout: repeat logout verification with separate Chrome profiles/windows.
+- [x] True separate-profile cross-tab logout: repeat logout verification with separate Chrome profiles/windows.
 - [x] Two-tab same-user workspace switch verified in same Chrome profile / two tabs: switch workspace in Tab A and confirm Tab B converges to the same active org without stale Billing/Members/General data.
 - [x] Billing tab after workspace switch: confirm billing belongs to the active workspace, not the previous workspace.
 - [x] Members tab after workspace switch: confirm the members/invites belong to the active workspace.
@@ -1831,9 +1846,9 @@ P0 is green only when ALL items here are checked:
 - [ ] Phase 0.5 Membership + invite lifecycle audited and stabilized.
 - [ ] Phase 0.6 Workspace archive / restore / transfer / leave rules defined before implementation.
 - [ ] Phase 0.7 Workspace export rules defined before destructive lifecycle actions.
-- [ ] P0.9 Cross-user data isolation + 2-tab stability verified.
+- [x] P0.9 Cross-user data isolation + 2-tab stability verified.
 - [x] Logout flow uses canonical helper only.
-- [ ] Cross-tab logout verified live.
+- [x] Cross-tab logout verified live.
 - [ ] No console errors in normal flows (ignore debug mode + expected favicon noise).
 - [ ] "Manage billing" never 500.
 

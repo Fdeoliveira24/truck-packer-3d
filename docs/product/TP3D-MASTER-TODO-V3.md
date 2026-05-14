@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-14 — Phase 1 Release Gate remains PARTIAL. Same-tab different-user isolation, same-profile two-tab workspace switch/logout, true separate-profile logout, billing/members/folder isolation after workspace switch, trial-expired owner gate, owner invite wrong-email guard, and invite revoke cleanup have passed. The remaining high-value release-gate check is a real UI-visible over-limit workspace fixture. No `app.js` modularization until that check is closed or a confirmed bug/fix is logged.
+Last updated: 2026-05-14 — Phase 1 Release Gate remains PARTIAL. Same-tab different-user isolation, same-profile two-tab workspace switch/logout, true separate-profile logout, billing/members/folder isolation after workspace switch, trial-expired owner gate, owner invite wrong-email guard, invite revoke cleanup, and the real UI-visible over-limit workspace fixture have passed. Remaining tracked Phase 1 items are deferred/admin-member invite restrictions and portal fallback edge cases. No `app.js` modularization until those checks are closed or converted into targeted follow-up tickets.
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -409,10 +409,12 @@ If FAIL:
 - Do not proceed to modularization.
 - Record exact browser steps, console/network evidence, and affected files before fixing.
 
-#### 2. Real UI-visible over-limit workspace fixture — OPEN
+#### 2. Real UI-visible over-limit workspace fixture — DONE
 Goal: prove the app handles a real `workspace_limit_reached` workspace that is visible/switchable in the UI.
 
 Current known state:
+- `test2@test.com` now has reusable fixture workspace `Release-Gate-Overlimit-Test` (`bccf2fea-797f-4318-992e-aff0fdf4efe3`).
+- `/billing-status` for that workspace returned `entitlementStatus: "workspace_limit_reached"`, `workspaceCount: 4`, and `workspaceLimit: 3`.
 - `wspace-test6` is visible and switchable, but it showed `Subscription Free`, not `workspace_limit_reached`; it is not a valid over-limit fixture.
 - Existing active/included billing states passed for `test1` and `test2`.
 - `trial_expired` passed for `test3`.
@@ -450,16 +452,41 @@ P0 is green only when ALL items here are checked:
 - [x] P0.9 Cross-user data isolation + 2-tab stability verified. *(Same-tab different-user isolation, same-profile two-tab checks, and true separate-profile logout passed.)*
 - [x] Logout flow uses canonical helper only.
 - [x] True separate-profile logout verified live. *(Separate Chrome profiles/windows signed into `test1@test.com`; Profile A logout caused Profile B to show signed-out UI by the 5s sample with no stale workspace DOM, auth keys, or token leaks.)*
-- [ ] Real UI-visible over-limit workspace fixture verified. *(A workspace must be visible/switchable, return `workspace_limit_reached`, block AutoPack/PDF, and show correct billing copy.)*
+- [x] Real UI-visible over-limit workspace fixture verified. *(`test2@test.com` workspace `Release-Gate-Overlimit-Test` is visible/switchable, returns `workspace_limit_reached`, blocks AutoPack/PDF, and shows correct billing copy.)*
 - [x] No blocking console/network errors in the tested Phase 1 flows (ignore debug mode + expected favicon noise).
 - [ ] "Manage billing" never 500.
   - [x] New-user signup creates auth user, profile, default workspace, owner membership, and billing trial row without DB trigger failure.
 
 ---
 
+- Date: 2026-05-14 — Phase 1 release-gate browser pass — UI-visible over-limit workspace
+- Verdict:
+  - PARTIAL overall, but the real UI-visible over-limit workspace fixture is now closed.
+- Fixture setup:
+  - Account used: `test2@test.com`.
+  - Created test-only active workspace `Release-Gate-Overlimit-Test` (`bccf2fea-797f-4318-992e-aff0fdf4efe3`) under test2 owner profile `4466f0e0-9dc8-4582-8f13-369b5e61957d`.
+  - Existing DB trigger seeded a null-status `billing_customers` placeholder for the new repeat-owner workspace; no subscription row or Stripe mutation was created.
+  - Fixture remains in place for future release-gate regression checks.
+- Billing-status evidence:
+  - Direct browser-authenticated call returned HTTP `200`.
+  - Result summary: `entitlementStatus: "workspace_limit_reached"`, `isActive: false`, `isPro: false`, `workspaceIncluded: false`, `workspaceCount: 4`, `workspaceLimit: 3`, `canManageBilling: true`, `portalAvailable: true`, `plan: "pro"`, `currentPeriodEnd: 2027-02-23T19:09:34+00:00`.
+- Browser evidence:
+  - Workspace switcher showed `Release-Gate-Overlimit-Test` after reload and switching into it set active org to `bccf2fea-797f-4318-992e-aff0fdf4efe3`.
+  - Settings > Billing showed `Release-Gate-Overlimit-Test`, `Pro`, `Not Included`, and workspace-limit copy: plan includes 3 workspace(s), 4 workspace(s) count toward that limit, including archived workspaces.
+  - Created disposable pack `Release Gate Overlimit Pack` inside the fixture to exercise Pro gates.
+  - AutoPack attempt was blocked with message: `Workspace limit reached. Upgrade your plan or free a workspace slot to use this Pro feature.` Packed count stayed `0`.
+  - Export PDF attempt was blocked with the same workspace-limit Pro-feature message; no PDF export was generated.
+  - Packs/Folders stayed scoped to the fixture: `Release Gate Overlimit Pack`, `All Packs (1)`, `Unfiled (1)`, and `No folders yet`.
+  - Settings > Members stayed scoped to the fixture: one test2 owner row, no pending invites, no stale member/invite rows from other workspaces.
+- Console/network:
+  - Direct Supabase health check returned HTTP `200`; direct `/billing-status` returned HTTP `200`.
+  - Short CDP monitor saw recurring non-blocking Supabase auth `/auth/v1/user` `ERR_INTERNET_DISCONNECTED` entries from the active session-validation path, but no auth loop, no unexpected billing 401/403/500, and no token/JWT/access-token patterns were observed.
+- Code state:
+  - No source files changed for this verification.
+
 - Date: 2026-05-14 — Phase 1 release-gate browser pass — true separate-profile logout
 - Verdict:
-  - PARTIAL. True separate-profile logout is now closed; the real UI-visible over-limit workspace fixture remains open.
+  - PARTIAL. True separate-profile logout was closed by this pass; the real UI-visible over-limit workspace fixture was still open at this point and is closed in the over-limit entry above.
 - Browser/profile setup:
   - Chrome Profile A used isolated debug profile on port `9342`.
   - Chrome Profile B used isolated debug profile on port `9343`.
@@ -471,7 +498,7 @@ P0 is green only when ALL items here are checked:
   - Console/network observation showed no auth loop, no bounce-back, no reload loop, and `tokenLeakEvents=0`; only non-blocking resource 404/403 entries were observed.
 - Code state:
   - Auth/session fix committed as `e0b5e05` (`fix(auth): validate stale session after cross-profile logout`).
-  - This entry is documentation-only and does not close the over-limit workspace fixture.
+  - This entry is documentation-only and did not close the over-limit workspace fixture.
 
 - Date: 2026-05-14 — Phase 1 release-gate next closure plan locked
 - Verdict:
@@ -482,10 +509,11 @@ P0 is green only when ALL items here are checked:
   - Same-profile two-tab logout passed.
   - Billing tab, Members tab, Packs/folders, and trial-expired owner gate passed in the tested browser flows.
   - Owner-created invite, wrong-email accept rejection, and invite revoke cleanup passed.
-- Two high-value remaining checks:
-  - Real UI-visible over-limit workspace fixture that returns `workspace_limit_reached`, appears in the switcher, blocks Pro actions, and shows correct billing copy.
+- High-value closure status:
+  - True separate-profile logout and real UI-visible over-limit workspace behavior are now both verified.
+  - Remaining tracked Phase 1 items are deferred/admin-member invite restrictions and portal fallback edge cases.
 - Execution rule:
-  - Do not start `app.js` modularization, broad CSS cleanup, broad UI cleanup, email invite delivery, or new feature work until these two checks are closed or the failure is logged with a targeted fix plan.
+  - Do not start `app.js` modularization, broad CSS cleanup, broad UI cleanup, email invite delivery, or new feature work until remaining Phase 1 checks are closed or converted into targeted follow-up tickets.
 - Code state:
   - Documentation-only planning update. No app code change intended.
 
@@ -1511,7 +1539,7 @@ Why this is next:
 - [x] Two-tab same-user workspace switch verified in same Chrome profile / two tabs: switch workspace in Tab A and confirm Tab B converges to the same active org without stale Billing/Members/General data.
 - [x] Billing tab after workspace switch: confirm billing belongs to the active workspace, not the previous workspace.
 - [x] Members tab after workspace switch: confirm the members/invites belong to the active workspace.
-- [ ] Over-limit workspace visibility: verify an over-limit workspace still appears in the switcher and can be opened, while Pro actions remain blocked.
+- [x] Over-limit workspace visibility: verify an over-limit workspace still appears in the switcher and can be opened, while Pro actions remain blocked.
 - [x] Folder data after workspace switch: confirm folders and pack-folder assignments do not leak across workspaces.
 - [ ] Console/network check: no blocking console errors, unhandled promise rejections, failed Edge Function calls, token leaks, or wrong-org network payloads during the above flows.
 

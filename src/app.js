@@ -142,6 +142,8 @@ const BILLING_ENTITLEMENT_STATUSES = new Set([
 const BILLING_THROTTLE_MS = 30000;
 const BILLING_REQUEST_TIMEOUT_MS = 15000;
 const BILLING_FOCUS_REFRESH_COOLDOWN_MS = 300000; // 5 minutes — do not spam refresh on every focus
+const AUTH_REVOCATION_VISIBLE_CHECK_INTERVAL_MS = 5000;
+const AUTH_REVOCATION_MIN_CHECK_GAP_MS = 2000;
 let _billingRefreshQueued = false;
 let _billingPendingRetry = { orgId: null, count: 0, timer: null };
 let _billingLastFocusRefreshAt = 0;
@@ -149,6 +151,10 @@ let _lastBillingKey = '';
 let _lastBillingKeyAt = 0;
 let _billingTraceSeq = 0;
 let _billingEpoch = 0; // incremented on sign-out; late refresh results are ignored when epoch changes
+let _authRevocationCheckTimer = null;
+let _authRevocationCheckInFlight = false;
+let _authRevocationCheckLastAt = 0;
+let _authRevocationCheckInstalled = false;
 const _bootStartedAtMs = Date.now();
 /** @type {null|((snapshot:any, meta?:{reason?:string, activeOrgId?:string|null})=>void)} */
 let _billingGateApplier = null;
@@ -569,6 +575,83 @@ function billingDebugLog(step, details) {
     return;
   }
   console.info('[Billing][App]', step, details);
+}
+
+function isVisibleAuthRevocationCheckSignedIn() {
+  try {
+    const authState =
+      SupabaseClient && typeof SupabaseClient.getAuthState === 'function' ? SupabaseClient.getAuthState() : null;
+    const status = authState && authState.status ? authState.status : 'unknown';
+    const session = authState && authState.session ? authState.session : null;
+    const user = authState && authState.user ? authState.user : session && session.user ? session.user : null;
+    return Boolean(status === 'signed_in' && session && user && user.id);
+  } catch {
+    return false;
+  }
+}
+
+function isVisibleAuthRevocationCheckAllowed() {
+  try {
+    if (typeof document !== 'undefined' && document.hidden) return false;
+  } catch {
+    // ignore
+  }
+  return isVisibleAuthRevocationCheckSignedIn();
+}
+
+function requestVisibleAuthRevocationCheck(reason = 'interval') {
+  if (_authRevocationCheckInFlight) return;
+  if (!isVisibleAuthRevocationCheckAllowed()) return;
+  if (!SupabaseClient || typeof SupabaseClient.validateSessionRevocation !== 'function') return;
+  const now = Date.now();
+  if (_authRevocationCheckLastAt && (now - _authRevocationCheckLastAt) < AUTH_REVOCATION_MIN_CHECK_GAP_MS) return;
+  _authRevocationCheckLastAt = now;
+  _authRevocationCheckInFlight = true;
+  void SupabaseClient.validateSessionRevocation({ source: `app-visible:${reason}` })
+    .catch(() => { /* ignore */ })
+    .finally(() => {
+      _authRevocationCheckInFlight = false;
+    });
+}
+
+function startVisibleAuthRevocationCheck() {
+  if (!isVisibleAuthRevocationCheckSignedIn()) return;
+  if (_authRevocationCheckTimer) return;
+  _authRevocationCheckTimer = window.setInterval(() => {
+    requestVisibleAuthRevocationCheck('interval');
+  }, AUTH_REVOCATION_VISIBLE_CHECK_INTERVAL_MS);
+  requestVisibleAuthRevocationCheck('start');
+}
+
+function stopVisibleAuthRevocationCheck() {
+  if (_authRevocationCheckTimer) {
+    try { window.clearInterval(_authRevocationCheckTimer); } catch { /* ignore */ }
+  }
+  _authRevocationCheckTimer = null;
+  _authRevocationCheckInFlight = false;
+  _authRevocationCheckLastAt = 0;
+}
+
+function installVisibleAuthRevocationCheck() {
+  if (_authRevocationCheckInstalled) return;
+  _authRevocationCheckInstalled = true;
+  try {
+    window.addEventListener('focus', () => {
+      requestVisibleAuthRevocationCheck('window-focus');
+      startVisibleAuthRevocationCheck();
+    }, { passive: true });
+  } catch {
+    // ignore
+  }
+  try {
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) return;
+      requestVisibleAuthRevocationCheck('tab-visible');
+      startVisibleAuthRevocationCheck();
+    }, { passive: true });
+  } catch {
+    // ignore
+  }
 }
 
 const ORG_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -1173,6 +1256,17 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       _notifyBilling();
       applyAccessGateFromBilling(getBillingState(), { reason: 'pending:' + reason, activeOrgId: requestedOrgId || null });
       scheduleBillingPendingRetry(requestedOrgId, reason);
+      return getBillingState();
+    }
+
+    // Cross-profile session revocation: billing-status 401 means the server rejected our session.
+    // BroadcastChannel/localStorage cannot cross isolated Chrome profiles, so this is the
+    // detection point for a profile whose server session was revoked elsewhere.
+    if (result && !result.pending && !result.skipped && Number(result.status) === 401) {
+      billingDebugLog('refresh:session-revoked-401', { reason, requestedOrgId: requestedOrgId || null });
+      if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
+        void SupabaseClient.signOut({ global: false, allowOffline: true }).catch(() => { /* ignore */ });
+      }
       return getBillingState();
     }
 
@@ -7689,6 +7783,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (!canProceed) return;
         AuthOverlay.hide();
         try { document.body.setAttribute('data-auth', 'signed_in'); } catch { /* ignore */ }
+        startVisibleAuthRevocationCheck();
 
         // ── P0.9: Scope storage to this user and reload state ──────────
         const uid = user && user.id ? String(user.id) : 'anon';
@@ -7793,6 +7888,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     function _executeSignedOutCleanup({ event, treatAsSignedOut, userInitiatedSignOut, onRetry }) {
       const isSignedOutEvent = event === 'SIGNED_OUT';
       try { document.body.setAttribute('data-auth', 'signed_out'); } catch { /* ignore */ }
+      stopVisibleAuthRevocationCheck();
       lastAuthEventSnapshot = { status: 'signed_out', userId: null, hasToken: false, session: null, ts: Date.now() };
 
       // ── P0.9: Reset scope to anon so autosave can't write to the old user's key ──
@@ -7825,7 +7921,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
       try { window.__TP3D_LAST_ACCOUNT_BUNDLE = null; } catch (_) { /* ignore */ }
       try {
-        clearOrgContext({ clearLocalOrgHint: Boolean(userInitiatedSignOut), confirmedNoOrg: Boolean(userInitiatedSignOut) });
+        const shouldClearSignedOutOrgHint = Boolean(userInitiatedSignOut || treatAsSignedOut || authBlockState);
+        clearOrgContext({
+          clearLocalOrgHint: shouldClearSignedOutOrgHint,
+          confirmedNoOrg: shouldClearSignedOutOrgHint,
+        });
       } catch {
         // ignore
       }
@@ -9511,6 +9611,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
         subscribeBilling(snapshot => applyAccessGateFromBilling(snapshot, { reason: 'billing-subscriber' }));
         subscribeBilling(snapshot => markWorkspaceSwitchBillingReadyIfSettled(snapshot, 'billing-subscriber'));
         applyAccessGateFromBilling(getBillingState(), { reason: 'gate-init' });
+      } catch (_) { /* ignore */ }
+
+      try {
+        installVisibleAuthRevocationCheck();
+        startVisibleAuthRevocationCheck();
       } catch (_) { /* ignore */ }
 
       // Refresh billing on focus (throttled inside refreshBilling + cross-tab freshness)

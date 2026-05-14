@@ -1232,6 +1232,58 @@ export function getUserSingleFlight() {
   return p;
 }
 
+export async function validateSessionRevocation({ source = 'unknown', timeoutMs = 3000 } = {}) {
+  const client = _client;
+  if (!client || !client.auth) return { ok: true, skipped: true, reason: 'no-client' };
+
+  try {
+    if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) {
+      return { ok: true, skipped: true, reason: 'offline' };
+    }
+  } catch {
+    // ignore
+  }
+
+  if (_signOutPromise) return { ok: true, skipped: true, reason: 'signout-in-flight' };
+  if (_authState && _authState.status === 'signed_out') return { ok: true, skipped: true, reason: 'signed-out' };
+
+  try {
+    if (typeof document !== 'undefined' && document.hidden) {
+      return { ok: true, skipped: true, reason: 'hidden-tab' };
+    }
+  } catch {
+    // ignore
+  }
+
+  const authGetUser = _authGetUser || (client.auth && client.auth.__tp3dOriginalGetUser) || null;
+  if (typeof authGetUser !== 'function') return { ok: true, skipped: true, reason: 'no-auth-get-user' };
+
+  try {
+    const res = await withTimeoutReject(authGetUser(), timeoutMs, 'auth revocation check timeout');
+    if (res && res.error) throw res.error;
+
+    const user = res && res.data && res.data.user ? res.data.user : null;
+    if (user && user.id) {
+      updateAuthState({ user });
+      return { ok: true, skipped: false, reason: 'valid', userId: String(user.id) };
+    }
+
+    return { ok: true, skipped: true, reason: 'no-user' };
+  } catch (err) {
+    const msg = String(err && err.message ? err.message : '');
+    if (msg.includes('timeout') || isNetworkFetchError(err)) {
+      _authCooldownUntil = Date.now() + 2000;
+      return { ok: true, skipped: true, reason: msg.includes('timeout') ? 'timeout' : 'network' };
+    }
+    if (isAuthRevokedError(err)) {
+      const status = getErrorStatus(err);
+      forceLocalSignedOut({ reason: `auth-revoked:${source}`, status });
+      return { ok: false, skipped: false, signedOut: true, reason: 'auth-revoked', status };
+    }
+    return { ok: true, skipped: true, reason: 'error' };
+  }
+}
+
 function forceLocalSignedOut({ reason = 'auth-invalid', status = null } = {}) {
   const now = Date.now();
   if (_authInvalidatedAt && now - _authInvalidatedAt < 1500) return;

@@ -73,9 +73,12 @@ const accountPurgeStatusMigrationPath = new URL(
   import.meta.url
 );
 const releaseGateCheckoutIdempotencyFile = 'supabase/functions/stripe-create-checkout-session/index.ts';
+const releaseGateAuthSessionFiles = new Set([
+  'src/core/supabase-client.js',
+]);
 
 function isNotCurrentReleaseGateCheckoutPatch(file) {
-  return file !== releaseGateCheckoutIdempotencyFile;
+  return file !== releaseGateCheckoutIdempotencyFile && !releaseGateAuthSessionFiles.has(file);
 }
 
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
@@ -642,6 +645,96 @@ test('billing pump never runs without proven auth or usable session', async () =
 
   // Gate checks session expires_at for fallback when not proven
   assert.match(app, /maybeScheduleBillingRefresh[\s\S]*?expires_at \* 1000[\s\S]*?> Date\.now\(\)/);
+});
+
+test('phase 1 P0 cross-profile logout: billing-status 401 triggers local sign-out cleanup', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+  const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{object\} billingSnapshot/);
+  assert.ok(refreshMatch, 'refreshBilling function must be extractable');
+  const refreshBody = refreshMatch[0];
+
+  const guardIdx = refreshBody.indexOf('refresh:session-revoked-401');
+  assert.ok(guardIdx > 0, 'refreshBilling must include a safe billing 401 debug event');
+  const guard = refreshBody.slice(Math.max(0, guardIdx - 450), guardIdx + 700);
+
+  assert.match(guard, /result && !result\.pending && !result\.skipped && Number\(result\.status\) === 401/,
+    'billing-status 401 guard must be exact and exclude pending/skipped states');
+  assert.match(guard, /SupabaseClient\.signOut\(\{ global: false, allowOffline: true \}\)/,
+    'billing-status 401 must use the existing local/offline sign-out cleanup path');
+  assert.match(guard, /return getBillingState\(\)/,
+    'billing-status 401 branch must stop refreshBilling after starting local cleanup');
+});
+
+test('phase 1 P0 cross-profile logout: billing 401 path does not catch non-auth errors or leak token data', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+  const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{object\} billingSnapshot/);
+  assert.ok(refreshMatch, 'refreshBilling function must be extractable');
+  const refreshBody = refreshMatch[0];
+
+  const signOutIdx = refreshBody.indexOf('SupabaseClient.signOut({ global: false, allowOffline: true })');
+  assert.ok(signOutIdx > 0, 'billing 401 sign-out call must exist');
+  const guardStart = refreshBody.lastIndexOf('if (result &&', signOutIdx);
+  assert.ok(guardStart > 0, 'billing 401 sign-out must be inside an explicit result guard');
+  const guard = refreshBody.slice(guardStart, signOutIdx + 450);
+
+  assert.match(guard, /Number\(result\.status\) === 401/,
+    'billing sign-out must be tied to exact HTTP 401 only');
+  assert.doesNotMatch(guard, /403|408|409|status\s*!==\s*null|status\s*[<>]=?\s*4|status\s*[<>]=?\s*5/i,
+    'billing sign-out guard must not use broad 4xx/5xx, timeout, conflict, or org-access status patterns');
+  assert.doesNotMatch(guard, /location\.reload|setTimeout[\s\S]*location\.reload/,
+    'billing 401 cleanup must not introduce reload or timed reload behavior');
+  assert.doesNotMatch(guard, /access_token|refresh_token|Bearer|JWT|\.token/i,
+    'billing 401 cleanup must not log or reference token-sensitive values');
+});
+
+test('phase 1 P0 cross-profile logout: visible signed-in tabs actively validate server auth', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+
+  assert.match(app, /const AUTH_REVOCATION_VISIBLE_CHECK_INTERVAL_MS = 5000/,
+    'visible auth revocation check must use the approved short release-gate interval');
+  assert.match(app, /function requestVisibleAuthRevocationCheck\(reason = 'interval'\)/,
+    'app must define an active auth revocation check independent of billing-status');
+  assert.match(app, /function isVisibleAuthRevocationCheckSignedIn\(\)[\s\S]*status === 'signed_in'[\s\S]*session[\s\S]*user[\s\S]*user\.id/,
+    'visible auth check must run only while the app believes a user is signed in');
+  assert.match(app, /SupabaseClient\.validateSessionRevocation\(\{ source: `app-visible:\$\{reason\}` \}\)/,
+    'visible auth check must use the server-backed Supabase auth validation helper');
+  assert.match(app, /window\.setInterval\(\(\) => \{[\s\S]*requestVisibleAuthRevocationCheck\('interval'\)[\s\S]*AUTH_REVOCATION_VISIBLE_CHECK_INTERVAL_MS/,
+    'visible signed-in validation must not depend on billing refresh firing');
+  assert.match(app, /window\.addEventListener\('focus'[\s\S]*requestVisibleAuthRevocationCheck\('window-focus'\)/,
+    'visible auth validation must also run on focus');
+  assert.match(app, /document\.addEventListener\('visibilitychange'[\s\S]*requestVisibleAuthRevocationCheck\('tab-visible'\)/,
+    'visible auth validation must also run when a tab becomes visible');
+  assert.match(app, /startVisibleAuthRevocationCheck\(\)/,
+    'signed-in auth flow must start the visible auth validation loop');
+  assert.match(app, /stopVisibleAuthRevocationCheck\(\)/,
+    'signed-out cleanup must stop the visible auth validation loop');
+  assert.match(app, /const shouldClearSignedOutOrgHint = Boolean\(userInitiatedSignOut \|\| treatAsSignedOut \|\| authBlockState\)[\s\S]{0,180}clearLocalOrgHint: shouldClearSignedOutOrgHint/,
+    'confirmed signed-out cleanup must clear stale active org hints');
+});
+
+test('phase 1 P0 cross-profile logout: server auth validation only clears on confirmed revocation', async () => {
+  const sc = await fs.readFile(supabasePath, 'utf8');
+  const fnStart = sc.indexOf('export async function validateSessionRevocation');
+  const fnEnd = sc.indexOf('\nfunction forceLocalSignedOut', fnStart);
+  assert.ok(fnStart >= 0 && fnEnd > fnStart, 'validateSessionRevocation helper must exist before forceLocalSignedOut');
+  const fn = sc.slice(fnStart, fnEnd);
+
+  assert.match(fn, /const authGetUser = _authGetUser \|\| \(client\.auth && client\.auth\.__tp3dOriginalGetUser\) \|\| null/,
+    'validation helper must call the original server-backed auth getUser path');
+  assert.doesNotMatch(fn, /isAuthProven\(\)|getUserRawSingleFlight|getSessionSingleFlightSafe/,
+    'validation helper must not use local auth proof, local getSession, or cached getUser fast paths');
+  assert.match(fn, /msg\.includes\('timeout'\) \|\| isNetworkFetchError\(err\)[\s\S]*return \{ ok: true, skipped: true, reason: msg\.includes\('timeout'\) \? 'timeout' : 'network' \}/,
+    'timeout and network failures must not force local sign-out');
+  assert.match(fn, /if \(isAuthRevokedError\(err\)\) \{[\s\S]*forceLocalSignedOut\(\{ reason: `auth-revoked:\$\{source\}`, status \}\)/,
+    'local sign-out must be guarded by the existing auth-revoked classifier');
+  assert.match(fn, /return \{ ok: true, skipped: true, reason: 'error' \}/,
+    'unknown validation errors must not force local sign-out');
+  assert.doesNotMatch(fn, /status\s*[<>]=?\s*4|status\s*!==\s*null|status\s*[<>]=?\s*5|403|408|409/,
+    'validation helper must not use broad status, org-access, timeout, or conflict status patterns');
+  assert.doesNotMatch(fn, /location\.reload|setTimeout[\s\S]*location\.reload/,
+    'validation helper must not introduce reload or timed reload behavior');
+  assert.doesNotMatch(fn, /access_token|refresh_token|Bearer|JWT|\.token/i,
+    'validation helper must not log or reference token-sensitive values');
 });
 
 test('TrialExpiredModal upgrades in-place when role resolves and never reads legacy session storage', async () => {

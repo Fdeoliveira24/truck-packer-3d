@@ -393,6 +393,30 @@ P0 is green only when ALL items here are checked:
 
 ## Running log (keep updated)
 
+
+- Date: 2026-05-13 — Phase 1 Release Gate checkout idempotency fix completed
+- What changed:
+  - Fixed `stripe-create-checkout-session` idempotency key so it is scoped by user, organization, price, and UTC minute bucket.
+  - Previous key used user + price + minute only, which could collide when the same user started same-price checkout for two different workspaces within the same minute.
+  - Added invariant test proving `organizationId` is part of the checkout idempotency key and that the call site passes the validated organization id.
+  - Deployed `stripe-create-checkout-session` after the fix.
+- Validation:
+  - `npm test` passed: 272/272.
+  - `npm run lint` passed with 0 errors and existing warnings only.
+  - `npm run -s typecheck` passed.
+  - `git diff --check` and `git diff --cached --check` passed.
+  - Supabase function list confirmed `stripe-create-checkout-session` version 33 updated after commit `f5cc8cd`.
+- Still required:
+  - Run the remaining live browser release-gate tests with separate Chrome profiles/windows:
+    - cross-tab logout,
+    - same-tab different-user isolation,
+    - two-tab same-user workspace switch,
+    - admin/member invite restrictions,
+    - trial-expired account,
+    - over-limit workspace behavior,
+    - portal fallback edge cases.
+
+
 - Date: 2026-05-13 — Phase 0.7C Pack Folder UI merged and closed
 - What changed:
   - Completed Pack Folder UI: compact Folders dropdown, Create Folder, Move Pack to Folder modal, Rename Folder, Delete Folder, folder reload persistence, and stale caret CSS cleanup.
@@ -1347,7 +1371,7 @@ Why this is next:
 - [ ] Console/network check: no blocking console errors, unhandled promise rejections, failed Edge Function calls, token leaks, or wrong-org network payloads during the above flows.
 
 #### Phase 1B — Billing and Stripe targeted checks
-- [ ] Verify checkout idempotency behavior and fix `stripe-create-checkout-session` so the idempotency key includes `organizationId` if still missing.
+- [x] Verify checkout idempotency behavior and fix `stripe-create-checkout-session` so the idempotency key includes `organizationId` if still missing.
 - [ ] Verify `/billing-status` workspace count against known DB rows and product policy. Do not blindly exclude archived workspaces because archived workspaces currently count toward plan limits by policy.
 - [ ] Confirm Supabase secrets needed for launch are present, including Stripe secrets, workspace-limit secrets, `SITE_URL`, and later email-provider secrets.
 - [ ] Run portal manual checks: deep-link update subscription, schedule-managed fallback, stale/missing stored subscription fallback.

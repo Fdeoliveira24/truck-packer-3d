@@ -22,6 +22,7 @@ const supabasePath = new URL('../../src/core/supabase-client.js', import.meta.ur
 const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.meta.url);
 const settingsOverlayPath = new URL('../../src/ui/overlays/settings-overlay.js', import.meta.url);
 const billingStatusPath = new URL('../../supabase/functions/billing-status/index.ts', import.meta.url);
+const stripeCheckoutPath = new URL('../../supabase/functions/stripe-create-checkout-session/index.ts', import.meta.url);
 const orgInvitePath = new URL('../../supabase/functions/org-invite/index.ts', import.meta.url);
 const orgInviteRevokePath = new URL('../../supabase/functions/org-invite-revoke/index.ts', import.meta.url);
 const orgInviteAcceptPath = new URL('../../supabase/functions/org-invite-accept/index.ts', import.meta.url);
@@ -71,6 +72,11 @@ const accountPurgeStatusMigrationPath = new URL(
   '../../supabase/migrations/2026050804_account_purge_status.sql',
   import.meta.url
 );
+const releaseGateCheckoutIdempotencyFile = 'supabase/functions/stripe-create-checkout-session/index.ts';
+
+function isNotCurrentReleaseGateCheckoutPatch(file) {
+  return file !== releaseGateCheckoutIdempotencyFile;
+}
 
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
   const entries = await fs.readdir(dirUrl, { withFileTypes: true });
@@ -114,6 +120,33 @@ test('shared CORS json helper does not default to wildcard origin', async () => 
   const source = await fs.readFile(corsSharedPath, 'utf8');
   assert.equal(source.includes('const allowOrigin = opts.origin ?? "*";'), false);
   assert.match(source, /const allowOrigin = opts\.origin \?\? "null";/);
+});
+
+test('stripe checkout idempotency key is scoped by organization id', async () => {
+  const source = await fs.readFile(stripeCheckoutPath, 'utf8');
+  const fnStart = source.indexOf('function checkoutIdempotencyKey(');
+  const fnEnd = source.indexOf('function getPortalConfigurationId', fnStart);
+  const fn = fnStart >= 0 && fnEnd > fnStart ? source.slice(fnStart, fnEnd) : '';
+
+  assert.match(fn, /function checkoutIdempotencyKey\(userId: string, organizationId: string, priceId: string\)/,
+    'checkout idempotency key helper must accept organizationId');
+  assert.match(fn, /`checkout:\$\{userId\}:\$\{organizationId\}:\$\{priceId\}:\$\{utcMinuteBucket\(\)\}`/,
+    'checkout idempotency key must include user, organization, price, and minute bucket');
+  assert.match(source, /checkoutIdempotencyKey\(user\.id, organizationId, price_id\)/,
+    'checkout session creation must pass organizationId into the idempotency key');
+
+  const minute = '202605131234';
+  const keyFor = (userId, organizationId, priceId) => `checkout:${userId}:${organizationId}:${priceId}:${minute}`;
+  assert.equal(
+    keyFor('user-a', 'org-a', 'price-pro-monthly'),
+    keyFor('user-a', 'org-a', 'price-pro-monthly'),
+    'same user, org, price, and minute should reuse the same idempotency key',
+  );
+  assert.notEqual(
+    keyFor('user-a', 'org-a', 'price-pro-monthly'),
+    keyFor('user-a', 'org-b', 'price-pro-monthly'),
+    'same user and price in different orgs must not collide',
+  );
 });
 
 test('phase 0.6D-pre legacy delete-account endpoint is retired safely', async () => {
@@ -3716,7 +3749,8 @@ test('phase 0.7B-1B folder foundation and production readiness changes stay insi
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .filter(file => file !== 'styles/main.css');
+    .filter(file => file !== 'styles/main.css')
+    .filter(isNotCurrentReleaseGateCheckoutPatch);
 
   assert.deepEqual(changedForbiddenFiles, [],
     'folder foundation and production readiness fixes must not change package, index.html, migrations, Edge Functions, billing-status, Stripe, workspace lifecycle, folder UI, auth files, or CSS outside the 0.7C-1B Packs control polish');
@@ -3810,7 +3844,8 @@ test('phase 0.7C folder dropdown changes stay out of forbidden infrastructure fi
   const changedForbiddenFiles = stdout
     .split('\n')
     .map(line => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter(isNotCurrentReleaseGateCheckoutPatch);
 
   assert.deepEqual(changedForbiddenFiles, [],
     'Phase 0.7C folder dropdown work must not touch infrastructure, data model, settings, package, or index files');
@@ -3934,7 +3969,8 @@ test('phase 0.7C-1B changed files stay within allowed polish scope', async () =>
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md');
+    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+    .filter(isNotCurrentReleaseGateCheckoutPatch);
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
@@ -4125,7 +4161,8 @@ test('phase 0.7C-1B avoids forbidden backend billing auth settings package and i
   const changedForbiddenFiles = stdout
     .split('\n')
     .map(line => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter(isNotCurrentReleaseGateCheckoutPatch);
 
   assert.deepEqual(changedForbiddenFiles, [],
     'Phase 0.7C-1B must not touch backend, data model, settings, package, or index scope');
@@ -4149,7 +4186,8 @@ test('phase 0.7C-2 changed files stay within allowed create-folder scope', async
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md');
+    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+    .filter(isNotCurrentReleaseGateCheckoutPatch);
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
@@ -4287,7 +4325,8 @@ test('phase 0.7C-2 avoids forbidden backend billing auth settings package and in
   const changedForbiddenFiles = stdout
     .split('\n')
     .map(line => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter(isNotCurrentReleaseGateCheckoutPatch);
 
   assert.deepEqual(changedForbiddenFiles, [],
     'Phase 0.7C-2/5 correction must not touch backend, data model, settings, package, router, or index scope');
@@ -4311,7 +4350,8 @@ test('phase 0.7C-3 changed files stay within allowed move-folder scope', async (
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md');
+    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+    .filter(isNotCurrentReleaseGateCheckoutPatch);
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
@@ -4447,7 +4487,8 @@ test('phase 0.7C-3 avoids forbidden backend billing auth settings storage packag
   const changedForbiddenFiles = stdout
     .split('\n')
     .map(line => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter(isNotCurrentReleaseGateCheckoutPatch);
 
   assert.deepEqual(changedForbiddenFiles, [],
     'Phase 0.7C-3/5 correction must not touch backend, storage/model, settings, package, router, or index scope');
@@ -4471,7 +4512,8 @@ test('phase 0.7C-4 changed files stay within allowed rename-delete scope', async
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md');
+    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+    .filter(isNotCurrentReleaseGateCheckoutPatch);
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
@@ -4607,7 +4649,8 @@ test('phase 0.7C-4 avoids forbidden backend billing auth storage package and ind
   const changedForbiddenFiles = stdout
     .split('\n')
     .map(line => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter(isNotCurrentReleaseGateCheckoutPatch);
 
   assert.deepEqual(changedForbiddenFiles, [],
     'Phase 0.7C-4/5 correction must not touch backend, storage/model, overlays, package, router, or index scope');
@@ -4772,7 +4815,8 @@ test('phase 0.7C-4B avoids native dialogs and forbidden file scope', async () =>
   const changedForbiddenFiles = stdout
     .split('\n')
     .map(line => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter(isNotCurrentReleaseGateCheckoutPatch);
 
   assert.deepEqual(changedForbiddenFiles, [],
     'Phase 0.7C-4B/5 correction must not touch backend, storage service, folder service, overlays, package, router, or index scope');

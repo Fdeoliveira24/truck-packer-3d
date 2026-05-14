@@ -22,8 +22,8 @@ function utcMinuteBucket(date = new Date()): string {
   return `${y}${mo}${d}${h}${m}`;
 }
 
-function checkoutIdempotencyKey(userId: string, priceId: string): string {
-  return `checkout:${userId}:${priceId}:${utcMinuteBucket()}`;
+function checkoutIdempotencyKey(userId: string, organizationId: string, priceId: string): string {
+  return `checkout:${userId}:${organizationId}:${priceId}:${utcMinuteBucket()}`;
 }
 
 function getPortalConfigurationId(): string | null {
@@ -422,7 +422,7 @@ Deno.serve(async (req) => {
           },
         },
       },
-      { idempotencyKey: checkoutIdempotencyKey(user.id, price_id) },
+      { idempotencyKey: checkoutIdempotencyKey(user.id, organizationId, price_id) },
     );
 
     return json({ url: session.url }, { status: 200, origin });

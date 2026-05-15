@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-14 — Phase 1 Release Gate remains PARTIAL. Same-tab different-user isolation, same-profile two-tab workspace switch/logout, true separate-profile logout, billing/members/folder isolation after workspace switch, trial-expired owner gate, owner invite wrong-email guard, invite revoke cleanup, and the real UI-visible over-limit workspace fixture have passed. Remaining tracked Phase 1 items are deferred/admin-member invite restrictions and portal fallback edge cases. No `app.js` modularization until those checks are closed or converted into targeted follow-up tickets.
+Last updated: 2026-05-15 — Phase 2 staging validation has a partial pass on `https://truckapp.pxl360.com/index.html`: app load, staging CORS, login, billing, Stripe Checkout launch in test mode, and link-based invite flows passed. Phase 1 Release Gate remains PARTIAL because admin/member invite restrictions and portal fallback edge cases are still tracked/deferred. Phase 3 real email delivery is not implemented.
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -1844,6 +1844,20 @@ Membership and invite lifecycle is now part of Phase 0.5 because it blocks archi
 
 ---
 
+## Phase 2A — Staging validation — PARTIAL PASS
+- [x] Staging app loads from `https://truckapp.pxl360.com/index.html`.
+- [x] Supabase staging CORS / allowed origin works from `https://truckapp.pxl360.com`.
+- [x] Login works from staging.
+- [x] Billing works from staging.
+- [x] Stripe Checkout opens from staging in test mode. Checkout was not completed in this pass.
+- [x] Invite links use the staging domain. Token values must not be written into this TODO.
+- [x] Wrong-account invite accept is blocked with the expected mismatch message.
+- [x] Invite resend works and generates a new staging-domain link.
+- [x] Invite revoke works.
+- [ ] Phase 3 email delivery: real email sending is not implemented yet. Do not mark complete until an email provider path is approved, implemented, and live-tested.
+
+---
+
 ## Phase 2 — Runtime cleanup / modularization — DO AFTER WORKSPACE + RUNTIME SAFETY
 
 ### Priority order
@@ -1883,6 +1897,27 @@ P0 is green only when ALL items here are checked:
 ---
 
 ## Running log (keep updated)
+
+- Date: 2026-05-15 — Phase 2 staging validation pass
+- What passed:
+  - Staging app loaded from `https://truckapp.pxl360.com/index.html`.
+  - Login worked from staging with `test1@test.com` and `test3@test.com`.
+  - Supabase staging CORS / allowed-origin configuration worked after staging secrets were set.
+  - Billing worked from staging and returned the expected account states.
+  - Stripe Checkout opened from staging in test mode. Checkout was not completed; returning to the app still showed the expected upgrade state.
+  - Link-based invite flow generated a staging invite link. The invite token value is intentionally omitted from this log.
+  - Wrong-account invite accept was blocked with `Invite email does not match the signed-in account.`
+  - Opening the invite link in another browser showed the login page, which is expected for signed-out handoff.
+  - Resend invite generated a new link.
+  - Revoke invite worked.
+- Not done:
+  - Phase 3 real invite email delivery remains not implemented; no email-provider path was tested in this pass.
+  - Checkout completion and webhook/return finalization were not tested because checkout was intentionally not completed.
+- Safety:
+  - No secrets, JWTs, service keys, Stripe keys, or invite tokens were recorded.
+  - No source files or `Production/` files were changed as part of this TODO update.
+- Validation:
+  - Post-update local validation passed with `npm test`, `npm run lint`, `npm run -s typecheck`, `git diff --check`, and `git diff --cached --check`.
 
 
 - Date: 2026-05-08 — Phase 0.6D-pre account deletion owner-block checkpoint

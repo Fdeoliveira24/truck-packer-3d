@@ -1119,6 +1119,100 @@ test('org-invite sets and refreshes expires_at on invite create and resend', asy
     'create path must return expires_at');
 });
 
+test('phase 3A org-invite sends Resend email using env-only configuration', async () => {
+  const src = await fs.readFile(orgInvitePath, 'utf8');
+
+  assert.match(src, /getEnvTrimmed\("RESEND_API_KEY"\)/,
+    'org-invite must read RESEND_API_KEY from Deno.env only');
+  assert.match(src, /getEnvTrimmed\("INVITE_EMAIL_FROM"\)/,
+    'org-invite must read INVITE_EMAIL_FROM from Deno.env');
+  assert.match(src, /getEnvTrimmed\("SUPPORT_EMAIL"\)/,
+    'org-invite must read SUPPORT_EMAIL from Deno.env where support copy is used');
+  assert.match(src, /fetch\("https:\/\/api\.resend\.com\/emails"/,
+    'org-invite must send through the Resend email API');
+  assert.match(src, /Authorization:\s*`Bearer \$\{apiKey\}`/,
+    'Resend authorization must be built from the env-read API key');
+  assert.doesNotMatch(src, /RESEND_API_KEY\s*=\s*["']|re_[A-Za-z0-9_=-]{8,}/,
+    'org-invite must not hardcode a Resend API key');
+});
+
+test('phase 3A org-invite email failure preserves invite creation and returns safe status', async () => {
+  const src = await fs.readFile(orgInvitePath, 'utf8');
+  const sendStart = src.indexOf('async function sendInviteEmail');
+  const sendEnd = src.indexOf('async function getActorRole', sendStart);
+  const sendFn = sendStart >= 0 && sendEnd > sendStart ? src.slice(sendStart, sendEnd) : '';
+  const successReturnStart = src.indexOf('invite_link: inviteLink');
+  const successReturn = successReturnStart >= 0 ? src.slice(Math.max(0, successReturnStart - 250), successReturnStart + 350) : '';
+  const invitePersistIdx = src.lastIndexOf('inviteRecord = data as Record<string, unknown>;', successReturnStart);
+  const emailSendIdx = src.indexOf('const emailResult = await sendInviteEmail', invitePersistIdx);
+
+  assert.match(sendFn, /return \{ email_sent: false, email_status: "not_configured" \}/,
+    'missing Resend configuration must not throw or fail invite creation');
+  assert.match(sendFn, /catch \{[\s\S]*return \{ email_sent: false, email_status: "send_failed" \}/,
+    'Resend network failures must be downgraded to send_failed');
+  assert.match(sendFn, /if \(res\.ok\)[\s\S]*return \{ email_sent: true, email_status: "sent" \}/,
+    'successful Resend delivery must return sent status');
+  assert.ok(invitePersistIdx > 0 && emailSendIdx > invitePersistIdx,
+    'org-invite must persist the invite before attempting email delivery');
+  assert.match(successReturn, /ok:\s*true[\s\S]*invite_link:\s*inviteLink[\s\S]*email_sent:\s*emailResult\.email_sent[\s\S]*email_status:\s*emailResult\.email_status/,
+    'org-invite response must preserve invite creation while returning safe email status fields');
+  assert.doesNotMatch(successReturn, /\btoken,\b/,
+    'org-invite must not return the raw invite token field');
+  assert.doesNotMatch(sendFn, /\.json\(\)/,
+    'org-invite must not expose or forward Resend response details');
+});
+
+test('phase 3A org-invite logs no invite token or secret-bearing values', async () => {
+  const src = await fs.readFile(orgInvitePath, 'utf8');
+  const consoleCalls = (src.match(/console\.(?:log|warn|error)\([\s\S]*?\);/g) || []).join('\n');
+
+  assert.doesNotMatch(consoleCalls, /inviteLink|invite_link|\btoken\b|apiKey|RESEND_API_KEY|Authorization|Bearer|access_token|refresh_token|JWT|service.?role|STRIPE_SECRET/i,
+    'org-invite console logs must not include invite tokens or secret-bearing values');
+  assert.match(consoleCalls, /organization_id[\s\S]*invited_email[\s\S]*email_status[\s\S]*status/,
+    'Resend failure logs may include only safe delivery metadata and HTTP status');
+});
+
+test('phase 3A Settings preserves Copy Link fallback and reports invite email status', async () => {
+  const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
+  const billingSrc = await fs.readFile(billingServiceUrl, 'utf8');
+
+  assert.match(billingSrc, /email_sent: Boolean\(data && data\.email_sent\)/,
+    'billing service must preserve safe email_sent response');
+  assert.match(billingSrc, /email_status: data && data\.email_status \? String\(data\.email_status\) : 'not_configured'/,
+    'billing service must preserve safe email_status response');
+  assert.match(settingsSrc, /function getInviteDeliveryToast\(result, action = 'create'\)/,
+    'Settings must map email status to user-facing invite feedback');
+  assert.match(settingsSrc, /Invite email sent\. You can also copy the invite link\./,
+    'Settings must show successful email delivery copy');
+  assert.match(settingsSrc, /Invite link created, but email was not sent\. Use Copy Link to share it\./,
+    'Settings must keep manual Copy Link fallback when email is not sent');
+  assert.match(settingsSrc, /label: 'Copy Link'/,
+    'Settings must preserve Copy Link actions');
+});
+
+test('phase 3A invite email changes stay within invite/email scope', async () => {
+  const allowedFiles = new Set([
+    'supabase/functions/org-invite/index.ts',
+    'src/data/services/billing.service.js',
+    'src/ui/overlays/settings-overlay.js',
+    'tests/audit/security-and-invariants.spec.mjs',
+  ]);
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !allowedFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'Phase 3A invite email work must stay inside org-invite, invite service/UI, and audit tests');
+});
+
 test('org-invite-accept rejects expired pending invites before membership insert without exposing organization_id', async () => {
   const src = await fs.readFile(orgInviteAcceptPath, 'utf8');
 

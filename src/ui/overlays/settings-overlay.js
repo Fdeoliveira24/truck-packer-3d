@@ -2553,6 +2553,22 @@ export function createSettingsOverlay({
     return requestPromise;
   }
 
+  function getInviteDeliveryToast(result, action = 'create') {
+    const sent = Boolean(result && result.email_sent);
+    if (sent) {
+      return {
+        message: 'Invite email sent. You can also copy the invite link.',
+        type: 'success',
+      };
+    }
+    return {
+      message: action === 'resend'
+        ? 'Invite link refreshed, but email was not sent. Use Copy Link to share it.'
+        : 'Invite link created, but email was not sent. Use Copy Link to share it.',
+      type: 'warning',
+    };
+  }
+
   async function sendInvite(orgId, email, role) {
     if (!orgId || !email) return null;
     const epoch = _renderEpoch;
@@ -2588,7 +2604,8 @@ export function createSettingsOverlay({
           },
         }]
         : undefined;
-      UIComponents.showToast('Invite link created for ' + email, 'success', { title: 'Invites', actions: copyInviteAction });
+      const toast = getInviteDeliveryToast(result, 'create');
+      UIComponents.showToast(toast.message, toast.type, { title: 'Invites', actions: copyInviteAction });
       // Refresh invites list
       await loadOrgInvites(orgId);
       renderIfFresh(getCurrentActionId(), 'invite:send', epoch);
@@ -2667,7 +2684,8 @@ export function createSettingsOverlay({
           },
         }]
         : undefined;
-      UIComponents.showToast('Invite link refreshed for ' + invite.email, 'success', { title: 'Invites', actions: copyInviteAction });
+      const toast = getInviteDeliveryToast(result, 'resend');
+      UIComponents.showToast(toast.message, toast.type, { title: 'Invites', actions: copyInviteAction });
       await loadOrgInvites(orgId);
       renderIfFresh(getCurrentActionId(), 'invite:resend', epoch);
       return result;

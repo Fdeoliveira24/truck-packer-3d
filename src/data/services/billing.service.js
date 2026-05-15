@@ -592,7 +592,7 @@ export async function createPortalSession() {
  * @param {string} orgId
  * @param {string} email
  * @param {string} [role='member']
- * @returns {Promise<{ok:boolean, invite?:any, token?:string, invite_link?:string, error?:string}>}
+ * @returns {Promise<{ok:boolean, invite?:any, invite_link?:string, email_sent?:boolean, email_status?:string, error?:string}>}
  */
 export async function sendOrgInvite(orgId, email, role = 'member') {
   try {
@@ -609,8 +609,9 @@ export async function sendOrgInvite(orgId, email, role = 'member') {
     return {
       ok: true,
       invite: data && data.invite ? data.invite : null,
-      token: data && data.token ? data.token : null,
       invite_link: data && data.invite_link ? data.invite_link : null,
+      email_sent: Boolean(data && data.email_sent),
+      email_status: data && data.email_status ? String(data.email_status) : 'not_configured',
     };
   } catch (err) {
     debugLog('sendOrgInvite:error', err && err.message);

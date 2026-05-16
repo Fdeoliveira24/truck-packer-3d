@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-15 — Phase 2 staging validation has a partial pass on `https://truckapp.pxl360.com/index.html`: app load, staging CORS, login, billing, Stripe Checkout launch in test mode, and link-based invite flows passed. Phase 1 Release Gate remains PARTIAL because admin/member invite restrictions and portal fallback edge cases are still tracked/deferred. Phase 3 real email delivery is not implemented.
+Last updated: 2026-05-15 — Phase 3A Resend invite email delivery passed on staging at `https://truckapp.pxl360.com/index.html`: app-created invite email sent, Gmail delivery confirmed, sender confirmed, staging-domain invite link confirmed, and disposable invite cleanup passed. Phase 1 Release Gate remains PARTIAL because admin/member invite restrictions and portal fallback edge cases are still tracked/deferred.
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -348,7 +348,7 @@ Notes:
 ---
 
 ## P1 — Invitations + membership lifecycle — NOT DONE
-- [ ] Invite email delivery + link correctness
+- [x] Invite email delivery + link correctness — Phase 3A staging validation passed with Resend.
 - [x] Accept invite flow — code complete for signed-in users; live signed-out handoff still needs sign-off
 - [x] Expiration rules — `organization_invites.expires_at` added, shown, and enforced
 - [x] Invite revocation moved behind `org-invite-revoke` Edge Function — implemented, committed, deployed, audit-passed, and live-tested
@@ -1566,8 +1566,8 @@ Why this is next:
   - [ ] Admin/member invite restrictions live check.
   - [ ] Expired invite live rejection check.
 - [ ] Confirm `SITE_URL` is set so invite links use the production domain.
-- [ ] Treat real email delivery as P1 if public team onboarding is part of launch. Implement email delivery only after the release-gate verification and critical billing/workspace/account safety fixes are stable.
-- [ ] Keep manual invite-link fallback even after email delivery is added.
+- [x] Treat real email delivery as P1 if public team onboarding is part of launch. Phase 3A Resend delivery is implemented and staging-validated.
+- [x] Keep manual invite-link fallback even after email delivery is added.
 
 #### Phase 1 output
 - [ ] Add a dated Running log entry with pass/fail results, accounts used, screenshots/timestamps where helpful, and any confirmed bugs.
@@ -1854,7 +1854,18 @@ Membership and invite lifecycle is now part of Phase 0.5 because it blocks archi
 - [x] Wrong-account invite accept is blocked with the expected mismatch message.
 - [x] Invite resend works and generates a new staging-domain link.
 - [x] Invite revoke works.
-- [ ] Phase 3 email delivery: real email sending is not implemented yet. Do not mark complete until an email provider path is approved, implemented, and live-tested.
+
+## Phase 3A — Resend invite email delivery — STAGING PASS
+- [x] Phase 3A Resend invite email delivery is complete on staging.
+- [x] Email arrival confirmed in Gmail.
+- [x] Resend sender address confirmed: `Truck Packer 3D <invites@truckapp.pxl360.com>`.
+- [x] Invite link uses the staging domain. Token values must not be written into this TODO.
+- [x] Revoke cleanup after email invite passed.
+- [ ] Production domain swap.
+- [ ] Final production sender domain.
+- [ ] Email template polish.
+- [ ] Delivery tracking / webhooks.
+- [ ] Broadcast / marketing email features.
 
 ---
 
@@ -1897,6 +1908,30 @@ P0 is green only when ALL items here are checked:
 ---
 
 ## Running log (keep updated)
+
+- Date: 2026-05-15 — Phase 3A Resend invite email delivery staging PASS
+- What passed:
+  - Staging URL: `https://truckapp.pxl360.com/index.html`.
+  - Invite email was sent from the app UI.
+  - UI showed `Invite email sent. You can also copy the invite link.`
+  - Email arrived in Gmail.
+  - Resend sender confirmed as `Truck Packer 3D <invites@truckapp.pxl360.com>`.
+  - Resend showed the email as sent and delivered.
+  - Invite link used the staging domain. The invite token value is intentionally omitted from this log.
+  - Email support path used `support@pxl360.com`.
+  - Wrong-email guard had already passed with the expected HTTP 403 mismatch message.
+  - Disposable invite was revoked after testing.
+  - Console had no blocking errors.
+- Still open / deferred:
+  - Production domain swap.
+  - Final production sender domain.
+  - Email template polish.
+  - Delivery tracking / webhooks.
+  - Broadcast / marketing email features.
+  - Admin/member invite restriction checks not already verified.
+  - Stripe portal fallback edge cases.
+- Safety:
+  - No secrets, API keys, JWTs, service-role keys, Stripe keys, or full invite tokens are recorded in this TODO.
 
 - Date: 2026-05-15 — Phase 2 staging validation pass
 - What passed:

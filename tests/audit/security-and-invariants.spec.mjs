@@ -1136,6 +1136,27 @@ test('phase 3A org-invite sends Resend email using env-only configuration', asyn
     'org-invite must not hardcode a Resend API key');
 });
 
+test('phase 3C org-invite email copy explains invite auth handoff without hiding workspace details', async () => {
+  const src = await fs.readFile(orgInvitePath, 'utf8');
+  const emailStart = src.indexOf('function buildInviteEmail');
+  const emailEnd = src.indexOf('async function sendInviteEmail', emailStart);
+  const emailFn = emailStart >= 0 && emailEnd > emailStart ? src.slice(emailStart, emailEnd) : '';
+
+  assert.ok(emailFn.length > 0, 'buildInviteEmail must be found');
+  assert.match(emailFn, /You’ve been invited to join a workspace in Truck Packer 3D\./,
+    'invite email must explain the workspace invite context');
+  assert.match(emailFn, /Sign in or create an account using the invited email address to accept this invite\./,
+    'invite email must explain that auth must use the invited email address');
+  assert.match(emailFn, /Workspace:[\s\S]*workspaceName|<strong>Workspace:<\/strong>[\s\S]*workspaceName/,
+    'invite email must keep workspace name visible');
+  assert.match(emailFn, /Role:[\s\S]*role|<strong>Role:<\/strong>[\s\S]*role/,
+    'invite email must keep role visible');
+  assert.match(emailFn, /Accept invite:[\s\S]*input\.inviteLink|<a href="\$\{escapeHtml\(input\.inviteLink\)\}"/,
+    'invite email must keep both accept button/link path and text fallback');
+  assert.doesNotMatch(emailFn, /console\.|apiKey|RESEND_API_KEY|Authorization|Bearer|access_token|refresh_token|JWT|service.?role|STRIPE_SECRET/i,
+    'invite email copy builder must not log or reference secret-bearing values');
+});
+
 test('phase 3A org-invite email failure preserves invite creation and returns safe status', async () => {
   const src = await fs.readFile(orgInvitePath, 'utf8');
   const sendStart = src.indexOf('async function sendInviteEmail');
@@ -1192,6 +1213,7 @@ test('phase 3A Settings preserves Copy Link fallback and reports invite email st
 
 test('phase 3A invite email changes stay within invite/email scope', async () => {
   const allowedFiles = new Set([
+    'src/app.js',
     'supabase/functions/org-invite/index.ts',
     'src/data/services/billing.service.js',
     'src/ui/overlays/settings-overlay.js',
@@ -1211,6 +1233,76 @@ test('phase 3A invite email changes stay within invite/email scope', async () =>
 
   assert.deepEqual(unexpectedFiles, [],
     'Phase 3A invite email work must stay inside org-invite, invite service/UI, and audit tests');
+});
+
+test('phase 3C1 app maps invite accept failures to persistent handoff copy', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('const inviteHandoffNoticeId');
+  const end = src.indexOf('function clearSidebarBillingDomForUserSwitch', start);
+  const inviteBlock = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(inviteBlock.length > 0, 'app invite handoff block must be present');
+  assert.match(inviteBlock, /const inviteExpiredMessage = 'This invite link has expired\. Please ask the workspace owner to send a new invite\.'/,
+    'expired invite failures must map to persistent expired copy');
+  assert.match(inviteBlock, /const inviteRevokedMessage = 'This invite link is no longer valid\. Please ask the workspace owner to send a new invite\.'/,
+    'revoked/no-longer-valid invite failures must map to persistent revoked copy');
+  assert.match(inviteBlock, /const inviteWrongEmailMessage = 'Invite email does not match the signed-in account\.'/,
+    'wrong-email guard copy must remain explicit');
+  assert.match(inviteBlock, /const inviteGenericFailureMessage = 'This invite link could not be accepted\. Please ask the workspace owner to send a new invite\.'/,
+    'generic invite failures must map to safe fallback copy');
+  assert.match(inviteBlock, /function mapInviteAcceptFailureMessage\(error\)[\s\S]*includes\('expired'\)[\s\S]*inviteExpiredMessage/,
+    'invite accept failure mapper must classify expired responses');
+  assert.match(inviteBlock, /includes\('no longer valid'\) \|\| lower\.includes\('revoked'\)[\s\S]*inviteRevokedMessage/,
+    'invite accept failure mapper must classify revoked/no-longer-valid responses');
+  assert.match(inviteBlock, /includes\('email does not match'\)[\s\S]*inviteWrongEmailMessage/,
+    'invite accept failure mapper must preserve email mismatch responses');
+  assert.match(inviteBlock, /setInviteHandoffNotice\(inviteMessage, 'error'\)/,
+    'failed invite acceptance must render persistent handoff copy');
+  assert.match(inviteBlock, /data-invite-handoff-message/,
+    'persistent invite handoff notice must have a stable DOM marker for browser validation');
+});
+
+test('phase 3C1 invite handoff notice does not expose raw tokens or scope into billing', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('const inviteHandoffNoticeId');
+  const end = src.indexOf('function clearSidebarBillingDomForUserSwitch', start);
+  const inviteBlock = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(inviteBlock.length > 0, 'app invite handoff block must be present');
+  assert.match(inviteBlock, /message\.textContent = inviteHandoffNotice\.message/,
+    'invite handoff notice must render sanitized textContent rather than HTML');
+  assert.doesNotMatch(inviteBlock, /innerHTML\s*=|appendChild\(.*pendingInviteToken|textContent\s*=\s*pendingInviteToken/,
+    'invite handoff notice must not insert raw invite tokens into visible UI');
+  assert.doesNotMatch(inviteBlock, /console\./,
+    'invite handoff path must not log token-bearing invite state');
+  assert.doesNotMatch(inviteBlock, /textContent\s*=[\s\S]{0,80}(pendingInviteToken|tokenFromUrl|storedToken)|showToast\([\s\S]{0,80}(pendingInviteToken|tokenFromUrl|storedToken)/,
+    'invite handoff path must not display raw invite token values');
+  assert.doesNotMatch(inviteBlock, /refresh_token|Bearer|JWT|service.?role|STRIPE_SECRET|RESEND_API_KEY/i,
+    'invite handoff path must not reference unrelated secret-bearing values');
+  assert.doesNotMatch(inviteBlock, /billing_customers|subscriptions|stripe|checkout|portal|archiveWorkspace|restoreWorkspace|transferOwnership|org-archive|org-restore/i,
+    'invite handoff UI fix must not touch billing, Stripe, or workspace lifecycle behavior');
+});
+
+test('phase 3C1 invite handoff fix stays within invite UI scope', async () => {
+  const allowedFiles = new Set([
+    'src/app.js',
+    'supabase/functions/org-invite/index.ts',
+    'tests/audit/security-and-invariants.spec.mjs',
+  ]);
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !allowedFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'Phase 3C1 invite handoff fix must stay inside app invite UI, org-invite copy, and audit tests');
 });
 
 test('org-invite-accept rejects expired pending invites before membership insert without exposing organization_id', async () => {

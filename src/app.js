@@ -8263,11 +8263,130 @@ const TP3D_BUILD_STAMP = Object.freeze({
       let pendingInviteToken = null;
       let inviteAcceptInFlight = false;
       const inviteTokenStorageKey = 'tp3d:pending_invite_token';
+      const inviteHandoffNoticeId = 'tp3d-invite-handoff-notice';
+      const inviteHandoffSigninMessage = 'You have a pending workspace invite. Sign in or create an account using the invited email address to accept this invite.';
+      const inviteExpiredMessage = 'This invite link has expired. Please ask the workspace owner to send a new invite.';
+      const inviteRevokedMessage = 'This invite link is no longer valid. Please ask the workspace owner to send a new invite.';
+      const inviteWrongEmailMessage = 'Invite email does not match the signed-in account.';
+      const inviteGenericFailureMessage = 'This invite link could not be accepted. Please ask the workspace owner to send a new invite.';
+      let inviteHandoffNotice = null;
+
+      function sanitizeInviteHandoffMessage(message) {
+        return String(message || '')
+          .replace(/invite_token=[^\s&]+/gi, 'invite_token=[redacted]')
+          .replace(/\beyJ[A-Za-z0-9._-]+/g, '[redacted]')
+          .replace(/[^\x20-\x7E]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 280);
+      }
+
+      function mapInviteAcceptFailureMessage(error) {
+        const raw = String(error || '').trim();
+        const lower = raw.toLowerCase();
+        if (lower.includes('expired')) return inviteExpiredMessage;
+        if (lower.includes('email does not match')) return inviteWrongEmailMessage;
+        if (lower.includes('no longer valid') || lower.includes('revoked')) return inviteRevokedMessage;
+        return inviteGenericFailureMessage;
+      }
+
+      function clearInviteHandoffNotice() {
+        inviteHandoffNotice = null;
+        try {
+          const existing = document.getElementById(inviteHandoffNoticeId);
+          if (existing) existing.remove();
+        } catch {
+          // Best-effort UI cleanup only.
+        }
+      }
+
+      function renderInviteHandoffNotice() {
+        try {
+          const existing = document.getElementById(inviteHandoffNoticeId);
+          if (existing) existing.remove();
+          if (!inviteHandoffNotice || !inviteHandoffNotice.message) return;
+
+          const authPage = document.querySelector('[data-auth-overlay="1"] .auth-page');
+          const box = document.createElement('div');
+          box.id = inviteHandoffNoticeId;
+          box.setAttribute('data-invite-handoff-message', '1');
+          box.setAttribute('role', 'alert');
+          box.setAttribute('aria-live', 'polite');
+          box.className = `auth-message auth-message--${inviteHandoffNotice.type === 'info' ? 'info' : 'error'}`;
+          box.style.display = 'block';
+          box.style.margin = authPage ? '0 0 14px' : '16px';
+          if (!authPage) {
+            Object.assign(box.style, {
+              position: 'fixed',
+              zIndex: '100000',
+              top: '16px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              maxWidth: 'min(560px, calc(100vw - 32px))',
+              background: inviteHandoffNotice.type === 'info' ? '#eff6ff' : '#fef2f2',
+              border: inviteHandoffNotice.type === 'info' ? '1px solid #93c5fd' : '1px solid #fca5a5',
+              borderRadius: '10px',
+              color: '#18212f',
+              boxShadow: '0 12px 36px rgba(15, 23, 42, 0.18)',
+              padding: '12px 14px',
+            });
+          }
+
+          const message = document.createElement('span');
+          message.textContent = inviteHandoffNotice.message;
+          box.appendChild(message);
+
+          const dismiss = document.createElement('button');
+          dismiss.type = 'button';
+          dismiss.textContent = 'Dismiss';
+          dismiss.setAttribute('aria-label', 'Dismiss invite message');
+          Object.assign(dismiss.style, {
+            marginLeft: '12px',
+            border: '0',
+            background: 'transparent',
+            color: 'inherit',
+            textDecoration: 'underline',
+            cursor: 'pointer',
+            font: 'inherit',
+          });
+          dismiss.addEventListener('click', clearInviteHandoffNotice);
+          box.appendChild(dismiss);
+
+          if (authPage) {
+            const brand = authPage.querySelector('.auth-brand');
+            if (brand && brand.nextSibling) authPage.insertBefore(box, brand.nextSibling);
+            else authPage.insertBefore(box, authPage.firstChild);
+          } else {
+            document.body.appendChild(box);
+          }
+        } catch {
+          // Invite copy is best-effort and must not block auth.
+        }
+      }
+
+      function setInviteHandoffNotice(message, type = 'error') {
+        const safeMessage = sanitizeInviteHandoffMessage(message);
+        if (!safeMessage) return;
+        inviteHandoffNotice = {
+          message: safeMessage,
+          type: type === 'info' ? 'info' : 'error',
+        };
+        renderInviteHandoffNotice();
+      }
+
+      function scheduleInviteHandoffNoticeRender() {
+        [0, 250, 1000, 2500].forEach(delay => {
+          window.setTimeout(renderInviteHandoffNotice, delay);
+        });
+      }
+
       try {
         const params = new URLSearchParams(window.location.search);
         const tokenFromUrl = String(params.get('invite_token') || '').trim();
         if (tokenFromUrl) {
           pendingInviteToken = tokenFromUrl;
+          setInviteHandoffNotice(inviteHandoffSigninMessage, 'info');
+          scheduleInviteHandoffNoticeRender();
           try {
             window.sessionStorage.setItem(inviteTokenStorageKey, tokenFromUrl);
           } catch (_) {
@@ -8279,7 +8398,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
         } else {
           try {
             const storedToken = String(window.sessionStorage.getItem(inviteTokenStorageKey) || '').trim();
-            if (storedToken) pendingInviteToken = storedToken;
+            if (storedToken) {
+              pendingInviteToken = storedToken;
+              setInviteHandoffNotice(inviteHandoffSigninMessage, 'info');
+              scheduleInviteHandoffNoticeRender();
+            }
           } catch (_) {
             // ignore
           }
@@ -8300,7 +8423,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
             session = null;
           }
         }
-        if (!session || !session.access_token) return;
+        if (!session || !session.access_token) {
+          setInviteHandoffNotice(inviteHandoffSigninMessage, 'info');
+          scheduleInviteHandoffNoticeRender();
+          return;
+        }
 
         inviteAcceptInFlight = true;
         try {
@@ -8314,6 +8441,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           }
 
           if (result && result.ok) {
+            clearInviteHandoffNotice();
             const acceptedOrgId = String(
               (result && result.organization_id) ||
               (result && result.data && result.data.organization_id) ||
@@ -8332,8 +8460,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
             requestAuthRefresh('invite-accepted', { force: true, forceBundle: true, sessionHint: session });
             try { SettingsOverlay.open('org-members'); } catch (_) { /* ignore */ }
           } else {
-            UIComponents.showToast(result && result.error ? result.error : 'Failed to accept invite.', 'error', {
+            const inviteMessage = mapInviteAcceptFailureMessage(result && result.error ? result.error : '');
+            setInviteHandoffNotice(inviteMessage, 'error');
+            UIComponents.showToast(inviteMessage, 'error', {
               title: 'Workspace',
+              duration: 12000,
             });
           }
         } catch (err) {
@@ -8343,11 +8474,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
           } catch (_) {
             // ignore
           }
-          UIComponents.showToast(
-            'Failed to accept invite: ' + (err && err.message ? err.message : 'Unknown error'),
-            'error',
-            { title: 'Workspace' },
-          );
+          const inviteMessage = mapInviteAcceptFailureMessage(err && err.message ? err.message : '');
+          setInviteHandoffNotice(inviteMessage, 'error');
+          UIComponents.showToast(inviteMessage, 'error', { title: 'Workspace', duration: 12000 });
         } finally {
           inviteAcceptInFlight = false;
         }

@@ -110,7 +110,11 @@ function buildInviteEmail(input: {
   const supportText = supportEmail ? `Need help? Contact ${supportEmail}.` : "";
 
   const text = [
-    `You're invited to join ${workspaceName} in Truck Packer 3D.`,
+    "You’ve been invited to join a workspace in Truck Packer 3D.",
+    "",
+    "Sign in or create an account using the invited email address to accept this invite.",
+    "",
+    `Workspace: ${workspaceName}`,
     `Role: ${role}`,
     expirationText,
     "",
@@ -122,7 +126,9 @@ function buildInviteEmail(input: {
 <html>
   <body style="font-family: Arial, sans-serif; line-height: 1.5; color: #18212f;">
     <h2 style="margin: 0 0 12px;">You're invited to Truck Packer 3D</h2>
-    <p>You have been invited to join <strong>${escapeHtml(workspaceName)}</strong>.</p>
+    <p>You’ve been invited to join a workspace in Truck Packer 3D.</p>
+    <p>Sign in or create an account using the invited email address to accept this invite.</p>
+    <p><strong>Workspace:</strong> ${escapeHtml(workspaceName)}</p>
     <p><strong>Role:</strong> ${escapeHtml(role)}</p>
     <p>${escapeHtml(expirationText)}</p>
     <p><a href="${escapeHtml(input.inviteLink)}" style="display: inline-block; padding: 10px 14px; background: #18212f; color: #ffffff; text-decoration: none; border-radius: 6px;">Accept invite</a></p>

@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-15 — Phase 3A Resend invite email delivery passed on staging at `https://truckapp.pxl360.com/index.html`: app-created invite email sent, Gmail delivery confirmed, sender confirmed, staging-domain invite link confirmed, and disposable invite cleanup passed. Phase 1 Release Gate remains PARTIAL because admin/member invite restrictions and portal fallback edge cases are still tracked/deferred.
+Last updated: 2026-05-15 — Phase 3B invite handoff validation passed the tested staging flows at `https://truckapp.pxl360.com/index.html`: signed-out handoff preserved invite context, signed-in correct-email accept worked, wrong-email accept was blocked, revoked invite rejection worked, and disposable invite cleanup passed. Phase 1 Release Gate remains PARTIAL because expired-invite live validation, admin/member invite restrictions, DB-level invite billing/Stripe mutation proof, and portal fallback edge cases are still tracked/deferred.
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -349,7 +349,7 @@ Notes:
 
 ## P1 — Invitations + membership lifecycle — NOT DONE
 - [x] Invite email delivery + link correctness — Phase 3A staging validation passed with Resend.
-- [x] Accept invite flow — code complete for signed-in users; live signed-out handoff still needs sign-off
+- [x] Accept invite flow — signed-in correct-email accept and signed-out handoff were staging-validated in Phase 3B.
 - [x] Expiration rules — `organization_invites.expires_at` added, shown, and enforced
 - [x] Invite revocation moved behind `org-invite-revoke` Edge Function — implemented, committed, deployed, audit-passed, and live-tested
 - [x] Removing member never changes billing
@@ -1211,7 +1211,7 @@ Goal: make workspace access predictable, safe, and clean before adding archive, 
 - [x] Invite links have clear status: active, accepted, expired, revoked.
 - [x] Pending invite revocation is server-side via `org-invite-revoke`; legacy direct browser-side revoke path is disabled.
 - [x] Invite acceptance works for signed-in users.
-- [ ] Invite handoff works for signed-out users after login/signup. *(Needs live browser sign-off.)*
+- [x] Invite handoff works for signed-out users after login/signup. *(Phase 3B staging sign-off: clean signed-out browser preserved invite context and resumed after matching account login.)*
 - [x] Expired or revoked invite shows a clear message.
 - [x] Invite cannot grant access to the wrong workspace.
 - [x] Invite cannot change billing owner or Stripe customer.
@@ -1225,8 +1225,8 @@ Goal: make workspace access predictable, safe, and clean before adding archive, 
 - [x] Empty invite/member states are helpful and not scary.
 
 ### Validation
-- [ ] Owner invite → user accepts → member appears. *(Live sign-off required.)*
-- [ ] Signed-out invite → login/signup → invite resumes correctly. *(Live sign-off required.)*
+- [x] Owner invite → user accepts → member appears. *(Phase 3B staging sign-off with `test1@test.com` inviting `test3@test.com`; member row appeared once and was cleaned up after validation.)*
+- [x] Signed-out invite → login/signup → invite resumes correctly. *(Phase 3B staging sign-off using clean signed-out handoff and matching account login.)*
 - [x] Expired/revoked invite blocked by Edge Function rules.
 - [x] Admin cannot promote Admin/Owner.
 - [x] Member cannot manage roles.
@@ -1266,8 +1266,8 @@ Goal: make workspace access predictable, safe, and clean before adding archive, 
   - No billing, Stripe, organization delete, or membership mutation occurs during invite revoke.
 
 ### Still open before Phase 0.5 can be closed
-- [ ] Live owner invite → accept → member appears.
-- [ ] Live signed-out invite handoff after login/signup.
+- [x] Live owner invite → accept → member appears.
+- [x] Live signed-out invite handoff after login/signup.
 - [ ] Live expired invite rejection after manually setting `expires_at` in the past.
 - [x] Live revoke pending invite via `org-invite-revoke` Edge Function.
 - [ ] Live already-revoked invite idempotency check.
@@ -1563,6 +1563,9 @@ Why this is next:
   - [x] Owner invite member link flow basic check passed with a disposable invite.
   - [x] Wrong-email invite accept rejection returned expected HTTP 403.
   - [x] Invite revoke cleanup passed after disposable invite tests.
+  - [x] Signed-out invite handoff preserved invite context and resumed after matching account login.
+  - [x] Signed-in correct-email accept created exactly one member row and workspace access worked.
+  - [x] Revoked disposable invite was rejected and did not add membership.
   - [ ] Admin/member invite restrictions live check.
   - [ ] Expired invite live rejection check.
 - [ ] Confirm `SITE_URL` is set so invite links use the production domain.
@@ -1867,6 +1870,16 @@ Membership and invite lifecycle is now part of Phase 0.5 because it blocks archi
 - [ ] Delivery tracking / webhooks.
 - [ ] Broadcast / marketing email features.
 
+## Phase 3B — Invite handoff validation — STAGING PARTIAL PASS
+- [x] Owner-created invite email sent from staging and appeared in Pending Invites.
+- [x] Signed-out invite handoff preserved invite context on the clean staging URL.
+- [x] Signed-in correct-email accept passed with `test3@test.com`; workspace access appeared and the member row appeared once.
+- [x] Wrong-email accept guard returned the expected safe rejection and did not add membership.
+- [x] Revoked disposable invite was rejected and did not add membership.
+- [x] Disposable invite/member cleanup passed after validation.
+- [ ] Expired invite live rejection remains blocked until a safe expired invite fixture or explicit DB-write approval is available.
+- [ ] DB-level billing/Stripe mutation proof remains open. Browser validation showed no Stripe checkout/portal resources during invite flows, but direct DB row comparison was not performed in this pass.
+
 ---
 
 ## Phase 2 — Runtime cleanup / modularization — DO AFTER WORKSPACE + RUNTIME SAFETY
@@ -1908,6 +1921,27 @@ P0 is green only when ALL items here are checked:
 ---
 
 ## Running log (keep updated)
+
+- Date: 2026-05-15 — Phase 3B invite handoff validation staging PARTIAL PASS
+- What passed:
+  - Staging URL: `https://truckapp.pxl360.com/index.html`.
+  - Owner account `test1@test.com` created disposable invites from Settings > Members.
+  - Invite email send path remained working; UI showed `Invite email sent. You can also copy the invite link.`
+  - Signed-out invite handoff preserved invite context on the clean staging URL without displaying the invite token in the app UI.
+  - Correct-email accept passed with `test3@test.com`; `test1-Workspace` access appeared, Settings > Members showed the user as `Member` exactly once, and the test member was removed after validation.
+  - Wrong-email guard passed through the deployed accept endpoint with the expected mismatch rejection and no membership insert.
+  - Revoked disposable invite rejection passed with the matching account: accept returned a business rejection, the user did not join `test1-Workspace`, and no member row was added.
+  - Disposable pending invites created during this pass were revoked. The pre-existing `info@pxl360.com` admin invite was left untouched.
+  - Browser resource check showed no Stripe checkout/portal resources during the invite flows.
+  - Console/network check found no blocking app errors after cleanup and no token/API-key/JWT leakage in the inspected browser output.
+- Still open / deferred:
+  - Expired invite live rejection remains blocked because no safe expired invite fixture or DB-write approval was available.
+  - Admin/member invite restrictions live check remains tracked separately.
+  - Full DB-level proof that invite create/accept/revoke did not mutate billing/Stripe rows was not performed in this pass.
+  - Stripe portal fallback edge cases remain tracked separately.
+- Safety:
+  - Full invite tokens are intentionally omitted from this TODO.
+  - No secrets, API keys, JWTs, service-role keys, Stripe keys, or full signed URLs are recorded.
 
 - Date: 2026-05-15 — Phase 3A Resend invite email delivery staging PASS
 - What passed:

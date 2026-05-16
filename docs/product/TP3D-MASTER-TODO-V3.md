@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-15 — Phase 3C1 is active: expired invite server rejection is proven, but the staging UI still needs a clear persistent expired/rejected invite message before Phase 3C can pass. Phase 0 and Phase 0.5 were updated to reflect browser/API/staging proof; workspace switching no-leak, archive safety, already-revoked idempotency, accepted-invite revoke rejection, admin/member invite restrictions, Resend invite delivery, and signed-out invite handoff are documented. Deep slug/share audits completed; slug is display metadata only; slug alone must not grant access. Phase 1/P0 remains PARTIAL: expired-invite staging UI message, removed-member two-tab sign-off, restore/transfer billing policy, portal fallback edge cases, and DB-level billing/Stripe mutation proof remain open.
+Last updated: 2026-05-15 — Phase 3C1 PASS: persistent invite rejection messages committed (`3c07561`) and staging-validated. Expired invite, revoked invite, and wrong-email guard all show clear persistent notices on staging. 285/285 tests passing. Remaining open: removed-member two-tab access-loss, restore billing refresh, transfer billing policy, portal fallback edge cases.
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -1306,7 +1306,7 @@ Goal: make workspace access predictable, safe, and clean before adding archive, 
 ### Still open before Phase 0.5 can be closed
 - [x] Live owner invite → accept → member appears.
 - [x] Live signed-out invite handoff after login/signup.
-- [ ] Live expired invite rejection after manually setting `expires_at` in the past. *(Server-side rejection passed; staging UI still needs a clear persistent expired/rejected message after the accept attempt.)*
+- [x] Live expired invite rejection after manually setting `expires_at` in the past. *(Server rejection confirmed; staging UI now shows clear persistent expired/rejected message — Phase 3C1 PASS 2026-05-15.)*
 - [x] Live revoke pending invite via `org-invite-revoke` Edge Function.
 - [x] Live already-revoked invite idempotency check. *(Idempotent revoke of an already-revoked invite confirmed during staging validation.)*
 - [x] Live accepted invite revoke rejection. *(Accepted invite revoke correctly rejected during staging validation.)*
@@ -1959,31 +1959,53 @@ P0 is green only when ALL items here are checked:
 
 ---
 
-### Phase 3C1 — Expired Invite UI Message — ACTIVE
+### Phase 3C1 — Expired Invite UI Message — PASS ✅
 
 Goal: make expired invite rejection visible and persistent in the staging UI.
 
 Current status:
 - [x] Server-side expired invite rejection is enforced by `org-invite-accept`.
 - [x] Expired disposable invite does not create membership.
-- [ ] Staging UI shows a clear persistent expired/rejected invite message after accept fails.
-- [ ] Browser proof confirms the message survives the signed-out handoff/login flow.
-- [ ] Console/network proof confirms no invite token, JWT, Resend key, Stripe key, or service key is leaked.
-- [ ] TODO running log updated after Phase 3C1 passes.
+- [x] Staging UI shows a clear persistent expired/rejected invite message after accept fails. *(Confirmed on staging `https://truckapp.pxl360.com/index.html` 2026-05-15.)*
+- [x] Browser proof confirms the message survives the signed-out handoff/login flow.
+- [x] Console/network proof confirms no invite token, JWT, Resend key, Stripe key, or service key is leaked.
+- [x] TODO running log updated after Phase 3C1 passes.
 
-Required user-facing message:
-- `This invite link has expired. Please ask the workspace owner to send a new invite.`
-
-Do not mark Phase 3C1 done until:
-- expired invite browser validation passes on `https://truckapp.pxl360.com/index.html`,
-- wrong-email guard still passes,
-- revoked invite rejection still passes,
-- terminal validation passes,
-- changed source files are committed.
+Required user-facing messages — all confirmed:
+- Expired: `This invite link has expired. Please ask the workspace owner to send a new invite.`
+- Revoked: `This invite link is no longer valid. Please ask the workspace owner to send a new invite.`
+- Wrong-email: `Invite email does not match the signed-in account.`
+- Generic fallback: `This invite link could not be accepted. Please ask the workspace owner to send a new invite.`
 
 ---
 
 ## Running log
+
+- Date: 2026-05-15 — Phase 3C1 invite rejection UI staging PASS
+- Verdict:
+  - PASS. All browser, API, and terminal validation passed. Phase 3C1 is committed and closed.
+- What passed:
+  - Staging URL: `https://truckapp.pxl360.com/index.html`.
+  - Staging `src/app.js` confirmed serving Phase 3C1 code (`mapInviteAcceptFailureMessage`, `inviteHandoffNoticeId`, `setInviteHandoffNotice`, `renderInviteHandoffNotice`).
+  - Expired invite link showed persistent error: `This invite link has expired. Please ask the workspace owner to send a new invite.` User NOT added as member. No stale workspace entered.
+  - Revoked invite link showed persistent error: `This invite link is no longer valid. Please ask the workspace owner to send a new invite.` No membership created.
+  - Wrong-email guard showed persistent error: `Invite email does not match the signed-in account.` No wrong-user membership created. Disposable invite cleaned up.
+  - Console/network: clean. No token leakage, no blocking errors, no Stripe checkout/portal network calls.
+  - DB billing proof: RLS confirmed `billing_customers` and `subscriptions` return empty for anon role. Code-level proof via audit tests confirms invite handoff block does not reference billing, Stripe, checkout, portal, or lifecycle tables.
+  - `npm test` 285/285 PASS after commit (all 11 pre-commit dirty-tree scope guard failures resolved by commit).
+  - `npm run lint` 0 errors, 18 pre-existing warnings.
+  - `npm run -s typecheck` clean.
+  - `git diff --check` WHITESPACE OK.
+- Code state:
+  - Commit `3c07561` — `fix(invites): show persistent invite rejection messages`.
+  - Files: `src/app.js`, `supabase/functions/org-invite/index.ts` (email copy only), `tests/audit/security-and-invariants.spec.mjs`.
+  - `Production/` remains untracked.
+- What remains open:
+  - Removed-member two-tab access-loss sign-off.
+  - Restore billing refresh live sign-off.
+  - Transfer Ownership billing policy definition.
+  - Portal stale-subscription and schedule-managed fallback.
+  - DB-level invite billing proof via service-role snapshot (deferred; code and RLS proof passed for this phase).
 
 - Date: 2026-05-15 — Phase 3C1 active — expired invite UI message blocker
 - Verdict:

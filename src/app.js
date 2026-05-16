@@ -5876,7 +5876,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const _authWrapperStatus = _authTruth ? _authTruth.status : null;
           const _wrapperSignedIn = Boolean(_authTruth && _authTruth.isSignedIn);
           const _hasRecentSignedIn = _hasRecentSignedInSnapshot || _hasRecentGateSignedIn || _wrapperSignedIn;
-          if (_hasRecentSignedIn && !_logoutLatchActive) {
+          // Only block cleanup when the wrapper still shows signed-in.
+          // If the wrapper already reports signed-out the session is gone; allow cleanup
+          // even if a recent SIGNED_IN is on record (covers cross-tab sign-out case).
+          if (_hasRecentSignedIn && !_logoutLatchActive && _wrapperSignedIn) {
             if (isTp3dDebugEnabled()) {
               console.info('[authGate] signedOutFallback:block', {
                 hasRecentSignedInSnapshot: _hasRecentSignedInSnapshot,
@@ -8232,6 +8235,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
             if (!canProceed) {
               return false; // Block app, auth overlay is already showing disabled state
             }
+            // Reset phase to 'form' before hiding so a later show() (e.g. cross-tab sign-out
+            // via tp3d:auth-signed-out) renders the sign-in form, not "Checking session…".
+            AuthOverlay.setPhase('form', { onRetry: bootstrapAuthGate });
             AuthOverlay.hide();
             showReadyOnce();
             return true;

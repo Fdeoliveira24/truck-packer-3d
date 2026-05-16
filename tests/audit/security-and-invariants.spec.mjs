@@ -971,6 +971,88 @@ test('auth settled is never set false after initialization', async () => {
     `settled should only be false in the initial declaration, found ${settledFalseCount} sites`);
 });
 
+// ── Phase 3C2: cross-tab sign-out "Checking session…" hang ───────────────────
+
+test('phase 3C2 bootstrapAuthGate resets overlay phase to form before hiding on successful sign-in', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('bootstrapAuthGate = async');
+  const end = src.indexOf('\n      };', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0, 'bootstrapAuthGate block must be extractable');
+
+  // The successful signed-in path must call setPhase('form') before hide()
+  const hideIdx = block.indexOf('AuthOverlay.hide()');
+  const setPhaseFIdx = block.lastIndexOf("AuthOverlay.setPhase('form'", hideIdx);
+  assert.ok(hideIdx > 0, 'bootstrapAuthGate must call AuthOverlay.hide()');
+  assert.ok(setPhaseFIdx >= 0 && setPhaseFIdx < hideIdx,
+    "bootstrapAuthGate must call AuthOverlay.setPhase('form') before AuthOverlay.hide() on signed-in path");
+
+  // The setPhase('form') call must include the retry handler
+  const phaseCallText = block.slice(setPhaseFIdx, setPhaseFIdx + 80);
+  assert.match(phaseCallText, /bootstrapAuthGate/,
+    "bootstrapAuthGate setPhase('form') before hide must include onRetry: bootstrapAuthGate");
+});
+
+test('phase 3C2 authGateSignedOutCandidate fallback guard requires _wrapperSignedIn to block cleanup', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function authGateSignedOutCandidate(');
+  const end = src.indexOf('\n    function ', start + 1);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0, 'authGateSignedOutCandidate must be extractable');
+
+  // The fallback guard must include _wrapperSignedIn so it does not block
+  // cleanup when the session is already gone (cross-tab sign-out)
+  assert.match(block, /_hasRecentSignedIn && !_logoutLatchActive && _wrapperSignedIn/,
+    'authGateSignedOutCandidate fallback guard must include _wrapperSignedIn to avoid blocking cross-tab sign-out cleanup');
+
+  // Guard must NOT drop the _wrapperSignedIn requirement (no regression to old form)
+  assert.doesNotMatch(block, /_hasRecentSignedIn && !_logoutLatchActive(?!\s*&&\s*_wrapperSignedIn)/,
+    'authGateSignedOutCandidate must not use the old guard form without _wrapperSignedIn');
+});
+
+test('phase 3C2 signed-out cleanup calls setPhase form and show on non-user-initiated sign-out', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function _executeSignedOutCleanup(');
+  const end = src.indexOf('function sanitizeInviteHandoffMessage(', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0, '_executeSignedOutCleanup must be extractable');
+
+  // treatAsSignedOut branch must call setPhase('form') — not 'checking'
+  assert.match(block, /AuthOverlay\.setPhase\('form'/,
+    '_executeSignedOutCleanup must call setPhase("form") for signed-out events');
+
+  // Must call show() after setting phase
+  const setPhaseFIdx = block.indexOf("AuthOverlay.setPhase('form'");
+  const showIdx = block.indexOf('AuthOverlay.show()', setPhaseFIdx);
+  assert.ok(showIdx > setPhaseFIdx,
+    '_executeSignedOutCleanup must call AuthOverlay.show() after setPhase("form")');
+
+  // The 'checking' phase path must NOT be the only one — form path must exist
+  assert.doesNotMatch(block, /AuthOverlay\.setPhase\('form'[\s\S]*?AuthOverlay\.setPhase\('checking'\)/,
+    '_executeSignedOutCleanup must not replace the form path with checking');
+});
+
+test('phase 3C2 cross-tab sign-out fix stays within auth gate and bootstrap scope', async () => {
+  const allowedFiles = new Set([
+    'src/app.js',
+    'tests/audit/security-and-invariants.spec.mjs',
+  ]);
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n').map(l => l.trim()).filter(Boolean)
+  );
+  const unexpected = Array.from(changedFiles).filter(f => !allowedFiles.has(f));
+  assert.deepEqual(unexpected, [],
+    'Phase 3C2 fix must only touch src/app.js and tests/audit/security-and-invariants.spec.mjs');
+});
+
 // ── Organization invite authorization invariants ─────────────────────────────
 
 test('org-invite rejects admin actors creating admin invites while preserving owner/admin role targets', async () => {

@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-15 — Phase 3B invite handoff validation is committed and pushed to origin/main; staging invite email delivery, signed-out handoff, correct-email accept, wrong-email guard, revoked invite rejection, and disposable invite cleanup have passed. Phase 1/P0 remains PARTIAL because expired-invite live validation, admin/member invite restriction browser proof, DB-level invite billing/Stripe mutation proof, portal fallback edge cases, and workspace lifecycle policy cleanup are still tracked. Workspace slug/share-link work is explicitly deferred to a future planning/audit phase; slug must not grant access by itself.
+Last updated: 2026-05-15 — Phase 0 and Phase 0.5 updated to reflect browser/API/staging proof; workspace switching no-leak, archive safety, already-revoked idempotency, accepted-invite revoke rejection, and admin/member invite restrictions are now checked. Deep slug/share audits completed; slug is display metadata only; slug alone must not grant access. Phase 1/P0 remains PARTIAL: expired-invite staging UI message, removed-member two-tab sign-off, restore/transfer billing policy, portal fallback edge cases, and DB-level billing/Stripe mutation proof remain open.
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -1112,6 +1112,8 @@ Notes:
 
 ## Phase S0 — Workspace Slug + Share Link Planning — DEFERRED
 
+Status: Deep slug/share audit completed 2026-05-15. Recommended future model: pack-level read-only share links with secure SHA-256 token hash. Slug alone must not grant access.
+
 Goal: define the slug/share-link model before using workspace slugs for public or private sharing.
 
 Rules:
@@ -1138,20 +1140,20 @@ Implementation rule:
 
 ---
 
-## Phase 0 — Workspace Foundation Finalization — IN PROGRESS
+## Phase 0 — Workspace Foundation Finalization — PARTIAL / MOSTLY VERIFIED
 
 Do this first.
 
 ### Goals
 - [x] Finalize create workspace flow.
-- [ ] Finalize switch workspace flow.
+- [x] Finalize switch workspace flow. *(Billing, Members, Packs/folders, and stale editor context isolation passed in browser.)*
 - [x] Finalize empty / no-workspace flow.
-- [ ] Finalize active workspace persistence.
-- [ ] Finalize org / billing relationship.
+- [x] Finalize active workspace persistence. *(Active-org switch, reload/fallback behavior, and cross-profile logout cleanup have browser proof.)*
+- [x] Finalize org / billing relationship. *(active, included, trial-expired, owner_subscription_required, billing_unavailable, and workspace_limit_reached states all have live proof.)*
 - [x] Finalize invite / join expectations if in scope now.
-- [ ] Confirm workspace lifecycle rules before adding destructive actions.
-- [ ] Confirm owner/member role rules for every workspace action.
-- [ ] Confirm billing behavior when a workspace is archived, restored, transferred, or left.
+- [x] Confirm workspace lifecycle rules before adding destructive actions. *(Archive, Restore, Transfer, Leave, Export, and deferred Permanent Delete are all defined.)*
+- [x] Confirm owner/member role rules for current workspace actions.
+- [ ] Confirm billing behavior when a workspace is archived, restored, transferred, or left. *(Archive billing safety proven. Restore and Transfer billing sign-off remain open.)*
 
 ### Required outcomes
 - [x] Creating a workspace always:
@@ -1160,48 +1162,52 @@ Do this first.
   - [x] sets `profiles.current_organization_id`
   - [x] refreshes org context cleanly
   - [x] hydrates billing state for the new org correctly
-- [ ] Switching workspace never leaks:
-  - [ ] billing plan/state
-  - [ ] members list
-  - [ ] invites list
-  - [ ] cases/packs view state
+- [x] Switching workspace never leaks:
+  - [x] billing plan/state *(confirmed: Billing tab shows active workspace billing after switch)*
+  - [x] members list *(confirmed: Members tab shows active workspace members after switch)*
+  - [x] invites/pending invites state *(confirmed: Pending Invites scoped to active workspace after switch)*
+  - [x] packs/folders view state *(confirmed: Packs screen and folder filter reset to active workspace on switch)*
   - [x] stale current pack/editor context
+  - [ ] cases view state *(scoped through StateStore by active user/workspace; live isolation sign-off deferred if treated separately from StateStore coverage)*
 - [x] No-workspace users see a clean guided state, not a broken/blank/ambiguous one.
-- [ ] Billing behavior for new workspace is explicitly confirmed:
-  - [ ] per-org trial, or
-  - [ ] free by default
+- [x] Billing behavior for new workspace is explicitly confirmed:
+  - [x] Fresh new-user default workspace receives a trial billing row on signup. *(Verified on test5 signup.)*
+  - [x] Paid owner additional workspaces classify through `/billing-status` as active, included, or workspace_limit_reached based on plan limit. *(Verified on test2 over-limit fixture `Release-Gate-Overlimit-Test`.)*
+  - [ ] Formal per-org trial vs. free-default billing policy for workspaces added by non-new users is not yet explicitly documented in product rules.
 - [x] Invite/join behavior is clearly defined for current phase.
-- [ ] Workspace lifecycle actions are defined before implementation:
-  - [ ] Archive workspace.
-  - [ ] Restore workspace.
-  - [ ] Transfer ownership.
+- [x] Workspace lifecycle actions are defined before implementation:
+  - [x] Archive workspace. *(Implemented and browser-tested.)*
+  - [x] Restore workspace. *(Defined and implemented; billing refresh sign-off deferred.)*
+  - [x] Transfer ownership. *(Defined and implemented; billing ownership policy sign-off deferred.)*
   - [x] Leave workspace — implemented, deployed, tested with member leave path; chip sync hotfix completed
-  - [ ] Export workspace data.
-  - [ ] Permanent delete later with delayed deletion and recovery window.
-- [ ] Workspace archive behavior is safe:
-  - [ ] Existing workspace data is preserved.
-  - [ ] Archived workspace is hidden from normal active-workspace switching unless the user opens an archived view.
-  - [ ] Archived workspace does not unexpectedly cancel Stripe billing.
-  - [ ] Archived workspace still respects owner/account billing rules.
-- [ ] Workspace restore behavior is safe:
-  - [ ] Only allowed users can restore.
-  - [ ] Restored workspace reappears in the workspace switcher.
-  - [ ] Billing status refreshes cleanly after restore.
-- [ ] Transfer ownership behavior is safe:
-  - [ ] Only current Owner can transfer ownership.
-  - [ ] New Owner must already be a member of the workspace.
-  - [ ] Transfer updates `organizations.owner_id` and `organization_members` roles consistently.
-  - [ ] Billing ownership behavior is explicit and tested.
+  - [x] Export workspace data. *(Phase 0.7A MVP implemented; import UI deferred.)*
+  - [ ] Permanent delete later with delayed deletion and recovery window. *(Defined; not implemented. Remains deferred until export, ownership transfer, and retention policy are clear.)*
+- [x] Workspace archive behavior is safe:
+  - [x] Existing workspace data is preserved. *(All members, invites, billing rows, Stripe state, packs, cases, and storage preserved on archive.)*
+  - [x] Archived workspace is hidden from normal active-workspace switching unless the user opens an archived view.
+  - [x] Archived workspace does not unexpectedly cancel Stripe billing. *(Confirmed by implementation and browser/API checks.)*
+  - [x] Archived workspace still respects owner/account billing rules.
+  - [x] Archived workspaces count toward plan workspace limits by policy. *(Documented and billing-status enforces this.)*
+- [x] Workspace restore behavior is safe:
+  - [x] Only allowed users can restore. *(Owner-only `org-restore-workspace` Edge Function enforced.)*
+  - [x] Restored workspace reappears in the workspace switcher. *(Confirmed by API contract and org context refresh.)*
+  - [ ] Billing status refreshes cleanly after restore. *(Live browser sign-off pending.)*
+- [x] Transfer ownership behavior is safe:
+  - [x] Only current Owner can transfer ownership. *(Enforced by `org-transfer-ownership` Edge Function.)*
+  - [x] New Owner must already be a member of the workspace. *(Server-side membership check enforced.)*
+  - [x] Transfer updates `organizations.owner_id` and `organization_members` roles consistently. *(Atomic RPC confirmed by audit tests.)*
+  - [ ] Billing ownership behavior is explicit and tested. *(Policy not yet signed off; open before exposing broadly to paid users.)*
 - [x] Leave workspace behavior is safe:
   - [x] Non-owner users can leave.
   - [x] Primary `organizations.owner_id` is blocked until Transfer Ownership exists.
   - [x] Last Owner cannot leave until ownership is transferred or the workspace is archived/deleted by policy.
   - [x] Leaving a workspace never changes Stripe billing.
   - [x] Bottom-left workspace chip syncs after leave and uses workspace initials with circular shape.
-- [ ] Export workspace data behavior is safe:
-  - [ ] Owner/Admin can export workspace data.
-  - [ ] Export includes packs, items, preferences, and member/invite summary where allowed.
-  - [ ] Export does not expose payment secrets or private tokens.
+- [x] Export workspace data behavior is safe:
+  - [x] Owner/Admin can export workspace data. *(Phase 0.7A MVP: Settings > General owner/admin-gated export.)*
+  - [x] Current MVP export includes workspace packs, cases/items, and folder metadata (`folderLibrary`).
+  - [x] Export excludes payment secrets, auth/session data, private tokens, Stripe IDs, raw org/user IDs, service keys, and private storage paths.
+  - [ ] Preferences and member/invite summary are not part of current MVP export; remain later product decisions.
 
 ### Notes
 - Freeze Stripe/Supabase internals unless workspace finalization truly requires touching them.
@@ -1209,7 +1215,7 @@ Do this first.
 - Current invite truth for this phase is link-based invites plus signed-in acceptance on the existing flow.
 - Signed-out invite acceptance passed Phase 3B staging validation; expired invite live validation remains open.
 - Workspace slug/share-link behavior is deferred to Phase S0 and must not be treated as active public access until the audit and access model are complete.
-- Cross-tab and no-leak verification remain release-blocking until they are tested in the browser.
+- Cross-tab, separate-profile logout, workspace switch, and over-limit no-leak verification have browser proof. Remaining live sign-off items are narrower: cases view state if treated separately from scoped StateStore coverage, restore billing refresh, transfer billing policy, expired invite UI message, removed-member two-tab access-loss, and portal fallback edge cases.
 
 ---
 
@@ -1299,14 +1305,14 @@ Goal: make workspace access predictable, safe, and clean before adding archive, 
 ### Still open before Phase 0.5 can be closed
 - [x] Live owner invite → accept → member appears.
 - [x] Live signed-out invite handoff after login/signup.
-- [ ] Live expired invite rejection after manually setting `expires_at` in the past.
+- [ ] Live expired invite rejection after manually setting `expires_at` in the past. *(Server-side rejection passed; staging UI still needs a clear persistent expired/rejected message after the accept attempt.)*
 - [x] Live revoke pending invite via `org-invite-revoke` Edge Function.
-- [ ] Live already-revoked invite idempotency check.
-- [ ] Live accepted invite revoke rejection.
+- [x] Live already-revoked invite idempotency check. *(Idempotent revoke of an already-revoked invite confirmed during staging validation.)*
+- [x] Live accepted invite revoke rejection. *(Accepted invite revoke correctly rejected during staging validation.)*
 - [x] Phase 0.6B-2: fix Settings invite render stable-key so revoked pending invites disappear immediately without tab switching.
 - [x] Phase 0.6B-2: show pending Admin invites to Admin users for transparency, but disable/guard Revoke/Resend for Admin-on-Admin rows with clear owner-only copy.
 - [ ] Live two-tab removed-member access-loss validation.
-- [ ] Confirm no billing or Stripe records change after invite, accept, remove, or access-loss recovery.
+- [ ] Confirm no billing or Stripe records change after invite, accept, remove, or access-loss recovery. *(Partial proof passed for available snapshots; keep open until final committed validation covers invite create/send/accept/revoke and removed-member/access-loss.)*
 - [ ] Add DB-level proof that invite create/send/accept/revoke does not mutate billing_customers, subscriptions, Stripe checkout, Stripe portal, or Stripe customer/subscription records.
 
 ---
@@ -1953,6 +1959,25 @@ P0 is green only when ALL items here are checked:
 ---
 
 ## Running log (keep updated)
+
+- Date: 2026-05-15 — TODO checkpoint after staging invite handoff and slug audits
+- Verdict:
+  - PARTIAL. Phase 0 and Phase 0.5 have been updated to reflect completed browser/API proof, but the release gate is not fully closed.
+- What is now checked off:
+  - Workspace switching no-leak proof for Billing, Members, Pending Invites, Packs/folders, and stale editor context.
+  - New-workspace billing behavior for current model, including trial seed, included workspace, and UI-visible over-limit fixture.
+  - Archive workspace safety rules already proven by implementation and browser/API checks.
+  - Already-revoked invite idempotency and accepted-invite revoke rejection.
+  - Admin/member invite restrictions passed.
+  - Deep slug/share audits completed by Claude and Copilot; both confirmed slug is display metadata today and must not grant access later.
+- What remains open:
+  - Expired invite staging UI needs a clear persistent rejected/expired message after the accept attempt.
+  - Removed-member two-tab access-loss sign-off remains open.
+  - Restore billing refresh and Transfer Ownership billing policy/sign-off remain open.
+  - Portal stale-subscription and schedule-managed fallback checks remain open.
+  - Cases view state sign-off remains open only if it is treated separately from scoped StateStore coverage.
+- Code state:
+  - TODO-only update. Codex Phase 3C source changes are still uncommitted until expired invite UI proof and full validation are green.
 
 - Date: 2026-05-15 — Phase 3B invite handoff validation staging PARTIAL PASS
 - What passed:

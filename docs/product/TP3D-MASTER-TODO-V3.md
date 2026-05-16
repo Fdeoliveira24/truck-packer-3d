@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-15 — Phase 3C1 PASS: persistent invite rejection messages committed (`3c07561`) and staging-validated. Expired invite, revoked invite, and wrong-email guard all show clear persistent notices on staging. 285/285 tests passing. Remaining open: removed-member two-tab access-loss, restore billing refresh, transfer billing policy, portal fallback edge cases.
+Last updated: 2026-05-16 — Phase 3C2 PASS: cross-tab sign-out "Checking session…" hang fixed (`329a551`) and staging-validated. Tab B shows sign-in form (not spinner) after Tab A signs out. 296/296 tests passing.
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -1979,7 +1979,49 @@ Required user-facing messages — all confirmed:
 
 ---
 
+### Phase 3C2 — Cross-Tab Sign-Out "Checking session…" Hang — PASS ✅
+
+Goal: after Tab A signs out, Tab B must show the sign-in form — not hang on "Checking session…".
+
+Root causes fixed:
+- `bootstrapAuthGate` hid the overlay without resetting `phase` from `'checking'` to `'form'`. Any later `show()` (e.g. from a cross-tab `SIGNED_OUT` broadcast) rendered the spinner. Fix: call `AuthOverlay.setPhase('form', { onRetry: bootstrapAuthGate })` before `AuthOverlay.hide()` on successful sign-in.
+- `authGateSignedOutCandidate` fallback guard blocked signed-out cleanup when `_hasRecentGateSignedIn` was true but `_wrapperSignedIn` was false (session already gone). Fix: add `&& _wrapperSignedIn` so cleanup proceeds when the session is confirmed gone.
+
+Current status:
+- [x] `bootstrapAuthGate` resets overlay phase to `'form'` before hiding on successful sign-in.
+- [x] `authGateSignedOutCandidate` fallback guard requires `_wrapperSignedIn` to block cleanup.
+- [x] Tab B transitions to sign-in form within ~2–5 s of Tab A signing out via BroadcastChannel.
+- [x] Tab B reload after cross-tab sign-out shows sign-in form immediately (no spinner).
+- [x] No app console errors during or after the cross-tab sign-out flow.
+- [x] Normal login and re-login unaffected.
+- [x] 4 new static audit tests added. 296/296 passing.
+
+---
+
 ## Running log
+
+- Date: 2026-05-16 — Phase 3C2 cross-tab sign-out hang — PASS
+- Verdict:
+  - PASS. All terminal and browser validation passed. Phase 3C2 is committed and closed.
+- What passed:
+  - Staging URL: `https://truckapp.pxl360.com/index.html`.
+  - Tab A signed in as test1, Tab B also showed app shell (shared session, same profile).
+  - `SupabaseClient.signOut({ global: false })` called on Tab A via DevTools JS.
+  - Tab A showed sign-in form within ~1 s.
+  - Tab B received BroadcastChannel SIGNED_OUT and transitioned to sign-in FORM (not "Checking session…") within ~5 s.
+  - Tab B reloaded after sign-out → showed sign-in form immediately. No spinner.
+  - Re-login on Tab B succeeded; app shell with `test1-Workspace` loaded cleanly.
+  - Console: no app errors. Only Chrome extension logs.
+  - `npm test` 296/296 PASS. `npm run lint` 0 errors. `npm run -s typecheck` clean.
+- Code state:
+  - Commit `329a551` — `fix(auth): prevent checking-session hang after cross-tab sign-out`.
+  - Files: `src/app.js`, `tests/audit/security-and-invariants.spec.mjs`.
+  - `Production/` refreshed and uploaded to staging before browser validation.
+- What remains open:
+  - Removed-member two-tab access-loss sign-off.
+  - Restore billing refresh live sign-off.
+  - Transfer Ownership billing policy definition.
+  - Portal stale-subscription and schedule-managed fallback.
 
 - Date: 2026-05-15 — Phase 3C1 invite rejection UI staging PASS
 - Verdict:

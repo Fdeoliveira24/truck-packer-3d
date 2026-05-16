@@ -8307,6 +8307,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
           if (!inviteHandoffNotice || !inviteHandoffNotice.message) return;
 
           const authPage = document.querySelector('[data-auth-overlay="1"] .auth-page');
+          // Only render inside the auth overlay when it is actually visible to the user.
+          // The overlay hides via `display:none` but stays in the DOM after sign-in, so
+          // a plain querySelector match does not guarantee the element is visible.
+          const authOverlay = authPage ? authPage.closest('[data-auth-overlay="1"]') : null;
+          const authPageVisible = authOverlay
+            ? window.getComputedStyle(authOverlay).display !== 'none'
+              && window.getComputedStyle(authOverlay).visibility !== 'hidden'
+              && authOverlay.getClientRects().length > 0
+            : false;
+          const visibleAuthPage = authPage && authPageVisible ? authPage : null;
+
           const box = document.createElement('div');
           box.id = inviteHandoffNoticeId;
           box.setAttribute('data-invite-handoff-message', '1');
@@ -8314,8 +8325,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
           box.setAttribute('aria-live', 'polite');
           box.className = `auth-message auth-message--${inviteHandoffNotice.type === 'info' ? 'info' : 'error'}`;
           box.style.display = 'block';
-          box.style.margin = authPage ? '0 0 14px' : '16px';
-          if (!authPage) {
+          box.style.margin = visibleAuthPage ? '0 0 14px' : '16px';
+          if (!visibleAuthPage) {
             Object.assign(box.style, {
               position: 'fixed',
               zIndex: '100000',
@@ -8352,10 +8363,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
           dismiss.addEventListener('click', clearInviteHandoffNotice);
           box.appendChild(dismiss);
 
-          if (authPage) {
-            const brand = authPage.querySelector('.auth-brand');
-            if (brand && brand.nextSibling) authPage.insertBefore(box, brand.nextSibling);
-            else authPage.insertBefore(box, authPage.firstChild);
+          if (visibleAuthPage) {
+            const brand = visibleAuthPage.querySelector('.auth-brand');
+            if (brand && brand.nextSibling) visibleAuthPage.insertBefore(box, brand.nextSibling);
+            else visibleAuthPage.insertBefore(box, visibleAuthPage.firstChild);
           } else {
             document.body.appendChild(box);
           }

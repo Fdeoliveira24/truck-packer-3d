@@ -1305,6 +1305,109 @@ test('phase 3C1 invite handoff fix stays within invite UI scope', async () => {
     'Phase 3C1 invite handoff fix must stay inside app invite UI, org-invite copy, and audit tests');
 });
 
+test('phase 3C1 renderInviteHandoffNotice guards auth overlay visibility before inserting notice', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function renderInviteHandoffNotice(');
+  const end = src.indexOf('function setInviteHandoffNotice(', start);
+  const fnBody = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fnBody.length > 0, 'renderInviteHandoffNotice function must be present in app.js');
+
+  // Must derive the parent auth overlay from the authPage element
+  assert.match(fnBody, /authPage\s*\?\s*authPage\.closest\(\s*'\[data-auth-overlay="1"\]'\s*\)/,
+    'renderInviteHandoffNotice must resolve the parent auth overlay via .closest()');
+
+  // Must check display:none (CSS visibility check)
+  assert.match(fnBody, /getComputedStyle\(authOverlay\)\.display\s*!==\s*['"]none['"]/,
+    'renderInviteHandoffNotice must check computed display before treating auth overlay as visible');
+
+  // Must use getClientRects() for layout visibility (offsetWidth/offsetHeight are HTMLElement-only)
+  assert.match(fnBody, /authOverlay\.getClientRects\(\)\.length/,
+    'renderInviteHandoffNotice must use getClientRects() for layout-based visibility check');
+
+  // Must produce a visibleAuthPage guard variable (or equivalent)
+  assert.match(fnBody, /visibleAuthPage\s*=/,
+    'renderInviteHandoffNotice must derive a visibleAuthPage guard before rendering into the overlay');
+
+  // Must use visibleAuthPage (not raw authPage) as the insertion target
+  assert.match(fnBody, /if\s*\(\s*visibleAuthPage\s*\)/,
+    'renderInviteHandoffNotice must gate DOM insertion on visibleAuthPage rather than raw authPage');
+  assert.doesNotMatch(fnBody, /if\s*\(\s*authPage\s*\)[\s\S]{0,60}insertBefore|if\s*\(\s*authPage\s*\)[\s\S]{0,60}appendChild/,
+    'renderInviteHandoffNotice must not use raw authPage as an unconditional insertion target');
+});
+
+test('phase 3C1 renderInviteHandoffNotice falls back to document.body when auth overlay is hidden', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function renderInviteHandoffNotice(');
+  const end = src.indexOf('function setInviteHandoffNotice(', start);
+  const fnBody = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fnBody.length > 0, 'renderInviteHandoffNotice must be extractable');
+
+  // The fallback path must append to document.body
+  assert.match(fnBody, /document\.body\.appendChild\(box\)/,
+    'renderInviteHandoffNotice must fall back to document.body.appendChild when auth overlay is not visible');
+
+  // The body fallback must be inside the else branch (i.e. only reached when visibleAuthPage is falsy)
+  const bodyFallbackIdx = fnBody.indexOf('document.body.appendChild(box)');
+  const visibleAuthPageBranchIdx = fnBody.lastIndexOf('if (visibleAuthPage)', bodyFallbackIdx);
+  assert.ok(visibleAuthPageBranchIdx >= 0,
+    'document.body fallback must be inside the else branch of the visibleAuthPage guard');
+
+  // The fixed-position styles must still be applied when falling back to body
+  assert.match(fnBody, /if\s*\(!visibleAuthPage\)[\s\S]{0,80}position.*fixed/,
+    'body fallback path must apply fixed-position styles for the floating notice');
+});
+
+test('phase 3C1 invite handoff visibility fix adds no token logging or reload side-effects', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  // Scope checks to the renderInviteHandoffNotice function only — this is the function modified by the fix.
+  const fnStart = src.indexOf('function renderInviteHandoffNotice(');
+  const fnEnd = src.indexOf('function setInviteHandoffNotice(', fnStart);
+  const fnBody = fnStart >= 0 && fnEnd > fnStart ? src.slice(fnStart, fnEnd) : '';
+
+  assert.ok(fnBody.length > 0, 'renderInviteHandoffNotice must be extractable for side-effect check');
+
+  // Visibility fix must not introduce any console output inside renderInviteHandoffNotice
+  assert.doesNotMatch(fnBody, /console\./,
+    'renderInviteHandoffNotice must not log token-bearing or session-bearing state');
+
+  // No reload must be introduced
+  assert.doesNotMatch(fnBody, /location\.reload|window\.location\.reload/,
+    'renderInviteHandoffNotice must not add a location.reload');
+  assert.doesNotMatch(fnBody, /setTimeout[\s\S]{0,80}location\.reload/,
+    'renderInviteHandoffNotice must not introduce a timed reload');
+
+  // No raw token values must be inserted into the DOM via the notice function
+  assert.doesNotMatch(fnBody, /textContent\s*=[\s\S]{0,80}(pendingInviteToken|tokenFromUrl|storedToken)/,
+    'renderInviteHandoffNotice must not expose raw invite token values in UI');
+
+  // No JWT-bearing headers or service credentials introduced by the visibility fix
+  assert.doesNotMatch(fnBody, /refresh_token|Bearer|service.?role|SUPABASE_SERVICE/i,
+    'renderInviteHandoffNotice must not reference JWT bearer headers or service credentials');
+});
+
+test('phase 3C1 invite handoff visibility fix stays within invite UI scope', async () => {
+  const allowedFiles = new Set([
+    'src/app.js',
+    'tests/audit/security-and-invariants.spec.mjs',
+  ]);
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !allowedFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'Phase 3C1 invite handoff visibility fix must only touch src/app.js and tests/audit/security-and-invariants.spec.mjs');
+});
+
 test('org-invite-accept rejects expired pending invites before membership insert without exposing organization_id', async () => {
   const src = await fs.readFile(orgInviteAcceptPath, 'utf8');
 

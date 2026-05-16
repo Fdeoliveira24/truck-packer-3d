@@ -1325,18 +1325,18 @@ test('phase 3C1 renderInviteHandoffNotice guards auth overlay visibility before 
   assert.match(fnBody, /authOverlay\.getClientRects\(\)\.length/,
     'renderInviteHandoffNotice must use getClientRects() for layout-based visibility check');
 
-  // Must produce a visibleAuthPage guard variable (or equivalent)
+  // Must produce a visibleAuthPage guard variable
   assert.match(fnBody, /visibleAuthPage\s*=/,
     'renderInviteHandoffNotice must derive a visibleAuthPage guard before rendering into the overlay');
 
-  // Must use visibleAuthPage (not raw authPage) as the insertion target
-  assert.match(fnBody, /if\s*\(\s*visibleAuthPage\s*\)/,
-    'renderInviteHandoffNotice must gate DOM insertion on visibleAuthPage rather than raw authPage');
-  assert.doesNotMatch(fnBody, /if\s*\(\s*authPage\s*\)[\s\S]{0,60}insertBefore|if\s*\(\s*authPage\s*\)[\s\S]{0,60}appendChild/,
-    'renderInviteHandoffNotice must not use raw authPage as an unconditional insertion target');
+  // Must return early when visibleAuthPage is falsy — do NOT insert into body
+  assert.match(fnBody, /if\s*\(\s*!visibleAuthPage\s*\)\s*return/,
+    'renderInviteHandoffNotice must return early when auth overlay is not visible');
+  assert.doesNotMatch(fnBody, /document\.body\.appendChild/,
+    'renderInviteHandoffNotice must not append to document.body (avoids z-index conflict with auth overlay)');
 });
 
-test('phase 3C1 renderInviteHandoffNotice falls back to document.body when auth overlay is hidden', async () => {
+test('phase 3C1 renderInviteHandoffNotice does not create blocking banner or set z-index above auth overlay', async () => {
   const src = await fs.readFile(appPath, 'utf8');
   const start = src.indexOf('function renderInviteHandoffNotice(');
   const end = src.indexOf('function setInviteHandoffNotice(', start);
@@ -1344,19 +1344,17 @@ test('phase 3C1 renderInviteHandoffNotice falls back to document.body when auth 
 
   assert.ok(fnBody.length > 0, 'renderInviteHandoffNotice must be extractable');
 
-  // The fallback path must append to document.body
-  assert.match(fnBody, /document\.body\.appendChild\(box\)/,
-    'renderInviteHandoffNotice must fall back to document.body.appendChild when auth overlay is not visible');
+  // Must not create a fixed-position floating banner (would sit above the auth overlay at z-index 99999)
+  assert.doesNotMatch(fnBody, /position.*fixed|position:\s*['"]fixed['"]/,
+    'renderInviteHandoffNotice must not apply fixed positioning');
+  assert.doesNotMatch(fnBody, /zIndex\s*:|['"]zIndex['"]\s*:|\.style\.zIndex/,
+    'renderInviteHandoffNotice must not assign z-index (avoids conflict with auth overlay stacking context)');
+  assert.doesNotMatch(fnBody, /document\.body\.appendChild/,
+    'renderInviteHandoffNotice must not append to document.body');
 
-  // The body fallback must be inside the else branch (i.e. only reached when visibleAuthPage is falsy)
-  const bodyFallbackIdx = fnBody.indexOf('document.body.appendChild(box)');
-  const visibleAuthPageBranchIdx = fnBody.lastIndexOf('if (visibleAuthPage)', bodyFallbackIdx);
-  assert.ok(visibleAuthPageBranchIdx >= 0,
-    'document.body fallback must be inside the else branch of the visibleAuthPage guard');
-
-  // The fixed-position styles must still be applied when falling back to body
-  assert.match(fnBody, /if\s*\(!visibleAuthPage\)[\s\S]{0,80}position.*fixed/,
-    'body fallback path must apply fixed-position styles for the floating notice');
+  // Must not alter auth gate, session, or billing state
+  assert.doesNotMatch(fnBody, /authGate|bootstrapAuthGate|requestAuthRefresh|refreshBilling|clearBillingState/,
+    'renderInviteHandoffNotice must not touch auth gate or billing state');
 });
 
 test('phase 3C1 invite handoff visibility fix adds no token logging or reload side-effects', async () => {
@@ -1385,6 +1383,29 @@ test('phase 3C1 invite handoff visibility fix adds no token logging or reload si
   // No JWT-bearing headers or service credentials introduced by the visibility fix
   assert.doesNotMatch(fnBody, /refresh_token|Bearer|service.?role|SUPABASE_SERVICE/i,
     'renderInviteHandoffNotice must not reference JWT bearer headers or service credentials');
+});
+
+test('phase 3C1 SIGNED_OUT event clears invite handoff notice to prevent stale notice persisting over auth overlay', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  // Find the onAuthStateChange handler — locate the isSignedOutEvent clearBillingState block
+  const handlerStart = src.indexOf('SupabaseClient.onAuthStateChange(');
+  const handlerEnd = src.indexOf('const authTruthForEvent = getAuthTruthSnapshot()', handlerStart);
+  const handlerBlock = handlerStart >= 0 && handlerEnd > handlerStart
+    ? src.slice(handlerStart, handlerEnd)
+    : '';
+
+  assert.ok(handlerBlock.length > 0, 'onAuthStateChange handler block must be extractable');
+
+  // clearInviteHandoffNotice must appear in the isSignedOutEvent branch
+  const signedOutBranch = handlerBlock.match(/if\s*\(isSignedOutEvent\)[\s\S]*?(?=\}\s*else\s*if\s*\(isSignedInEvent)/);
+  assert.ok(signedOutBranch, 'isSignedOutEvent branch must be present in handler');
+  assert.match(signedOutBranch[0], /clearInviteHandoffNotice\(\)/,
+    'SIGNED_OUT must call clearInviteHandoffNotice() to prevent stale notice persisting over the auth overlay');
+
+  // clearBillingState and clearInviteHandoffNotice must both be in the same signed-out branch
+  assert.match(signedOutBranch[0], /clearBillingState\(\)/,
+    'SIGNED_OUT branch must still call clearBillingState()');
 });
 
 test('phase 3C1 invite handoff visibility fix stays within invite UI scope', async () => {

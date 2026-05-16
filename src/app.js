@@ -8318,6 +8318,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
             : false;
           const visibleAuthPage = authPage && authPageVisible ? authPage : null;
 
+          // When the auth overlay is hidden (signed-in), the toast already handles the
+          // rejection message. Do not append to document.body: a fixed banner with a
+          // higher z-index than the auth overlay (99999) would sit on top of it during
+          // sign-out and make "Checking session..." appear hung.
+          if (!visibleAuthPage) return;
+
           const box = document.createElement('div');
           box.id = inviteHandoffNoticeId;
           box.setAttribute('data-invite-handoff-message', '1');
@@ -8325,23 +8331,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           box.setAttribute('aria-live', 'polite');
           box.className = `auth-message auth-message--${inviteHandoffNotice.type === 'info' ? 'info' : 'error'}`;
           box.style.display = 'block';
-          box.style.margin = visibleAuthPage ? '0 0 14px' : '16px';
-          if (!visibleAuthPage) {
-            Object.assign(box.style, {
-              position: 'fixed',
-              zIndex: '100000',
-              top: '16px',
-              left: '50%',
-              transform: 'translateX(-50%)',
-              maxWidth: 'min(560px, calc(100vw - 32px))',
-              background: inviteHandoffNotice.type === 'info' ? '#eff6ff' : '#fef2f2',
-              border: inviteHandoffNotice.type === 'info' ? '1px solid #93c5fd' : '1px solid #fca5a5',
-              borderRadius: '10px',
-              color: '#18212f',
-              boxShadow: '0 12px 36px rgba(15, 23, 42, 0.18)',
-              padding: '12px 14px',
-            });
-          }
+          box.style.margin = '0 0 14px';
 
           const message = document.createElement('span');
           message.textContent = inviteHandoffNotice.message;
@@ -8363,13 +8353,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
           dismiss.addEventListener('click', clearInviteHandoffNotice);
           box.appendChild(dismiss);
 
-          if (visibleAuthPage) {
-            const brand = visibleAuthPage.querySelector('.auth-brand');
-            if (brand && brand.nextSibling) visibleAuthPage.insertBefore(box, brand.nextSibling);
-            else visibleAuthPage.insertBefore(box, visibleAuthPage.firstChild);
-          } else {
-            document.body.appendChild(box);
-          }
+          const brand = visibleAuthPage.querySelector('.auth-brand');
+          if (brand && brand.nextSibling) visibleAuthPage.insertBefore(box, brand.nextSibling);
+          else visibleAuthPage.insertBefore(box, visibleAuthPage.firstChild);
         } catch {
           // Invite copy is best-effort and must not block auth.
         }
@@ -8594,6 +8580,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // NOTE: refreshBilling is NOT called here — renderAuthState (below) is the single billing trigger
           if (isSignedOutEvent) {
             clearBillingState();
+            clearInviteHandoffNotice();
           } else if (isSignedInEvent || isTokenRefreshEvent || isInitialSessionEvent || isUserUpdatedEvent) {
             if (userFromSession && userFromSession.id) {
               tryAcceptPendingInvite(session || null).catch(() => { });

@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-15 — Phase 3B invite handoff validation passed the tested staging flows at `https://truckapp.pxl360.com/index.html`: signed-out handoff preserved invite context, signed-in correct-email accept worked, wrong-email accept was blocked, revoked invite rejection worked, and disposable invite cleanup passed. Phase 1 Release Gate remains PARTIAL because expired-invite live validation, admin/member invite restrictions, DB-level invite billing/Stripe mutation proof, and portal fallback edge cases are still tracked/deferred.
+Last updated: 2026-05-15 — Phase 3B invite handoff validation is committed and pushed to origin/main; staging invite email delivery, signed-out handoff, correct-email accept, wrong-email guard, revoked invite rejection, and disposable invite cleanup have passed. Phase 1/P0 remains PARTIAL because expired-invite live validation, admin/member invite restriction browser proof, DB-level invite billing/Stripe mutation proof, portal fallback edge cases, and workspace lifecycle policy cleanup are still tracked. Workspace slug/share-link work is explicitly deferred to a future planning/audit phase; slug must not grant access by itself.
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -1110,6 +1110,34 @@ Notes:
 
 ---
 
+## Phase S0 — Workspace Slug + Share Link Planning — DEFERRED
+
+Goal: define the slug/share-link model before using workspace slugs for public or private sharing.
+
+Rules:
+- Slug alone must not grant access.
+- Slug is only a readable workspace identifier/address.
+- Access must be controlled separately through membership, explicit share settings, or a secure share token.
+- Shared views must be read-only by default.
+- Shared views must never expose billing, members, invites, account settings, Stripe data, private tokens, or admin actions.
+- Owner/Admin can create and revoke share links when this feature is built.
+- Share links should support expiration later.
+- Changing a slug should warn the owner if any share links or saved URLs depend on it.
+
+Decisions needed before implementation:
+- Is sharing workspace-level, pack-level, or both?
+- Should viewers need an account?
+- Should a shared link use only a slug, or slug plus a secure token?
+- What exact pack/load data is visible in read-only view?
+- Should shared viewers be able to export PDF/manifest files?
+- Is sharing a Free, Pro, or paid-only feature?
+- How do archived/restored workspaces affect slug URLs and share links?
+
+Implementation rule:
+- Before writing code, run a deep slug/share audit covering schema, routing, access control, invite overlap, archived workspaces, billing gates, local storage, and public read-only rendering.
+
+---
+
 ## Phase 0 — Workspace Foundation Finalization — IN PROGRESS
 
 Do this first.
@@ -1179,7 +1207,8 @@ Do this first.
 - Freeze Stripe/Supabase internals unless workspace finalization truly requires touching them.
 - Do not start broad runtime refactors until this is stable.
 - Current invite truth for this phase is link-based invites plus signed-in acceptance on the existing flow.
-- Signed-out invite acceptance still needs live verification.
+- Signed-out invite acceptance passed Phase 3B staging validation; expired invite live validation remains open.
+- Workspace slug/share-link behavior is deferred to Phase S0 and must not be treated as active public access until the audit and access model are complete.
 - Cross-tab and no-leak verification remain release-blocking until they are tested in the browser.
 
 ---
@@ -1211,6 +1240,8 @@ Goal: make workspace access predictable, safe, and clean before adding archive, 
 - [x] Invite links have clear status: active, accepted, expired, revoked.
 - [x] Pending invite revocation is server-side via `org-invite-revoke`; legacy direct browser-side revoke path is disabled.
 - [x] Invite acceptance works for signed-in users.
+- [x] Invite-auth handoff copy remains acceptable for MVP: invited users are not given a password; they sign in or sign up with the invited email, and the invite resumes after authentication.
+- [ ] Future polish: improve the invite landing/auth screen copy when invite_token is present so it clearly says the user is accepting a workspace invite and must use the invited email address.
 - [x] Invite handoff works for signed-out users after login/signup. *(Phase 3B staging sign-off: clean signed-out browser preserved invite context and resumed after matching account login.)*
 - [x] Expired or revoked invite shows a clear message.
 - [x] Invite cannot grant access to the wrong workspace.
@@ -1276,6 +1307,7 @@ Goal: make workspace access predictable, safe, and clean before adding archive, 
 - [x] Phase 0.6B-2: show pending Admin invites to Admin users for transparency, but disable/guard Revoke/Resend for Admin-on-Admin rows with clear owner-only copy.
 - [ ] Live two-tab removed-member access-loss validation.
 - [ ] Confirm no billing or Stripe records change after invite, accept, remove, or access-loss recovery.
+- [ ] Add DB-level proof that invite create/send/accept/revoke does not mutate billing_customers, subscriptions, Stripe checkout, Stripe portal, or Stripe customer/subscription records.
 
 ---
 

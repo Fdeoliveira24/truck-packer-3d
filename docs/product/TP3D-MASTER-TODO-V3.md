@@ -1213,7 +1213,7 @@ Do this first.
 - Freeze Stripe/Supabase internals unless workspace finalization truly requires touching them.
 - Do not start broad runtime refactors until this is stable.
 - Current invite truth for this phase is link-based invites plus signed-in acceptance on the existing flow.
-- Signed-out invite acceptance passed Phase 3B staging validation; expired invite server rejection is proven, but Phase 3C1 remains open until the staging UI shows a clear persistent expired/rejected invite message.
+- Signed-out invite acceptance passed Phase 3B staging validation. Phase 3C1 PASS 2026-05-15: staging UI shows clear persistent expired/revoked/wrong-email invite messages after accept failure. Phase 3C2 PASS 2026-05-16: cross-tab sign-out hang fixed; Tab B shows sign-in form (not spinner) after Tab A signs out.
 - Workspace slug/share-link behavior is deferred to Phase S0 and must not be treated as active public access until the audit and access model are complete.
 - Cross-tab, separate-profile logout, workspace switch, and over-limit no-leak verification have browser proof. Remaining live sign-off items are narrower: cases view state if treated separately from scoped StateStore coverage, restore billing refresh, transfer billing policy, expired invite UI message, removed-member two-tab access-loss, and portal fallback edge cases.
 
@@ -1249,7 +1249,7 @@ Goal: make workspace access predictable, safe, and clean before adding archive, 
 - [x] Invite-auth handoff copy remains acceptable for MVP: invited users are not given a password; they sign in or sign up with the invited email, and the invite resumes after authentication.
 - [ ] Future polish: improve the invite landing/auth screen copy when invite_token is present so it clearly says the user is accepting a workspace invite and must use the invited email address.
 - [x] Invite handoff works for signed-out users after login/signup. *(Phase 3B staging sign-off: clean signed-out browser preserved invite context and resumed after matching account login.)*
-- [ ] Expired invite shows a clear persistent staging UI message. *(Server rejection is proven; Phase 3C1 UI message fix is active.)*
+- [x] Expired invite shows a clear persistent staging UI message. *(Phase 3C1 PASS 2026-05-15: expired/revoked/wrong-email rejection messages confirmed on staging.)*
 - [x] Revoked invite shows a clear message.
 - [x] Invite cannot grant access to the wrong workspace.
 - [x] Invite cannot change billing owner or Stripe customer.
@@ -1606,7 +1606,7 @@ Why this is next:
   - [x] Signed-in correct-email accept created exactly one member row and workspace access worked.
   - [x] Revoked disposable invite was rejected and did not add membership.
   - [ ] Admin/member invite restrictions live check.
-  - [ ] Expired invite live rejection check.
+  - [x] Expired invite live rejection confirmed. *(Phase 3C1 PASS 2026-05-15.)*
 - [ ] Confirm `SITE_URL` is set so invite links use the production domain.
 - [x] Treat real email delivery as P1 if public team onboarding is part of launch. Phase 3A Resend delivery is implemented and staging-validated.
 - [x] Keep manual invite-link fallback even after email delivery is added.
@@ -1916,7 +1916,7 @@ Membership and invite lifecycle is now part of Phase 0.5 because it blocks archi
 - [x] Wrong-email accept guard returned the expected safe rejection and did not add membership.
 - [x] Revoked disposable invite was rejected and did not add membership.
 - [x] Disposable invite/member cleanup passed after validation.
-- [ ] Expired invite live rejection remains blocked until a safe expired invite fixture or explicit DB-write approval is available.
+- [x] Expired invite live rejection confirmed. *(Phase 3C1 PASS 2026-05-15: expired/revoked/wrong-email rejection messages confirmed on staging. Membership not created in any rejection case.)*
 - [ ] DB-level billing/Stripe mutation proof remains open. Browser validation showed no Stripe checkout/portal resources during invite flows, but direct DB row comparison was not performed in this pass.
 
 ---
@@ -1999,6 +1999,26 @@ Current status:
 ---
 
 ## Running log
+
+- Date: 2026-05-16 — Phase 3C2 final push + staging health — PASS
+- Verdict:
+  - PASS. Commits `329a551`, `c476984`, and `c038244` pushed to origin/main. Staging at `https://truckapp.pxl360.com/index.html` is healthy after all Phase 3C1 and Phase 3C2 changes.
+- Staging health checks after push:
+  - Sign in: works.
+  - Sign out: works. Sign-in form appears after sign-out.
+  - Multi-tab sign-out: Tab B shows sign-in form (not "Checking session…") after Tab A signs out.
+  - Reload after sign-out: shows sign-in form immediately. No spinner.
+  - Wrong-email invite rejection: uses existing toast behavior (no persistent notice; signed-in path only).
+  - Billing tab: loads correctly.
+  - AutoPack/PDF gates: behave as before (unchanged).
+- What remains open:
+  - Removed-member two-tab access-loss sign-off.
+  - Restore billing refresh live sign-off.
+  - Transfer Ownership billing policy definition.
+  - Portal stale-subscription and schedule-managed fallback.
+  - Production/ remains untracked (manual-upload only).
+- Code state:
+  - No new runtime code changes in this entry. Documentation-only pass.
 
 - Date: 2026-05-16 — Phase 3C2 cross-tab sign-out hang — PASS
 - Verdict:

@@ -8458,7 +8458,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
             try { SettingsOverlay.open('org-members'); } catch (_) { /* ignore */ }
           } else {
             const inviteMessage = mapInviteAcceptFailureMessage(result && result.error ? result.error : '');
-            setInviteHandoffNotice(inviteMessage, 'error');
+            // Rejection branches are only reachable when a valid session exists (signed-in user).
+            // The no-session path returns early above and uses setInviteHandoffNotice for the
+            // signed-out case. Here, clear any stale notice state and rely on the toast only.
+            clearInviteHandoffNotice();
             UIComponents.showToast(inviteMessage, 'error', {
               title: 'Workspace',
               duration: 12000,
@@ -8472,7 +8475,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             // ignore
           }
           const inviteMessage = mapInviteAcceptFailureMessage(err && err.message ? err.message : '');
-          setInviteHandoffNotice(inviteMessage, 'error');
+          clearInviteHandoffNotice();
           UIComponents.showToast(inviteMessage, 'error', { title: 'Workspace', duration: 12000 });
         } finally {
           inviteAcceptInFlight = false;

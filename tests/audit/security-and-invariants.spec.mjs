@@ -1256,10 +1256,14 @@ test('phase 3C1 app maps invite accept failures to persistent handoff copy', asy
     'invite accept failure mapper must classify revoked/no-longer-valid responses');
   assert.match(inviteBlock, /includes\('email does not match'\)[\s\S]*inviteWrongEmailMessage/,
     'invite accept failure mapper must preserve email mismatch responses');
-  assert.match(inviteBlock, /setInviteHandoffNotice\(inviteMessage, 'error'\)/,
-    'failed invite acceptance must render persistent handoff copy');
+  // Rejection failures no longer call setInviteHandoffNotice (toast-only for signed-in users).
+  // They must call clearInviteHandoffNotice() to clean up stale state, and show a toast.
+  assert.match(inviteBlock, /clearInviteHandoffNotice\(\)/,
+    'failed invite acceptance (signed-in) must clear stale handoff notice and rely on toast');
+  assert.match(inviteBlock, /UIComponents\.showToast\(inviteMessage/,
+    'failed invite acceptance must show a toast with the rejection message');
   assert.match(inviteBlock, /data-invite-handoff-message/,
-    'persistent invite handoff notice must have a stable DOM marker for browser validation');
+    'persistent invite handoff notice element must have a stable DOM marker for browser validation');
 });
 
 test('phase 3C1 invite handoff notice does not expose raw tokens or scope into billing', async () => {
@@ -1406,6 +1410,59 @@ test('phase 3C1 SIGNED_OUT event clears invite handoff notice to prevent stale n
   // clearBillingState and clearInviteHandoffNotice must both be in the same signed-out branch
   assert.match(signedOutBranch[0], /clearBillingState\(\)/,
     'SIGNED_OUT branch must still call clearBillingState()');
+});
+
+test('phase 3C1 signed-in invite rejection clears notice state instead of setting persistent error notice', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('async function tryAcceptPendingInvite(');
+  const end = src.indexOf('function clearSidebarBillingDomForUserSwitch(', start);
+  const fnBody = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fnBody.length > 0, 'tryAcceptPendingInvite must be extractable');
+
+  // Rejection branches (result.ok=false and catch) must call clearInviteHandoffNotice, not set error notice
+  const elseIdx = fnBody.indexOf('const inviteMessage = mapInviteAcceptFailureMessage(result');
+  const catchIdx = fnBody.indexOf('const inviteMessage = mapInviteAcceptFailureMessage(err');
+  assert.ok(elseIdx > 0, 'result.ok=false branch must be locatable');
+  assert.ok(catchIdx > elseIdx, 'catch branch must be locatable after else branch');
+
+  // Neither branch must call setInviteHandoffNotice with an error message
+  const afterElse = fnBody.slice(elseIdx, catchIdx);
+  const afterCatch = fnBody.slice(catchIdx);
+  assert.doesNotMatch(afterElse, /setInviteHandoffNotice\([^)]*'error'\)/,
+    'result.ok=false branch must not call setInviteHandoffNotice with error type');
+  assert.doesNotMatch(afterCatch, /setInviteHandoffNotice\([^)]*'error'\)/,
+    'catch branch must not call setInviteHandoffNotice with error type');
+
+  // Both branches must call clearInviteHandoffNotice() to clean up stale state
+  assert.match(afterElse, /clearInviteHandoffNotice\(\)/,
+    'result.ok=false branch must call clearInviteHandoffNotice() to prevent persistent app-shell banner');
+  assert.match(afterCatch, /clearInviteHandoffNotice\(\)/,
+    'catch branch must call clearInviteHandoffNotice() to prevent persistent app-shell banner');
+
+  // Both branches must still show the toast
+  assert.match(afterElse, /UIComponents\.showToast\(inviteMessage/,
+    'result.ok=false branch must show toast with invite failure message');
+  assert.match(afterCatch, /UIComponents\.showToast\(inviteMessage/,
+    'catch branch must show toast with invite failure message');
+});
+
+test('phase 3C1 invite rejection failure path does not log token or JWT values', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('async function tryAcceptPendingInvite(');
+  const end = src.indexOf('function clearSidebarBillingDomForUserSwitch(', start);
+  const fnBody = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fnBody.length > 0, 'tryAcceptPendingInvite must be extractable');
+
+  assert.doesNotMatch(fnBody, /console\./,
+    'tryAcceptPendingInvite must not log any state (prevents token/session leakage)');
+  assert.doesNotMatch(fnBody, /pendingInviteToken[\s\S]{0,60}textContent|console[\s\S]{0,60}pendingInviteToken/,
+    'tryAcceptPendingInvite must not expose raw invite token in UI or logs');
+  // session.access_token is a legitimate session presence check — exclude it.
+  // Only flag logging/display of bearer headers, service credentials, or refresh tokens.
+  assert.doesNotMatch(fnBody, /refresh_token|Bearer|service.?role|SUPABASE_SERVICE/i,
+    'tryAcceptPendingInvite must not reference bearer headers or service credentials');
 });
 
 test('phase 3C1 invite handoff visibility fix stays within invite UI scope', async () => {

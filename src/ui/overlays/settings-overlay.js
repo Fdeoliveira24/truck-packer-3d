@@ -4549,6 +4549,7 @@ export function createSettingsOverlay({
     accountBtn.type = 'button';
     accountBtn.className = 'btn';
     accountBtn.classList.add('tp3d-settings-account-btn');
+    accountBtn.classList.add('tp3d-settings-profile-card');
     const accountInner = doc.createElement('span');
     accountInner.className = 'tp3d-settings-account-inner';
     const accountAvatar = doc.createElement('span');

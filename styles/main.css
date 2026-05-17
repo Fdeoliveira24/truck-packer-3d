@@ -1408,6 +1408,15 @@ tr:hover td {
   display: none;
 }
 
+/* Static identity block — preserves click handler; removes .btn hover lift and shadow escalation. */
+.tp3d-settings-profile-card {
+  border-radius: var(--radius-md);
+}
+.tp3d-settings-profile-card:hover {
+  box-shadow: var(--shadow-sm);
+  transform: none;
+}
+
 .tp3d-settings-account-inner {
   display: flex;
   align-items: center;
@@ -1485,6 +1494,23 @@ tr:hover td {
 .tp3d-settings-nav-item.is-disabled:hover {
   background: transparent;
   color: var(--text-secondary);
+}
+
+/* INTENTIONAL: Active state scoped to Settings nav.
+   Active class is .active, set by applyTabStateToDOM() via classList.toggle('active', isActive).
+   Overrides .nav-btn.active all-around border with a left-only accent border. */
+.tp3d-settings-nav-item.active {
+  border: none;
+  border-left: 2px solid var(--accent-primary);
+  padding-left: 10px; /* 12px base - 2px border = same visual text offset */
+  color: var(--accent-primary);
+}
+.tp3d-settings-nav-item.active:hover {
+  color: var(--accent-primary);
+}
+.tp3d-settings-nav-item:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
 }
 
 .tp3d-settings-nav-label {

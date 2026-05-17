@@ -4940,33 +4940,62 @@ export function createSettingsOverlay({
       } else if (resourcesSubView === 'help') {
         renderHelpContent(body);
       } else {
-        // Root view: show buttons
+        // Root view: card-row list
         const container = doc.createElement('div');
-        container.className = 'grid';
+        container.className = 'tp3d-resources-view';
 
-        const makeBtn = (label, variant, onClick) => {
+        const makeResourceCard = (icon, title, description, onClick) => {
           const btn = doc.createElement('button');
           btn.type = 'button';
-          btn.className = 'btn';
-          if (variant) btn.classList.add(variant);
-          btn.textContent = label;
+          btn.className = 'tp3d-resources-card tp3d-settings-card--clickable';
           btn.addEventListener('click', onClick);
+
+          const iconEl = doc.createElement('i');
+          iconEl.className = icon;
+          btn.appendChild(iconEl);
+
+          const textWrap = doc.createElement('div');
+
+          const titleEl = doc.createElement('div');
+          titleEl.className = 'tp3d-resources-card-title';
+          titleEl.textContent = title;
+          textWrap.appendChild(titleEl);
+
+          const subEl = doc.createElement('div');
+          subEl.className = 'muted tp3d-resources-card-sub';
+          subEl.textContent = description;
+          textWrap.appendChild(subEl);
+
+          btn.appendChild(textWrap);
           return btn;
         };
 
-        const exportBtn = makeBtn('Export App', null, () => setResourcesSubView('export'));
-        const importBtn = makeBtn('Import App', null, () => setResourcesSubView('import'));
-        const helpBtn = makeBtn('Help', null, () => setResourcesSubView('help'));
+        container.appendChild(makeResourceCard(
+          'fa-solid fa-bell', 'Updates',
+          'Review recent product updates and release notes.',
+          () => setResourcesSubView('updates')
+        ));
+        container.appendChild(makeResourceCard(
+          'fa-solid fa-map', 'Roadmap',
+          'See planned improvements and upcoming product work.',
+          () => setResourcesSubView('roadmap')
+        ));
+        container.appendChild(makeResourceCard(
+          'fa-solid fa-file-export', 'Export App',
+          'Download a local backup of your app data.',
+          () => setResourcesSubView('export')
+        ));
+        container.appendChild(makeResourceCard(
+          'fa-solid fa-file-import', 'Import App',
+          'Restore app data from a supported backup file.',
+          () => setResourcesSubView('import')
+        ));
+        container.appendChild(makeResourceCard(
+          'fa-solid fa-circle-question', 'Help',
+          'Find guidance, support notes, and key product information.',
+          () => setResourcesSubView('help')
+        ));
 
-        // Updates and Roadmap buttons switch sub-views
-        const updatesBtn = makeBtn('Updates', null, () => setResourcesSubView('updates'));
-        const roadmapBtn = makeBtn('Roadmap', null, () => setResourcesSubView('roadmap'));
-
-        container.appendChild(updatesBtn);
-        container.appendChild(roadmapBtn);
-        container.appendChild(exportBtn);
-        container.appendChild(importBtn);
-        container.appendChild(helpBtn);
         body.appendChild(container);
       }
     } else if (_tabState.activeTabId === 'account') {

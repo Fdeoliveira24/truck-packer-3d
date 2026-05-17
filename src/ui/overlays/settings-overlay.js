@@ -5774,8 +5774,7 @@ export function createSettingsOverlay({
             wrap.appendChild(createBtn);
 
             const retryRow = doc.createElement('div');
-            retryRow.style.display = 'flex';
-            retryRow.style.justifyContent = 'flex-end';
+            retryRow.className = 'tp3d-account-actions';
 
             const retryBtn = doc.createElement('button');
             retryBtn.type = 'button';

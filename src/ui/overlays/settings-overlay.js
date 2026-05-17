@@ -5973,7 +5973,7 @@ export function createSettingsOverlay({
               exportCard.className = 'card tp3d-settings-card-max';
 
               const exportHeading = doc.createElement('div');
-              exportHeading.className = 'tp3d-settings-section-heading';
+              exportHeading.className = 'tp3d-settings-card-title';
               exportHeading.textContent = 'Backup & Export';
               exportCard.appendChild(exportHeading);
 
@@ -6005,7 +6005,7 @@ export function createSettingsOverlay({
             accessCard.className = 'card tp3d-settings-card-max';
 
             const accessHeading = doc.createElement('div');
-            accessHeading.className = 'tp3d-settings-section-heading';
+            accessHeading.className = 'tp3d-settings-card-title';
             accessHeading.textContent = 'Ownership & Access';
             accessCard.appendChild(accessHeading);
 

@@ -1499,12 +1499,15 @@ tr:hover td {
 /* INTENTIONAL: Active state scoped to Settings nav.
    Active class is .active, set by applyTabStateToDOM() via classList.toggle('active', isActive).
    Overrides .nav-btn.active all-around border with a left-only accent border. */
+
 .tp3d-settings-nav-item.active {
+  background: var(--accent-primary-14);
+  color: var(--accent-primary);
   border: none;
   border-left: 2px solid var(--accent-primary);
-  padding-left: 10px; /* 12px base - 2px border = same visual text offset */
-  color: var(--accent-primary);
+  padding-left: 10px; /* 12px base − 2px border keeps icon/text visually aligned */
 }
+
 .tp3d-settings-nav-item.active:hover {
   color: var(--accent-primary);
 }
@@ -1855,10 +1858,6 @@ tr:hover td {
   margin-top: 0;
 }
 
-/* Narrow numeric inputs so they don't awkwardly span the full column */
-.tp3d-prefs-number-input {
-  max-width: 120px;
-}
 
 /* Roadmap badge (dynamic background color set inline) */
 .tp3d-settings-roadmap-badge {

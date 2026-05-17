@@ -1496,21 +1496,9 @@ tr:hover td {
   color: var(--text-secondary);
 }
 
-/* INTENTIONAL: Active state scoped to Settings nav.
-   Active class is .active, set by applyTabStateToDOM() via classList.toggle('active', isActive).
-   Overrides .nav-btn.active all-around border with a left-only accent border. */
+/* Settings nav active: delegates to global .nav-btn.active
+   (accent-14 bg, text-primary color, accent-25 border — same as packs/cases nav) */
 
-.tp3d-settings-nav-item.active {
-  background: var(--accent-primary-14);
-  color: var(--accent-primary);
-  border: none;
-  border-left: 2px solid var(--accent-primary);
-  padding-left: 10px; /* 12px base − 2px border keeps icon/text visually aligned */
-}
-
-.tp3d-settings-nav-item.active:hover {
-  color: var(--accent-primary);
-}
 .tp3d-settings-nav-item:focus-visible {
   outline: 2px solid var(--accent-primary);
   outline-offset: 2px;
@@ -1610,10 +1598,10 @@ tr:hover td {
 
 .tp3d-settings-row {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 200px 1fr;
   gap: 16px;
   align-items: center;
-  padding: 16px 0;
+  padding: 10px 0;
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -3317,17 +3305,15 @@ body.modal-open {
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  color: inherit;
+  color: var(--text-secondary);
   font: inherit;
   cursor: pointer;
   padding: 0;
-  box-shadow: var(--shadow-sm);
-  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 .tp3d-resources-card-btn:hover {
   background: var(--bg-hover);
-  border-color: var(--border-strong);
-  box-shadow: var(--shadow-md);
+  color: var(--text-primary);
 }
 .tp3d-resources-card-btn:focus-visible {
   outline: 2px solid var(--accent-primary);
@@ -3346,7 +3332,6 @@ body.modal-open {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-secondary);
   font-size: var(--text-lg);
 }
 .tp3d-resources-card-copy {

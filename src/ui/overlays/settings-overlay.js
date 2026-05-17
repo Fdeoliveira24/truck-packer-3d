@@ -6050,7 +6050,7 @@ export function createSettingsOverlay({
 
               const exportWsBtn = doc.createElement('button');
               exportWsBtn.type = 'button';
-              exportWsBtn.className = 'btn btn-ghost';
+              exportWsBtn.className = 'btn';
               exportWsBtn.textContent = 'Export Workspace Data';
               exportWsBtn.addEventListener('click', () => {
                 const wsName = orgData && orgData.name ? String(orgData.name) : '';
@@ -6089,7 +6089,7 @@ export function createSettingsOverlay({
 
               const transferBtn = doc.createElement('button');
               transferBtn.type = 'button';
-              transferBtn.className = 'btn btn-ghost';
+              transferBtn.className = 'btn';
               transferBtn.textContent = _transferOwnershipInFlight ? 'Transferring…' : 'Transfer Ownership';
               transferBtn.disabled = _transferOwnershipInFlight;
               transferBtn.addEventListener('click', async () => {

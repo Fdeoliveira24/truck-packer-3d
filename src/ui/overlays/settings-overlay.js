@@ -4855,22 +4855,10 @@ export function createSettingsOverlay({
       prefsCard.appendChild(displayHeading);
 
       hiddenOpacity.classList.add('tp3d-prefs-number-input');
-      const opacityWrap = doc.createElement('div');
-      opacityWrap.appendChild(hiddenOpacity);
-      const opacityHint = doc.createElement('div');
-      opacityHint.className = 'muted tp3d-settings-meta tp3d-settings-mt-xs';
-      opacityHint.textContent = '0 = invisible · 1 = fully visible';
-      opacityWrap.appendChild(opacityHint);
-      prefsCard.appendChild(row('Hidden Case Opacity', opacityWrap));
+      prefsCard.appendChild(row('Hidden Case Opacity', hiddenOpacity));
 
       labelSize.classList.add('tp3d-prefs-number-input');
-      const sizeWrap = doc.createElement('div');
-      sizeWrap.appendChild(labelSize);
-      const sizeHint = doc.createElement('div');
-      sizeHint.className = 'muted tp3d-settings-meta tp3d-settings-mt-xs';
-      sizeHint.textContent = '8 – 24 pt';
-      sizeWrap.appendChild(sizeHint);
-      prefsCard.appendChild(row('Label Font Size', sizeWrap));
+      prefsCard.appendChild(row('Label Font Size', labelSize));
 
       const appearanceHeading = doc.createElement('div');
       appearanceHeading.className = 'tp3d-prefs-heading';

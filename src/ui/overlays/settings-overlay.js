@@ -5489,6 +5489,7 @@ export function createSettingsOverlay({
         ''
       ).toLowerCase();
       const isOwnerOrAdmin = orgRole === 'owner' || orgRole === 'admin';
+      const _siblingCards = [];
 
       if (isLockedOrgAccessLost(ensureModalOrgId())) {
         isEditingOrg = false;
@@ -5956,16 +5957,30 @@ export function createSettingsOverlay({
             (membershipData && membershipData.organization_id) ||
             ''
           );
+          const currentUserIdForLeave = orgUserView && orgUserView.userId ? String(orgUserView.userId) : '';
+          const isPrimaryOwner = Boolean(
+            orgData &&
+            orgData.owner_id &&
+            currentUserIdForLeave &&
+            String(orgData.owner_id) === currentUserIdForLeave
+          );
+          const leaveName = orgData && orgData.name ? String(orgData.name) : '';
+
+          // Card 2 — Backup & Export (owner/admin only)
           if (leaveOrgId && membershipData) {
             if (isOwnerOrAdmin && typeof _onExportWorkspace === 'function') {
-              const exportWsDivider = doc.createElement('div');
-              exportWsDivider.className = 'tp3d-settings-org-divider';
-              viewContainer.appendChild(exportWsDivider);
+              const exportCard = doc.createElement('div');
+              exportCard.className = 'card tp3d-settings-card-max';
+
+              const exportHeading = doc.createElement('div');
+              exportHeading.className = 'tp3d-settings-section-heading';
+              exportHeading.textContent = 'Backup & Export';
+              exportCard.appendChild(exportHeading);
 
               const exportWsIntro = doc.createElement('div');
               exportWsIntro.className = 'muted tp3d-settings-meta tp3d-settings-mt-md';
               exportWsIntro.textContent = 'Download a JSON backup of this workspace\'s packs and cases.';
-              viewContainer.appendChild(exportWsIntro);
+              exportCard.appendChild(exportWsIntro);
 
               const exportWsActions = doc.createElement('div');
               exportWsActions.className = 'tp3d-account-actions';
@@ -5978,38 +5993,33 @@ export function createSettingsOverlay({
                 _onExportWorkspace(wsName);
               });
               exportWsActions.appendChild(exportWsBtn);
-              viewContainer.appendChild(exportWsActions);
+              exportCard.appendChild(exportWsActions);
+
+              _siblingCards.push(exportCard);
             }
+          }
 
-            const leaveDivider = doc.createElement('div');
-            leaveDivider.className = 'tp3d-settings-org-divider';
-            viewContainer.appendChild(leaveDivider);
+          // Card 3 — Ownership & Access
+          if (leaveOrgId && membershipData) {
+            const accessCard = doc.createElement('div');
+            accessCard.className = 'card tp3d-settings-card-max';
 
-            const currentUserIdForLeave = orgUserView && orgUserView.userId ? String(orgUserView.userId) : '';
-            const isPrimaryOwner = Boolean(
-              orgData &&
-              orgData.owner_id &&
-              currentUserIdForLeave &&
-              String(orgData.owner_id) === currentUserIdForLeave
-            );
-            const leaveName = orgData && orgData.name ? String(orgData.name) : '';
-
-            const leaveIntro = doc.createElement('div');
-            leaveIntro.className = 'muted tp3d-settings-meta tp3d-settings-mt-md';
-            leaveIntro.textContent = 'Remove yourself from this workspace. You will need a new invite to rejoin.';
-            viewContainer.appendChild(leaveIntro);
+            const accessHeading = doc.createElement('div');
+            accessHeading.className = 'tp3d-settings-section-heading';
+            accessHeading.textContent = 'Ownership & Access';
+            accessCard.appendChild(accessHeading);
 
             if (isPrimaryOwner) {
               const ownerWarning = doc.createElement('div');
               ownerWarning.className = 'tp3d-org-feedback tp3d-org-feedback--warning';
               ownerWarning.textContent = 'Transfer ownership before leaving. You are the primary owner.';
-              viewContainer.appendChild(ownerWarning);
+              accessCard.appendChild(ownerWarning);
 
               const transferActions = doc.createElement('div');
               transferActions.className = 'tp3d-account-actions';
               const transferBtn = doc.createElement('button');
               transferBtn.type = 'button';
-              transferBtn.className = 'btn btn-primary';
+              transferBtn.className = 'btn btn-ghost';
               transferBtn.textContent = _transferOwnershipInFlight ? 'Transferring…' : 'Transfer Ownership';
               transferBtn.disabled = _transferOwnershipInFlight;
               transferBtn.addEventListener('click', async () => {
@@ -6017,8 +6027,17 @@ export function createSettingsOverlay({
                 await showTransferOwnershipModal(leaveOrgId, leaveName, currentUserIdForLeave);
               });
               transferActions.appendChild(transferBtn);
-              viewContainer.appendChild(transferActions);
+              accessCard.appendChild(transferActions);
+
+              const transferLeaveDivider = doc.createElement('div');
+              transferLeaveDivider.className = 'tp3d-settings-org-divider';
+              accessCard.appendChild(transferLeaveDivider);
             }
+
+            const leaveIntro = doc.createElement('div');
+            leaveIntro.className = 'muted tp3d-settings-meta tp3d-settings-mt-md';
+            leaveIntro.textContent = 'Remove yourself from this workspace. You will need a new invite to rejoin.';
+            accessCard.appendChild(leaveIntro);
 
             const leaveActions = doc.createElement('div');
             leaveActions.className = 'tp3d-account-actions';
@@ -6048,26 +6067,49 @@ export function createSettingsOverlay({
               if (confirmed) await leaveWorkspace(leaveOrgId, leaveName);
             });
             leaveActions.appendChild(leaveBtn);
-            viewContainer.appendChild(leaveActions);
+            accessCard.appendChild(leaveActions);
 
+            _siblingCards.push(accessCard);
+
+            // Card 4 — Danger Zone (primary owner only)
             if (isPrimaryOwner) {
-              const archiveDivider = doc.createElement('div');
-              archiveDivider.className = 'tp3d-settings-org-divider';
-              viewContainer.appendChild(archiveDivider);
+              const dangerCard = doc.createElement('div');
+              dangerCard.className = 'card tp3d-settings-card-max';
 
-              const archiveIntro = doc.createElement('div');
-              archiveIntro.className = 'muted tp3d-settings-meta tp3d-settings-mt-md';
-              archiveIntro.textContent = 'Archive this workspace. It will be hidden from normal workspace switching.';
-              viewContainer.appendChild(archiveIntro);
+              const dangerZone = doc.createElement('div');
+              dangerZone.className = 'tp3d-settings-danger';
+
+              const dangerTitle = doc.createElement('div');
+              dangerTitle.className = 'tp3d-settings-danger-title';
+              dangerTitle.textContent = 'Danger Zone';
+              dangerZone.appendChild(dangerTitle);
+
+              const dangerDivider = doc.createElement('div');
+              dangerDivider.className = 'tp3d-settings-danger-divider';
+              dangerZone.appendChild(dangerDivider);
+
+              const archiveRow = doc.createElement('div');
+              archiveRow.className = 'tp3d-settings-danger-row';
+
+              const archiveLeft = doc.createElement('div');
+              archiveLeft.className = 'tp3d-settings-danger-left';
+              archiveLeft.textContent = 'Archive Workspace';
+              archiveRow.appendChild(archiveLeft);
+
+              const archiveRight = doc.createElement('div');
+              archiveRight.className = 'tp3d-settings-danger-right';
+
+              const archiveDesc = doc.createElement('div');
+              archiveDesc.className = 'muted tp3d-settings-meta';
+              archiveDesc.textContent = 'Archive this workspace. It will be hidden from normal workspace switching.';
+              archiveRight.appendChild(archiveDesc);
 
               const archiveExportHint = doc.createElement('div');
-              archiveExportHint.className = 'muted tp3d-settings-meta tp3d-settings-mt-md';
+              archiveExportHint.className = 'muted tp3d-settings-meta';
               archiveExportHint.textContent =
                 'Before archiving or making major workspace changes, you may export a workspace JSON backup.';
-              viewContainer.appendChild(archiveExportHint);
+              archiveRight.appendChild(archiveExportHint);
 
-              const archiveActions = doc.createElement('div');
-              archiveActions.className = 'tp3d-account-actions';
               const archiveBtn = doc.createElement('button');
               archiveBtn.type = 'button';
               archiveBtn.className = 'btn btn-danger';
@@ -6085,18 +6127,25 @@ export function createSettingsOverlay({
                 }).catch(() => false);
                 if (confirmed) await archiveWorkspace(leaveOrgId, leaveName);
               });
-              archiveActions.appendChild(archiveBtn);
-              viewContainer.appendChild(archiveActions);
+              archiveRight.appendChild(archiveBtn);
+              archiveRow.appendChild(archiveRight);
+              dangerZone.appendChild(archiveRow);
+              dangerCard.appendChild(dangerZone);
+
+              _siblingCards.push(dangerCard);
             }
           }
 
         }
 
         if (!isLoadingMembership && !isLoadingOrg && !isLoadingAccountBundle) {
+          const archivedCard = doc.createElement('div');
+          archivedCard.className = 'card tp3d-settings-card-max';
           appendArchivedWorkspacesSection(
-            viewContainer,
+            archivedCard,
             orgUserView && orgUserView.userId ? String(orgUserView.userId) : ''
           );
+          _siblingCards.push(archivedCard);
         }
 
         orgCard.appendChild(orgTitle);
@@ -6105,6 +6154,7 @@ export function createSettingsOverlay({
       }
 
       body.appendChild(orgCard);
+      _siblingCards.forEach(c => body.appendChild(c));
     } else if (_tabState.activeTabId === 'org-members') {
       const orgUserView = getCurrentUserView(profileData);
       const membersLockedOrgId = ensureModalOrgId();

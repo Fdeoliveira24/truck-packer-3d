@@ -1025,12 +1025,14 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
   }
 
   // ── Cross-tab shared freshness: skip if another tab recently fetched for this org ──
-  // Applies even on "force" calls: force bypasses local throttle, not cross-tab single-flight.
+  // force:true bypasses this guard so manual Retry/Refresh always triggers a real fetch.
+  // Failed snapshots (ok:false, billing_unavailable, timeout) are never reused — only
+  // successful ok:true snapshots are eligible for cross-tab freshness reuse.
   if (requestedOrgId) {
     const sharedFreshAt = _getSharedBillingFreshness(requestedOrgId);
     if (sharedFreshAt && (now - sharedFreshAt) < _BILLING_SHARED_FRESH_MS) {
       const shared = _readSharedBillingResult(requestedOrgId);
-      if (shared && _isBillingSnapshotScopedToOrg(requestedOrgId, shared)) {
+      if (!force && shared && _isBillingSnapshotScopedToOrg(requestedOrgId, shared) && shared.ok) {
         billingDebugLog('billing:cross-tab-lock:skip-fresh', {
           reason,
           orgId: requestedOrgId,

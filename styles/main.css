@@ -1800,6 +1800,32 @@ tr:hover td {
   margin-top: var(--space-3);
 }
 
+/* ── Preferences tab — scoped visual polish ─────────────────────── */
+
+/* Group label: small, uppercase, muted — creates hierarchy without bulk */
+.tp3d-prefs-heading {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* First heading: no top separator — card boundary is enough */
+.tp3d-prefs-card > .tp3d-prefs-heading:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+/* Narrow numeric inputs so they don't awkwardly span the full column */
+.tp3d-prefs-number-input {
+  max-width: 120px;
+}
+
 /* Roadmap badge (dynamic background color set inline) */
 .tp3d-settings-roadmap-badge {
   border-color: transparent;

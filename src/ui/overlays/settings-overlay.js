@@ -4840,24 +4840,40 @@ export function createSettingsOverlay({
       theme.value = prefs.theme;
 
       const prefsCard = doc.createElement('div');
-      prefsCard.className = 'card tp3d-settings-card-max';
+      prefsCard.className = 'card tp3d-settings-card-max tp3d-prefs-card';
 
       const unitsHeading = doc.createElement('div');
-      unitsHeading.className = 'tp3d-settings-card-title';
+      unitsHeading.className = 'tp3d-prefs-heading';
       unitsHeading.textContent = 'Units';
       prefsCard.appendChild(unitsHeading);
       prefsCard.appendChild(row('Length', length));
       prefsCard.appendChild(row('Weight', weight));
 
       const displayHeading = doc.createElement('div');
-      displayHeading.className = 'tp3d-settings-card-title';
+      displayHeading.className = 'tp3d-prefs-heading';
       displayHeading.textContent = 'Editor Display';
       prefsCard.appendChild(displayHeading);
-      prefsCard.appendChild(row('Hidden Case Opacity', hiddenOpacity));
-      prefsCard.appendChild(row('Label Font Size', labelSize));
+
+      hiddenOpacity.classList.add('tp3d-prefs-number-input');
+      const opacityWrap = doc.createElement('div');
+      opacityWrap.appendChild(hiddenOpacity);
+      const opacityHint = doc.createElement('div');
+      opacityHint.className = 'muted tp3d-settings-meta tp3d-settings-mt-xs';
+      opacityHint.textContent = '0 = invisible · 1 = fully visible';
+      opacityWrap.appendChild(opacityHint);
+      prefsCard.appendChild(row('Hidden Case Opacity', opacityWrap));
+
+      labelSize.classList.add('tp3d-prefs-number-input');
+      const sizeWrap = doc.createElement('div');
+      sizeWrap.appendChild(labelSize);
+      const sizeHint = doc.createElement('div');
+      sizeHint.className = 'muted tp3d-settings-meta tp3d-settings-mt-xs';
+      sizeHint.textContent = '8 – 24 pt';
+      sizeWrap.appendChild(sizeHint);
+      prefsCard.appendChild(row('Label Font Size', sizeWrap));
 
       const appearanceHeading = doc.createElement('div');
-      appearanceHeading.className = 'tp3d-settings-card-title';
+      appearanceHeading.className = 'tp3d-prefs-heading';
       appearanceHeading.textContent = 'Appearance';
       prefsCard.appendChild(appearanceHeading);
       prefsCard.appendChild(row('Theme', theme));

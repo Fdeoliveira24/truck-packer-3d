@@ -10,7 +10,7 @@ This document is the authoritative reference for every UI implementation phase t
 
 - **Additive first.** Add new classes before removing old ones. Deprecated classes become aliases that point to the new rule.
 - **CSS-only phases are zero-risk only if** the selector is already correctly applied by the JS. Verify JS class assignments before assuming a CSS rule has effect.
-- **Never remove `.modal .btn-danger` override.** It is intentional context-scoped behavior. The CSS comment explaining it must be preserved and expanded on any edit.
+- **Never remove `.modal .btn-danger` or `.tp3d-settings-danger-right .btn-danger` overrides.** Both are intentional context-scoped overrides that promote `.btn-danger` from ghost-red to solid red inside modals and danger zones. The CSS comment explaining them must be preserved and expanded on any edit.
 - **Phase 10 (inline style migration) is last.** It is the highest regression risk in the plan. Do not batch-remove inline styles. One property at a time, browser-verified after each.
 - **Do not modularize `settings-overlay.js` yet.** All JS changes are `className` additions only, not structural rewrites.
 - **`Production/` stays untracked throughout.**
@@ -54,7 +54,7 @@ The token values are correct. The problem is wrong application. This table is th
 | Right-pane tab title | `--text-xl` (20px) | semibold | Reduce from `--text-2xl`. Use `.tp3d-settings-right-title` |
 | Right-pane subtitle | `--text-sm` (14px) | normal | `--text-secondary`. Use `.tp3d-settings-right-subtitle` |
 | Section heading (all tabs) | `--text-xs` (12px) | semibold | Uppercase + `letter-spacing: 0.07em` + `--text-secondary`. Use `.tp3d-prefs-heading` (extend to all tabs) |
-| Row label | `--text-base` (16px) via `.tp3d-settings-row` | **medium** (500) — not semibold | Semibold reserved for titles/headings only. **Test in isolation on Account tab before applying globally.** |
+| Row label | `--text-base` (16px) via `.tp3d-settings-row` | **medium** (500) — not semibold | **Browser-test first on all six tabs; commit only if it improves readability.** This is not a guaranteed Phase 1 change. |
 | Row value | `--text-base` | normal | |
 | Card/section title (Billing, Org) | `--text-xl` | semibold | Use new `.tp3d-settings-section-title` — replaces the duplicate `org-title` / `billing-title` rules |
 | Nav items | `--text-sm` | medium | See A2 |
@@ -92,8 +92,10 @@ overflow: hidden
 
 ### A5. Interactive Card Pattern
 
-Resource root cards currently use `.tp3d-resources-card-btn` (correct structure). In addition:
-- Apply `.card--interactive` to the resource card buttons so hover behavior comes from CSS, not JS.
+Resource root cards use `.tp3d-resources-card-btn`, `.tp3d-resources-card-row`, `.tp3d-resources-card-icon`, and `.tp3d-resources-card-copy`. These classes already carry their own hover/focus/transition rules in `main.css`. **Do not add `.card--interactive` to resources root items** — it would create a specificity conflict with the existing hover rules.
+
+The correct fix for UI-4B is a JS-only className swap to this existing system. `.card--interactive` is reserved for future generic clickable cards that do not have a dedicated button class.
+
 - Remove any JS-applied `style.background` on resource card hover — JS inline hover styles on static elements are forbidden by this contract.
 - Resource card icon `font-size`: **20px** fixed (not a token) — FA icons at this size optically align across all five resource items.
 
@@ -110,7 +112,7 @@ border-bottom: 1px solid var(--border-subtle)
 ```
 
 `.tp3d-settings-row-label` change: `font-weight: var(--font-medium)` (from `semibold`).
-**Risk note:** This is a global change to all settings form rows. Must be tested tab-by-tab before committing. Start with a browser-only test — no commit until all six tabs are verified at both desktop and 768px.
+**Test-first:** Browser-test on all six tabs before committing. Commit only if the change improves readability. This is not a guaranteed Phase 1 change — if the lighter weight makes rows feel less scannable, defer this item.
 
 New modifier (additive):
 
@@ -154,7 +156,7 @@ Five tiers. The existing CSS already implements most of this — the contract ju
 | Standard action (Edit, Export, Transfer) | `.btn` | Outlined neutral | Default state with border |
 | Quiet / navigation action | `.btn.btn-ghost` | Transparent | No border, no background |
 | Danger (outside modal) | `.btn.btn-danger` | Ghost-red text | Background: `rgba(239,68,68,0.12)`, color: `var(--error)` — current out-of-modal behavior |
-| Danger (inside `.modal` or `.tp3d-settings-danger-zone`) | `.btn.btn-danger` | Solid red | Overridden by `.modal .btn-danger` rule — **do not remove this override** |
+| Danger (inside `.modal` or `.tp3d-settings-danger-right`) | `.btn.btn-danger` | Solid red | Overridden by `.modal .btn-danger` and `.tp3d-settings-danger-right .btn-danger` scoped rules — **do not remove either override** |
 
 **Text-link actions are forbidden.** Any clickable text that triggers an action (download, transfer, leave, export) must be a `.btn` or `.btn.btn-ghost`. No naked `<a>` or unstyled `<span>` as action triggers.
 
@@ -202,7 +204,7 @@ Apply to: Members empty state, Billing no-data fallback, Archived Workspaces emp
 
 ### A11. Resources Tab Pattern
 
-**Root view cards:** Use `.tp3d-resources-card-btn` (already implemented). Add `.card--interactive` to each card button so hover state is CSS-driven. Remove any JS inline `style.background` on hover.
+**Root view cards:** Use `.tp3d-resources-card-btn` (already implemented with hover/focus/transition in `main.css`). Do not add `.card--interactive` — not needed and would conflict. Remove any JS inline `style.background` on hover.
 
 **Icon standardization:** Resource card icons — bell, map, file-export, file-import, circle-question — render at different optical sizes in FA6. Fix by setting `font-size: 20px` explicitly on `.tp3d-resources-card-icon`. This is a CSS-only change.
 
@@ -244,7 +246,7 @@ The Billing tab has the most complex state machine — this contract imposes vis
 | Section title | Apply `.tp3d-settings-section-title` (replaces `.tp3d-settings-billing-title`) |
 | Pro CTA card | `.tp3d-billing-pro-cta` — keep as-is, it's well-designed |
 | Payment warning card | `.tp3d-billing-payment-warning` — keep |
-| Billing action buttons | Already use `.btn.btn-secondary` — keep |
+| Billing action buttons | `.btn` (outlined neutral — `.btn-secondary` does not exist) — keep |
 | Skeleton states | Keep all `tp3d-skeleton-*` and `tp3d-skel-*` classes — do not touch |
 
 `tp3d-settings-billing-title` and `tp3d-settings-org-title` are identical CSS rules. Phase 8 creates `.tp3d-settings-section-title` as a unified replacement and marks the two originals as deprecated aliases (the rule stays, the class name is phased out in future JS passes).
@@ -277,22 +279,27 @@ This policy applies to all overlays: `settings-overlay.js`, `account-overlay.js`
 | All dropdowns | `top`, `left`, `right`, `width`, `minWidth`, `visibility` | Viewport-calculated at open time |
 | Toast icon | `background` | Maps to semantic token per toast type; config-driven |
 | Modal overlay nested | `zIndex` | Stacking context for nested modals (e.g. delete-confirm above account modal) |
-| `display: flex` on always-on containers | `display` | Element created fresh per render; toggling via class is equivalent risk |
+| `display: flex` on modal/overlay containers | `display` | Modal containers rely on `.tp3d-settings-modal` grid layout. Moving `display` to CSS is only safe if the same commit adds **and** applies a tested modal modifier class that explicitly handles the grid override. Never move the `display` property in isolation. |
 
 #### Must move to CSS (static / repeated)
 
 | Location | Property | Target CSS class |
 |---|---|---|
-| `settings-overlay.js:5555, 5802` | `background: var(--accent-primary)` on logo placeholder | `.tp3d-avatar-placeholder { background: var(--accent-primary) }` |
 | `settings-overlay.js:5777–5778` | `display: flex; justify-content: flex-end` on retry row | Already fixed (UI-1B): use `.tp3d-account-actions` |
 | `settings-overlay.js:2441, 5270–5271` | `color: var(--danger, #dc2626)` on error messages | `.tp3d-error-inline { color: var(--error); min-height: 18px }` |
-| `account-overlay.js:162–164` | `maxWidth: 560px; display: flex; flexDirection: column` on delete-confirm modal | `.tp3d-settings-modal--confirm { max-width: 560px; display: flex; flex-direction: column }` |
+| `account-overlay.js:162–164` | `maxWidth: 560px; display: flex; flexDirection: column` on delete-confirm modal | `.tp3d-settings-modal--confirm { max-width: 560px; display: flex; flex-direction: column }` — **only move if the same commit adds and applies a tested modal modifier class that safely replaces the `.tp3d-settings-modal` grid behavior; never move `display` alone** |
 | `account-overlay.js:239–242` | `display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px` on footer | `.tp3d-confirm-modal-footer` |
 | `account-overlay.js:445–447` | `display: flex; flex-direction: column; gap: 6px` on avatarRight | `.tp3d-avatar-col` |
 | Any `style.fontWeight = 'var(--font-semibold)'` on static elements | `fontWeight` | Use `.tp3d-settings-card-title` or a utility class |
 | Any `style.fontSize = 'var(--text-sm)'` on static elements | `fontSize` | Use `.tp3d-settings-meta` or `.muted` |
 
 **Migration rule:** For each inline style to migrate: (1) add the CSS class to `main.css`, (2) add `classList.add(...)` in JS, (3) verify in browser, (4) only then remove the `style.*` assignment. Never remove before adding.
+
+#### Hold for avatar/logo image pass
+
+| Location | Property | Note |
+|---|---|---|
+| `settings-overlay.js:5555, 5802` | `background: var(--accent-primary)` on logo placeholder | The placeholder background interacts with the avatar/logo upload flow — the placeholder may be replaced by a user image. Verify placeholder-vs-image render states visually before moving to a static CSS class. |
 
 ---
 

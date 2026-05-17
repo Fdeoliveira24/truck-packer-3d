@@ -3878,14 +3878,27 @@ export function createSettingsOverlay({
       retryBtn.className = 'btn tp3d-settings-mt-sm';
       retryBtn.textContent = 'Retry';
       retryBtn.addEventListener('click', () => {
+        retryBtn.disabled = true;
+        retryBtn.textContent = 'Retrying\u2026';
+        retryBtn.setAttribute('aria-busy', 'true');
         const refreshPromise = api && typeof api.refreshBilling === 'function'
           ? api.refreshBilling({ force: true, reason: 'settings-billing-retry' })
           : Promise.resolve();
         Promise.resolve(refreshPromise)
           .catch(() => { })
-          .finally(() => renderCurrentBillingTabAfterRefresh('settings-billing-retry'));
+          .finally(() => {
+            retryBtn.removeAttribute('aria-busy');
+            retryBtn.disabled = false;
+            retryBtn.textContent = 'Retry';
+            renderCurrentBillingTabAfterRefresh('settings-billing-retry');
+          });
       });
       planCard.appendChild(retryBtn);
+
+      const retryHint = doc.createElement('div');
+      retryHint.className = 'muted tp3d-settings-meta tp3d-settings-mt-xs';
+      retryHint.textContent = 'Retry may take longer on a slow connection.';
+      planCard.appendChild(retryHint);
     } else {
       // Plan header row
       const planHeader = doc.createElement('div');
@@ -4260,17 +4273,25 @@ export function createSettingsOverlay({
 
       const refreshBtn = doc.createElement('button');
       refreshBtn.type = 'button';
-      refreshBtn.className = 'btn btn-secondary';
+      refreshBtn.className = 'btn btn-ghost';
       refreshBtn.textContent = 'Refresh';
       refreshBtn.disabled = Boolean(loading || !lockedOrgId);
       refreshBtn.addEventListener('click', () => {
         if (!lockedOrgId) return;
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = 'Refreshing\u2026';
+        refreshBtn.setAttribute('aria-busy', 'true');
         const hydratePromise = ensureBillingContextHydrated(lockedOrgId, { force: true, source: 'org-billing:refresh' });
         const refreshPromise = api && typeof api.refreshBilling === 'function'
           ? api.refreshBilling({ force: true, reason: 'settings-billing-refresh' })
           : Promise.resolve();
         Promise.allSettled([hydratePromise, refreshPromise])
-          .then(() => renderCurrentBillingTabAfterRefresh('settings-billing-refresh'));
+          .then(() => renderCurrentBillingTabAfterRefresh('settings-billing-refresh'))
+          .finally(() => {
+            refreshBtn.removeAttribute('aria-busy');
+            refreshBtn.disabled = Boolean(loading || !lockedOrgId);
+            refreshBtn.textContent = 'Refresh';
+          });
       });
       actionsRow.appendChild(refreshBtn);
       subSection.appendChild(actionsRow);

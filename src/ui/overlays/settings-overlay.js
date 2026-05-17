@@ -4839,11 +4839,28 @@ export function createSettingsOverlay({
       `;
       theme.value = prefs.theme;
 
-      body.appendChild(row('Length', length));
-      body.appendChild(row('Weight', weight));
-      body.appendChild(row('Hidden Case Opacity', hiddenOpacity));
-      body.appendChild(row('Label Font Size', labelSize));
-      body.appendChild(row('Theme', theme));
+      const prefsCard = doc.createElement('div');
+      prefsCard.className = 'card tp3d-settings-card-max';
+
+      const unitsHeading = doc.createElement('div');
+      unitsHeading.className = 'tp3d-settings-card-title';
+      unitsHeading.textContent = 'Units';
+      prefsCard.appendChild(unitsHeading);
+      prefsCard.appendChild(row('Length', length));
+      prefsCard.appendChild(row('Weight', weight));
+
+      const displayHeading = doc.createElement('div');
+      displayHeading.className = 'tp3d-settings-card-title';
+      displayHeading.textContent = 'Editor Display';
+      prefsCard.appendChild(displayHeading);
+      prefsCard.appendChild(row('Hidden Case Opacity', hiddenOpacity));
+      prefsCard.appendChild(row('Label Font Size', labelSize));
+
+      const appearanceHeading = doc.createElement('div');
+      appearanceHeading.className = 'tp3d-settings-card-title';
+      appearanceHeading.textContent = 'Appearance';
+      prefsCard.appendChild(appearanceHeading);
+      prefsCard.appendChild(row('Theme', theme));
 
       const showShadowControls = false;
       if (showShadowControls) {
@@ -4886,7 +4903,7 @@ export function createSettingsOverlay({
 
         shadowRow.appendChild(shadowStatus);
         shadowRow.appendChild(restoreBtn);
-        body.appendChild(row('Shadows', shadowRow));
+        prefsCard.appendChild(row('Shadows', shadowRow));
       }
 
       const actions = doc.createElement('div');
@@ -4906,7 +4923,8 @@ export function createSettingsOverlay({
         })
       );
       actions.appendChild(saveBtn);
-      body.appendChild(actions);
+      prefsCard.appendChild(actions);
+      body.appendChild(prefsCard);
     } else if (_tabState.activeTabId === 'resources') {
       // Handle sub-views within Resources
       if (resourcesSubView === 'updates') {

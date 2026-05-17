@@ -87,7 +87,7 @@ The view-mode render path is reorganized into **four cards** plus one trailing s
   [tp3d-org-feedback tp3d-org-feedback--warning]
     "Transfer ownership before leaving. You are the primary owner."
   [tp3d-account-actions]
-    [btn btn-ghost]  "Transfer Ownership"   ← CHANGED from btn-primary to btn-ghost
+    [btn btn-secondary]  "Transfer Ownership"   ← CHANGED from btn-primary to btn-secondary
     (disabled while _transferOwnershipInFlight)
 
 [tp3d-settings-org-divider]  (only if isPrimaryOwner, to separate transfer from leave)
@@ -100,7 +100,7 @@ The view-mode render path is reorganized into **four cards** plus one trailing s
 ```
 
 **Change from current:** Extract from divider-separated inline blocks into its own card.
-**Button class change:** Transfer Ownership changes `btn btn-primary` → `btn btn-ghost`. No backend change.
+**Button class change:** Transfer Ownership changes `btn btn-primary` → `btn btn-secondary`. No backend change.
 
 ---
 
@@ -195,7 +195,7 @@ All classes used in the target structure are verified to exist in `styles/main.c
 | Remove archiveExportHint (duplicate) | settings-overlay.js | ~6058–6061 | LOW | Delete 5 lines; no gate logic |
 | Wrap archive in danger card 4 | settings-overlay.js | ~6062–6090 | LOW | Moving DOM; isPrimaryOwner gate unchanged |
 | Change archived section container | settings-overlay.js | ~6095–6100 | LOW | Pass new container instead of viewContainer |
-| Transfer Ownership: `btn-primary` → `btn-ghost` | settings-overlay.js | ~6006 | **VERY LOW** | One className string change; zero backend impact |
+| Transfer Ownership: `btn-primary` → `btn-secondary` | settings-overlay.js | ~6006 | **VERY LOW** | One className string change; zero backend impact |
 | orgCard outer still wraps all | settings-overlay.js | ~5468, ~6105 | LOW | Remove `orgCard.appendChild(viewContainer)`; append cards directly to `body` |
 
 **Highest actual risk:** The transfer+leave block (card 3). It has:  
@@ -326,7 +326,7 @@ The exact changes:
    Add a tp3d-settings-section-heading "Ownership & Access".
    Move the isPrimaryOwner warning notice, Transfer Ownership button, the
    leaveDivider, leaveIntro, and Leave Workspace button into this card.
-   Change Transfer Ownership button class from "btn btn-primary" to "btn btn-ghost".
+   Change Transfer Ownership button class from "btn btn-primary" to "btn btn-secondary".
    Keep all isPrimaryOwner checks, in-flight guards, and async handlers unchanged.
    Append card to `body` after card 2 (or after card 1 if card 2 not rendered).
 

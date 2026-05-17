@@ -4947,26 +4947,34 @@ export function createSettingsOverlay({
         const makeResourceCard = (icon, title, description, onClick) => {
           const btn = doc.createElement('button');
           btn.type = 'button';
-          btn.className = 'tp3d-resources-card tp3d-settings-card--clickable';
+          btn.className = 'tp3d-resources-card-btn tp3d-settings-card--clickable';
           btn.addEventListener('click', onClick);
 
+          const row = doc.createElement('div');
+          row.className = 'tp3d-resources-card-row';
+
+          const iconWrap = doc.createElement('span');
+          iconWrap.className = 'tp3d-resources-card-icon';
           const iconEl = doc.createElement('i');
           iconEl.className = icon;
-          btn.appendChild(iconEl);
+          iconWrap.appendChild(iconEl);
+          row.appendChild(iconWrap);
 
-          const textWrap = doc.createElement('div');
+          const copy = doc.createElement('span');
+          copy.className = 'tp3d-resources-card-copy';
 
-          const titleEl = doc.createElement('div');
+          const titleEl = doc.createElement('span');
           titleEl.className = 'tp3d-resources-card-title';
           titleEl.textContent = title;
-          textWrap.appendChild(titleEl);
+          copy.appendChild(titleEl);
 
-          const subEl = doc.createElement('div');
-          subEl.className = 'muted tp3d-resources-card-sub';
+          const subEl = doc.createElement('span');
+          subEl.className = 'tp3d-resources-card-sub';
           subEl.textContent = description;
-          textWrap.appendChild(subEl);
+          copy.appendChild(subEl);
 
-          btn.appendChild(textWrap);
+          row.appendChild(copy);
+          btn.appendChild(row);
           return btn;
         };
 

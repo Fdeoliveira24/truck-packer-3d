@@ -1574,6 +1574,11 @@ tr:hover td {
   flex: 1;
 }
 
+/* Scoped card gap — sibling cards inside the right body get breathing room */
+.tp3d-settings-right-body > .card + .card {
+  margin-top: var(--space-4);
+}
+
 .tp3d-settings-row {
   display: grid;
   grid-template-columns: 220px 1fr;
@@ -1709,6 +1714,7 @@ tr:hover td {
   flex-direction: column;
   min-width: 0;
   overflow: hidden;
+  background: var(--bg-secondary);
 }
 
 /* ---- Settings utility classes ---- */

@@ -5916,7 +5916,7 @@ export function createSettingsOverlay({
 
             const advancedHelper = doc.createElement('span');
             advancedHelper.className = 'tp3d-settings-advanced-helper muted';
-            advancedHelper.textContent = 'Ownership, leave, archive, and restore tools for workspace admins.';
+            advancedHelper.textContent = 'Backup, ownership, archive, and restore tools.';
 
             advancedToggle.appendChild(advancedLabel);
             advancedToggle.appendChild(advancedHelper);
@@ -5935,7 +5935,47 @@ export function createSettingsOverlay({
             advancedCard.appendChild(advancedToggle);
             advancedCard.appendChild(advancedBody);
 
-            // A. Ownership & Access
+            // A. Workspace Backup (owner/admin only)
+            if (isOwnerOrAdmin && typeof _onExportWorkspace === 'function') {
+              const exportSection = doc.createElement('div');
+              exportSection.className = 'tp3d-settings-advanced-section';
+
+              const exportSectionHeading = doc.createElement('div');
+              exportSectionHeading.className = 'tp3d-settings-section-heading';
+              exportSectionHeading.textContent = 'Workspace Backup';
+              exportSection.appendChild(exportSectionHeading);
+
+              const exportSectionDivider = doc.createElement('div');
+              exportSectionDivider.className = 'tp3d-settings-org-divider';
+              exportSection.appendChild(exportSectionDivider);
+
+              const exportRow = doc.createElement('div');
+              exportRow.className = 'tp3d-workspace-action-row';
+
+              const exportCopy = doc.createElement('div');
+              exportCopy.className = 'tp3d-workspace-action-copy';
+
+              const exportWsIntro = doc.createElement('div');
+              exportWsIntro.className = 'tp3d-workspace-action-text';
+              exportWsIntro.textContent = 'Download this workspace\'s packs, cases, and folder structure. App preferences, members, billing, payment data, and thumbnails are not included.';
+              exportCopy.appendChild(exportWsIntro);
+
+              const exportWsBtn = doc.createElement('button');
+              exportWsBtn.type = 'button';
+              exportWsBtn.className = 'btn';
+              exportWsBtn.textContent = 'Export Workspace Backup';
+              exportWsBtn.addEventListener('click', () => {
+                const wsName = orgData && orgData.name ? String(orgData.name) : '';
+                _onExportWorkspace(wsName);
+              });
+
+              exportRow.appendChild(exportCopy);
+              exportRow.appendChild(exportWsBtn);
+              exportSection.appendChild(exportRow);
+              advancedBody.appendChild(exportSection);
+            }
+
+            // B. Ownership & Access
             const ownershipSection = doc.createElement('div');
             ownershipSection.className = 'tp3d-settings-advanced-section';
 
@@ -6028,7 +6068,7 @@ export function createSettingsOverlay({
 
             advancedBody.appendChild(ownershipSection);
 
-            // B. Danger Zone (primary owner only)
+            // C. Danger Zone (primary owner only)
             if (isPrimaryOwner) {
               const dangerZone = doc.createElement('div');
               dangerZone.className = 'tp3d-settings-danger';
@@ -6091,56 +6131,17 @@ export function createSettingsOverlay({
               advancedBody.appendChild(dangerZone);
             }
 
-            _siblingCards.push(advancedCard);
-
-            // Workspace Backup card (owner/admin only)
-            if (isOwnerOrAdmin && typeof _onExportWorkspace === 'function') {
-              const exportCard = doc.createElement('div');
-              exportCard.className = 'card tp3d-settings-card-max';
-
-              const exportRow = doc.createElement('div');
-              exportRow.className = 'tp3d-workspace-action-row';
-
-              const exportCopy = doc.createElement('div');
-              exportCopy.className = 'tp3d-workspace-action-copy';
-
-              const exportHeading = doc.createElement('div');
-              exportHeading.className = 'tp3d-workspace-action-title';
-              exportHeading.textContent = 'Workspace Backup';
-              exportCopy.appendChild(exportHeading);
-
-              const exportWsIntro = doc.createElement('div');
-              exportWsIntro.className = 'tp3d-workspace-action-text';
-              exportWsIntro.textContent = 'Download this workspace\'s packs, cases, and folder structure. App preferences, members, billing, payment data, and thumbnails are not included.';
-              exportCopy.appendChild(exportWsIntro);
-
-              const exportWsBtn = doc.createElement('button');
-              exportWsBtn.type = 'button';
-              exportWsBtn.className = 'btn';
-              exportWsBtn.textContent = 'Export Workspace Backup';
-              exportWsBtn.addEventListener('click', () => {
-                const wsName = orgData && orgData.name ? String(orgData.name) : '';
-                _onExportWorkspace(wsName);
-              });
-
-              exportRow.appendChild(exportCopy);
-              exportRow.appendChild(exportWsBtn);
-              exportCard.appendChild(exportRow);
-
-              _siblingCards.push(exportCard);
+            // D. Archived Workspaces
+            if (!isLoadingMembership && !isLoadingOrg && !isLoadingAccountBundle) {
+              appendArchivedWorkspacesSection(
+                advancedBody,
+                orgUserView && orgUserView.userId ? String(orgUserView.userId) : ''
+              );
             }
+
+            _siblingCards.push(advancedCard);
           }
 
-        }
-
-        if (!isLoadingMembership && !isLoadingOrg && !isLoadingAccountBundle) {
-          const archivedCard = doc.createElement('div');
-          archivedCard.className = 'card tp3d-settings-card-max';
-          appendArchivedWorkspacesSection(
-            archivedCard,
-            orgUserView && orgUserView.userId ? String(orgUserView.userId) : ''
-          );
-          _siblingCards.push(archivedCard);
         }
 
         orgCard.appendChild(orgTitle);

@@ -1784,6 +1784,11 @@ tr:hover td {
   margin-top: var(--space-4);
 }
 
+.tp3d-settings-advanced-body .tp3d-settings-danger-title {
+  font-size: var(--text-sm);
+  margin-bottom: 6px;
+}
+
 /* === Neutral empty state (no archived workspaces, no members, etc.) === */
 .tp3d-settings-empty {
   display: flex;

@@ -1766,7 +1766,7 @@ tr:hover td {
 }
 
 .tp3d-settings-advanced-label {
-  font-size: var(--text-sm);
+  font-size: var(--text-lg);
   font-weight: var(--font-semibold);
 }
 
@@ -1785,6 +1785,10 @@ tr:hover td {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   padding: var(--space-3) var(--space-4) 0;
+}
+
+.tp3d-settings-advanced-section > .tp3d-settings-org-divider:first-child {
+  display: none;
 }
 
 .tp3d-settings-advanced-body .tp3d-settings-danger-title {

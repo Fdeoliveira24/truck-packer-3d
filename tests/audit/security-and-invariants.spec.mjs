@@ -2142,7 +2142,7 @@ test('phase 0.6A settings general uses safe leave workspace UI', async () => {
     'leave action must use UIComponents.confirm with danger styling');
   assert.match(src, /leaveBtn\.disabled = _leaveWorkspaceInFlight \|\| isPrimaryOwner/,
     'leave button must disable while in flight and for primary owner');
-  assert.match(src, /Transfer ownership before leaving\. You are the primary owner\./,
+  assert.match(src, /Transfer Workspace ownership before leaving\. You are the primary owner\./,
     'primary owner must see transfer-ownership helper copy');
   assert.doesNotMatch(src, /window\.alert|window\.confirm|window\.prompt/,
     'settings overlay must not use native browser dialogs');

@@ -5914,12 +5914,7 @@ export function createSettingsOverlay({
             advancedLabel.className = 'tp3d-settings-advanced-label';
             advancedLabel.textContent = 'Advanced';
 
-            const advancedHelper = doc.createElement('span');
-            advancedHelper.className = 'tp3d-settings-advanced-helper muted';
-            advancedHelper.textContent = 'Backup, ownership, archive, and restore tools.';
-
             advancedToggle.appendChild(advancedLabel);
-            advancedToggle.appendChild(advancedHelper);
 
             const advancedBody = doc.createElement('div');
             advancedBody.id = advancedBodyId;
@@ -5975,34 +5970,29 @@ export function createSettingsOverlay({
               advancedBody.appendChild(exportSection);
             }
 
-            // B. Ownership & Access
-            const ownershipSection = doc.createElement('div');
-            ownershipSection.className = 'tp3d-settings-advanced-section';
-
-            const ownershipHeading = doc.createElement('div');
-            ownershipHeading.className = 'tp3d-settings-section-heading';
-            ownershipHeading.textContent = 'Ownership & Access';
-            ownershipSection.appendChild(ownershipHeading);
-
-            const ownershipDivider = doc.createElement('div');
-            ownershipDivider.className = 'tp3d-settings-org-divider';
-            ownershipSection.appendChild(ownershipDivider);
-
+            // B. Transfer Ownership (primary owner only)
             if (isPrimaryOwner) {
+              const transferSection = doc.createElement('div');
+              transferSection.className = 'tp3d-settings-advanced-section';
+
+              const transferSectionHeading = doc.createElement('div');
+              transferSectionHeading.className = 'tp3d-settings-section-heading';
+              transferSectionHeading.textContent = 'Transfer Ownership';
+              transferSection.appendChild(transferSectionHeading);
+
+              const transferSectionDivider = doc.createElement('div');
+              transferSectionDivider.className = 'tp3d-settings-org-divider';
+              transferSection.appendChild(transferSectionDivider);
+
               const transferRow = doc.createElement('div');
               transferRow.className = 'tp3d-workspace-action-row';
 
               const transferCopy = doc.createElement('div');
               transferCopy.className = 'tp3d-workspace-action-copy';
 
-              const transferTitle = doc.createElement('div');
-              transferTitle.className = 'tp3d-workspace-action-title';
-              transferTitle.textContent = 'Transfer Ownership';
-              transferCopy.appendChild(transferTitle);
-
               const ownerWarning = doc.createElement('div');
               ownerWarning.className = 'tp3d-workspace-action-text tp3d-org-feedback tp3d-org-feedback--warning';
-              ownerWarning.textContent = 'Transfer ownership before leaving. You are the primary owner.';
+              ownerWarning.textContent = 'Transfer Workspace ownership before leaving. You are the primary owner.';
               transferCopy.appendChild(ownerWarning);
 
               const transferBtn = doc.createElement('button');
@@ -6017,19 +6007,28 @@ export function createSettingsOverlay({
 
               transferRow.appendChild(transferCopy);
               transferRow.appendChild(transferBtn);
-              ownershipSection.appendChild(transferRow);
+              transferSection.appendChild(transferRow);
+              advancedBody.appendChild(transferSection);
             }
+
+            // C. Leave Workspace
+            const leaveSection = doc.createElement('div');
+            leaveSection.className = 'tp3d-settings-advanced-section';
+
+            const leaveSectionHeading = doc.createElement('div');
+            leaveSectionHeading.className = 'tp3d-settings-section-heading';
+            leaveSectionHeading.textContent = 'Leave Workspace';
+            leaveSection.appendChild(leaveSectionHeading);
+
+            const leaveSectionDivider = doc.createElement('div');
+            leaveSectionDivider.className = 'tp3d-settings-org-divider';
+            leaveSection.appendChild(leaveSectionDivider);
 
             const leaveRow = doc.createElement('div');
             leaveRow.className = 'tp3d-workspace-action-row';
 
             const leaveCopy = doc.createElement('div');
             leaveCopy.className = 'tp3d-workspace-action-copy';
-
-            const leaveTitle = doc.createElement('div');
-            leaveTitle.className = 'tp3d-workspace-action-title';
-            leaveTitle.textContent = 'Leave Workspace';
-            leaveCopy.appendChild(leaveTitle);
 
             const leaveIntro = doc.createElement('div');
             leaveIntro.className = 'tp3d-workspace-action-text';
@@ -6064,11 +6063,10 @@ export function createSettingsOverlay({
 
             leaveRow.appendChild(leaveCopy);
             leaveRow.appendChild(leaveBtn);
-            ownershipSection.appendChild(leaveRow);
+            leaveSection.appendChild(leaveRow);
+            advancedBody.appendChild(leaveSection);
 
-            advancedBody.appendChild(ownershipSection);
-
-            // C. Danger Zone (primary owner only)
+            // D. Danger Zone (primary owner only)
             if (isPrimaryOwner) {
               const dangerZone = doc.createElement('div');
               dangerZone.className = 'tp3d-settings-danger';
@@ -6131,12 +6129,15 @@ export function createSettingsOverlay({
               advancedBody.appendChild(dangerZone);
             }
 
-            // D. Archived Workspaces
+            // E. Archived Workspaces
             if (!isLoadingMembership && !isLoadingOrg && !isLoadingAccountBundle) {
+              const archivedSection = doc.createElement('div');
+              archivedSection.className = 'tp3d-settings-advanced-section';
               appendArchivedWorkspacesSection(
-                advancedBody,
+                archivedSection,
                 orgUserView && orgUserView.userId ? String(orgUserView.userId) : ''
               );
+              advancedBody.appendChild(archivedSection);
             }
 
             _siblingCards.push(advancedCard);

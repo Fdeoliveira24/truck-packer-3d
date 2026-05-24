@@ -40,6 +40,15 @@ type EntitlementCandidate = {
   interval?: "month" | "year" | null;
 };
 
+const STRIPE_BILLING_STATUS_TIMEOUT_MS = 9000;
+
+class BillingStatusStripeTimeoutError extends Error {
+  constructor(operation: string) {
+    super(`Stripe billing-status timeout: ${operation}`);
+    this.name = "BillingStatusStripeTimeoutError";
+  }
+}
+
 function json(req: Request, status: number, data: unknown) {
   return new Response(JSON.stringify(data), {
     status,
@@ -48,6 +57,77 @@ function json(req: Request, status: number, data: unknown) {
       "Content-Type": "application/json",
     },
   });
+}
+
+function isBillingStatusStripeTimeout(error: unknown): boolean {
+  return error instanceof BillingStatusStripeTimeoutError ||
+    String((error as { name?: string } | null)?.name || "") === "BillingStatusStripeTimeoutError";
+}
+
+function billingUnavailablePayload({
+  userId,
+  orgId,
+  billingOwnerUserId = null,
+  canManageBilling = false,
+}: {
+  userId: string;
+  orgId: string | null;
+  billingOwnerUserId?: string | null;
+  canManageBilling?: boolean;
+}): Record<string, unknown> {
+  return {
+    ok: true,
+    userId,
+    orgId,
+    billingOwnerUserId,
+    entitlementStatus: "billing_unavailable",
+    workspaceIncluded: false,
+    workspaceCount: null,
+    workspaceLimit: null,
+    canManageBilling,
+    plan: "free",
+    status: "none",
+    isActive: false,
+    isPro: false,
+    interval: "unknown",
+    trialEndsAt: null,
+    currentPeriodEnd: null,
+    cancelAtPeriodEnd: false,
+    cancelAt: null,
+    portalAvailable: false,
+    paymentProblem: false,
+    paymentGraceUntil: null,
+    paymentGraceRemainingDays: null,
+    action: "retry",
+  };
+}
+
+function billingStatusStripeTimeoutResponse(
+  req: Request,
+  context: {
+    userId: string;
+    orgId: string | null;
+    billingOwnerUserId?: string | null;
+    canManageBilling?: boolean;
+  },
+) {
+  return json(req, 200, billingUnavailablePayload(context));
+}
+
+async function withStripeBillingStatusTimeout<T>(operation: string, promise: Promise<T>): Promise<T> {
+  let timeoutId: number | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new BillingStatusStripeTimeoutError(operation));
+        }, STRIPE_BILLING_STATUS_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (typeof timeoutId === "number") clearTimeout(timeoutId);
+  }
 }
 
 function parsePositiveIntEnv(name: string, fallback: number): number {
@@ -650,9 +730,12 @@ Deno.serve(async (req) => {
     ) {
       try {
         const stripe = stripeClient();
-        const stripeSub = await stripe.subscriptions.retrieve(
-          String(billingCustomer.stripe_subscription_id),
-          { expand: ["items.data.price"] },
+        const stripeSub = await withStripeBillingStatusTimeout(
+          "billing_customer_subscription_retrieve",
+          stripe.subscriptions.retrieve(
+            String(billingCustomer.stripe_subscription_id),
+            { expand: ["items.data.price"] },
+          ),
         );
 
         const orgIdFromMetadata = metadataOrgId((stripeSub as any)?.metadata ?? null);
@@ -684,7 +767,15 @@ Deno.serve(async (req) => {
           };
           dbStatus = subscription ? String((subscription as any).status || "") : "";
         }
-      } catch {
+      } catch (stripeKnownSubErr) {
+        if (isBillingStatusStripeTimeout(stripeKnownSubErr)) {
+          return billingStatusStripeTimeoutResponse(req, {
+            userId,
+            orgId: resolvedOrgId,
+            billingOwnerUserId,
+            canManageBilling,
+          });
+        }
         // ignore; other fallback strategies may still determine status
       }
     }
@@ -712,12 +803,15 @@ Deno.serve(async (req) => {
           const mapped: any[] = [];
 
           for (const stripeCustomerId of stripeCustomerIds) {
-            const stripeSubs = await stripe.subscriptions.list({
-              customer: stripeCustomerId,
-              status: "all",
-              limit: 100,
-              expand: ["data.items.data.price"],
-            });
+            const stripeSubs = await withStripeBillingStatusTimeout(
+              "customer_subscriptions_list",
+              stripe.subscriptions.list({
+                customer: stripeCustomerId,
+                status: "all",
+                limit: 100,
+                expand: ["data.items.data.price"],
+              }),
+            );
             const list = Array.isArray(stripeSubs.data) ? stripeSubs.data : [];
             list.forEach((s: any) => {
               const orgIdFromMetadata = metadataOrgId(s?.metadata ?? null);
@@ -806,6 +900,14 @@ Deno.serve(async (req) => {
           }
         }
       } catch (stripeResyncErr) {
+        if (isBillingStatusStripeTimeout(stripeResyncErr)) {
+          return billingStatusStripeTimeoutResponse(req, {
+            userId,
+            orgId: resolvedOrgId,
+            billingOwnerUserId,
+            canManageBilling,
+          });
+        }
         if (debug) {
           console.warn("billing-status: stripe fallback failed", stripeResyncErr);
         }
@@ -1220,12 +1322,23 @@ Deno.serve(async (req) => {
 
             for (const stripeSubscriptionId of ownerStripeSubscriptionIds) {
               try {
-                const stripeSub = await stripe.subscriptions.retrieve(
-                  stripeSubscriptionId,
-                  { expand: ["items.data.price"] },
+                const stripeSub = await withStripeBillingStatusTimeout(
+                  "owner_subscription_retrieve",
+                  stripe.subscriptions.retrieve(
+                    stripeSubscriptionId,
+                    { expand: ["items.data.price"] },
+                  ),
                 );
                 pushStripeSubscriptionCandidate(stripeSub);
-              } catch {
+              } catch (ownerKnownSubErr) {
+                if (isBillingStatusStripeTimeout(ownerKnownSubErr)) {
+                  return billingStatusStripeTimeoutResponse(req, {
+                    userId,
+                    orgId: resolvedOrgId,
+                    billingOwnerUserId,
+                    canManageBilling,
+                  });
+                }
                 if (debug) {
                   console.warn("billing-status: owner known subscription fallback failed");
                 }
@@ -1233,16 +1346,27 @@ Deno.serve(async (req) => {
             }
 
             if (ownerStripeCustomerId) {
-              const stripeSubs = await stripe.subscriptions.list({
-                customer: ownerStripeCustomerId,
-                status: "all",
-                limit: 100,
-                expand: ["data.items.data.price"],
-              });
+              const stripeSubs = await withStripeBillingStatusTimeout(
+                "owner_customer_subscriptions_list",
+                stripe.subscriptions.list({
+                  customer: ownerStripeCustomerId,
+                  status: "all",
+                  limit: 100,
+                  expand: ["data.items.data.price"],
+                }),
+              );
               (Array.isArray(stripeSubs.data) ? stripeSubs.data : [])
                 .forEach((s: any) => pushStripeSubscriptionCandidate(s));
             }
           } catch (stripeOwnerEntitlementErr) {
+            if (isBillingStatusStripeTimeout(stripeOwnerEntitlementErr)) {
+              return billingStatusStripeTimeoutResponse(req, {
+                userId,
+                orgId: resolvedOrgId,
+                billingOwnerUserId,
+                canManageBilling,
+              });
+            }
             if (debug) {
               console.warn("billing-status: owner Stripe entitlement fallback failed", stripeOwnerEntitlementErr);
             }
@@ -1311,9 +1435,12 @@ Deno.serve(async (req) => {
     } else if (subscription?.stripe_subscription_id && Deno.env.get("STRIPE_SECRET_KEY")) {
       try {
         const stripe = stripeClient();
-        const stripeSub = await stripe.subscriptions.retrieve(
-          String(subscription.stripe_subscription_id),
-          { expand: ["items.data.price"] },
+        const stripeSub = await withStripeBillingStatusTimeout(
+          "subscription_interval_retrieve",
+          stripe.subscriptions.retrieve(
+            String(subscription.stripe_subscription_id),
+            { expand: ["items.data.price"] },
+          ),
         );
         const intervalRaw = (stripeSub as any)?.items?.data?.[0]?.price?.recurring?.interval ?? null;
         if (intervalRaw === "month" || intervalRaw === "year") {
@@ -1327,7 +1454,15 @@ Deno.serve(async (req) => {
             // ignore update errors
           }
         }
-      } catch {
+      } catch (stripeIntervalErr) {
+        if (isBillingStatusStripeTimeout(stripeIntervalErr)) {
+          return billingStatusStripeTimeoutResponse(req, {
+            userId,
+            orgId: resolvedOrgId,
+            billingOwnerUserId,
+            canManageBilling,
+          });
+        }
         // ignore stripe lookup errors
       }
     }

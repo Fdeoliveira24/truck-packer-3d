@@ -76,9 +76,18 @@ const releaseGateCheckoutIdempotencyFile = 'supabase/functions/stripe-create-che
 const releaseGateAuthSessionFiles = new Set([
   'src/core/supabase-client.js',
 ]);
+const billingRetryReliabilityFiles = new Set([
+  'src/app.js',
+  'src/ui/overlays/settings-overlay.js',
+  'src/data/services/billing.service.js',
+  'supabase/functions/billing-status/index.ts',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
 
 function isNotCurrentReleaseGateCheckoutPatch(file) {
-  return file !== releaseGateCheckoutIdempotencyFile && !releaseGateAuthSessionFiles.has(file);
+  return file !== releaseGateCheckoutIdempotencyFile &&
+    !releaseGateAuthSessionFiles.has(file) &&
+    !billingRetryReliabilityFiles.has(file);
 }
 
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
@@ -712,6 +721,129 @@ test('phase 1 P0 cross-profile logout: visible signed-in tabs actively validate 
     'confirmed signed-out cleanup must clear stale active org hints');
 });
 
+test('P0 billing retry reliability C: refreshBilling only reuses successful shared snapshots and force bypasses them', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+  const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{object\} billingSnapshot/);
+  assert.ok(refreshMatch, 'refreshBilling function must be extractable');
+  const refreshBody = refreshMatch[0];
+  const classifierMatch = app.match(/function _isShareableBillingSnapshot\(orgId, state\) \{[\s\S]*?\n\}/);
+  assert.ok(classifierMatch, 'shared billing success classifier must exist');
+  const classifier = classifierMatch[0];
+
+  assert.match(classifier, /state\.ok !== true[\s\S]*return false/,
+    'shared billing snapshots must require ok:true');
+  assert.match(classifier, /normalizeBillingEntitlementStatus\(state\.entitlementStatus\)[\s\S]*billing_unavailable[\s\S]*return false/,
+    'billing_unavailable snapshots must not be reusable shared state');
+  assert.match(classifier, /state\.error[\s\S]*return false/,
+    'errored shared billing snapshots must not be reusable');
+  assert.match(classifier, /numericStatus[\s\S]*=== 408[\s\S]*return false/,
+    'timeout shared billing snapshots must not be reusable');
+  assert.match(classifier, /statusText[\s\S]*timeout[\s\S]*network/,
+    'network-style failed shared billing snapshots must not be reusable');
+  assert.match(refreshBody, /const shared = _readShareableBillingResult\(requestedOrgId[\s\S]*if \(!force && shared\)/,
+    'refreshBilling must only reuse shareable snapshots when force is false');
+});
+
+test('P0 billing retry reliability C: cross-tab billing ignores failed snapshots and still accepts successful scoped snapshots', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+  const handlerStart = app.indexOf('function _handleCrossTabBillingResult(orgId, state, fromTabId)');
+  const handlerEnd = app.indexOf('\nfunction _extractOrgIdFromStorageKey', handlerStart);
+  const handler = handlerStart >= 0 && handlerEnd > handlerStart ? app.slice(handlerStart, handlerEnd) : '';
+  assert.ok(handler.length > 0, 'cross-tab billing handler must be extractable');
+
+  assert.match(handler, /!_isShareableBillingSnapshot\(orgId, state\)[\s\S]*billing:cross-tab:discard-failed-shared[\s\S]*return/,
+    'cross-tab handler must reject failed shared snapshots before applying state');
+  assert.match(handler, /_applySharedBillingSnapshot\(orgId, state, fromTabId === 'storage' \? 'cross-tab-storage' : 'cross-tab-broadcast'\)/,
+    'cross-tab handler must still apply accepted successful scoped snapshots');
+  assert.match(app, /function _broadcastBillingResult\(orgId, state\)[\s\S]*!_isShareableBillingSnapshot\(orgId, state\)[\s\S]*return/,
+    'BroadcastChannel sends must exclude failed billing snapshots');
+  assert.match(app, /function _writeSharedBillingResult\(orgId, state\)[\s\S]*!_isShareableBillingSnapshot\(orgId, state\)[\s\S]*_clearSharedBillingResult\(orgId\)/,
+    'localStorage shared billing writes must clear instead of storing failed snapshots');
+});
+
+test('P0 billing retry reliability C: Settings Billing Retry and Refresh keep progress feedback and force reasons', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.match(src, /retryBtn\.disabled = true[\s\S]*retryBtn\.textContent = 'Retrying\\u2026'[\s\S]*retryBtn\.setAttribute\('aria-busy', 'true'\)[\s\S]*api\.refreshBilling\(\{ force: true, reason: 'settings-billing-retry' \}\)/,
+    'Retry must visibly enter busy state and force a settings-billing-retry refresh');
+  assert.match(src, /retryBtn\.removeAttribute\('aria-busy'\)[\s\S]*retryBtn\.disabled = false[\s\S]*retryBtn\.textContent = 'Retry'/,
+    'Retry must restore button state after refresh completion');
+  assert.match(src, /refreshBtn\.disabled = true[\s\S]*refreshBtn\.textContent = 'Refreshing\\u2026'[\s\S]*refreshBtn\.setAttribute\('aria-busy', 'true'\)[\s\S]*api\.refreshBilling\(\{ force: true, reason: 'settings-billing-refresh' \}\)/,
+    'Refresh must visibly enter busy state and force a settings-billing-refresh request');
+  assert.match(src, /refreshBtn\.removeAttribute\('aria-busy'\)[\s\S]*refreshBtn\.textContent = 'Refresh'/,
+    'Refresh must restore button state after refresh completion');
+});
+
+test('P0 billing retry reliability C: queued forced refreshes have a completion repaint path without duplicate subscriptions', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+  const settings = await fs.readFile(settingsOverlayPath, 'utf8');
+
+  assert.match(app, /let _billingRefreshQueuedWaiters = \[\]/,
+    'refreshBilling must track callers waiting for a queued forced refresh');
+  assert.match(app, /return force \? _waitForQueuedBillingRefresh\(\) : getBillingState\(\)/,
+    'force:true callers blocked by loading must wait for queued refresh completion');
+  assert.match(app, /refreshBilling\(\{ force: true, reason: 'queued' \}\)[\s\S]*\.then\(snapshot => \{[\s\S]*_resolveBillingRefreshQueuedWaiters\(snapshot\)/,
+    'queued refresh completion must resolve waiting Settings callers');
+  assert.match(settings, /function ensureBillingSubscription\(\)[\s\S]*if \(billingUnsubscribe\) return[\s\S]*api\.subscribeBilling\(\(\) => \{[\s\S]*renderBillingInto\(wrap\)/,
+    'Settings Billing tab must use one guarded subscribeBilling render path');
+  assert.match(settings, /if \(billingUnsubscribe\) \{[\s\S]*billingUnsubscribe\(\)[\s\S]*billingUnsubscribe = null/,
+    'Settings overlay must clean the billing subscription on close');
+});
+
+test('P0 billing retry reliability C: billing-status Stripe calls have timeout protection', async () => {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+  const directStripeCalls = [...src.matchAll(/stripe\.subscriptions\.(retrieve|list)\(/g)];
+
+  assert.match(src, /const STRIPE_BILLING_STATUS_TIMEOUT_MS = 9000/,
+    'billing-status Stripe timeout must be shorter than the frontend 15s timeout');
+  assert.match(src, /class BillingStatusStripeTimeoutError extends Error/,
+    'billing-status must use a specific timeout error type');
+  assert.match(src, /function withStripeBillingStatusTimeout\b[\s\S]*Promise\.race[\s\S]*STRIPE_BILLING_STATUS_TIMEOUT_MS/,
+    'Stripe API calls must be wrapped in a bounded Promise.race');
+  assert.match(src, /function billingUnavailablePayload[\s\S]*entitlementStatus: "billing_unavailable"[\s\S]*action: "retry"/,
+    'Stripe timeout response must be the safe billing_unavailable-style fallback');
+  assert.ok(directStripeCalls.length > 0, 'billing-status must contain Stripe subscription calls to protect');
+  for (const match of directStripeCalls) {
+    const before = src.slice(Math.max(0, match.index - 260), match.index);
+    assert.match(before, /withStripeBillingStatusTimeout\(/,
+      `Stripe ${match[1]} call must be passed through withStripeBillingStatusTimeout`);
+  }
+});
+
+test('P0 billing retry reliability C: changed billing logs do not expose tokens or API keys', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+  const billingStatus = await fs.readFile(billingStatusPath, 'utf8');
+  const failedSharedLog = app.match(/billing:cross-tab:discard-failed-shared[\s\S]{0,220}/)?.[0] || '';
+  const safeFieldsHelper = app.match(/function _billingSharedSnapshotDebugFields\(orgId, state\) \{[\s\S]*?\n\}/)?.[0] || '';
+  const timeoutResponse = billingStatus.match(/function billingStatusStripeTimeoutResponse[\s\S]*?\n\}/)?.[0] || '';
+  const sensitive = /access_token|refresh_token|Authorization\s*:|service_role|SUPABASE_SERVICE_ROLE_KEY|STRIPE_SECRET|sk_live_|sk_test_|eyJ[A-Za-z0-9._-]{20,}/i;
+
+  assert.match(failedSharedLog, /_billingSharedSnapshotDebugFields/,
+    'failed shared-state debug log must use the safe field helper');
+  assert.match(safeFieldsHelper, /orgId[\s\S]*status[\s\S]*entitlementStatus[\s\S]*ok/,
+    'failed shared-state debug log must be limited to safe billing fields');
+  assert.doesNotMatch(failedSharedLog + timeoutResponse, sensitive,
+    'changed billing reliability paths must not log or return secret-bearing values');
+});
+
+test('P0 billing retry reliability C: changed files stay in approved billing reliability scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !billingRetryReliabilityFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'P0 billing retry reliability C must stay inside approved billing reliability files');
+});
+
 test('phase 1 P0 cross-profile logout: server auth validation only clears on confirmed revocation', async () => {
   const sc = await fs.readFile(supabasePath, 'utf8');
   const fnStart = sc.indexOf('export async function validateSessionRevocation');
@@ -1047,6 +1179,7 @@ test('phase 3C2 cross-tab sign-out fix stays within auth gate and bootstrap scop
   const changedFiles = new Set(
     `${unstaged.stdout}\n${staged.stdout}`
       .split('\n').map(l => l.trim()).filter(Boolean)
+      .filter(isNotCurrentReleaseGateCheckoutPatch)
   );
   const unexpected = Array.from(changedFiles).filter(f => !allowedFiles.has(f));
   assert.deepEqual(unexpected, [],
@@ -1310,6 +1443,7 @@ test('phase 3A invite email changes stay within invite/email scope', async () =>
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
+      .filter(isNotCurrentReleaseGateCheckoutPatch)
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !allowedFiles.has(file));
 
@@ -1384,6 +1518,7 @@ test('phase 3C1 invite handoff fix stays within invite UI scope', async () => {
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
+      .filter(isNotCurrentReleaseGateCheckoutPatch)
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !allowedFiles.has(file));
 
@@ -1561,6 +1696,7 @@ test('phase 3C1 invite handoff visibility fix stays within invite UI scope', asy
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
+      .filter(isNotCurrentReleaseGateCheckoutPatch)
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !allowedFiles.has(file));
 

@@ -145,6 +145,7 @@ const BILLING_FOCUS_REFRESH_COOLDOWN_MS = 300000; // 5 minutes — do not spam r
 const AUTH_REVOCATION_VISIBLE_CHECK_INTERVAL_MS = 5000;
 const AUTH_REVOCATION_MIN_CHECK_GAP_MS = 2000;
 let _billingRefreshQueued = false;
+let _billingRefreshQueuedWaiters = [];
 let _billingPendingRetry = { orgId: null, count: 0, timer: null };
 let _billingLastFocusRefreshAt = 0;
 let _lastBillingKey = '';
@@ -305,6 +306,10 @@ function _getSharedBillingFreshness(orgId) {
 function _writeSharedBillingResult(orgId, state) {
   try {
     if (!_isBillingSnapshotScopedToOrg(orgId, state)) return;
+    if (!_isShareableBillingSnapshot(orgId, state)) {
+      _clearSharedBillingResult(orgId);
+      return;
+    }
     const fetchedAt = Number(state && state.lastFetchedAt) || Date.now();
     window.localStorage.setItem(_billingFreshKey(orgId), String(fetchedAt));
     // Keep legacy key writable for older tabs that still read tp3d:* keys.
@@ -341,6 +346,52 @@ function _isBillingSnapshotScopedToOrg(orgId, state) {
   return Boolean(targetOrgId && (!rawSnapshotOrgId || (snapshotOrgId && snapshotOrgId === targetOrgId)));
 }
 
+function _clearSharedBillingResult(orgId) {
+  try {
+    if (!normalizeOrgIdForBilling(orgId)) return;
+    window.localStorage.removeItem(_billingFreshKey(orgId));
+    window.localStorage.removeItem(_billingLegacyFreshKey(orgId));
+    window.localStorage.removeItem(_billingResultKey(orgId));
+    window.localStorage.removeItem(_billingLegacyResultKey(orgId));
+  } catch (_) { /* ignore */ }
+}
+
+function _billingSharedSnapshotDebugFields(orgId, state) {
+  return {
+    orgId: normalizeOrgIdForBilling(orgId) || null,
+    status: state && Object.prototype.hasOwnProperty.call(state, 'status') ? state.status : null,
+    entitlementStatus: state && state.entitlementStatus ? state.entitlementStatus : null,
+    ok: Boolean(state && state.ok === true),
+  };
+}
+
+function _isShareableBillingSnapshot(orgId, state) {
+  if (!state || typeof state !== 'object') return false;
+  if (!_isBillingSnapshotScopedToOrg(orgId, state)) return false;
+  if (state.ok !== true) return false;
+  const entitlementStatus = normalizeBillingEntitlementStatus(state.entitlementStatus);
+  if (entitlementStatus === 'billing_unavailable') return false;
+  if (state.error) return false;
+  const rawStatus = Object.prototype.hasOwnProperty.call(state, 'status') ? state.status : null;
+  if (rawStatus === null || typeof rawStatus === 'undefined') return false;
+  const numericStatus = Number(rawStatus);
+  if (Number.isFinite(numericStatus) && numericStatus === 408) return false;
+  const statusText = String(rawStatus || '').toLowerCase();
+  if (statusText === 'timeout' || statusText === 'network_error' || statusText === 'network') return false;
+  return true;
+}
+
+function _readShareableBillingResult(orgId, _reason = 'shared-read') {
+  const shared = _readSharedBillingResult(orgId);
+  if (!shared) return null;
+  if (_isShareableBillingSnapshot(orgId, shared)) return shared;
+  billingDebugLog('billing:cross-tab:discard-failed-shared', {
+    ..._billingSharedSnapshotDebugFields(orgId, shared),
+  });
+  if (_isBillingSnapshotScopedToOrg(orgId, shared)) _clearSharedBillingResult(orgId);
+  return null;
+}
+
 function _applySharedBillingSnapshot(orgId, state, reason = 'cross-tab-shared') {
   if (!state || typeof state !== 'object') return false;
   if (!_isBillingSnapshotScopedToOrg(orgId, state)) {
@@ -348,6 +399,12 @@ function _applySharedBillingSnapshot(orgId, state, reason = 'cross-tab-shared') 
       reason,
       keyOrgId: orgId || null,
       stateOrgId: state && state.orgId ? state.orgId : null,
+    });
+    return false;
+  }
+  if (!_isShareableBillingSnapshot(orgId, state)) {
+    billingDebugLog('billing:cross-tab:discard-failed-shared', {
+      ..._billingSharedSnapshotDebugFields(orgId, state),
     });
     return false;
   }
@@ -426,8 +483,8 @@ function reconcileBillingStateForActiveOrg(reason = 'active-org-reconcile') {
   if (!activeOrgId) return false;
   const currentBillingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
   if (!currentBillingOrgId || currentBillingOrgId === activeOrgId) return false;
-  const shared = _readSharedBillingResult(activeOrgId);
-  if (shared && _isBillingSnapshotScopedToOrg(activeOrgId, shared)) {
+  const shared = _readShareableBillingResult(activeOrgId, 'reconcile:' + reason);
+  if (shared) {
     return _applySharedBillingSnapshot(activeOrgId, shared, 'reconcile-shared:' + reason);
   }
   return _clearBillingSnapshotForOrgTransition(activeOrgId, 'reconcile-pending:' + reason);
@@ -435,7 +492,7 @@ function reconcileBillingStateForActiveOrg(reason = 'active-org-reconcile') {
 
 function _broadcastBillingResult(orgId, state) {
   if (!_billingBroadcast) return;
-  if (!_isBillingSnapshotScopedToOrg(orgId, state)) return;
+  if (!_isShareableBillingSnapshot(orgId, state)) return;
   try {
     _billingBroadcast.postMessage({ type: 'billing-result', orgId, state: {
       ok: state.ok, plan: state.plan, status: state.status, orgId: state.orgId,
@@ -490,6 +547,12 @@ function _handleCrossTabBillingResult(orgId, state, fromTabId) {
   const currentOrgId = getActiveOrgIdForBilling();
   if (!currentOrgId || currentOrgId !== orgId) return;
   if (_billingState.loading) return; // don't overwrite an in-flight local fetch
+  if (!_isShareableBillingSnapshot(orgId, state)) {
+    billingDebugLog('billing:cross-tab:discard-failed-shared', {
+      ..._billingSharedSnapshotDebugFields(orgId, state),
+    });
+    return;
+  }
 
   const _ctSig = _buildCrossTabBillingSig(orgId, state);
   if (_ctSigSeenOrMark(orgId, _ctSig)) return; // silent exit (already applied/processed)
@@ -529,7 +592,7 @@ function _handleCrossTabBillingStorageEvent(ev) {
     const currentOrgId = getActiveOrgIdForBilling();
     if (!currentOrgId || currentOrgId !== orgId) return;
     if (_billingState.loading) return;
-    const state = _readSharedBillingResult(orgId);
+    const state = _readShareableBillingResult(orgId, 'storage');
     if (!state) return;
     _handleCrossTabBillingResult(orgId, state, 'storage');
   } catch (_) { /* ignore */ }
@@ -735,6 +798,24 @@ function subscribeBilling(fn) {
   return () => _billingSubscribers.delete(fn);
 }
 
+function _waitForQueuedBillingRefresh() {
+  return new Promise(resolve => {
+    _billingRefreshQueuedWaiters.push(resolve);
+  });
+}
+
+function _resolveBillingRefreshQueuedWaiters(snapshot = getBillingState()) {
+  const waiters = _billingRefreshQueuedWaiters;
+  _billingRefreshQueuedWaiters = [];
+  waiters.forEach(resolve => {
+    try {
+      resolve(snapshot);
+    } catch {
+      // ignore
+    }
+  });
+}
+
 function clearBillingPendingRetry(orgId = null) {
   const targetOrgId = orgId ? String(orgId) : null;
   if (targetOrgId && _billingPendingRetry.orgId && _billingPendingRetry.orgId !== targetOrgId) return;
@@ -797,6 +878,7 @@ function settleBillingPendingRetryExhausted(requestedOrgId, reason) {
     reason: 'pending-retry-exhausted:' + reason,
     activeOrgId: targetOrgId,
   });
+  _resolveBillingRefreshQueuedWaiters(getBillingState());
 }
 
 function scheduleBillingPendingRetry(requestedOrgId, reason) {
@@ -855,6 +937,7 @@ function clearBillingState() {
   _billingLastFocusRefreshAt = 0;
   _lastAppliedBillingLfa = 0;
   _billingRefreshQueued = false;
+  _resolveBillingRefreshQueuedWaiters(getBillingState());
   _lastProcessedBillingSigByOrg.clear();
   _billingEpoch++;
   _notifyBilling();
@@ -971,9 +1054,11 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
   }
 
   if (_billingState.loading) {
-    if (force) _billingRefreshQueued = true;
+    if (force) {
+      _billingRefreshQueued = true;
+    }
     billingDebugLog('refresh:skip-loading', { reason, force, requestedOrgId: requestedOrgId || null });
-    return getBillingState();
+    return force ? _waitForQueuedBillingRefresh() : getBillingState();
   }
   if (
     force &&
@@ -1031,8 +1116,8 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
   if (requestedOrgId) {
     const sharedFreshAt = _getSharedBillingFreshness(requestedOrgId);
     if (sharedFreshAt && (now - sharedFreshAt) < _BILLING_SHARED_FRESH_MS) {
-      const shared = _readSharedBillingResult(requestedOrgId);
-      if (!force && shared && _isBillingSnapshotScopedToOrg(requestedOrgId, shared) && shared.ok) {
+      const shared = _readShareableBillingResult(requestedOrgId, 'refresh:' + reason);
+      if (!force && shared) {
         billingDebugLog('billing:cross-tab-lock:skip-fresh', {
           reason,
           orgId: requestedOrgId,
@@ -1042,12 +1127,15 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
           _applySharedBillingSnapshot(requestedOrgId, shared, 'shared-fresh:' + reason);
         }
         return getBillingState();
-      } else if (shared) {
-        billingDebugLog('billing:cross-tab-lock:ignore-fresh-org-mismatch', {
-          reason,
-          orgId: requestedOrgId,
-          stateOrgId: shared && shared.orgId ? shared.orgId : null,
-        });
+      } else if (!force) {
+        const unshareableShared = _readSharedBillingResult(requestedOrgId);
+        if (unshareableShared) {
+          billingDebugLog('billing:cross-tab-lock:ignore-fresh-org-mismatch', {
+            reason,
+            orgId: requestedOrgId,
+            stateOrgId: unshareableShared && unshareableShared.orgId ? unshareableShared.orgId : null,
+          });
+        }
       }
     }
   }
@@ -1059,8 +1147,8 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
   }
   if (requestedOrgId && !_acquiredCrossTabLock) {
     // Another tab is fetching — check if shared result is available
-    const shared = _readSharedBillingResult(requestedOrgId);
-    if (shared && _isBillingSnapshotScopedToOrg(requestedOrgId, shared)) {
+    const shared = _readShareableBillingResult(requestedOrgId, 'cross-tab-locked:' + reason);
+    if (shared) {
       _applySharedBillingSnapshot(requestedOrgId, shared, 'cross-tab-locked:' + reason);
     }
     // Broadcast/storage listeners should update soon; keep one bounded retry for stale browsers.
@@ -1102,8 +1190,8 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       requestedOrgId &&
       (!_billingState.orgId || _billingState.orgId !== requestedOrgId)
     ) {
-      const staleShared = _readSharedBillingResult(requestedOrgId);
-      if (staleShared && _isBillingSnapshotScopedToOrg(requestedOrgId, staleShared)) {
+      const staleShared = _readShareableBillingResult(requestedOrgId, 'stale-cache-warmup:' + reason);
+      if (staleShared) {
         _applySharedBillingSnapshot(requestedOrgId, staleShared, 'stale-cache-warmup:' + reason);
       }
     }
@@ -1187,6 +1275,7 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       });
       clearBillingPendingRetry(requestedOrgId);
       _billingRefreshQueued = false;
+      _resolveBillingRefreshQueuedWaiters(getBillingState());
       setTimeout(() => {
         refreshBilling({ force: true, reason: 'queued' }).catch(() => { });
       }, 0);
@@ -1406,7 +1495,13 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
     if (_billingRefreshQueued) {
       _billingRefreshQueued = false;
       setTimeout(() => {
-        refreshBilling({ force: true, reason: 'queued' }).catch(() => { });
+        refreshBilling({ force: true, reason: 'queued' })
+          .then(snapshot => {
+            _resolveBillingRefreshQueuedWaiters(snapshot);
+          })
+          .catch(() => {
+            _resolveBillingRefreshQueuedWaiters(getBillingState());
+          });
       }, 0);
     }
     return getBillingState();
@@ -6526,8 +6621,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
       let billingOrgMismatch = Boolean(snapOrgId && snapOrgId !== activeOrgId);
       const billingOrgMismatchAtStart = billingOrgMismatch;
       if (billingOrgMismatch) {
-        const shared = _readSharedBillingResult(activeOrgId);
-        if (shared && _isBillingSnapshotScopedToOrg(activeOrgId, shared)) {
+        const shared = _readShareableBillingResult(activeOrgId, 'pump-mismatch:' + reason);
+        if (shared) {
           _applySharedBillingSnapshot(activeOrgId, shared, 'pump-mismatch-shared:' + reason);
           const nextSnapOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
           billingOrgMismatch = Boolean(nextSnapOrgId && nextSnapOrgId !== activeOrgId);
@@ -6566,8 +6661,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (!reasonIsForce && activeOrgId) {
         const sharedFreshAt = _getSharedBillingFreshness(activeOrgId);
         if (sharedFreshAt && (now - sharedFreshAt) < _BILLING_SHARED_FRESH_MS) {
-          const shared = _readSharedBillingResult(activeOrgId);
-          if (shared && _isBillingSnapshotScopedToOrg(activeOrgId, shared)) {
+          const shared = _readShareableBillingResult(activeOrgId, 'pump:' + reason);
+          if (shared) {
             billingDebugLog('billing:cross-tab-lock:skip-fresh', {
               reason: 'pump:' + reason,
               orgId: activeOrgId,
@@ -6578,11 +6673,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
               _applySharedBillingSnapshot(activeOrgId, shared, 'shared-fresh-pump:' + reason);
             }
             return;
-          } else if (shared) {
+          }
+          const unshareableShared = _readSharedBillingResult(activeOrgId);
+          if (unshareableShared) {
             billingDebugLog('billing:cross-tab-lock:ignore-fresh-org-mismatch', {
               reason: 'pump:' + reason,
               orgId: activeOrgId,
-              stateOrgId: shared && shared.orgId ? shared.orgId : null,
+              stateOrgId: unshareableShared && unshareableShared.orgId ? unshareableShared.orgId : null,
             });
           } else {
             billingDebugLog('billing:cross-tab-lock:ignore-fresh-missing-result', {
@@ -7843,7 +7940,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
             const _pumpOrgId = getActiveOrgIdForBilling();
             if (_pumpOrgId) {
               const _sharedAt = _getSharedBillingFreshness(_pumpOrgId);
-              _pumpFreshCrossTab = Boolean(_sharedAt && (Date.now() - _sharedAt) < _BILLING_SHARED_FRESH_MS);
+              const _shared = _sharedAt && (Date.now() - _sharedAt) < _BILLING_SHARED_FRESH_MS
+                ? _readShareableBillingResult(_pumpOrgId, 'render-auth-state') : null;
+              _pumpFreshCrossTab = Boolean(_shared);
             }
           }
           if (!_pumpFresh && !_pumpFreshCrossTab) {
@@ -9780,8 +9879,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
           if (focusOrgId) {
             const sharedFreshAt = _getSharedBillingFreshness(focusOrgId);
             if (sharedFreshAt && (now - sharedFreshAt) < BILLING_FOCUS_REFRESH_COOLDOWN_MS) {
-              const shared = _readSharedBillingResult(focusOrgId);
-              if (shared && _isBillingSnapshotScopedToOrg(focusOrgId, shared)) {
+              const shared = _readShareableBillingResult(focusOrgId, 'focus:' + reason);
+              if (shared) {
                 billingDebugLog('billing:cross-tab-lock:skip-fresh', {
                   reason,
                   orgId: focusOrgId,
@@ -9793,10 +9892,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
                 }
                 return;
               }
-              billingDebugLog(shared ? 'billing:cross-tab-lock:ignore-fresh-org-mismatch' : 'billing:cross-tab-lock:ignore-fresh-missing-result', {
+              const unshareableShared = _readSharedBillingResult(focusOrgId);
+              billingDebugLog(unshareableShared ? 'billing:cross-tab-lock:ignore-fresh-org-mismatch' : 'billing:cross-tab-lock:ignore-fresh-missing-result', {
                 reason,
                 orgId: focusOrgId,
-                stateOrgId: shared && shared.orgId ? shared.orgId : null,
+                stateOrgId: unshareableShared && unshareableShared.orgId ? unshareableShared.orgId : null,
                 sharedAgeMs: now - sharedFreshAt,
               });
             }

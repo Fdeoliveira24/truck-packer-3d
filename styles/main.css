@@ -1784,7 +1784,7 @@ tr:hover td {
   margin-top: var(--space-4);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4) 0;
+  padding: var(--space-3) var(--space-4);
 }
 
 .tp3d-settings-advanced-section > .tp3d-settings-org-divider:first-child {
@@ -1811,7 +1811,7 @@ tr:hover td {
   margin-top: var(--space-4);
   border: 1px solid rgba(239, 68, 68, 0.25);
   border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4) 0;
+  padding: var(--space-3) var(--space-4);
   background: rgba(239, 68, 68, 0.03);
 }
 
@@ -2342,7 +2342,7 @@ tr:hover td {
 }
 
 .tp3d-import-drop-title {
-  font-size: var(--text-xl);
+  font-size: var(--text-base);
   font-weight: var(--font-semibold);
 }
 
@@ -2357,14 +2357,15 @@ tr:hover td {
 
 .tp3d-import-hint {
   font-size: var(--text-sm);
-  line-height: var(--leading-relaxed);
-  background: var(--bg-secondary);
-  padding: 12px 14px;
+  line-height: 1.5;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
 }
 
 .tp3d-import-warning {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
 }
 
@@ -3520,6 +3521,55 @@ body.modal-open {
 }
 
 .tp3d-resources-help-line {
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* Resources empty state (Release Notes / Roadmap) */
+.tp3d-resources-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+}
+
+.tp3d-resources-empty-icon {
+  font-size: 28px;
+  color: var(--text-muted);
+  opacity: 0.45;
+}
+
+.tp3d-resources-empty-title {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-resources-empty-body {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* Resources help — stacked section cards */
+.tp3d-resources-help-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  display: grid;
+  gap: var(--space-1);
+}
+
+.tp3d-resources-help-heading {
+  font-weight: var(--font-semibold);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.tp3d-resources-help-body {
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   line-height: 1.5;
 }

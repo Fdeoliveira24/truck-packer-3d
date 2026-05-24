@@ -3029,38 +3029,40 @@ export function createSettingsOverlay({
 
   // Render Updates content inside the modal
   function renderUpdatesContent(container) {
-    const wrap = doc.createElement('div');
-    wrap.className = 'tp3d-settings-stack';
-
-    const title = doc.createElement('div');
-    title.className = 'tp3d-settings-card-title';
-    title.textContent = 'Release Notes';
-    const body = doc.createElement('div');
-    body.className = 'muted tp3d-settings-meta';
-    body.textContent = 'Verified release notes will appear here as the product changes.';
-
-    wrap.appendChild(title);
-    wrap.appendChild(body);
-
-    container.appendChild(wrap);
+    const empty = doc.createElement('div');
+    empty.className = 'tp3d-resources-empty';
+    const icon = doc.createElement('div');
+    icon.className = 'tp3d-resources-empty-icon';
+    icon.innerHTML = '<i class="fa-solid fa-bell" aria-hidden="true"></i>';
+    const titleEl = doc.createElement('div');
+    titleEl.className = 'tp3d-resources-empty-title';
+    titleEl.textContent = 'Release Notes';
+    const bodyEl = doc.createElement('div');
+    bodyEl.className = 'tp3d-resources-empty-body';
+    bodyEl.textContent = 'Verified release notes will appear here as the product changes.';
+    empty.appendChild(icon);
+    empty.appendChild(titleEl);
+    empty.appendChild(bodyEl);
+    container.appendChild(empty);
   }
 
   // Render Roadmap content inside the modal
   function renderRoadmapContent(container) {
-    const wrap = doc.createElement('div');
-    wrap.className = 'tp3d-settings-stack';
-
-    const title = doc.createElement('div');
-    title.className = 'tp3d-settings-card-title';
-    title.textContent = 'Roadmap';
-    const body = doc.createElement('div');
-    body.className = 'muted tp3d-settings-meta';
-    body.textContent = 'Published roadmap items will appear here when they are ready to share.';
-
-    wrap.appendChild(title);
-    wrap.appendChild(body);
-
-    container.appendChild(wrap);
+    const empty = doc.createElement('div');
+    empty.className = 'tp3d-resources-empty';
+    const icon = doc.createElement('div');
+    icon.className = 'tp3d-resources-empty-icon';
+    icon.innerHTML = '<i class="fa-solid fa-map" aria-hidden="true"></i>';
+    const titleEl = doc.createElement('div');
+    titleEl.className = 'tp3d-resources-empty-title';
+    titleEl.textContent = 'Roadmap';
+    const bodyEl = doc.createElement('div');
+    bodyEl.className = 'tp3d-resources-empty-body';
+    bodyEl.textContent = 'Published roadmap items will appear here when they are ready to share.';
+    empty.appendChild(icon);
+    empty.appendChild(titleEl);
+    empty.appendChild(bodyEl);
+    container.appendChild(empty);
   }
 
   function renderExportContent(container) {
@@ -3242,7 +3244,8 @@ export function createSettingsOverlay({
     const drop = doc.createElement('div');
     drop.className = 'card tp3d-import-drop';
     drop.innerHTML = `
-      <div class="tp3d-import-drop-title">Drag & Drop Backup File Here</div>
+      <div class="tp3d-import-drop-icon" aria-hidden="true"><i class="fa-solid fa-file-import"></i></div>
+      <div class="tp3d-import-drop-title">Drag &amp; Drop Backup File Here</div>
       <div class="muted tp3d-import-drop-sub">Supported: .json</div>
       <div class="tp3d-import-drop-spacer"></div>
     `;
@@ -3302,39 +3305,44 @@ export function createSettingsOverlay({
     const wrap = doc.createElement('div');
     wrap.className = 'tp3d-resources-view';
 
-    const block = doc.createElement('div');
-    block.className = 'card tp3d-resources-card';
+    const helpItems = [
+      {
+        heading: 'App Backup',
+        body: 'Exporting app backup downloads a JSON file with all packs, cases, folders, and preferences. Importing an app backup replaces all local app data. Export an app backup before importing.',
+      },
+      {
+        heading: 'Workspace Backup',
+        body: 'Exporting workspace backup downloads packs, cases, and folders for this workspace only. Workspace backup does not support import at this time.',
+      },
+      {
+        heading: 'Pack JSON',
+        body: 'Export Pack JSON (from the pack menu) downloads a single pack and its cases. Import Pack JSON adds that pack to your library without replacing other packs.',
+      },
+      {
+        heading: 'Cases CSV/XLSX',
+        body: 'Import Cases on the Cases screen uploads CSV or XLSX. Valid rows are added; duplicate names and invalid rows are skipped.',
+      },
+      {
+        heading: 'Safety Tip',
+        body: 'Export an app backup before large imports so you can restore if needed.',
+        muted: true,
+      },
+    ];
 
-    const text = doc.createElement('div');
-    text.className = 'tp3d-resources-help';
+    helpItems.forEach(({ heading, body, muted }) => {
+      const card = doc.createElement('div');
+      card.className = 'tp3d-resources-help-card';
+      const headingEl = doc.createElement('div');
+      headingEl.className = 'tp3d-resources-help-heading';
+      headingEl.textContent = heading;
+      const bodyEl = doc.createElement('div');
+      bodyEl.className = muted ? 'tp3d-resources-help-body muted' : 'tp3d-resources-help-body';
+      bodyEl.textContent = body;
+      card.appendChild(headingEl);
+      card.appendChild(bodyEl);
+      wrap.appendChild(card);
+    });
 
-    const p1 = doc.createElement('div');
-    p1.className = 'tp3d-resources-help-line';
-    p1.innerHTML =
-      '<strong>App Backup:</strong> Exporting app backup downloads a JSON file with all packs, cases, folders, and preferences. Importing an app backup replaces all local app data. Export an app backup before importing.';
-    const p2 = doc.createElement('div');
-    p2.className = 'tp3d-resources-help-line';
-    p2.innerHTML =
-      '<strong>Workspace Backup:</strong> Exporting workspace backup downloads packs, cases, and folders for this workspace only. Workspace backup does not support import at this time.';
-    const p3 = doc.createElement('div');
-    p3.className = 'tp3d-resources-help-line';
-    p3.innerHTML =
-      '<strong>Pack JSON:</strong> Export Pack JSON (from the pack menu) downloads a single pack and its cases. Import Pack JSON adds that pack to your library without replacing other packs.';
-    const p4 = doc.createElement('div');
-    p4.className = 'tp3d-resources-help-line';
-    p4.innerHTML =
-      '<strong>Cases CSV/XLSX:</strong> Import Cases on the Cases screen uploads CSV or XLSX. Valid rows are added; duplicate names and invalid rows are skipped.';
-    const p5 = doc.createElement('div');
-    p5.className = 'tp3d-resources-help-line muted';
-    p5.textContent = 'Export an app backup before large imports so you can restore if needed.';
-
-    text.appendChild(p1);
-    text.appendChild(p2);
-    text.appendChild(p3);
-    text.appendChild(p4);
-    text.appendChild(p5);
-    block.appendChild(text);
-    wrap.appendChild(block);
     container.appendChild(wrap);
   }
 

@@ -3948,7 +3948,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
             if (inst.hidden) { return inst; }
             const pos = placements.get(inst.id) || stagingMap.get(inst.id);
             if (!pos) { return inst; }
-            const rot = rotations.get(inst.id) || { x: 0, y: 0, z: 0 };
+            const currentRotation =
+              inst.transform && inst.transform.rotation
+                ? inst.transform.rotation
+                : { x: 0, y: 0, z: 0 };
+            const rot = rotations.get(inst.id) || currentRotation;
             const od = orientedDimsMap.get(inst.id) || null;
             const next = {
               ...inst,
@@ -4015,6 +4019,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       // ── Staging ─────────────────────────────────────────────────────────
 
+      function getStagingDims(item) {
+        const od = item && item.inst && item.inst.orientedDims;
+        if (od && Number(od.length) > 0 && Number(od.width) > 0 && Number(od.height) > 0) {
+          return { length: Number(od.length), width: Number(od.width), height: Number(od.height) };
+        }
+        const ori = item && Array.isArray(item.orientations) ? item.orientations[0] : null;
+        if (ori && Number(ori.l) > 0 && Number(ori.w) > 0 && Number(ori.h) > 0) {
+          return { length: Number(ori.l), width: Number(ori.w), height: Number(ori.h) };
+        }
+        return (item && item.caseData && item.caseData.dimensions) || { length: 24, width: 24, height: 24 };
+      }
+
       function buildStagingMap(packItems, truck) {
         const gap = 4;
         const truckW = truck.width || 102;
@@ -4025,7 +4041,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         let curZ = stageZStart;
         let rowMaxWidth = 0;
         packItems.forEach((item) => {
-          const dims = item.caseData.dimensions || { length: 24, width: 24, height: 24 };
+          const dims = getStagingDims(item);
           if (curX + dims.length > truckL && curX > 0) {
             curZ += rowMaxWidth + gap;
             curX = 0;

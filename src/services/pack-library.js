@@ -16,7 +16,7 @@ import * as Utils from '../core/utils/index.js';
 import * as CoreNormalizer from '../core/normalizer.js';
 import * as CaseLibrary from './case-library.js';
 import { computeCoG } from './cog-service.js';
-import { computeOOGWarnings, computePalletWarnings } from './oog-service.js';
+import { computePalletWarnings } from './oog-service.js';
 
 function getDims(truck) {
   const t = truck && typeof truck === 'object' ? truck : {};
@@ -370,6 +370,50 @@ export function removeInstances(packId, instanceIds) {
   return update(packId, { cases: nextInstances });
 }
 
+function computeShapeAwareOOGWarnings(pack, caseLibrary) {
+  if (!pack || !Array.isArray(pack.cases) || !pack.truck) return [];
+  const zonesInches = getTrailerUsableZones(pack.truck);
+  const truck = pack.truck || {};
+  const truckL = Number(truck.length) || 0;
+  const truckW = Number(truck.width) || 0;
+  const truckH = Number(truck.height) || 0;
+  const halfW = truckW / 2;
+  const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
+  const warnings = [];
+
+  (pack.cases || []).forEach(inst => {
+    if (!inst || inst.hidden) return;
+    const caseData = caseMap.get(inst.caseId);
+    if (!caseData) return;
+    const dims = inst.orientedDims || caseData.dimensions || { length: 0, width: 0, height: 0 };
+    const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
+    const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
+    const aabb = {
+      min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
+      max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
+    };
+    if (isAabbContainedInAnyZone(aabb, zonesInches)) return;
+
+    const issues = [];
+    if (aabb.min.x < -0.05) issues.push('protrudesRear');
+    if (aabb.max.x > truckL + 0.05) issues.push('protrudesFront');
+    if (aabb.min.y < -0.05) issues.push('belowFloor');
+    if (aabb.max.y > truckH + 0.05) issues.push('exceedsHeight');
+    if (aabb.min.z < -halfW - 0.05) issues.push('protrudesLeft');
+    if (aabb.max.z > halfW + 0.05) issues.push('protrudesRight');
+    if (!issues.length) issues.push('outsideUsableZone');
+
+    warnings.push({
+      instanceId: inst.id,
+      caseId: inst.caseId,
+      caseName: caseData.name || 'Unknown',
+      issues,
+    });
+  });
+
+  return warnings;
+}
+
 export function computeStats(pack, caseLibraryOverride) {
   const zonesInches = getTrailerUsableZones(pack && pack.truck);
   const truckVol = getTrailerCapacityInches3(pack && pack.truck);
@@ -405,7 +449,7 @@ export function computeStats(pack, caseLibraryOverride) {
   const volumePercent = truckVol > 0 ? (usedIn3 / truckVol) * 100 : 0;
   const caseLib = Array.isArray(caseLibraryOverride) ? caseLibraryOverride : CaseLibrary.getCases();
   const cog = computeCoG(pack, caseLib);
-  const oogWarnings = computeOOGWarnings(pack, caseLib);
+  const oogWarnings = computeShapeAwareOOGWarnings(pack, caseLib);
   const palletWarnings = computePalletWarnings(pack, caseLib);
   return {
     totalCases: (pack.cases || []).length,

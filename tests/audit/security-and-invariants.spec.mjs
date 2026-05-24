@@ -1085,6 +1085,108 @@ test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when t
     'AutoPack tween completion must clear the fallback and resolve through the same finish path');
 });
 
+test('AUTO-PACK-A0C staged unpacked items keep oriented spacing and current rotation', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const stagingStart = src.indexOf('function getStagingDims(item)');
+  const stagingEnd = src.indexOf('\n      // ── Animation', stagingStart);
+  const stagingBlock = stagingStart >= 0 && stagingEnd > stagingStart ? src.slice(stagingStart, stagingEnd) : '';
+  const persistStart = src.indexOf('const nextCases = (packData.cases || []).map(inst => {');
+  const persistEnd = src.indexOf('\n          PackLibrary.update(packId, { cases: nextCases });', persistStart);
+  const persistBlock = persistStart >= 0 && persistEnd > persistStart ? src.slice(persistStart, persistEnd) : '';
+
+  assert.match(stagingBlock, /item\.inst && item\.inst\.orientedDims/,
+    'staging must use stored oriented dimensions when an unpacked item already has a locked/manual orientation');
+  assert.match(stagingBlock, /item\.orientations\[0\][\s\S]*length: Number\(ori\.l\)[\s\S]*width: Number\(ori\.w\)[\s\S]*height: Number\(ori\.h\)/,
+    'staging must fall back to the generated AutoPack orientation dimensions, not raw case dimensions');
+  assert.match(persistBlock, /const currentRotation =[\s\S]*inst\.transform && inst\.transform\.rotation/,
+    'unpacked staged items must keep their current transform rotation');
+  assert.match(persistBlock, /const rot = rotations\.get\(inst\.id\) \|\| currentRotation/,
+    'AutoPack must not reset unpacked item rotations to default when no placement rotation exists');
+});
+
+test('AUTO-PACK-A0C computeStats OOG warnings use oriented dimensions and shape-aware zones', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const lockedCase = {
+    id: 'locked-wide',
+    name: 'Locked Wide',
+    dimensions: { length: 20, width: 70, height: 10 },
+    weight: 10,
+  };
+  const rectPack = {
+    id: 'rect-oriented',
+    truck: { length: 80, width: 40, height: 20, shapeMode: 'rect', shapeConfig: {} },
+    cases: [{
+      id: 'inst-oriented',
+      caseId: lockedCase.id,
+      hidden: false,
+      orientedDims: { length: 70, width: 20, height: 10 },
+      transform: {
+        position: { x: 35, y: 5, z: 10 },
+        rotation: { x: 0, y: Math.PI / 2, z: 0 },
+        scale: { x: 1, y: 1, z: 1 },
+      },
+    }],
+  };
+  assert.equal(PackLibrary.computeStats(rectPack, [lockedCase]).oogWarnings.length, 0,
+    'valid rotated cases must not be flagged out-of-gauge by raw unrotated dimensions');
+
+  const shortCase = {
+    id: 'short-bonus',
+    name: 'Short Bonus',
+    dimensions: { length: 30, width: 24, height: 18 },
+    weight: 10,
+  };
+  const frontPack = {
+    id: 'front-oriented',
+    truck: {
+      length: 240,
+      width: 96,
+      height: 72,
+      shapeMode: 'frontBonus',
+      shapeConfig: { bonusLength: 60, bonusWidth: 54, bonusHeight: 24 },
+    },
+    cases: [{
+      id: 'inst-front',
+      caseId: shortCase.id,
+      hidden: false,
+      orientedDims: { length: 24, width: 30, height: 18 },
+      transform: {
+        position: { x: 228, y: 9, z: -12 },
+        rotation: { x: 0, y: Math.PI / 2, z: 0 },
+        scale: { x: 1, y: 1, z: 1 },
+      },
+    }],
+  };
+  assert.equal(PackLibrary.computeStats(frontPack, [shortCase]).oogWarnings.length, 0,
+    'valid front-bonus placements must use shape-aware usable zones before warning');
+
+  const blockedWheelPack = {
+    id: 'wheel-blocked',
+    truck: {
+      length: 100,
+      width: 100,
+      height: 100,
+      shapeMode: 'wheelWells',
+      shapeConfig: { wellHeight: 20, wellWidth: 20, wellLength: 40, wellOffsetFromRear: 30 },
+    },
+    cases: [{
+      id: 'inst-wheel-blocked',
+      caseId: shortCase.id,
+      hidden: false,
+      orientedDims: { length: 10, width: 10, height: 10 },
+      transform: {
+        position: { x: 40, y: 5, z: 40 },
+        rotation: { x: 0, y: 0, z: 0 },
+        scale: { x: 1, y: 1, z: 1 },
+      },
+    }],
+  };
+  const blockedWarnings = PackLibrary.computeStats(blockedWheelPack, [shortCase]).oogWarnings;
+  assert.equal(blockedWarnings.length, 1,
+    'items inside blocked wheel-well volume must still be reported as outside usable geometry');
+  assert.deepEqual(blockedWarnings[0].issues, ['outsideUsableZone']);
+});
+
 test('AUTO-PACK-A0 trailer geometry helpers block wheel wells and preserve front bonus shape awareness', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
 

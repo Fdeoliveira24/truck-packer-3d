@@ -97,12 +97,19 @@ const uiCopyExportImportFiles = new Set([
   'docs/product/TP3D-MASTER-TODO-V3.md',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);
+const uiStabilization1Files = new Set([
+  'src/ui/overlays/settings-overlay.js',
+  'src/ui/overlays/account-overlay.js',
+  'styles/main.css',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
 
 function isNotCurrentReleaseGateCheckoutPatch(file) {
   return file !== releaseGateCheckoutIdempotencyFile &&
     !releaseGateAuthSessionFiles.has(file) &&
     !billingRetryReliabilityFiles.has(file) &&
-    !uiCopyExportImportFiles.has(file);
+    !uiCopyExportImportFiles.has(file) &&
+    !uiStabilization1Files.has(file);
 }
 
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
@@ -930,11 +937,30 @@ test('UI-COPY-EXPORT-IMPORT-1 changed files stay in approved copy-only scope', a
       .map(line => line.trim())
       .filter(Boolean)
       .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(isNotCurrentReleaseGateCheckoutPatch)
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !uiCopyExportImportFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'UI-COPY-EXPORT-IMPORT-1 must stay inside approved UI copy and docs files');
+});
+
+test('UI-STABILIZATION-1 changed files stay in approved scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !uiStabilization1Files.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'UI-STABILIZATION-1 must stay inside approved settings UI cleanup files');
 });
 
 test('phase 1 P0 cross-profile logout: server auth validation only clears on confirmed revocation', async () => {

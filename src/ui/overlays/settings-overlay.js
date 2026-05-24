@@ -750,7 +750,7 @@ export function createSettingsOverlay({
     lostRefreshRow.className = 'row';
     const lostRefreshBtn = doc.createElement('button');
     lostRefreshBtn.type = 'button';
-    lostRefreshBtn.className = 'btn btn-secondary';
+    lostRefreshBtn.className = 'btn';
     lostRefreshBtn.textContent = 'Refresh';
     lostRefreshBtn.addEventListener('click', () => {
       _orgAccessLostId = '';
@@ -2363,7 +2363,7 @@ export function createSettingsOverlay({
 
     const errorMsg = doc.createElement('div');
     errorMsg.className = 'muted tp3d-settings-meta tp3d-settings-mt-sm';
-    errorMsg.style.color = 'var(--danger, #dc2626)';
+    errorMsg.style.color = 'var(--error)';
     errorMsg.textContent = '';
     content.appendChild(errorMsg);
 
@@ -3879,10 +3879,10 @@ export function createSettingsOverlay({
       payCard.appendChild(payIcon);
 
       const payBody = doc.createElement('div');
-      payBody.style.flex = '1';
+      payBody.className = 'tp3d-billing-payment-body';
 
       const payTitle = doc.createElement('div');
-      payTitle.style.fontWeight = 'var(--font-semibold, 600)';
+      payTitle.className = 'tp3d-billing-payment-title';
       payTitle.textContent = 'Payment issue';
       payBody.appendChild(payTitle);
 
@@ -3891,8 +3891,7 @@ export function createSettingsOverlay({
         ? graceDays + ' day' + (graceDays === 1 ? '' : 's') + ' remaining before Pro features are disabled.'
         : 'Pro features have been disabled until payment is resolved.';
       const payDesc = doc.createElement('div');
-      payDesc.className = 'muted';
-      payDesc.style.fontSize = 'var(--text-sm, 13px)';
+      payDesc.className = 'muted tp3d-billing-payment-desc';
       payDesc.textContent = graceText;
       payBody.appendChild(payDesc);
 
@@ -4095,7 +4094,7 @@ export function createSettingsOverlay({
       manageWrap.className = 'tp3d-billing-manage-wrap';
       const manageBtn = doc.createElement('button');
       manageBtn.type = 'button';
-      manageBtn.className = 'btn btn-secondary';
+      manageBtn.className = 'btn';
       manageBtn.textContent = 'Manage';
       manageBtn.disabled = Boolean(manageDisabledReason);
       if (manageDisabledReason) {
@@ -4927,7 +4926,7 @@ export function createSettingsOverlay({
 
         const uploadBtn = doc.createElement('button');
         uploadBtn.type = 'button';
-        uploadBtn.className = 'btn btn-secondary';
+        uploadBtn.className = 'btn';
         uploadBtn.textContent = profileData && profileData.avatar_url ? 'Change Avatar' : 'Upload Avatar';
         uploadBtn.disabled = !accountUserView.isAuthed || isUploadingAvatar;
 
@@ -5199,7 +5198,7 @@ export function createSettingsOverlay({
         const errorMsg = doc.createElement('div');
         errorMsg.className = 'muted';
         errorMsg.style.minHeight = '18px';
-        errorMsg.style.color = 'var(--danger, #dc2626)';
+        errorMsg.style.color = 'var(--error)';
         errorMsg.textContent = '';
 
         confirmWrap.appendChild(confirmLabel);
@@ -6267,7 +6266,7 @@ export function createSettingsOverlay({
         refreshRow.className = 'row';
         const refreshBtn = doc.createElement('button');
         refreshBtn.type = 'button';
-        refreshBtn.className = 'btn btn-secondary';
+        refreshBtn.className = 'btn';
         refreshBtn.textContent = 'Refresh';
         refreshBtn.addEventListener('click', () => {
           queueAccountBundleRefresh({ force: true, source: 'org-members:refresh-org' });
@@ -6315,7 +6314,7 @@ export function createSettingsOverlay({
             permissionsRetryRow.className = 'row';
             const permissionsRetryBtn = doc.createElement('button');
             permissionsRetryBtn.type = 'button';
-            permissionsRetryBtn.className = 'btn btn-secondary';
+            permissionsRetryBtn.className = 'btn';
             permissionsRetryBtn.textContent = 'Refresh permissions';
             permissionsRetryBtn.addEventListener('click', () => {
               _membersPermissionPendingSince = 0;

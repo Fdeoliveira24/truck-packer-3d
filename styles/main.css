@@ -1874,6 +1874,7 @@ tr:hover td {
 .tp3d-settings-section-heading {
   margin-top: 12px;
   font-weight: var(--font-semibold);
+  font-size: var(--text-sm);
 }
 
 /* Lists inside update/roadmap cards */
@@ -5035,4 +5036,16 @@ body.modal-open {
   border-radius: var(--radius-md, 8px);
   font-size: var(--text-sm, 13px);
   line-height: 1.5;
+}
+
+.tp3d-billing-payment-body {
+  flex: 1;
+}
+
+.tp3d-billing-payment-title {
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-billing-payment-desc {
+  font-size: var(--text-sm);
 }

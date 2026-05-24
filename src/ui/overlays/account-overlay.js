@@ -232,14 +232,11 @@ export function createAccountOverlay(opts = {}) {
     error.className = 'muted';
     error.style.marginTop = '8px';
     error.style.minHeight = '18px';
-    error.style.color = 'var(--danger, #dc2626)';
+    error.style.color = 'var(--error)';
     error.textContent = '';
 
     const footer = doc.createElement('div');
-    footer.style.display = 'flex';
-    footer.style.justifyContent = 'flex-end';
-    footer.style.gap = '8px';
-    footer.style.marginTop = '16px';
+    footer.className = 'tp3d-account-actions';
 
     const cancelBtn = doc.createElement('button');
     cancelBtn.type = 'button';
@@ -442,9 +439,7 @@ export function createAccountOverlay(opts = {}) {
     avatarLabel.textContent = 'Avatar';
 
     const avatarRight = doc.createElement('div');
-    avatarRight.style.display = 'flex';
-    avatarRight.style.flexDirection = 'column';
-    avatarRight.style.gap = '6px';
+    avatarRight.className = 'tp3d-account-avatar-buttons';
 
     const avatarInput = doc.createElement('input');
     avatarInput.type = 'file';

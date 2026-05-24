@@ -1069,6 +1069,22 @@ test('AUTO-PACK-A0 AutoPack respects locked orientation and keeps unlocked orien
     'AutoPack item setup must pass the instance into orientation generation');
 });
 
+test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when tweens stop ticking', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const tweenStart = src.indexOf('function tweenInstanceToPosition(instanceId, positionInches, duration)');
+  const tweenEnd = src.indexOf('\n      function sleep(ms)', tweenStart);
+  const block = tweenStart >= 0 && tweenEnd > tweenStart ? src.slice(tweenStart, tweenEnd) : '';
+
+  assert.match(block, /const finish = \(\) =>/,
+    'AutoPack tween bridge must use an idempotent finish helper');
+  assert.match(block, /const fallbackDelay = Math\.max\(50, \(Number\(duration\) \|\| 0\) \+ 150\)/,
+    'AutoPack tween bridge must define a bounded fallback delay');
+  assert.match(block, /const fallback = window\.setTimeout\(finish, fallbackDelay\)/,
+    'AutoPack tween bridge must resolve even if the tween loop does not tick');
+  assert.match(block, /window\.clearTimeout\(fallback\);[\s\S]*finish\(\);/,
+    'AutoPack tween completion must clear the fallback and resolve through the same finish path');
+});
+
 test('AUTO-PACK-A0 trailer geometry helpers block wheel wells and preserve front bonus shape awareness', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
 

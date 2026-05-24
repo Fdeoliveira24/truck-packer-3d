@@ -4081,17 +4081,33 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (!obj) { return Promise.resolve(); }
         const target = SceneManager.vecInchesToWorld(positionInches);
         return new Promise(resolve => {
-          const Tween = window.TWEEN || null;
-          if (!Tween) {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
             obj.position.set(target.x, target.y, target.z);
             resolve();
+          };
+          const Tween = window.TWEEN || null;
+          if (!Tween) {
+            finish();
             return;
           }
-          new Tween.Tween(obj.position)
-            .to({ x: target.x, y: target.y, z: target.z }, duration)
-            .easing(Tween.Easing.Cubic.InOut)
-            .onComplete(resolve)
-            .start();
+          const fallbackDelay = Math.max(50, (Number(duration) || 0) + 150);
+          const fallback = window.setTimeout(finish, fallbackDelay);
+          try {
+            new Tween.Tween(obj.position)
+              .to({ x: target.x, y: target.y, z: target.z }, duration)
+              .easing(Tween.Easing.Cubic.InOut)
+              .onComplete(() => {
+                window.clearTimeout(fallback);
+                finish();
+              })
+              .start();
+          } catch (_) {
+            window.clearTimeout(fallback);
+            finish();
+          }
         });
       }
 

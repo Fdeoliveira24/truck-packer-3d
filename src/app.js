@@ -3251,6 +3251,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       CaseScene,
       StateStore,
       PackLibrary,
+      CaseLibrary,
       PreferencesManager,
       UIComponents,
     });
@@ -3291,7 +3292,31 @@ const TP3D_BUILD_STAMP = Object.freeze({
        * Y-rotation of 90° visually swaps L↔W while H stays vertical.
        * canFlip allows the original height to become depth or width.
        */
-      function buildOrientations(dims, caseData) {
+      function buildLockedOrientation(dims, inst) {
+        if (!inst || inst.orientationLocked !== true) return null;
+        const sourceRotation =
+          inst.lockedRotation ||
+          (inst.transform && inst.transform.rotation) ||
+          null;
+        if (!sourceRotation) return null;
+        const lockedRotation = PackLibrary.normalizeRightAngleRotation(sourceRotation);
+        const orientedDims = PackLibrary.getOrientedDimsForRotation(dims, lockedRotation);
+        if (!orientedDims.length || !orientedDims.width || !orientedDims.height) return null;
+        return {
+          l: orientedDims.length,
+          w: orientedDims.width,
+          h: orientedDims.height,
+          rotX: lockedRotation.x,
+          rotY: lockedRotation.y,
+          rotZ: lockedRotation.z,
+          locked: true,
+        };
+      }
+
+      function buildOrientations(dims, caseData, inst) {
+        const lockedOrientation = buildLockedOrientation(dims, inst);
+        if (lockedOrientation) return [lockedOrientation];
+
         const lock = (caseData.orientationLock || 'any').toLowerCase();
         const canFlip = Boolean(caseData.canFlip);
         const L = dims.length, W = dims.width, H = dims.height;
@@ -3551,7 +3576,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
                 vol = c.volume || Utils.volumeInCubicInches(d);
               }
               // Pre-compute orientations once per item
-              const orientations = buildOrientations(d, c);
+              const orientations = buildOrientations(d, c, inst);
               return { inst, caseData: c, volume: vol, orientations };
             })
             .filter(Boolean)

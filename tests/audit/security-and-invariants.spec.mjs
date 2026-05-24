@@ -13,7 +13,9 @@ const indexHtmlPath = new URL('../../index.html', import.meta.url);
 const storagePath = new URL('../../src/core/storage.js', import.meta.url);
 const importExportPath = new URL('../../src/services/import-export.js', import.meta.url);
 const folderLibraryPath = new URL('../../src/services/folder-library.js', import.meta.url);
+const packLibraryPath = new URL('../../src/services/pack-library.js', import.meta.url);
 const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
+const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 const stylesMainPath = new URL('../../styles/main.css', import.meta.url);
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
 const normalizerPath = new URL('../../src/core/normalizer.js', import.meta.url);
@@ -103,13 +105,20 @@ const uiStabilization1Files = new Set([
   'styles/main.css',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);
+const autoPackA0Files = new Set([
+  'src/app.js',
+  'src/screens/editor-screen.js',
+  'src/services/pack-library.js',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
 
 function isNotCurrentReleaseGateCheckoutPatch(file) {
   return file !== releaseGateCheckoutIdempotencyFile &&
     !releaseGateAuthSessionFiles.has(file) &&
     !billingRetryReliabilityFiles.has(file) &&
     !uiCopyExportImportFiles.has(file) &&
-    !uiStabilization1Files.has(file);
+    !uiStabilization1Files.has(file) &&
+    !autoPackA0Files.has(file);
 }
 
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
@@ -956,11 +965,171 @@ test('UI-STABILIZATION-1 changed files stay in approved scope', async () => {
       .map(line => line.trim())
       .filter(Boolean)
       .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(isNotCurrentReleaseGateCheckoutPatch)
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !uiStabilization1Files.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'UI-STABILIZATION-1 must stay inside approved settings UI cleanup files');
+});
+
+// ============================================================================
+// AUTO-PACK-A0 — Manual Orientation Lock + Geometry Constraint Safety
+// ============================================================================
+
+test('AUTO-PACK-A0 changed files stay in approved orientation lock scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !autoPackA0Files.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'AUTO-PACK-A0 must only edit AutoPack, editor rotation, pack geometry helpers, and audit tests');
+});
+
+test('AUTO-PACK-A0 orientation lock helpers normalize rotation and compute oriented dimensions', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const dims = { length: 48, width: 24, height: 30 };
+
+  assert.deepEqual(
+    PackLibrary.getOrientedDimsForRotation(dims, { x: 0, y: Math.PI / 2, z: 0 }),
+    { length: 24, width: 48, height: 30 },
+    'Y-locked orientation must swap truck length/width extents'
+  );
+  assert.deepEqual(
+    PackLibrary.getOrientedDimsForRotation(dims, { x: Math.PI / 2, y: 0, z: 0 }),
+    { length: 48, width: 30, height: 24 },
+    'X-locked orientation must move original width into height'
+  );
+
+  const patch = PackLibrary.createOrientationLockPatch({ x: 0, y: Math.PI / 2, z: 0 }, dims);
+  assert.equal(patch.orientationLocked, true);
+  assert.deepEqual(patch.lockedRotation, { x: 0, y: Math.PI / 2, z: 0 });
+  assert.deepEqual(patch.orientedDims, { length: 24, width: 48, height: 30 });
+  assert.deepEqual(
+    PackLibrary.clearOrientationLockPatch(),
+    { orientationLocked: false, lockedRotation: null, orientedDims: null },
+    'reset data support must clear the orientation lock contract'
+  );
+});
+
+test('AUTO-PACK-A0 manual editor rotate and flip paths set per-instance orientation locks', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const rotateStart = src.indexOf('function rotateSelection(axis, delta)');
+  const rotateEnd = src.indexOf('/**\n     * Nudge selected instances', rotateStart);
+  const rotateBlock = rotateStart >= 0 && rotateEnd > rotateStart ? src.slice(rotateStart, rotateEnd) : '';
+  const multiStart = src.indexOf('function renderMultiInspector(pack, selected)');
+  const multiEnd = src.indexOf('// === Actions Card ===', multiStart);
+  const multiBlock = multiStart >= 0 && multiEnd > multiStart ? src.slice(multiStart, multiEnd) : '';
+  const singleStart = src.indexOf('function renderSingleInspector(pack, inst, caseData, prefs)');
+  const singleEnd = src.indexOf('\n    /**\n     * Creates a card header row', singleStart);
+  const singleBlock = singleStart >= 0 && singleEnd > singleStart ? src.slice(singleStart, singleEnd) : '';
+
+  assert.match(src, /function createManualOrientationLockPatch\(PackLibrary, CaseLibrary, inst, rotation\)/,
+    'editor must have a narrow helper for manual orientation locks');
+  assert.match(rotateBlock, /createManualOrientationLockPatch\(PackLibrary, CaseLibrary, inst, rot\)/,
+    'keyboard rotate/flip path must lock manual orientation');
+  assert.match(multiBlock, /createManualOrientationLockPatch\(PackLibrary, CaseLibrary, inst, rot\)/,
+    'multi-select rotate/flip buttons must lock manual orientation');
+  assert.match(singleBlock, /createManualOrientationLockPatch\(PackLibrary, CaseLibrary, inst, curRot\)/,
+    'single inspector rotate/flip buttons must lock manual orientation');
+  assert.match(singleBlock, /TODO\(AUTO-PACK-A0\): when reset-orientation UI is added, apply PackLibrary\.clearOrientationLockPatch\(\)/,
+    'no reset UI exists yet, so reset support must remain documented without broad UI changes');
+});
+
+test('AUTO-PACK-A0 AutoPack respects locked orientation and keeps unlocked orientation generation', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const lockedStart = src.indexOf('function buildLockedOrientation(dims, inst)');
+  const buildEnd = src.indexOf('\n      // ── Core: gravity-based free-space packing', lockedStart);
+  const block = lockedStart >= 0 && buildEnd > lockedStart ? src.slice(lockedStart, buildEnd) : '';
+
+  assert.match(block, /inst\.orientationLocked !== true/,
+    'locked orientation path must be gated by the per-instance orientationLocked flag');
+  assert.match(block, /inst\.lockedRotation[\s\S]*inst\.transform && inst\.transform\.rotation/,
+    'AutoPack must prefer the stored lockedRotation and fall back to the current instance rotation');
+  assert.match(block, /PackLibrary\.normalizeRightAngleRotation\(sourceRotation\)/,
+    'locked rotations must be normalized to right-angle editor rotations');
+  assert.match(block, /PackLibrary\.getOrientedDimsForRotation\(dims, lockedRotation\)/,
+    'locked orientation dimensions must come from the shared geometry helper');
+  assert.match(block, /if \(lockedOrientation\) return \[lockedOrientation\];[\s\S]*tryOri\(L, W, H/,
+    'locked items must test only one orientation while unlocked items keep normal orientation candidates');
+  assert.match(src, /const orientations = buildOrientations\(d, c, inst\)/,
+    'AutoPack item setup must pass the instance into orientation generation');
+});
+
+test('AUTO-PACK-A0 trailer geometry helpers block wheel wells and preserve front bonus shape awareness', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  const wheelTruck = {
+    length: 100,
+    width: 100,
+    height: 100,
+    shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 20, wellWidth: 20, wellLength: 40, wellOffsetFromRear: 30 },
+  };
+  const wheelZones = PackLibrary.getTrailerUsableZones(wheelTruck);
+  assert.equal(wheelZones.length, 5,
+    'wheelWells geometry must remain decomposed into shape-aware usable zones');
+  assert.equal(PackLibrary.isAabbContainedInAnyZone({
+    min: { x: 35, y: 5, z: 35 },
+    max: { x: 45, y: 15, z: 45 },
+  }, wheelZones), false,
+  'low boxes inside wheel well blocked volume must not be considered placeable');
+  assert.equal(PackLibrary.isAabbContainedInAnyZone({
+    min: { x: 35, y: 25, z: 35 },
+    max: { x: 45, y: 35, z: 45 },
+  }, wheelZones), true,
+  'boxes above wheel well height may use the above-well zone');
+
+  const frontBonusTruck = {
+    length: 100,
+    width: 100,
+    height: 50,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 20, bonusWidth: 40, bonusHeight: 30 },
+  };
+  const frontZones = PackLibrary.getTrailerUsableZones(frontBonusTruck);
+  assert.equal(frontZones.length, 2,
+    'frontBonus geometry must remain split between main body and bonus zone');
+  assert.equal(PackLibrary.isAabbContainedInAnyZone({
+    min: { x: 85, y: 5, z: -10 },
+    max: { x: 95, y: 25, z: 10 },
+  }, frontZones), true,
+  'box inside the narrower/lower front bonus zone must be placeable');
+  assert.equal(PackLibrary.isAabbContainedInAnyZone({
+    min: { x: 85, y: 35, z: -10 },
+    max: { x: 95, y: 45, z: 10 },
+  }, frontZones), false,
+  'box above front bonus height must not fit merely because the base truck rectangle would fit');
+});
+
+test('AUTO-PACK-A0 AutoPack keeps zone containment and stacking guards wired', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const tryStart = src.indexOf('function tryPlace(cx, cz, ori, truckH, zones, packed)');
+  const tryEnd = src.indexOf('\n      // ── Main packing algorithm', tryStart);
+  const tryBlock = tryStart >= 0 && tryEnd > tryStart ? src.slice(tryStart, tryEnd) : '';
+  const restStart = src.indexOf('function findRestingY(cx, cz, halfL, halfW, packed)');
+  const restEnd = src.indexOf('\n      /**\n       * Check AABB collision', restStart);
+  const restBlock = restStart >= 0 && restEnd > restStart ? src.slice(restStart, restEnd) : '';
+
+  assert.match(src, /const zones = TrailerGeometry\.getTrailerUsableZones\(truck\)/,
+    'AutoPack must continue deriving usable zones from trailer geometry');
+  assert.match(tryBlock, /TrailerGeometry\.isAabbContainedInAnyZone\(aabb, zones\)/,
+    'AutoPack placement must continue using zone containment checks');
+  assert.match(src, /if \(mode === 'frontBonus'\)[\s\S]*if \(mode === 'wheelWells'\)/,
+    'app-local trailer geometry must keep frontBonus and wheelWells branches');
+  assert.match(restBlock, /if \(p\.noStackOnTop \|\| p\.stackable === false\) continue;/,
+    'noStackOnTop and stackable=false must remain guarded in resting-height checks');
+  assert.match(restBlock, /if \(p\.maxStackCount > 0\)[\s\S]*if \(countOnP >= p\.maxStackCount\) continue;/,
+    'maxStackCount guard must remain wired in resting-height checks');
 });
 
 test('phase 1 P0 cross-profile logout: server auth validation only clears on confirmed revocation', async () => {

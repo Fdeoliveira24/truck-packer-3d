@@ -15,6 +15,17 @@ import { createCaseGeometry } from '../editor/geometry-factory.js';
 
 // Editor screen + 3D interaction helpers (extracted from src/app.js; behavior preserved)
 
+function createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, rotation) {
+  const caseData = inst ? CaseLibrary.getById(inst.caseId) : null;
+  if (caseData && caseData.dimensions && typeof PackLibrary.createOrientationLockPatch === 'function') {
+    return PackLibrary.createOrientationLockPatch(rotation, caseData.dimensions);
+  }
+  const lockedRotation = typeof PackLibrary.normalizeRightAngleRotation === 'function'
+    ? PackLibrary.normalizeRightAngleRotation(rotation)
+    : rotation;
+  return { orientationLocked: true, lockedRotation };
+}
+
 export function createCaseScene({
   SceneManager,
   CaseLibrary,
@@ -690,6 +701,7 @@ export function createInteractionManager({
   CaseScene,
   StateStore,
   PackLibrary,
+  CaseLibrary,
   PreferencesManager,
   UIComponents,
 }) {
@@ -734,7 +746,12 @@ export function createInteractionManager({
         if (!inst) { return; }
         const rot = { ...(inst.transform.rotation || { x: 0, y: 0, z: 0 }) };
         rot[axis] = ((Number(rot[axis]) || 0) + delta) % (2 * Math.PI);
-        PackLibrary.updateInstance(packId, id, { transform: { ...inst.transform, rotation: rot } });
+        const lockPatch = createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, rot);
+        const lockedRotation = lockPatch.lockedRotation || rot;
+        PackLibrary.updateInstance(packId, id, {
+          ...lockPatch,
+          transform: { ...inst.transform, rotation: lockedRotation },
+        });
         // Gravity after rotation
         requestAnimationFrame(() => {
           const settledY = CaseScene.settleY(id);
@@ -743,7 +760,8 @@ export function createInteractionManager({
             if (obj) { obj.position.y = settledY; }
             const posInches = SceneManager.vecWorldToInches(obj.position);
             PackLibrary.updateInstance(packId, id, {
-              transform: { ...inst.transform, rotation: rot, position: posInches },
+              ...lockPatch,
+              transform: { ...inst.transform, rotation: lockedRotation, position: posInches },
             });
           }
         });
@@ -2303,7 +2321,11 @@ export function createEditorScreen({
             if (!inst) { return; }
             const rot = { ...(inst.transform.rotation || { x: 0, y: 0, z: 0 }) };
             rot[axis] = ((Number(rot[axis]) || 0) + delta) % (2 * Math.PI);
-            PackLibrary.updateInstance(pack.id, id, { transform: { ...inst.transform, rotation: rot } });
+            const lockPatch = createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, rot);
+            PackLibrary.updateInstance(pack.id, id, {
+              ...lockPatch,
+              transform: { ...inst.transform, rotation: lockPatch.lockedRotation || rot },
+            });
           });
         });
         rotRow.appendChild(btn);
@@ -2565,6 +2587,7 @@ export function createEditorScreen({
       rotTitle.className = 'label';
       rotTitle.textContent = 'Rotate / Flip';
       transformCard.appendChild(rotTitle);
+      // TODO(AUTO-PACK-A0): when reset-orientation UI is added, apply PackLibrary.clearOrientationLockPatch().
 
       const rot = inst.transform.rotation || { x: 0, y: 0, z: 0 };
       const halfPI = Math.PI / 2;
@@ -2583,8 +2606,11 @@ export function createEditorScreen({
         btn.addEventListener('click', () => {
           const curRot = { ...rot };
           curRot[axis] = ((Number(curRot[axis]) || 0) + delta) % (2 * Math.PI);
+          const lockPatch = createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, curRot);
+          const lockedRotation = lockPatch.lockedRotation || curRot;
           PackLibrary.updateInstance(pack.id, inst.id, {
-            transform: { ...inst.transform, rotation: curRot },
+            ...lockPatch,
+            transform: { ...inst.transform, rotation: lockedRotation },
           });
           // Apply gravity after rotation
           requestAnimationFrame(() => {
@@ -2594,7 +2620,8 @@ export function createEditorScreen({
               if (obj) { obj.position.y = settledY; }
               const posInches = SceneManager.vecWorldToInches(obj.position);
               PackLibrary.updateInstance(pack.id, inst.id, {
-                transform: { ...inst.transform, rotation: curRot, position: posInches },
+                ...lockPatch,
+                transform: { ...inst.transform, rotation: lockedRotation, position: posInches },
               });
             }
           });

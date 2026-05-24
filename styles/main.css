@@ -1736,6 +1736,54 @@ tr:hover td {
   color: var(--text-secondary);
 }
 
+/* === Advanced collapsible card (Workspace General) === */
+.tp3d-settings-advanced {
+  padding: 0;
+  overflow: hidden;
+}
+
+.tp3d-settings-advanced-toggle {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.tp3d-settings-advanced-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.tp3d-settings-advanced-toggle:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: -2px;
+}
+
+.tp3d-settings-advanced-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-settings-advanced-helper {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.tp3d-settings-advanced-body {
+  padding: 0 var(--space-4) var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.tp3d-settings-advanced-section {
+  margin-top: var(--space-4);
+}
+
 /* === Neutral empty state (no archived workspaces, no members, etc.) === */
 .tp3d-settings-empty {
   display: flex;

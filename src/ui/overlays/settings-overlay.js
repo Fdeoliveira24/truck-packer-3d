@@ -5896,49 +5896,57 @@ export function createSettingsOverlay({
           );
           const leaveName = orgData && orgData.name ? String(orgData.name) : '';
 
-          // Card 2 — Backup & Export (owner/admin only)
+          // Advanced collapsible card (Ownership & Access + Danger Zone)
+          // followed by Workspace Backup — both guarded by leaveOrgId && membershipData
           if (leaveOrgId && membershipData) {
-            if (isOwnerOrAdmin && typeof _onExportWorkspace === 'function') {
-              const exportCard = doc.createElement('div');
-              exportCard.className = 'card tp3d-settings-card-max';
+            const advancedBodyId = 'tp3d-settings-advanced-body';
 
-              const exportRow = doc.createElement('div');
-              exportRow.className = 'tp3d-workspace-action-row';
+            const advancedCard = doc.createElement('div');
+            advancedCard.className = 'card tp3d-settings-card-max tp3d-settings-advanced';
 
-              const exportCopy = doc.createElement('div');
-              exportCopy.className = 'tp3d-workspace-action-copy';
+            const advancedToggle = doc.createElement('button');
+            advancedToggle.type = 'button';
+            advancedToggle.className = 'tp3d-settings-advanced-toggle';
+            advancedToggle.setAttribute('aria-expanded', 'false');
+            advancedToggle.setAttribute('aria-controls', advancedBodyId);
 
-              const exportHeading = doc.createElement('div');
-              exportHeading.className = 'tp3d-workspace-action-title';
-              exportHeading.textContent = 'Workspace Backup';
-              exportCopy.appendChild(exportHeading);
+            const advancedLabel = doc.createElement('span');
+            advancedLabel.className = 'tp3d-settings-advanced-label';
+            advancedLabel.textContent = 'Advanced';
 
-              const exportWsIntro = doc.createElement('div');
-              exportWsIntro.className = 'tp3d-workspace-action-text';
-              exportWsIntro.textContent = 'Download this workspace\'s packs, cases, and folder structure. App preferences, members, billing, payment data, and thumbnails are not included.';
-              exportCopy.appendChild(exportWsIntro);
+            const advancedHelper = doc.createElement('span');
+            advancedHelper.className = 'tp3d-settings-advanced-helper muted';
+            advancedHelper.textContent = 'Ownership, leave, archive, and restore tools for workspace admins.';
 
-              const exportWsBtn = doc.createElement('button');
-              exportWsBtn.type = 'button';
-              exportWsBtn.className = 'btn';
-              exportWsBtn.textContent = 'Export Workspace Backup';
-              exportWsBtn.addEventListener('click', () => {
-                const wsName = orgData && orgData.name ? String(orgData.name) : '';
-                _onExportWorkspace(wsName);
-              });
+            advancedToggle.appendChild(advancedLabel);
+            advancedToggle.appendChild(advancedHelper);
 
-              exportRow.appendChild(exportCopy);
-              exportRow.appendChild(exportWsBtn);
-              exportCard.appendChild(exportRow);
+            const advancedBody = doc.createElement('div');
+            advancedBody.id = advancedBodyId;
+            advancedBody.className = 'tp3d-settings-advanced-body';
+            advancedBody.hidden = true;
 
-              _siblingCards.push(exportCard);
-            }
-          }
+            advancedToggle.addEventListener('click', () => {
+              const isExpanded = advancedToggle.getAttribute('aria-expanded') === 'true';
+              advancedToggle.setAttribute('aria-expanded', String(!isExpanded));
+              advancedBody.hidden = isExpanded;
+            });
 
-          // Card 3 — Ownership & Access
-          if (leaveOrgId && membershipData) {
-            const accessCard = doc.createElement('div');
-            accessCard.className = 'card tp3d-settings-card-max';
+            advancedCard.appendChild(advancedToggle);
+            advancedCard.appendChild(advancedBody);
+
+            // A. Ownership & Access
+            const ownershipSection = doc.createElement('div');
+            ownershipSection.className = 'tp3d-settings-advanced-section';
+
+            const ownershipHeading = doc.createElement('div');
+            ownershipHeading.className = 'tp3d-settings-section-heading';
+            ownershipHeading.textContent = 'Ownership & Access';
+            ownershipSection.appendChild(ownershipHeading);
+
+            const ownershipDivider = doc.createElement('div');
+            ownershipDivider.className = 'tp3d-settings-org-divider';
+            ownershipSection.appendChild(ownershipDivider);
 
             if (isPrimaryOwner) {
               const transferRow = doc.createElement('div');
@@ -5969,7 +5977,7 @@ export function createSettingsOverlay({
 
               transferRow.appendChild(transferCopy);
               transferRow.appendChild(transferBtn);
-              accessCard.appendChild(transferRow);
+              ownershipSection.appendChild(transferRow);
             }
 
             const leaveRow = doc.createElement('div');
@@ -6016,15 +6024,12 @@ export function createSettingsOverlay({
 
             leaveRow.appendChild(leaveCopy);
             leaveRow.appendChild(leaveBtn);
-            accessCard.appendChild(leaveRow);
+            ownershipSection.appendChild(leaveRow);
 
-            _siblingCards.push(accessCard);
+            advancedBody.appendChild(ownershipSection);
 
-            // Card 4 — Danger Zone (primary owner only)
+            // B. Danger Zone (primary owner only)
             if (isPrimaryOwner) {
-              const dangerCard = doc.createElement('div');
-              dangerCard.className = 'card tp3d-settings-card-max tp3d-settings-danger-zone';
-
               const dangerZone = doc.createElement('div');
               dangerZone.className = 'tp3d-settings-danger';
 
@@ -6083,9 +6088,46 @@ export function createSettingsOverlay({
               archiveRight.appendChild(archiveBtn);
               archiveRow.appendChild(archiveRight);
               dangerZone.appendChild(archiveRow);
-              dangerCard.appendChild(dangerZone);
+              advancedBody.appendChild(dangerZone);
+            }
 
-              _siblingCards.push(dangerCard);
+            _siblingCards.push(advancedCard);
+
+            // Workspace Backup card (owner/admin only)
+            if (isOwnerOrAdmin && typeof _onExportWorkspace === 'function') {
+              const exportCard = doc.createElement('div');
+              exportCard.className = 'card tp3d-settings-card-max';
+
+              const exportRow = doc.createElement('div');
+              exportRow.className = 'tp3d-workspace-action-row';
+
+              const exportCopy = doc.createElement('div');
+              exportCopy.className = 'tp3d-workspace-action-copy';
+
+              const exportHeading = doc.createElement('div');
+              exportHeading.className = 'tp3d-workspace-action-title';
+              exportHeading.textContent = 'Workspace Backup';
+              exportCopy.appendChild(exportHeading);
+
+              const exportWsIntro = doc.createElement('div');
+              exportWsIntro.className = 'tp3d-workspace-action-text';
+              exportWsIntro.textContent = 'Download this workspace\'s packs, cases, and folder structure. App preferences, members, billing, payment data, and thumbnails are not included.';
+              exportCopy.appendChild(exportWsIntro);
+
+              const exportWsBtn = doc.createElement('button');
+              exportWsBtn.type = 'button';
+              exportWsBtn.className = 'btn';
+              exportWsBtn.textContent = 'Export Workspace Backup';
+              exportWsBtn.addEventListener('click', () => {
+                const wsName = orgData && orgData.name ? String(orgData.name) : '';
+                _onExportWorkspace(wsName);
+              });
+
+              exportRow.appendChild(exportCopy);
+              exportRow.appendChild(exportWsBtn);
+              exportCard.appendChild(exportRow);
+
+              _siblingCards.push(exportCard);
             }
           }
 

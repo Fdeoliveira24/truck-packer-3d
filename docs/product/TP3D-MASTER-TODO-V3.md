@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-16 — Phase 3C2 PASS: cross-tab sign-out "Checking session…" hang fixed (`329a551`) and staging-validated. Tab B shows sign-in form (not spinner) after Tab A signs out. 296/296 tests passing.
+Last updated: 2026-05-24 — Phase P0-BILLING-RETRY-RELIABILITY-C PASS: retry/refresh reliability hardened (`0aa4777`) and locally browser-validated. 303/303 tests passing.
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -1999,6 +1999,20 @@ Current status:
 ---
 
 ## Running log
+
+- Date: 2026-05-24 — Phase P0-BILLING-RETRY-RELIABILITY-C — PASS
+- Verdict:
+  - PASS. Runtime/test changes committed in `0aa4777` after terminal validation and local Chrome billing validation.
+- What passed:
+  - Terminal: `npm test` 303/303 PASS, `npm run lint` 0 errors with existing warnings only, `npm run -s typecheck` PASS, `git diff --check` PASS, `git diff --cached --check` PASS.
+  - Browser Refresh: test1 Billing tab showed `Refreshing...` busy state and fired a fresh `billing-status` request; no reload loop or false sign-out.
+  - Browser Retry: live test1 was healthy Pro, so Retry was validated through a browser-only simulated `billing_unavailable` state; `Retrying...` busy state appeared, a fresh `billing-status` request fired, and the panel re-rendered back to active billing.
+  - BroadcastChannel: successful ok:true billing state still synced between tabs; failed `billing_unavailable` / timeout snapshots from BroadcastChannel and localStorage did not poison Tab B and were not reused as trusted fresh truth.
+  - Queued retry: forced refresh while loading waited for queued completion, resolved the waiter, and left the Billing panel stable with fresh active state.
+  - Stripe timeout: `billing-status` Stripe subscription reads now have 9s timeout protection returning the safe `billing_unavailable` retry fallback. Stripe mutation logic unchanged.
+  - Console/network: no token/JWT/API key/secret markers observed in sanitized Chrome console scan. No Stripe mutation or production deploy performed.
+- Remaining open billing risks:
+  - None for this retry/refresh reliability pass. Separate billing items such as portal edge-case sign-off remain tracked outside this pass.
 
 - Date: 2026-05-16 — Phase 3C2 final push + staging health — PASS
 - Verdict:

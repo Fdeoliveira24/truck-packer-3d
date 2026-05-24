@@ -1370,81 +1370,6 @@ export function createSettingsOverlay({
     workspaceSwitchHandler = null;
   }
 
-  // Static content for Updates and Roadmap (embedded to avoid external dependencies)
-  const updatesData = [
-    {
-      version: '1.0.0',
-      date: '2026-01-15',
-      features: [
-        'Multi-screen workspace (Packs, Cases, Editor, Updates, Roadmap, Settings)',
-        'Three.js 3D editor with drag placement',
-        'CSV/XLSX import, PNG + PDF export',
-      ],
-      bugFixes: [],
-      breakingChanges: [],
-    },
-    {
-      version: '1.1.0',
-      date: '2026-03-01',
-      features: ['(Example) Weight balance view', '(Example) Case rotation'],
-      bugFixes: ['(Example) Improved collision edge cases'],
-      breakingChanges: [],
-    },
-  ];
-
-  const roadmapData = [
-    {
-      quarter: 'Q1 2026',
-      items: [
-        {
-          title: 'Weight balance',
-          status: 'Completed',
-          badgeIcon: 'fa-solid fa-check',
-          color: 'var(--success)',
-          details: 'Add center-of-gravity and axle load estimates.',
-        },
-        {
-          title: 'Rotation (MVP)',
-          status: 'In Progress',
-          badgeIcon: 'fa-solid fa-rotate',
-          color: 'var(--warning)',
-          details: 'Allow 90° rotations and pack-time heuristics.',
-        },
-      ],
-    },
-    {
-      quarter: 'Q2 2026',
-      items: [
-        {
-          title: 'Multi-user',
-          status: 'Planned',
-          badgeIcon: 'fa-solid fa-clipboard-list',
-          color: 'var(--info)',
-          details: 'Presence + change tracking (no real-time yet).',
-        },
-        {
-          title: '3D export',
-          status: 'Planned',
-          badgeIcon: 'fa-solid fa-clipboard-list',
-          color: 'var(--info)',
-          details: 'GLB/GLTF export for downstream tools.',
-        },
-      ],
-    },
-    {
-      quarter: 'Future',
-      items: [
-        {
-          title: 'AR view',
-          status: 'Idea',
-          badgeIcon: 'fa-regular fa-lightbulb',
-          color: 'var(--text-muted)',
-          details: 'Preview a load-out in real space on mobile.',
-        },
-      ],
-    },
-  ];
-
   // NOTE: Phase 2+ will optionally pass a profile row (profiles table) into this helper.
   // Keep one shared source of truth for avatar displayName/initials.
   function getCurrentUserView(profile = null) {
@@ -3107,49 +3032,15 @@ export function createSettingsOverlay({
     const wrap = doc.createElement('div');
     wrap.className = 'tp3d-settings-stack';
 
-    updatesData.forEach(u => {
-      const card = doc.createElement('div');
-      card.className = 'card';
+    const title = doc.createElement('div');
+    title.className = 'tp3d-settings-card-title';
+    title.textContent = 'Release Notes';
+    const body = doc.createElement('div');
+    body.className = 'muted tp3d-settings-meta';
+    body.textContent = 'Verified release notes will appear here as the product changes.';
 
-      const header = doc.createElement('div');
-      header.className = 'row space-between';
-
-      const left = doc.createElement('div');
-      const versionTitle = doc.createElement('div');
-      versionTitle.className = 'tp3d-settings-card-title';
-      versionTitle.textContent = `Version ${u.version}`;
-      const versionDate = doc.createElement('div');
-      versionDate.className = 'muted tp3d-settings-meta';
-      versionDate.textContent = new Date(u.date).toLocaleDateString();
-      left.appendChild(versionTitle);
-      left.appendChild(versionDate);
-      header.appendChild(left);
-      card.appendChild(header);
-
-      const sections = [
-        { title: 'New Features', items: u.features || [] },
-        { title: 'Bug Fixes', items: u.bugFixes || [] },
-        { title: 'Breaking Changes', items: u.breakingChanges || [] },
-      ].filter(s => s.items.length);
-
-      sections.forEach(s => {
-        const t = doc.createElement('div');
-        t.className = 'tp3d-settings-section-heading';
-        t.textContent = s.title;
-        card.appendChild(t);
-
-        const ul = doc.createElement('ul');
-        ul.className = 'tp3d-settings-list';
-        s.items.forEach(it => {
-          const li = doc.createElement('li');
-          li.textContent = it;
-          ul.appendChild(li);
-        });
-        card.appendChild(ul);
-      });
-
-      wrap.appendChild(card);
-    });
+    wrap.appendChild(title);
+    wrap.appendChild(body);
 
     container.appendChild(wrap);
   }
@@ -3157,59 +3048,17 @@ export function createSettingsOverlay({
   // Render Roadmap content inside the modal
   function renderRoadmapContent(container) {
     const wrap = doc.createElement('div');
-    wrap.className = 'tp3d-settings-stack--loose';
+    wrap.className = 'tp3d-settings-stack';
 
-    roadmapData.forEach(group => {
-      const groupWrap = doc.createElement('div');
-      groupWrap.className = 'tp3d-settings-stack--tight';
+    const title = doc.createElement('div');
+    title.className = 'tp3d-settings-card-title';
+    title.textContent = 'Roadmap';
+    const body = doc.createElement('div');
+    body.className = 'muted tp3d-settings-meta';
+    body.textContent = 'Published roadmap items will appear here when they are ready to share.';
 
-      const h = doc.createElement('div');
-      h.className = 'tp3d-settings-card-title';
-      h.textContent = group.quarter;
-      groupWrap.appendChild(h);
-
-      const grid = doc.createElement('div');
-      grid.className = 'tp3d-settings-stack--tight';
-
-      group.items.forEach(item => {
-        const card = doc.createElement('div');
-        card.className = 'card tp3d-settings-card--clickable';
-        const row = doc.createElement('div');
-        row.className = 'row space-between';
-        const title = doc.createElement('div');
-        title.style.fontWeight = 'var(--font-semibold)';
-        title.textContent = String(item.title || '');
-        const badge = doc.createElement('div');
-        badge.className = 'badge tp3d-settings-roadmap-badge';
-        badge.style.background = String(item.color || '');
-        const badgeIcon = doc.createElement('i');
-        badgeIcon.className = String(item.badgeIcon || '');
-        badgeIcon.setAttribute('aria-hidden', 'true');
-        badge.appendChild(badgeIcon);
-        badge.appendChild(doc.createTextNode(' ' + String(item.status || '')));
-        row.appendChild(title);
-        row.appendChild(badge);
-        const details = doc.createElement('div');
-        details.className = 'muted tp3d-settings-meta tp3d-settings-mt-sm';
-        details.textContent = String(item.details || '');
-        card.appendChild(row);
-        card.appendChild(details);
-        card.addEventListener('click', () => {
-          const modalContent = doc.createElement('div');
-          modalContent.className = 'muted tp3d-settings-meta';
-          modalContent.textContent = String(item.details || '');
-          UIComponents.showModal({
-            title: String(item.title || ''),
-            content: modalContent,
-            actions: [{ label: 'Close', variant: 'primary' }],
-          });
-        });
-        grid.appendChild(card);
-      });
-
-      groupWrap.appendChild(grid);
-      wrap.appendChild(groupWrap);
-    });
+    wrap.appendChild(title);
+    wrap.appendChild(body);
 
     container.appendChild(wrap);
   }
@@ -3221,7 +3070,7 @@ export function createSettingsOverlay({
     const blurb = doc.createElement('div');
     blurb.className = 'muted tp3d-resources-text';
     blurb.textContent =
-      'App Export downloads a full JSON backup of packs, cases, and settings. This file can be imported back to restore everything.';
+      'Download local packs, cases, folders, and preferences. Account login, workspace membership, billing, and payment data are not included.';
 
     const filename = `truck-packer-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
     const meta = doc.createElement('div');
@@ -3243,7 +3092,7 @@ export function createSettingsOverlay({
     const exportBtn = doc.createElement('button');
     exportBtn.type = 'button';
     exportBtn.className = 'btn btn-primary';
-    exportBtn.textContent = 'Export';
+    exportBtn.textContent = 'Download App Backup';
     exportBtn.addEventListener('click', () => {
       try {
         const json = ImportExport.buildAppExportJSON();
@@ -3320,10 +3169,11 @@ export function createSettingsOverlay({
     }
 
     const ok = await UIComponents.confirm({
-      title: 'Import App JSON?',
-      message: 'This will replace your current data with the imported backup. This cannot be undone.',
+      title: 'Import App Backup?',
+      message:
+        'This replaces local packs, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. This cannot be undone.',
       danger: true,
-      okLabel: 'Replace & Import',
+      okLabel: 'Replace Local App Data',
     });
     if (!ok) return;
 
@@ -3409,7 +3259,7 @@ export function createSettingsOverlay({
         <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
         <div>
           <span class="tp3d-import-warning-label">Warning:</span>
-          <span class="tp3d-import-warning-text"> This will replace your current data.</span>
+          <span class="tp3d-import-warning-text"> Importing an app backup replaces local packs, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. Export an app backup first.</span>
         </div>
       </div>
     `;
@@ -3417,8 +3267,8 @@ export function createSettingsOverlay({
     const results = doc.createElement('div');
     results.classList.add('tp3d-import-results');
 
-    content.appendChild(drop);
     content.appendChild(hint);
+    content.appendChild(drop);
     content.appendChild(results);
     container.appendChild(content);
 
@@ -3461,22 +3311,22 @@ export function createSettingsOverlay({
     const p1 = doc.createElement('div');
     p1.className = 'tp3d-resources-help-line';
     p1.innerHTML =
-      '<strong>App Export/Import:</strong> Use Export to download a full JSON backup. Use Import to restore from that backup.';
+      '<strong>App Backup:</strong> Exporting app backup downloads a JSON file with all packs, cases, folders, and preferences. Importing an app backup replaces all local app data. Export an app backup before importing.';
     const p2 = doc.createElement('div');
     p2.className = 'tp3d-resources-help-line';
     p2.innerHTML =
-      '<strong>Pack Export/Import:</strong> In Packs, open the pack menu and choose Export Pack to download a single pack JSON. Use Import Pack on the Packs screen to add a shared pack JSON.';
+      '<strong>Workspace Backup:</strong> Exporting workspace backup downloads packs, cases, and folders for this workspace only. Workspace backup does not support import at this time.';
     const p3 = doc.createElement('div');
     p3.className = 'tp3d-resources-help-line';
     p3.innerHTML =
-      '<strong>Cases Template:</strong> On the Cases screen, click Template to download the CSV headers for cases.';
+      '<strong>Pack JSON:</strong> Export Pack JSON (from the pack menu) downloads a single pack and its cases. Import Pack JSON adds that pack to your library without replacing other packs.';
     const p4 = doc.createElement('div');
     p4.className = 'tp3d-resources-help-line';
     p4.innerHTML =
-      '<strong>Cases Import:</strong> Click Import on the Cases screen to upload CSV or XLSX. Valid rows are added; duplicates and invalid rows are skipped.';
+      '<strong>Cases CSV/XLSX:</strong> Import Cases on the Cases screen uploads CSV or XLSX. Valid rows are added; duplicate names and invalid rows are skipped.';
     const p5 = doc.createElement('div');
     p5.className = 'tp3d-resources-help-line muted';
-    p5.textContent = 'Tip: Export the app before importing to keep a backup.';
+    p5.textContent = 'Export an app backup before large imports so you can restore if needed.';
 
     text.appendChild(p1);
     text.appendChild(p2);
@@ -4696,36 +4546,36 @@ export function createSettingsOverlay({
           // Handle sub-views within Resources
           if (resourcesSubView === 'updates') {
             return {
-              title: 'Updates',
-              helper: 'Release notes and recent changes.',
+              title: 'Release Notes',
+              helper: 'Verified product changes will appear here.',
               showBack: true,
             };
           }
           if (resourcesSubView === 'roadmap') {
             return {
               title: 'Roadmap',
-              helper: 'Product direction and upcoming features.',
+              helper: 'Published product plans will appear here.',
               showBack: true,
             };
           }
           if (resourcesSubView === 'export') {
             return {
-              title: 'Export App JSON',
-              helper: 'Download a full JSON backup of packs, cases, and settings.',
+              title: 'Export App Backup',
+              helper: 'Download local packs, cases, folders, and preferences as a JSON backup.',
               showBack: true,
             };
           }
           if (resourcesSubView === 'import') {
             return {
-              title: 'Import App JSON',
-              helper: 'Restore your data from a JSON backup.',
+              title: 'Import App Backup',
+              helper: 'Replace local packs, cases, folders, and preferences from a backup JSON.',
               showBack: true,
             };
           }
           if (resourcesSubView === 'help') {
             return {
-              title: 'Help - Export / Import',
-              helper: 'Guidance for exports and imports.',
+              title: 'Import / Export Help',
+              helper: 'Learn which files replace data and which files add data.',
               showBack: true,
             };
           }
@@ -5005,28 +4855,28 @@ export function createSettingsOverlay({
         };
 
         container.appendChild(makeResourceCard(
-          'fa-solid fa-bell', 'Updates',
-          'Review recent product updates and release notes.',
+          'fa-solid fa-bell', 'Release Notes',
+          'Verified product changes will appear here.',
           () => setResourcesSubView('updates')
         ));
         container.appendChild(makeResourceCard(
           'fa-solid fa-map', 'Roadmap',
-          'See planned improvements and upcoming product work.',
+          'Published product plans will appear here.',
           () => setResourcesSubView('roadmap')
         ));
         container.appendChild(makeResourceCard(
-          'fa-solid fa-file-export', 'Export App',
-          'Download a local backup of your app data.',
+          'fa-solid fa-file-export', 'Export App Backup',
+          'Download local packs, cases, folders, and preferences as a JSON backup.',
           () => setResourcesSubView('export')
         ));
         container.appendChild(makeResourceCard(
-          'fa-solid fa-file-import', 'Import App',
-          'Restore app data from a supported backup file.',
+          'fa-solid fa-file-import', 'Import App Backup',
+          'Replace local packs, cases, folders, and preferences from a backup JSON.',
           () => setResourcesSubView('import')
         ));
         container.appendChild(makeResourceCard(
-          'fa-solid fa-circle-question', 'Help',
-          'Find guidance, support notes, and key product information.',
+          'fa-solid fa-circle-question', 'Import / Export Help',
+          'Learn which files replace data and which files add data.',
           () => setResourcesSubView('help')
         ));
 
@@ -6061,18 +5911,18 @@ export function createSettingsOverlay({
 
               const exportHeading = doc.createElement('div');
               exportHeading.className = 'tp3d-workspace-action-title';
-              exportHeading.textContent = 'Backup & Export';
+              exportHeading.textContent = 'Workspace Backup';
               exportCopy.appendChild(exportHeading);
 
               const exportWsIntro = doc.createElement('div');
               exportWsIntro.className = 'tp3d-workspace-action-text';
-              exportWsIntro.textContent = 'Download a JSON backup of this workspace\'s packs and cases.';
+              exportWsIntro.textContent = 'Download this workspace\'s packs, cases, and folder structure. App preferences, members, billing, payment data, and thumbnails are not included.';
               exportCopy.appendChild(exportWsIntro);
 
               const exportWsBtn = doc.createElement('button');
               exportWsBtn.type = 'button';
               exportWsBtn.className = 'btn';
-              exportWsBtn.textContent = 'Export Workspace Data';
+              exportWsBtn.textContent = 'Export Workspace Backup';
               exportWsBtn.addEventListener('click', () => {
                 const wsName = orgData && orgData.name ? String(orgData.name) : '';
                 _onExportWorkspace(wsName);

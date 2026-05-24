@@ -1077,7 +1077,7 @@ export function createPacksScreen({
               disabled: !pack.thumbnail,
               onClick: () => ExportService.clearPackPreview(pack.id),
             },
-            { label: 'Export Pack', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+            { label: 'Export Pack JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
             {
               label: 'Move to Folder',
               icon: 'fa-solid fa-folder-open',
@@ -1264,7 +1264,7 @@ export function createPacksScreen({
               disabled: !pack.thumbnail,
               onClick: () => ExportService.clearPackPreview(pack.id),
             },
-            { label: 'Export Pack', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+            { label: 'Export Pack JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
             {
               label: 'Move to Folder',
               icon: 'fa-solid fa-folder-open',

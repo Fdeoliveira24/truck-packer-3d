@@ -21,6 +21,9 @@ const corsSharedPath = new URL('../../supabase/functions/_shared/cors.ts', impor
 const supabasePath = new URL('../../src/core/supabase-client.js', import.meta.url);
 const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.meta.url);
 const settingsOverlayPath = new URL('../../src/ui/overlays/settings-overlay.js', import.meta.url);
+const helpModalPath = new URL('../../src/ui/overlays/help-modal.js', import.meta.url);
+const importAppDialogPath = new URL('../../src/ui/overlays/import-app-dialog.js', import.meta.url);
+const importPackDialogPath = new URL('../../src/ui/overlays/import-pack-dialog.js', import.meta.url);
 const billingStatusPath = new URL('../../supabase/functions/billing-status/index.ts', import.meta.url);
 const stripeCheckoutPath = new URL('../../supabase/functions/stripe-create-checkout-session/index.ts', import.meta.url);
 const orgInvitePath = new URL('../../supabase/functions/org-invite/index.ts', import.meta.url);
@@ -83,11 +86,23 @@ const billingRetryReliabilityFiles = new Set([
   'supabase/functions/billing-status/index.ts',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);
+const uiCopyExportImportFiles = new Set([
+  'index.html',
+  'src/app.js',
+  'src/screens/packs-screen.js',
+  'src/ui/overlays/help-modal.js',
+  'src/ui/overlays/import-app-dialog.js',
+  'src/ui/overlays/import-pack-dialog.js',
+  'src/ui/overlays/settings-overlay.js',
+  'docs/product/TP3D-MASTER-TODO-V3.md',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
 
 function isNotCurrentReleaseGateCheckoutPatch(file) {
   return file !== releaseGateCheckoutIdempotencyFile &&
     !releaseGateAuthSessionFiles.has(file) &&
-    !billingRetryReliabilityFiles.has(file);
+    !billingRetryReliabilityFiles.has(file) &&
+    !uiCopyExportImportFiles.has(file);
 }
 
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
@@ -837,11 +852,89 @@ test('P0 billing retry reliability C: changed files stay in approved billing rel
       .map(line => line.trim())
       .filter(Boolean)
       .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(isNotCurrentReleaseGateCheckoutPatch)
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !billingRetryReliabilityFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'P0 billing retry reliability C must stay inside approved billing reliability files');
+});
+
+test('UI-COPY-EXPORT-IMPORT-1 copy uses scoped backup import export wording', async () => {
+  const [settings, app, index, importApp, importPack, help, packs] = await Promise.all([
+    fs.readFile(settingsOverlayPath, 'utf8'),
+    fs.readFile(appPath, 'utf8'),
+    fs.readFile(indexHtmlPath, 'utf8'),
+    fs.readFile(importAppDialogPath, 'utf8'),
+    fs.readFile(importPackDialogPath, 'utf8'),
+    fs.readFile(helpModalPath, 'utf8'),
+    fs.readFile(packsScreenPath, 'utf8'),
+  ]);
+
+  assert.match(settings, /Release Notes[\s\S]*Verified product changes will appear here/,
+    'Settings Resources must label Updates as Release Notes with neutral copy');
+  assert.match(settings, /Export App Backup[\s\S]*Download local packs, cases, folders, and preferences as a JSON backup/,
+    'Settings Resources must scope App Backup export copy');
+  assert.match(settings, /Import App Backup[\s\S]*Replace local packs, cases, folders, and preferences from a backup JSON/,
+    'Settings Resources must scope App Backup import copy');
+  assert.match(settings, /Workspace Backup[\s\S]*Export Workspace Backup/,
+    'Workspace General must use Workspace Backup wording');
+  assert.match(app, /title:\s*['"]Export App Backup['"][\s\S]*label:\s*['"]Download App Backup['"]/,
+    'App export modal must use backup title and CTA');
+  assert.match(app, /title:\s*['"]Export Workspace Backup['"][\s\S]*label:\s*['"]Export Workspace Backup['"]/,
+    'Workspace export modal must use backup title and CTA');
+  assert.match(index, /Import Pack JSON/,
+    'Packs screen header button must use Import Pack JSON');
+  assert.match(index, /Download Cases Template[\s\S]*Import Cases/,
+    'Cases buttons must use explicit template and import labels');
+  assert.match(importApp, /title:\s*['"]Import App Backup['"]/,
+    'Import App dialog must use Import App Backup title');
+  assert.match(importApp, /Replace Local App Data/,
+    'Import App dialog must use scoped replacement CTA');
+  assert.match(importPack, /title:\s*['"]Import Pack JSON['"]/,
+    'Import Pack dialog must use Import Pack JSON title');
+  assert.equal((packs.match(/label:\s*['"]Export Pack JSON['"]/g) || []).length, 2,
+    'Both pack context menus must use Export Pack JSON');
+  assert.match(help, /Import \/ Export Help[\s\S]*Workspace Backup[\s\S]*Pack JSON[\s\S]*Cases CSV\/XLSX/,
+    'Top-bar Help modal must match the import/export help scope');
+});
+
+test('UI-COPY-EXPORT-IMPORT-1 removes fake release notes and stale roadmap commitments', async () => {
+  const [settings, app, index] = await Promise.all([
+    fs.readFile(settingsOverlayPath, 'utf8'),
+    fs.readFile(appPath, 'utf8'),
+    fs.readFile(indexHtmlPath, 'utf8'),
+  ]);
+  const combined = `${settings}\n${app}\n${index}`;
+
+  assert.doesNotMatch(combined, /\(Example\)|version:\s*['"]1\.1\.0['"]|date:\s*['"]2026-03-01['"]/,
+    'Fake example release notes must not remain user-facing');
+  assert.doesNotMatch(settings, /updatesData|roadmapData/,
+    'Settings empty states must not leave unused static Updates/Roadmap arrays behind');
+  assert.doesNotMatch(app, /quarter:\s*['"]Q1 2026['"]|quarter:\s*['"]Q2 2026['"]/,
+    'Full-screen Roadmap data must not include Q1/Q2 stale commitments');
+  assert.match(settings, /Verified release notes will appear here as the product changes/,
+    'Settings Release Notes sub-view must render the neutral empty state');
+  assert.match(settings, /Published roadmap items will appear here when they are ready to share/,
+    'Settings Roadmap sub-view must render the neutral empty state');
+});
+
+test('UI-COPY-EXPORT-IMPORT-1 changed files stay in approved copy-only scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !uiCopyExportImportFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'UI-COPY-EXPORT-IMPORT-1 must stay inside approved UI copy and docs files');
 });
 
 test('phase 1 P0 cross-profile logout: server auth validation only clears on confirmed revocation', async () => {
@@ -3885,15 +3978,15 @@ test('phase 0.7A-2 app exposes workspace export modal using existing download pa
     'workspace export modal must not touch auth, reload, Stripe, or server identity data');
 });
 
-test('phase 0.7A-2 Settings General has Owner Admin gated Export Workspace Data action', async () => {
+test('phase 0.7A-2 Settings General has Owner Admin gated Workspace Backup action', async () => {
   const src = await fs.readFile(settingsOverlayPath, 'utf8');
 
   assert.match(src, /onExportWorkspace:\s*_onExportWorkspace/,
     'settings overlay must accept onExportWorkspace callback');
   assert.match(src, /if \(isOwnerOrAdmin && typeof _onExportWorkspace === 'function'\)/,
     'workspace export action must fail closed unless owner/admin role and callback are available');
-  assert.match(src, /Export Workspace Data/,
-    'settings general must include Export Workspace Data action label');
+  assert.match(src, /Export Workspace Backup/,
+    'settings general must include Export Workspace Backup action label');
   assert.match(src, /_onExportWorkspace\(wsName\)/,
     'settings general export button must call onExportWorkspace with workspace display name');
 });
@@ -5103,10 +5196,10 @@ test('phase 0.7C-3 list and grid pack menus include compact move action between 
   const gridEnd = src.indexOf('\n    function buildPreview(', gridStart + 1);
   const gridBlock = gridStart >= 0 && gridEnd > gridStart ? src.slice(gridStart, gridEnd) : '';
 
-  assert.match(listBlock, /label:\s*['"]Export Pack['"][\s\S]{0,220}label:\s*['"]Move to Folder['"][\s\S]{0,220}openMoveToFolderModal\(pack\)[\s\S]{0,220}label:\s*['"]Delete['"]/,
-    'list view pack menu must insert one Move to Folder action after Export Pack and before Delete');
-  assert.match(gridBlock, /label:\s*['"]Export Pack['"][\s\S]{0,220}label:\s*['"]Move to Folder['"][\s\S]{0,220}openMoveToFolderModal\(pack\)[\s\S]{0,220}label:\s*['"]Delete['"]/,
-    'grid view pack menu must insert one Move to Folder action after Export Pack and before Delete');
+  assert.match(listBlock, /label:\s*['"]Export Pack JSON['"][\s\S]{0,220}label:\s*['"]Move to Folder['"][\s\S]{0,220}openMoveToFolderModal\(pack\)[\s\S]{0,220}label:\s*['"]Delete['"]/,
+    'list view pack menu must insert one Move to Folder action after Export Pack JSON and before Delete');
+  assert.match(gridBlock, /label:\s*['"]Export Pack JSON['"][\s\S]{0,220}label:\s*['"]Move to Folder['"][\s\S]{0,220}openMoveToFolderModal\(pack\)[\s\S]{0,220}label:\s*['"]Delete['"]/,
+    'grid view pack menu must insert one Move to Folder action after Export Pack JSON and before Delete');
   assert.doesNotMatch(listBlock, /\.\.\.buildMoveFolderItems\(pack\)|type:\s*['"]header['"], label:\s*['"]Move to folder['"]/,
     'list view pack menu must not inline every folder choice');
   assert.doesNotMatch(gridBlock, /\.\.\.buildMoveFolderItems\(pack\)|type:\s*['"]header['"], label:\s*['"]Move to folder['"]/,

@@ -127,7 +127,7 @@ export function createImportPackDialog({
     openImportDialogWithFilePicker({
       documentRef: doc,
       UIComponents,
-      title: 'Import Packs',
+      title: 'Import Pack JSON',
       content,
       accept: '.json,application/json',
       drop,

@@ -3085,61 +3085,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
           version: '1.0.0',
           date: '2026-01-15',
           features: [
-            'Multi-screen workspace (Packs, Cases, Editor, Updates, Roadmap, Settings)',
+            'Multi-screen workspace (Packs, Cases, Editor, Release Notes, Roadmap, Settings)',
             'Three.js 3D editor with drag placement',
             'CSV/XLSX import, PNG + PDF export',
           ],
           bugFixes: [],
           breakingChanges: [],
         },
-        {
-          version: '1.1.0',
-          date: '2026-03-01',
-          features: ['(Example) Weight balance view', '(Example) Case rotation'],
-          bugFixes: ['(Example) Improved collision edge cases'],
-          breakingChanges: [],
-        },
       ];
 
       const roadmap = [
-        {
-          quarter: 'Q1 2026',
-          items: [
-            {
-              title: 'Weight balance',
-              status: 'Completed',
-              badge: '✓',
-              color: 'var(--success)',
-              details: 'Add center-of-gravity and axle load estimates.',
-            },
-            {
-              title: 'Rotation (MVP)',
-              status: 'In Progress',
-              badge: '⏱',
-              color: 'var(--warning)',
-              details: 'Allow 90° rotations and pack-time heuristics.',
-            },
-          ],
-        },
-        {
-          quarter: 'Q2 2026',
-          items: [
-            {
-              title: 'Multi-user',
-              status: 'Planned',
-              badge: '📋',
-              color: 'var(--info)',
-              details: 'Presence + change tracking (no real-time yet).',
-            },
-            {
-              title: '3D export',
-              status: 'Planned',
-              badge: '📋',
-              color: 'var(--info)',
-              details: 'GLB/GLTF export for downstream tools.',
-            },
-          ],
-        },
         {
           quarter: 'Future',
           items: [
@@ -3173,8 +3128,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
         packs: { title: 'Packs', subtitle: 'Project library' },
         cases: { title: 'Cases', subtitle: 'Inventory management' },
         editor: { title: 'Editor', subtitle: '3D workspace' },
-        updates: { title: 'Updates', subtitle: 'Release notes' },
-        roadmap: { title: 'Roadmap', subtitle: 'Product direction' },
+        updates: { title: 'Release Notes', subtitle: 'Verified product changes' },
+        roadmap: { title: 'Roadmap', subtitle: 'Published product plans' },
         settings: { title: 'Settings', subtitle: 'Preferences' },
       };
 
@@ -5104,9 +5059,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       blurb.className = 'muted';
       blurb.style.fontSize = 'var(--text-sm)';
       blurb.innerHTML =
-        '<div><strong>App Export</strong> downloads a full JSON backup of packs, cases, and settings.</div>' +
-        '<div style="height:8px"></div>' +
-        '<div>This file can be imported back to restore everything.</div>';
+        '<div>Download local packs, cases, folders, and preferences. Account login, workspace membership, billing, and payment data are not included.</div>';
 
       const filename = `truck-packer-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
       const meta = document.createElement('div');
@@ -5120,12 +5073,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       content.appendChild(meta);
 
       UIComponents.showModal({
-        title: 'Export App JSON',
+        title: 'Export App Backup',
         content,
         actions: [
           { label: 'Cancel' },
           {
-            label: 'Export',
+            label: 'Download App Backup',
             variant: 'primary',
             onClick: () => {
               try {
@@ -5156,9 +5109,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       blurb.className = 'muted';
       blurb.style.fontSize = 'var(--text-sm)';
       blurb.innerHTML =
-        '<div><strong>Workspace Export</strong> downloads a JSON backup of packs and cases for this workspace.</div>' +
-        '<div style="height:8px"></div>' +
-        '<div>Pack thumbnails are excluded. Account preferences and payment data are not included.</div>';
+        '<div>Download this workspace\'s packs, cases, and folder structure. App preferences, members, billing, payment data, and thumbnails are not included.</div>';
 
       const meta = document.createElement('div');
       meta.className = 'card';
@@ -5171,12 +5122,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       content.appendChild(meta);
 
       UIComponents.showModal({
-        title: 'Export Workspace Data',
+        title: 'Export Workspace Backup',
         content,
         actions: [
           { label: 'Cancel' },
           {
-            label: 'Export',
+            label: 'Export Workspace Backup',
             variant: 'primary',
             onClick: () => {
               try {

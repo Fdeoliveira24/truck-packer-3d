@@ -34,18 +34,18 @@ export function createHelpModal({ UIComponents } = {}) {
   function open() {
     close();
     modal = UIComponents.showModal({
-      title: 'Help - Export / Import',
+      title: 'Import / Export Help',
       content: `
                   <div class="muted" style="font-size:var(--text-sm);line-height:var(--leading-relaxed)">
-                    <div><strong>App Export/Import</strong>: Use the top bar Export to download a full JSON backup. Use Import to restore from that backup JSON.</div>
+                    <div><strong>App Backup</strong>: Exporting app backup downloads a JSON file with all packs, cases, folders, and preferences. Importing an app backup replaces all local app data. Export an app backup before importing.</div>
                     <div style="height:8px"></div>
-                    <div><strong>Pack Export/Import</strong>: In Packs, open the pack menu (three dots) and choose Export Pack to download a single pack JSON. Use Import Pack on the Packs screen to add a shared pack JSON.</div>
+                    <div><strong>Workspace Backup</strong>: Exporting workspace backup downloads packs, cases, and folders for this workspace only. Workspace backup does not support import at this time.</div>
                     <div style="height:8px"></div>
-                    <div><strong>Cases Template</strong>: On the Cases screen, click Template to download the CSV headers for cases.</div>
+                    <div><strong>Pack JSON</strong>: Export Pack JSON (from the pack menu) downloads a single pack and its cases. Import Pack JSON adds that pack to your library without replacing other packs.</div>
                     <div style="height:4px"></div>
-                    <div><strong>Cases Import</strong>: Click Import on the Cases screen to upload CSV or XLSX. Valid rows are added; duplicates and invalid rows are skipped.</div>
+                    <div><strong>Cases CSV/XLSX</strong>: Import Cases on the Cases screen uploads CSV or XLSX. Valid rows are added; duplicate names and invalid rows are skipped.</div>
                     <div style="height:8px"></div>
-                    <div>Tip: Export the app before importing to keep a backup.</div>
+                    <div>Export an app backup before large imports so you can restore if needed.</div>
                   </div>
                 `,
       actions: [{ label: 'Close', variant: 'primary', onClick: () => close() }],

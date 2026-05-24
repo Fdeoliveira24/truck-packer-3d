@@ -82,10 +82,11 @@ export function createImportAppDialog({
     }
 
     const ok = await UIComponents.confirm({
-      title: 'Import App JSON?',
-      message: 'This will replace your current data with the imported backup. This cannot be undone.',
+      title: 'Import App Backup?',
+      message:
+        'This replaces local packs, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. This cannot be undone.',
       danger: true,
-      okLabel: 'Replace & Import',
+      okLabel: 'Replace Local App Data',
     });
     if (!ok) return;
 
@@ -155,7 +156,7 @@ export function createImportAppDialog({
         <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
         <div>
           <span class="tp3d-import-warning-label">Warning:</span>
-          <span class="tp3d-import-warning-text"> This will replace your current data.</span>
+          <span class="tp3d-import-warning-text"> Importing an app backup replaces local packs, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. Export an app backup first.</span>
         </div>
       </div>
     `;
@@ -163,14 +164,14 @@ export function createImportAppDialog({
     const results = doc.createElement('div');
     results.classList.add('tp3d-import-results');
 
-    content.appendChild(drop);
     content.appendChild(hint);
+    content.appendChild(drop);
     content.appendChild(results);
 
     openImportDialogWithFilePicker({
       documentRef: doc,
       UIComponents,
-      title: 'Import App JSON',
+      title: 'Import App Backup',
       content,
       accept: '.json,application/json',
       drop,

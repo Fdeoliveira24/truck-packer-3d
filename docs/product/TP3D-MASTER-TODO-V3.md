@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO (V3)
-Last updated: 2026-05-24 — Phase P0-BILLING-RETRY-RELIABILITY-C PASS: retry/refresh reliability hardened (`0aa4777`) and locally browser-validated. 303/303 tests passing.
+Last updated: 2026-05-24 — Phase UI-COPY-EXPORT-IMPORT-1 PASS: import/export backup wording clarified, fake Updates/Roadmap content removed, and 306/306 tests passing.
 
 This is the "single source of truth" checklist for finishing Billing/Access first (P0), then moving into product work (P1+).
 Rules:
@@ -1999,6 +1999,15 @@ Current status:
 ---
 
 ## Running log
+
+- Date: 2026-05-24 — Phase UI-COPY-EXPORT-IMPORT-1 — PASS
+- Verdict:
+  - PASS. Import/export/backup wording now states scope and risk clearly, and fake/stale Updates/Roadmap user-facing content was removed or replaced with neutral copy.
+- What passed:
+  - Terminal: `npm test` 306/306 PASS, `npm run lint` 0 errors with existing warnings only, `npm run -s typecheck` PASS, `git diff --check` PASS, `git diff --cached --check` PASS.
+  - Browser: Settings > Resources cards and sub-views validated; Workspace General shows Workspace Backup copy; Packs/Cases labels fit; Import Pack JSON and Import Cases dialogs open; Workspace Backup modal opens.
+  - Release Notes/Roadmap: no `(Example)` release notes, no fake `1.1.0`, and no Q1/Q2 2026 roadmap commitments in the validated UI.
+  - Scope: no import/export handlers, storage schemas, billing/auth logic, or CSS were changed.
 
 - Date: 2026-05-24 — Phase P0-BILLING-RETRY-RELIABILITY-C — PASS
 - Verdict:

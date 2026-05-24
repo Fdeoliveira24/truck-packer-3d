@@ -4891,6 +4891,20 @@ const TP3D_BUILD_STAMP = Object.freeze({
         InteractionManager.deleteSelection();
       }
 
+      function cloneOrientationLockMetadata(inst) {
+        const orientationLocked = inst && inst.orientationLocked === true;
+        if (!orientationLocked) {
+          return { orientationLocked: false, lockedRotation: null, orientedDims: null };
+        }
+        const transformRotation =
+          inst && inst.transform && inst.transform.rotation ? inst.transform.rotation : { x: 0, y: 0, z: 0 };
+        return {
+          orientationLocked: true,
+          lockedRotation: Utils.deepClone(inst.lockedRotation || transformRotation),
+          orientedDims: inst.orientedDims ? Utils.deepClone(inst.orientedDims) : null,
+        };
+      }
+
       function duplicateSelected() {
         if (!inEditor()) return;
         const packId = StateStore.get('currentPackId');
@@ -4930,7 +4944,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
         clipboard = selected
           .map(id => (pack.cases || []).find(i => i.id === id))
           .filter(Boolean)
-          .map(i => ({ caseId: i.caseId, transform: Utils.deepClone(i.transform || {}) }));
+          .map(i => ({
+            caseId: i.caseId,
+            transform: Utils.deepClone(i.transform || {}),
+            ...cloneOrientationLockMetadata(i),
+          }));
         UIComponents.showToast(`Copied ${clipboard.length} case(s)`, 'info', { title: 'Clipboard' });
       }
 
@@ -4954,6 +4972,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             },
             hidden: false,
             groupId: null,
+            ...cloneOrientationLockMetadata(item),
           });
           newIds.push(nextCases[nextCases.length - 1].id);
         });

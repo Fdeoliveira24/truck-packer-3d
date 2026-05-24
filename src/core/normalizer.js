@@ -16,6 +16,7 @@ import * as CoreDefaults from './defaults.js';
 import { uuid } from './browser.js';
 
 const DEFAULT_TRUCK = { length: 636, width: 102, height: 98 };
+const RIGHT_ANGLE_RAD = Math.PI / 2;
 
 function finiteNumber(value, fallback) {
   const n = Number(value);
@@ -35,6 +36,84 @@ function safeString(value, fallback = '') {
 
 function safeId(value) {
   return safeString(value, '') || uuid();
+}
+
+function normalizeRightAngle(value) {
+  const raw = Number(value) || 0;
+  let turns = Math.round(raw / RIGHT_ANGLE_RAD) % 4;
+  if (turns < 0) turns += 4;
+  return turns * RIGHT_ANGLE_RAD;
+}
+
+function normalizeRightAngleRotation(rotation = {}) {
+  return {
+    x: normalizeRightAngle(rotation.x),
+    y: normalizeRightAngle(rotation.y),
+    z: normalizeRightAngle(rotation.z),
+  };
+}
+
+function rotateVectorXYZ(vec, rotation) {
+  let x = vec.x;
+  let y = vec.y;
+  let z = vec.z;
+  const rx = normalizeRightAngle(rotation.x);
+  const ry = normalizeRightAngle(rotation.y);
+  const rz = normalizeRightAngle(rotation.z);
+
+  const cosX = Math.cos(rx);
+  const sinX = Math.sin(rx);
+  const y1 = y * cosX - z * sinX;
+  const z1 = y * sinX + z * cosX;
+  y = y1;
+  z = z1;
+
+  const cosY = Math.cos(ry);
+  const sinY = Math.sin(ry);
+  const x2 = x * cosY + z * sinY;
+  const z2 = -x * sinY + z * cosY;
+  x = x2;
+  z = z2;
+
+  const cosZ = Math.cos(rz);
+  const sinZ = Math.sin(rz);
+  const x3 = x * cosZ - y * sinZ;
+  const y3 = x * sinZ + y * cosZ;
+  return { x: x3, y: y3, z };
+}
+
+function getOrientedDimsForRotation(dimensions = {}, rotation = {}) {
+  const length = Math.max(0, Number(dimensions.length) || 0);
+  const width = Math.max(0, Number(dimensions.width) || 0);
+  const height = Math.max(0, Number(dimensions.height) || 0);
+  const locked = normalizeRightAngleRotation(rotation);
+  const axes = [
+    rotateVectorXYZ({ x: length, y: 0, z: 0 }, locked),
+    rotateVectorXYZ({ x: 0, y: height, z: 0 }, locked),
+    rotateVectorXYZ({ x: 0, y: 0, z: width }, locked),
+  ];
+  const out = axes.reduce(
+    (acc, axis) => ({
+      length: acc.length + Math.abs(axis.x),
+      height: acc.height + Math.abs(axis.y),
+      width: acc.width + Math.abs(axis.z),
+    }),
+    { length: 0, width: 0, height: 0 }
+  );
+  return {
+    length: Math.round(out.length * 1e6) / 1e6,
+    width: Math.round(out.width * 1e6) / 1e6,
+    height: Math.round(out.height * 1e6) / 1e6,
+  };
+}
+
+function normalizeOrientedDims(value) {
+  const dims = value && typeof value === 'object' ? value : {};
+  const length = positiveNumber(dims.length, 0);
+  const width = positiveNumber(dims.width, 0);
+  const height = positiveNumber(dims.height, 0);
+  if (!length || !width || !height) return null;
+  return { length, width, height };
 }
 
 export function normalizePreferences(prefs) {
@@ -192,6 +271,17 @@ export function normalizeInstance(inst, caseMap) {
   const caseId = safeString(inst && inst.caseId, '');
   const caseData = caseMap.get(caseId) || null;
   const halfY = caseData ? Math.max(1, (caseData.dimensions.height || 1) / 2) : 10;
+  const orientationLocked = inst && inst.orientationLocked === true;
+  const sourceLockedRotation =
+    inst && inst.lockedRotation && typeof inst.lockedRotation === 'object' ? inst.lockedRotation : rot;
+  const lockedRotation = orientationLocked ? normalizeRightAngleRotation(sourceLockedRotation) : null;
+  const computedOrientedDims =
+    orientationLocked && caseData && caseData.dimensions
+      ? getOrientedDimsForRotation(caseData.dimensions, lockedRotation)
+      : null;
+  const orientedDims = orientationLocked
+    ? normalizeOrientedDims(computedOrientedDims) || normalizeOrientedDims(inst && inst.orientedDims)
+    : null;
 
   return {
     id: safeId(inst && inst.id),
@@ -215,6 +305,9 @@ export function normalizeInstance(inst, caseMap) {
     },
     hidden: Boolean(inst && inst.hidden),
     groupId: inst && inst.groupId != null ? inst.groupId : null,
+    orientationLocked,
+    lockedRotation,
+    orientedDims,
   };
 }
 

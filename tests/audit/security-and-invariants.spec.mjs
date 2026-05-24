@@ -111,6 +111,10 @@ const autoPackA0Files = new Set([
   'src/services/pack-library.js',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);
+const autoPackA0BFiles = new Set([
+  ...autoPackA0Files,
+  'src/core/normalizer.js',
+]);
 
 function isNotCurrentReleaseGateCheckoutPatch(file) {
   return file !== releaseGateCheckoutIdempotencyFile &&
@@ -118,7 +122,7 @@ function isNotCurrentReleaseGateCheckoutPatch(file) {
     !billingRetryReliabilityFiles.has(file) &&
     !uiCopyExportImportFiles.has(file) &&
     !uiStabilization1Files.has(file) &&
-    !autoPackA0Files.has(file);
+    !autoPackA0BFiles.has(file);
 }
 
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
@@ -977,7 +981,7 @@ test('UI-STABILIZATION-1 changed files stay in approved scope', async () => {
 // AUTO-PACK-A0 — Manual Orientation Lock + Geometry Constraint Safety
 // ============================================================================
 
-test('AUTO-PACK-A0 changed files stay in approved orientation lock scope', async () => {
+test('AUTO-PACK-A0/A0B changed files stay in approved orientation lock scope', async () => {
   const [unstaged, staged] = await Promise.all([
     execFileAsync('git', ['diff', '--name-only']),
     execFileAsync('git', ['diff', '--cached', '--name-only']),
@@ -989,10 +993,10 @@ test('AUTO-PACK-A0 changed files stay in approved orientation lock scope', async
       .filter(Boolean)
       .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
   );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !autoPackA0Files.has(file));
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !autoPackA0BFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
-    'AUTO-PACK-A0 must only edit AutoPack, editor rotation, pack geometry helpers, and audit tests');
+    'AUTO-PACK-A0/A0B must only edit AutoPack, editor rotation, normalization, pack geometry helpers, and audit tests');
 });
 
 test('AUTO-PACK-A0 orientation lock helpers normalize rotation and compute oriented dimensions', async () => {
@@ -1130,6 +1134,184 @@ test('AUTO-PACK-A0 AutoPack keeps zone containment and stacking guards wired', a
     'noStackOnTop and stackable=false must remain guarded in resting-height checks');
   assert.match(restBlock, /if \(p\.maxStackCount > 0\)[\s\S]*if \(countOnP >= p\.maxStackCount\) continue;/,
     'maxStackCount guard must remain wired in resting-height checks');
+});
+
+test('AUTO-PACK-A0B normalizeInstance preserves manual orientation lock metadata', async () => {
+  const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const normalized = Normalizer.normalizeAppData({
+    caseLibrary: [
+      {
+        id: 'case-locked',
+        name: 'Locked Case',
+        dimensions: { length: 48, width: 24, height: 30 },
+      },
+    ],
+    packLibrary: [
+      {
+        id: 'pack-locked',
+        title: 'Locked Pack',
+        cases: [
+          {
+            id: 'inst-locked',
+            caseId: 'case-locked',
+            transform: {
+              position: { x: 1, y: 15, z: 2 },
+              rotation: { x: 0, y: Math.PI / 2, z: 0 },
+              scale: { x: 1, y: 1, z: 1 },
+            },
+            hidden: true,
+            groupId: 'group-1',
+            orientationLocked: true,
+            lockedRotation: { x: 0, y: Math.PI / 2, z: 0 },
+            orientedDims: { length: 999, width: 999, height: 999 },
+          },
+        ],
+      },
+    ],
+    folderLibrary: [],
+    preferences: {},
+  });
+  const inst = normalized.packLibrary[0].cases[0];
+
+  assert.equal(inst.orientationLocked, true,
+    'normalizeInstance must preserve orientationLocked=true');
+  assert.deepEqual(inst.lockedRotation, { x: 0, y: Math.PI / 2, z: 0 },
+    'normalizeInstance must preserve normalized lockedRotation');
+  assert.deepEqual(inst.orientedDims, { length: 24, width: 48, height: 30 },
+    'normalizeInstance must recompute safe orientedDims from case dimensions and lockedRotation');
+  assert.deepEqual(inst.transform.rotation, { x: 0, y: Math.PI / 2, z: 0 },
+    'normalizeInstance must not drop transform rotation');
+  assert.equal(inst.hidden, true,
+    'normalizeInstance must keep hidden state');
+  assert.equal(inst.groupId, 'group-1',
+    'normalizeInstance must keep groupId');
+});
+
+test('AUTO-PACK-A0B app and pack import paths do not strip orientation locks', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const Storage = await import(`${storagePath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const lockedCase = {
+    id: 'case-import-lock',
+    name: 'Import Lock Case',
+    dimensions: { length: 48, width: 24, height: 30 },
+    weight: 10,
+  };
+  const lockedInstance = {
+    id: 'inst-import-lock',
+    caseId: lockedCase.id,
+    transform: {
+      position: { x: 4, y: 15, z: 6 },
+      rotation: { x: 0, y: Math.PI / 2, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+    orientationLocked: true,
+    lockedRotation: { x: 0, y: Math.PI / 2, z: 0 },
+    orientedDims: { length: 24, width: 48, height: 30 },
+  };
+
+  const importedApp = Storage.importAppJSON(JSON.stringify({
+    app: 'Truck Packer 3D',
+    data: {
+      caseLibrary: [lockedCase],
+      packLibrary: [
+        {
+          id: 'pack-app-import-lock',
+          title: 'App Import Lock Pack',
+          folderId: 'missing-folder',
+          truck: { length: 100, width: 100, height: 100 },
+          cases: [lockedInstance],
+        },
+      ],
+      folderLibrary: [],
+      preferences: {},
+    },
+  }));
+  const appInst = importedApp.packLibrary[0].cases[0];
+  assert.equal(appInst.orientationLocked, true,
+    'App Import must preserve orientationLocked through normalizeAppData');
+  assert.deepEqual(appInst.lockedRotation, { x: 0, y: Math.PI / 2, z: 0 },
+    'App Import must preserve lockedRotation through normalizeAppData');
+  assert.deepEqual(appInst.orientedDims, { length: 24, width: 48, height: 30 },
+    'App Import must keep safe orientedDims through normalizeAppData');
+  assert.equal(importedApp.packLibrary[0].folderId, null,
+    'App Import must keep existing stale-folder normalization behavior');
+
+  StateStore.init({
+    caseLibrary: [lockedCase],
+    packLibrary: [],
+    folderLibrary: [],
+    preferences: {},
+  });
+  const importedPack = PackLibrary.importPackPayload({
+    pack: {
+      id: 'pack-single-import-lock',
+      title: 'Single Pack Import Lock',
+      folderId: 'folder-should-clear',
+      truck: { length: 100, width: 100, height: 100 },
+      cases: [lockedInstance],
+    },
+    bundledCases: [],
+  });
+  const packInst = importedPack.cases[0];
+  assert.equal(packInst.orientationLocked, true,
+    'Single pack import must preserve orientationLocked from the imported instance');
+  assert.deepEqual(packInst.lockedRotation, { x: 0, y: Math.PI / 2, z: 0 },
+    'Single pack import must preserve lockedRotation from the imported instance');
+  assert.deepEqual(packInst.orientedDims, { length: 24, width: 48, height: 30 },
+    'Single pack import must preserve orientedDims from the imported instance');
+  assert.equal(importedPack.folderId, null,
+    'Single pack import must still clear folderId');
+});
+
+test('AUTO-PACK-A0B clipboard and duplicate flows preserve orientation lock metadata', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const helperStart = src.indexOf('function cloneOrientationLockMetadata(inst)');
+  const helperEnd = src.indexOf('\n      function duplicateSelected()', helperStart);
+  const helperBlock = helperStart >= 0 && helperEnd > helperStart ? src.slice(helperStart, helperEnd) : '';
+  const duplicateStart = src.indexOf('function duplicateSelected()');
+  const duplicateEnd = src.indexOf('\n      function copySelected()', duplicateStart);
+  const duplicateBlock = duplicateStart >= 0 && duplicateEnd > duplicateStart ? src.slice(duplicateStart, duplicateEnd) : '';
+  const copyStart = src.indexOf('function copySelected()');
+  const copyEnd = src.indexOf('\n      function pasteClipboard()', copyStart);
+  const copyBlock = copyStart >= 0 && copyEnd > copyStart ? src.slice(copyStart, copyEnd) : '';
+  const pasteStart = src.indexOf('function pasteClipboard()');
+  const pasteEnd = src.indexOf('\n      function focusSelected()', pasteStart);
+  const pasteBlock = pasteStart >= 0 && pasteEnd > pasteStart ? src.slice(pasteStart, pasteEnd) : '';
+
+  assert.match(helperBlock, /orientationLocked:\s*true/,
+    'clipboard helper must preserve orientationLocked=true');
+  assert.match(helperBlock, /lockedRotation:\s*Utils\.deepClone\(inst\.lockedRotation \|\| transformRotation\)/,
+    'clipboard helper must preserve lockedRotation with transform rotation fallback');
+  assert.match(helperBlock, /orientedDims:\s*inst\.orientedDims \? Utils\.deepClone\(inst\.orientedDims\) : null/,
+    'clipboard helper must preserve orientedDims when present');
+  assert.match(duplicateBlock, /\.\.\.Utils\.deepClone\(inst\)/,
+    'duplicateSelected must keep cloning the full instance metadata');
+  assert.match(copyBlock, /\.\.\.cloneOrientationLockMetadata\(i\)/,
+    'copySelected must copy orientation lock metadata');
+  assert.match(pasteBlock, /\.\.\.cloneOrientationLockMetadata\(item\)/,
+    'pasteClipboard must apply orientation lock metadata to pasted instances');
+});
+
+test('AUTO-PACK-A0B editor snapping uses usable-zone walls, not missing TrailerGeometry dimensions', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const helperStart = src.indexOf('function getSnapWallCandidatesWorld()');
+  const helperEnd = src.indexOf('\n    /**\n     * Snap a world position', helperStart);
+  const helperBlock = helperStart >= 0 && helperEnd > helperStart ? src.slice(helperStart, helperEnd) : '';
+  const snapStart = src.indexOf('function snapToNearest(instanceId, worldPos)');
+  const snapEnd = src.indexOf('\n    /** Highlight instances', snapStart);
+  const snapBlock = snapStart >= 0 && snapEnd > snapStart ? src.slice(snapStart, snapEnd) : '';
+
+  assert.match(helperBlock, /TrailerGeometry\.getTrailerUsableZones\(truck\)/,
+    'snap walls must come from shape-aware trailer usable zones');
+  assert.match(helperBlock, /TrailerGeometry\.zonesInchesToWorld\(zonesInches\)/,
+    'snap walls must convert usable zones into world coordinates');
+  assert.match(helperBlock, /SceneManager\.getTruckBoundsWorld\(\)/,
+    'snap walls may only use rectangular scene bounds as a no-pack fallback');
+  assert.doesNotMatch(snapBlock, /TrailerGeometry\.(?:length|width)/,
+    'snapToNearest must not depend on missing TrailerGeometry.length or TrailerGeometry.width properties');
+  assert.match(snapBlock, /const wallCandidates = getSnapWallCandidatesWorld\(\)/,
+    'snapToNearest must use the shape-aware wall candidate helper');
 });
 
 test('phase 1 P0 cross-profile logout: server auth validation only clears on confirmed revocation', async () => {

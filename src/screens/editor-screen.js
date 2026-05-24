@@ -547,6 +547,35 @@ export function createCaseScene({
       return floorY;
     }
 
+    function getSnapWallCandidatesWorld() {
+      const packId = StateStore.get('currentPackId');
+      const pack = packId ? PackLibrary.getById(packId) : null;
+      const truck = pack && pack.truck ? pack.truck : null;
+      if (
+        truck &&
+        TrailerGeometry &&
+        typeof TrailerGeometry.getTrailerUsableZones === 'function' &&
+        typeof TrailerGeometry.zonesInchesToWorld === 'function'
+      ) {
+        const zonesInches = TrailerGeometry.getTrailerUsableZones(truck);
+        const zonesWorld = TrailerGeometry.zonesInchesToWorld(zonesInches);
+        const x = [];
+        const z = [];
+        zonesWorld.forEach(zone => {
+          x.push(zone.min.x, zone.max.x);
+          z.push(zone.min.z, zone.max.z);
+        });
+        if (x.length && z.length) return { x, z };
+      }
+
+      const bounds = SceneManager.getTruckBoundsWorld();
+      if (!bounds) return null;
+      return {
+        x: [bounds.min.x, bounds.max.x],
+        z: [bounds.min.z, bounds.max.z],
+      };
+    }
+
     /**
      * Snap a world position to the nearest box edge or truck wall (XZ only).
      * Returns adjusted { x, z } or null if no snap occurred.
@@ -572,35 +601,33 @@ export function createCaseScene({
       const myMaxZ = worldPos.z + half.z;
 
       // Snap to truck walls
-      const tg = TrailerGeometry;
-      if (tg) {
-        const tw = SceneManager.toWorld(tg.width) / 2;
-        const tl = SceneManager.toWorld(tg.length);
-        // Truck X: 0 to length
-        const candidates = [
-          { myEdge: myMinX, wall: 0 },             // rear wall
-          { myEdge: myMaxX, wall: tl },             // front wall
-        ];
-        candidates.forEach(({ myEdge, wall }) => {
-          const dist = Math.abs(myEdge - wall);
-          if (dist < snapXDist) {
-            snapXDist = dist;
-            bestX = wall + (myEdge === myMinX ? half.x : -half.x);
-            snapped = true;
-          }
+      const wallCandidates = getSnapWallCandidatesWorld();
+      if (wallCandidates) {
+        wallCandidates.x.forEach(wall => {
+          [
+            { myEdge: myMinX, offset: half.x },
+            { myEdge: myMaxX, offset: -half.x },
+          ].forEach(({ myEdge, offset }) => {
+            const dist = Math.abs(myEdge - wall);
+            if (dist < snapXDist) {
+              snapXDist = dist;
+              bestX = wall + offset;
+              snapped = true;
+            }
+          });
         });
-        // Truck Z: -tw to +tw
-        const zCandidates = [
-          { myEdge: myMinZ, wall: -tw },
-          { myEdge: myMaxZ, wall: tw },
-        ];
-        zCandidates.forEach(({ myEdge, wall }) => {
-          const dist = Math.abs(myEdge - wall);
-          if (dist < snapZDist) {
-            snapZDist = dist;
-            bestZ = wall + (myEdge === myMinZ ? half.z : -half.z);
-            snapped = true;
-          }
+        wallCandidates.z.forEach(wall => {
+          [
+            { myEdge: myMinZ, offset: half.z },
+            { myEdge: myMaxZ, offset: -half.z },
+          ].forEach(({ myEdge, offset }) => {
+            const dist = Math.abs(myEdge - wall);
+            if (dist < snapZDist) {
+              snapZDist = dist;
+              bestZ = wall + offset;
+              snapped = true;
+            }
+          });
         });
       }
 

@@ -1289,6 +1289,111 @@ test('AUTO-PACK-A1-R1 solver scaffold is pure and returns the expected output sh
   );
 });
 
+test('AUTO-PACK-A1-R3 floor solver packs rectangular floor positions without gaps or overlaps', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 120, width: 48, height: 48 };
+  const zones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 120, y: 48, z: 24 } }];
+  const items = Array.from({ length: 4 }, (_, index) => ({
+    instanceId: `box-${index + 1}`,
+    dims: { l: 48, w: 24, h: 24 },
+  }));
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 4);
+  assert.deepEqual(output.unpacked, []);
+  assert.equal(output.phaseStats.floorCount, 4);
+
+  const packed = items.map(item => {
+    const pos = output.placements.get(item.instanceId);
+    const od = output.orientedDims.get(item.instanceId);
+    const dims = { l: od.length, w: od.width, h: od.height };
+    return Solver.getAabb(pos, dims);
+  });
+
+  for (let i = 0; i < packed.length; i++) {
+    assert.equal(packed[i].min.y, 0, 'floor solver must keep floor-fit boxes on the floor');
+    assert.equal(Solver.isAabbContainedInAnyZone(packed[i], zones), true,
+      'floor solver must keep every packed AABB inside a usable zone');
+    for (let j = i + 1; j < packed.length; j++) {
+      assert.equal(Solver.aabbsOverlap(packed[i], packed[j]), false,
+        'floor solver must not overlap packed floor items');
+    }
+  }
+
+  assert.deepEqual(
+    [...new Set(packed.map(aabb => aabb.min.x))].sort((a, b) => a - b),
+    [0, 48],
+    'exact floor-fit boxes should advance flush along X without an unexplained gap'
+  );
+  assert.deepEqual(
+    [...new Set(packed.map(aabb => aabb.min.z))].sort((a, b) => a - b),
+    [-24, 0],
+    'exact floor-fit boxes should fill the truck width flush before leaving open lanes'
+  );
+});
+
+test('AUTO-PACK-A1-R3 floor solver consumes supplied wheel-well usable zones', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 30, width: 48, height: 48 };
+  const zones = [
+    { min: { x: 0, y: 0, z: -8 }, max: { x: 30, y: 48, z: 8 } },
+    { min: { x: 0, y: 15, z: -24 }, max: { x: 30, y: 48, z: -8 } },
+    { min: { x: 0, y: 15, z: 8 }, max: { x: 30, y: 48, z: 24 } },
+  ];
+  const items = Array.from({ length: 3 }, (_, index) => ({
+    instanceId: `well-${index + 1}`,
+    dims: { l: 30, w: 16, h: 10 },
+  }));
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 3);
+  assert.deepEqual(output.unpacked, []);
+
+  const bottoms = [];
+  for (const item of items) {
+    const pos = output.placements.get(item.instanceId);
+    const od = output.orientedDims.get(item.instanceId);
+    const aabb = Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
+    bottoms.push(aabb.min.y);
+    assert.equal(Solver.isAabbContainedInAnyZone(aabb, zones), true,
+      'wheel-well floor solver must use supplied usable zones instead of a plain rectangle');
+  }
+  assert.equal(bottoms.includes(15), true,
+    'wheel-well side zones must place items at the elevated well floor, not inside the blocked well volume');
+});
+
+test('AUTO-PACK-A1-R3 floor solver respects front-bonus height and width zones', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 120, width: 48, height: 48 };
+  const zones = [
+    { min: { x: 0, y: 0, z: -24 }, max: { x: 80, y: 48, z: 24 } },
+    { min: { x: 80, y: 0, z: -12 }, max: { x: 120, y: 20, z: 12 } },
+  ];
+  const items = [
+    { instanceId: 'short-bonus', loadPriority: 2, dims: { l: 30, w: 20, h: 15 } },
+    { instanceId: 'tall-main', loadPriority: 1, dims: { l: 30, w: 20, h: 30 } },
+  ];
+
+  const output = Solver.solveAutoPack({ truck, zones, items, loadFrontFirst: true });
+  assert.equal(output.placements.size, 2);
+  assert.deepEqual(output.unpacked, []);
+
+  const short = Solver.getAabb(output.placements.get('short-bonus'), { l: 30, w: 20, h: 15 });
+  const tallOd = output.orientedDims.get('tall-main');
+  const tall = Solver.getAabb(output.placements.get('tall-main'), {
+    l: tallOd.length,
+    w: tallOd.width,
+    h: tallOd.height,
+  });
+
+  assert.equal(short.min.x >= 80, true,
+    'front-to-rear floor pass should use the valid short front-bonus zone first');
+  assert.equal(tall.max.x <= 80, true,
+    'items taller than the front bonus must stay in the main trailer zone');
+  assert.equal(Solver.isAabbContainedInAnyZone(short, zones), true);
+  assert.equal(Solver.isAabbContainedInAnyZone(tall, zones), true);
+});
+
 test('AUTO-PACK-A1-R1 live AutoPack behavior is not swapped to the scaffold solver yet', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');

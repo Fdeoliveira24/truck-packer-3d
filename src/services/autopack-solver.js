@@ -214,7 +214,7 @@ export function classifyAutoPackItem(item = {}) {
   return 'STANDARD';
 }
 
-export function solveAutoPack() {
+function makeEmptyOutput() {
   return {
     placements: new Map(),
     rotations: new Map(),
@@ -229,4 +229,245 @@ export function solveAutoPack() {
       unpackedCount: 0,
     },
   };
+}
+
+function normalizeTruck(truck = {}) {
+  return {
+    length: positiveNumber(truck.length, 0),
+    width: positiveNumber(truck.width, 0),
+    height: positiveNumber(truck.height, 0),
+  };
+}
+
+function normalizeZone(raw = {}) {
+  const min = raw.min || {};
+  const max = raw.max || {};
+  return {
+    min: {
+      x: finiteNumber(min.x, 0),
+      y: finiteNumber(min.y, 0),
+      z: finiteNumber(min.z, 0),
+    },
+    max: {
+      x: finiteNumber(max.x, 0),
+      y: finiteNumber(max.y, 0),
+      z: finiteNumber(max.z, 0),
+    },
+  };
+}
+
+function normalizeZones(zones = []) {
+  return (Array.isArray(zones) ? zones : [])
+    .map(normalizeZone)
+    .filter(zone =>
+      zone.max.x > zone.min.x &&
+      zone.max.y > zone.min.y &&
+      zone.max.z > zone.min.z
+    );
+}
+
+function isAabbContainedInZone(aabb, zone, epsilon = 0.05) {
+  return aabb.min.x >= zone.min.x - epsilon &&
+    aabb.max.x <= zone.max.x + epsilon &&
+    aabb.min.y >= zone.min.y - epsilon &&
+    aabb.max.y <= zone.max.y + epsilon &&
+    aabb.min.z >= zone.min.z - epsilon &&
+    aabb.max.z <= zone.max.z + epsilon;
+}
+
+export function isAabbContainedInAnyZone(aabb, zones = [], epsilon = 0.05) {
+  return (zones || []).some(zone => isAabbContainedInZone(aabb, zone, epsilon));
+}
+
+function collidesPacked(aabb, packed) {
+  return packed.some(placement => aabbsOverlap(aabb, placement.aabb));
+}
+
+function normalizeItem(item = {}, index = 0) {
+  const dims = readDims(item.dims || item.dimensions || item.orientedDims);
+  const id = item.instanceId || item.id || `autopack-item-${index}`;
+  const candidates = buildOrientationCandidates(dims, item)
+    .filter(candidate => candidate.l > 0 && candidate.w > 0 && candidate.h > 0)
+    .sort((a, b) => {
+      const footprintDelta = (b.l * b.w) - (a.l * a.w);
+      if (footprintDelta) return footprintDelta;
+      const heightDelta = b.h - a.h;
+      if (heightDelta) return heightDelta;
+      return b.l - a.l;
+    });
+
+  return {
+    id,
+    item,
+    dims,
+    candidates,
+    volume: dims.l * dims.w * dims.h,
+    footprint: dims.l * dims.w,
+    weight: finiteNumber(item.weight, 0),
+    index,
+    className: classifyAutoPackItem({ ...item, dims }),
+  };
+}
+
+function sortItemsForFloor(items) {
+  return [...items].sort((a, b) => {
+    const priorityDelta = finiteNumber(b.item.loadPriority, 0) - finiteNumber(a.item.loadPriority, 0);
+    if (priorityDelta) return priorityDelta;
+    const footprintDelta = b.footprint - a.footprint;
+    if (footprintDelta) return footprintDelta;
+    const weightDelta = b.weight - a.weight;
+    if (weightDelta) return weightDelta;
+    const volumeDelta = b.volume - a.volume;
+    if (volumeDelta) return volumeDelta;
+    return a.index - b.index;
+  });
+}
+
+function sortZonesForFloor(zones, loadFrontFirst) {
+  return [...zones].sort((a, b) => {
+    const ax = loadFrontFirst ? a.max.x : a.min.x;
+    const bx = loadFrontFirst ? b.max.x : b.min.x;
+    if (ax !== bx) return loadFrontFirst ? bx - ax : ax - bx;
+    if (a.min.y !== b.min.y) return a.min.y - b.min.y;
+    return a.min.z - b.min.z;
+  });
+}
+
+function uniqueSorted(values, comparator) {
+  const seen = new Set();
+  const out = [];
+  for (const value of values) {
+    const normalized = Math.round(value * 1000000) / 1000000;
+    const key = String(normalized);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out.sort(comparator);
+}
+
+function buildFloorCandidates(candidate, zone, packed, loadFrontFirst) {
+  const xFaces = [loadFrontFirst ? zone.max.x : zone.min.x];
+  const zFaces = [zone.min.z];
+  for (const placement of packed) {
+    const p = placement.aabb;
+    if (loadFrontFirst) {
+      xFaces.push(p.min.x);
+    } else {
+      xFaces.push(p.max.x);
+    }
+    zFaces.push(p.max.z);
+  }
+
+  const sortedX = uniqueSorted(xFaces, (a, b) => loadFrontFirst ? b - a : a - b);
+  const sortedZ = uniqueSorted(zFaces, (a, b) => a - b);
+  const placements = [];
+
+  for (const xFace of sortedX) {
+    for (const zFace of sortedZ) {
+      const x = loadFrontFirst ? xFace - candidate.l / 2 : xFace + candidate.l / 2;
+      const y = zone.min.y + candidate.h / 2;
+      const z = zFace + candidate.w / 2;
+      const position = { x, y, z };
+      const dims = { l: candidate.l, w: candidate.w, h: candidate.h };
+      const aabb = getAabb(position, dims);
+      placements.push({ position, dims, aabb, zone });
+    }
+  }
+
+  return placements;
+}
+
+function scoreFloorCandidate(candidate, loadFrontFirst) {
+  const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
+  return [
+    xPrimary,
+    candidate.aabb.min.y,
+    candidate.aabb.min.z,
+    candidate.dims.h,
+    candidate.dims.l * candidate.dims.w,
+  ];
+}
+
+function compareScore(a, b) {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
+function findFloorPlacement(item, zones, packed, loadFrontFirst) {
+  let best = null;
+  let bestScore = null;
+
+  for (const orientation of item.candidates) {
+    for (const zone of zones) {
+      if (orientation.l > zone.max.x - zone.min.x + 0.05) continue;
+      if (orientation.w > zone.max.z - zone.min.z + 0.05) continue;
+      if (orientation.h > zone.max.y - zone.min.y + 0.05) continue;
+
+      for (const candidate of buildFloorCandidates(orientation, zone, packed, loadFrontFirst)) {
+        if (!isAabbContainedInAnyZone(candidate.aabb, zones)) continue;
+        if (collidesPacked(candidate.aabb, packed)) continue;
+        const score = scoreFloorCandidate(candidate, loadFrontFirst);
+        if (!best || compareScore(score, bestScore) < 0) {
+          best = { ...candidate, orientation };
+          bestScore = score;
+        }
+      }
+    }
+  }
+
+  return best;
+}
+
+export function solveAutoPack(input = {}) {
+  const truck = normalizeTruck(input.truck || {});
+  const zones = normalizeZones(input.zones || []);
+  const rawItems = Array.isArray(input.items) ? input.items : [];
+  const output = makeEmptyOutput();
+  if (!rawItems.length) return output;
+
+  const items = rawItems.map(normalizeItem);
+  const loadFrontFirst = input.loadFrontFirst === true || input.loadDirection === 'front_to_rear';
+  const floorZones = sortZonesForFloor(zones, loadFrontFirst);
+  const packed = [];
+
+  if (!truck.length || !truck.width || !truck.height || !floorZones.length) {
+    output.unpacked = items.map(item => item.id);
+    output.warnings.push('AutoPack floor solver skipped: missing truck dimensions or usable zones.');
+    output.phaseStats.unpackedCount = output.unpacked.length;
+    return output;
+  }
+
+  for (const item of sortItemsForFloor(items)) {
+    const placement = findFloorPlacement(item, floorZones, packed, loadFrontFirst);
+    if (!placement) {
+      output.unpacked.push(item.id);
+      output.warnings.push(`Item ${item.id} could not fit in any usable floor zone.`);
+      continue;
+    }
+
+    const packedPlacement = {
+      instanceId: item.id,
+      item,
+      pos: placement.position,
+      dims: placement.dims,
+      aabb: placement.aabb,
+      phase: 'floor',
+      zone: placement.zone,
+    };
+    packed.push(packedPlacement);
+    output.placements.set(item.id, placement.position);
+    output.rotations.set(item.id, placement.orientation.rotation);
+    output.orientedDims.set(item.id, {
+      length: placement.dims.l,
+      width: placement.dims.w,
+      height: placement.dims.h,
+    });
+  }
+
+  output.phaseStats.floorCount = packed.length;
+  output.phaseStats.unpackedCount = output.unpacked.length;
+  return output;
 }

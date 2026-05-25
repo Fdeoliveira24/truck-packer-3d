@@ -3284,6 +3284,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
       }
 
+      const MIN_STACK_SUPPORT_RATIO = 0.5;
+
+      function getXzOverlapArea(aMinX, aMaxX, aMinZ, aMaxZ, bMinX, bMaxX, bMinZ, bMaxZ) {
+        const overlapL = Math.max(0, Math.min(aMaxX, bMaxX) - Math.max(aMinX, bMinX));
+        const overlapW = Math.max(0, Math.min(aMaxZ, bMaxZ) - Math.max(aMinZ, bMinZ));
+        return overlapL * overlapW;
+      }
+
       /**
        * Build valid orientations for an item.
        * Each orientation = { l (X-depth), w (Z-width), h (Y-height), rotY }.
@@ -3378,8 +3386,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const bMaxX = cx + halfL;
         const bMinZ = cz - halfW;
         const bMaxZ = cz + halfW;
+        const candidateArea = Math.max(1e-9, (bMaxX - bMinX) * (bMaxZ - bMinZ));
+        const supportByTop = new Map();
 
-        let floor = 0;
         for (const p of packed) {
           if (p.noStackOnTop || p.stackable === false) continue;
           if (p.maxStackCount > 0) {
@@ -3398,13 +3407,27 @@ const TP3D_BUILD_STAMP = Object.freeze({
           }
           const pHL = p.dims.l / 2;
           const pHW = p.dims.w / 2;
-          if (bMinX < p.pos.x + pHL - EPS && bMaxX > p.pos.x - pHL + EPS &&
-            bMinZ < p.pos.z + pHW - EPS && bMaxZ > p.pos.z - pHW + EPS) {
-            const top = p.pos.y + p.dims.h / 2;
-            if (top > floor) { floor = top; }
-          }
+          const overlapArea = getXzOverlapArea(
+            bMinX,
+            bMaxX,
+            bMinZ,
+            bMaxZ,
+            p.pos.x - pHL,
+            p.pos.x + pHL,
+            p.pos.z - pHW,
+            p.pos.z + pHW
+          );
+          if (overlapArea <= EPS) continue;
+          const top = p.pos.y + p.dims.h / 2;
+          const key = Math.round(top * 1000) / 1000;
+          supportByTop.set(key, (supportByTop.get(key) || 0) + overlapArea);
         }
-        return floor;
+
+        const supports = Array.from(supportByTop.entries()).sort((a, b) => b[0] - a[0]);
+        for (const [top, supportArea] of supports) {
+          if (supportArea >= candidateArea * MIN_STACK_SUPPORT_RATIO) return top;
+        }
+        return 0;
       }
 
       /**
@@ -3452,6 +3475,72 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (collides(pos, dims, packed)) { return null; }
 
         return { pos, dims, restY };
+      }
+
+      function getPlacementAabb(pos, dims) {
+        return {
+          min: { x: pos.x - dims.l / 2, y: pos.y - dims.h / 2, z: pos.z - dims.w / 2 },
+          max: { x: pos.x + dims.l / 2, y: pos.y + dims.h / 2, z: pos.z + dims.w / 2 },
+        };
+      }
+
+      function isXzContainedInZone(aabb, zone) {
+        const EPS = 0.05;
+        return aabb.min.x >= zone.min.x - EPS &&
+          aabb.max.x <= zone.max.x + EPS &&
+          aabb.min.z >= zone.min.z - EPS &&
+          aabb.max.z <= zone.max.z + EPS;
+      }
+
+      function hasPlacementSupport(placement, acceptedPacked, zones) {
+        const EPS = 0.05;
+        const aabb = getPlacementAabb(placement.pos, placement.dims);
+        const bottom = aabb.min.y;
+        if (bottom <= EPS) return true;
+        if ((zones || []).some(zone => Math.abs(bottom - zone.min.y) <= EPS && isXzContainedInZone(aabb, zone))) {
+          return true;
+        }
+
+        const candidateArea = Math.max(1e-9, placement.dims.l * placement.dims.w);
+        let supportArea = 0;
+        for (const p of acceptedPacked) {
+          if (p.noStackOnTop || p.stackable === false) continue;
+          const top = p.pos.y + p.dims.h / 2;
+          if (Math.abs(bottom - top) > EPS) continue;
+          supportArea += getXzOverlapArea(
+            aabb.min.x,
+            aabb.max.x,
+            aabb.min.z,
+            aabb.max.z,
+            p.pos.x - p.dims.l / 2,
+            p.pos.x + p.dims.l / 2,
+            p.pos.z - p.dims.w / 2,
+            p.pos.z + p.dims.w / 2
+          );
+        }
+        return supportArea >= candidateArea * MIN_STACK_SUPPORT_RATIO;
+      }
+
+      function validatePackedPlacements(packedList, zones) {
+        const accepted = [];
+        const rejected = [];
+        for (const p of packedList) {
+          const aabb = getPlacementAabb(p.pos, p.dims);
+          if (!TrailerGeometry.isAabbContainedInAnyZone(aabb, zones)) {
+            rejected.push({ id: p.instanceId, reason: 'outsideUsableZone' });
+            continue;
+          }
+          if (collides(p.pos, p.dims, accepted)) {
+            rejected.push({ id: p.instanceId, reason: 'collision' });
+            continue;
+          }
+          if (!hasPlacementSupport(p, accepted, zones)) {
+            rejected.push({ id: p.instanceId, reason: 'unsupported' });
+            continue;
+          }
+          accepted.push(p);
+        }
+        return { accepted, rejected };
       }
 
       // ── Main packing algorithm ──────────────────────────────────────────
@@ -3631,7 +3720,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
           // ── Greedy placement loop ──
           const remaining = [...packItems];
-          const packed = []; // { pos:{x,y,z}, dims:{l,w,h}, instanceId }
+          let packed = []; // { pos:{x,y,z}, dims:{l,w,h}, instanceId }
           const placements = new Map(); // instanceId → {x,y,z}
           const rotations = new Map();  // instanceId → {x,y,z}
 
@@ -3651,10 +3740,25 @@ const TP3D_BUILD_STAMP = Object.freeze({
           ];
 
           function capXAnchorsSorted(arr, maxCount) {
-            // X anchors are already sorted toward the loading end. Sampling evenly can
-            // drop the exact packed edges we need for flush placement, causing gaps.
             if (!Array.isArray(arr) || arr.length <= maxCount) return arr;
-            return arr.slice(0, maxCount);
+
+            const headCount = Math.max(1, Math.floor(maxCount * 0.40));
+            const midCount = Math.max(1, Math.floor(maxCount * 0.20));
+            const tailCount = Math.max(1, maxCount - headCount - midCount);
+            const head = arr.slice(0, headCount);
+            const tail = arr.slice(Math.max(headCount, arr.length - tailCount));
+            const midStart = Math.max(0, Math.floor((arr.length - midCount) / 2));
+            const mid = arr.slice(midStart, midStart + midCount);
+
+            const seen = new Set();
+            const out = [];
+            for (const v of [...head, ...mid, ...tail]) {
+              const k = String(v);
+              if (seen.has(k)) continue;
+              seen.add(k);
+              out.push(v);
+            }
+            return out.sort((a, b) => loadFrontFirst ? b - a : a - b);
           }
 
           function capZAnchorsSorted(arr, maxCount) {
@@ -3712,7 +3816,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
               const arr = Array.from(set)
                 .filter(x => x >= -0.01 && x <= truckL + 0.01)
                 .sort((a, b) => loadFrontFirst ? b - a : a - b);
-              return capXAnchorsSorted(arr, 120);
+              return capXAnchorsSorted(arr, 240);
             }
 
             function computeLiveZFaces() {
@@ -3940,7 +4044,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
             }
           }
 
-          const unpacked = remaining.map(item => item.inst.id);
+          const finalValidation = validatePackedPlacements(packed, zones);
+          packed = finalValidation.accepted;
+          const rejectedPackedIds = new Set(finalValidation.rejected.map(item => item.id));
+          for (const id of rejectedPackedIds) {
+            placements.delete(id);
+            rotations.delete(id);
+          }
+
+          const unpacked = [
+            ...remaining.map(item => item.inst.id),
+            ...Array.from(rejectedPackedIds),
+          ];
 
           // Build oriented dims map for renderer halfWorld fix
           const orientedDimsMap = new Map();
@@ -4007,6 +4122,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
                 status: 'ok',
                 packed: packed.length,
                 unpacked: unpacked.length,
+                rejectedPlacements: finalValidation.rejected,
                 packedCases: stats && typeof stats.packedCases === 'number' ? stats.packedCases : null,
                 volumePercent: stats && typeof stats.volumePercent === 'number' ? stats.volumePercent : null,
               });
@@ -4051,10 +4167,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       function buildStagingMap(packItems, truck) {
-        const gap = 4;
+        const gap = 8;
         const truckW = truck.width || 102;
         const truckL = truck.length || 636;
-        const stageZStart = (truckW / 2) + 10;
+        const stageZStart = (truckW / 2) + Math.max(36, truckW * 0.35);
         const map = new Map();
         let curX = 0;
         let curZ = stageZStart;

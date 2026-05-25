@@ -1024,7 +1024,7 @@ test('AUTO-PACK-A1-2 changed files stay in approved floor-pass scope', async () 
 test('AUTO-PACK-A1-2 AutoPack runs a floor pass before allowing stack placements', async () => {
   const src = await fs.readFile(appPath, 'utf8');
   const passStart = src.indexOf('const FLOOR_REST_EPS = 0.05;');
-  const passEnd = src.indexOf('\n          const unpacked = remaining.map', passStart);
+  const passEnd = src.indexOf('\n          const unpacked = [', passStart);
   const block = passStart >= 0 && passEnd > passStart ? src.slice(passStart, passEnd) : '';
 
   assert.match(block, /const placementPasses = \[[\s\S]*name: 'floor', allowStacking: false[\s\S]*name: 'stack', allowStacking: true[\s\S]*\];/,
@@ -1039,6 +1039,45 @@ test('AUTO-PACK-A1-2 AutoPack runs a floor pass before allowing stack placements
     'the stack pass must still exist so stacking is not disabled');
   assert.match(block, /tryPlace\(cx, cz, ori, truckH, zones, packed\)/,
     'floor and stack passes must still use the existing containment, ceiling, and collision path');
+});
+
+test('AUTO-PACK-A1-3 AutoPack validates support, containment, and staging separation', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const supportStart = src.indexOf('const MIN_STACK_SUPPORT_RATIO = 0.5;');
+  const supportEnd = src.indexOf('\n      // ── Main packing algorithm', supportStart);
+  const supportBlock = supportStart >= 0 && supportEnd > supportStart ? src.slice(supportStart, supportEnd) : '';
+  const stagingStart = src.indexOf('function buildStagingMap(packItems, truck)');
+  const stagingEnd = src.indexOf('\n      // ── Animation', stagingStart);
+  const stagingBlock = stagingStart >= 0 && stagingEnd > stagingStart ? src.slice(stagingStart, stagingEnd) : '';
+
+  assert.match(supportBlock, /const MIN_STACK_SUPPORT_RATIO = 0\.5;/,
+    'stacked AutoPack placements must require meaningful footprint support');
+  assert.match(supportBlock, /function validatePackedPlacements\(packedList, zones\)/,
+    'AutoPack must run a final safety validation before persisting placements');
+  assert.match(supportBlock, /TrailerGeometry\.isAabbContainedInAnyZone\(aabb, zones\)/,
+    'final validation must preserve shape-aware usable-zone containment');
+  assert.match(supportBlock, /collides\(p\.pos, p\.dims, accepted\)/,
+    'final validation must reject packed-item collisions');
+  assert.match(supportBlock, /hasPlacementSupport\(p, accepted, zones\)/,
+    'final validation must reject unsupported/floating placements');
+  assert.match(src, /const finalValidation = validatePackedPlacements\(packed, zones\);[\s\S]*placements\.delete\(id\);[\s\S]*rotations\.delete\(id\);/,
+    'placements rejected by final validation must be staged instead of persisted as packed');
+  assert.match(stagingBlock, /const stageZStart = \(truckW \/ 2\) \+ Math\.max\(36, truckW \* 0\.35\);/,
+    'staged/unpacked items must be clearly separated from the trailer side');
+});
+
+test('AUTO-PACK-A1-3 X anchor cap keeps front and middle anchors available', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const capStart = src.indexOf('function capXAnchorsSorted(arr, maxCount)');
+  const capEnd = src.indexOf('\n          function capZAnchorsSorted', capStart);
+  const capBlock = capStart >= 0 && capEnd > capStart ? src.slice(capStart, capEnd) : '';
+
+  assert.doesNotMatch(capBlock, /return arr\.slice\(0, maxCount\);/,
+    'X anchor capping must not silently drop all far-end floor anchors');
+  assert.match(capBlock, /headCount[\s\S]*midCount[\s\S]*tailCount/,
+    'X anchor capping must retain loading-end, middle, and far-end anchors');
+  assert.match(src, /return capXAnchorsSorted\(arr, 240\);/,
+    'AutoPack should keep enough X anchors for larger floor layouts');
 });
 
 test('AUTO-PACK-A0 orientation lock helpers normalize rotation and compute oriented dimensions', async () => {

@@ -14,6 +14,7 @@ const storagePath = new URL('../../src/core/storage.js', import.meta.url);
 const importExportPath = new URL('../../src/services/import-export.js', import.meta.url);
 const folderLibraryPath = new URL('../../src/services/folder-library.js', import.meta.url);
 const packLibraryPath = new URL('../../src/services/pack-library.js', import.meta.url);
+const autoPackLegacySolverPath = new URL('../../src/services/autopack-legacy-solver.js', import.meta.url);
 const autoPackSolverPath = new URL('../../src/services/autopack-solver.js', import.meta.url);
 const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
@@ -127,6 +128,11 @@ const autoPackA1R1Files = new Set([
   'src/data/models/case.model.js',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);
+const autoPackA1Clean1Files = new Set([
+  'src/app.js',
+  'src/services/autopack-legacy-solver.js',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
 
 function isNotCurrentReleaseGateCheckoutPatch(file) {
   return file !== releaseGateCheckoutIdempotencyFile &&
@@ -135,7 +141,8 @@ function isNotCurrentReleaseGateCheckoutPatch(file) {
     !uiCopyExportImportFiles.has(file) &&
     !uiStabilization1Files.has(file) &&
     !autoPackA0BFiles.has(file) &&
-    !autoPackA1R1Files.has(file);
+    !autoPackA1R1Files.has(file) &&
+    !autoPackA1Clean1Files.has(file);
 }
 
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
@@ -1007,7 +1014,9 @@ test('AUTO-PACK-A0/A0B changed files stay in approved orientation lock scope', a
       .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
   );
   const unexpectedFiles = Array.from(changedFiles)
-    .filter(file => !autoPackA0BFiles.has(file) && !autoPackA1R1Files.has(file));
+    .filter(file => !autoPackA0BFiles.has(file) &&
+      !autoPackA1R1Files.has(file) &&
+      !autoPackA1Clean1Files.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'AUTO-PACK-A0/A0B must only edit AutoPack, editor rotation, normalization, pack geometry helpers, and audit tests');
@@ -1026,16 +1035,18 @@ test('AUTO-PACK-A1-2 changed files stay in approved floor-pass scope', async () 
       .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
   );
   const unexpectedFiles = Array.from(changedFiles)
-    .filter(file => !autoPackA1Files.has(file) && !autoPackA1R1Files.has(file));
+    .filter(file => !autoPackA1Files.has(file) &&
+      !autoPackA1R1Files.has(file) &&
+      !autoPackA1Clean1Files.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'AUTO-PACK-A1-2 must only edit AutoPack placement flow and audit tests');
 });
 
 test('AUTO-PACK-A1-2 AutoPack runs a floor pass before allowing stack placements', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await fs.readFile(autoPackLegacySolverPath, 'utf8');
   const passStart = src.indexOf('const FLOOR_REST_EPS = 0.05;');
-  const passEnd = src.indexOf('\n          const unpacked = [', passStart);
+  const passEnd = src.indexOf('\n  const finalValidation = validatePackedPlacements', passStart);
   const block = passStart >= 0 && passEnd > passStart ? src.slice(passStart, passEnd) : '';
 
   assert.match(block, /const placementPasses = \[[\s\S]*name: 'floor', allowStacking: false[\s\S]*name: 'stack', allowStacking: true[\s\S]*\];/,
@@ -1048,39 +1059,40 @@ test('AUTO-PACK-A1-2 AutoPack runs a floor pass before allowing stack placements
     'diagnostics should expose when the floor pass skips stacked candidates');
   assert.match(block, /placementPass\.allowStacking/,
     'the stack pass must still exist so stacking is not disabled');
-  assert.match(block, /tryPlace\(cx, cz, ori, truckH, zones, packed\)/,
+  assert.match(block, /tryPlace\(cx, cz, ori, truckH, zones, packed, geometry\)/,
     'floor and stack passes must still use the existing containment, ceiling, and collision path');
 });
 
 test('AUTO-PACK-A1-3 AutoPack validates support, containment, and staging separation', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const src = await fs.readFile(autoPackLegacySolverPath, 'utf8');
   const supportStart = src.indexOf('const MIN_STACK_SUPPORT_RATIO = 0.5;');
-  const supportEnd = src.indexOf('\n      // ── Main packing algorithm', supportStart);
+  const supportEnd = src.indexOf('\nexport function buildLegacyAutoPackItems', supportStart);
   const supportBlock = supportStart >= 0 && supportEnd > supportStart ? src.slice(supportStart, supportEnd) : '';
-  const stagingStart = src.indexOf('function buildStagingMap(packItems, truck)');
-  const stagingEnd = src.indexOf('\n      // ── Animation', stagingStart);
-  const stagingBlock = stagingStart >= 0 && stagingEnd > stagingStart ? src.slice(stagingStart, stagingEnd) : '';
+  const stagingStart = appSrc.indexOf('function buildStagingMap(packItems, truck)');
+  const stagingEnd = appSrc.indexOf('\n      // ── Animation', stagingStart);
+  const stagingBlock = stagingStart >= 0 && stagingEnd > stagingStart ? appSrc.slice(stagingStart, stagingEnd) : '';
 
   assert.match(supportBlock, /const MIN_STACK_SUPPORT_RATIO = 0\.5;/,
     'stacked AutoPack placements must require meaningful footprint support');
-  assert.match(supportBlock, /function validatePackedPlacements\(packedList, zones\)/,
+  assert.match(supportBlock, /function validatePackedPlacements\(packedList, zones, geometry\)/,
     'AutoPack must run a final safety validation before persisting placements');
-  assert.match(supportBlock, /TrailerGeometry\.isAabbContainedInAnyZone\(aabb, zones\)/,
+  assert.match(supportBlock, /geometry\.isAabbContainedInAnyZone\(aabb, zones\)/,
     'final validation must preserve shape-aware usable-zone containment');
   assert.match(supportBlock, /collides\(p\.pos, p\.dims, accepted\)/,
     'final validation must reject packed-item collisions');
   assert.match(supportBlock, /hasPlacementSupport\(p, accepted, zones\)/,
     'final validation must reject unsupported/floating placements');
-  assert.match(src, /const finalValidation = validatePackedPlacements\(packed, zones\);[\s\S]*placements\.delete\(id\);[\s\S]*rotations\.delete\(id\);/,
+  assert.match(src, /const finalValidation = validatePackedPlacements\(packed, zones, geometry\);[\s\S]*placements\.delete\(id\);[\s\S]*rotations\.delete\(id\);/,
     'placements rejected by final validation must be staged instead of persisted as packed');
   assert.match(stagingBlock, /const stageZStart = \(truckW \/ 2\) \+ Math\.max\(36, truckW \* 0\.35\);/,
     'staged/unpacked items must be clearly separated from the trailer side');
 });
 
 test('AUTO-PACK-A1-3 X anchor cap keeps front and middle anchors available', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await fs.readFile(autoPackLegacySolverPath, 'utf8');
   const capStart = src.indexOf('function capXAnchorsSorted(arr, maxCount)');
-  const capEnd = src.indexOf('\n          function capZAnchorsSorted', capStart);
+  const capEnd = src.indexOf('\n  function capZAnchorsSorted', capStart);
   const capBlock = capStart >= 0 && capEnd > capStart ? src.slice(capStart, capEnd) : '';
 
   assert.doesNotMatch(capBlock, /return arr\.slice\(0, maxCount\);/,
@@ -1103,7 +1115,8 @@ test('AUTO-PACK-A1-R1 changed files stay in approved logistics scaffold scope', 
       .filter(Boolean)
       .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
   );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !autoPackA1R1Files.has(file));
+  const unexpectedFiles = Array.from(changedFiles)
+    .filter(file => !autoPackA1R1Files.has(file) && !autoPackA1Clean1Files.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'AUTO-PACK-A1-R1 must only edit solver scaffold, normalizers, case model, and audit tests');
@@ -1266,18 +1279,45 @@ test('AUTO-PACK-A1-R1 solver scaffold is pure and returns the expected output sh
 });
 
 test('AUTO-PACK-A1-R1 live AutoPack behavior is not swapped to the scaffold solver yet', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const legacySrc = await fs.readFile(autoPackLegacySolverPath, 'utf8');
 
-  assert.doesNotMatch(src, /autopack-solver\.js|solveAutoPack/,
+  assert.doesNotMatch(appSrc, /autopack-solver\.js|solveAutoPack/,
     'A1-R1 must not import or call the new scaffold solver from app.js');
-  assert.match(src, /function buildOrientations\(dims, caseData, inst\)/,
-    'A1-R1 must leave the existing live orientation generation in app.js');
-  assert.match(src, /const X_TIGHTNESS_WEIGHT = 0\.8;/,
-    'A1-R1 must leave the existing live scoring path untouched');
-  assert.match(src, /function capXAnchorsSorted\(arr, maxCount\)/,
-    'A1-R1 must leave the existing live anchor scanner untouched');
-  assert.match(src, /for \(const placementPass of placementPasses\)/,
-    'A1-R1 must leave the existing live AutoPack pass loop untouched');
+  assert.match(appSrc, /solveLegacyAutoPack/,
+    'live AutoPack must still use the isolated legacy solver until the new solver is wired');
+  assert.match(legacySrc, /function buildOrientations\(dims, caseData, inst, orientationTools\)/,
+    'A1-R1/A1-CLEAN-1 must leave the existing live orientation generation in the legacy solver');
+  assert.match(legacySrc, /const X_TIGHTNESS_WEIGHT = 0\.8;/,
+    'A1-R1/A1-CLEAN-1 must leave the existing live scoring path untouched inside the legacy solver');
+  assert.match(legacySrc, /function capXAnchorsSorted\(arr, maxCount\)/,
+    'A1-R1/A1-CLEAN-1 must leave the existing live anchor scanner untouched inside the legacy solver');
+  assert.match(legacySrc, /for \(const placementPass of placementPasses\)/,
+    'A1-R1/A1-CLEAN-1 must leave the existing live AutoPack pass loop untouched inside the legacy solver');
+});
+
+test('AUTO-PACK-A1-CLEAN-1 app delegates legacy placement without carrying the scanner inline', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const legacySrc = await fs.readFile(autoPackLegacySolverPath, 'utf8');
+
+  assert.match(appSrc, /import \{ buildLegacyAutoPackItems, solveLegacyAutoPack \} from '\.\/services\/autopack-legacy-solver\.js';/,
+    'app.js must import the temporary legacy solver boundary');
+  assert.match(appSrc, /const legacyResult = await solveLegacyAutoPack\(\{/,
+    'app.js must delegate placement to the legacy solver boundary');
+  assert.doesNotMatch(appSrc, /function buildOrientations\(dims, caseData, inst/,
+    'app.js must not keep legacy orientation generation inline');
+  assert.doesNotMatch(appSrc, /function findRestingY\(cx, cz, halfL, halfW, packed\)/,
+    'app.js must not keep legacy gravity placement inline');
+  assert.doesNotMatch(appSrc, /function capXAnchorsSorted\(arr, maxCount\)/,
+    'app.js must not keep the legacy X-anchor scanner inline');
+  assert.doesNotMatch(appSrc, /const X_TIGHTNESS_WEIGHT = 0\.8;/,
+    'app.js must not carry the legacy scoring constant inline');
+  assert.match(legacySrc, /function buildOrientations\(dims, caseData, inst, orientationTools\)/,
+    'the legacy solver module must preserve the old orientation behavior during the extraction');
+  assert.match(legacySrc, /const X_TIGHTNESS_WEIGHT = 0\.8;/,
+    'the legacy solver module must preserve the old scoring behavior during the extraction');
+  assert.doesNotMatch(legacySrc, /\b(?:getBillingState|getProRuleSet|UIComponents|StateStore|Supabase|Stripe)\b/,
+    'the legacy solver must stay isolated from billing, auth, UI, and app state orchestration');
 });
 
 test('AUTO-PACK-A0 orientation lock helpers normalize rotation and compute oriented dimensions', async () => {
@@ -1331,23 +1371,28 @@ test('AUTO-PACK-A0 manual editor rotate and flip paths set per-instance orientat
 });
 
 test('AUTO-PACK-A0 AutoPack respects locked orientation and keeps unlocked orientation generation', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
-  const lockedStart = src.indexOf('function buildLockedOrientation(dims, inst)');
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const src = await fs.readFile(autoPackLegacySolverPath, 'utf8');
+  const lockedStart = src.indexOf('function buildLockedOrientation(dims, inst, orientationTools)');
   const buildEnd = src.indexOf('\n      // ── Core: gravity-based free-space packing', lockedStart);
-  const block = lockedStart >= 0 && buildEnd > lockedStart ? src.slice(lockedStart, buildEnd) : '';
+  const block = lockedStart >= 0
+    ? src.slice(lockedStart, buildEnd > lockedStart ? buildEnd : src.indexOf('\nfunction findRestingY', lockedStart))
+    : '';
 
   assert.match(block, /inst\.orientationLocked !== true/,
     'locked orientation path must be gated by the per-instance orientationLocked flag');
   assert.match(block, /inst\.lockedRotation[\s\S]*inst\.transform && inst\.transform\.rotation/,
     'AutoPack must prefer the stored lockedRotation and fall back to the current instance rotation');
-  assert.match(block, /PackLibrary\.normalizeRightAngleRotation\(sourceRotation\)/,
+  assert.match(block, /orientationTools\.normalizeRightAngleRotation\(sourceRotation\)/,
     'locked rotations must be normalized to right-angle editor rotations');
-  assert.match(block, /PackLibrary\.getOrientedDimsForRotation\(dims, lockedRotation\)/,
+  assert.match(block, /orientationTools\.getOrientedDimsForRotation\(dims, lockedRotation\)/,
     'locked orientation dimensions must come from the shared geometry helper');
   assert.match(block, /if \(lockedOrientation\) return \[lockedOrientation\];[\s\S]*tryOri\(L, W, H/,
     'locked items must test only one orientation while unlocked items keep normal orientation candidates');
-  assert.match(src, /const orientations = buildOrientations\(d, c, inst\)/,
-    'AutoPack item setup must pass the instance into orientation generation');
+  assert.match(src, /const orientations = buildOrientations\(d, c, inst, orientationTools\)/,
+    'legacy AutoPack item setup must pass the instance into orientation generation');
+  assert.match(appSrc, /buildLegacyAutoPackItems\(\{[\s\S]*orientationTools:/,
+    'app AutoPack orchestration must supply orientation helpers to the legacy solver');
 });
 
 test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when tweens stop ticking', async () => {
@@ -1515,19 +1560,20 @@ test('AUTO-PACK-A0 trailer geometry helpers block wheel wells and preserve front
 });
 
 test('AUTO-PACK-A0 AutoPack keeps zone containment and stacking guards wired', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
-  const tryStart = src.indexOf('function tryPlace(cx, cz, ori, truckH, zones, packed)');
-  const tryEnd = src.indexOf('\n      // ── Main packing algorithm', tryStart);
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const src = await fs.readFile(autoPackLegacySolverPath, 'utf8');
+  const tryStart = src.indexOf('function tryPlace(cx, cz, ori, truckH, zones, packed, geometry)');
+  const tryEnd = src.indexOf('\nfunction getPlacementAabb', tryStart);
   const tryBlock = tryStart >= 0 && tryEnd > tryStart ? src.slice(tryStart, tryEnd) : '';
   const restStart = src.indexOf('function findRestingY(cx, cz, halfL, halfW, packed)');
-  const restEnd = src.indexOf('\n      /**\n       * Check AABB collision', restStart);
+  const restEnd = src.indexOf('\nfunction collides', restStart);
   const restBlock = restStart >= 0 && restEnd > restStart ? src.slice(restStart, restEnd) : '';
 
-  assert.match(src, /const zones = TrailerGeometry\.getTrailerUsableZones\(truck\)/,
+  assert.match(appSrc, /const zones = TrailerGeometry\.getTrailerUsableZones\(truck\)/,
     'AutoPack must continue deriving usable zones from trailer geometry');
-  assert.match(tryBlock, /TrailerGeometry\.isAabbContainedInAnyZone\(aabb, zones\)/,
+  assert.match(tryBlock, /geometry\.isAabbContainedInAnyZone\(aabb, zones\)/,
     'AutoPack placement must continue using zone containment checks');
-  assert.match(src, /if \(mode === 'frontBonus'\)[\s\S]*if \(mode === 'wheelWells'\)/,
+  assert.match(appSrc, /if \(mode === 'frontBonus'\)[\s\S]*if \(mode === 'wheelWells'\)/,
     'app-local trailer geometry must keep frontBonus and wheelWells branches');
   assert.match(restBlock, /if \(p\.noStackOnTop \|\| p\.stackable === false\) continue;/,
     'noStackOnTop and stackable=false must remain guarded in resting-height checks');

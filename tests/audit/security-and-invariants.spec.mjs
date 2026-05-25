@@ -14,11 +14,13 @@ const storagePath = new URL('../../src/core/storage.js', import.meta.url);
 const importExportPath = new URL('../../src/services/import-export.js', import.meta.url);
 const folderLibraryPath = new URL('../../src/services/folder-library.js', import.meta.url);
 const packLibraryPath = new URL('../../src/services/pack-library.js', import.meta.url);
+const autoPackSolverPath = new URL('../../src/services/autopack-solver.js', import.meta.url);
 const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 const stylesMainPath = new URL('../../styles/main.css', import.meta.url);
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
 const normalizerPath = new URL('../../src/core/normalizer.js', import.meta.url);
+const caseModelPath = new URL('../../src/data/models/case.model.js', import.meta.url);
 const corsSharedPath = new URL('../../supabase/functions/_shared/cors.ts', import.meta.url);
 const supabasePath = new URL('../../src/core/supabase-client.js', import.meta.url);
 const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.meta.url);
@@ -119,6 +121,12 @@ const autoPackA1Files = new Set([
   'src/app.js',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);
+const autoPackA1R1Files = new Set([
+  'src/services/autopack-solver.js',
+  'src/core/normalizer.js',
+  'src/data/models/case.model.js',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
 
 function isNotCurrentReleaseGateCheckoutPatch(file) {
   return file !== releaseGateCheckoutIdempotencyFile &&
@@ -126,7 +134,8 @@ function isNotCurrentReleaseGateCheckoutPatch(file) {
     !billingRetryReliabilityFiles.has(file) &&
     !uiCopyExportImportFiles.has(file) &&
     !uiStabilization1Files.has(file) &&
-    !autoPackA0BFiles.has(file);
+    !autoPackA0BFiles.has(file) &&
+    !autoPackA1R1Files.has(file);
 }
 
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
@@ -997,7 +1006,8 @@ test('AUTO-PACK-A0/A0B changed files stay in approved orientation lock scope', a
       .filter(Boolean)
       .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
   );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !autoPackA0BFiles.has(file));
+  const unexpectedFiles = Array.from(changedFiles)
+    .filter(file => !autoPackA0BFiles.has(file) && !autoPackA1R1Files.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'AUTO-PACK-A0/A0B must only edit AutoPack, editor rotation, normalization, pack geometry helpers, and audit tests');
@@ -1015,7 +1025,8 @@ test('AUTO-PACK-A1-2 changed files stay in approved floor-pass scope', async () 
       .filter(Boolean)
       .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
   );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !autoPackA1Files.has(file));
+  const unexpectedFiles = Array.from(changedFiles)
+    .filter(file => !autoPackA1Files.has(file) && !autoPackA1R1Files.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'AUTO-PACK-A1-2 must only edit AutoPack placement flow and audit tests');
@@ -1078,6 +1089,195 @@ test('AUTO-PACK-A1-3 X anchor cap keeps front and middle anchors available', asy
     'X anchor capping must retain loading-end, middle, and far-end anchors');
   assert.match(src, /return capXAnchorsSorted\(arr, 240\);/,
     'AutoPack should keep enough X anchors for larger floor layouts');
+});
+
+test('AUTO-PACK-A1-R1 changed files stay in approved logistics scaffold scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !autoPackA1R1Files.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'AUTO-PACK-A1-R1 must only edit solver scaffold, normalizers, case model, and audit tests');
+});
+
+test('AUTO-PACK-A1-R1 normalizers add logistics defaults and preserve explicit values', async () => {
+  const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const CaseModel = await import(`${caseModelPath.href}?t=${Date.now()}-${Math.random()}`);
+  const now = Date.now();
+
+  const coreDefault = Normalizer.normalizeCase({
+    id: 'case-defaults',
+    name: 'Defaults',
+    dimensions: { length: 48, width: 24, height: 24 },
+  }, now);
+  assert.equal(coreDefault.laneItem, null);
+  assert.equal(coreDefault.loadPriority, 0);
+  assert.equal(coreDefault.mustLoadLast, false);
+  assert.equal(coreDefault.mustUnloadFirst, false);
+  assert.equal(coreDefault.stopGroup, '');
+  assert.equal(coreDefault.keepTogetherGroup, '');
+
+  const modelDefault = CaseModel.normalizeCase({
+    id: 'case-model-defaults',
+    name: 'Model Defaults',
+    dimensions: { length: 48, width: 24, height: 24 },
+  });
+  assert.equal(modelDefault.laneItem, null);
+  assert.equal(modelDefault.loadPriority, 0);
+  assert.equal(modelDefault.mustLoadLast, false);
+  assert.equal(modelDefault.mustUnloadFirst, false);
+  assert.equal(modelDefault.stopGroup, '');
+  assert.equal(modelDefault.keepTogetherGroup, '');
+
+  const normalized = Normalizer.normalizeAppData({
+    caseLibrary: [
+      {
+        id: 'case-logistics',
+        name: 'Logistics Case',
+        dimensions: { length: 96, width: 12, height: 12 },
+        laneItem: false,
+        loadPriority: 7,
+        mustLoadLast: true,
+        mustUnloadFirst: true,
+        stopGroup: 'Stop A',
+        keepTogetherGroup: 'Rack Group',
+      },
+    ],
+    packLibrary: [
+      {
+        id: 'pack-logistics',
+        title: 'Logistics Pack',
+        truck: { length: 120, width: 48, height: 48 },
+        cases: [
+          {
+            id: 'inst-logistics',
+            caseId: 'case-logistics',
+            deliverySequence: 3,
+          },
+        ],
+      },
+    ],
+    folderLibrary: [],
+    preferences: {},
+  });
+  const normalizedCase = normalized.caseLibrary[0];
+  const normalizedInstance = normalized.packLibrary[0].cases[0];
+
+  assert.equal(normalizedCase.laneItem, false,
+    'case-level laneItem override must survive normalizeAppData');
+  assert.equal(normalizedCase.loadPriority, 7,
+    'case-level loadPriority must survive normalizeAppData');
+  assert.equal(normalizedCase.mustLoadLast, true,
+    'case-level mustLoadLast must survive normalizeAppData');
+  assert.equal(normalizedCase.mustUnloadFirst, true,
+    'case-level mustUnloadFirst must survive normalizeAppData');
+  assert.equal(normalizedCase.stopGroup, 'Stop A',
+    'case-level stopGroup must survive normalizeAppData');
+  assert.equal(normalizedCase.keepTogetherGroup, 'Rack Group',
+    'case-level keepTogetherGroup must survive normalizeAppData');
+  assert.equal(normalizedInstance.deliverySequence, 3,
+    'instance-level deliverySequence must survive normalizeAppData');
+
+  const normalizedDefaultInstance = Normalizer.normalizeAppData({
+    caseLibrary: [
+      {
+        id: 'case-instance-default',
+        name: 'Instance Default',
+        dimensions: { length: 24, width: 24, height: 24 },
+      },
+    ],
+    packLibrary: [
+      {
+        id: 'pack-instance-default',
+        title: 'Instance Default Pack',
+        cases: [{ id: 'inst-default', caseId: 'case-instance-default' }],
+      },
+    ],
+    folderLibrary: [],
+    preferences: {},
+  }).packLibrary[0].cases[0];
+
+  assert.equal(normalizedDefaultInstance.deliverySequence, null,
+    'instance-level deliverySequence default must be null');
+});
+
+test('AUTO-PACK-A1-R1 solver scaffold is pure and returns the expected output shape', async () => {
+  const src = await fs.readFile(autoPackSolverPath, 'utf8');
+  assert.doesNotMatch(src, /import\s+.*from\s+['"][^'"]*(?:three|supabase|stripe|billing|state-store|ui-components)/i,
+    'solver scaffold must not import app infrastructure or payment/auth dependencies');
+  assert.doesNotMatch(src, /\b(?:window|document|localStorage|StateStore|UIComponents)\b/,
+    'solver scaffold must remain independent of browser globals and app state');
+
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const output = Solver.solveAutoPack({
+    truck: { length: 120, width: 48, height: 48 },
+    zones: [],
+    items: [],
+  });
+
+  assert.ok(output.placements instanceof Map,
+    'solveAutoPack must expose placements as a Map');
+  assert.ok(output.rotations instanceof Map,
+    'solveAutoPack must expose rotations as a Map');
+  assert.ok(output.orientedDims instanceof Map,
+    'solveAutoPack must expose orientedDims as a Map');
+  assert.deepEqual(output.unpacked, []);
+  assert.deepEqual(output.warnings, []);
+  assert.deepEqual(output.phaseStats, {
+    laneCount: 0,
+    floorCount: 0,
+    stackCount: 0,
+    fillerCount: 0,
+    unpackedCount: 0,
+  });
+
+  assert.equal(
+    Solver.classifyAutoPackItem({ dimensions: { length: 96, width: 12, height: 12 } }),
+    'LANE_ITEM',
+    'long aspect-ratio items must be classified as lane candidates'
+  );
+  assert.equal(
+    Solver.classifyAutoPackItem({ shape: 'drum', dimensions: { length: 24, width: 24, height: 24 } }),
+    'LANE_ITEM',
+    'round shapes must be classified as lane candidates for future lane handling'
+  );
+  assert.equal(
+    Solver.classifyAutoPackItem({ laneItem: false, shape: 'drum', dimensions: { length: 24, width: 24, height: 24 } }),
+    'STANDARD',
+    'laneItem=false must prevent automatic lane classification'
+  );
+  assert.equal(
+    Solver.computeSupportFraction(
+      Solver.getAabb({ x: 0, y: 15, z: 0 }, { l: 20, w: 20, h: 10 }),
+      [Solver.getAabb({ x: 0, y: 5, z: 0 }, { l: 20, w: 20, h: 10 })]
+    ),
+    1,
+    'support math must report full footprint support when AABBs align'
+  );
+});
+
+test('AUTO-PACK-A1-R1 live AutoPack behavior is not swapped to the scaffold solver yet', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  assert.doesNotMatch(src, /autopack-solver\.js|solveAutoPack/,
+    'A1-R1 must not import or call the new scaffold solver from app.js');
+  assert.match(src, /function buildOrientations\(dims, caseData, inst\)/,
+    'A1-R1 must leave the existing live orientation generation in app.js');
+  assert.match(src, /const X_TIGHTNESS_WEIGHT = 0\.8;/,
+    'A1-R1 must leave the existing live scoring path untouched');
+  assert.match(src, /function capXAnchorsSorted\(arr, maxCount\)/,
+    'A1-R1 must leave the existing live anchor scanner untouched');
+  assert.match(src, /for \(const placementPass of placementPasses\)/,
+    'A1-R1 must leave the existing live AutoPack pass loop untouched');
 });
 
 test('AUTO-PACK-A0 orientation lock helpers normalize rotation and compute oriented dimensions', async () => {

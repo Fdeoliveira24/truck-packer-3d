@@ -224,6 +224,7 @@ export function normalizeCase(c, now) {
   const hazmatClass = hazmatRaw ? hazmatRaw : null;
   const category = safeString(c && c.category, 'default').toLowerCase();
   const color = safeString(c && c.color, '');
+  const laneItem = c && c.laneItem === true ? true : c && c.laneItem === false ? false : null;
   return {
     id: safeId(c && c.id),
     name: safeString(c && c.name, 'Unnamed Case'),
@@ -240,6 +241,12 @@ export function normalizeCase(c, now) {
     isPallet: Boolean(c && c.isPallet),
     maxPalletWeight,
     hazmatClass,
+    laneItem,
+    loadPriority: finiteNumber(c && c.loadPriority, 0),
+    mustLoadLast: Boolean(c && c.mustLoadLast),
+    mustUnloadFirst: Boolean(c && c.mustUnloadFirst),
+    stopGroup: safeString(c && c.stopGroup, ''),
+    keepTogetherGroup: safeString(c && c.keepTogetherGroup, ''),
     canFlip: Boolean(c && c.canFlip),
     notes: safeString(c && c.notes, ''),
     color,
@@ -282,6 +289,8 @@ export function normalizeInstance(inst, caseMap) {
   const orientedDims = orientationLocked
     ? normalizeOrientedDims(computedOrientedDims) || normalizeOrientedDims(inst && inst.orientedDims)
     : null;
+  const deliverySequenceRaw = Number(inst && inst.deliverySequence);
+  const deliverySequence = Number.isFinite(deliverySequenceRaw) ? deliverySequenceRaw : null;
 
   return {
     id: safeId(inst && inst.id),
@@ -308,6 +317,7 @@ export function normalizeInstance(inst, caseMap) {
     orientationLocked,
     lockedRotation,
     orientedDims,
+    deliverySequence,
   };
 }
 

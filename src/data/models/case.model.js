@@ -36,6 +36,7 @@ export function normalizeCase(data) {
   const maxPalletWeight = Number(d.maxPalletWeight);
   const hazmatRaw = String(d.hazmatClass || '').trim();
   const hazmatClass = hazmatRaw ? hazmatRaw : null;
+  const laneItem = d.laneItem === true ? true : d.laneItem === false ? false : null;
   return {
     id: String(d.id || '').trim() || uuid(),
     name: String(d.name || '').trim() || 'New Case',
@@ -62,6 +63,12 @@ export function normalizeCase(data) {
     isPallet: Boolean(d.isPallet),
     maxPalletWeight: Number.isFinite(maxPalletWeight) && maxPalletWeight >= 0 ? maxPalletWeight : 0,
     hazmatClass,
+    laneItem,
+    loadPriority: Number.isFinite(Number(d.loadPriority)) ? Number(d.loadPriority) : 0,
+    mustLoadLast: Boolean(d.mustLoadLast),
+    mustUnloadFirst: Boolean(d.mustUnloadFirst),
+    stopGroup: String(d.stopGroup || '').trim(),
+    keepTogetherGroup: String(d.keepTogetherGroup || '').trim(),
     canFlip: Boolean(d.canFlip),
     notes: String(d.notes || ''),
     color: String(d.color || '#ff9f1c'),

@@ -115,6 +115,10 @@ const autoPackA0BFiles = new Set([
   ...autoPackA0Files,
   'src/core/normalizer.js',
 ]);
+const autoPackA1Files = new Set([
+  'src/app.js',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
 
 function isNotCurrentReleaseGateCheckoutPatch(file) {
   return file !== releaseGateCheckoutIdempotencyFile &&
@@ -997,6 +1001,44 @@ test('AUTO-PACK-A0/A0B changed files stay in approved orientation lock scope', a
 
   assert.deepEqual(unexpectedFiles, [],
     'AUTO-PACK-A0/A0B must only edit AutoPack, editor rotation, normalization, pack geometry helpers, and audit tests');
+});
+
+test('AUTO-PACK-A1-2 changed files stay in approved floor-pass scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !autoPackA1Files.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'AUTO-PACK-A1-2 must only edit AutoPack placement flow and audit tests');
+});
+
+test('AUTO-PACK-A1-2 AutoPack runs a floor pass before allowing stack placements', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const passStart = src.indexOf('const FLOOR_REST_EPS = 0.05;');
+  const passEnd = src.indexOf('\n          const unpacked = remaining.map', passStart);
+  const block = passStart >= 0 && passEnd > passStart ? src.slice(passStart, passEnd) : '';
+
+  assert.match(block, /const placementPasses = \[[\s\S]*name: 'floor', allowStacking: false[\s\S]*name: 'stack', allowStacking: true[\s\S]*\];/,
+    'AutoPack must run floor placement before the stack-allowed pass');
+  assert.match(block, /for \(const placementPass of placementPasses\)/,
+    'the main placement sweep must be wrapped by the placement pass sequence');
+  assert.match(block, /if \(!placementPass\.allowStacking && result\.restY > FLOOR_REST_EPS\)[\s\S]*continue;/,
+    'floor pass must reject stacked candidates using restY tolerance, not packed count');
+  assert.match(block, /skippedStackInFloorPass/,
+    'diagnostics should expose when the floor pass skips stacked candidates');
+  assert.match(block, /placementPass\.allowStacking/,
+    'the stack pass must still exist so stacking is not disabled');
+  assert.match(block, /tryPlace\(cx, cz, ori, truckH, zones, packed\)/,
+    'floor and stack passes must still use the existing containment, ceiling, and collision path');
 });
 
 test('AUTO-PACK-A0 orientation lock helpers normalize rotation and compute oriented dimensions', async () => {

@@ -3644,6 +3644,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
           // Scoring weights (inches-based).
           const X_TIGHTNESS_WEIGHT = 0.8;
+          const FLOOR_REST_EPS = 0.05;
+          const placementPasses = [
+            { name: 'floor', allowStacking: false },
+            { name: 'stack', allowStacking: true },
+          ];
 
           function capXAnchorsSorted(arr, maxCount) {
             // X anchors are already sorted toward the loading end. Sampling evenly can
@@ -3689,8 +3694,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
           }
 
           let placementsSinceYield = 0;
-          for (let sweep = 0; remaining.length > 0 && sweep < maxIterations; sweep++) {
-            let placedAny = false;
+          for (const placementPass of placementPasses) {
+            if (remaining.length === 0) break;
+            const passMaxIterations = placementPass.allowStacking ? maxIterations : 1;
+            for (let sweep = 0; remaining.length > 0 && sweep < passMaxIterations; sweep++) {
+              let placedAny = false;
 
             function computeLiveXFaces() {
               // IMPORTANT: include exact edges from placements made so far,
@@ -3743,6 +3751,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
                   oobZ: 0,
                   triedPlace: 0,
                   okPlace: 0,
+                  skippedStackInFloorPass: 0,
+                  placementPass: placementPass.name,
                 };
 
                 let chosenIndex = -1;
@@ -3783,6 +3793,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
                     slotStats.triedPlace++;
                     const result = tryPlace(cx, cz, ori, truckH, zones, packed);
                     if (!result) continue;
+
+                    // Floor pass prevents early towers by giving all valid floor placements a chance
+                    // before stacked placements are considered.
+                    if (!placementPass.allowStacking && result.restY > FLOOR_REST_EPS) {
+                      slotStats.skippedStackInFloorPass++;
+                      continue;
+                    }
 
                     slotStats.okPlace++;
 
@@ -3869,6 +3886,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
                   if (diag && typeof diag.autopackPlace === 'function') {
                     diag.autopackPlace({
                       sweep,
+                      placementPass: placementPass.name,
                       xFace,
                       zFace,
                       score: chosenScore,
@@ -3918,7 +3936,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
               }
             }
 
-            if (!placedAny) break;
+              if (!placedAny) break;
+            }
           }
 
           const unpacked = remaining.map(item => item.inst.id);

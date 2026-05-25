@@ -14,6 +14,7 @@ const storagePath = new URL('../../src/core/storage.js', import.meta.url);
 const importExportPath = new URL('../../src/services/import-export.js', import.meta.url);
 const folderLibraryPath = new URL('../../src/services/folder-library.js', import.meta.url);
 const packLibraryPath = new URL('../../src/services/pack-library.js', import.meta.url);
+const autoPackEnginePath = new URL('../../src/services/autopack-engine.js', import.meta.url);
 const autoPackLegacySolverPath = new URL('../../src/services/autopack-legacy-solver.js', import.meta.url);
 const autoPackSolverPath = new URL('../../src/services/autopack-solver.js', import.meta.url);
 const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
@@ -133,6 +134,11 @@ const autoPackA1Clean1Files = new Set([
   'src/services/autopack-legacy-solver.js',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);
+const autoPackA1Clean2Files = new Set([
+  'src/app.js',
+  'src/services/autopack-engine.js',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
 
 function isNotCurrentReleaseGateCheckoutPatch(file) {
   return file !== releaseGateCheckoutIdempotencyFile &&
@@ -142,7 +148,8 @@ function isNotCurrentReleaseGateCheckoutPatch(file) {
     !uiStabilization1Files.has(file) &&
     !autoPackA0BFiles.has(file) &&
     !autoPackA1R1Files.has(file) &&
-    !autoPackA1Clean1Files.has(file);
+    !autoPackA1Clean1Files.has(file) &&
+    !autoPackA1Clean2Files.has(file);
 }
 
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
@@ -1016,7 +1023,8 @@ test('AUTO-PACK-A0/A0B changed files stay in approved orientation lock scope', a
   const unexpectedFiles = Array.from(changedFiles)
     .filter(file => !autoPackA0BFiles.has(file) &&
       !autoPackA1R1Files.has(file) &&
-      !autoPackA1Clean1Files.has(file));
+      !autoPackA1Clean1Files.has(file) &&
+      !autoPackA1Clean2Files.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'AUTO-PACK-A0/A0B must only edit AutoPack, editor rotation, normalization, pack geometry helpers, and audit tests');
@@ -1037,7 +1045,8 @@ test('AUTO-PACK-A1-2 changed files stay in approved floor-pass scope', async () 
   const unexpectedFiles = Array.from(changedFiles)
     .filter(file => !autoPackA1Files.has(file) &&
       !autoPackA1R1Files.has(file) &&
-      !autoPackA1Clean1Files.has(file));
+      !autoPackA1Clean1Files.has(file) &&
+      !autoPackA1Clean2Files.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'AUTO-PACK-A1-2 must only edit AutoPack placement flow and audit tests');
@@ -1064,14 +1073,14 @@ test('AUTO-PACK-A1-2 AutoPack runs a floor pass before allowing stack placements
 });
 
 test('AUTO-PACK-A1-3 AutoPack validates support, containment, and staging separation', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
   const src = await fs.readFile(autoPackLegacySolverPath, 'utf8');
   const supportStart = src.indexOf('const MIN_STACK_SUPPORT_RATIO = 0.5;');
   const supportEnd = src.indexOf('\nexport function buildLegacyAutoPackItems', supportStart);
   const supportBlock = supportStart >= 0 && supportEnd > supportStart ? src.slice(supportStart, supportEnd) : '';
-  const stagingStart = appSrc.indexOf('function buildStagingMap(packItems, truck)');
-  const stagingEnd = appSrc.indexOf('\n      // ── Animation', stagingStart);
-  const stagingBlock = stagingStart >= 0 && stagingEnd > stagingStart ? appSrc.slice(stagingStart, stagingEnd) : '';
+  const stagingStart = engineSrc.indexOf('function buildStagingMap(packItems, truck)');
+  const stagingEnd = engineSrc.indexOf('\n  async function animatePlacements', stagingStart);
+  const stagingBlock = stagingStart >= 0 && stagingEnd > stagingStart ? engineSrc.slice(stagingStart, stagingEnd) : '';
 
   assert.match(supportBlock, /const MIN_STACK_SUPPORT_RATIO = 0\.5;/,
     'stacked AutoPack placements must require meaningful footprint support');
@@ -1116,7 +1125,9 @@ test('AUTO-PACK-A1-R1 changed files stay in approved logistics scaffold scope', 
       .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
   );
   const unexpectedFiles = Array.from(changedFiles)
-    .filter(file => !autoPackA1R1Files.has(file) && !autoPackA1Clean1Files.has(file));
+    .filter(file => !autoPackA1R1Files.has(file) &&
+      !autoPackA1Clean1Files.has(file) &&
+      !autoPackA1Clean2Files.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'AUTO-PACK-A1-R1 must only edit solver scaffold, normalizers, case model, and audit tests');
@@ -1280,11 +1291,14 @@ test('AUTO-PACK-A1-R1 solver scaffold is pure and returns the expected output sh
 
 test('AUTO-PACK-A1-R1 live AutoPack behavior is not swapped to the scaffold solver yet', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
+  const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
   const legacySrc = await fs.readFile(autoPackLegacySolverPath, 'utf8');
 
   assert.doesNotMatch(appSrc, /autopack-solver\.js|solveAutoPack/,
     'A1-R1 must not import or call the new scaffold solver from app.js');
-  assert.match(appSrc, /solveLegacyAutoPack/,
+  assert.doesNotMatch(engineSrc, /autopack-solver\.js|solveAutoPack\(/,
+    'A1-CLEAN-2 must not wire the scaffold solver through the runtime engine yet');
+  assert.match(engineSrc, /solveLegacyAutoPack/,
     'live AutoPack must still use the isolated legacy solver until the new solver is wired');
   assert.match(legacySrc, /function buildOrientations\(dims, caseData, inst, orientationTools\)/,
     'A1-R1/A1-CLEAN-1 must leave the existing live orientation generation in the legacy solver');
@@ -1298,12 +1312,13 @@ test('AUTO-PACK-A1-R1 live AutoPack behavior is not swapped to the scaffold solv
 
 test('AUTO-PACK-A1-CLEAN-1 app delegates legacy placement without carrying the scanner inline', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
+  const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
   const legacySrc = await fs.readFile(autoPackLegacySolverPath, 'utf8');
 
-  assert.match(appSrc, /import \{ buildLegacyAutoPackItems, solveLegacyAutoPack \} from '\.\/services\/autopack-legacy-solver\.js';/,
-    'app.js must import the temporary legacy solver boundary');
-  assert.match(appSrc, /const legacyResult = await solveLegacyAutoPack\(\{/,
-    'app.js must delegate placement to the legacy solver boundary');
+  assert.match(engineSrc, /import \{ buildLegacyAutoPackItems, solveLegacyAutoPack \} from '\.\/autopack-legacy-solver\.js';/,
+    'the AutoPack runtime must import the temporary legacy solver boundary');
+  assert.match(engineSrc, /const legacyResult = await solveLegacyAutoPack\(\{/,
+    'the AutoPack runtime must delegate placement to the legacy solver boundary');
   assert.doesNotMatch(appSrc, /function buildOrientations\(dims, caseData, inst/,
     'app.js must not keep legacy orientation generation inline');
   assert.doesNotMatch(appSrc, /function findRestingY\(cx, cz, halfL, halfW, packed\)/,
@@ -1318,6 +1333,28 @@ test('AUTO-PACK-A1-CLEAN-1 app delegates legacy placement without carrying the s
     'the legacy solver module must preserve the old scoring behavior during the extraction');
   assert.doesNotMatch(legacySrc, /\b(?:getBillingState|getProRuleSet|UIComponents|StateStore|Supabase|Stripe)\b/,
     'the legacy solver must stay isolated from billing, auth, UI, and app state orchestration');
+});
+
+test('AUTO-PACK-A1-CLEAN-2 app delegates AutoPack runtime without carrying orchestration inline', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
+
+  assert.match(appSrc, /import \{ createAutoPackEngine \} from '\.\/services\/autopack-engine\.js';/,
+    'app.js must import the AutoPack runtime factory');
+  assert.match(appSrc, /const AutoPackEngine = createAutoPackEngine\(\{/,
+    'app.js must construct AutoPack through the runtime factory');
+  assert.doesNotMatch(appSrc, /function buildStagingMap\(packItems, truck\)/,
+    'app.js must not keep AutoPack staging inline');
+  assert.doesNotMatch(appSrc, /function animatePlacements\(placements, rotations, orientedDimsMap/,
+    'app.js must not keep AutoPack animation inline');
+  assert.doesNotMatch(appSrc, /const legacyResult = await solveLegacyAutoPack\(\{/,
+    'app.js must not call the legacy solver directly after A1-CLEAN-2');
+  assert.match(engineSrc, /export function createAutoPackEngine\(\{/,
+    'the runtime module must expose the AutoPack engine factory');
+  assert.match(engineSrc, /capturePackPreview\(packId, \{ source: 'auto' \}\);/,
+    'the runtime module must preserve preview capture after AutoPack');
+  assert.match(engineSrc, /PackLibrary\.update\(packId, \{ cases: nextCases \}\);/,
+    'the runtime module must preserve pack persistence');
 });
 
 test('AUTO-PACK-A0 orientation lock helpers normalize rotation and compute oriented dimensions', async () => {
@@ -1371,7 +1408,7 @@ test('AUTO-PACK-A0 manual editor rotate and flip paths set per-instance orientat
 });
 
 test('AUTO-PACK-A0 AutoPack respects locked orientation and keeps unlocked orientation generation', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
   const src = await fs.readFile(autoPackLegacySolverPath, 'utf8');
   const lockedStart = src.indexOf('function buildLockedOrientation(dims, inst, orientationTools)');
   const buildEnd = src.indexOf('\n      // ── Core: gravity-based free-space packing', lockedStart);
@@ -1391,33 +1428,33 @@ test('AUTO-PACK-A0 AutoPack respects locked orientation and keeps unlocked orien
     'locked items must test only one orientation while unlocked items keep normal orientation candidates');
   assert.match(src, /const orientations = buildOrientations\(d, c, inst, orientationTools\)/,
     'legacy AutoPack item setup must pass the instance into orientation generation');
-  assert.match(appSrc, /buildLegacyAutoPackItems\(\{[\s\S]*orientationTools:/,
-    'app AutoPack orchestration must supply orientation helpers to the legacy solver');
+  assert.match(engineSrc, /buildLegacyAutoPackItems\(\{[\s\S]*orientationTools:/,
+    'AutoPack runtime orchestration must supply orientation helpers to the legacy solver');
 });
 
 test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when tweens stop ticking', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await fs.readFile(autoPackEnginePath, 'utf8');
   const tweenStart = src.indexOf('function tweenInstanceToPosition(instanceId, positionInches, duration)');
-  const tweenEnd = src.indexOf('\n      function sleep(ms)', tweenStart);
+  const tweenEnd = src.indexOf('\n  function sleep(ms)', tweenStart);
   const block = tweenStart >= 0 && tweenEnd > tweenStart ? src.slice(tweenStart, tweenEnd) : '';
 
   assert.match(block, /const finish = \(\) =>/,
     'AutoPack tween bridge must use an idempotent finish helper');
   assert.match(block, /const fallbackDelay = Math\.max\(50, \(Number\(duration\) \|\| 0\) \+ 150\)/,
     'AutoPack tween bridge must define a bounded fallback delay');
-  assert.match(block, /const fallback = window\.setTimeout\(finish, fallbackDelay\)/,
+  assert.match(block, /const fallback = runtimeWindow\.setTimeout\(finish, fallbackDelay\)/,
     'AutoPack tween bridge must resolve even if the tween loop does not tick');
-  assert.match(block, /window\.clearTimeout\(fallback\);[\s\S]*finish\(\);/,
+  assert.match(block, /runtimeWindow\.clearTimeout\(fallback\);[\s\S]*finish\(\);/,
     'AutoPack tween completion must clear the fallback and resolve through the same finish path');
 });
 
 test('AUTO-PACK-A0C staged unpacked items keep oriented spacing and current rotation', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await fs.readFile(autoPackEnginePath, 'utf8');
   const stagingStart = src.indexOf('function getStagingDims(item)');
-  const stagingEnd = src.indexOf('\n      // ── Animation', stagingStart);
+  const stagingEnd = src.indexOf('\n  async function animatePlacements', stagingStart);
   const stagingBlock = stagingStart >= 0 && stagingEnd > stagingStart ? src.slice(stagingStart, stagingEnd) : '';
   const persistStart = src.indexOf('const nextCases = (packData.cases || []).map(inst => {');
-  const persistEnd = src.indexOf('\n          PackLibrary.update(packId, { cases: nextCases });', persistStart);
+  const persistEnd = src.indexOf('\n      PackLibrary.update(packId, { cases: nextCases });', persistStart);
   const persistBlock = persistStart >= 0 && persistEnd > persistStart ? src.slice(persistStart, persistEnd) : '';
 
   assert.match(stagingBlock, /item\.inst && item\.inst\.orientedDims/,
@@ -1561,6 +1598,7 @@ test('AUTO-PACK-A0 trailer geometry helpers block wheel wells and preserve front
 
 test('AUTO-PACK-A0 AutoPack keeps zone containment and stacking guards wired', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
+  const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
   const src = await fs.readFile(autoPackLegacySolverPath, 'utf8');
   const tryStart = src.indexOf('function tryPlace(cx, cz, ori, truckH, zones, packed, geometry)');
   const tryEnd = src.indexOf('\nfunction getPlacementAabb', tryStart);
@@ -1569,7 +1607,7 @@ test('AUTO-PACK-A0 AutoPack keeps zone containment and stacking guards wired', a
   const restEnd = src.indexOf('\nfunction collides', restStart);
   const restBlock = restStart >= 0 && restEnd > restStart ? src.slice(restStart, restEnd) : '';
 
-  assert.match(appSrc, /const zones = TrailerGeometry\.getTrailerUsableZones\(truck\)/,
+  assert.match(engineSrc, /const zones = TrailerGeometry\.getTrailerUsableZones\(truck\)/,
     'AutoPack must continue deriving usable zones from trailer geometry');
   assert.match(tryBlock, /geometry\.isAabbContainedInAnyZone\(aabb, zones\)/,
     'AutoPack placement must continue using zone containment checks');

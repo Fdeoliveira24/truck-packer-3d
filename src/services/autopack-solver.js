@@ -3,6 +3,7 @@ const LONG_RATIO = 3;
 const LONG_MIN_IN = 72;
 const HEAVY_LBS = 150;
 const FILLER_IN3 = 500;
+const MIN_SUPPORT_FRACTION = 0.5;
 
 function finiteNumber(value, fallback = 0) {
   const n = Number(value);
@@ -186,7 +187,7 @@ export function computeSupportFraction(candidateAabb, supports = [], tolerance =
 
   for (const support of supports || []) {
     if (!support) continue;
-    if (support.noStackOnTop || support.stackable === false) continue;
+    if (!canSupportStack(support)) continue;
     const supportAabb = support.min && support.max
       ? support
       : getAabb(support.pos || support.position, support.dims || support.orientedDims || support.dimensions);
@@ -195,6 +196,15 @@ export function computeSupportFraction(candidateAabb, supports = [], tolerance =
   }
 
   return Math.min(1, supportArea / candidateArea);
+}
+
+function getPlacementRules(placement = {}) {
+  return (placement.item && placement.item.item) || placement.item || placement.caseData || placement;
+}
+
+function canSupportStack(placement = {}) {
+  const rules = getPlacementRules(placement);
+  return !(rules.noStackOnTop || rules.stackable === false);
 }
 
 export function classifyAutoPackItem(item = {}) {
@@ -281,6 +291,43 @@ export function isAabbContainedInAnyZone(aabb, zones = [], epsilon = 0.05) {
 
 function collidesPacked(aabb, packed) {
   return packed.some(placement => aabbsOverlap(aabb, placement.aabb));
+}
+
+function getMaxStackCount(placement = {}) {
+  const maxStackCount = finiteNumber(getPlacementRules(placement).maxStackCount, 0);
+  return maxStackCount > 0 ? maxStackCount : 0;
+}
+
+function countDirectStackChildren(support, packed, tolerance = 0.05) {
+  const supportTop = support.aabb.max.y;
+  let count = 0;
+  for (const placement of packed) {
+    if (placement === support) continue;
+    if (Math.abs(placement.aabb.min.y - supportTop) > tolerance) continue;
+    if (computeXzOverlapArea(placement.aabb, support.aabb) <= 0.05) continue;
+    count++;
+  }
+  return count;
+}
+
+function hasStackCapacity(placement, packed) {
+  const maxStackCount = getMaxStackCount(placement);
+  return !maxStackCount || countDirectStackChildren(placement, packed) < maxStackCount;
+}
+
+function getCandidateSupports(candidateAabb, packed, tolerance = 0.05) {
+  const bottom = candidateAabb.min.y;
+  return packed.filter(placement =>
+    Math.abs(bottom - placement.aabb.max.y) <= tolerance &&
+    computeXzOverlapArea(candidateAabb, placement.aabb) > 0.05
+  );
+}
+
+function supportsCandidate(candidateAabb, packed) {
+  const supports = getCandidateSupports(candidateAabb, packed);
+  if (!supports.length) return false;
+  if (supports.some(support => !canSupportStack(support) || !hasStackCapacity(support, packed))) return false;
+  return computeSupportFraction(candidateAabb, supports) >= MIN_SUPPORT_FRACTION;
 }
 
 function normalizeItem(item = {}, index = 0) {
@@ -421,6 +468,77 @@ function findFloorPlacement(item, zones, packed, loadFrontFirst) {
   return best;
 }
 
+function stackAnchorMins(supportMin, supportMax, itemSize) {
+  return uniqueSorted(
+    [
+      supportMin,
+      supportMax - itemSize,
+      supportMin + ((supportMax - supportMin) - itemSize) / 2,
+    ],
+    (a, b) => a - b
+  );
+}
+
+function buildStackCandidates(orientation, support) {
+  const xMins = stackAnchorMins(support.aabb.min.x, support.aabb.max.x, orientation.l);
+  const zMins = stackAnchorMins(support.aabb.min.z, support.aabb.max.z, orientation.w);
+  const placements = [];
+
+  for (const xMin of xMins) {
+    for (const zMin of zMins) {
+      const position = {
+        x: xMin + orientation.l / 2,
+        y: support.aabb.max.y + orientation.h / 2,
+        z: zMin + orientation.w / 2,
+      };
+      const dims = { l: orientation.l, w: orientation.w, h: orientation.h };
+      const aabb = getAabb(position, dims);
+      placements.push({ position, dims, aabb });
+    }
+  }
+
+  return placements;
+}
+
+function scoreStackCandidate(candidate, loadFrontFirst) {
+  const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
+  return [
+    candidate.aabb.min.y,
+    xPrimary,
+    candidate.aabb.min.z,
+    -candidate.supportFraction,
+  ];
+}
+
+function findStackPlacement(item, zones, packed, loadFrontFirst) {
+  let best = null;
+  let bestScore = null;
+
+  for (const orientation of item.candidates) {
+    for (const support of packed) {
+      if (!canSupportStack(support) || !hasStackCapacity(support, packed)) continue;
+
+      for (const candidate of buildStackCandidates(orientation, support)) {
+        if (!isAabbContainedInAnyZone(candidate.aabb, zones)) continue;
+        if (collidesPacked(candidate.aabb, packed)) continue;
+        if (!supportsCandidate(candidate.aabb, packed)) continue;
+
+        const supports = getCandidateSupports(candidate.aabb, packed)
+          .filter(candidateSupport => canSupportStack(candidateSupport));
+        const supportFraction = computeSupportFraction(candidate.aabb, supports);
+        const scoredCandidate = { ...candidate, supportFraction, orientation };
+        const score = scoreStackCandidate(scoredCandidate, loadFrontFirst);
+        if (!best || compareScore(score, bestScore) < 0) {
+          best = scoredCandidate;
+          bestScore = score;
+        }
+      }
+    }
+  }
+
+  return best;
+}
+
 export function solveAutoPack(input = {}) {
   const truck = normalizeTruck(input.truck || {});
   const zones = normalizeZones(input.zones || []);
@@ -440,11 +558,12 @@ export function solveAutoPack(input = {}) {
     return output;
   }
 
+  const deferred = [];
+
   for (const item of sortItemsForFloor(items)) {
     const placement = findFloorPlacement(item, floorZones, packed, loadFrontFirst);
     if (!placement) {
-      output.unpacked.push(item.id);
-      output.warnings.push(`Item ${item.id} could not fit in any usable floor zone.`);
+      deferred.push(item);
       continue;
     }
 
@@ -467,7 +586,37 @@ export function solveAutoPack(input = {}) {
     });
   }
 
+  let stackCount = 0;
+  for (const item of deferred) {
+    const placement = findStackPlacement(item, floorZones, packed, loadFrontFirst);
+    if (!placement) {
+      output.unpacked.push(item.id);
+      output.warnings.push(`Item ${item.id} could not fit on the floor or on a safe supported stack.`);
+      continue;
+    }
+
+    const packedPlacement = {
+      instanceId: item.id,
+      item,
+      pos: placement.position,
+      dims: placement.dims,
+      aabb: placement.aabb,
+      phase: 'stack',
+    };
+    packed.push(packedPlacement);
+    stackCount++;
+    output.placements.set(item.id, placement.position);
+    output.rotations.set(item.id, placement.orientation.rotation);
+    output.orientedDims.set(item.id, {
+      length: placement.dims.l,
+      width: placement.dims.w,
+      height: placement.dims.h,
+    });
+  }
+
   output.phaseStats.floorCount = packed.length;
+  output.phaseStats.stackCount = stackCount;
+  output.phaseStats.floorCount -= stackCount;
   output.phaseStats.unpackedCount = output.unpacked.length;
   return output;
 }

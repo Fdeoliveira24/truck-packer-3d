@@ -1394,6 +1394,106 @@ test('AUTO-PACK-A1-R3 floor solver respects front-bonus height and width zones',
   assert.equal(Solver.isAabbContainedInAnyZone(tall, zones), true);
 });
 
+test('AUTO-PACK-A1-R4 stack phase runs only after floor positions are exhausted', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 48, width: 48, height: 48 };
+  const zones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 48, y: 48, z: 24 } }];
+  const items = Array.from({ length: 6 }, (_, index) => ({
+    instanceId: `cube-${index + 1}`,
+    dims: { l: 24, w: 24, h: 24 },
+  }));
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 6);
+  assert.deepEqual(output.unpacked, []);
+  assert.equal(output.phaseStats.floorCount, 4,
+    'floor pass must fill the four valid floor cells before stack phase runs');
+  assert.equal(output.phaseStats.stackCount, 2,
+    'stack pass must place the remaining cubes only after the floor is full');
+
+  const packed = items.map(item => {
+    const pos = output.placements.get(item.instanceId);
+    const od = output.orientedDims.get(item.instanceId);
+    return Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
+  });
+  assert.equal(packed.filter(aabb => aabb.min.y === 0).length, 4);
+  assert.equal(packed.filter(aabb => aabb.min.y === 24).length, 2);
+
+  for (let i = 0; i < packed.length; i++) {
+    assert.equal(Solver.isAabbContainedInAnyZone(packed[i], zones), true);
+    for (let j = i + 1; j < packed.length; j++) {
+      assert.equal(Solver.aabbsOverlap(packed[i], packed[j]), false,
+        'stacked output must not collide with floor or stack placements');
+    }
+  }
+});
+
+test('AUTO-PACK-A1-R4 stack phase requires meaningful support area', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 24, width: 24, height: 48 };
+  const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 24, y: 48, z: 12 } }];
+  const items = [
+    { instanceId: 'small-support', loadPriority: 2, dims: { l: 12, w: 12, h: 12 } },
+    { instanceId: 'large-top', loadPriority: 1, dims: { l: 24, w: 24, h: 12 } },
+  ];
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 1);
+  assert.deepEqual(output.unpacked, ['large-top']);
+  assert.equal(output.phaseStats.stackCount, 0,
+    'a large item must not be stacked on a small support with less than 50% support');
+});
+
+test('AUTO-PACK-A1-R4 stack phase honors noStackOnTop and stackable false supports', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 24, width: 24, height: 48 };
+  const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 24, y: 48, z: 12 } }];
+
+  const noStackOutput = Solver.solveAutoPack({
+    truck,
+    zones,
+    items: [
+      { instanceId: 'fragile-base', loadPriority: 2, noStackOnTop: true, dims: { l: 24, w: 24, h: 24 } },
+      { instanceId: 'top-case', loadPriority: 1, dims: { l: 24, w: 24, h: 24 } },
+    ],
+  });
+  assert.equal(noStackOutput.placements.size, 1);
+  assert.deepEqual(noStackOutput.unpacked, ['top-case']);
+  assert.equal(noStackOutput.phaseStats.stackCount, 0,
+    'noStackOnTop support must not receive stacked items');
+
+  const stackableFalseOutput = Solver.solveAutoPack({
+    truck,
+    zones,
+    items: [
+      { instanceId: 'unstackable-base', loadPriority: 2, stackable: false, dims: { l: 24, w: 24, h: 24 } },
+      { instanceId: 'top-case', loadPriority: 1, dims: { l: 24, w: 24, h: 24 } },
+    ],
+  });
+  assert.equal(stackableFalseOutput.placements.size, 1);
+  assert.deepEqual(stackableFalseOutput.unpacked, ['top-case']);
+  assert.equal(stackableFalseOutput.phaseStats.stackCount, 0,
+    'stackable=false support must not receive stacked items');
+});
+
+test('AUTO-PACK-A1-R4 stack phase enforces maxStackCount for direct support children', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 48, width: 24, height: 48 };
+  const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 48, y: 48, z: 12 } }];
+  const items = [
+    { instanceId: 'wide-base', loadPriority: 3, maxStackCount: 1, dims: { l: 48, w: 24, h: 24 } },
+    { instanceId: 'top-a', loadPriority: 2, stackable: false, dims: { l: 24, w: 24, h: 24 } },
+    { instanceId: 'top-b', loadPriority: 1, stackable: false, dims: { l: 24, w: 24, h: 24 } },
+  ];
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 2);
+  assert.deepEqual(output.unpacked, ['top-b']);
+  assert.equal(output.phaseStats.floorCount, 1);
+  assert.equal(output.phaseStats.stackCount, 1,
+    'maxStackCount=1 must allow only one direct child on the wide base');
+});
+
 test('AUTO-PACK-A1-R1 live AutoPack behavior is not swapped to the scaffold solver yet', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');

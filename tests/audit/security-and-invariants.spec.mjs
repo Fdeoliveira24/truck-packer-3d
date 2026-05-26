@@ -1494,6 +1494,72 @@ test('AUTO-PACK-A1-R4 stack phase enforces maxStackCount for direct support chil
     'maxStackCount=1 must allow only one direct child on the wide base');
 });
 
+test('AUTO-PACK-A1-R5 lane phase places long items lengthwise before normal boxes', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 120, width: 48, height: 48 };
+  const zones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 120, y: 48, z: 24 } }];
+  const items = [
+    { instanceId: 'tube-a', dims: { l: 96, w: 8, h: 8 } },
+    { instanceId: 'tube-b', dims: { l: 96, w: 8, h: 8 } },
+    { instanceId: 'normal-box-a', loadPriority: 100, dims: { l: 24, w: 24, h: 24 } },
+    { instanceId: 'normal-box-b', loadPriority: 100, dims: { l: 24, w: 24, h: 24 } },
+  ];
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 4);
+  assert.deepEqual(output.unpacked, []);
+  assert.equal(output.phaseStats.laneCount, 2,
+    'long aspect-ratio items must be placed by the lane phase before normal floor items');
+  assert.equal(output.phaseStats.floorCount, 2);
+
+  const aabbs = new Map();
+  for (const item of items) {
+    const pos = output.placements.get(item.instanceId);
+    const od = output.orientedDims.get(item.instanceId);
+    const dims = { l: od.length, w: od.width, h: od.height };
+    const aabb = Solver.getAabb(pos, dims);
+    aabbs.set(item.instanceId, aabb);
+    assert.equal(Solver.isAabbContainedInAnyZone(aabb, zones), true);
+  }
+
+  for (const tubeId of ['tube-a', 'tube-b']) {
+    const od = output.orientedDims.get(tubeId);
+    assert.equal(od.length, 96,
+      'lane phase must keep tube/truss items aligned lengthwise along X');
+    assert.equal(od.width, 8);
+    assert.equal(od.height, 8);
+    assert.equal(aabbs.get(tubeId).min.y, 0,
+      'lane items should sit on the floor lane, not float or stack');
+  }
+
+  const packed = [...aabbs.values()];
+  for (let i = 0; i < packed.length; i++) {
+    for (let j = i + 1; j < packed.length; j++) {
+      assert.equal(Solver.aabbsOverlap(packed[i], packed[j]), false,
+        'lane reservations must prevent normal boxes from colliding with long items');
+    }
+  }
+});
+
+test('AUTO-PACK-A1-R5 lane phase unpacks long items that cannot fit a safe lengthwise lane', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 120, width: 48, height: 48 };
+  const zones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 120, y: 48, z: 24 } }];
+  const items = [
+    { instanceId: 'oversize-rail', dims: { l: 144, w: 8, h: 8 } },
+    { instanceId: 'normal-box', dims: { l: 24, w: 24, h: 24 } },
+  ];
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.has('oversize-rail'), false);
+  assert.deepEqual(output.unpacked, ['oversize-rail']);
+  assert.equal(output.phaseStats.laneCount, 0);
+  assert.equal(output.phaseStats.floorCount, 1,
+    'normal boxes should still use the floor phase when an oversized lane item is unpacked');
+  assert.match(output.warnings.join('\n'), /oversize-rail.*lengthwise lane/,
+    'oversized lane failures should be reported as lane placement failures');
+});
+
 test('AUTO-PACK-A1-R1 live AutoPack behavior is not swapped to the scaffold solver yet', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');

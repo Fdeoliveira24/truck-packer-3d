@@ -370,6 +370,22 @@ function sortItemsForFloor(items) {
   });
 }
 
+function sortItemsForLane(items) {
+  return [...items].sort((a, b) => {
+    const priorityDelta = finiteNumber(b.item.loadPriority, 0) - finiteNumber(a.item.loadPriority, 0);
+    if (priorityDelta) return priorityDelta;
+    const maxLength = item => Math.max(0, ...item.candidates.map(candidate => candidate.l));
+    const minWidth = item => Math.min(Infinity, ...item.candidates.map(candidate => candidate.w));
+    const lengthDelta = maxLength(b) - maxLength(a);
+    if (lengthDelta) return lengthDelta;
+    const widthDelta = minWidth(a) - minWidth(b);
+    if (widthDelta) return widthDelta;
+    const volumeDelta = b.volume - a.volume;
+    if (volumeDelta) return volumeDelta;
+    return a.index - b.index;
+  });
+}
+
 function sortZonesForFloor(zones, loadFrontFirst) {
   return [...zones].sort((a, b) => {
     const ax = loadFrontFirst ? a.max.x : a.min.x;
@@ -468,6 +484,52 @@ function findFloorPlacement(item, zones, packed, loadFrontFirst) {
   return best;
 }
 
+function getLaneOrientations(item) {
+  return [...item.candidates].sort((a, b) => {
+    const lengthDelta = b.l - a.l;
+    if (lengthDelta) return lengthDelta;
+    const widthDelta = a.w - b.w;
+    if (widthDelta) return widthDelta;
+    return a.h - b.h;
+  });
+}
+
+function scoreLaneCandidate(candidate, orientation, loadFrontFirst) {
+  const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
+  return [
+    -orientation.l,
+    candidate.aabb.min.y,
+    candidate.aabb.min.z,
+    xPrimary,
+    orientation.w,
+  ];
+}
+
+function findLanePlacement(item, zones, packed, loadFrontFirst) {
+  let best = null;
+  let bestScore = null;
+
+  for (const orientation of getLaneOrientations(item)) {
+    for (const zone of zones) {
+      if (orientation.l > zone.max.x - zone.min.x + 0.05) continue;
+      if (orientation.w > zone.max.z - zone.min.z + 0.05) continue;
+      if (orientation.h > zone.max.y - zone.min.y + 0.05) continue;
+
+      for (const candidate of buildFloorCandidates(orientation, zone, packed, loadFrontFirst)) {
+        if (!isAabbContainedInAnyZone(candidate.aabb, zones)) continue;
+        if (collidesPacked(candidate.aabb, packed)) continue;
+        const score = scoreLaneCandidate(candidate, orientation, loadFrontFirst);
+        if (!best || compareScore(score, bestScore) < 0) {
+          best = { ...candidate, orientation };
+          bestScore = score;
+        }
+      }
+    }
+  }
+
+  return best;
+}
+
 function stackAnchorMins(supportMin, supportMax, itemSize) {
   return uniqueSorted(
     [
@@ -539,6 +601,27 @@ function findStackPlacement(item, zones, packed, loadFrontFirst) {
   return best;
 }
 
+function recordPlacement(output, packed, item, placement, phase) {
+  const packedPlacement = {
+    instanceId: item.id,
+    item,
+    pos: placement.position,
+    dims: placement.dims,
+    aabb: placement.aabb,
+    phase,
+    zone: placement.zone || null,
+  };
+  packed.push(packedPlacement);
+  output.placements.set(item.id, placement.position);
+  output.rotations.set(item.id, placement.orientation.rotation);
+  output.orientedDims.set(item.id, {
+    length: placement.dims.l,
+    width: placement.dims.w,
+    height: placement.dims.h,
+  });
+  return packedPlacement;
+}
+
 export function solveAutoPack(input = {}) {
   const truck = normalizeTruck(input.truck || {});
   const zones = normalizeZones(input.zones || []);
@@ -559,31 +642,32 @@ export function solveAutoPack(input = {}) {
   }
 
   const deferred = [];
+  const laneItems = sortItemsForLane(items.filter(item => item.className === 'LANE_ITEM'));
+  const floorItems = sortItemsForFloor(items.filter(item => item.className !== 'LANE_ITEM'));
+  let laneCount = 0;
+  let floorCount = 0;
 
-  for (const item of sortItemsForFloor(items)) {
+  for (const item of laneItems) {
+    const placement = findLanePlacement(item, floorZones, packed, loadFrontFirst);
+    if (!placement) {
+      output.unpacked.push(item.id);
+      output.warnings.push(`Lane item ${item.id} could not fit in a safe lengthwise lane.`);
+      continue;
+    }
+
+    recordPlacement(output, packed, item, placement, 'lane');
+    laneCount++;
+  }
+
+  for (const item of floorItems) {
     const placement = findFloorPlacement(item, floorZones, packed, loadFrontFirst);
     if (!placement) {
       deferred.push(item);
       continue;
     }
 
-    const packedPlacement = {
-      instanceId: item.id,
-      item,
-      pos: placement.position,
-      dims: placement.dims,
-      aabb: placement.aabb,
-      phase: 'floor',
-      zone: placement.zone,
-    };
-    packed.push(packedPlacement);
-    output.placements.set(item.id, placement.position);
-    output.rotations.set(item.id, placement.orientation.rotation);
-    output.orientedDims.set(item.id, {
-      length: placement.dims.l,
-      width: placement.dims.w,
-      height: placement.dims.h,
-    });
+    recordPlacement(output, packed, item, placement, 'floor');
+    floorCount++;
   }
 
   let stackCount = 0;
@@ -595,28 +679,13 @@ export function solveAutoPack(input = {}) {
       continue;
     }
 
-    const packedPlacement = {
-      instanceId: item.id,
-      item,
-      pos: placement.position,
-      dims: placement.dims,
-      aabb: placement.aabb,
-      phase: 'stack',
-    };
-    packed.push(packedPlacement);
+    recordPlacement(output, packed, item, placement, 'stack');
     stackCount++;
-    output.placements.set(item.id, placement.position);
-    output.rotations.set(item.id, placement.orientation.rotation);
-    output.orientedDims.set(item.id, {
-      length: placement.dims.l,
-      width: placement.dims.w,
-      height: placement.dims.h,
-    });
   }
 
-  output.phaseStats.floorCount = packed.length;
+  output.phaseStats.laneCount = laneCount;
+  output.phaseStats.floorCount = floorCount;
   output.phaseStats.stackCount = stackCount;
-  output.phaseStats.floorCount -= stackCount;
   output.phaseStats.unpackedCount = output.unpacked.length;
   return output;
 }

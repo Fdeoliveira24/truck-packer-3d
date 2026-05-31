@@ -207,6 +207,26 @@ function canSupportStack(placement = {}) {
   return !(rules.noStackOnTop || rules.stackable === false);
 }
 
+function getPlacementWeight(placement = {}) {
+  if (placement.item && Number.isFinite(Number(placement.item.weight))) {
+    return finiteNumber(placement.item.weight, 0);
+  }
+  return finiteNumber(getPlacementRules(placement).weight, 0);
+}
+
+function isPalletSupport(placement = {}) {
+  const rules = getPlacementRules(placement);
+  return rules.isPallet === true || placement.isPallet === true;
+}
+
+function canSupportCandidateWeight(candidateItem, support) {
+  if (!candidateItem) return true;
+  if (isPalletSupport(support)) return true;
+  const candidateWeight = finiteNumber(candidateItem.weight, 0);
+  const supportWeight = getPlacementWeight(support);
+  return candidateWeight <= supportWeight;
+}
+
 export function classifyAutoPackItem(item = {}) {
   const dims = readDims(item.dims || item.dimensions || item.orientedDims);
   const sorted = [dims.l, dims.w, dims.h].sort((a, b) => b - a);
@@ -323,10 +343,11 @@ function getCandidateSupports(candidateAabb, packed, tolerance = 0.05) {
   );
 }
 
-function supportsCandidate(candidateAabb, packed) {
+function supportsCandidate(candidateAabb, packed, candidateItem = null) {
   const supports = getCandidateSupports(candidateAabb, packed);
   if (!supports.length) return false;
   if (supports.some(support => !canSupportStack(support) || !hasStackCapacity(support, packed))) return false;
+  if (supports.some(support => !canSupportCandidateWeight(candidateItem, support))) return false;
   return computeSupportFraction(candidateAabb, supports) >= MIN_SUPPORT_FRACTION;
 }
 
@@ -583,10 +604,13 @@ function findStackPlacement(item, zones, packed, loadFrontFirst) {
       for (const candidate of buildStackCandidates(orientation, support)) {
         if (!isAabbContainedInAnyZone(candidate.aabb, zones)) continue;
         if (collidesPacked(candidate.aabb, packed)) continue;
-        if (!supportsCandidate(candidate.aabb, packed)) continue;
+        if (!supportsCandidate(candidate.aabb, packed, item)) continue;
 
         const supports = getCandidateSupports(candidate.aabb, packed)
-          .filter(candidateSupport => canSupportStack(candidateSupport));
+          .filter(candidateSupport =>
+            canSupportStack(candidateSupport) &&
+            canSupportCandidateWeight(item, candidateSupport)
+          );
         const supportFraction = computeSupportFraction(candidate.aabb, supports);
         const scoredCandidate = { ...candidate, supportFraction, orientation };
         const score = scoreStackCandidate(scoredCandidate, loadFrontFirst);

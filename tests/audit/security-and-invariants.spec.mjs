@@ -1494,6 +1494,54 @@ test('AUTO-PACK-A1-R4 stack phase enforces maxStackCount for direct support chil
     'maxStackCount=1 must allow only one direct child on the wide base');
 });
 
+test('AUTO-PACK-A1-R5.5 stack phase blocks heavy items on lighter non-pallet supports', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 24, width: 24, height: 48 };
+  const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 24, y: 48, z: 12 } }];
+  const items = [
+    { instanceId: 'priority-light-base', loadPriority: 100, weight: 20, dims: { l: 24, w: 24, h: 24 } },
+    { instanceId: 'heavy-deferred', loadPriority: 1, weight: 220, dims: { l: 24, w: 24, h: 24 } },
+  ];
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 1);
+  assert.deepEqual(output.unpacked, ['heavy-deferred']);
+  assert.equal(output.phaseStats.stackCount, 0,
+    'loadPriority must not allow a heavier item to stack on a lighter non-pallet support');
+});
+
+test('AUTO-PACK-A1-R5.5 stack phase allows light items on heavier supports', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 24, width: 24, height: 48 };
+  const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 24, y: 48, z: 12 } }];
+  const items = [
+    { instanceId: 'heavy-base', loadPriority: 10, weight: 220, dims: { l: 24, w: 24, h: 24 } },
+    { instanceId: 'light-top', loadPriority: 1, weight: 20, dims: { l: 24, w: 24, h: 24 } },
+  ];
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 2);
+  assert.deepEqual(output.unpacked, []);
+  assert.equal(output.phaseStats.stackCount, 1,
+    'lighter items may still stack on heavier safe supports');
+});
+
+test('AUTO-PACK-A1-R5.5 pallet supports are exempt from support-weight comparison', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 24, width: 24, height: 48 };
+  const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 24, y: 48, z: 12 } }];
+  const items = [
+    { instanceId: 'pallet-base', loadPriority: 10, isPallet: true, weight: 20, dims: { l: 24, w: 24, h: 12 } },
+    { instanceId: 'heavy-pallet-load', loadPriority: 1, weight: 220, dims: { l: 24, w: 24, h: 24 } },
+  ];
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 2);
+  assert.deepEqual(output.unpacked, []);
+  assert.equal(output.phaseStats.stackCount, 1,
+    'pallet support behavior should not be derived from pallet tare weight');
+});
+
 test('AUTO-PACK-A1-R5 lane phase places long items lengthwise before normal boxes', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = { length: 120, width: 48, height: 48 };

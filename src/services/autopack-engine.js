@@ -1,4 +1,5 @@
-import { buildLegacyAutoPackItems, solveLegacyAutoPack } from './autopack-legacy-solver.js';
+import { buildLegacyAutoPackItems } from './autopack-legacy-solver.js';
+import { solveAutoPack } from './autopack-solver.js';
 
 export function createAutoPackEngine({
   CaseLibrary,
@@ -129,7 +130,7 @@ export function createAutoPackEngine({
       const truckH = truck.height || 98;
       const zones = TrailerGeometry.getTrailerUsableZones(truck);
 
-      // For frontBonus, keep the legacy solver's current front-to-rear behavior.
+      // For frontBonus, keep the current front-to-rear behavior.
       // For everything else, pack rear-to-front (low X first).
       const loadFrontFirst = mode === 'frontBonus';
       const xStep = Math.max(2, Math.min(12, truckL / 60));
@@ -148,32 +149,62 @@ export function createAutoPackEngine({
       const stagingMap = buildStagingMap(packItems, truck);
       stageInstant(stagingMap);
 
-      const legacyResult = await solveLegacyAutoPack({
-        packId,
-        mode,
+      try {
+        if (diag && typeof diag.autopackStart === 'function') {
+          diag.autopackStart({
+            packId,
+            mode,
+            loadFrontFirst,
+            truck: { length: truckL, width: truckW, height: truckH },
+            zones: zones && zones.length ? zones.length : 0,
+            xStep,
+            zStep,
+            items: packItems.length,
+          });
+        }
+      } catch {
+        // ignore
+      }
+
+      const solverResult = solveAutoPack({
         truck: { length: truckL, width: truckW, height: truckH },
         zones,
-        packItems,
         loadFrontFirst,
-        xStep,
-        zStep,
-        geometry: {
-          isAabbContainedInAnyZone: TrailerGeometry.isAabbContainedInAnyZone,
-        },
-        diag,
-        sleep,
-        shouldAbort: isWorkspaceRunStale,
+        items: packItems.map(({ inst, caseData }) => {
+          const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
+          return {
+            instanceId: inst.id,
+            caseId: inst.caseId,
+            dims: { l: d.length, w: d.width, h: d.height },
+            shape: caseData.shape,
+            weight: caseData.weight,
+            canFlip: caseData.canFlip,
+            orientationLock: caseData.orientationLock,
+            orientationLocked: inst.orientationLocked,
+            lockedRotation: inst.lockedRotation,
+            orientedDims: inst.orientedDims,
+            transform: inst.transform,
+            noStackOnTop: caseData.noStackOnTop,
+            stackable: caseData.stackable,
+            maxStackCount: caseData.maxStackCount,
+            isPallet: caseData.isPallet,
+            laneItem: caseData.laneItem,
+            loadPriority: inst.loadPriority ?? caseData.loadPriority,
+            mustLoadLast: inst.mustLoadLast ?? caseData.mustLoadLast,
+            mustUnloadFirst: inst.mustUnloadFirst ?? caseData.mustUnloadFirst,
+            stopGroup: inst.stopGroup ?? caseData.stopGroup,
+            keepTogetherGroup: inst.keepTogetherGroup ?? caseData.keepTogetherGroup,
+            deliverySequence: inst.deliverySequence,
+          };
+        }),
       });
-      if (!legacyResult || legacyResult.aborted || isWorkspaceRunStale()) return;
+      if (!solverResult || isWorkspaceRunStale()) return;
 
-      const {
-        placements,
-        rotations,
-        orientedDimsMap,
-        unpacked,
-        packed,
-        finalValidation,
-      } = legacyResult;
+      const placements = solverResult.placements;
+      const rotations = solverResult.rotations;
+      const orientedDimsMap = solverResult.orientedDims;
+      const unpacked = solverResult.unpacked || [];
+      const packedCount = placements instanceof Map ? placements.size : 0;
 
       cancelAllTweens();
       const animationCompleted = await animatePlacements(
@@ -225,9 +256,11 @@ export function createAutoPackEngine({
         if (diag && typeof diag.autopackEnd === 'function') {
           diag.autopackEnd({
             status: 'ok',
-            packed: packed.length,
+            packed: packedCount,
             unpacked: unpacked.length,
-            rejectedPlacements: finalValidation.rejected,
+            rejectedPlacements: 0,
+            phaseStats: solverResult.phaseStats || null,
+            warnings: Array.isArray(solverResult.warnings) ? solverResult.warnings : [],
             packedCases: stats && typeof stats.packedCases === 'number' ? stats.packedCases : null,
             volumePercent: stats && typeof stats.volumePercent === 'number' ? stats.volumePercent : null,
           });

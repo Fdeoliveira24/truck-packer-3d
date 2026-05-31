@@ -1608,36 +1608,61 @@ test('AUTO-PACK-A1-R5 lane phase unpacks long items that cannot fit a safe lengt
     'oversized lane failures should be reported as lane placement failures');
 });
 
-test('AUTO-PACK-A1-R1 live AutoPack behavior is not swapped to the scaffold solver yet', async () => {
+test('AUTO-PACK-A1-R6 live AutoPack routes through the logistics solver from the runtime engine only', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
   const legacySrc = await fs.readFile(autoPackLegacySolverPath, 'utf8');
 
   assert.doesNotMatch(appSrc, /autopack-solver\.js|solveAutoPack/,
-    'A1-R1 must not import or call the new scaffold solver from app.js');
-  assert.doesNotMatch(engineSrc, /autopack-solver\.js|solveAutoPack\(/,
-    'A1-CLEAN-2 must not wire the scaffold solver through the runtime engine yet');
-  assert.match(engineSrc, /solveLegacyAutoPack/,
-    'live AutoPack must still use the isolated legacy solver until the new solver is wired');
+    'app.js must stay an orchestrator consumer and must not import the solver directly');
+  assert.match(engineSrc, /import \{ solveAutoPack \} from '\.\/autopack-solver\.js';/,
+    'A1-R6 must wire the pure logistics solver through the runtime engine');
+  assert.match(engineSrc, /const solverResult = solveAutoPack\(\{/,
+    'runtime AutoPack must call the logistics solver for live placement');
+  assert.doesNotMatch(engineSrc, /solveLegacyAutoPack\(/,
+    'A1-R6 must not keep calling the legacy placement solver');
   assert.match(legacySrc, /function buildOrientations\(dims, caseData, inst, orientationTools\)/,
-    'A1-R1/A1-CLEAN-1 must leave the existing live orientation generation in the legacy solver');
+    'A1-R6 must leave the legacy solver file in place until browser proof is complete');
   assert.match(legacySrc, /const X_TIGHTNESS_WEIGHT = 0\.8;/,
-    'A1-R1/A1-CLEAN-1 must leave the existing live scoring path untouched inside the legacy solver');
+    'A1-R6 must not delete the legacy scoring path before A1-R7 cleanup approval');
   assert.match(legacySrc, /function capXAnchorsSorted\(arr, maxCount\)/,
-    'A1-R1/A1-CLEAN-1 must leave the existing live anchor scanner untouched inside the legacy solver');
+    'A1-R6 must leave the legacy anchor scanner available for rollback until browser proof is complete');
   assert.match(legacySrc, /for \(const placementPass of placementPasses\)/,
-    'A1-R1/A1-CLEAN-1 must leave the existing live AutoPack pass loop untouched inside the legacy solver');
+    'A1-R6 must leave the legacy AutoPack pass loop untouched until A1-R7 cleanup approval');
 });
 
-test('AUTO-PACK-A1-CLEAN-1 app delegates legacy placement without carrying the scanner inline', async () => {
+test('AUTO-PACK-A1-R6 live adapter preserves runtime gates, zones, and orientation metadata', async () => {
+  const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
+
+  assert.match(engineSrc, /getProRuleSet\(_bs, activeRole\)/,
+    'A1-R6 must preserve the billing/pro gate in the runtime engine');
+  assert.match(engineSrc, /const isWorkspaceRunStale = \(\) => runWorkspaceGeneration !== workspaceGeneration;/,
+    'A1-R6 must preserve the stale-run guard');
+  assert.match(engineSrc, /const zones = TrailerGeometry\.getTrailerUsableZones\(truck\);/,
+    'A1-R6 must continue using TrailerGeometry as the single usable-zone source');
+  assert.match(engineSrc, /stageInstant\(stagingMap\);/,
+    'A1-R6 must preserve pre-run staging before solver placement');
+  assert.match(engineSrc, /animatePlacements\(\s*placements,\s*rotations,\s*orientedDimsMap,/,
+    'A1-R6 must keep the existing animation path');
+  assert.match(engineSrc, /PackLibrary\.update\(packId, \{ cases: nextCases \}\);/,
+    'A1-R6 must keep the existing persistence path');
+  assert.match(engineSrc, /orientationLocked: inst\.orientationLocked,/,
+    'A1-R6 must pass manual orientation lock state to the logistics solver');
+  assert.match(engineSrc, /lockedRotation: inst\.lockedRotation,/,
+    'A1-R6 must pass locked rotations to the logistics solver');
+  assert.match(engineSrc, /orientedDims: inst\.orientedDims,/,
+    'A1-R6 must pass oriented dimensions to the logistics solver');
+});
+
+test('AUTO-PACK-A1-CLEAN-1 app keeps legacy scanner isolated outside app.js', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
   const legacySrc = await fs.readFile(autoPackLegacySolverPath, 'utf8');
 
-  assert.match(engineSrc, /import \{ buildLegacyAutoPackItems, solveLegacyAutoPack \} from '\.\/autopack-legacy-solver\.js';/,
-    'the AutoPack runtime must import the temporary legacy solver boundary');
-  assert.match(engineSrc, /const legacyResult = await solveLegacyAutoPack\(\{/,
-    'the AutoPack runtime must delegate placement to the legacy solver boundary');
+  assert.match(engineSrc, /import \{ buildLegacyAutoPackItems \} from '\.\/autopack-legacy-solver\.js';/,
+    'the AutoPack runtime may use the temporary legacy item adapter before A1-R7 cleanup');
+  assert.doesNotMatch(engineSrc, /solveLegacyAutoPack\(/,
+    'the AutoPack runtime must not use the legacy placement solver after A1-R6');
   assert.doesNotMatch(appSrc, /function buildOrientations\(dims, caseData, inst/,
     'app.js must not keep legacy orientation generation inline');
   assert.doesNotMatch(appSrc, /function findRestingY\(cx, cz, halfL, halfW, packed\)/,

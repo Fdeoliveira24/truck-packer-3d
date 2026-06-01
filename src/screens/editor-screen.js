@@ -759,6 +759,14 @@ export function createInteractionManager({
       window.addEventListener('keydown', onKeyDown);
     }
 
+    function rejectMoveCollision(instanceId, candidateWorld, ignoreSet) {
+      const check = CaseScene.checkCollision(instanceId, candidateWorld, ignoreSet);
+      CaseScene.setCollision(instanceId, check.collides);
+      if (!check.collides) return false;
+      UIComponents.showToast('Cannot place here: collision detected', 'error');
+      return true;
+    }
+
     /**
      * Rotate selected instances by delta on given axis, then apply gravity.
      */
@@ -805,24 +813,30 @@ export function createInteractionManager({
       const packId = StateStore.get('currentPackId');
       const pack = PackLibrary.getById(packId);
       if (!pack) { return; }
+      const ignoreSet = new Set(ids);
       ids.forEach(id => {
         const inst = (pack.cases || []).find(i => i.id === id);
         if (!inst) { return; }
         const pos = { ...(inst.transform.position || { x: 0, y: 0, z: 0 }) };
         pos[axis] = (Number(pos[axis]) || 0) + deltaInches;
-        PackLibrary.updateInstance(packId, id, { transform: { ...inst.transform, position: pos } });
-        // Gravity after nudge
-        requestAnimationFrame(() => {
+        const obj = CaseScene.getObject(id);
+        const originalWorld = obj ? obj.position.clone() : null;
+        const candidateWorld = SceneManager.vecInchesToWorld(pos);
+        if (rejectMoveCollision(id, candidateWorld, ignoreSet)) return;
+
+        let finalPos = pos;
+        if (obj) {
+          obj.position.copy(candidateWorld);
           const settledY = CaseScene.settleY(id);
-          if (settledY !== null) {
-            const obj = CaseScene.getObject(id);
-            if (obj) { obj.position.y = settledY; }
-            const posInches2 = SceneManager.vecWorldToInches(obj.position);
-            PackLibrary.updateInstance(packId, id, {
-              transform: { ...inst.transform, position: posInches2 },
-            });
+          if (settledY !== null) obj.position.y = settledY;
+          if (rejectMoveCollision(id, obj.position, ignoreSet)) {
+            if (originalWorld) obj.position.copy(originalWorld);
+            return;
           }
-        });
+          finalPos = SceneManager.vecWorldToInches(obj.position);
+        }
+        CaseScene.setCollision(id, false);
+        PackLibrary.updateInstance(packId, id, { transform: { ...inst.transform, position: finalPos } });
       });
     }
 
@@ -2591,17 +2605,34 @@ export function createEditorScreen({
           y: Utils.unitToInches(Number(fY.input.value) || 0, prefs.units.length),
           z: Utils.unitToInches(Number(fZ.input.value) || 0, prefs.units.length),
         };
-        PackLibrary.updateInstance(pack.id, inst.id, { transform: { ...inst.transform, position: nextPos } });
-        // Apply gravity after position update
-        const settledY = CaseScene.settleY(inst.id);
-        if (settledY !== null) {
-          const obj = CaseScene.getObject(inst.id);
-          if (obj) { obj.position.y = settledY; }
-          const settledInches = SceneManager.vecWorldToInches({ x: 0, y: settledY, z: 0 });
-          nextPos.y = settledInches.y;
-          PackLibrary.updateInstance(pack.id, inst.id, { transform: { ...inst.transform, position: nextPos } });
+        const obj = CaseScene.getObject(inst.id);
+        const originalWorld = obj ? obj.position.clone() : null;
+        const candidateWorld = SceneManager.vecInchesToWorld(nextPos);
+        const ignoreSet = new Set([inst.id]);
+        let check = CaseScene.checkCollision(inst.id, candidateWorld, ignoreSet);
+        CaseScene.setCollision(inst.id, check.collides);
+        if (check.collides) {
+          UIComponents.showToast('Cannot place here: collision detected', 'error');
+          return;
         }
-        SceneManager.focusOnWorldPoint(SceneManager.vecInchesToWorld(nextPos), { duration: 420 });
+
+        let finalPos = nextPos;
+        if (obj) {
+          obj.position.copy(candidateWorld);
+          const settledY = CaseScene.settleY(inst.id);
+          if (settledY !== null) obj.position.y = settledY;
+          check = CaseScene.checkCollision(inst.id, obj.position, ignoreSet);
+          CaseScene.setCollision(inst.id, check.collides);
+          if (check.collides) {
+            if (originalWorld) obj.position.copy(originalWorld);
+            UIComponents.showToast('Cannot place here: collision detected', 'error');
+            return;
+          }
+          finalPos = SceneManager.vecWorldToInches(obj.position);
+        }
+        CaseScene.setCollision(inst.id, false);
+        PackLibrary.updateInstance(pack.id, inst.id, { transform: { ...inst.transform, position: finalPos } });
+        SceneManager.focusOnWorldPoint(SceneManager.vecInchesToWorld(finalPos), { duration: 420 });
         UIComponents.showToast('Position updated', 'success');
       });
       transformCard.appendChild(savePos);

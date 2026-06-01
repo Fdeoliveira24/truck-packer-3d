@@ -139,6 +139,10 @@ const autoPackA1Clean2Files = new Set([
   'src/services/autopack-engine.js',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);
+const autoPackEditorCollisionFiles = new Set([
+  'src/screens/editor-screen.js',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
 
 function isNotCurrentReleaseGateCheckoutPatch(file) {
   return file !== releaseGateCheckoutIdempotencyFile &&
@@ -149,7 +153,8 @@ function isNotCurrentReleaseGateCheckoutPatch(file) {
     !autoPackA0BFiles.has(file) &&
     !autoPackA1R1Files.has(file) &&
     !autoPackA1Clean1Files.has(file) &&
-    !autoPackA1Clean2Files.has(file);
+    !autoPackA1Clean2Files.has(file) &&
+    !autoPackEditorCollisionFiles.has(file);
 }
 
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
@@ -1046,7 +1051,8 @@ test('AUTO-PACK-A1-2 changed files stay in approved floor-pass scope', async () 
     .filter(file => !autoPackA1Files.has(file) &&
       !autoPackA1R1Files.has(file) &&
       !autoPackA1Clean1Files.has(file) &&
-      !autoPackA1Clean2Files.has(file));
+      !autoPackA1Clean2Files.has(file) &&
+      !autoPackEditorCollisionFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'AUTO-PACK-A1-2 must only edit AutoPack placement flow and audit tests');
@@ -1127,7 +1133,8 @@ test('AUTO-PACK-A1-R1 changed files stay in approved logistics scaffold scope', 
   const unexpectedFiles = Array.from(changedFiles)
     .filter(file => !autoPackA1R1Files.has(file) &&
       !autoPackA1Clean1Files.has(file) &&
-      !autoPackA1Clean2Files.has(file));
+      !autoPackA1Clean2Files.has(file) &&
+      !autoPackEditorCollisionFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'AUTO-PACK-A1-R1 must only edit solver scaffold, normalizers, case model, and audit tests');
@@ -1749,6 +1756,27 @@ test('AUTO-PACK-A0 manual editor rotate and flip paths set per-instance orientat
     'single inspector rotate/flip buttons must lock manual orientation');
   assert.match(singleBlock, /TODO\(AUTO-PACK-A0\): when reset-orientation UI is added, apply PackLibrary\.clearOrientationLockPatch\(\)/,
     'no reset UI exists yet, so reset support must remain documented without broad UI changes');
+});
+
+test('EDITOR movement paths reject collisions before persisting moved positions', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const nudgeStart = src.indexOf('function nudgeSelection(axis, deltaInches)');
+  const nudgeEnd = src.indexOf('/**\n     * Keyboard shortcuts', nudgeStart);
+  const nudgeBlock = nudgeStart >= 0 && nudgeEnd > nudgeStart ? src.slice(nudgeStart, nudgeEnd) : '';
+  const applyStart = src.indexOf("savePos.addEventListener('click'");
+  const applyEnd = src.indexOf('transformCard.appendChild(savePos)', applyStart);
+  const applyBlock = applyStart >= 0 && applyEnd > applyStart ? src.slice(applyStart, applyEnd) : '';
+
+  assert.match(src, /function rejectMoveCollision\(instanceId, candidateWorld, ignoreSet\)/,
+    'keyboard movement must share a collision rejection helper before persistence');
+  assert.match(nudgeBlock, /rejectMoveCollision\(id, candidateWorld, ignoreSet\)[\s\S]*PackLibrary\.updateInstance/,
+    'keyboard nudge must reject immediate collision candidates before PackLibrary persistence');
+  assert.match(nudgeBlock, /rejectMoveCollision\(id, obj\.position, ignoreSet\)[\s\S]*PackLibrary\.updateInstance/,
+    'keyboard nudge must re-check collision after gravity settling before PackLibrary persistence');
+  assert.match(applyBlock, /CaseScene\.checkCollision\(inst\.id, candidateWorld, ignoreSet\)[\s\S]*PackLibrary\.updateInstance/,
+    'inspector position apply must reject immediate collision candidates before PackLibrary persistence');
+  assert.match(applyBlock, /CaseScene\.checkCollision\(inst\.id, obj\.position, ignoreSet\)[\s\S]*PackLibrary\.updateInstance/,
+    'inspector position apply must re-check collision after gravity settling before PackLibrary persistence');
 });
 
 test('AUTO-PACK-A0 AutoPack respects locked orientation and keeps unlocked orientation generation', async () => {

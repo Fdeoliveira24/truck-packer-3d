@@ -625,10 +625,10 @@ function scoreFreeRectCandidate(candidate, loadFrontFirst, packed = []) {
   const contactScore = wallContacts + Math.min(8, faceContacts);
   return [
     candidate.aabb.min.y,
-    xPrimary,
     -contactScore,
     Math.min(leftoverX, leftoverZ),
     wasteArea,
+    xPrimary,
     leftoverZ,
     candidate.aabb.min.z,
     leftoverX,
@@ -1012,11 +1012,114 @@ function isPlacementOnZoneFloor(aabb, zones) {
   );
 }
 
+function getPlacementZone(placement, zones) {
+  if (placement.zone && isAabbContainedInZone(placement.aabb, placement.zone)) return placement.zone;
+  return zones.find(zone => isAabbContainedInZone(placement.aabb, zone)) || null;
+}
+
+function candidateCompactionAnchors(placement, others, zone, loadFrontFirst, axis) {
+  const isX = axis === 'x';
+  const size = isX ? placement.dims.l : placement.dims.w;
+  const min = isX ? zone.min.x : zone.min.z;
+  const max = isX ? zone.max.x : zone.max.z;
+  const raw = [
+    min,
+    max - size,
+    isX && loadFrontFirst ? max - size : min,
+  ];
+
+  for (const other of others) {
+    if (!other?.aabb) continue;
+    if (Math.abs(other.aabb.min.y - placement.aabb.min.y) > CONTACT_EPS) continue;
+    const overlapsCrossAxis = isX
+      ? intervalsOverlap(placement.aabb.min.z, placement.aabb.max.z, other.aabb.min.z, other.aabb.max.z)
+      : intervalsOverlap(placement.aabb.min.x, placement.aabb.max.x, other.aabb.min.x, other.aabb.max.x);
+    if (!overlapsCrossAxis) continue;
+    const otherMin = isX ? other.aabb.min.x : other.aabb.min.z;
+    const otherMax = isX ? other.aabb.max.x : other.aabb.max.z;
+    raw.push(otherMin - size, otherMax);
+  }
+
+  const anchors = [];
+  for (const value of raw) {
+    const clamped = clampAnchor(value, min, max, size);
+    if (clamped !== null) anchors.push(clamped);
+  }
+
+  const comparator = isX && loadFrontFirst ? (a, b) => b - a : (a, b) => a - b;
+  return uniqueSorted(anchors, comparator);
+}
+
+function scoreCompactionCandidate(aabb, zone, loadFrontFirst, others) {
+  const xPrimary = loadFrontFirst ? -aabb.max.x : aabb.min.x;
+  const contactScore = wallContactCount(aabb, zone, loadFrontFirst) + Math.min(8, countFaceContacts(aabb, others));
+  const sideDistance = Math.min(
+    Math.abs(aabb.min.z - zone.min.z),
+    Math.abs(aabb.max.z - zone.max.z)
+  );
+  return [
+    xPrimary,
+    -contactScore,
+    sideDistance,
+    aabb.min.z,
+  ];
+}
+
 function compactFloorPlacements(output, packed, zones, loadFrontFirst) {
-  void output;
-  void packed;
-  void zones;
-  void loadFrontFirst;
+  const compactable = packed.filter(placement =>
+    placement.phase !== 'stack' &&
+    isPlacementOnZoneFloor(placement.aabb, zones)
+  );
+  if (!compactable.length) return rebuildFloorStateFromPacked(zones, packed);
+
+  let changed = false;
+  const ordered = [...compactable].sort((a, b) => {
+    const ax = loadFrontFirst ? -a.aabb.max.x : a.aabb.min.x;
+    const bx = loadFrontFirst ? -b.aabb.max.x : b.aabb.min.x;
+    if (ax !== bx) return ax - bx;
+    return a.aabb.min.z - b.aabb.min.z;
+  });
+
+  for (let pass = 0; pass < 2; pass++) {
+    for (const placement of ordered) {
+      const zone = getPlacementZone(placement, zones);
+      if (!zone) continue;
+      const others = packed.filter(other => other !== placement);
+      const xAnchors = candidateCompactionAnchors(placement, others, zone, loadFrontFirst, 'x');
+      const zAnchors = candidateCompactionAnchors(placement, others, zone, loadFrontFirst, 'z');
+      let best = null;
+      let bestScore = scoreCompactionCandidate(placement.aabb, zone, loadFrontFirst, others);
+
+      for (const xMin of xAnchors) {
+        for (const zMin of zAnchors) {
+          const position = {
+            x: xMin + placement.dims.l / 2,
+            y: placement.pos.y,
+            z: zMin + placement.dims.w / 2,
+          };
+          const aabb = getAabb(position, placement.dims);
+          if (!isAabbContainedInZone(aabb, zone)) continue;
+          if (collidesPacked(aabb, others)) continue;
+          const score = scoreCompactionCandidate(aabb, zone, loadFrontFirst, others);
+          if (compareScore(score, bestScore) < 0) {
+            best = { position, aabb, zone, score };
+            bestScore = score;
+          }
+        }
+      }
+
+      if (!best) continue;
+      placement.pos = best.position;
+      placement.aabb = best.aabb;
+      placement.zone = best.zone;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    writeOutputPlacements(output, packed);
+  }
+  return rebuildFloorStateFromPacked(zones, packed);
 }
 
 function writeOutputPlacements(output, placements) {
@@ -1186,7 +1289,7 @@ export function solveAutoPack(input = {}) {
     floorCount++;
   }
 
-  compactFloorPlacements(output, packed, floorZones, loadFrontFirst);
+  floorState.freeRects = compactFloorPlacements(output, packed, floorZones, loadFrontFirst).freeRects;
 
   const fillerQueue = [
     ...sortItemsForFloor(deferred),
@@ -1205,7 +1308,7 @@ export function solveAutoPack(input = {}) {
     fillerCount++;
   }
 
-  compactFloorPlacements(output, packed, floorZones, loadFrontFirst);
+  floorState.freeRects = compactFloorPlacements(output, packed, floorZones, loadFrontFirst).freeRects;
 
   let stackCount = 0;
   for (const item of sortItemsForStack(stackDeferred)) {

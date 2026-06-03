@@ -1795,6 +1795,18 @@ test('AUTO-PACK-A1-R6.3 validation rejects get a strict repack attempt before st
     'only items that still fail validation or repack should be staged');
 });
 
+test('AUTO-PACK-A1-R6.3 floor compaction rebuilds free space before filler and stack phases', async () => {
+  const src = await fs.readFile(autoPackSolverPath, 'utf8');
+  assert.match(src, /function compactFloorPlacements\(output, packed, zones, loadFrontFirst\)/,
+    'solver must keep a dedicated floor compaction pass');
+  assert.doesNotMatch(src, /function compactFloorPlacements[\s\S]*?\{\s*void output;\s*void packed;\s*void zones;\s*void loadFrontFirst;/,
+    'floor compaction must not regress to the old no-op implementation');
+  assert.match(src, /floorState\.freeRects = compactFloorPlacements\(output, packed, floorZones, loadFrontFirst\)\.freeRects;/,
+    'compaction must rebuild the free-space map before later placement phases use it');
+  assert.match(src, /writeOutputPlacements\(output, packed\);/,
+    'accepted compaction moves must be reflected in the solver output maps');
+});
+
 test('AUTO-PACK-A1-R6.2 free-space floor pass does not stage an item that fits a remaining floor rectangle', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = { length: 72, width: 48, height: 48 };

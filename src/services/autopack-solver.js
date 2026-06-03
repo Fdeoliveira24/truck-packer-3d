@@ -2,8 +2,10 @@ const RIGHT_ANGLE_RAD = Math.PI / 2;
 const LONG_RATIO = 3;
 const LONG_MIN_IN = 72;
 const HEAVY_LBS = 150;
-const FILLER_IN3 = 500;
+const FILLER_IN3 = 6000;
 const MIN_SUPPORT_FRACTION = 0.5;
+const CONTACT_EPS = 0.05;
+const COMPACTION_PASSES = 3;
 
 function finiteNumber(value, fallback = 0) {
   const n = Number(value);
@@ -313,6 +315,37 @@ function collidesPacked(aabb, packed) {
   return packed.some(placement => aabbsOverlap(aabb, placement.aabb));
 }
 
+function intervalsOverlap(aMin, aMax, bMin, bMax, epsilon = CONTACT_EPS) {
+  return aMin < bMax - epsilon && aMax > bMin + epsilon;
+}
+
+function touches(a, b, epsilon = CONTACT_EPS) {
+  return Math.abs(a - b) <= epsilon;
+}
+
+function countFaceContacts(aabb, packed) {
+  let contacts = 0;
+  for (const placement of packed) {
+    const other = placement.aabb;
+    const yOverlap = intervalsOverlap(aabb.min.y, aabb.max.y, other.min.y, other.max.y);
+    if (!yOverlap) continue;
+    const xOverlap = intervalsOverlap(aabb.min.x, aabb.max.x, other.min.x, other.max.x);
+    const zOverlap = intervalsOverlap(aabb.min.z, aabb.max.z, other.min.z, other.max.z);
+    if (zOverlap && (touches(aabb.max.x, other.min.x) || touches(aabb.min.x, other.max.x))) contacts++;
+    if (xOverlap && (touches(aabb.max.z, other.min.z) || touches(aabb.min.z, other.max.z))) contacts++;
+  }
+  return contacts;
+}
+
+function wallContactCount(aabb, zone, loadFrontFirst) {
+  if (!zone) return 0;
+  let contacts = 0;
+  if (loadFrontFirst ? touches(aabb.max.x, zone.max.x) : touches(aabb.min.x, zone.min.x)) contacts++;
+  if (touches(aabb.min.z, zone.min.z)) contacts++;
+  if (touches(aabb.max.z, zone.max.z)) contacts++;
+  return contacts;
+}
+
 function getMaxStackCount(placement = {}) {
   const maxStackCount = finiteNumber(getPlacementRules(placement).maxStackCount, 0);
   return maxStackCount > 0 ? maxStackCount : 0;
@@ -391,6 +424,32 @@ function sortItemsForFloor(items) {
   });
 }
 
+function sortItemsForFiller(items) {
+  return [...items].sort((a, b) => {
+    const footprintDelta = a.footprint - b.footprint;
+    if (footprintDelta) return footprintDelta;
+    const volumeDelta = a.volume - b.volume;
+    if (volumeDelta) return volumeDelta;
+    const priorityDelta = finiteNumber(b.item.loadPriority, 0) - finiteNumber(a.item.loadPriority, 0);
+    if (priorityDelta) return priorityDelta;
+    const weightDelta = b.weight - a.weight;
+    if (weightDelta) return weightDelta;
+    return a.index - b.index;
+  });
+}
+
+function sortItemsForStack(items) {
+  return [...items].sort((a, b) => {
+    const weightDelta = a.weight - b.weight;
+    if (weightDelta) return weightDelta;
+    const footprintDelta = b.footprint - a.footprint;
+    if (footprintDelta) return footprintDelta;
+    const volumeDelta = b.volume - a.volume;
+    if (volumeDelta) return volumeDelta;
+    return a.index - b.index;
+  });
+}
+
 function sortItemsForLane(items) {
   return [...items].sort((a, b) => {
     const priorityDelta = finiteNumber(b.item.loadPriority, 0) - finiteNumber(a.item.loadPriority, 0);
@@ -431,27 +490,39 @@ function uniqueSorted(values, comparator) {
 }
 
 function buildFloorCandidates(candidate, zone, packed, loadFrontFirst) {
-  const xFaces = [loadFrontFirst ? zone.max.x : zone.min.x];
-  const zFaces = [zone.min.z];
+  const xMins = [
+    zone.min.x,
+    zone.max.x - candidate.l,
+  ];
+  const zMins = [
+    zone.min.z,
+    zone.max.z - candidate.w,
+  ];
   for (const placement of packed) {
     const p = placement.aabb;
-    if (loadFrontFirst) {
-      xFaces.push(p.min.x);
-    } else {
-      xFaces.push(p.max.x);
-    }
-    zFaces.push(p.max.z);
+    xMins.push(
+      p.max.x,
+      p.min.x - candidate.l,
+      p.min.x,
+      p.max.x - candidate.l
+    );
+    zMins.push(
+      p.max.z,
+      p.min.z - candidate.w,
+      p.min.z,
+      p.max.z - candidate.w
+    );
   }
 
-  const sortedX = uniqueSorted(xFaces, (a, b) => loadFrontFirst ? b - a : a - b);
-  const sortedZ = uniqueSorted(zFaces, (a, b) => a - b);
+  const sortedX = uniqueSorted(xMins, (a, b) => loadFrontFirst ? b - a : a - b);
+  const sortedZ = uniqueSorted(zMins, (a, b) => a - b);
   const placements = [];
 
-  for (const xFace of sortedX) {
-    for (const zFace of sortedZ) {
-      const x = loadFrontFirst ? xFace - candidate.l / 2 : xFace + candidate.l / 2;
+  for (const xMin of sortedX) {
+    for (const zMin of sortedZ) {
+      const x = xMin + candidate.l / 2;
       const y = zone.min.y + candidate.h / 2;
-      const z = zFace + candidate.w / 2;
+      const z = zMin + candidate.w / 2;
       const position = { x, y, z };
       const dims = { l: candidate.l, w: candidate.w, h: candidate.h };
       const aabb = getAabb(position, dims);
@@ -462,11 +533,15 @@ function buildFloorCandidates(candidate, zone, packed, loadFrontFirst) {
   return placements;
 }
 
-function scoreFloorCandidate(candidate, loadFrontFirst) {
+function scoreFloorCandidate(candidate, loadFrontFirst, packed = []) {
   const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
+  const wallContacts = wallContactCount(candidate.aabb, candidate.zone, loadFrontFirst);
+  const faceContacts = countFaceContacts(candidate.aabb, packed);
   return [
     xPrimary,
     candidate.aabb.min.y,
+    candidate.dims.w,
+    -(wallContacts + Math.min(3, faceContacts)),
     candidate.aabb.min.z,
     candidate.dims.h,
     candidate.dims.l * candidate.dims.w,
@@ -493,7 +568,7 @@ function findFloorPlacement(item, zones, packed, loadFrontFirst) {
       for (const candidate of buildFloorCandidates(orientation, zone, packed, loadFrontFirst)) {
         if (!isAabbContainedInAnyZone(candidate.aabb, zones)) continue;
         if (collidesPacked(candidate.aabb, packed)) continue;
-        const score = scoreFloorCandidate(candidate, loadFrontFirst);
+        const score = scoreFloorCandidate(candidate, loadFrontFirst, packed);
         if (!best || compareScore(score, bestScore) < 0) {
           best = { ...candidate, orientation };
           bestScore = score;
@@ -587,9 +662,9 @@ function scoreStackCandidate(candidate, loadFrontFirst) {
   const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
   return [
     candidate.aabb.min.y,
+    -candidate.supportFraction,
     xPrimary,
     candidate.aabb.min.z,
-    -candidate.supportFraction,
   ];
 }
 
@@ -632,6 +707,7 @@ function recordPlacement(output, packed, item, placement, phase) {
     pos: placement.position,
     dims: placement.dims,
     aabb: placement.aabb,
+    orientation: placement.orientation,
     phase,
     zone: placement.zone || null,
   };
@@ -644,6 +720,132 @@ function recordPlacement(output, packed, item, placement, phase) {
     height: placement.dims.h,
   });
   return packedPlacement;
+}
+
+function updateRecordedPlacement(output, placement, candidate) {
+  placement.pos = candidate.position;
+  placement.dims = candidate.dims;
+  placement.aabb = candidate.aabb;
+  placement.zone = candidate.zone || placement.zone || null;
+  output.placements.set(placement.instanceId, candidate.position);
+  output.orientedDims.set(placement.instanceId, {
+    length: candidate.dims.l,
+    width: candidate.dims.w,
+    height: candidate.dims.h,
+  });
+}
+
+function isPlacementOnZoneFloor(aabb, zones) {
+  return zones.some(zone =>
+    isAabbContainedInZone(aabb, zone) &&
+    Math.abs(aabb.min.y - zone.min.y) <= CONTACT_EPS
+  );
+}
+
+function compactFloorPlacements(output, packed, zones, loadFrontFirst) {
+  for (let pass = 0; pass < COMPACTION_PASSES; pass++) {
+    let moved = false;
+    for (const placement of packed) {
+      if (placement.phase === 'stack') continue;
+      if (!isPlacementOnZoneFloor(placement.aabb, zones)) continue;
+      const others = packed.filter(other => other !== placement);
+      const rotation = output.rotations.get(placement.instanceId) || { x: 0, y: 0, z: 0 };
+      const orientation = {
+        l: placement.dims.l,
+        w: placement.dims.w,
+        h: placement.dims.h,
+        rotation,
+      };
+      let best = {
+        position: placement.pos,
+        dims: placement.dims,
+        aabb: placement.aabb,
+        zone: placement.zone,
+      };
+      let bestScore = scoreFloorCandidate(best, loadFrontFirst, others);
+
+      for (const zone of zones) {
+        if (orientation.l > zone.max.x - zone.min.x + CONTACT_EPS) continue;
+        if (orientation.w > zone.max.z - zone.min.z + CONTACT_EPS) continue;
+        if (orientation.h > zone.max.y - zone.min.y + CONTACT_EPS) continue;
+        for (const candidate of buildFloorCandidates(orientation, zone, others, loadFrontFirst)) {
+          if (!isAabbContainedInAnyZone(candidate.aabb, zones)) continue;
+          if (collidesPacked(candidate.aabb, others)) continue;
+          const score = scoreFloorCandidate(candidate, loadFrontFirst, others);
+          if (compareScore(score, bestScore) < 0) {
+            best = candidate;
+            bestScore = score;
+          }
+        }
+      }
+
+      if (
+        Math.abs(best.position.x - placement.pos.x) > CONTACT_EPS ||
+        Math.abs(best.position.y - placement.pos.y) > CONTACT_EPS ||
+        Math.abs(best.position.z - placement.pos.z) > CONTACT_EPS
+      ) {
+        updateRecordedPlacement(output, placement, best);
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+}
+
+function validatePackedPlacements(output, packed, zones) {
+  const accepted = [];
+  const rejected = [];
+
+  for (const placement of packed) {
+    let reason = '';
+    if (!isAabbContainedInAnyZone(placement.aabb, zones)) {
+      reason = 'outside usable zones';
+    } else if (collidesPacked(placement.aabb, accepted)) {
+      reason = 'overlaps another packed item';
+    } else if (
+      !isPlacementOnZoneFloor(placement.aabb, zones) &&
+      !supportsCandidate(placement.aabb, accepted, placement.item)
+    ) {
+      reason = 'does not have safe stack support';
+    }
+
+    if (reason) {
+      rejected.push({ placement, reason });
+    } else {
+      accepted.push(placement);
+    }
+  }
+
+  if (!rejected.length) return accepted;
+
+  output.placements.clear();
+  output.rotations.clear();
+  output.orientedDims.clear();
+  for (const placement of accepted) {
+    output.placements.set(placement.instanceId, placement.pos);
+    output.rotations.set(placement.instanceId, placement.orientation?.rotation || { x: 0, y: 0, z: 0 });
+    output.orientedDims.set(placement.instanceId, {
+      length: placement.dims.l,
+      width: placement.dims.w,
+      height: placement.dims.h,
+    });
+  }
+
+  const unpacked = new Set(output.unpacked);
+  for (const { placement, reason } of rejected) {
+    unpacked.add(placement.instanceId);
+    output.warnings.push(`Item ${placement.instanceId} was staged after validation: ${reason}.`);
+  }
+  output.unpacked = [...unpacked];
+  return accepted;
+}
+
+function refreshPhaseStats(output, packed) {
+  output.phaseStats.laneCount = packed.filter(placement => placement.phase === 'lane').length;
+  output.phaseStats.floorCount = packed.filter(placement => placement.phase === 'floor').length;
+  output.phaseStats.stackCount = packed.filter(placement => placement.phase === 'stack').length;
+  output.phaseStats.fillerCount = packed.filter(placement => placement.phase === 'filler').length;
+  output.phaseStats.unpackedCount = output.unpacked.length;
 }
 
 export function solveAutoPack(input = {}) {
@@ -667,9 +869,13 @@ export function solveAutoPack(input = {}) {
 
   const deferred = [];
   const laneItems = sortItemsForLane(items.filter(item => item.className === 'LANE_ITEM'));
-  const floorItems = sortItemsForFloor(items.filter(item => item.className !== 'LANE_ITEM'));
+  const mainFloorItems = sortItemsForFloor(items.filter(item =>
+    item.className !== 'LANE_ITEM' && item.className !== 'FILLER'
+  ));
+  const fillerItems = items.filter(item => item.className === 'FILLER');
   let laneCount = 0;
   let floorCount = 0;
+  let fillerCount = 0;
 
   for (const item of laneItems) {
     const placement = findLanePlacement(item, floorZones, packed, loadFrontFirst);
@@ -683,7 +889,7 @@ export function solveAutoPack(input = {}) {
     laneCount++;
   }
 
-  for (const item of floorItems) {
+  for (const item of mainFloorItems) {
     const placement = findFloorPlacement(item, floorZones, packed, loadFrontFirst);
     if (!placement) {
       deferred.push(item);
@@ -694,8 +900,25 @@ export function solveAutoPack(input = {}) {
     floorCount++;
   }
 
+  compactFloorPlacements(output, packed, floorZones, loadFrontFirst);
+
+  const fillerQueue = sortItemsForFiller([...deferred, ...fillerItems]);
+  const stackDeferred = [];
+  for (const item of fillerQueue) {
+    const placement = findFloorPlacement(item, floorZones, packed, loadFrontFirst);
+    if (!placement) {
+      stackDeferred.push(item);
+      continue;
+    }
+
+    recordPlacement(output, packed, item, placement, 'filler');
+    fillerCount++;
+  }
+
+  compactFloorPlacements(output, packed, floorZones, loadFrontFirst);
+
   let stackCount = 0;
-  for (const item of deferred) {
+  for (const item of sortItemsForStack(stackDeferred)) {
     const placement = findStackPlacement(item, floorZones, packed, loadFrontFirst);
     if (!placement) {
       output.unpacked.push(item.id);
@@ -707,9 +930,17 @@ export function solveAutoPack(input = {}) {
     stackCount++;
   }
 
+  const validatedPacked = validatePackedPlacements(output, packed, floorZones);
+  if (validatedPacked.length !== packed.length) {
+    packed.length = 0;
+    packed.push(...validatedPacked);
+  }
+
   output.phaseStats.laneCount = laneCount;
   output.phaseStats.floorCount = floorCount;
   output.phaseStats.stackCount = stackCount;
+  output.phaseStats.fillerCount = fillerCount;
   output.phaseStats.unpackedCount = output.unpacked.length;
+  refreshPhaseStats(output, packed);
   return output;
 }

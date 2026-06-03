@@ -1277,6 +1277,16 @@ test('AUTO-PACK-A1-R1 solver scaffold is pure and returns the expected output sh
     'long aspect-ratio items must be classified as lane candidates'
   );
   assert.equal(
+    Solver.classifyAutoPackItem({ dimensions: { length: 60, width: 20, height: 20 } }),
+    'STANDARD',
+    'ratio-3 medium boxes must not be auto-classified as lane items'
+  );
+  assert.equal(
+    Solver.classifyAutoPackItem({ dimensions: { length: 72, width: 48, height: 40 } }),
+    'STANDARD',
+    'blocky cases with one large dimension must not be auto-classified as lane items'
+  );
+  assert.equal(
     Solver.classifyAutoPackItem({ shape: 'drum', dimensions: { length: 24, width: 24, height: 24 } }),
     'STANDARD',
     'short round shapes must not be forced into long-item lane handling'
@@ -1290,6 +1300,15 @@ test('AUTO-PACK-A1-R1 solver scaffold is pure and returns the expected output sh
     Solver.classifyAutoPackItem({ laneItem: false, shape: 'drum', dimensions: { length: 24, width: 24, height: 24 } }),
     'STANDARD',
     'laneItem=false must prevent automatic lane classification'
+  );
+  assert.equal(
+    Solver.classifyAutoPackItem({
+      orientationLocked: true,
+      lockedRotation: { z: Math.PI / 2 },
+      dimensions: { length: 120, width: 12, height: 12 },
+    }),
+    'STANDARD',
+    'manual orientation locks must classify by effective floor footprint instead of raw long dimension'
   );
   assert.equal(
     Solver.computeSupportFraction(

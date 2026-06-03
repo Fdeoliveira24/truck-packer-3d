@@ -1,6 +1,6 @@
 const RIGHT_ANGLE_RAD = Math.PI / 2;
-const LONG_RATIO = 3;
-const LONG_MIN_IN = 72;
+const LONG_RATIO = 4;
+const LONG_MIN_IN = 96;
 const HEAVY_LBS = 150;
 const FILLER_IN3 = 6000;
 const MIN_SUPPORT_FRACTION = 0.5;
@@ -230,11 +230,11 @@ function canSupportCandidateWeight(candidateItem, support) {
 }
 
 export function classifyAutoPackItem(item = {}) {
-  const dims = readDims(item.dims || item.dimensions || item.orientedDims);
-  const sorted = [dims.l, dims.w, dims.h].sort((a, b) => b - a);
-  const longest = sorted[0] || 0;
-  const middle = sorted[1] || 1;
-  const laneByDims = longest >= LONG_MIN_IN || longest / Math.max(1, middle) >= LONG_RATIO;
+  const dims = getClassificationDims(item);
+  const floorDims = [dims.l, dims.w].sort((a, b) => b - a);
+  const longest = floorDims[0] || 0;
+  const middle = floorDims[1] || 1;
+  const laneByDims = longest >= LONG_MIN_IN && longest / Math.max(1, middle) >= LONG_RATIO;
 
   if (item.laneItem === true) return 'LANE_ITEM';
   if (item.laneItem !== false && laneByDims) return 'LANE_ITEM';
@@ -242,6 +242,18 @@ export function classifyAutoPackItem(item = {}) {
   if (finiteNumber(item.weight, 0) >= HEAVY_LBS) return 'HEAVY_BASE';
   if (dims.l * dims.w * dims.h <= FILLER_IN3) return 'FILLER';
   return 'STANDARD';
+}
+
+function getClassificationDims(item = {}) {
+  if (item.classificationDims) return readDims(item.classificationDims);
+  const dims = readDims(item.dims || item.dimensions || item.orientedDims);
+  if (item.orientationLocked === true) {
+    const lockedCandidate = buildOrientationCandidates(dims, item)[0] || null;
+    if (lockedCandidate) {
+      return { l: lockedCandidate.l, w: lockedCandidate.w, h: lockedCandidate.h };
+    }
+  }
+  return dims;
 }
 
 function makeEmptyOutput() {
@@ -394,6 +406,9 @@ function normalizeItem(item = {}, index = 0) {
       if (heightDelta) return heightDelta;
       return b.l - a.l;
     });
+  const classificationDims = item.orientationLocked === true && candidates[0]
+    ? { l: candidates[0].l, w: candidates[0].w, h: candidates[0].h }
+    : dims;
 
   return {
     id,
@@ -404,7 +419,7 @@ function normalizeItem(item = {}, index = 0) {
     footprint: dims.l * dims.w,
     weight: finiteNumber(item.weight, 0),
     index,
-    className: classifyAutoPackItem({ ...item, dims }),
+    className: classifyAutoPackItem({ ...item, classificationDims }),
   };
 }
 

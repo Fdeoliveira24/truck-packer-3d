@@ -1278,8 +1278,13 @@ test('AUTO-PACK-A1-R1 solver scaffold is pure and returns the expected output sh
   );
   assert.equal(
     Solver.classifyAutoPackItem({ shape: 'drum', dimensions: { length: 24, width: 24, height: 24 } }),
+    'STANDARD',
+    'short round shapes must not be forced into long-item lane handling'
+  );
+  assert.equal(
+    Solver.classifyAutoPackItem({ laneItem: true, shape: 'drum', dimensions: { length: 24, width: 24, height: 24 } }),
     'LANE_ITEM',
-    'round shapes must be classified as lane candidates for future lane handling'
+    'laneItem=true must still allow manual lane classification for round items'
   );
   assert.equal(
     Solver.classifyAutoPackItem({ laneItem: false, shape: 'drum', dimensions: { length: 24, width: 24, height: 24 } }),
@@ -1327,16 +1332,23 @@ test('AUTO-PACK-A1-R3 floor solver packs rectangular floor positions without gap
     }
   }
 
-  assert.deepEqual(
-    [...new Set(packed.map(aabb => aabb.min.x))].sort((a, b) => a - b),
-    [0, 48],
-    'exact floor-fit boxes should advance flush along X without an unexplained gap'
+  const bounds = packed.reduce(
+    (acc, aabb) => ({
+      minX: Math.min(acc.minX, aabb.min.x),
+      maxX: Math.max(acc.maxX, aabb.max.x),
+      minZ: Math.min(acc.minZ, aabb.min.z),
+      maxZ: Math.max(acc.maxZ, aabb.max.z),
+      area: acc.area + (aabb.max.x - aabb.min.x) * (aabb.max.z - aabb.min.z),
+    }),
+    { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity, area: 0 }
   );
-  assert.deepEqual(
-    [...new Set(packed.map(aabb => aabb.min.z))].sort((a, b) => a - b),
-    [-24, 0],
-    'exact floor-fit boxes should fill the truck width flush before leaving open lanes'
-  );
+  assert.equal(bounds.area, (bounds.maxX - bounds.minX) * (bounds.maxZ - bounds.minZ),
+    'exact floor-fit boxes should form one gap-free floor block even when yaw rotation is selected');
+  assert.equal(bounds.minX, 0,
+    'gap-free floor block should start against the load-side wall');
+  assert.equal(bounds.minZ, -24);
+  assert.equal(bounds.maxZ, 24,
+    'gap-free floor block should use the full truck width');
 });
 
 test('AUTO-PACK-A1-R3 floor solver consumes supplied wheel-well usable zones', async () => {
@@ -1440,7 +1452,7 @@ test('AUTO-PACK-A1-R4 stack phase requires meaningful support area', async () =>
   const truck = { length: 24, width: 24, height: 48 };
   const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 24, y: 48, z: 12 } }];
   const items = [
-    { instanceId: 'small-support', loadPriority: 2, dims: { l: 16, w: 16, h: 24 } },
+    { instanceId: 'small-support', laneItem: true, dims: { l: 16, w: 16, h: 24 } },
     { instanceId: 'large-top', loadPriority: 1, dims: { l: 24, w: 24, h: 12 } },
   ];
 
@@ -1506,7 +1518,7 @@ test('AUTO-PACK-A1-R5.5 stack phase blocks heavy items on lighter non-pallet sup
   const truck = { length: 24, width: 24, height: 48 };
   const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 24, y: 48, z: 12 } }];
   const items = [
-    { instanceId: 'priority-light-base', loadPriority: 100, weight: 20, dims: { l: 24, w: 24, h: 24 } },
+    { instanceId: 'priority-light-base', laneItem: true, loadPriority: 100, weight: 20, dims: { l: 24, w: 24, h: 24 } },
     { instanceId: 'heavy-deferred', loadPriority: 1, weight: 220, dims: { l: 24, w: 24, h: 24 } },
   ];
 
@@ -1719,6 +1731,150 @@ test('AUTO-PACK-A1-R6.1 solver keeps final validation gate for unsafe packed pla
     'validation gate must reject floating or unsupported stacks');
   assert.match(src, /output\.unpacked = \[\.\.\.unpacked\];/,
     'validation failures must be staged through the existing unpacked output path');
+});
+
+test('AUTO-PACK-A1-R6.2 free-space floor pass does not stage an item that fits a remaining floor rectangle', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 72, width: 48, height: 48 };
+  const zones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 72, y: 48, z: 24 } }];
+  const items = [
+    { instanceId: 'wide-left', orientationLocked: true, lockedRotation: {}, dims: { l: 48, w: 30, h: 24 } },
+    { instanceId: 'side-void-fit', orientationLocked: true, lockedRotation: {}, dims: { l: 48, w: 18, h: 24 } },
+    { instanceId: 'front-a', orientationLocked: true, lockedRotation: {}, dims: { l: 24, w: 24, h: 24 } },
+    { instanceId: 'front-b', orientationLocked: true, lockedRotation: {}, dims: { l: 24, w: 24, h: 24 } },
+  ];
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 4);
+  assert.deepEqual(output.unpacked, []);
+  assert.equal(output.phaseStats.stackCount, 0,
+    'free-space floor pass must consume real floor rectangles before stacking');
+
+  const packed = items.map(item => {
+    const pos = output.placements.get(item.instanceId);
+    const od = output.orientedDims.get(item.instanceId);
+    return Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
+  });
+  for (let i = 0; i < packed.length; i++) {
+    assert.equal(packed[i].min.y, 0);
+    assert.equal(Solver.isAabbContainedInAnyZone(packed[i], zones), true);
+    for (let j = i + 1; j < packed.length; j++) {
+      assert.equal(Solver.aabbsOverlap(packed[i], packed[j]), false);
+    }
+  }
+
+  const sideVoid = Solver.getAabb(
+    output.placements.get('side-void-fit'),
+    {
+      l: output.orientedDims.get('side-void-fit').length,
+      w: output.orientedDims.get('side-void-fit').width,
+      h: output.orientedDims.get('side-void-fit').height,
+    }
+  );
+  assert.equal(sideVoid.min.x, 0,
+    'item that exactly fits the side floor void should stay in that void instead of moving forward or staging');
+});
+
+test('AUTO-PACK-A1-R6.2 Basic Fit keeps footprint compactness ahead of loadPriority', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 96, width: 48, height: 48 };
+  const zones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 96, y: 48, z: 24 } }];
+  const items = [
+    { instanceId: 'large-a', loadPriority: 0, orientationLocked: true, lockedRotation: {}, dims: { l: 48, w: 24, h: 24 } },
+    { instanceId: 'large-b', loadPriority: 0, orientationLocked: true, lockedRotation: {}, dims: { l: 48, w: 24, h: 24 } },
+    { instanceId: 'priority-small', loadPriority: 999, orientationLocked: true, lockedRotation: {}, dims: { l: 24, w: 24, h: 24 } },
+  ];
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 3);
+  assert.deepEqual(output.unpacked, []);
+
+  const largeADims = output.orientedDims.get('large-a');
+  const largeBDims = output.orientedDims.get('large-b');
+  const smallDims = output.orientedDims.get('priority-small');
+  const largeA = Solver.getAabb(output.placements.get('large-a'), {
+    l: largeADims.length,
+    w: largeADims.width,
+    h: largeADims.height,
+  });
+  const largeB = Solver.getAabb(output.placements.get('large-b'), {
+    l: largeBDims.length,
+    w: largeBDims.width,
+    h: largeBDims.height,
+  });
+  const small = Solver.getAabb(output.placements.get('priority-small'), {
+    l: smallDims.length,
+    w: smallDims.width,
+    h: smallDims.height,
+  });
+  assert.deepEqual([largeA.min.x, largeB.min.x].sort((a, b) => a - b), [0, 0],
+    'larger footprint items should form the rear floor row before a high-priority small case in Basic Fit');
+  assert.equal(small.min.x >= 48, true,
+    'loadPriority must not be allowed to create a sparse rear floor row in Basic Fit');
+});
+
+test('AUTO-PACK-A1-R6.2 long lanes reserve strips without wasting adjacent floor width', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 120, width: 48, height: 48 };
+  const zones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 120, y: 48, z: 24 } }];
+  const items = [
+    { instanceId: 'long-truss', dims: { l: 120, w: 12, h: 12 } },
+    { instanceId: 'box-a', dims: { l: 24, w: 24, h: 24 } },
+    { instanceId: 'box-b', dims: { l: 24, w: 24, h: 24 } },
+    { instanceId: 'box-c', dims: { l: 24, w: 24, h: 24 } },
+  ];
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 4);
+  assert.deepEqual(output.unpacked, []);
+  assert.equal(output.phaseStats.laneCount, 1);
+  assert.equal(output.phaseStats.floorCount, 3,
+    'normal boxes should use the floor width left beside the long lane');
+
+  const packed = items.map(item => {
+    const od = output.orientedDims.get(item.instanceId);
+    return Solver.getAabb(output.placements.get(item.instanceId), {
+      l: od.length,
+      w: od.width,
+      h: od.height,
+    });
+  });
+  for (let i = 0; i < packed.length; i++) {
+    assert.equal(Solver.isAabbContainedInAnyZone(packed[i], zones), true);
+    for (let j = i + 1; j < packed.length; j++) {
+      assert.equal(Solver.aabbsOverlap(packed[i], packed[j]), false);
+    }
+  }
+});
+
+test('AUTO-PACK-A1-R6.2 stack free-space fills the lower support layer before higher layers', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 48, width: 48, height: 72 };
+  const zones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 48, y: 72, z: 24 } }];
+  const items = [
+    { instanceId: 'base', weight: 300, dims: { l: 48, w: 48, h: 24 } },
+    ...Array.from({ length: 5 }, (_, index) => ({
+      instanceId: `top-${index + 1}`,
+      weight: 20,
+      dims: { l: 24, w: 24, h: 24 },
+    })),
+  ];
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 6);
+  assert.deepEqual(output.unpacked, []);
+  assert.equal(output.phaseStats.floorCount, 1);
+  assert.equal(output.phaseStats.stackCount, 5);
+
+  const topBottoms = items.slice(1).map(item => {
+    const pos = output.placements.get(item.instanceId);
+    const od = output.orientedDims.get(item.instanceId);
+    return Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height }).min.y;
+  });
+  assert.equal(topBottoms.filter(y => y === 24).length, 4,
+    'stack pass should fill all four lower layer cells on the base before using a higher layer');
+  assert.equal(topBottoms.filter(y => y === 48).length, 1,
+    'only the remaining item should advance to the next stack layer');
 });
 
 test('AUTO-PACK-A1-R6 live AutoPack routes through the logistics solver from the runtime engine only', async () => {

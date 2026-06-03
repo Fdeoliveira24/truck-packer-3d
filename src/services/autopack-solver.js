@@ -5,7 +5,7 @@ const HEAVY_LBS = 150;
 const FILLER_IN3 = 6000;
 const MIN_SUPPORT_FRACTION = 0.5;
 const CONTACT_EPS = 0.05;
-const COMPACTION_PASSES = 3;
+const FREE_RECT_EPS = 0.05;
 
 function finiteNumber(value, fallback = 0) {
   const n = Number(value);
@@ -234,12 +234,10 @@ export function classifyAutoPackItem(item = {}) {
   const sorted = [dims.l, dims.w, dims.h].sort((a, b) => b - a);
   const longest = sorted[0] || 0;
   const middle = sorted[1] || 1;
-  const shape = String(item.shape || '').trim().toLowerCase();
-  const laneByShape = shape === 'cylinder' || shape === 'drum';
   const laneByDims = longest >= LONG_MIN_IN || longest / Math.max(1, middle) >= LONG_RATIO;
 
   if (item.laneItem === true) return 'LANE_ITEM';
-  if (item.laneItem !== false && (laneByShape || laneByDims)) return 'LANE_ITEM';
+  if (item.laneItem !== false && laneByDims) return 'LANE_ITEM';
   if (item.noStackOnTop || item.stackable === false) return 'FRAGILE_BASE';
   if (finiteNumber(item.weight, 0) >= HEAVY_LBS) return 'HEAVY_BASE';
   if (dims.l * dims.w * dims.h <= FILLER_IN3) return 'FILLER';
@@ -412,14 +410,14 @@ function normalizeItem(item = {}, index = 0) {
 
 function sortItemsForFloor(items) {
   return [...items].sort((a, b) => {
-    const priorityDelta = finiteNumber(b.item.loadPriority, 0) - finiteNumber(a.item.loadPriority, 0);
-    if (priorityDelta) return priorityDelta;
     const footprintDelta = b.footprint - a.footprint;
     if (footprintDelta) return footprintDelta;
     const weightDelta = b.weight - a.weight;
     if (weightDelta) return weightDelta;
     const volumeDelta = b.volume - a.volume;
     if (volumeDelta) return volumeDelta;
+    const priorityDelta = finiteNumber(b.item.loadPriority, 0) - finiteNumber(a.item.loadPriority, 0);
+    if (priorityDelta) return priorityDelta;
     return a.index - b.index;
   });
 }
@@ -452,8 +450,6 @@ function sortItemsForStack(items) {
 
 function sortItemsForLane(items) {
   return [...items].sort((a, b) => {
-    const priorityDelta = finiteNumber(b.item.loadPriority, 0) - finiteNumber(a.item.loadPriority, 0);
-    if (priorityDelta) return priorityDelta;
     const maxLength = item => Math.max(0, ...item.candidates.map(candidate => candidate.l));
     const minWidth = item => Math.min(Infinity, ...item.candidates.map(candidate => candidate.w));
     const lengthDelta = maxLength(b) - maxLength(a);
@@ -462,6 +458,8 @@ function sortItemsForLane(items) {
     if (widthDelta) return widthDelta;
     const volumeDelta = b.volume - a.volume;
     if (volumeDelta) return volumeDelta;
+    const priorityDelta = finiteNumber(b.item.loadPriority, 0) - finiteNumber(a.item.loadPriority, 0);
+    if (priorityDelta) return priorityDelta;
     return a.index - b.index;
   });
 }
@@ -489,65 +487,6 @@ function uniqueSorted(values, comparator) {
   return out.sort(comparator);
 }
 
-function buildFloorCandidates(candidate, zone, packed, loadFrontFirst) {
-  const xMins = [
-    zone.min.x,
-    zone.max.x - candidate.l,
-  ];
-  const zMins = [
-    zone.min.z,
-    zone.max.z - candidate.w,
-  ];
-  for (const placement of packed) {
-    const p = placement.aabb;
-    xMins.push(
-      p.max.x,
-      p.min.x - candidate.l,
-      p.min.x,
-      p.max.x - candidate.l
-    );
-    zMins.push(
-      p.max.z,
-      p.min.z - candidate.w,
-      p.min.z,
-      p.max.z - candidate.w
-    );
-  }
-
-  const sortedX = uniqueSorted(xMins, (a, b) => loadFrontFirst ? b - a : a - b);
-  const sortedZ = uniqueSorted(zMins, (a, b) => a - b);
-  const placements = [];
-
-  for (const xMin of sortedX) {
-    for (const zMin of sortedZ) {
-      const x = xMin + candidate.l / 2;
-      const y = zone.min.y + candidate.h / 2;
-      const z = zMin + candidate.w / 2;
-      const position = { x, y, z };
-      const dims = { l: candidate.l, w: candidate.w, h: candidate.h };
-      const aabb = getAabb(position, dims);
-      placements.push({ position, dims, aabb, zone });
-    }
-  }
-
-  return placements;
-}
-
-function scoreFloorCandidate(candidate, loadFrontFirst, packed = []) {
-  const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
-  const wallContacts = wallContactCount(candidate.aabb, candidate.zone, loadFrontFirst);
-  const faceContacts = countFaceContacts(candidate.aabb, packed);
-  return [
-    xPrimary,
-    candidate.aabb.min.y,
-    candidate.dims.w,
-    -(wallContacts + Math.min(3, faceContacts)),
-    candidate.aabb.min.z,
-    candidate.dims.h,
-    candidate.dims.l * candidate.dims.w,
-  ];
-}
-
 function compareScore(a, b) {
   for (let i = 0; i < Math.min(a.length, b.length); i++) {
     if (a[i] !== b[i]) return a[i] - b[i];
@@ -555,24 +494,181 @@ function compareScore(a, b) {
   return 0;
 }
 
-function findFloorPlacement(item, zones, packed, loadFrontFirst) {
+function makeFreeRect(zone, index = 0) {
+  return {
+    id: `zone-${index}`,
+    zone,
+    minX: zone.min.x,
+    maxX: zone.max.x,
+    minZ: zone.min.z,
+    maxZ: zone.max.z,
+  };
+}
+
+function freeRectLength(rect) {
+  return rect.maxX - rect.minX;
+}
+
+function freeRectWidth(rect) {
+  return rect.maxZ - rect.minZ;
+}
+
+function freeRectArea(rect) {
+  return Math.max(0, freeRectLength(rect)) * Math.max(0, freeRectWidth(rect));
+}
+
+function freeRectHasArea(rect) {
+  return freeRectLength(rect) > FREE_RECT_EPS && freeRectWidth(rect) > FREE_RECT_EPS;
+}
+
+function freeRectContains(outer, inner) {
+  return outer.zone === inner.zone &&
+    outer.minX <= inner.minX + FREE_RECT_EPS &&
+    outer.maxX >= inner.maxX - FREE_RECT_EPS &&
+    outer.minZ <= inner.minZ + FREE_RECT_EPS &&
+    outer.maxZ >= inner.maxZ - FREE_RECT_EPS;
+}
+
+function freeRectsEqual(a, b) {
+  return a.zone === b.zone &&
+    Math.abs(a.minX - b.minX) <= FREE_RECT_EPS &&
+    Math.abs(a.maxX - b.maxX) <= FREE_RECT_EPS &&
+    Math.abs(a.minZ - b.minZ) <= FREE_RECT_EPS &&
+    Math.abs(a.maxZ - b.maxZ) <= FREE_RECT_EPS;
+}
+
+function normalizeFreeRects(rects) {
+  const filtered = (rects || []).filter(freeRectHasArea);
+  const unique = [];
+  for (const rect of filtered) {
+    if (unique.some(existing => freeRectsEqual(existing, rect))) continue;
+    unique.push(rect);
+  }
+  return unique.filter((rect, index) =>
+    !unique.some((other, otherIndex) =>
+      otherIndex !== index &&
+      freeRectContains(other, rect) &&
+      freeRectArea(other) >= freeRectArea(rect) - FREE_RECT_EPS
+    )
+  );
+}
+
+function createFloorState(zones) {
+  return {
+    freeRects: normalizeFreeRects(zones.map((zone, index) => makeFreeRect(zone, index))),
+  };
+}
+
+function rectIntersectsAabb(rect, aabb) {
+  return rect.minX < aabb.max.x - FREE_RECT_EPS &&
+    rect.maxX > aabb.min.x + FREE_RECT_EPS &&
+    rect.minZ < aabb.max.z - FREE_RECT_EPS &&
+    rect.maxZ > aabb.min.z + FREE_RECT_EPS;
+}
+
+function subtractAabbFromFreeRect(rect, aabb) {
+  if (!rectIntersectsAabb(rect, aabb)) return [rect];
+  const overlapMinX = Math.max(rect.minX, aabb.min.x);
+  const overlapMaxX = Math.min(rect.maxX, aabb.max.x);
+  const overlapMinZ = Math.max(rect.minZ, aabb.min.z);
+  const overlapMaxZ = Math.min(rect.maxZ, aabb.max.z);
+  const out = [];
+
+  if (overlapMinX > rect.minX + FREE_RECT_EPS) {
+    out.push({ ...rect, maxX: overlapMinX });
+  }
+  if (overlapMaxX < rect.maxX - FREE_RECT_EPS) {
+    out.push({ ...rect, minX: overlapMaxX });
+  }
+  if (overlapMinZ > rect.minZ + FREE_RECT_EPS) {
+    out.push({ ...rect, minX: overlapMinX, maxX: overlapMaxX, maxZ: overlapMinZ });
+  }
+  if (overlapMaxZ < rect.maxZ - FREE_RECT_EPS) {
+    out.push({ ...rect, minX: overlapMinX, maxX: overlapMaxX, minZ: overlapMaxZ });
+  }
+
+  return out;
+}
+
+function occupyFloorSpace(floorState, placement) {
+  if (!floorState || !placement || !placement.zone) return;
+  const next = [];
+  for (const rect of floorState.freeRects) {
+    if (rect.zone !== placement.zone) {
+      next.push(rect);
+      continue;
+    }
+    next.push(...subtractAabbFromFreeRect(rect, placement.aabb));
+  }
+  floorState.freeRects = normalizeFreeRects(next);
+}
+
+function scoreFreeRectCandidate(candidate, loadFrontFirst, packed = []) {
+  const rect = candidate.freeRect;
+  const leftoverX = Math.max(0, freeRectLength(rect) - candidate.dims.l);
+  const leftoverZ = Math.max(0, freeRectWidth(rect) - candidate.dims.w);
+  const wasteArea = Math.max(0, freeRectArea(rect) - candidate.dims.l * candidate.dims.w);
+  const wallContacts = wallContactCount(candidate.aabb, candidate.zone, loadFrontFirst);
+  const faceContacts = countFaceContacts(candidate.aabb, packed);
+  const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
+  return [
+    candidate.aabb.min.y,
+    wasteArea,
+    Math.min(leftoverX, leftoverZ),
+    leftoverZ,
+    -(wallContacts + Math.min(4, faceContacts)),
+    xPrimary,
+    candidate.aabb.min.z,
+    leftoverX,
+  ];
+}
+
+function buildFreeRectCandidates(orientation, floorState, loadFrontFirst) {
+  const placements = [];
+  for (const rect of floorState.freeRects) {
+    const zone = rect.zone;
+    if (orientation.l > freeRectLength(rect) + FREE_RECT_EPS) continue;
+    if (orientation.w > freeRectWidth(rect) + FREE_RECT_EPS) continue;
+    if (orientation.h > zone.max.y - zone.min.y + FREE_RECT_EPS) continue;
+
+    const primaryX = loadFrontFirst ? rect.maxX - orientation.l : rect.minX;
+    const xMins = [primaryX];
+    const zMins = uniqueSorted(
+      [
+        rect.minZ,
+        rect.maxZ - orientation.w,
+      ],
+      (a, b) => a - b
+    );
+
+    for (const xMin of xMins) {
+      for (const zMin of zMins) {
+        const position = {
+          x: xMin + orientation.l / 2,
+          y: zone.min.y + orientation.h / 2,
+          z: zMin + orientation.w / 2,
+        };
+        const dims = { l: orientation.l, w: orientation.w, h: orientation.h };
+        const aabb = getAabb(position, dims);
+        placements.push({ position, dims, aabb, zone, freeRect: rect });
+      }
+    }
+  }
+  return placements;
+}
+
+function findFloorPlacement(item, floorState, packed, loadFrontFirst) {
   let best = null;
   let bestScore = null;
 
   for (const orientation of item.candidates) {
-    for (const zone of zones) {
-      if (orientation.l > zone.max.x - zone.min.x + 0.05) continue;
-      if (orientation.w > zone.max.z - zone.min.z + 0.05) continue;
-      if (orientation.h > zone.max.y - zone.min.y + 0.05) continue;
-
-      for (const candidate of buildFloorCandidates(orientation, zone, packed, loadFrontFirst)) {
-        if (!isAabbContainedInAnyZone(candidate.aabb, zones)) continue;
-        if (collidesPacked(candidate.aabb, packed)) continue;
-        const score = scoreFloorCandidate(candidate, loadFrontFirst, packed);
-        if (!best || compareScore(score, bestScore) < 0) {
-          best = { ...candidate, orientation };
-          bestScore = score;
-        }
+    for (const candidate of buildFreeRectCandidates(orientation, floorState, loadFrontFirst)) {
+      if (!isAabbContainedInZone(candidate.aabb, candidate.zone)) continue;
+      if (collidesPacked(candidate.aabb, packed)) continue;
+      const score = scoreFreeRectCandidate(candidate, loadFrontFirst, packed);
+      if (!best || compareScore(score, bestScore) < 0) {
+        best = { ...candidate, orientation };
+        bestScore = score;
       }
     }
   }
@@ -592,33 +688,31 @@ function getLaneOrientations(item) {
 
 function scoreLaneCandidate(candidate, orientation, loadFrontFirst) {
   const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
+  const rectWaste = candidate.freeRect
+    ? Math.max(0, freeRectArea(candidate.freeRect) - orientation.l * orientation.w)
+    : 0;
   return [
     -orientation.l,
     candidate.aabb.min.y,
+    rectWaste,
     candidate.aabb.min.z,
     xPrimary,
     orientation.w,
   ];
 }
 
-function findLanePlacement(item, zones, packed, loadFrontFirst) {
+function findLanePlacement(item, floorState, packed, loadFrontFirst) {
   let best = null;
   let bestScore = null;
 
   for (const orientation of getLaneOrientations(item)) {
-    for (const zone of zones) {
-      if (orientation.l > zone.max.x - zone.min.x + 0.05) continue;
-      if (orientation.w > zone.max.z - zone.min.z + 0.05) continue;
-      if (orientation.h > zone.max.y - zone.min.y + 0.05) continue;
-
-      for (const candidate of buildFloorCandidates(orientation, zone, packed, loadFrontFirst)) {
-        if (!isAabbContainedInAnyZone(candidate.aabb, zones)) continue;
-        if (collidesPacked(candidate.aabb, packed)) continue;
-        const score = scoreLaneCandidate(candidate, orientation, loadFrontFirst);
-        if (!best || compareScore(score, bestScore) < 0) {
-          best = { ...candidate, orientation };
-          bestScore = score;
-        }
+    for (const candidate of buildFreeRectCandidates(orientation, floorState, loadFrontFirst)) {
+      if (!isAabbContainedInZone(candidate.aabb, candidate.zone)) continue;
+      if (collidesPacked(candidate.aabb, packed)) continue;
+      const score = scoreLaneCandidate(candidate, orientation, loadFrontFirst);
+      if (!best || compareScore(score, bestScore) < 0) {
+        best = { ...candidate, orientation };
+        bestScore = score;
       }
     }
   }
@@ -637,21 +731,50 @@ function stackAnchorMins(supportMin, supportMax, itemSize) {
   );
 }
 
-function buildStackCandidates(orientation, support) {
-  const xMins = stackAnchorMins(support.aabb.min.x, support.aabb.max.x, orientation.l);
-  const zMins = stackAnchorMins(support.aabb.min.z, support.aabb.max.z, orientation.w);
+function buildStackSurfaceRects(support, packed) {
+  let rects = [{
+    id: `support-${support.instanceId}`,
+    zone: support,
+    minX: support.aabb.min.x,
+    maxX: support.aabb.max.x,
+    minZ: support.aabb.min.z,
+    maxZ: support.aabb.max.z,
+  }];
+  for (const placement of packed) {
+    if (placement === support) continue;
+    if (Math.abs(placement.aabb.min.y - support.aabb.max.y) > CONTACT_EPS) continue;
+    if (computeXzOverlapArea(placement.aabb, support.aabb) <= CONTACT_EPS) continue;
+    rects = rects.flatMap(rect => subtractAabbFromFreeRect(rect, placement.aabb));
+  }
+  return normalizeFreeRects(rects);
+}
+
+function buildStackCandidates(orientation, support, packed) {
   const placements = [];
 
-  for (const xMin of xMins) {
-    for (const zMin of zMins) {
-      const position = {
-        x: xMin + orientation.l / 2,
-        y: support.aabb.max.y + orientation.h / 2,
-        z: zMin + orientation.w / 2,
-      };
-      const dims = { l: orientation.l, w: orientation.w, h: orientation.h };
-      const aabb = getAabb(position, dims);
-      placements.push({ position, dims, aabb });
+  for (const rect of buildStackSurfaceRects(support, packed)) {
+    if (orientation.l > freeRectLength(rect) + FREE_RECT_EPS) continue;
+    if (orientation.w > freeRectWidth(rect) + FREE_RECT_EPS) continue;
+    const xMins = stackAnchorMins(rect.minX, rect.maxX, orientation.l);
+    const zMins = uniqueSorted(
+      [
+        rect.minZ,
+        rect.maxZ - orientation.w,
+      ],
+      (a, b) => a - b
+    );
+
+    for (const xMin of xMins) {
+      for (const zMin of zMins) {
+        const position = {
+          x: xMin + orientation.l / 2,
+          y: support.aabb.max.y + orientation.h / 2,
+          z: zMin + orientation.w / 2,
+        };
+        const dims = { l: orientation.l, w: orientation.w, h: orientation.h };
+        const aabb = getAabb(position, dims);
+        placements.push({ position, dims, aabb, freeRect: rect });
+      }
     }
   }
 
@@ -660,9 +783,13 @@ function buildStackCandidates(orientation, support) {
 
 function scoreStackCandidate(candidate, loadFrontFirst) {
   const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
+  const wasteArea = candidate.freeRect
+    ? Math.max(0, freeRectArea(candidate.freeRect) - candidate.dims.l * candidate.dims.w)
+    : 0;
   return [
     candidate.aabb.min.y,
     -candidate.supportFraction,
+    wasteArea,
     xPrimary,
     candidate.aabb.min.z,
   ];
@@ -676,7 +803,7 @@ function findStackPlacement(item, zones, packed, loadFrontFirst) {
     for (const support of packed) {
       if (!canSupportStack(support) || !hasStackCapacity(support, packed)) continue;
 
-      for (const candidate of buildStackCandidates(orientation, support)) {
+      for (const candidate of buildStackCandidates(orientation, support, packed)) {
         if (!isAabbContainedInAnyZone(candidate.aabb, zones)) continue;
         if (collidesPacked(candidate.aabb, packed)) continue;
         if (!supportsCandidate(candidate.aabb, packed, item)) continue;
@@ -722,19 +849,6 @@ function recordPlacement(output, packed, item, placement, phase) {
   return packedPlacement;
 }
 
-function updateRecordedPlacement(output, placement, candidate) {
-  placement.pos = candidate.position;
-  placement.dims = candidate.dims;
-  placement.aabb = candidate.aabb;
-  placement.zone = candidate.zone || placement.zone || null;
-  output.placements.set(placement.instanceId, candidate.position);
-  output.orientedDims.set(placement.instanceId, {
-    length: candidate.dims.l,
-    width: candidate.dims.w,
-    height: candidate.dims.h,
-  });
-}
-
 function isPlacementOnZoneFloor(aabb, zones) {
   return zones.some(zone =>
     isAabbContainedInZone(aabb, zone) &&
@@ -743,53 +857,10 @@ function isPlacementOnZoneFloor(aabb, zones) {
 }
 
 function compactFloorPlacements(output, packed, zones, loadFrontFirst) {
-  for (let pass = 0; pass < COMPACTION_PASSES; pass++) {
-    let moved = false;
-    for (const placement of packed) {
-      if (placement.phase === 'stack') continue;
-      if (!isPlacementOnZoneFloor(placement.aabb, zones)) continue;
-      const others = packed.filter(other => other !== placement);
-      const rotation = output.rotations.get(placement.instanceId) || { x: 0, y: 0, z: 0 };
-      const orientation = {
-        l: placement.dims.l,
-        w: placement.dims.w,
-        h: placement.dims.h,
-        rotation,
-      };
-      let best = {
-        position: placement.pos,
-        dims: placement.dims,
-        aabb: placement.aabb,
-        zone: placement.zone,
-      };
-      let bestScore = scoreFloorCandidate(best, loadFrontFirst, others);
-
-      for (const zone of zones) {
-        if (orientation.l > zone.max.x - zone.min.x + CONTACT_EPS) continue;
-        if (orientation.w > zone.max.z - zone.min.z + CONTACT_EPS) continue;
-        if (orientation.h > zone.max.y - zone.min.y + CONTACT_EPS) continue;
-        for (const candidate of buildFloorCandidates(orientation, zone, others, loadFrontFirst)) {
-          if (!isAabbContainedInAnyZone(candidate.aabb, zones)) continue;
-          if (collidesPacked(candidate.aabb, others)) continue;
-          const score = scoreFloorCandidate(candidate, loadFrontFirst, others);
-          if (compareScore(score, bestScore) < 0) {
-            best = candidate;
-            bestScore = score;
-          }
-        }
-      }
-
-      if (
-        Math.abs(best.position.x - placement.pos.x) > CONTACT_EPS ||
-        Math.abs(best.position.y - placement.pos.y) > CONTACT_EPS ||
-        Math.abs(best.position.z - placement.pos.z) > CONTACT_EPS
-      ) {
-        updateRecordedPlacement(output, placement, best);
-        moved = true;
-      }
-    }
-    if (!moved) break;
-  }
+  void output;
+  void packed;
+  void zones;
+  void loadFrontFirst;
 }
 
 function validatePackedPlacements(output, packed, zones) {
@@ -858,6 +929,7 @@ export function solveAutoPack(input = {}) {
   const items = rawItems.map(normalizeItem);
   const loadFrontFirst = input.loadFrontFirst === true || input.loadDirection === 'front_to_rear';
   const floorZones = sortZonesForFloor(zones, loadFrontFirst);
+  const floorState = createFloorState(floorZones);
   const packed = [];
 
   if (!truck.length || !truck.width || !truck.height || !floorZones.length) {
@@ -878,7 +950,7 @@ export function solveAutoPack(input = {}) {
   let fillerCount = 0;
 
   for (const item of laneItems) {
-    const placement = findLanePlacement(item, floorZones, packed, loadFrontFirst);
+    const placement = findLanePlacement(item, floorState, packed, loadFrontFirst);
     if (!placement) {
       output.unpacked.push(item.id);
       output.warnings.push(`Lane item ${item.id} could not fit in a safe lengthwise lane.`);
@@ -886,32 +958,38 @@ export function solveAutoPack(input = {}) {
     }
 
     recordPlacement(output, packed, item, placement, 'lane');
+    occupyFloorSpace(floorState, placement);
     laneCount++;
   }
 
   for (const item of mainFloorItems) {
-    const placement = findFloorPlacement(item, floorZones, packed, loadFrontFirst);
+    const placement = findFloorPlacement(item, floorState, packed, loadFrontFirst);
     if (!placement) {
       deferred.push(item);
       continue;
     }
 
     recordPlacement(output, packed, item, placement, 'floor');
+    occupyFloorSpace(floorState, placement);
     floorCount++;
   }
 
   compactFloorPlacements(output, packed, floorZones, loadFrontFirst);
 
-  const fillerQueue = sortItemsForFiller([...deferred, ...fillerItems]);
+  const fillerQueue = [
+    ...sortItemsForFloor(deferred),
+    ...sortItemsForFiller(fillerItems),
+  ];
   const stackDeferred = [];
   for (const item of fillerQueue) {
-    const placement = findFloorPlacement(item, floorZones, packed, loadFrontFirst);
+    const placement = findFloorPlacement(item, floorState, packed, loadFrontFirst);
     if (!placement) {
       stackDeferred.push(item);
       continue;
     }
 
     recordPlacement(output, packed, item, placement, 'filler');
+    occupyFloorSpace(floorState, placement);
     fillerCount++;
   }
 

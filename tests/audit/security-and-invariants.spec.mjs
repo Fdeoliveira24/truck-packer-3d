@@ -1779,6 +1779,22 @@ test('AUTO-PACK-A1-R6.1 solver keeps final validation gate for unsafe packed pla
     'validation failures must be staged through the existing unpacked output path');
 });
 
+test('AUTO-PACK-A1-R6.3 validation rejects get a strict repack attempt before staging', async () => {
+  const src = await fs.readFile(autoPackSolverPath, 'utf8');
+  assert.match(src, /function repackRejectedPlacements\(output, accepted, rejected, zones, loadFrontFirst\)/,
+    'solver must include a bounded repack pass for validation rejects');
+  assert.match(src, /validatePackedPlacements\(output, packed, floorZones, \{ stageRejected: false \}\)/,
+    'initial validation must identify rejected placements before staging them');
+  assert.match(src, /repackRejectedPlacements\(\s*output,\s*initialValidation\.accepted,\s*initialValidation\.rejected,/,
+    'validation rejects must flow through the repack helper');
+  assert.match(src, /const floorPlacement = findFloorPlacement\(item, floorState, repacked, loadFrontFirst\);/,
+    'repack must retry floor placement before staging rejected items');
+  assert.match(src, /const stackPlacement = findStackPlacement\(item, zones, repacked, loadFrontFirst\);/,
+    'repack must retry safe stack placement before staging rejected items');
+  assert.match(src, /stageRejectedPlacements\(output, \[\.\.\.staged\.values\(\)\]\);/,
+    'only items that still fail validation or repack should be staged');
+});
+
 test('AUTO-PACK-A1-R6.2 free-space floor pass does not stage an item that fits a remaining floor rectangle', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = { length: 72, width: 48, height: 48 };

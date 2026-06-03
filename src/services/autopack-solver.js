@@ -1019,7 +1019,33 @@ function compactFloorPlacements(output, packed, zones, loadFrontFirst) {
   void loadFrontFirst;
 }
 
+function writeOutputPlacements(output, placements) {
+  output.placements.clear();
+  output.rotations.clear();
+  output.orientedDims.clear();
+  for (const placement of placements) {
+    output.placements.set(placement.instanceId, placement.pos);
+    output.rotations.set(placement.instanceId, placement.orientation?.rotation || { x: 0, y: 0, z: 0 });
+    output.orientedDims.set(placement.instanceId, {
+      length: placement.dims.l,
+      width: placement.dims.w,
+      height: placement.dims.h,
+    });
+  }
+}
+
+function stageRejectedPlacements(output, rejected) {
+  const unpacked = new Set(output.unpacked);
+  for (const { placement, reason } of rejected) {
+    unpacked.add(placement.instanceId);
+    output.warnings.push(`Item ${placement.instanceId} was staged after validation: ${reason}.`);
+  }
+  output.unpacked = [...unpacked];
+}
+
 function validatePackedPlacements(output, packed, zones) {
+  const options = arguments[3] || {};
+  const stageRejected = options.stageRejected !== false;
   const accepted = [];
   const rejected = [];
 
@@ -1043,28 +1069,58 @@ function validatePackedPlacements(output, packed, zones) {
     }
   }
 
-  if (!rejected.length) return accepted;
+  if (!rejected.length) return { accepted, rejected };
 
-  output.placements.clear();
-  output.rotations.clear();
-  output.orientedDims.clear();
-  for (const placement of accepted) {
-    output.placements.set(placement.instanceId, placement.pos);
-    output.rotations.set(placement.instanceId, placement.orientation?.rotation || { x: 0, y: 0, z: 0 });
-    output.orientedDims.set(placement.instanceId, {
-      length: placement.dims.l,
-      width: placement.dims.w,
-      height: placement.dims.h,
-    });
+  if (stageRejected) {
+    writeOutputPlacements(output, accepted);
+    stageRejectedPlacements(output, rejected);
   }
 
-  const unpacked = new Set(output.unpacked);
-  for (const { placement, reason } of rejected) {
-    unpacked.add(placement.instanceId);
-    output.warnings.push(`Item ${placement.instanceId} was staged after validation: ${reason}.`);
+  return { accepted, rejected };
+}
+
+function rebuildFloorStateFromPacked(zones, packed) {
+  const floorState = createFloorState(zones);
+  for (const placement of packed) {
+    if (!isPlacementOnZoneFloor(placement.aabb, zones)) continue;
+    occupyFloorSpace(floorState, placement);
   }
-  output.unpacked = [...unpacked];
-  return accepted;
+  return floorState;
+}
+
+function repackRejectedPlacements(output, accepted, rejected, zones, loadFrontFirst) {
+  if (!rejected.length) return { packed: accepted, rejected: [] };
+  const repacked = [...accepted];
+  const floorState = rebuildFloorStateFromPacked(zones, repacked);
+  const stillRejected = [];
+
+  writeOutputPlacements(output, repacked);
+
+  const retryQueue = [...rejected].sort((a, b) => {
+    const yDelta = a.placement.aabb.min.y - b.placement.aabb.min.y;
+    if (yDelta) return yDelta;
+    return a.placement.item.index - b.placement.item.index;
+  });
+
+  for (const rejectedPlacement of retryQueue) {
+    const item = rejectedPlacement.placement.item;
+    const floorPlacement = findFloorPlacement(item, floorState, repacked, loadFrontFirst);
+    if (floorPlacement) {
+      recordPlacement(output, repacked, item, floorPlacement, 'floor');
+      occupyFloorSpace(floorState, floorPlacement);
+      continue;
+    }
+
+    const stackPlacement = findStackPlacement(item, zones, repacked, loadFrontFirst);
+    if (stackPlacement) {
+      recordPlacement(output, repacked, item, stackPlacement, 'stack');
+      continue;
+    }
+
+    stillRejected.push(rejectedPlacement);
+  }
+
+  return { packed: repacked, rejected: stillRejected };
 }
 
 function refreshPhaseStats(output, packed) {
@@ -1168,10 +1224,27 @@ export function solveAutoPack(input = {}) {
     stackCount++;
   }
 
-  const validatedPacked = validatePackedPlacements(output, packed, floorZones);
-  if (validatedPacked.length !== packed.length) {
+  const initialValidation = validatePackedPlacements(output, packed, floorZones, { stageRejected: false });
+  const repackedValidation = repackRejectedPlacements(
+    output,
+    initialValidation.accepted,
+    initialValidation.rejected,
+    floorZones,
+    loadFrontFirst
+  );
+  const finalValidation = validatePackedPlacements(output, repackedValidation.packed, floorZones, { stageRejected: false });
+  if (finalValidation.rejected.length || repackedValidation.rejected.length) {
+    const staged = new Map();
+    for (const rejected of [...repackedValidation.rejected, ...finalValidation.rejected]) {
+      staged.set(rejected.placement.instanceId, rejected);
+    }
+    stageRejectedPlacements(output, [...staged.values()]);
+    writeOutputPlacements(output, finalValidation.accepted);
+  }
+
+  if (finalValidation.accepted.length !== packed.length) {
     packed.length = 0;
-    packed.push(...validatedPacked);
+    packed.push(...finalValidation.accepted);
   }
 
   output.phaseStats.laneCount = laneCount;

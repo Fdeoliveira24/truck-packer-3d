@@ -1807,6 +1807,21 @@ test('AUTO-PACK-A1-R6.3 floor compaction rebuilds free space before filler and s
     'accepted compaction moves must be reflected in the solver output maps');
 });
 
+test('AUTO-PACK-A1-R6.3 large mixed packs use bounded scaled anchor caps', async () => {
+  const src = await fs.readFile(autoPackSolverPath, 'utf8');
+  assert.match(src, /const BASE_ANCHOR_CAP = 18;/,
+    'small packs must keep the previous 18-anchor baseline');
+  assert.match(src, /const MAX_ANCHOR_CAP = 24;/,
+    'large-pack anchor expansion must stay bounded for solver runtime');
+  assert.match(src, /function anchorCapForPackedCount\(packed = \[\]\)/,
+    'anchor cap must scale from packed count instead of using a fixed magic value');
+  assert.match(src, /Math\.min\(MAX_ANCHOR_CAP, BASE_ANCHOR_CAP \+ Math\.floor\(count \/ 30\) \* 2\)/,
+    'anchor scaling must ramp gradually for large mixed packs');
+  const scaledCapUses = src.match(/capAnchorValues\(anchors, anchorCapForPackedCount\(packed\), scoreAnchor, comparator\)/g) || [];
+  assert.equal(scaledCapUses.length, 2,
+    'floor and stack anchor builders must both use the scaled bounded cap');
+});
+
 test('AUTO-PACK-A1-R6.2 free-space floor pass does not stage an item that fits a remaining floor rectangle', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = { length: 72, width: 48, height: 48 };

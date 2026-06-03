@@ -6,6 +6,8 @@ const FILLER_IN3 = 6000;
 const MIN_SUPPORT_FRACTION = 0.5;
 const CONTACT_EPS = 0.05;
 const FREE_RECT_EPS = 0.05;
+const BASE_ANCHOR_CAP = 18;
+const MAX_ANCHOR_CAP = 24;
 
 function finiteNumber(value, fallback = 0) {
   const n = Number(value);
@@ -661,6 +663,11 @@ function capAnchorValues(values, maxCount, scoreAnchor, comparator) {
     .sort(comparator);
 }
 
+function anchorCapForPackedCount(packed = []) {
+  const count = Array.isArray(packed) ? packed.length : 0;
+  return Math.min(MAX_ANCHOR_CAP, BASE_ANCHOR_CAP + Math.floor(count / 30) * 2);
+}
+
 function buildAxisAnchors(rect, orientation, packed, loadFrontFirst, axis) {
   const isX = axis === 'x';
   const min = isX ? rect.minX : rect.minZ;
@@ -692,7 +699,7 @@ function buildAxisAnchors(rect, orientation, packed, loadFrontFirst, axis) {
     return loadFrontFirst ? Math.abs((value + size) - max) : Math.abs(value - min);
   };
 
-  return capAnchorValues(anchors, 18, scoreAnchor, comparator);
+  return capAnchorValues(anchors, anchorCapForPackedCount(packed), scoreAnchor, comparator);
 }
 
 function buildFreeRectCandidates(orientation, floorState, loadFrontFirst, packed = []) {
@@ -904,7 +911,7 @@ function buildStackAxisAnchors(rect, orientation, packed, loadFrontFirst, axis) 
     }
     return loadFrontFirst ? Math.abs((value + size) - max) : Math.abs(value - min);
   };
-  return capAnchorValues(anchors, 18, scoreAnchor, comparator);
+  return capAnchorValues(anchors, anchorCapForPackedCount(packed), scoreAnchor, comparator);
 }
 
 function buildStackCandidates(orientation, packed, yLevel, loadFrontFirst) {

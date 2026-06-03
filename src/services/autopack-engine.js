@@ -21,6 +21,10 @@ export function createAutoPackEngine({
   UIComponents,
   Utils,
 }) {
+  const ANIMATION_BATCH_SIZE = 24;
+  const ANIMATION_BATCH_GAP_MS = 16;
+  const ANIMATION_DURATION_MS = 260;
+  const TWEEN_FALLBACK_GRACE_MS = 90;
   let isRunning = false;
   let workspaceGeneration = 0;
 
@@ -111,6 +115,10 @@ export function createAutoPackEngine({
 
     isRunning = true;
     cancelAllTweens();
+    const runStartedAt = nowMs();
+    let solverMs = 0;
+    let animationMs = 0;
+    const animationMetrics = { animated: 0, batches: 0, fallbackCount: 0 };
 
     const diag =
       (typeof runtimeWindow !== 'undefined' &&
@@ -148,6 +156,10 @@ export function createAutoPackEngine({
 
       const stagingMap = buildStagingMap(packItems, truck);
       stageInstant(stagingMap);
+      // Let the staged layout paint before the synchronous solver starts. This
+      // prevents large packs from looking frozen at their old positions.
+      await waitForAnimationFrames(2);
+      if (isWorkspaceRunStale()) return;
 
       try {
         if (diag && typeof diag.autopackStart === 'function') {
@@ -166,6 +178,7 @@ export function createAutoPackEngine({
         // ignore
       }
 
+      const solverStartedAt = nowMs();
       const solverResult = solveAutoPack({
         truck: { length: truckL, width: truckW, height: truckH },
         zones,
@@ -198,6 +211,7 @@ export function createAutoPackEngine({
           };
         }),
       });
+      solverMs = nowMs() - solverStartedAt;
       if (!solverResult || isWorkspaceRunStale()) return;
 
       const placements = solverResult.placements;
@@ -207,12 +221,15 @@ export function createAutoPackEngine({
       const packedCount = placements instanceof Map ? placements.size : 0;
 
       cancelAllTweens();
+      const animationStartedAt = nowMs();
       const animationCompleted = await animatePlacements(
         placements,
         rotations,
         orientedDimsMap,
-        isWorkspaceRunStale
+        isWorkspaceRunStale,
+        animationMetrics
       );
+      animationMs = nowMs() - animationStartedAt;
       if (!animationCompleted || isWorkspaceRunStale()) return;
 
       const nextCases = (packData.cases || []).map(inst => {
@@ -260,6 +277,12 @@ export function createAutoPackEngine({
             unpacked: unpacked.length,
             rejectedPlacements: 0,
             phaseStats: solverResult.phaseStats || null,
+            timings: {
+              solverMs: Math.round(solverMs),
+              animationMs: Math.round(animationMs),
+              totalMs: Math.round(nowMs() - runStartedAt),
+            },
+            animation: { ...animationMetrics },
             warnings: Array.isArray(solverResult.warnings) ? solverResult.warnings : [],
             packedCases: stats && typeof stats.packedCases === 'number' ? stats.packedCases : null,
             volumePercent: stats && typeof stats.volumePercent === 'number' ? stats.volumePercent : null,
@@ -288,6 +311,30 @@ export function createAutoPackEngine({
     } finally {
       isRunning = false;
     }
+  }
+
+  function nowMs() {
+    const perf = runtimeWindow.performance;
+    return perf && typeof perf.now === 'function' ? perf.now() : Date.now();
+  }
+
+  function waitForAnimationFrames(count = 1) {
+    const raf = runtimeWindow.requestAnimationFrame;
+    if (typeof raf !== 'function') {
+      return sleep(0);
+    }
+    return new Promise(resolve => {
+      let remaining = Math.max(1, Number(count) || 1);
+      const tick = () => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          resolve();
+          return;
+        }
+        raf(tick);
+      };
+      raf(tick);
+    });
   }
 
   function getStagingDims(item) {
@@ -326,72 +373,99 @@ export function createAutoPackEngine({
     return map;
   }
 
-  async function animatePlacements(placements, rotations, orientedDimsMap, shouldAbort = null) {
+  async function animatePlacements(placements, rotations, orientedDimsMap, shouldAbort = null, metrics = null) {
     cancelAllTweens();
-    for (const [id, pos] of placements.entries()) {
+    const entries = Array.from(placements.entries())
+      .sort((a, b) => {
+        const aPos = a[1] || {};
+        const bPos = b[1] || {};
+        return (Number(aPos.y) || 0) - (Number(bPos.y) || 0) ||
+          (Number(aPos.x) || 0) - (Number(bPos.x) || 0) ||
+          (Number(aPos.z) || 0) - (Number(bPos.z) || 0);
+      });
+
+    for (let i = 0; i < entries.length; i += ANIMATION_BATCH_SIZE) {
       if (typeof shouldAbort === 'function' && shouldAbort()) return false;
-      const obj = CaseScene.getObject(id);
-      if (!obj) { continue; }
-
-      const rot = rotations ? rotations.get(id) : null;
-      if (rot) {
-        obj.rotation.set(rot.x || 0, rot.y || 0, rot.z || 0);
+      const batch = entries.slice(i, i + ANIMATION_BATCH_SIZE)
+        .filter(([id]) => prepareObjectForPlacement(id, rotations, orientedDimsMap));
+      if (!batch.length) { continue; }
+      if (metrics) {
+        metrics.batches += 1;
+        metrics.animated += batch.length;
       }
-
-      if (orientedDimsMap) {
-        const od = orientedDimsMap.get(id);
-        if (od) {
-          obj.userData.halfWorld = {
-            x: SceneManager.toWorld(od.length) / 2,
-            y: SceneManager.toWorld(od.height) / 2,
-            z: SceneManager.toWorld(od.width) / 2,
-          };
-        }
-      }
-
+      batch.forEach(([id, pos]) => {
+        tweenInstanceToPosition(id, pos, ANIMATION_DURATION_MS, metrics);
+      });
       // eslint-disable-next-line no-await-in-loop
-      await tweenInstanceToPosition(id, pos, 200);
-      if (typeof shouldAbort === 'function' && shouldAbort()) return false;
-      // eslint-disable-next-line no-await-in-loop
-      await sleep(25);
+      await sleep(ANIMATION_DURATION_MS + ANIMATION_BATCH_GAP_MS);
+      batch.forEach(([id, pos]) => {
+        snapInstanceToPosition(id, pos);
+      });
       if (typeof shouldAbort === 'function' && shouldAbort()) return false;
     }
     return true;
   }
 
-  function tweenInstanceToPosition(instanceId, positionInches, duration) {
+  function prepareObjectForPlacement(id, rotations, orientedDimsMap) {
+    const obj = CaseScene.getObject(id);
+    if (!obj) { return false; }
+
+    const rot = rotations ? rotations.get(id) : null;
+    if (rot) {
+      obj.rotation.set(rot.x || 0, rot.y || 0, rot.z || 0);
+    }
+
+    if (orientedDimsMap) {
+      const od = orientedDimsMap.get(id);
+      if (od) {
+        obj.userData.halfWorld = {
+          x: SceneManager.toWorld(od.length) / 2,
+          y: SceneManager.toWorld(od.height) / 2,
+          z: SceneManager.toWorld(od.width) / 2,
+        };
+      }
+    }
+    return true;
+  }
+
+  function snapInstanceToPosition(instanceId, positionInches) {
     const obj = CaseScene.getObject(instanceId);
-    if (!obj) { return Promise.resolve(); }
+    if (!obj) { return; }
     const target = SceneManager.vecInchesToWorld(positionInches);
-    return new Promise(resolve => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        obj.position.set(target.x, target.y, target.z);
-        resolve();
-      };
-      const Tween = runtimeWindow.TWEEN || null;
-      if (!Tween) {
-        finish();
-        return;
-      }
-      const fallbackDelay = Math.max(50, (Number(duration) || 0) + 150);
-      const fallback = runtimeWindow.setTimeout(finish, fallbackDelay);
-      try {
-        new Tween.Tween(obj.position)
-          .to({ x: target.x, y: target.y, z: target.z }, duration)
-          .easing(Tween.Easing.Cubic.InOut)
-          .onComplete(() => {
-            runtimeWindow.clearTimeout(fallback);
-            finish();
-          })
-          .start();
-      } catch (_) {
-        runtimeWindow.clearTimeout(fallback);
-        finish();
-      }
-    });
+    obj.position.set(target.x, target.y, target.z);
+  }
+
+  function tweenInstanceToPosition(instanceId, positionInches, duration, metrics = null) {
+    const obj = CaseScene.getObject(instanceId);
+    if (!obj) { return; }
+    const target = SceneManager.vecInchesToWorld(positionInches);
+    let settled = false;
+    let fallback = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (fallback) runtimeWindow.clearTimeout(fallback);
+      obj.position.set(target.x, target.y, target.z);
+    };
+    const Tween = runtimeWindow.TWEEN || null;
+    if (!Tween) {
+      finish();
+      return;
+    }
+    const fallbackDelay = Math.max(250, (Number(duration) || 0) + TWEEN_FALLBACK_GRACE_MS);
+    fallback = runtimeWindow.setTimeout(() => {
+      if (metrics) { metrics.fallbackCount += 1; }
+      finish();
+    }, fallbackDelay);
+    try {
+      new Tween.Tween(obj.position)
+        .to({ x: target.x, y: target.y, z: target.z }, duration)
+        .easing(Tween.Easing.Cubic.InOut)
+        .onComplete(finish)
+        .start();
+    } catch (_) {
+      finish();
+    }
   }
 
   function sleep(ms) {

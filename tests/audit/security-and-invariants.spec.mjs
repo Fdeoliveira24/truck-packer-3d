@@ -2068,18 +2068,77 @@ test('AUTO-PACK-A0 AutoPack respects locked orientation and keeps unlocked orien
 
 test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when tweens stop ticking', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
-  const tweenStart = src.indexOf('function tweenInstanceToPosition(instanceId, positionInches, duration)');
+  const tweenStart = src.indexOf('function tweenInstanceToPosition(instanceId, positionInches, duration');
   const tweenEnd = src.indexOf('\n  function sleep(ms)', tweenStart);
   const block = tweenStart >= 0 && tweenEnd > tweenStart ? src.slice(tweenStart, tweenEnd) : '';
 
   assert.match(block, /const finish = \(\) =>/,
     'AutoPack tween bridge must use an idempotent finish helper');
-  assert.match(block, /const fallbackDelay = Math\.max\(50, \(Number\(duration\) \|\| 0\) \+ 150\)/,
-    'AutoPack tween bridge must define a bounded fallback delay');
-  assert.match(block, /const fallback = runtimeWindow\.setTimeout\(finish, fallbackDelay\)/,
+  assert.match(block, /const fallbackDelay = Math\.max\(250, \(Number\(duration\) \|\| 0\) \+ TWEEN_FALLBACK_GRACE_MS\)/,
+    'AutoPack tween bridge must define a bounded but not visually aggressive fallback delay');
+  assert.match(block, /fallback = runtimeWindow\.setTimeout\(\(\) => \{[\s\S]*fallbackCount \+= 1;[\s\S]*finish\(\);[\s\S]*\}, fallbackDelay\)/,
     'AutoPack tween bridge must resolve even if the tween loop does not tick');
-  assert.match(block, /runtimeWindow\.clearTimeout\(fallback\);[\s\S]*finish\(\);/,
-    'AutoPack tween completion must clear the fallback and resolve through the same finish path');
+  assert.match(block, /if \(fallback\) runtimeWindow\.clearTimeout\(fallback\);/,
+    'AutoPack tween completion must clear the fallback through the shared finish path');
+  assert.match(block, /\.onComplete\(finish\)/,
+    'AutoPack tween completion must resolve through the same finish path as the fallback');
+});
+
+test('AUTO-PACK-A1-ANIM-1 AutoPack yields after staging before synchronous solving', async () => {
+  const src = await fs.readFile(autoPackEnginePath, 'utf8');
+  const packStart = src.indexOf('async function pack()');
+  const solverStart = src.indexOf('const solverStartedAt = nowMs();', packStart);
+  const block = packStart >= 0 && solverStart > packStart ? src.slice(packStart, solverStart) : '';
+
+  assert.match(block, /stageInstant\(stagingMap\);\s*\/\/ Let the staged layout paint[\s\S]*await waitForAnimationFrames\(2\);\s*if \(isWorkspaceRunStale\(\)\) return;/,
+    'AutoPack must allow staged items to paint before the synchronous solver can block the UI thread');
+  assert.match(src, /function waitForAnimationFrames\(count = 1\)/,
+    'AutoPack runtime must include an animation-frame yield helper');
+});
+
+test('AUTO-PACK-A1-ANIM-1 AutoPack animates placements in batches with fallback metrics', async () => {
+  const src = await fs.readFile(autoPackEnginePath, 'utf8');
+  const animateStart = src.indexOf('async function animatePlacements');
+  const animateEnd = src.indexOf('\n  function prepareObjectForPlacement', animateStart);
+  const block = animateStart >= 0 && animateEnd > animateStart ? src.slice(animateStart, animateEnd) : '';
+  const tweenStart = src.indexOf('function tweenInstanceToPosition(instanceId, positionInches, duration');
+  const tweenEnd = src.indexOf('\n  function sleep(ms)', tweenStart);
+  const tweenBlock = tweenStart >= 0 && tweenEnd > tweenStart ? src.slice(tweenStart, tweenEnd) : '';
+
+  assert.match(src, /const ANIMATION_BATCH_SIZE = 24;/,
+    'AutoPack animation must use bounded batches instead of one long serial chain');
+  assert.match(src, /const TWEEN_FALLBACK_GRACE_MS = 90;/,
+    'AutoPack animation fallback must be short enough that large packs cannot look frozen for many seconds');
+  assert.match(block, /Array\.from\(placements\.entries\(\)\)[\s\S]*\.sort\(/,
+    'AutoPack animation must order lower placements before upper layers');
+  assert.match(block, /entries\.slice\(i, i \+ ANIMATION_BATCH_SIZE\)/,
+    'AutoPack animation must process placements in batches');
+  assert.match(block, /batch\.forEach\(\(\[id, pos\]\) => \{[\s\S]*tweenInstanceToPosition\(id, pos, ANIMATION_DURATION_MS, metrics\);[\s\S]*\}\);/,
+    'AutoPack animation must start each batch without awaiting per-object tween callbacks');
+  assert.match(block, /await sleep\(ANIMATION_DURATION_MS \+ ANIMATION_BATCH_GAP_MS\);[\s\S]*snapInstanceToPosition\(id, pos\);/,
+    'AutoPack animation must use a deterministic batch window and then snap the batch to final positions');
+  assert.match(block, /metrics\.batches \+= 1;[\s\S]*metrics\.animated \+= batch\.length;/,
+    'AutoPack animation must record batch and animated item counts');
+  assert.match(tweenBlock, /metrics\) \{ metrics\.fallbackCount \+= 1; \}/,
+    'AutoPack tween fallback must report fallback hits for diagnostics');
+});
+
+test('AUTO-PACK-A1-ANIM-1 AutoPack diagnostics report solver and animation timing', async () => {
+  const src = await fs.readFile(autoPackEnginePath, 'utf8');
+  const packStart = src.indexOf('async function pack()');
+  const endStart = src.indexOf("if (diag && typeof diag.autopackEnd === 'function')", packStart);
+  const endBlock = endStart >= 0 ? src.slice(endStart, src.indexOf('\n      runtimeWindow.setTimeout', endStart)) : '';
+
+  assert.match(src, /const runStartedAt = nowMs\(\);[\s\S]*let solverMs = 0;[\s\S]*let animationMs = 0;[\s\S]*const animationMetrics = \{ animated: 0, batches: 0, fallbackCount: 0 \};/,
+    'AutoPack must initialize timing and animation metrics for each run');
+  assert.match(src, /const solverStartedAt = nowMs\(\);[\s\S]*const solverResult = solveAutoPack\(\{[\s\S]*solverMs = nowMs\(\) - solverStartedAt;/,
+    'AutoPack must measure synchronous solver time');
+  assert.match(src, /const animationStartedAt = nowMs\(\);[\s\S]*animatePlacements\([\s\S]*animationMetrics[\s\S]*animationMs = nowMs\(\) - animationStartedAt;/,
+    'AutoPack must measure animation time');
+  assert.match(endBlock, /timings: \{[\s\S]*solverMs: Math\.round\(solverMs\),[\s\S]*animationMs: Math\.round\(animationMs\),[\s\S]*totalMs: Math\.round\(nowMs\(\) - runStartedAt\),[\s\S]*\}/,
+    'AutoPack diagnostics must include solver, animation, and total timing');
+  assert.match(endBlock, /animation: \{ \.\.\.animationMetrics \}/,
+    'AutoPack diagnostics must include animation batch and fallback metrics');
 });
 
 test('AUTO-PACK-A0C staged unpacked items keep oriented spacing and current rotation', async () => {

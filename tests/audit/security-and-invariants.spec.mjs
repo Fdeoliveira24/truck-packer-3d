@@ -1877,6 +1877,73 @@ test('AUTO-PACK-A1-R6.2 stack free-space fills the lower support layer before hi
     'only the remaining item should advance to the next stack layer');
 });
 
+test('AUTO-PACK-A1-R6.3 floor allocator keeps placeable mixed cases out of staging', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 120, width: 60, height: 60 };
+  const zones = [{ min: { x: 0, y: 0, z: -30 }, max: { x: 120, y: 60, z: 30 } }];
+  const dims = [
+    [60, 20, 20],
+    [60, 20, 20],
+    [60, 20, 20],
+    [48, 30, 20],
+    [12, 20, 12],
+    [60, 30, 20],
+    [20, 20, 20],
+    [60, 20, 20],
+    [48, 30, 20],
+    [48, 30, 20],
+  ];
+  const items = dims.map(([l, w, h], index) => ({
+    instanceId: `gap-regression-${index + 1}`,
+    orientationLocked: true,
+    lockedRotation: {},
+    dims: { l, w, h },
+    weight: 20,
+  }));
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, items.length,
+    'free-space allocator must not stage a compatible item when packed-edge floor/stack space remains');
+  assert.deepEqual(output.unpacked, []);
+
+  const packed = items.map(item => {
+    const pos = output.placements.get(item.instanceId);
+    const od = output.orientedDims.get(item.instanceId);
+    return Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
+  });
+  for (let i = 0; i < packed.length; i++) {
+    assert.equal(Solver.isAabbContainedInAnyZone(packed[i], zones), true);
+    for (let j = i + 1; j < packed.length; j++) {
+      assert.equal(Solver.aabbsOverlap(packed[i], packed[j]), false,
+        'packed-edge gap refill must not create collisions');
+    }
+  }
+});
+
+test('AUTO-PACK-A1-R6.3 stack surface builder merges adjacent supports into one usable layer', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const supportDims = { l: 24, w: 24, h: 24 };
+  const supports = [
+    { instanceId: 'support-a', pos: { x: 12, y: 12, z: -12 } },
+    { instanceId: 'support-b', pos: { x: 36, y: 12, z: -12 } },
+    { instanceId: 'support-c', pos: { x: 12, y: 12, z: 12 } },
+    { instanceId: 'support-d', pos: { x: 36, y: 12, z: 12 } },
+  ].map(support => ({
+    instanceId: support.instanceId,
+    item: { item: { weight: 100 } },
+    aabb: Solver.getAabb(support.pos, supportDims),
+  }));
+
+  const rects = Solver.buildStackLayerFreeRects(supports, 24);
+  assert.equal(rects.some(rect =>
+    rect.minX === 0 &&
+    rect.maxX === 48 &&
+    rect.minZ === -24 &&
+    rect.maxZ === 24
+  ), true,
+  'stack phase must see adjacent same-height support cases as one usable supported surface');
+});
+
 test('AUTO-PACK-A1-R6 live AutoPack routes through the logistics solver from the runtime engine only', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');

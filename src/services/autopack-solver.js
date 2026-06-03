@@ -568,23 +568,19 @@ function rectIntersectsAabb(rect, aabb) {
 
 function subtractAabbFromFreeRect(rect, aabb) {
   if (!rectIntersectsAabb(rect, aabb)) return [rect];
-  const overlapMinX = Math.max(rect.minX, aabb.min.x);
-  const overlapMaxX = Math.min(rect.maxX, aabb.max.x);
-  const overlapMinZ = Math.max(rect.minZ, aabb.min.z);
-  const overlapMaxZ = Math.min(rect.maxZ, aabb.max.z);
   const out = [];
 
-  if (overlapMinX > rect.minX + FREE_RECT_EPS) {
-    out.push({ ...rect, maxX: overlapMinX });
+  if (aabb.min.x > rect.minX + FREE_RECT_EPS) {
+    out.push({ ...rect, maxX: aabb.min.x });
   }
-  if (overlapMaxX < rect.maxX - FREE_RECT_EPS) {
-    out.push({ ...rect, minX: overlapMaxX });
+  if (aabb.max.x < rect.maxX - FREE_RECT_EPS) {
+    out.push({ ...rect, minX: aabb.max.x });
   }
-  if (overlapMinZ > rect.minZ + FREE_RECT_EPS) {
-    out.push({ ...rect, minX: overlapMinX, maxX: overlapMaxX, maxZ: overlapMinZ });
+  if (aabb.min.z > rect.minZ + FREE_RECT_EPS) {
+    out.push({ ...rect, maxZ: aabb.min.z });
   }
-  if (overlapMaxZ < rect.maxZ - FREE_RECT_EPS) {
-    out.push({ ...rect, minX: overlapMinX, maxX: overlapMaxX, minZ: overlapMaxZ });
+  if (aabb.max.z < rect.maxZ - FREE_RECT_EPS) {
+    out.push({ ...rect, minZ: aabb.max.z });
   }
 
   return out;
@@ -611,19 +607,80 @@ function scoreFreeRectCandidate(candidate, loadFrontFirst, packed = []) {
   const wallContacts = wallContactCount(candidate.aabb, candidate.zone, loadFrontFirst);
   const faceContacts = countFaceContacts(candidate.aabb, packed);
   const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
+  const contactScore = wallContacts + Math.min(8, faceContacts);
   return [
     candidate.aabb.min.y,
-    wasteArea,
-    Math.min(leftoverX, leftoverZ),
-    leftoverZ,
-    -(wallContacts + Math.min(4, faceContacts)),
     xPrimary,
+    -contactScore,
+    Math.min(leftoverX, leftoverZ),
+    wasteArea,
+    leftoverZ,
     candidate.aabb.min.z,
     leftoverX,
   ];
 }
 
-function buildFreeRectCandidates(orientation, floorState, loadFrontFirst) {
+function clampAnchor(value, min, max, size) {
+  const lower = min;
+  const upper = max - size;
+  if (value < lower - FREE_RECT_EPS || value > upper + FREE_RECT_EPS) return null;
+  if (Math.abs(value - lower) <= FREE_RECT_EPS) return lower;
+  if (Math.abs(value - upper) <= FREE_RECT_EPS) return upper;
+  return value;
+}
+
+function isPlacementOnRectFloor(placement, rect) {
+  if (!placement || !placement.aabb || !rect?.zone) return false;
+  if (Math.abs(placement.aabb.min.y - rect.zone.min.y) > CONTACT_EPS) return false;
+  return isAabbContainedInZone(placement.aabb, rect.zone) || rectIntersectsAabb(rect, placement.aabb);
+}
+
+function capAnchorValues(values, maxCount, scoreAnchor, comparator) {
+  const unique = uniqueSorted(values, comparator);
+  if (unique.length <= maxCount) return unique;
+  return unique
+    .map(value => ({ value, score: scoreAnchor(value) }))
+    .sort((a, b) => a.score - b.score || comparator(a.value, b.value))
+    .slice(0, maxCount)
+    .map(entry => entry.value)
+    .sort(comparator);
+}
+
+function buildAxisAnchors(rect, orientation, packed, loadFrontFirst, axis) {
+  const isX = axis === 'x';
+  const min = isX ? rect.minX : rect.minZ;
+  const max = isX ? rect.maxX : rect.maxZ;
+  const size = isX ? orientation.l : orientation.w;
+  const primary = isX && loadFrontFirst ? max - size : min;
+  const secondary = isX && loadFrontFirst ? min : max - size;
+  const raw = [primary, secondary, min, max - size];
+
+  for (const placement of packed) {
+    if (!isPlacementOnRectFloor(placement, rect)) continue;
+    const pMin = isX ? placement.aabb.min.x : placement.aabb.min.z;
+    const pMax = isX ? placement.aabb.max.x : placement.aabb.max.z;
+    raw.push(pMin, pMax, pMin - size, pMax - size);
+  }
+
+  const anchors = [];
+  for (const value of raw) {
+    const clamped = clampAnchor(value, min, max, size);
+    if (clamped === null) continue;
+    anchors.push(clamped);
+  }
+
+  const comparator = isX && loadFrontFirst ? (a, b) => b - a : (a, b) => a - b;
+  const scoreAnchor = value => {
+    if (!isX) {
+      return Math.min(Math.abs(value - min), Math.abs((value + size) - max));
+    }
+    return loadFrontFirst ? Math.abs((value + size) - max) : Math.abs(value - min);
+  };
+
+  return capAnchorValues(anchors, 18, scoreAnchor, comparator);
+}
+
+function buildFreeRectCandidates(orientation, floorState, loadFrontFirst, packed = []) {
   const placements = [];
   for (const rect of floorState.freeRects) {
     const zone = rect.zone;
@@ -631,15 +688,8 @@ function buildFreeRectCandidates(orientation, floorState, loadFrontFirst) {
     if (orientation.w > freeRectWidth(rect) + FREE_RECT_EPS) continue;
     if (orientation.h > zone.max.y - zone.min.y + FREE_RECT_EPS) continue;
 
-    const primaryX = loadFrontFirst ? rect.maxX - orientation.l : rect.minX;
-    const xMins = [primaryX];
-    const zMins = uniqueSorted(
-      [
-        rect.minZ,
-        rect.maxZ - orientation.w,
-      ],
-      (a, b) => a - b
-    );
+    const xMins = buildAxisAnchors(rect, orientation, packed, loadFrontFirst, 'x');
+    const zMins = buildAxisAnchors(rect, orientation, packed, loadFrontFirst, 'z');
 
     for (const xMin of xMins) {
       for (const zMin of zMins) {
@@ -662,7 +712,7 @@ function findFloorPlacement(item, floorState, packed, loadFrontFirst) {
   let bestScore = null;
 
   for (const orientation of item.candidates) {
-    for (const candidate of buildFreeRectCandidates(orientation, floorState, loadFrontFirst)) {
+    for (const candidate of buildFreeRectCandidates(orientation, floorState, loadFrontFirst, packed)) {
       if (!isAabbContainedInZone(candidate.aabb, candidate.zone)) continue;
       if (collidesPacked(candidate.aabb, packed)) continue;
       const score = scoreFreeRectCandidate(candidate, loadFrontFirst, packed);
@@ -706,7 +756,7 @@ function findLanePlacement(item, floorState, packed, loadFrontFirst) {
   let bestScore = null;
 
   for (const orientation of getLaneOrientations(item)) {
-    for (const candidate of buildFreeRectCandidates(orientation, floorState, loadFrontFirst)) {
+    for (const candidate of buildFreeRectCandidates(orientation, floorState, loadFrontFirst, packed)) {
       if (!isAabbContainedInZone(candidate.aabb, candidate.zone)) continue;
       if (collidesPacked(candidate.aabb, packed)) continue;
       const score = scoreLaneCandidate(candidate, orientation, loadFrontFirst);
@@ -720,55 +770,142 @@ function findLanePlacement(item, floorState, packed, loadFrontFirst) {
   return best;
 }
 
-function stackAnchorMins(supportMin, supportMax, itemSize) {
-  return uniqueSorted(
-    [
-      supportMin,
-      supportMax - itemSize,
-      supportMin + ((supportMax - supportMin) - itemSize) / 2,
-    ],
-    (a, b) => a - b
+function stackRectContains(outer, inner) {
+  return Math.abs(outer.yLevel - inner.yLevel) <= FREE_RECT_EPS &&
+    outer.minX <= inner.minX + FREE_RECT_EPS &&
+    outer.maxX >= inner.maxX - FREE_RECT_EPS &&
+    outer.minZ <= inner.minZ + FREE_RECT_EPS &&
+    outer.maxZ >= inner.maxZ - FREE_RECT_EPS;
+}
+
+function mergeAdjacentStackRects(rects) {
+  const merged = normalizeFreeRects(rects);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    let mergePair = null;
+    for (let i = 0; i < merged.length; i++) {
+      for (let j = i + 1; j < merged.length; j++) {
+        const a = merged[i];
+        const b = merged[j];
+        if (Math.abs(a.yLevel - b.yLevel) > FREE_RECT_EPS) continue;
+        const sameX = Math.abs(a.minX - b.minX) <= FREE_RECT_EPS &&
+          Math.abs(a.maxX - b.maxX) <= FREE_RECT_EPS;
+        const sameZ = Math.abs(a.minZ - b.minZ) <= FREE_RECT_EPS &&
+          Math.abs(a.maxZ - b.maxZ) <= FREE_RECT_EPS;
+        const zAdjacent = sameX &&
+          (Math.abs(a.maxZ - b.minZ) <= FREE_RECT_EPS || Math.abs(b.maxZ - a.minZ) <= FREE_RECT_EPS);
+        const xAdjacent = sameZ &&
+          (Math.abs(a.maxX - b.minX) <= FREE_RECT_EPS || Math.abs(b.maxX - a.minX) <= FREE_RECT_EPS);
+
+        if (!zAdjacent && !xAdjacent) continue;
+        mergePair = {
+          i,
+          j,
+          rect: {
+            ...a,
+            minX: Math.min(a.minX, b.minX),
+            maxX: Math.max(a.maxX, b.maxX),
+            minZ: Math.min(a.minZ, b.minZ),
+            maxZ: Math.max(a.maxZ, b.maxZ),
+          },
+        };
+        break;
+      }
+      if (mergePair) break;
+    }
+    if (mergePair) {
+      merged.splice(mergePair.j, 1);
+      merged.splice(mergePair.i, 1, mergePair.rect);
+      changed = true;
+    }
+  }
+  return merged.filter((rect, index) =>
+    !merged.some((other, otherIndex) =>
+      otherIndex !== index &&
+      stackRectContains(other, rect) &&
+      freeRectArea(other) >= freeRectArea(rect) - FREE_RECT_EPS
+    )
   );
 }
 
-function buildStackSurfaceRects(support, packed) {
-  let rects = [{
-    id: `support-${support.instanceId}`,
-    zone: support,
-    minX: support.aabb.min.x,
-    maxX: support.aabb.max.x,
-    minZ: support.aabb.min.z,
-    maxZ: support.aabb.max.z,
-  }];
-  for (const placement of packed) {
-    if (placement === support) continue;
-    if (Math.abs(placement.aabb.min.y - support.aabb.max.y) > CONTACT_EPS) continue;
-    if (computeXzOverlapArea(placement.aabb, support.aabb) <= CONTACT_EPS) continue;
-    rects = rects.flatMap(rect => subtractAabbFromFreeRect(rect, placement.aabb));
+export function buildStackLayerFreeRects(packed, yLevel) {
+  let rects = [];
+  for (const support of packed || []) {
+    if (!support?.aabb || Math.abs(support.aabb.max.y - yLevel) > CONTACT_EPS) continue;
+    if (!canSupportStack(support) || !hasStackCapacity(support, packed)) continue;
+    rects.push({
+      id: `stack-layer-${support.instanceId}`,
+      zone: null,
+      yLevel,
+      minX: support.aabb.min.x,
+      maxX: support.aabb.max.x,
+      minZ: support.aabb.min.z,
+      maxZ: support.aabb.max.z,
+    });
   }
-  return normalizeFreeRects(rects);
+
+  rects = mergeAdjacentStackRects(rects);
+  for (const placement of packed || []) {
+    if (!placement?.aabb || Math.abs(placement.aabb.min.y - yLevel) > CONTACT_EPS) continue;
+    rects = rects.flatMap(rect => subtractAabbFromFreeRect(rect, placement.aabb));
+    rects = mergeAdjacentStackRects(rects);
+  }
+  return rects.filter(freeRectHasArea);
 }
 
-function buildStackCandidates(orientation, support, packed) {
+function buildStackAxisAnchors(rect, orientation, packed, loadFrontFirst, axis) {
+  const isX = axis === 'x';
+  const min = isX ? rect.minX : rect.minZ;
+  const max = isX ? rect.maxX : rect.maxZ;
+  const size = isX ? orientation.l : orientation.w;
+  const raw = [
+    isX && loadFrontFirst ? max - size : min,
+    isX && loadFrontFirst ? min : max - size,
+    min,
+    max - size,
+    min + ((max - min) - size) / 2,
+  ];
+
+  for (const placement of packed || []) {
+    if (!placement?.aabb) continue;
+    if (Math.abs(placement.aabb.min.y - rect.yLevel) > CONTACT_EPS &&
+        Math.abs(placement.aabb.max.y - rect.yLevel) > CONTACT_EPS) continue;
+    const pMin = isX ? placement.aabb.min.x : placement.aabb.min.z;
+    const pMax = isX ? placement.aabb.max.x : placement.aabb.max.z;
+    raw.push(pMin, pMax, pMin - size, pMax - size);
+  }
+
+  const anchors = [];
+  for (const value of raw) {
+    const clamped = clampAnchor(value, min, max, size);
+    if (clamped !== null) anchors.push(clamped);
+  }
+
+  const comparator = isX && loadFrontFirst ? (a, b) => b - a : (a, b) => a - b;
+  const scoreAnchor = value => {
+    if (!isX) {
+      return Math.min(Math.abs(value - min), Math.abs((value + size) - max));
+    }
+    return loadFrontFirst ? Math.abs((value + size) - max) : Math.abs(value - min);
+  };
+  return capAnchorValues(anchors, 18, scoreAnchor, comparator);
+}
+
+function buildStackCandidates(orientation, packed, yLevel, loadFrontFirst) {
   const placements = [];
 
-  for (const rect of buildStackSurfaceRects(support, packed)) {
+  for (const rect of buildStackLayerFreeRects(packed, yLevel)) {
     if (orientation.l > freeRectLength(rect) + FREE_RECT_EPS) continue;
     if (orientation.w > freeRectWidth(rect) + FREE_RECT_EPS) continue;
-    const xMins = stackAnchorMins(rect.minX, rect.maxX, orientation.l);
-    const zMins = uniqueSorted(
-      [
-        rect.minZ,
-        rect.maxZ - orientation.w,
-      ],
-      (a, b) => a - b
-    );
+    const xMins = buildStackAxisAnchors(rect, orientation, packed, loadFrontFirst, 'x');
+    const zMins = buildStackAxisAnchors(rect, orientation, packed, loadFrontFirst, 'z');
 
     for (const xMin of xMins) {
       for (const zMin of zMins) {
         const position = {
           x: xMin + orientation.l / 2,
-          y: support.aabb.max.y + orientation.h / 2,
+          y: yLevel + orientation.h / 2,
           z: zMin + orientation.w / 2,
         };
         const dims = { l: orientation.l, w: orientation.w, h: orientation.h };
@@ -798,12 +935,16 @@ function scoreStackCandidate(candidate, loadFrontFirst) {
 function findStackPlacement(item, zones, packed, loadFrontFirst) {
   let best = null;
   let bestScore = null;
+  const yLevels = uniqueSorted(
+    packed
+      .filter(placement => canSupportStack(placement) && hasStackCapacity(placement, packed))
+      .map(placement => placement.aabb.max.y),
+    (a, b) => a - b
+  );
 
   for (const orientation of item.candidates) {
-    for (const support of packed) {
-      if (!canSupportStack(support) || !hasStackCapacity(support, packed)) continue;
-
-      for (const candidate of buildStackCandidates(orientation, support, packed)) {
+    for (const yLevel of yLevels) {
+      for (const candidate of buildStackCandidates(orientation, packed, yLevel, loadFrontFirst)) {
         if (!isAabbContainedInAnyZone(candidate.aabb, zones)) continue;
         if (collidesPacked(candidate.aabb, packed)) continue;
         if (!supportsCandidate(candidate.aabb, packed, item)) continue;

@@ -1093,8 +1093,8 @@ export function solveAutoPack(input = {}) {
   for (const item of laneItems) {
     const placement = findLanePlacement(item, floorState, packed, loadFrontFirst);
     if (!placement) {
-      output.unpacked.push(item.id);
-      output.warnings.push(`Lane item ${item.id} could not fit in a safe lengthwise lane.`);
+      item.lanePlacementFailed = true;
+      deferred.push(item);
       continue;
     }
 
@@ -1141,7 +1141,11 @@ export function solveAutoPack(input = {}) {
     const placement = findStackPlacement(item, floorZones, packed, loadFrontFirst);
     if (!placement) {
       output.unpacked.push(item.id);
-      output.warnings.push(`Item ${item.id} could not fit on the floor or on a safe supported stack.`);
+      if (item.lanePlacementFailed) {
+        output.warnings.push(`Lane item ${item.id} could not fit in a safe lengthwise lane or any fallback floor/stack position.`);
+      } else {
+        output.warnings.push(`Item ${item.id} could not fit on the floor or on a safe supported stack.`);
+      }
       continue;
     }
 

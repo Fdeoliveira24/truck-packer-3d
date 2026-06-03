@@ -1627,6 +1627,33 @@ test('AUTO-PACK-A1-R5 lane phase unpacks long items that cannot fit a safe lengt
     'oversized lane failures should be reported as lane placement failures');
 });
 
+test('AUTO-PACK-A1-R6.3 failed lane items retry through safe stack path before staging', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 48, width: 24, height: 48 };
+  const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 48, y: 48, z: 12 } }];
+  const items = [
+    { instanceId: 'lane-base', laneItem: true, weight: 100, dims: { l: 48, w: 24, h: 24 } },
+    { instanceId: 'lane-top-retry', laneItem: true, weight: 20, dims: { l: 48, w: 24, h: 24 } },
+  ];
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 2,
+    'failed lane item must be retried through the normal safe placement pipeline before staging');
+  assert.deepEqual(output.unpacked, []);
+  assert.equal(output.phaseStats.laneCount, 1);
+  assert.equal(output.phaseStats.stackCount, 1,
+    'lane retry should be allowed to use a safe supported stack after floor lane space is full');
+
+  const topDims = output.orientedDims.get('lane-top-retry');
+  const topAabb = Solver.getAabb(output.placements.get('lane-top-retry'), {
+    l: topDims.length,
+    w: topDims.width,
+    h: topDims.height,
+  });
+  assert.equal(topAabb.min.y, 24,
+    'retried lane item should sit on the safe support instead of being staged');
+});
+
 test('AUTO-PACK-A1-R6.1 filler pass uses floor voids before stacking', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = { length: 60, width: 48, height: 48 };

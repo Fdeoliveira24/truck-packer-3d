@@ -1765,6 +1765,31 @@ test('AUTO-PACK-A1-R6.1 stack scoring fills lower layers before higher layers', 
     'stack phase must build supported lower layers before placing higher layers');
 });
 
+test('AUTO-PACK-A1-R6.3 stack order supports descending-weight multi-layer stacks', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 24, width: 24, height: 96 };
+  const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 24, y: 96, z: 12 } }];
+  const items = [100, 90, 80, 70].map((weight, index) => ({
+    instanceId: `weighted-layer-${index + 1}`,
+    weight,
+    dims: { l: 24, w: 24, h: 24 },
+  }));
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 4,
+    'lighter upper cases should keep stacking when each support is heavier than the case above');
+  assert.deepEqual(output.unpacked, []);
+  assert.equal(output.phaseStats.stackCount, 3);
+
+  const bottoms = items.map(item => {
+    const pos = output.placements.get(item.instanceId);
+    const od = output.orientedDims.get(item.instanceId);
+    return Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height }).min.y;
+  }).sort((a, b) => a - b);
+  assert.deepEqual(bottoms, [0, 24, 48, 72],
+    'descending-weight stack order should build every lower layer before staging valid upper layers');
+});
+
 test('AUTO-PACK-A1-R6.1 solver keeps final validation gate for unsafe packed placements', async () => {
   const src = await fs.readFile(autoPackSolverPath, 'utf8');
   assert.match(src, /function validatePackedPlacements\(output, packed, zones\)/,

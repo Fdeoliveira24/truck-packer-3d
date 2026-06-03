@@ -455,7 +455,7 @@ function sortItemsForFiller(items) {
 
 function sortItemsForStack(items) {
   return [...items].sort((a, b) => {
-    const weightDelta = a.weight - b.weight;
+    const weightDelta = b.weight - a.weight;
     if (weightDelta) return weightDelta;
     const footprintDelta = b.footprint - a.footprint;
     if (footprintDelta) return footprintDelta;

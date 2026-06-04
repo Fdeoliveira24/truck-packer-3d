@@ -2130,6 +2130,77 @@ test('AUTO-PACK-A1-R6.4 repeated batch compaction does not break shelf rows', as
   assert.equal(output.phaseStats.stackCount, 26);
 });
 
+test('AUTO-PACK-A1-R6.5 repeated flippable flat panels prefer low shelf orientation when the batch fits', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 636, width: 102, height: 98 };
+  const zones = [{ min: { x: 0, y: 0, z: -51 }, max: { x: 636, y: 98, z: 51 } }];
+  const items = Array.from({ length: 36 }, (_, index) => ({
+    instanceId: `wide-flat-panel-${index + 1}`,
+    caseId: 'wide-flat-panel',
+    dims: { l: 70, w: 24, h: 10 },
+    weight: 180,
+    canFlip: true,
+    stackable: true,
+  }));
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 36);
+  assert.deepEqual(output.unpacked, []);
+  assert.equal(output.phaseStats.stackCount, 0,
+    'a repeated flat-panel batch that fits on the floor should not stand panels upright or stack them');
+
+  for (const item of items) {
+    const orientedDims = output.orientedDims.get(item.instanceId);
+    assert.deepEqual(orientedDims, { length: 70, width: 24, height: 10 },
+      'repeated flippable flat panels should stay in the low shelf orientation when the full batch fits');
+    const aabb = Solver.getAabb(output.placements.get(item.instanceId), {
+      l: orientedDims.length,
+      w: orientedDims.width,
+      h: orientedDims.height,
+    });
+    assert.equal(Solver.isAabbContainedInAnyZone(aabb, zones, 0.001), true,
+      'flat-panel shelf placements must remain fully inside the trailer');
+  }
+});
+
+test('AUTO-PACK-A1-R6.5 repeated same-footprint heavy groups reserve floor before light groups', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 130, width: 100, height: 100 };
+  const zones = [{ min: { x: 0, y: 0, z: -50 }, max: { x: 130, y: 100, z: 50 } }];
+  const heavyItems = Array.from({ length: 8 }, (_, index) => ({
+    instanceId: `heavy-cube-${index + 1}`,
+    caseId: 'heavy-cube',
+    dims: { l: 24, w: 24, h: 24 },
+    weight: 300,
+    canFlip: false,
+  }));
+  const lightItems = Array.from({ length: 8 }, (_, index) => ({
+    instanceId: `light-cube-${index + 1}`,
+    caseId: 'light-cube',
+    dims: { l: 24, w: 24, h: 24 },
+    weight: 10,
+    canFlip: false,
+  }));
+
+  const output = Solver.solveAutoPack({ truck, zones, items: [...lightItems, ...heavyItems] });
+  assert.equal(output.placements.size, 16);
+  assert.deepEqual(output.unpacked, []);
+
+  const heavyMaxX = Math.max(...heavyItems.map(item => {
+    const pos = output.placements.get(item.instanceId);
+    const od = output.orientedDims.get(item.instanceId);
+    return Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height }).max.x;
+  }));
+  const lightMinX = Math.min(...lightItems.map(item => {
+    const pos = output.placements.get(item.instanceId);
+    const od = output.orientedDims.get(item.instanceId);
+    return Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height }).min.x;
+  }));
+
+  assert.ok(heavyMaxX <= lightMinX + 0.001,
+    'same-footprint repeated heavy groups should occupy the load-side floor before lighter groups');
+});
+
 test('AUTO-PACK-A1-R6 live AutoPack routes through the logistics solver from the runtime engine only', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');

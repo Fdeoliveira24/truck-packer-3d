@@ -826,13 +826,19 @@ function buildRepeatedBatches(items) {
     .sort((a, b) => {
       const footprintDelta = b[0].footprint - a[0].footprint;
       if (footprintDelta) return footprintDelta;
+      const weightDelta = repeatedGroupWeight(b) - repeatedGroupWeight(a);
+      if (weightDelta) return weightDelta;
       const countDelta = b.length - a.length;
       if (countDelta) return countDelta;
       return a[0].index - b[0].index;
     });
 }
 
-function scoreRepeatedOrientation(orientation, floorState, orderIndex) {
+function repeatedGroupWeight(group = []) {
+  return group.reduce((max, item) => Math.max(max, finiteNumber(item.weight, 0)), 0);
+}
+
+function scoreRepeatedOrientation(orientation, floorState, orderIndex, groupSize = 0) {
   let floorCapacity = 0;
   let bestRows = 0;
   let bestCols = 0;
@@ -850,7 +856,21 @@ function scoreRepeatedOrientation(orientation, floorState, orderIndex) {
     wastedLength += freeRectLength(rect) - cols * orientation.l;
   }
 
+  const fitsWholeGroup = groupSize > 0 && floorCapacity >= groupSize;
+  if (fitsWholeGroup) {
+    return [
+      0,
+      orientation.h,
+      wastedWidth,
+      wastedLength,
+      -bestRows,
+      -bestCols,
+      orderIndex,
+    ];
+  }
+
   return [
+    1,
     -floorCapacity,
     -bestRows,
     -bestCols,
@@ -866,8 +886,8 @@ function chooseRepeatedBatchOrientation(group, floorState) {
   let best = null;
   let bestScore = null;
   first.candidates.forEach((orientation, orderIndex) => {
-    const score = scoreRepeatedOrientation(orientation, floorState, orderIndex);
-    if (score[0] === 0) return;
+    const score = scoreRepeatedOrientation(orientation, floorState, orderIndex, group.length);
+    if (score[0] === 1 && score[1] === 0) return;
     if (!best || compareScore(score, bestScore) < 0) {
       best = orientation;
       bestScore = score;

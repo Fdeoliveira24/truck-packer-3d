@@ -2058,6 +2058,78 @@ test('AUTO-PACK-A1-R6.3 stack surface builder merges adjacent supports into one 
   'stack phase must see adjacent same-height support cases as one usable supported surface');
 });
 
+test('AUTO-PACK-A1-R6.4 repeated non-flippable cases use one shelf-grid orientation', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 636, width: 102, height: 98 };
+  const zones = [{ min: { x: 0, y: 0, z: -51 }, max: { x: 636, y: 98, z: 51 } }];
+  const items = Array.from({ length: 78 }, (_, index) => ({
+    instanceId: `repeated-panel-${index + 1}`,
+    caseId: 'wide-flat-scenic-panel',
+    dims: { l: 60, w: 20, h: 20 },
+    weight: 180,
+    canFlip: false,
+    stackable: true,
+  }));
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 78);
+  assert.deepEqual(output.unpacked, []);
+
+  const distinctDims = new Set([...output.orientedDims.values()].map(dims => JSON.stringify(dims)));
+  assert.equal(distinctDims.size, 1,
+    'large repeated non-flippable batches should not mix yaw orientations in a patchwork load');
+  assert.deepEqual(JSON.parse([...distinctDims][0]), { length: 60, width: 20, height: 20 },
+    'batch shelf-grid should choose the orientation that maximizes clean floor capacity');
+
+  const packed = items.map(item => {
+    const pos = output.placements.get(item.instanceId);
+    const od = output.orientedDims.get(item.instanceId);
+    return Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
+  });
+  for (let i = 0; i < packed.length; i++) {
+    assert.equal(Solver.isAabbContainedInAnyZone(packed[i], zones, 0.001), true,
+      'repeated shelf-grid placements must stay fully inside the trailer AABB');
+    for (let j = i + 1; j < packed.length; j++) {
+      assert.equal(Solver.aabbsOverlap(packed[i], packed[j]), false,
+        'repeated shelf-grid placements must not overlap');
+    }
+  }
+
+  const floorLayer = packed.filter(aabb => aabb.min.y === 0);
+  assert.equal(floorLayer.length, 50,
+    'repeated 60x20x20 cases should fill a 10 by 5 floor grid before stacking');
+  const firstColumnCenters = items.slice(0, 5).map(item => output.placements.get(item.instanceId));
+  assert.deepEqual(firstColumnCenters.map(pos => pos.x), [30, 30, 30, 30, 30],
+    'batch grid should fill width at the current load-side X slice before advancing length');
+  assert.deepEqual(firstColumnCenters.map(pos => pos.z), [-41, -21, -1, 19, 39],
+    'batch grid should create contiguous width rows without midpoint gaps');
+});
+
+test('AUTO-PACK-A1-R6.4 repeated batch compaction does not break shelf rows', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 636, width: 102, height: 98 };
+  const zones = [{ min: { x: 0, y: 0, z: -51 }, max: { x: 636, y: 98, z: 51 } }];
+  const items = Array.from({ length: 78 }, (_, index) => ({
+    instanceId: `flat-panel-${index + 1}`,
+    caseId: 'flat-panel',
+    dims: { l: 48, w: 24, h: 24 },
+    weight: 80,
+    canFlip: false,
+    stackable: true,
+  }));
+
+  const output = Solver.solveAutoPack({ truck, zones, items });
+  assert.equal(output.placements.size, 78);
+  assert.deepEqual(output.unpacked, []);
+
+  const firstRow = items.slice(0, 4).map(item => output.placements.get(item.instanceId));
+  assert.deepEqual(firstRow.map(pos => pos.x), [24, 24, 24, 24]);
+  assert.deepEqual(firstRow.map(pos => pos.z), [-39, -15, 9, 33],
+    'floor compaction must not split a deterministic repeated-case row');
+  assert.equal(output.phaseStats.floorCount, 52);
+  assert.equal(output.phaseStats.stackCount, 26);
+});
+
 test('AUTO-PACK-A1-R6 live AutoPack routes through the logistics solver from the runtime engine only', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');

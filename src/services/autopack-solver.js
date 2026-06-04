@@ -8,6 +8,7 @@ const CONTACT_EPS = 0.05;
 const FREE_RECT_EPS = 0.05;
 const BASE_ANCHOR_CAP = 18;
 const MAX_ANCHOR_CAP = 24;
+const REPEATED_BATCH_MIN = 8;
 
 function finiteNumber(value, fallback = 0) {
   const n = Number(value);
@@ -792,6 +793,154 @@ function findLanePlacement(item, floorState, packed, loadFrontFirst) {
   return best;
 }
 
+function repeatedBatchKey(item) {
+  if (!item || item.className === 'LANE_ITEM' || !item.candidates.length) return '';
+  const source = item.item || {};
+  const lockKey = source.orientationLocked === true
+    ? JSON.stringify(normalizeRightAngleRotation(source.lockedRotation || source.transform?.rotation || {}))
+    : 'unlocked';
+  return [
+    source.caseId || '',
+    item.dims.l,
+    item.dims.w,
+    item.dims.h,
+    source.canFlip === true ? 'flip' : 'no-flip',
+    String(source.orientationLock || 'any'),
+    lockKey,
+    source.noStackOnTop === true ? 'no-top' : 'top-ok',
+    source.stackable === false ? 'no-stack' : 'stack-ok',
+    finiteNumber(source.maxStackCount, 0),
+  ].join('|');
+}
+
+function buildRepeatedBatches(items) {
+  const groups = new Map();
+  for (const item of items || []) {
+    const key = repeatedBatchKey(item);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  return [...groups.values()]
+    .filter(group => group.length >= REPEATED_BATCH_MIN)
+    .sort((a, b) => {
+      const footprintDelta = b[0].footprint - a[0].footprint;
+      if (footprintDelta) return footprintDelta;
+      const countDelta = b.length - a.length;
+      if (countDelta) return countDelta;
+      return a[0].index - b[0].index;
+    });
+}
+
+function scoreRepeatedOrientation(orientation, floorState, orderIndex) {
+  let floorCapacity = 0;
+  let bestRows = 0;
+  let bestCols = 0;
+  let wastedWidth = 0;
+  let wastedLength = 0;
+
+  for (const rect of floorState.freeRects || []) {
+    const cols = Math.floor((freeRectLength(rect) + FREE_RECT_EPS) / orientation.l);
+    const rows = Math.floor((freeRectWidth(rect) + FREE_RECT_EPS) / orientation.w);
+    if (cols <= 0 || rows <= 0) continue;
+    floorCapacity += cols * rows;
+    bestRows = Math.max(bestRows, rows);
+    bestCols = Math.max(bestCols, cols);
+    wastedWidth += freeRectWidth(rect) - rows * orientation.w;
+    wastedLength += freeRectLength(rect) - cols * orientation.l;
+  }
+
+  return [
+    -floorCapacity,
+    -bestRows,
+    -bestCols,
+    wastedWidth,
+    wastedLength,
+    orderIndex,
+  ];
+}
+
+function chooseRepeatedBatchOrientation(group, floorState) {
+  const first = group && group[0];
+  if (!first || !first.candidates.length) return null;
+  let best = null;
+  let bestScore = null;
+  first.candidates.forEach((orientation, orderIndex) => {
+    const score = scoreRepeatedOrientation(orientation, floorState, orderIndex);
+    if (score[0] === 0) return;
+    if (!best || compareScore(score, bestScore) < 0) {
+      best = orientation;
+      bestScore = score;
+    }
+  });
+  return best;
+}
+
+function placeRepeatedBatchFloor(group, orientation, floorState, packed, output, loadFrontFirst) {
+  if (!group.length || !orientation) return [];
+  const queue = [...group];
+  const rects = [...(floorState.freeRects || [])]
+    .sort((a, b) => {
+      const ax = loadFrontFirst ? -a.maxX : a.minX;
+      const bx = loadFrontFirst ? -b.maxX : b.minX;
+      if (ax !== bx) return ax - bx;
+      if (a.zone.min.y !== b.zone.min.y) return a.zone.min.y - b.zone.min.y;
+      return a.minZ - b.minZ;
+    });
+
+  for (const rect of rects) {
+    if (!queue.length) break;
+    if (orientation.h > rect.zone.max.y - rect.zone.min.y + FREE_RECT_EPS) continue;
+    const cols = Math.floor((freeRectLength(rect) + FREE_RECT_EPS) / orientation.l);
+    const rows = Math.floor((freeRectWidth(rect) + FREE_RECT_EPS) / orientation.w);
+    if (cols <= 0 || rows <= 0) continue;
+
+    for (let col = 0; col < cols && queue.length; col++) {
+      const xMin = loadFrontFirst
+        ? rect.maxX - (col + 1) * orientation.l
+        : rect.minX + col * orientation.l;
+      for (let row = 0; row < rows && queue.length; row++) {
+        const zMin = rect.minZ + row * orientation.w;
+        const position = {
+          x: xMin + orientation.l / 2,
+          y: rect.zone.min.y + orientation.h / 2,
+          z: zMin + orientation.w / 2,
+        };
+        const dims = { l: orientation.l, w: orientation.w, h: orientation.h };
+        const aabb = getAabb(position, dims);
+        if (!isAabbContainedInZone(aabb, rect.zone)) continue;
+        if (collidesPacked(aabb, packed)) continue;
+        const item = queue.shift();
+        item.candidates = [orientation];
+        const placement = { position, dims, aabb, zone: rect.zone, freeRect: rect, orientation, lockedGrid: true };
+        recordPlacement(output, packed, item, placement, 'floor');
+        occupyFloorSpace(floorState, placement);
+      }
+    }
+  }
+
+  for (const item of queue) {
+    item.candidates = [orientation];
+  }
+  return queue;
+}
+
+function placeRepeatedFloorBatches(items, floorState, packed, output, loadFrontFirst) {
+  const remaining = new Set(items || []);
+  for (const group of buildRepeatedBatches(items)) {
+    const activeGroup = group.filter(item => remaining.has(item));
+    if (activeGroup.length < REPEATED_BATCH_MIN) continue;
+    const orientation = chooseRepeatedBatchOrientation(activeGroup, floorState);
+    if (!orientation) continue;
+    const notPlaced = placeRepeatedBatchFloor(activeGroup, orientation, floorState, packed, output, loadFrontFirst);
+    const notPlacedSet = new Set(notPlaced);
+    for (const item of activeGroup) {
+      if (!notPlacedSet.has(item)) remaining.delete(item);
+    }
+  }
+  return [...remaining];
+}
+
 function stackRectContains(outer, inner) {
   return Math.abs(outer.yLevel - inner.yLevel) <= FREE_RECT_EPS &&
     outer.minX <= inner.minX + FREE_RECT_EPS &&
@@ -1000,6 +1149,7 @@ function recordPlacement(output, packed, item, placement, phase) {
     orientation: placement.orientation,
     phase,
     zone: placement.zone || null,
+    lockedGrid: placement.lockedGrid === true,
   };
   packed.push(packedPlacement);
   output.placements.set(item.id, placement.position);
@@ -1074,6 +1224,7 @@ function scoreCompactionCandidate(aabb, zone, loadFrontFirst, others) {
 
 function compactFloorPlacements(output, packed, zones, loadFrontFirst) {
   const compactable = packed.filter(placement =>
+    !placement.lockedGrid &&
     placement.phase !== 'stack' &&
     isPlacementOnZoneFloor(placement.aabb, zones)
   );
@@ -1263,10 +1414,7 @@ export function solveAutoPack(input = {}) {
 
   const deferred = [];
   const laneItems = sortItemsForLane(items.filter(item => item.className === 'LANE_ITEM'));
-  const mainFloorItems = sortItemsForFloor(items.filter(item =>
-    item.className !== 'LANE_ITEM' && item.className !== 'FILLER'
-  ));
-  const fillerItems = items.filter(item => item.className === 'FILLER');
+  const nonLaneItems = items.filter(item => item.className !== 'LANE_ITEM');
   let laneCount = 0;
   let floorCount = 0;
   let fillerCount = 0;
@@ -1283,6 +1431,18 @@ export function solveAutoPack(input = {}) {
     occupyFloorSpace(floorState, placement);
     laneCount++;
   }
+
+  const remainingNonLaneItems = placeRepeatedFloorBatches(
+    nonLaneItems,
+    floorState,
+    packed,
+    output,
+    loadFrontFirst
+  );
+  const mainFloorItems = sortItemsForFloor(remainingNonLaneItems.filter(item =>
+    item.className !== 'FILLER'
+  ));
+  const fillerItems = remainingNonLaneItems.filter(item => item.className === 'FILLER');
 
   for (const item of mainFloorItems) {
     const placement = findFloorPlacement(item, floorState, packed, loadFrontFirst);

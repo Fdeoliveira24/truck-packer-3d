@@ -13,6 +13,8 @@
 
 // Cases screen (extracted from src/app.js; behavior preserved)
 
+import { openCaseModal as openSharedCaseModal } from '../ui/overlays/case-modal.js';
+
 export function createCasesScreen({
   Utils,
   UIComponents,
@@ -84,18 +86,6 @@ export function createCasesScreen({
       btnViewGrid && btnViewGrid.addEventListener('click', () => setViewMode('grid'));
       btnViewList && btnViewList.addEventListener('click', () => setViewMode('list'));
       btnFiltersToggle && btnFiltersToggle.addEventListener('click', () => toggleFiltersVisible());
-
-      /* Close filter popup when clicking outside the panel or toggle button */
-      document.addEventListener('click', (e) => {
-        if (!filtersEl || !filtersEl.classList.contains('is-open')) return;
-        const target = e && e.target instanceof Node ? e.target : null;
-        if (!target) return;
-        if (filtersEl.contains(target) || (btnFiltersToggle && btnFiltersToggle.contains(target))) return;
-        const prefs = PreferencesManager.get();
-        prefs.casesFiltersVisible = false;
-        PreferencesManager.set(prefs);
-        applyFiltersVisibility();
-      });
 
       btnCardDisplay &&
         btnCardDisplay.addEventListener('click', () => {
@@ -816,158 +806,14 @@ export function createCasesScreen({
     }
 
     function openCaseModal(existing) {
-      const prefs = PreferencesManager.get();
-      const lengthUnit = prefs.units.length;
-      const weightUnit = prefs.units.weight;
-
-      const now = Date.now();
-      const isEdit = Boolean(existing);
-      const initial = existing
-        ? Utils.deepClone(existing)
-        : {
-            id: Utils.uuid(),
-            name: '',
-            manufacturer: '',
-            category: 'default',
-            dimensions: { length: 48, width: 24, height: 24 },
-            weight: 0,
-            canFlip: true,
-            notes: '',
-            color: CategoryService.meta('default').color,
-            createdAt: now,
-            updatedAt: now,
-          };
-
-      const content = document.createElement('div');
-      content.classList.add('tp3d-cases-modal-grid-2col');
-
-      const fName = field('Name', 'text', 'Line Array Case', true);
-      fName.input.value = initial.name || '';
-
-      const fMfg = field('Manufacturer', 'text', 'L-Acoustics', false);
-      fMfg.input.value = initial.manufacturer || '';
-
-      const catWrap = document.createElement('div');
-      catWrap.className = 'field';
-      catWrap.classList.add('tp3d-grid-span-full');
-      const catLabel = document.createElement('div');
-      catLabel.className = 'label';
-      catLabel.textContent = 'Category';
-      const catRow = document.createElement('div');
-      catRow.classList.add('tp3d-cases-cat-row');
-      const catColorSwatch = document.createElement('div');
-      catColorSwatch.classList.add('tp3d-cases-cat-swatch');
-      const catSelect = document.createElement('select');
-      catSelect.className = 'select';
-      catSelect.classList.add('tp3d-flex-1');
-      const catOptions = CategoryService.all();
-      const currentKey = catOptions.find(c => c.key === initial.category) ? initial.category : 'default';
-      catOptions.forEach(c => {
-        const opt = document.createElement('option');
-        opt.value = c.key;
-        opt.textContent = c.name || CategoryService.meta(c.key).name;
-        catSelect.appendChild(opt);
-      });
-      catSelect.value = currentKey;
-      const updateSwatch = () => {
-        const meta = CategoryService.meta(catSelect.value || 'default');
-        catColorSwatch.style.background = meta.color || '#9ca3af';
-      };
-      catSelect.addEventListener('change', updateSwatch);
-      updateSwatch();
-      catRow.appendChild(catColorSwatch);
-      catRow.appendChild(catSelect);
-      catWrap.appendChild(catLabel);
-      catWrap.appendChild(catRow);
-
-      const fL = field(`Length (${lengthUnit})`, 'number', '', true);
-      const fW = field(`Width (${lengthUnit})`, 'number', '', true);
-      const fH = field(`Height (${lengthUnit})`, 'number', '', true);
-      fL.input.value = String(Utils.inchesToUnit(initial.dimensions.length, lengthUnit));
-      fW.input.value = String(Utils.inchesToUnit(initial.dimensions.width, lengthUnit));
-      fH.input.value = String(Utils.inchesToUnit(initial.dimensions.height, lengthUnit));
-
-      const fWeight = field(`Weight (${weightUnit})`, 'number', '', false);
-      fWeight.input.step = '0.1';
-      const weightValue = Utils.poundsToUnit(Number(initial.weight) || 0, weightUnit);
-      fWeight.input.value = String(Math.round(weightValue * 100) / 100);
-
-      const flipRow = document.createElement('label');
-      flipRow.classList.add('tp3d-cases-flip-row');
-      flipRow.classList.add('tp3d-grid-span-full');
-      const flip = document.createElement('input');
-      flip.type = 'checkbox';
-      flip.checked = Boolean(initial.canFlip);
-      const flipText = document.createElement('span');
-      flipText.textContent = 'Can be flipped';
-      flipRow.appendChild(flip);
-      flipRow.appendChild(flipText);
-
-      const notesWrap = document.createElement('div');
-      notesWrap.className = 'field';
-      notesWrap.classList.add('tp3d-grid-span-full');
-      const notesLabel = document.createElement('div');
-      notesLabel.className = 'label';
-      notesLabel.textContent = 'Notes';
-      const notes = document.createElement('textarea');
-      notes.className = 'input';
-      notes.classList.add('tp3d-textarea-minh-60');
-      notes.value = initial.notes || '';
-      notesWrap.appendChild(notesLabel);
-      notesWrap.appendChild(notes);
-
-      content.appendChild(fName.wrap);
-      content.appendChild(fMfg.wrap);
-      content.appendChild(catWrap);
-      content.appendChild(fL.wrap);
-      content.appendChild(fW.wrap);
-      content.appendChild(fH.wrap);
-      content.appendChild(fWeight.wrap);
-      content.appendChild(flipRow);
-      content.appendChild(notesWrap);
-
-      UIComponents.showModal({
-        title: isEdit ? 'Edit Case' : 'New Case',
-        content,
-        actions: [
-          { label: 'Cancel' },
-          {
-            label: 'Save',
-            variant: 'primary',
-            onClick: () => {
-              const name = String(fName.input.value || '').trim();
-              if (!name) {
-                UIComponents.showToast('Name is required', 'warning');
-                fName.input.focus();
-                return;
-              }
-              const length = Utils.unitToInches(Number(fL.input.value) || 0, lengthUnit);
-              const width = Utils.unitToInches(Number(fW.input.value) || 0, lengthUnit);
-              const height = Utils.unitToInches(Number(fH.input.value) || 0, lengthUnit);
-              if (length <= 0 || width <= 0 || height <= 0) {
-                UIComponents.showToast('Dimensions must be > 0', 'warning');
-                return;
-              }
-              const weightLb = Utils.unitToPounds(Number(fWeight.input.value) || 0, weightUnit);
-              const categoryKey = String(catSelect.value || 'default');
-              const catMeta = CategoryService.meta(categoryKey);
-              const caseData = {
-                ...initial,
-                name,
-                manufacturer: String(fMfg.input.value || '').trim(),
-                category: categoryKey,
-                dimensions: { length, width, height },
-                weight: weightLb,
-                canFlip: Boolean(flip.checked),
-                notes: String(notes.value || '').trim(),
-                color: catMeta.color || '#ff9f1c',
-              };
-              CaseLibrary.upsert(caseData);
-              UIComponents.showToast('Case saved', 'success');
-              render();
-            },
-          },
-        ],
+      openSharedCaseModal({
+        existing,
+        Utils,
+        UIComponents,
+        PreferencesManager,
+        CaseLibrary,
+        CategoryService,
+        onSaved: () => render(),
       });
     }
 
@@ -1030,17 +876,39 @@ export function createCasesScreen({
       const rect = anchorEl.getBoundingClientRect();
       UIComponents.openDropdown(anchorEl, items, {
         align: 'right',
-        width: Math.max(220, rect.width),
+        width: Math.max(220, Math.min(rect.width, 240)),
         role: 'categories',
       });
+    }
+
+    function normalizeCategoryNameKey(value) {
+      return String(value || '')
+        .trim()
+        .toLowerCase();
+    }
+
+    function findDuplicateCategoryName(name, excludeKey = '') {
+      const key = normalizeCategoryNameKey(name);
+      const excluded = normalizeCategoryNameKey(excludeKey);
+      if (!key) return null;
+      return CategoryService.listWithCounts(CaseLibrary.getCases()).find(cat => {
+        if (cat.key === excluded) return false;
+        return cat.key === key || normalizeCategoryNameKey(cat.name || cat.key) === key;
+      }) || null;
+    }
+
+    function getProjectCategoryNameSet() {
+      return new Set(
+        CategoryService.listWithCounts(CaseLibrary.getCases()).map(c => normalizeCategoryNameKey(c.name || c.key))
+      );
     }
 
     function createCategoryAndEdit() {
       const baseName = 'New Category';
       let idx = 1;
       let name = baseName;
-      const existing = new Set(CategoryService.all().map(c => String(c.name || '').toLowerCase()));
-      while (existing.has(name.toLowerCase())) {
+      const existing = getProjectCategoryNameSet();
+      while (existing.has(normalizeCategoryNameKey(name))) {
         idx += 1;
         name = `${baseName} ${idx}`;
       }
@@ -1060,15 +928,25 @@ export function createCasesScreen({
       name.value = initial.name || '';
       name.placeholder = 'Category name';
 
+      const colorWrap = document.createElement('label');
+      colorWrap.classList.add('tp3d-cases-cat-swatch');
+      colorWrap.setAttribute('aria-label', 'Category color');
+      colorWrap.setAttribute('title', 'Category color');
+
       const color = document.createElement('input');
       color.type = 'color';
-      color.className = 'input';
+      color.className = 'tp3d-cases-cat-color-input';
       color.value = initial.color || '#9ca3af';
-      color.classList.add('tp3d-cases-color-btn');
+      color.setAttribute('aria-label', 'Category color');
+      colorWrap.style.background = color.value;
+      colorWrap.appendChild(color);
+      color.addEventListener('input', () => {
+        colorWrap.style.background = color.value || '#9ca3af';
+      });
 
       const row = document.createElement('div');
       row.classList.add('tp3d-cases-color-row');
-      row.appendChild(color);
+      row.appendChild(colorWrap);
       row.appendChild(name);
 
       content.appendChild(row);
@@ -1112,6 +990,12 @@ export function createCasesScreen({
                 name.focus();
                 return false;
               }
+              const duplicate = findDuplicateCategoryName(nextName, initial.key);
+              if (duplicate) {
+                UIComponents.showToast(`Category "${duplicate.name}" already exists. Choose a unique name.`, 'warning');
+                name.focus();
+                return false;
+              }
               const renamed = CategoryService.rename(initial.key, nextName, color.value);
               render();
               UIComponents.showToast(`Saved "${renamed.name}"`, 'success');
@@ -1131,19 +1015,25 @@ export function createCasesScreen({
 
       const renderList = () => {
         listEl.innerHTML = '';
-        CategoryService.all().forEach(cat => {
+        CategoryService.listWithCounts(CaseLibrary.getCases()).forEach(cat => {
           const row = document.createElement('div');
           row.className = 'card';
           row.classList.add('tp3d-cases-catmgr-row');
 
-          const colorWrap = document.createElement('div');
-          colorWrap.classList.add('tp3d-cases-catmgr-color-wrap');
+          const colorWrap = document.createElement('label');
+          colorWrap.classList.add('tp3d-cases-cat-swatch', 'tp3d-cases-catmgr-color-wrap');
+          colorWrap.setAttribute('aria-label', 'Category color');
+          colorWrap.setAttribute('title', 'Category color');
           const color = document.createElement('input');
           color.type = 'color';
           color.value = cat.color || '#9ca3af';
-          color.className = 'input';
-          color.classList.add('tp3d-cases-catmgr-color-input');
+          color.className = 'tp3d-cases-cat-color-input';
+          color.setAttribute('aria-label', 'Category color');
+          colorWrap.style.background = color.value;
           colorWrap.appendChild(color);
+          color.addEventListener('input', () => {
+            colorWrap.style.background = color.value || '#9ca3af';
+          });
 
           const name = document.createElement('input');
           name.type = 'text';
@@ -1161,6 +1051,12 @@ export function createCasesScreen({
           saveBtn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i>';
           saveBtn.setAttribute('data-tooltip', 'Save changes');
           saveBtn.addEventListener('click', () => {
+            const duplicate = findDuplicateCategoryName(name.value, cat.key);
+            if (duplicate) {
+              UIComponents.showToast(`Category "${duplicate.name}" already exists. Choose a unique name.`, 'warning');
+              name.focus();
+              return;
+            }
             const renamed = CategoryService.rename(cat.key, name.value, color.value);
             renderList();
             render();
@@ -1207,8 +1103,8 @@ export function createCasesScreen({
         const baseName = 'New Category';
         let idx = 1;
         let name = baseName;
-        const existing = new Set(CategoryService.all().map(c => c.name.toLowerCase()));
-        while (existing.has(name.toLowerCase())) {
+        const existing = getProjectCategoryNameSet();
+        while (existing.has(normalizeCategoryNameKey(name))) {
           idx += 1;
           name = `${baseName} ${idx}`;
         }
@@ -1227,21 +1123,6 @@ export function createCasesScreen({
         content,
         actions: [{ label: 'Close', variant: 'primary' }],
       });
-    }
-
-    function field(label, type, placeholder, required) {
-      const wrap = document.createElement('div');
-      wrap.className = 'field';
-      const l = document.createElement('div');
-      l.className = 'label';
-      l.textContent = required ? `${label} (required)` : label;
-      const input = document.createElement('input');
-      input.className = 'input';
-      input.type = type;
-      input.placeholder = placeholder || '';
-      wrap.appendChild(l);
-      wrap.appendChild(input);
-      return { wrap, input };
     }
 
     async function deleteCase(caseId) {

@@ -646,42 +646,64 @@ textarea:focus {
   font-size: var(--text-sm);
 }
 
-/* Cases filter popup — absolutely positioned so chips overlay the page
-   instead of pushing the grid/table downward. Hidden by default;
-   visible when .is-open is toggled via JS. */
-#cases-filters {
+.tp3d-cases-filter-anchor,
+.tp3d-packs-filter-anchor {
+  position: relative;
+  z-index: 30;
+}
+
+/* Filter lists. Hidden by default; visible when .is-open is toggled via JS. */
+#cases-filters,
+#packs-filters {
   display: none;
+  flex-direction: column;
+  align-items: stretch;
+  flex-wrap: nowrap;
   position: absolute;
-  top: 100%;
+  top: 35px;
   left: 0;
-  right: 0;
-  margin-top: 4px;
+  z-index: 60;
   padding: var(--space-3);
+  width: min(220px, 100%);
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
-  z-index: 1000;
-  max-height: 280px;
+  max-height: min(42vh, 360px);
   overflow-y: auto;
-  gap: 8px;
-  flex-wrap: wrap;
+  overflow-x: hidden;
+  gap: 6px;
 }
 
-#cases-filters.is-open {
+#cases-filters.is-open,
+#packs-filters.is-open {
   display: flex;
 }
 
-/* Anchor for the filter popup — search bar row becomes the positioning context */
-#screen-cases>.row:has(#cases-search) {
-  position: relative;
+#cases-filters .chip,
+#packs-filters .chip,
+#editor-case-chips .chip {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  justify-content: flex-start;
+}
+
+#cases-filters .chip span:last-child,
+#packs-filters .chip span:last-child,
+#editor-case-chips .chip span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 768px) {
-  #cases-filters {
-    left: calc(-1 * var(--space-3));
-    right: calc(-1 * var(--space-3));
-    max-height: 200px;
+  #cases-filters,
+  #packs-filters {
+    width: 100%;
+    right: 0;
+    max-height: min(42vh, 300px);
   }
 }
 
@@ -705,14 +727,16 @@ textarea:focus {
   position: absolute;
   top: calc(100% + 8px);
   right: var(--space-3);
-  left: auto;
-  z-index: 32;
+  left: var(--space-3);
+  z-index: 80;
   display: none;
   flex-direction: column;
+  align-items: stretch;
+  flex-wrap: nowrap;
   gap: 6px;
   padding: 10px;
-  width: clamp(200px, 78%, 300px);
-  max-width: min(320px, calc(100% - (var(--space-3) * 2)));
+  width: auto;
+  max-width: none;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--bg-secondary);
@@ -730,9 +754,16 @@ textarea:focus {
   display: flex;
 }
 
-#editor-case-chips .chip {
+.dropdown[data-role='categories'] {
+  top: 195px !important;
+  width: min(240px, calc(100vw - 16px)) !important;
+  max-height: calc(100vh - 215px) !important;
+  overflow-y: auto;
+}
+
+.dropdown[data-role='categories'] .dropdown-menu {
   width: 100%;
-  justify-content: flex-start;
+  min-width: 0;
 }
 
 #editor-case-chips[hidden] {
@@ -742,8 +773,9 @@ textarea:focus {
 @media (max-width: 899px) {
   #editor-case-chips {
     right: var(--space-2);
-    width: min(78vw, 300px);
-    max-width: calc(100% - 12px);
+    left: var(--space-2);
+    width: auto;
+    max-width: none;
     height: auto;
     min-height: 0;
     max-height: min(50vh, 300px);
@@ -2003,6 +2035,25 @@ tr:hover td {
   margin-top: 0;
 }
 
+.tp3d-prefs-range-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.tp3d-prefs-range-input {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.tp3d-prefs-range-value {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 
 /* Roadmap badge (dynamic background color set inline) */
 .tp3d-settings-roadmap-badge {
@@ -3123,10 +3174,36 @@ body.modal-open {
 }
 
 .tp3d-cases-cat-swatch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 44px;
   height: 32px;
   border-radius: 8px;
   border: 1px solid var(--border-subtle);
+  overflow: hidden;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 34%);
+}
+
+.tp3d-cases-cat-color-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.tp3d-cases-new-category-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
 }
 
 .tp3d-cases-flip-row {
@@ -3146,13 +3223,6 @@ body.modal-open {
   min-width: 320px;
 }
 
-.tp3d-cases-color-btn {
-  width: 56px;
-  height: 40px;
-  padding: 0;
-  cursor: pointer;
-}
-
 .tp3d-cases-color-row {
   display: flex;
   align-items: center;
@@ -3165,17 +3235,17 @@ body.modal-open {
 
 .tp3d-editor-card-grid-gap-12 {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 #inspector-body {
   display: grid;
-  gap: 16px;
+  gap: 10px;
   align-content: start;
 }
 
 #inspector-body .card {
-  padding: 12px;
+  padding: 10px;
 }
 
 .tp3d-editor-preset-row {
@@ -3291,7 +3361,7 @@ body.modal-open {
 .tp3d-editor-case-search {
   position: sticky;
   top: 0;
-  z-index: 24;
+  z-index: 40;
   background: var(--bg-secondary);
   margin: calc(-1 * var(--space-3)) calc(-1 * var(--space-3)) var(--space-2);
   padding: var(--space-3);
@@ -3312,6 +3382,32 @@ body.modal-open {
   position: relative;
   z-index: 2;
   background: var(--bg-secondary);
+}
+
+.tp3d-editor-browser-tabs {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-top: 10px;
+  background: var(--bg-secondary);
+}
+
+.tp3d-editor-new-case-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding-inline: 0;
+  line-height: 1;
+}
+
+.tp3d-editor-new-case-btn i {
+  display: block;
+  line-height: 1;
 }
 
 /* Text column layout */
@@ -3335,7 +3431,36 @@ body.modal-open {
 
 .tp3d-editor-transform-card {
   position: relative;
-  gap: 10px;
+  gap: 6px;
+}
+
+#inspector-body .card .btn {
+  padding: 6px 10px;
+}
+
+.tp3d-editor-position-row {
+  gap: 8px;
+}
+
+.tp3d-editor-inline-position-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tp3d-editor-inline-position-field .label {
+  flex: 0 0 auto;
+  margin: 0;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+}
+
+.tp3d-editor-inline-position-field .input {
+  min-width: 0;
+  height: 34px;
+  padding: 6px 8px;
+  text-align: right;
 }
 
 .tp3d-editor-info-icon {
@@ -3376,12 +3501,12 @@ body.modal-open {
 .tp3d-editor-rot-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .tp3d-editor-rot-btn {
   justify-content: flex-start;
-  padding: 6px 10px;
+  padding: 5px 8px;
 }
 
 .tp3d-editor-rot-btn[data-tooltip]::before,

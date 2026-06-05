@@ -4680,7 +4680,6 @@ export function createSettingsOverlay({
       length.innerHTML = `
         <option value="in">Inches (in)</option>
         <option value="ft">Feet (ft)</option>
-        <option value="mm">Millimeters (mm)</option>
         <option value="cm">Centimeters (cm)</option>
         <option value="m">Meters (m)</option>
       `;
@@ -4695,12 +4694,22 @@ export function createSettingsOverlay({
       weight.value = prefs.units.weight;
 
       const hiddenOpacity = doc.createElement('input');
-      hiddenOpacity.className = 'input';
-      hiddenOpacity.type = 'number';
+      hiddenOpacity.className = 'tp3d-prefs-range-input';
+      hiddenOpacity.type = 'range';
       hiddenOpacity.min = '0';
       hiddenOpacity.max = '1';
       hiddenOpacity.step = '0.05';
       hiddenOpacity.value = String(prefs.hiddenCaseOpacity);
+      const hiddenOpacityValue = doc.createElement('span');
+      hiddenOpacityValue.className = 'tp3d-prefs-range-value';
+      hiddenOpacityValue.textContent = Number(hiddenOpacity.value).toFixed(2);
+      hiddenOpacity.addEventListener('input', () => {
+        hiddenOpacityValue.textContent = Number(hiddenOpacity.value).toFixed(2);
+      });
+      const hiddenOpacityWrap = doc.createElement('div');
+      hiddenOpacityWrap.className = 'tp3d-prefs-range-control';
+      hiddenOpacityWrap.appendChild(hiddenOpacity);
+      hiddenOpacityWrap.appendChild(hiddenOpacityValue);
 
       const labelSize = doc.createElement('input');
       labelSize.className = 'input';
@@ -4733,8 +4742,7 @@ export function createSettingsOverlay({
       displayHeading.textContent = 'Editor Display';
       prefsCard.appendChild(displayHeading);
 
-      hiddenOpacity.classList.add('tp3d-prefs-number-input');
-      prefsCard.appendChild(row('Hidden Case Opacity', hiddenOpacity));
+      prefsCard.appendChild(row('Hidden Case Opacity', hiddenOpacityWrap));
 
       labelSize.classList.add('tp3d-prefs-number-input');
       prefsCard.appendChild(row('Label Font Size', labelSize));

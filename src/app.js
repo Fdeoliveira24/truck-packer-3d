@@ -3934,6 +3934,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const elTheme = /** @type {HTMLSelectElement} */ (document.getElementById('pref-theme'));
       const elLabel = /** @type {HTMLInputElement} */ (document.getElementById('pref-label-size'));
       const elHidden = /** @type {HTMLInputElement} */ (document.getElementById('pref-hidden-opacity'));
+      const elHiddenValue = /** @type {HTMLElement} */ (document.getElementById('pref-hidden-opacity-value'));
       const elSnap = /** @type {HTMLSelectElement} */ (document.getElementById('pref-snapping-enabled'));
       const elGrid = /** @type {HTMLInputElement} */ (document.getElementById('pref-grid-size'));
       const elShot = /** @type {HTMLSelectElement} */ (document.getElementById('pref-shot-res'));
@@ -3943,6 +3944,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       function initSettingsUI() {
         btnSave.addEventListener('click', () => save());
+        elHidden.addEventListener('input', syncHiddenOpacityValue);
         btnReset.addEventListener('click', async () => {
           const ok = await UIComponents.confirm({
             title: 'Reset demo data?',
@@ -3956,6 +3958,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
         });
       }
 
+      function syncHiddenOpacityValue() {
+        if (!elHiddenValue) return;
+        elHiddenValue.textContent = Number(elHidden.value).toFixed(2);
+      }
+
       function loadForm() {
         const p = PreferencesManager.get();
         elLength.value = p.units.length;
@@ -3963,6 +3970,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         elTheme.value = p.theme;
         elLabel.value = String(p.labelFontSize);
         elHidden.value = String(p.hiddenCaseOpacity);
+        syncHiddenOpacityValue();
         elSnap.value = String(Boolean(p.snapping.enabled));
         elGrid.value = String(p.snapping.gridSize);
         elShot.value = p.export.screenshotResolution;
@@ -9141,6 +9149,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           if (prefs && prefs.theme) PreferencesManager.applyTheme(prefs.theme);
           SceneManager.refreshTheme();
           SettingsUI.loadForm();
+          if (StateStore.get('currentScreen') === 'editor') EditorUI.render();
         }
 
         if (changes.currentScreen || changes._replace) {

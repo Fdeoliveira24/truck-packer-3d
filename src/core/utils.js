@@ -32,7 +32,7 @@ export function parseResolution(res) {
   return { width: Number(m[1]), height: Number(m[2]) };
 }
 
-export const lengthUnits = ['in', 'ft', 'mm', 'cm', 'm'];
+export const lengthUnits = ['in', 'ft', 'cm', 'm'];
 export const weightUnits = ['lb', 'kg'];
 
 export function inchesToUnit(inches, unit) {

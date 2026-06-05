@@ -29,6 +29,12 @@ function applyCaseDefaultColor(caseObj) {
   return next;
 }
 
+function normalizeCategoryFilterKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase();
+}
+
 export function getCases() {
   return StateStore.get('caseLibrary') || [];
 }
@@ -58,10 +64,10 @@ export function upsert(caseData) {
 }
 
 export function reassignCategory(oldKey, newKey) {
-  const from = oldKey ? oldKey.trim().toLowerCase() : '';
-  const to = newKey ? newKey.trim().toLowerCase() : 'default';
+  const from = normalizeCategoryFilterKey(oldKey);
+  const to = normalizeCategoryFilterKey(newKey) || 'default';
   if (!from || from === to) return;
-  const next = getCases().map(c => (c.category === from ? { ...c, category: to } : c));
+  const next = getCases().map(c => (normalizeCategoryFilterKey(c.category || 'default') === from ? { ...c, category: to } : c));
   StateStore.set({ caseLibrary: next });
 }
 
@@ -89,10 +95,13 @@ export function search(query, categoryKeys) {
   const q = String(query || '')
     .trim()
     .toLowerCase();
-  const cats = (categoryKeys || []).filter(k => k && k !== 'all');
+  const cats = (categoryKeys || [])
+    .map(normalizeCategoryFilterKey)
+    .filter(k => k && k !== 'all');
   return getCases().filter(c => {
     const matchesQ = !q || (c.name || '').toLowerCase().includes(q) || (c.manufacturer || '').toLowerCase().includes(q);
-    const matchesCat = !cats.length || cats.includes(c.category);
+    const caseCategory = normalizeCategoryFilterKey(c.category || 'default') || 'default';
+    const matchesCat = !cats.length || cats.includes(caseCategory);
     return matchesQ && matchesCat;
   });
 }
@@ -100,7 +109,8 @@ export function search(query, categoryKeys) {
 export function countsByCategory() {
   const counts = {};
   getCases().forEach(c => {
-    counts[c.category] = (counts[c.category] || 0) + 1;
+    const key = normalizeCategoryFilterKey(c.category || 'default') || 'default';
+    counts[key] = (counts[key] || 0) + 1;
   });
   return counts;
 }

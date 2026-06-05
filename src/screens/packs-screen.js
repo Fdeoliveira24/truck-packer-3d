@@ -44,6 +44,7 @@ export function createPacksScreen({
     const filterEmptyMsg = /** @type {HTMLElement} */ (document.getElementById('packs-filter-empty-msg'));
     const btnNew = document.getElementById('btn-new-pack');
     const btnImport = document.getElementById('btn-import-pack');
+    const chipAll = document.getElementById('packs-filter-chip-all');
     const chipEmpty = document.getElementById('packs-filter-chip-empty');
     const chipPartial = document.getElementById('packs-filter-chip-partial');
     const chipFull = document.getElementById('packs-filter-chip-full');
@@ -73,7 +74,7 @@ export function createPacksScreen({
     let footerController = null;
     let footerMountEl = null;
     let filteredPacks = [];
-    const filtersRowEl = chipEmpty ? chipEmpty.parentElement : null;
+    const filtersRowEl = document.getElementById('packs-filters');
     let foldersButtonEl = null;
     let foldersButtonLabelEl = null;
 
@@ -116,6 +117,7 @@ export function createPacksScreen({
           searchEl.blur();
         }
       });
+      wireChip(chipAll, 'all');
       wireChip(chipEmpty, 'empty');
       wireChip(chipPartial, 'partial');
       wireChip(chipFull, 'full');
@@ -193,15 +195,16 @@ export function createPacksScreen({
 
     function toggleFiltersVisible() {
       const prefs = PreferencesManager.get();
-      prefs.packsFiltersVisible = !prefs.packsFiltersVisible;
+      prefs.packsFiltersVisible = prefs.packsFiltersVisible !== true;
       PreferencesManager.set(prefs);
       applyFiltersVisibility();
     }
 
     function applyFiltersVisibility() {
       if (!filtersRowEl) return;
-      const visible = PreferencesManager.get().packsFiltersVisible !== false;
-      filtersRowEl.style.display = visible ? '' : 'none';
+      const visible = PreferencesManager.get().packsFiltersVisible === true;
+      filtersRowEl.classList.toggle('is-open', visible);
+      filtersRowEl.style.display = '';
       btnFiltersToggle && btnFiltersToggle.classList.toggle('btn-primary', visible);
     }
 
@@ -754,8 +757,13 @@ export function createPacksScreen({
     function wireChip(el, key) {
       if (!el) return;
       const toggle = () => {
-        filters[key] = !filters[key];
-        el.classList.toggle('active', filters[key]);
+        if (key === 'all') {
+          filters.empty = false;
+          filters.partial = false;
+          filters.full = false;
+        } else {
+          filters[key] = !filters[key];
+        }
         packsListState.pageIndex = 0;
         render();
       };
@@ -766,6 +774,34 @@ export function createPacksScreen({
           if (ev.key === 'Enter' || ev.key === ' ') toggle();
         }
       );
+    }
+
+    function getPackStatus(pack) {
+      const total = (pack && pack.cases ? pack.cases : []).length;
+      const percent = pack && pack.stats && Number.isFinite(pack.stats.volumePercent) ? pack.stats.volumePercent : 0;
+      if (total === 0) return 'empty';
+      if (percent >= 99.999) return 'full';
+      if (percent > 0) return 'partial';
+      return 'empty';
+    }
+
+    function updateStatusFilterChips(packs) {
+      const counts = { all: 0, empty: 0, partial: 0, full: 0 };
+      (packs || []).forEach(pack => {
+        counts.all += 1;
+        counts[getPackStatus(pack)] += 1;
+      });
+      const anyActive = filters.empty || filters.partial || filters.full;
+      const setChip = (el, label, count, active) => {
+        if (!el) return;
+        el.classList.toggle('active', Boolean(active));
+        const labelEl = el.querySelector('span:last-child');
+        if (labelEl) labelEl.textContent = `${label}: ${count}`;
+      };
+      setChip(chipAll, 'All', counts.all, !anyActive);
+      setChip(chipEmpty, 'Empty', counts.empty, filters.empty);
+      setChip(chipPartial, 'Partial', counts.partial, filters.partial);
+      setChip(chipFull, 'Full', counts.full, filters.full);
     }
 
     function handleSelectAll() {
@@ -875,6 +911,7 @@ export function createPacksScreen({
       };
       allPacks.sort(sorters[sortKey] || sorters['edited-desc']);
       renderFoldersButton(allPacks);
+      updateStatusFilterChips(allPacks);
 
       const packs = allPacks
         .filter(p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q))
@@ -886,11 +923,10 @@ export function createPacksScreen({
         })
         .filter(p => {
           if (!filters.empty && !filters.partial && !filters.full) return true;
-          const total = (p.cases || []).length;
-          const percent = p.stats && Number.isFinite(p.stats.volumePercent) ? p.stats.volumePercent : 0;
-          const isEmpty = total === 0;
-          const isFull = percent >= 99.999;
-          const isPartial = !isEmpty && percent > 0 && !isFull;
+          const status = getPackStatus(p);
+          const isEmpty = status === 'empty';
+          const isPartial = status === 'partial';
+          const isFull = status === 'full';
 
           if (filters.empty && isEmpty) return true;
           if (filters.partial && isPartial) return true;

@@ -13,20 +13,25 @@ const indexHtmlPath = new URL('../../index.html', import.meta.url);
 const storagePath = new URL('../../src/core/storage.js', import.meta.url);
 const importExportPath = new URL('../../src/services/import-export.js', import.meta.url);
 const folderLibraryPath = new URL('../../src/services/folder-library.js', import.meta.url);
+const caseLibraryPath = new URL('../../src/services/case-library.js', import.meta.url);
 const packLibraryPath = new URL('../../src/services/pack-library.js', import.meta.url);
 const autoPackEnginePath = new URL('../../src/services/autopack-engine.js', import.meta.url);
 const autoPackLegacySolverPath = new URL('../../src/services/autopack-legacy-solver.js', import.meta.url);
 const autoPackSolverPath = new URL('../../src/services/autopack-solver.js', import.meta.url);
 const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
+const casesScreenPath = new URL('../../src/screens/cases-screen.js', import.meta.url);
 const stylesMainPath = new URL('../../styles/main.css', import.meta.url);
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
 const normalizerPath = new URL('../../src/core/normalizer.js', import.meta.url);
 const caseModelPath = new URL('../../src/data/models/case.model.js', import.meta.url);
+const coreUtilsPath = new URL('../../src/core/utils.js', import.meta.url);
+const coreUtilsIndexPath = new URL('../../src/core/utils/index.js', import.meta.url);
 const corsSharedPath = new URL('../../supabase/functions/_shared/cors.ts', import.meta.url);
 const supabasePath = new URL('../../src/core/supabase-client.js', import.meta.url);
 const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.meta.url);
 const settingsOverlayPath = new URL('../../src/ui/overlays/settings-overlay.js', import.meta.url);
+const caseModalPath = new URL('../../src/ui/overlays/case-modal.js', import.meta.url);
 const helpModalPath = new URL('../../src/ui/overlays/help-modal.js', import.meta.url);
 const importAppDialogPath = new URL('../../src/ui/overlays/import-app-dialog.js', import.meta.url);
 const importPackDialogPath = new URL('../../src/ui/overlays/import-pack-dialog.js', import.meta.url);
@@ -143,6 +148,20 @@ const autoPackEditorCollisionFiles = new Set([
   'src/screens/editor-screen.js',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);
+const editorInspectorPolishFiles = new Set([
+  'index.html',
+  'src/app.js',
+  'src/core/utils.js',
+  'src/core/utils/index.js',
+  'src/screens/cases-screen.js',
+  'src/screens/editor-screen.js',
+  'src/screens/packs-screen.js',
+  'src/services/case-library.js',
+  'src/ui/overlays/case-modal.js',
+  'src/ui/overlays/settings-overlay.js',
+  'styles/main.css',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
 
 function isNotCurrentReleaseGateCheckoutPatch(file) {
   return file !== releaseGateCheckoutIdempotencyFile &&
@@ -154,7 +173,8 @@ function isNotCurrentReleaseGateCheckoutPatch(file) {
     !autoPackA1R1Files.has(file) &&
     !autoPackA1Clean1Files.has(file) &&
     !autoPackA1Clean2Files.has(file) &&
-    !autoPackEditorCollisionFiles.has(file);
+    !autoPackEditorCollisionFiles.has(file) &&
+    !editorInspectorPolishFiles.has(file);
 }
 
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
@@ -1029,7 +1049,8 @@ test('AUTO-PACK-A0/A0B changed files stay in approved orientation lock scope', a
     .filter(file => !autoPackA0BFiles.has(file) &&
       !autoPackA1R1Files.has(file) &&
       !autoPackA1Clean1Files.has(file) &&
-      !autoPackA1Clean2Files.has(file));
+      !autoPackA1Clean2Files.has(file) &&
+      !editorInspectorPolishFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'AUTO-PACK-A0/A0B must only edit AutoPack, editor rotation, normalization, pack geometry helpers, and audit tests');
@@ -1052,7 +1073,8 @@ test('AUTO-PACK-A1-2 changed files stay in approved floor-pass scope', async () 
       !autoPackA1R1Files.has(file) &&
       !autoPackA1Clean1Files.has(file) &&
       !autoPackA1Clean2Files.has(file) &&
-      !autoPackEditorCollisionFiles.has(file));
+      !autoPackEditorCollisionFiles.has(file) &&
+      !editorInspectorPolishFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'AUTO-PACK-A1-2 must only edit AutoPack placement flow and audit tests');
@@ -1134,7 +1156,8 @@ test('AUTO-PACK-A1-R1 changed files stay in approved logistics scaffold scope', 
     .filter(file => !autoPackA1R1Files.has(file) &&
       !autoPackA1Clean1Files.has(file) &&
       !autoPackA1Clean2Files.has(file) &&
-      !autoPackEditorCollisionFiles.has(file));
+      !autoPackEditorCollisionFiles.has(file) &&
+      !editorInspectorPolishFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
     'AUTO-PACK-A1-R1 must only edit solver scaffold, normalizers, case model, and audit tests');
@@ -2342,6 +2365,343 @@ test('AUTO-PACK-A0 manual editor rotate and flip paths set per-instance orientat
     'single inspector rotate/flip buttons must lock manual orientation');
   assert.match(singleBlock, /TODO\(AUTO-PACK-A0\): when reset-orientation UI is added, apply PackLibrary\.clearOrientationLockPatch\(\)/,
     'no reset UI exists yet, so reset support must remain documented without broad UI changes');
+});
+
+test('EDITOR selection Actions cards stay minimal, ordered, and bound to existing workflows', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const selectAllStart = src.indexOf('function selectAllCases(pack)');
+  const selectAllEnd = src.indexOf('function makeSelectAllButton(pack', selectAllStart);
+  const selectAllBlock = selectAllStart >= 0 && selectAllEnd > selectAllStart
+    ? src.slice(selectAllStart, selectAllEnd)
+    : '';
+  const makeSelectStart = src.indexOf('function makeSelectAllButton(pack');
+  const makeSelectEnd = src.indexOf('function renderTruckInspector(pack, prefs)', makeSelectStart);
+  const makeSelectBlock = makeSelectStart >= 0 && makeSelectEnd > makeSelectStart
+    ? src.slice(makeSelectStart, makeSelectEnd)
+    : '';
+  const truckStart = src.indexOf('function renderTruckInspector(pack, prefs)');
+  const truckEnd = src.indexOf('function renderMultiInspector(pack, selected)', truckStart);
+  const truckBlock = truckStart >= 0 && truckEnd > truckStart ? src.slice(truckStart, truckEnd) : '';
+  const multiStart = src.indexOf('function renderMultiInspector(pack, selected)');
+  const multiEnd = src.indexOf('function renderSingleInspector(pack, inst, caseData, prefs)', multiStart);
+  const multiBlock = multiStart >= 0 && multiEnd > multiStart ? src.slice(multiStart, multiEnd) : '';
+  const singleStart = src.indexOf('function renderSingleInspector(pack, inst, caseData, prefs)');
+  const singleEnd = src.indexOf('\n    /**\n     * Creates a card header row', singleStart);
+  const singleBlock = singleStart >= 0 && singleEnd > singleStart ? src.slice(singleStart, singleEnd) : '';
+
+  assert.match(selectAllBlock, /InteractionManager\.selectAllInPack\(\)/,
+    'Actions Select All must reuse the existing InteractionManager selection path');
+  assert.match(makeSelectBlock, /label: 'Select All'[\s\S]*iconHtml: selectAllIconSvg\(\)/,
+    'multi-select Actions card must render the custom stacked-select icon with Select All');
+  assert.match(makeSelectBlock, /selectedCount\s*>=\s*totalCount/,
+    'Select All should disable itself once the full pack is already selected');
+  assert.match(makeSelectBlock, /function makeActionButton\(\{ label,[\s\S]*btn\.style\.width = '100%'[\s\S]*btn\.style\.justifyContent = 'center'[\s\S]*btn\.style\.minWidth = '0'/,
+    'Actions buttons must share one equal-width button helper without adding new CSS classes');
+  assert.match(makeSelectBlock, /function configureActionGrid\(row\)[\s\S]*row\.style\.display = 'grid'[\s\S]*row\.style\.gridTemplateColumns = 'repeat\(2, minmax\(0, 1fr\)\)'/,
+    'Actions cards must use an equal two-column layout without new CSS classes');
+  assert.match(makeSelectBlock, /function makeVisibilityButton\(pack, selectedIds\)[\s\S]*instances\.every\(inst => inst\.hidden === true\)[\s\S]*label: showSelection \? 'Show' : 'Hide'[\s\S]*hidden: !showSelection/,
+    'Actions cards must use one consistent Show/Hide toggle based on selected hidden state');
+  assert.match(makeSelectBlock, /function duplicateAabbIntersects\(a,\s*b\)[\s\S]*a\.min\.x < b\.max\.x - EPS[\s\S]*a\.max\.z > b\.min\.z \+ EPS/,
+    'Actions Duplicate must use an AABB collision guard before saving clones');
+  assert.match(makeSelectBlock, /function isDuplicateInsideTruck\(pack,\s*aabb\)[\s\S]*TrailerGeometry\.getTrailerUsableZones\(pack\.truck\)[\s\S]*TrailerGeometry\.isAabbContainedInAnyZone\(aabb,\s*zones\)/,
+    'Actions Duplicate must use existing TrailerGeometry usable zones for inside-truck checks');
+  assert.match(makeSelectBlock, /function findDuplicateOffset\(pack,\s*payload,\s*existingAabbs\)[\s\S]*duplicateOffsetIsSafe\(pack,\s*payload,\s*existingAabbs,\s*offset,\s*true\)[\s\S]*duplicateOffsetIsSafe\(pack,\s*payload,\s*existingAabbs,\s*offset,\s*false\)/,
+    'Actions Duplicate must try safe in-truck placement first, then collision-free staging');
+  assert.doesNotMatch(makeSelectBlock, /position:\s*\{\s*x:\s*pos\.x \+ 12,\s*y:\s*pos\.y,\s*z:\s*pos\.z \+ 12/,
+    'Actions Duplicate must not use the old fixed +12 inch offset that can overlap selected boxes');
+  assert.doesNotMatch(src, /function deleteAllCases|Delete All|renderPackActionsCard/,
+    'editor must not add a separate Delete All path or no-selection Actions card');
+  assert.doesNotMatch(truckBlock, /makeSelectAllButton|Actions/,
+    'truck inspector must stay focused on truck editing and stats');
+  assert.match(multiBlock, /const btnSelectAll = makeSelectAllButton\(pack,\s*selected\.length\)/,
+    'multi-select Actions card must include Select All');
+  assert.match(multiBlock, /InteractionManager\.deleteSelection\(\)/,
+    'multi-select Delete must keep using the existing selected-delete binding');
+  assert.match(multiBlock, /const btnDuplicate = makeActionButton\(\{[\s\S]*onClick: \(\) => duplicateSelection\(pack,\s*selected\)/,
+    'multi-select Duplicate must use the shared duplicate helper');
+  assert.match(multiBlock, /const btnClear = makeActionButton\(\{[\s\S]*onClick: \(\) => InteractionManager\.setSelection\(\[\]\)/,
+    'multi-select Deselect must clear both state and scene selection through InteractionManager');
+  assert.doesNotMatch(multiBlock, /const btnShow|const btnHide/,
+    'multi-select Actions must use one visibility toggle instead of separate Show and Hide buttons');
+  assert.match(multiBlock,
+    /actRow\.appendChild\(btnSetCategory\);[\s\S]*actRow\.appendChild\(btnVisibility\);[\s\S]*actRow\.appendChild\(btnSelectAll\);[\s\S]*actRow\.appendChild\(btnClear\);[\s\S]*actRow\.appendChild\(btnDuplicate\);[\s\S]*actRow\.appendChild\(btnDelete\);/,
+    'multi-select Actions order must be Set Category, Show/Hide, Select All, Deselect, Duplicate, Delete');
+  assert.match(singleBlock, /const selectAll = makeSelectAllButton\(pack,\s*1\)/,
+    'single-item Actions card must include Select All through the shared helper');
+  assert.match(singleBlock, /const setCategory = makeActionButton\(\{[\s\S]*onClick: \(\) => openSetCategoryModal\(pack,\s*\[inst\.id\]\)/,
+    'single-item Set Category must reuse the shared category modal');
+  assert.match(singleBlock, /const visibility = makeVisibilityButton\(pack,\s*\[inst\.id\]\)/,
+    'single-item Actions must use the same Show/Hide toggle helper as multi-select');
+  assert.match(singleBlock, /const duplicate = makeActionButton\(\{[\s\S]*onClick: \(\) => duplicateSelection\(pack,\s*\[inst\.id\]\)/,
+    'single-item Duplicate must use the shared duplicate helper');
+  assert.doesNotMatch(singleBlock, /const show|const hide/,
+    'single-item Actions must use one visibility toggle instead of separate Show and Hide buttons');
+  assert.match(singleBlock,
+    /actRow\.appendChild\(setCategory\);[\s\S]*actRow\.appendChild\(visibility\);[\s\S]*actRow\.appendChild\(selectAll\);[\s\S]*actRow\.appendChild\(clear\);[\s\S]*actRow\.appendChild\(duplicate\);[\s\S]*actRow\.appendChild\(deleteButton\);/,
+    'single-item Actions order must be Set Category, Show/Hide, Select All, Deselect, Duplicate, Delete');
+  assert.doesNotMatch(singleBlock, /Unhide|Remove/,
+    'single-item Actions must avoid ambiguous Unhide/Remove labels');
+});
+
+test('EDITOR inspector unit labels follow preferences and repaint on preference changes', async () => {
+  const [editorSrc, appSrc] = await Promise.all([
+    fs.readFile(editorScreenPath, 'utf8'),
+    fs.readFile(appPath, 'utf8'),
+  ]);
+  const truckStart = editorSrc.indexOf('function renderTruckInspector(pack, prefs)');
+  const truckEnd = editorSrc.indexOf('function renderMultiInspector(pack, selected)', truckStart);
+  const truckBlock = truckStart >= 0 && truckEnd > truckStart ? editorSrc.slice(truckStart, truckEnd) : '';
+  const singleStart = editorSrc.indexOf('function renderSingleInspector(pack, inst, caseData, prefs)');
+  const singleEnd = editorSrc.indexOf('\n    /**\n     * Creates a card header row', singleStart);
+  const singleBlock = singleStart >= 0 && singleEnd > singleStart ? editorSrc.slice(singleStart, singleEnd) : '';
+  const prefStart = appSrc.indexOf('if (changes.preferences || changes._undo || changes._redo || changes._replace)');
+  const prefEnd = appSrc.indexOf('if (changes.currentScreen || changes._replace)', prefStart);
+  const prefBlock = prefStart >= 0 && prefEnd > prefStart ? appSrc.slice(prefStart, prefEnd) : '';
+
+  assert.match(editorSrc, /function getLengthUnit\(prefs\)[\s\S]*return prefs && prefs\.units && prefs\.units\.length \? prefs\.units\.length : 'in'/,
+    'editor inspector must use a safe length-unit helper');
+  assert.match(editorSrc, /function displayLengthToInches\(value,\s*fallbackInches,\s*unit\)[\s\S]*Utils\.unitToInches\(n,\s*unit \|\| 'in'\)/,
+    'editor inspector must convert displayed values back to internal inches before save');
+  assert.match(truckBlock, /const lengthUnit = getLengthUnit\(prefs\)/,
+    'truck inspector must derive its display unit from preferences');
+  assert.match(truckBlock, /smallField\(`Length \(\$\{lengthUnit\}\)`,\s*Utils\.inchesToUnit\(pack\.truck\.length,\s*lengthUnit\)\)/,
+    'truck length field must display the active length unit');
+  assert.match(truckBlock, /length:\s*Math\.max\(24,\s*displayLengthToInches\(fL\.input\.value,\s*pack\.truck\.length,\s*lengthUnit\)\)/,
+    'truck length save must convert the displayed unit back to inches');
+  assert.match(truckBlock, /smallField\(`Length \(\$\{lengthUnit\}\)`,\s*Utils\.inchesToUnit\(bonusLength,\s*lengthUnit\)\)/,
+    'front overhang config fields must display the active length unit');
+  assert.match(truckBlock, /wellOffsetFromRear:\s*Utils\.clamp\(displayLengthToInches\(fWO\.input\.value,\s*wellOffset,\s*lengthUnit\)/,
+    'wheel well config fields must save active-unit values back to inches');
+  assert.doesNotMatch(truckBlock, /smallField\('Length \(in\)'|smallField\('Width \(in\)'|smallField\('Height \(in\)'/,
+    'truck inspector must not hardcode inch labels');
+  assert.match(singleBlock, /sub\.textContent = `\$\{mfg\} • \$\{Utils\.formatDims\(d,\s*lengthUnit\)\}`/,
+    'selected case subtitle must use the active length unit');
+  assert.match(singleBlock, /inlinePositionField\('X',\s*lengthUnit,\s*Utils\.inchesToUnit\(pos\.x,\s*lengthUnit\)\)/,
+    'position inputs must use compact inline fields with active-unit values');
+  assert.match(prefBlock, /if \(StateStore\.get\('currentScreen'\) === 'editor'\) EditorUI\.render\(\);/,
+    'preference changes must immediately re-render the editor inspector');
+});
+
+test('PREFERENCES remove millimeter selection and use hidden-opacity slider', async () => {
+  const [settingsSrc, indexSrc, appSrc, utilsSrc, utilsIndexSrc] = await Promise.all([
+    fs.readFile(settingsOverlayPath, 'utf8'),
+    fs.readFile(indexHtmlPath, 'utf8'),
+    fs.readFile(appPath, 'utf8'),
+    fs.readFile(coreUtilsPath, 'utf8'),
+    fs.readFile(coreUtilsIndexPath, 'utf8'),
+  ]);
+  const { normalizePreferences } = await import(
+    `${normalizerPath.href}?t=${Date.now()}-${Math.random()}`
+  );
+  const normalized = normalizePreferences({ units: { length: 'mm', weight: 'lb' } });
+
+  assert.doesNotMatch(settingsSrc, /Millimeters|value="mm"|value='mm'/,
+    'active settings overlay must not offer millimeters as a length preference');
+  assert.doesNotMatch(indexSrc, /Millimeters|value="mm"|value='mm'/,
+    'legacy settings markup must not expose a stale millimeter option');
+  assert.match(utilsSrc, /export const lengthUnits = \['in', 'ft', 'cm', 'm'\]/,
+    'primary utility length units must exclude mm from selectable preferences');
+  assert.match(utilsIndexSrc, /export const lengthUnits = \['in', 'ft', 'cm', 'm'\]/,
+    'stable utility index length units must exclude mm from selectable preferences');
+  assert.match(utilsSrc, /case 'mm':[\s\S]*inches \* 25\.4[\s\S]*case 'mm':[\s\S]*value \/ 25\.4/,
+    'mm conversion support must remain for old imported or persisted values');
+  assert.notEqual(normalized.units.length, 'mm',
+    'normalization must not preserve mm as an active preference');
+  assert.match(settingsSrc, /hiddenOpacity\.type = 'range'[\s\S]*hiddenOpacity\.min = '0'[\s\S]*hiddenOpacity\.max = '1'[\s\S]*hiddenOpacity\.step = '0\.05'/,
+    'active settings overlay must render hidden opacity as a 0-1 range slider');
+  assert.match(settingsSrc, /hiddenOpacityValue\.textContent = Number\(hiddenOpacity\.value\)\.toFixed\(2\)/,
+    'hidden opacity slider must show its current numeric value');
+  assert.match(indexSrc, /id="pref-hidden-opacity" type="range" min="0" max="1" step="0\.05"/,
+    'legacy settings markup must also use a range slider for hidden opacity');
+  assert.match(indexSrc, /id="pref-hidden-opacity-value"[\s\S]*0\.30/,
+    'legacy settings markup must show the hidden opacity value beside the slider');
+  assert.match(appSrc, /const elHiddenValue[\s\S]*document\.getElementById\('pref-hidden-opacity-value'\)/,
+    'legacy settings controller must bind the hidden opacity value readout');
+  assert.match(appSrc, /elHidden\.addEventListener\('input', syncHiddenOpacityValue\)/,
+    'hidden opacity readout must update while the slider moves');
+  assert.match(appSrc, /elHiddenValue\.textContent = Number\(elHidden\.value\)\.toFixed\(2\)/,
+    'legacy settings controller must format the hidden opacity readout consistently');
+});
+
+test('EDITOR Case Browser New Case shortcut uses shared modal without adding to pack', async () => {
+  const [editorSrc, casesSrc, modalSrc, stylesSrc] = await Promise.all([
+    fs.readFile(editorScreenPath, 'utf8'),
+    fs.readFile(casesScreenPath, 'utf8'),
+    fs.readFile(caseModalPath, 'utf8'),
+    fs.readFile(stylesMainPath, 'utf8'),
+  ]);
+  const editorModalStart = editorSrc.indexOf('function openEditorNewCaseModal()');
+  const editorModalEnd = editorSrc.indexOf('function setCaseFiltersVisible', editorModalStart);
+  const editorModalBlock = editorModalStart >= 0 && editorModalEnd > editorModalStart
+    ? editorSrc.slice(editorModalStart, editorModalEnd)
+    : '';
+
+  assert.match(casesSrc, /import \{ openCaseModal as openSharedCaseModal \} from '\.\.\/ui\/overlays\/case-modal\.js'/,
+    'Cases page must use the shared Case modal implementation');
+  assert.match(editorSrc, /import \{ openCaseModal as openSharedCaseModal \} from '\.\.\/ui\/overlays\/case-modal\.js'/,
+    'Editor Case Browser shortcut must use the shared Case modal implementation');
+  assert.match(editorSrc, /btnNewCase\.setAttribute\('data-role', 'editor-new-case'\)[\s\S]*openEditorNewCaseModal\(\)/,
+    'Editor Case Browser must expose a New Case shortcut button');
+  assert.match(editorSrc, /const browserControlsHost = caseSearchEl \? caseSearchEl\.closest\('\.tp3d-editor-case-search'\) : null/,
+    'Editor Case Browser tabs must be anchored in the sticky search block');
+  assert.doesNotMatch(editorSrc, /caseListEl\.parentElement\.insertBefore\(tabsEl, caseListEl\)/,
+    'Editor Case Browser tabs must not be injected into the scrollable case list');
+  assert.match(editorSrc, /btnNewCase\.setAttribute\('aria-label', 'New case'\)[\s\S]*btnNewCase\.innerHTML = '<i class="fa-solid fa-plus"><\/i>'/,
+    'Editor New Case shortcut must remain icon-only with an accessible label');
+  assert.doesNotMatch(editorSrc, /tp3d-editor-browser-tabs-spacer/,
+    'Editor Case Browser toolbar must not include a spacer that pushes the New Case button away');
+  assert.doesNotMatch(stylesSrc, /\.tp3d-editor-browser-tabs-spacer/,
+    'stale Case Browser toolbar spacer CSS must be removed');
+  assert.match(stylesSrc, /\.tp3d-editor-new-case-btn \{[\s\S]*display: inline-flex;[\s\S]*align-items: center;[\s\S]*justify-content: center;/,
+    'Editor New Case icon-only button must be visually centered');
+  assert.match(editorModalBlock, /openSharedCaseModal\(\{[\s\S]*onSaved: \(\) => \{[\s\S]*caseSearchEl\.value = ''[\s\S]*browserCats\.clear\(\)[\s\S]*caseBrowserGroupBy = 'category'[\s\S]*renderCaseBrowser\(\)/,
+    'saving a case from the editor must refresh and reveal it in the Case Browser');
+  assert.doesNotMatch(editorModalBlock, /addCaseToPack|PackLibrary\.add|PackLibrary\.update\(/,
+    'Editor New Case shortcut must not add the new case to the current pack');
+  assert.match(modalSrc, /export function formatCaseModalNumber\(value, unit\)[\s\S]*m: 4/,
+    'shared Case modal must use unit-aware numeric formatting');
+  assert.match(modalSrc, /fL\.input\.value = formatCaseModalNumber\(Utils\.inchesToUnit\(initial\.dimensions\.length, lengthUnit\), lengthUnit\)/,
+    'Case modal length input must avoid raw floating-point conversion strings');
+  assert.doesNotMatch(modalSrc, /String\(Utils\.inchesToUnit/,
+    'Case modal must not write raw conversion values directly into number inputs');
+  assert.match(modalSrc, /CategoryService\.listWithCounts\(CaseLibrary\.getCases\(\)\)/,
+    'shared Case modal must load project-aware categories from the case library, including imported categories');
+  assert.doesNotMatch(modalSrc, /const catOptions = CategoryService\.all\(\)/,
+    'shared Case modal must not be limited to default or preference-only categories');
+  assert.match(modalSrc, /catSelect\.value = catOptions\.some\(c => c\.key === desiredKey\) \? desiredKey : 'default'/,
+    'shared Case modal must preserve a current category when it exists in project categories');
+  assert.match(modalSrc, /catColorInput\.type = 'color'[\s\S]*catColorInput\.setAttribute\('aria-label', 'Category color'\)/,
+    'shared Case modal category swatch must expose a real color input');
+  assert.match(modalSrc, /CategoryService\.upsert\(\{ key: categoryKey, name: catMeta\.name, color: categoryColor \}\)/,
+    'shared Case modal must persist edited category colors through CategoryService');
+  assert.match(modalSrc, /color: categoryColor/,
+    'saved case data must use the edited category color');
+  assert.doesNotMatch(modalSrc, /tp3d-cases-new-category-toggle|New category'/,
+    'shared Case modal must not render a redundant New category toggle above the add row');
+  assert.match(modalSrc, /newCatName\.placeholder = 'Add New Category Name'/,
+    'shared Case modal new category row must use clear placeholder copy');
+  assert.match(modalSrc, /newCatSave\.innerHTML = '<i class="fa-solid fa-plus"><\/i> Add'/,
+    'shared Case modal new category row must keep a single explicit + Add action');
+  assert.match(modalSrc, /newCatColorSwatch\.classList\.add\('tp3d-cases-cat-swatch'\)[\s\S]*newCatColor\.className = 'tp3d-cases-cat-color-input'/,
+    'shared Case modal new category color must reuse the standard category swatch style');
+  assert.doesNotMatch(stylesSrc, /tp3d-cases-new-category-toggle|tp3d-cases-color-btn/,
+    'stale category toggle and raw color button CSS must be removed');
+  assert.match(modalSrc, /findDuplicateCategory\(nextName\)[\s\S]*Category "\$\{duplicate\.name\}" already exists/,
+    'shared Case modal must warn instead of creating duplicate categories');
+  assert.match(casesSrc, /function findDuplicateCategoryName\(name, excludeKey = ''\)/,
+    'Cases screen category editing must share an explicit duplicate-category guard');
+  assert.match(casesSrc, /colorWrap\.classList\.add\('tp3d-cases-cat-swatch'\)[\s\S]*color\.className = 'tp3d-cases-cat-color-input'/,
+    'category edit modal must reuse the standard category swatch style');
+  assert.match(casesSrc, /colorWrap\.classList\.add\('tp3d-cases-cat-swatch', 'tp3d-cases-catmgr-color-wrap'\)[\s\S]*color\.className = 'tp3d-cases-cat-color-input'/,
+    'category manager color pickers must reuse the standard category swatch style');
+  assert.match(editorSrc, /colorWrap\.classList\.add\('tp3d-cases-cat-swatch'\)[\s\S]*colorInput\.className = 'tp3d-cases-cat-color-input'/,
+    'editor Set Category color picker must reuse the standard category swatch style');
+  assert.match(casesSrc, /findDuplicateCategoryName\(nextName, initial\.key\)[\s\S]*Category "\$\{duplicate\.name\}" already exists/,
+    'category edit modal must block duplicate renames with a warning');
+  assert.match(casesSrc, /findDuplicateCategoryName\(name\.value, cat\.key\)[\s\S]*Category "\$\{duplicate\.name\}" already exists/,
+    'category manager rows must block duplicate renames with a warning');
+  assert.match(casesSrc, /CategoryService\.listWithCounts\(CaseLibrary\.getCases\(\)\)\.forEach\(cat => \{/,
+    'category manager must include imported/project categories, not only preference defaults');
+});
+
+test('CASE filters normalize imported category keys before matching cases', async () => {
+  const src = await fs.readFile(caseLibraryPath, 'utf8');
+
+  assert.match(src, /function normalizeCategoryFilterKey\(value\)/,
+    'case library must centralize category key normalization');
+  assert.match(src, /const cats = \(categoryKeys \|\| \[\]\)[\s\S]*\.map\(normalizeCategoryFilterKey\)[\s\S]*\.filter\(k => k && k !== 'all'\)/,
+    'case search must normalize selected category filter keys');
+  assert.match(src, /const caseCategory = normalizeCategoryFilterKey\(c\.category \|\| 'default'\) \|\| 'default'/,
+    'case search must normalize raw case category values before filtering');
+  assert.doesNotMatch(src, /cats\.includes\(c\.category\)/,
+    'case search must not compare normalized chip keys against raw category names');
+  assert.match(src, /function countsByCategory\(\)[\s\S]*normalizeCategoryFilterKey\(c\.category \|\| 'default'\)/,
+    'category counts should use the same normalized category keys as filters');
+});
+
+test('CASE and editor filter panels render as bounded vertical lists', async () => {
+  const src = await fs.readFile(stylesMainPath, 'utf8');
+  const casesSrc = await fs.readFile(casesScreenPath, 'utf8');
+  const indexSrc = await fs.readFile(indexHtmlPath, 'utf8');
+
+  assert.match(src, /\.tp3d-cases-filter-anchor,[\s\S]*\.tp3d-packs-filter-anchor \{[\s\S]*position: relative;/,
+    'Cases screen filters must be anchored to the search toolbar');
+  assert.match(src, /#cases-filters,[\s\S]*#packs-filters \{[\s\S]*position: absolute;[\s\S]*top: 35px;[\s\S]*left: 0;/,
+    'Cases and Packs filters must overlay below the toolbar instead of pushing page content down');
+  assert.match(src, /#cases-filters,[\s\S]*#packs-filters \{[\s\S]*flex-direction: column;/,
+    'Cases and Packs filters must render as vertical lists');
+  assert.match(src, /#cases-filters,[\s\S]*#packs-filters \{[\s\S]*width: min\(220px, 100%\);/,
+    'Cases and Packs filters must stay compact while overlaying page content');
+  assert.match(src, /#cases-filters \.chip,[\s\S]*#packs-filters \.chip,[\s\S]*#editor-case-chips \.chip \{[\s\S]*width: 100%;[\s\S]*min-width: 0;[\s\S]*justify-content: flex-start;/,
+    'Cases, Packs, and editor filter chips must use full-width list rows');
+  assert.match(src, /#cases-filters \.chip span:last-child,[\s\S]*#packs-filters \.chip span:last-child,[\s\S]*#editor-case-chips \.chip span:last-child \{[\s\S]*text-overflow: ellipsis;[\s\S]*white-space: nowrap;/,
+    'filter chip labels must truncate instead of overflowing or clipping the side panel');
+  assert.match(src, /\.dropdown\[data-role='categories'\] \{[\s\S]*top: 195px !important;[\s\S]*width: min\(240px, calc\(100vw - 16px\)\) !important;/,
+    'Cases category management dropdown must sit lower and stay compact');
+  assert.match(src, /#editor-case-chips \{[\s\S]*left: var\(--space-3\);/,
+    'Editor Case Browser filters must be bounded by the fixed search block');
+  assert.match(src, /#editor-case-chips \{[\s\S]*right: var\(--space-3\);/,
+    'Editor Case Browser filters must be bounded by the fixed search block');
+  assert.match(src, /#editor-case-chips \{[\s\S]*width: auto;/,
+    'Editor Case Browser filters must be bounded by the fixed search block');
+  assert.match(src, /#editor-case-chips \{[\s\S]*flex-direction: column;[\s\S]*flex-wrap: nowrap;/,
+    'Editor Case Browser filters must not wrap into clipped side-by-side columns');
+  assert.match(src, /#editor-case-chips \{[\s\S]*z-index: 80;/,
+    'Editor Case Browser filters must layer above the case list');
+  assert.doesNotMatch(indexSrc, /id="(?:cases|editor-case)-filters-toggle"[\s\S]{0,180}data-tooltip="Toggle filters"/,
+    'filter toggle buttons must not render a tooltip over the open filter panel');
+  assert.doesNotMatch(casesSrc, /Close filter popup when clicking outside|casesFiltersVisible = false[\s\S]*applyFiltersVisibility\(\);[\s\S]*document\.addEventListener\('click'/,
+    'Cases screen filters are an in-page list and must not use stale outside-click popover closing');
+});
+
+test('EDITOR and Packs filter popups include total All counts', async () => {
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  const packsSrc = await fs.readFile(packsScreenPath, 'utf8');
+  const indexSrc = await fs.readFile(indexHtmlPath, 'utf8');
+
+  assert.match(editorSrc, /const allFilterCount = CaseLibrary\.getCases\(\)\.length/,
+    'Editor Case Browser filter popup must compute the total case count');
+  assert.match(editorSrc, /`All: \$\{allFilterCount\}`/,
+    'Editor Case Browser All filter must display its count');
+  assert.match(indexSrc, /id=["']packs-filter-chip-all["']/,
+    'Packs status filter popup must include an All chip');
+  assert.match(packsSrc, /function updateStatusFilterChips\(packs\)/,
+    'Packs status filter popup must refresh status counts');
+  assert.match(packsSrc, /setChip\(chipAll, ['"]All['"], counts\.all, !anyActive\)/,
+    'Packs All status chip must display the total pack count');
+});
+
+test('EDITOR Case Browser filter popup supports manufacturer grouping', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  assert.match(src, /const browserManufacturers = new Set\(\)/,
+    'editor Case Browser must track manufacturer filters separately from category filters');
+  assert.match(src, /function getManufacturerFilterOptions\(cases\)/,
+    'editor Case Browser must build manufacturer filter options');
+  assert.match(src, /function getManufacturerFilterColor\(value\)/,
+    'editor Case Browser manufacturer chips must use deterministic colors instead of neutral gray only');
+  assert.match(src, /color: getManufacturerFilterColor\(label\)/,
+    'manufacturer filter options must carry a display color');
+  assert.match(src, /caseBrowserGroupBy === 'manufacturer' && browserManufacturers\.size[\s\S]*cases = cases\.filter\(c => browserManufacturers\.has\(getManufacturerFilterKey\(c && c\.manufacturer\)\)\)/,
+    'manufacturer tab must filter visible cases by selected manufacturer chips');
+  assert.match(src, /const activeBrowserFilters = caseBrowserGroupBy === 'manufacturer' \? browserManufacturers : browserCats/,
+    'filter chip state must switch between manufacturer and category mode');
+  assert.match(src, /caseBrowserGroupBy === 'manufacturer'[\s\S]*getManufacturerFilterOptions\(CaseLibrary\.getCases\(\)\)[\s\S]*CategoryService\.listWithCounts\(CaseLibrary\.getCases\(\)\)/,
+    'filter popup must render manufacturer options in manufacturer mode and category options otherwise');
+  assert.doesNotMatch(src, /caseChipsEl\.hidden = true; caseChipsEl\.style\.display = 'none'/,
+    'manufacturer mode must not disable the filter popup');
+  assert.match(src, /browserManufacturers\.clear\(\)[\s\S]*caseBrowserGroupBy = 'category'/,
+    'saving a new case from the editor must clear stale manufacturer filters');
+});
+
+test('EDITOR multi-select summary removes shortcut helper copy', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const multiStart = src.indexOf('function renderMultiInspector(pack, selected)');
+  const multiEnd = src.indexOf('function renderSingleInspector(pack, inst, caseData, prefs)', multiStart);
+  const multiBlock = multiStart >= 0 && multiEnd > multiStart ? src.slice(multiStart, multiEnd) : '';
+
+  assert.doesNotMatch(multiBlock, /Shift\+Click to add\/remove\. Ctrl\/Cmd\+A select all\. Delete to remove\./,
+    'multi-select inspector summary must not duplicate the future shortcuts area');
 });
 
 test('EDITOR movement paths reject collisions before persisting moved positions', async () => {
@@ -6629,18 +6989,24 @@ test('phase 0.7C-1B preserves Empty Partial Full filter chips', async () => {
   const indexSrc = await fs.readFile(indexHtmlPath, 'utf8');
   const packsSrc = await fs.readFile(packsScreenPath, 'utf8');
 
+  assert.match(indexSrc, /id=["']packs-filter-chip-all["']/,
+    'All filter chip must remain in index.html');
   assert.match(indexSrc, /id=["']packs-filter-chip-empty["']/,
     'Empty filter chip must remain in index.html');
   assert.match(indexSrc, /id=["']packs-filter-chip-partial["']/,
     'Partial filter chip must remain in index.html');
   assert.match(indexSrc, /id=["']packs-filter-chip-full["']/,
     'Full filter chip must remain in index.html');
+  assert.match(packsSrc, /wireChip\(chipAll, ['"]all['"]\)/,
+    'All filter chip wiring must remain');
   assert.match(packsSrc, /wireChip\(chipEmpty, ['"]empty['"]\)/,
     'Empty filter chip wiring must remain');
   assert.match(packsSrc, /wireChip\(chipPartial, ['"]partial['"]\)/,
     'Partial filter chip wiring must remain');
   assert.match(packsSrc, /wireChip\(chipFull, ['"]full['"]\)/,
     'Full filter chip wiring must remain');
+  assert.match(packsSrc, /filters\.empty = false;[\s\S]*filters\.partial = false;[\s\S]*filters\.full = false;/,
+    'All filter chip must clear the status filters');
 });
 
 test('phase 0.7C-1B folders button uses scoped structure without tooltip or ghost style', async () => {

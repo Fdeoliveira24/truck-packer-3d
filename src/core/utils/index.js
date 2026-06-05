@@ -122,7 +122,7 @@ export function getUserAvatarView({ user, sessionUser, profile } = {}) {
   return { isAuthed, userId, email, displayName, initials, workspaceShareId };
 }
 
-export const lengthUnits = ['in', 'ft', 'mm', 'cm', 'm'];
+export const lengthUnits = ['in', 'ft', 'cm', 'm'];
 export const weightUnits = ['lb', 'kg'];
 
 export function inchesToUnit(inches, unit) {

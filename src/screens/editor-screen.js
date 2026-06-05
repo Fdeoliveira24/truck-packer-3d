@@ -12,6 +12,7 @@
 // ============================================================================
 
 import { createCaseGeometry } from '../editor/geometry-factory.js';
+import { openCaseModal as openSharedCaseModal } from '../ui/overlays/case-modal.js';
 
 // Editor screen + 3D interaction helpers (extracted from src/app.js; behavior preserved)
 
@@ -1342,6 +1343,7 @@ export function createEditorScreen({
     let initialized = false;
     const supportsWebGL = Utils.hasWebGL();
     const browserCats = new Set();
+    const browserManufacturers = new Set();
     let activationRaf = null;
     const caseFiltersStorageKey = 'tp3d.editor.caseBrowser.showFilters';
     let showCaseFilters = false;
@@ -1543,11 +1545,69 @@ export function createEditorScreen({
       activationRaf = window.requestAnimationFrame(attemptResize);
     }
 
+    function normalizeBrowserFilterKey(value) {
+      return String(value || '')
+        .trim()
+        .toLowerCase();
+    }
+
+    function getManufacturerFilterKey(value) {
+      return normalizeBrowserFilterKey(value) || '__no_manufacturer__';
+    }
+
+    function getManufacturerFilterLabel(value) {
+      return String(value || '').trim() || '(No manufacturer)';
+    }
+
+    function getManufacturerFilterColor(value) {
+      const key = getManufacturerFilterKey(value);
+      if (key === '__no_manufacturer__') return '#9b9ba8';
+      const palette = [
+        '#f59e0b',
+        '#3b82f6',
+        '#10b981',
+        '#ec4899',
+        '#8b5cf6',
+        '#14b8a6',
+        '#f97316',
+        '#6366f1',
+        '#84cc16',
+        '#ef4444',
+      ];
+      let hash = 0;
+      for (let i = 0; i < key.length; i += 1) {
+        hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+      }
+      return palette[hash % palette.length];
+    }
+
+    function getManufacturerFilterOptions(cases) {
+      const options = new Map();
+      (Array.isArray(cases) ? cases : []).forEach(c => {
+        const key = getManufacturerFilterKey(c && c.manufacturer);
+        const label = getManufacturerFilterLabel(c && c.manufacturer);
+        const existing = options.get(key) || { key, name: label, count: 0, color: getManufacturerFilterColor(label) };
+        existing.count += 1;
+        options.set(key, existing);
+      });
+      return Array.from(options.values()).sort((a, b) => {
+        if (a.key === '__no_manufacturer__') return 1;
+        if (b.key === '__no_manufacturer__') return -1;
+        return a.name.localeCompare(b.name);
+      });
+    }
+
     function renderCaseBrowser() {
-      if (caseListEl && caseListEl.parentElement && !caseListEl.parentElement.querySelector('.tp3d-editor-browser-tabs')) {
+      const browserControlsHost = caseSearchEl ? caseSearchEl.closest('.tp3d-editor-case-search') : null;
+      const staleBrowserControls = caseListEl && caseListEl.parentElement
+        ? caseListEl.parentElement.querySelector('.tp3d-editor-browser-tabs')
+        : null;
+      if (staleBrowserControls && browserControlsHost && staleBrowserControls.parentElement !== browserControlsHost) {
+        staleBrowserControls.remove();
+      }
+      if (browserControlsHost && !browserControlsHost.querySelector('.tp3d-editor-browser-tabs')) {
         const tabsEl = document.createElement('div');
         tabsEl.className = 'tp3d-editor-browser-tabs';
-        tabsEl.style.cssText = 'display:flex;gap:6px;padding:4px 0 8px';
         const btnCat = document.createElement('button');
         btnCat.type = 'button';
         btnCat.className = 'btn btn-sm tp3d-browser-tab';
@@ -1558,9 +1618,23 @@ export function createEditorScreen({
         btnMfg.className = 'btn btn-sm tp3d-browser-tab';
         btnMfg.dataset.groupBy = 'manufacturer';
         btnMfg.textContent = 'Manufacturer';
+        const btnNewCase = document.createElement('button');
+        btnNewCase.type = 'button';
+        btnNewCase.className = 'btn btn-sm btn-primary tp3d-editor-new-case-btn';
+        btnNewCase.setAttribute('data-role', 'editor-new-case');
+        btnNewCase.setAttribute('aria-label', 'New case');
+        btnNewCase.setAttribute('title', 'New case');
+        btnNewCase.innerHTML = '<i class="fa-solid fa-plus"></i>';
+        btnNewCase.addEventListener('click', ev => {
+          ev.stopPropagation();
+          openEditorNewCaseModal();
+        });
         tabsEl.appendChild(btnCat);
         tabsEl.appendChild(btnMfg);
-        caseListEl.parentElement.insertBefore(tabsEl, caseListEl);
+        tabsEl.appendChild(btnNewCase);
+        const searchRow = browserControlsHost.querySelector('.tp3d-editor-case-search-row');
+        if (searchRow && searchRow.nextSibling) browserControlsHost.insertBefore(tabsEl, searchRow.nextSibling);
+        else browserControlsHost.appendChild(tabsEl);
         tabsEl.addEventListener('click', ev => {
           if (!(ev.target instanceof Element)) return;
           const btn = ev.target.closest('[data-group-by]');
@@ -1577,34 +1651,41 @@ export function createEditorScreen({
 
       const q = String(caseSearchEl.value || '').trim();
       const prefs = PreferencesManager.get ? PreferencesManager.get() : { units: { length: 'in', weight: 'lb' } };
-      const cases = CaseLibrary.search(q, caseBrowserGroupBy === 'category' ? Array.from(browserCats) : []).sort((a, b) =>
-        (a.name || '').localeCompare(b.name || '')
-      );
-      const counts = CategoryService.listWithCounts(CaseLibrary.getCases());
+      const lengthUnit = (prefs.units && prefs.units.length) || 'in';
+      let cases = CaseLibrary.search(q, caseBrowserGroupBy === 'category' ? Array.from(browserCats) : []);
+      if (caseBrowserGroupBy === 'manufacturer' && browserManufacturers.size) {
+        cases = cases.filter(c => browserManufacturers.has(getManufacturerFilterKey(c && c.manufacturer)));
+      }
+      cases = cases.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      const activeBrowserFilters = caseBrowserGroupBy === 'manufacturer' ? browserManufacturers : browserCats;
+      const browserFilterOptions = caseBrowserGroupBy === 'manufacturer'
+        ? getManufacturerFilterOptions(CaseLibrary.getCases())
+        : CategoryService.listWithCounts(CaseLibrary.getCases());
+      const allFilterCount = CaseLibrary.getCases().length;
 
       caseChipsEl.innerHTML = '';
       caseChipsEl.appendChild(
         makeBrowserChip(
-          'All',
+          `All: ${allFilterCount}`,
           'all',
-          browserCats.size === 0,
+          activeBrowserFilters.size === 0,
           () => {
-            browserCats.clear();
+            activeBrowserFilters.clear();
             renderCaseBrowser();
           },
           '#9b9ba8'
         )
       );
-      counts.forEach(c => {
-        const active = browserCats.has(c.key);
+      browserFilterOptions.forEach(c => {
+        const active = activeBrowserFilters.has(c.key);
         caseChipsEl.appendChild(
           makeBrowserChip(
             `${c.name}: ${c.count}`,
             c.key,
             active,
             () => {
-              if (browserCats.has(c.key)) browserCats.delete(c.key);
-              else browserCats.add(c.key);
+              if (activeBrowserFilters.has(c.key)) activeBrowserFilters.delete(c.key);
+              else activeBrowserFilters.add(c.key);
               renderCaseBrowser();
             },
             c.color
@@ -1615,7 +1696,6 @@ export function createEditorScreen({
 
       caseListEl.innerHTML = '';
       if (caseBrowserGroupBy === 'manufacturer') {
-        if (caseChipsEl) { caseChipsEl.hidden = true; caseChipsEl.style.display = 'none'; }
         const mfgGroups = new Map();
         cases.forEach(c => {
           const key = (c.manufacturer && c.manufacturer.trim()) || '(No manufacturer)';
@@ -1650,7 +1730,7 @@ export function createEditorScreen({
               const hasDims = c && c.dimensions && Number.isFinite(c.dimensions.length) && Number.isFinite(c.dimensions.width) && Number.isFinite(c.dimensions.height);
               const meta = document.createElement('div');
               meta.className = 'tp3d-editor-card-dims tp3d-editor-case-meta-primary';
-              meta.textContent = hasDims ? `${c.dimensions.length}\u00d7${c.dimensions.width}\u00d7${c.dimensions.height} in` : '\u2014';
+              meta.textContent = hasDims ? Utils.formatDims(c.dimensions, lengthUnit) : '\u2014';
               card.appendChild(header);
               card.appendChild(meta);
               caseListEl.appendChild(card);
@@ -1679,10 +1759,10 @@ export function createEditorScreen({
           Number.isFinite(c.dimensions.length) &&
           Number.isFinite(c.dimensions.width) &&
           Number.isFinite(c.dimensions.height);
-        const dimsValue = hasDims ? `${c.dimensions.length}×${c.dimensions.width}×${c.dimensions.height} in` : '—';
+        const dimsLabel = hasDims ? Utils.formatDims(c.dimensions, lengthUnit) : '—';
         const catMeta = CategoryService.meta(c.category || 'default');
         const volumeLabel = hasDims
-          ? Utils.formatVolume(c.dimensions, (prefs.units && prefs.units.length) || 'in')
+          ? Utils.formatVolume(c.dimensions, lengthUnit)
           : '—';
         const weightNum = Number(c.weight);
         let weightLabel = '—';
@@ -1701,7 +1781,7 @@ export function createEditorScreen({
 
         const meta1 = document.createElement('div');
         meta1.className = 'tp3d-editor-card-dims tp3d-editor-case-meta-primary';
-        const parts = [dimsValue, volumeLabel, weightLabel].filter(v => v && v !== '—');
+        const parts = [dimsLabel, volumeLabel, weightLabel].filter(v => v && v !== '—');
         meta1.textContent = parts.join(' · ');
 
         const meta2 = document.createElement('div');
@@ -1718,6 +1798,25 @@ export function createEditorScreen({
         card.appendChild(meta1);
         card.appendChild(meta2);
         caseListEl.appendChild(card);
+      });
+    }
+
+    function openEditorNewCaseModal() {
+      openSharedCaseModal({
+        existing: null,
+        Utils,
+        UIComponents,
+        PreferencesManager,
+        CaseLibrary,
+        CategoryService,
+        onSaved: () => {
+          if (caseSearchEl) caseSearchEl.value = '';
+          browserCats.clear();
+          browserManufacturers.clear();
+          caseBrowserGroupBy = 'category';
+          setCaseFiltersVisible(false, false);
+          renderCaseBrowser();
+        },
       });
     }
 
@@ -1937,13 +2036,426 @@ export function createEditorScreen({
       renderSingleInspector(pack, inst, c, prefs);
     }
 
+    function selectAllCases(pack) {
+      const count = pack && Array.isArray(pack.cases) ? pack.cases.length : 0;
+      if (!count) {
+        UIComponents.showToast('No cases to select', 'info');
+        return;
+      }
+      InteractionManager.selectAllInPack();
+      render();
+    }
+
+    function makeSelectAllButton(pack, selectedCount = 0) {
+      const totalCount = pack && Array.isArray(pack.cases) ? pack.cases.length : 0;
+      return makeActionButton({
+        label: 'Select All',
+        iconHtml: selectAllIconSvg(),
+        disabled: !totalCount || selectedCount >= totalCount,
+        onClick: () => selectAllCases(pack),
+      });
+    }
+
+    function selectAllIconSvg() {
+      return [
+        '<svg aria-hidden="true" focusable="false" width="18" height="18" viewBox="0 0 24 24" fill="none"',
+        ' xmlns="http://www.w3.org/2000/svg">',
+        '<path d="M4 12.5V5.75C4 4.78 4.78 4 5.75 4h6.75" stroke="currentColor" stroke-width="2.2"',
+        ' stroke-linecap="round" stroke-linejoin="round"/>',
+        '<path d="M8 16.5V9.75C8 8.78 8.78 8 9.75 8h6.75" stroke="currentColor" stroke-width="2.2"',
+        ' stroke-linecap="round" stroke-linejoin="round"/>',
+        '<rect x="12" y="12" width="8" height="8" rx="1.8" stroke="currentColor" stroke-width="2.2"/>',
+        '<path d="M14.2 16.1l1.55 1.55 3.05-3.3" stroke="currentColor" stroke-width="2.2"',
+        ' stroke-linecap="round" stroke-linejoin="round"/>',
+        '</svg>',
+      ].join('');
+    }
+
+    function makeActionButton({ label, iconClass = '', iconHtml = '', danger = false, disabled = false, onClick }) {
+      const btn = document.createElement('button');
+      btn.className = danger ? 'btn btn-danger' : 'btn';
+      btn.type = 'button';
+      btn.style.width = '100%';
+      btn.style.justifyContent = 'center';
+      btn.style.minWidth = '0';
+      btn.style.whiteSpace = 'nowrap';
+      btn.innerHTML = `${iconHtml || `<i class="${iconClass}"></i>`} ${label}`;
+      btn.disabled = Boolean(disabled);
+      if (typeof onClick === 'function') btn.addEventListener('click', onClick);
+      return btn;
+    }
+
+    function configureActionGrid(row) {
+      row.style.display = 'grid';
+      row.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
+      row.style.gap = '8px';
+      row.style.alignItems = 'stretch';
+    }
+
+    function makeVisibilityButton(pack, selectedIds) {
+      const ids = Array.isArray(selectedIds) ? selectedIds : [];
+      const instances = ids.map(id => (pack.cases || []).find(i => i.id === id)).filter(Boolean);
+      const showSelection = instances.length > 0 && instances.every(inst => inst.hidden === true);
+      return makeActionButton({
+        label: showSelection ? 'Show' : 'Hide',
+        iconClass: showSelection ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash',
+        disabled: !instances.length,
+        onClick: () => {
+          instances.forEach(inst => PackLibrary.updateInstance(pack.id, inst.id, { hidden: !showSelection }));
+        },
+      });
+    }
+
+    function getDuplicateDims(inst) {
+      if (inst && inst.orientedDims) {
+        return {
+          length: Math.max(0, Number(inst.orientedDims.length) || 0),
+          width: Math.max(0, Number(inst.orientedDims.width) || 0),
+          height: Math.max(0, Number(inst.orientedDims.height) || 0),
+        };
+      }
+      const c = inst ? CaseLibrary.getById(inst.caseId) : null;
+      const d = c && c.dimensions ? c.dimensions : {};
+      return {
+        length: Math.max(0, Number(d.length) || 0),
+        width: Math.max(0, Number(d.width) || 0),
+        height: Math.max(0, Number(d.height) || 0),
+      };
+    }
+
+    function getDuplicatePosition(inst, dims) {
+      const position = inst && inst.transform && inst.transform.position ? inst.transform.position : null;
+      return {
+        x: Number(position && position.x) || 0,
+        y: Number(position && position.y) || Math.max(1, dims.height / 2),
+        z: Number(position && position.z) || 0,
+      };
+    }
+
+    function getDuplicateAabb(position, dims) {
+      return {
+        min: {
+          x: position.x - dims.length / 2,
+          y: position.y - dims.height / 2,
+          z: position.z - dims.width / 2,
+        },
+        max: {
+          x: position.x + dims.length / 2,
+          y: position.y + dims.height / 2,
+          z: position.z + dims.width / 2,
+        },
+      };
+    }
+
+    function duplicateAabbIntersects(a, b) {
+      const EPS = 0.001;
+      return (
+        a.min.x < b.max.x - EPS &&
+        a.max.x > b.min.x + EPS &&
+        a.min.y < b.max.y - EPS &&
+        a.max.y > b.min.y + EPS &&
+        a.min.z < b.max.z - EPS &&
+        a.max.z > b.min.z + EPS
+      );
+    }
+
+    function isDuplicateInsideTruck(pack, aabb) {
+      if (!pack || !pack.truck) return false;
+      const zones = TrailerGeometry.getTrailerUsableZones(pack.truck);
+      return TrailerGeometry.isAabbContainedInAnyZone(aabb, zones);
+    }
+
+    function buildDuplicatePayload(pack, selectedIds) {
+      const source = Array.isArray(selectedIds)
+        ? selectedIds.map(id => (pack.cases || []).find(i => i.id === id)).filter(Boolean)
+        : [];
+      return source
+        .map(inst => {
+          const dims = getDuplicateDims(inst);
+          if (!dims.length || !dims.width || !dims.height) return null;
+          return {
+            inst,
+            dims,
+            position: getDuplicatePosition(inst, dims),
+          };
+        })
+        .filter(Boolean);
+    }
+
+    function buildDuplicateBounds(payload) {
+      const initial = {
+        min: { x: Infinity, y: Infinity, z: Infinity },
+        max: { x: -Infinity, y: -Infinity, z: -Infinity },
+      };
+      return payload.reduce((bounds, item) => {
+        const aabb = getDuplicateAabb(item.position, item.dims);
+        bounds.min.x = Math.min(bounds.min.x, aabb.min.x);
+        bounds.min.y = Math.min(bounds.min.y, aabb.min.y);
+        bounds.min.z = Math.min(bounds.min.z, aabb.min.z);
+        bounds.max.x = Math.max(bounds.max.x, aabb.max.x);
+        bounds.max.y = Math.max(bounds.max.y, aabb.max.y);
+        bounds.max.z = Math.max(bounds.max.z, aabb.max.z);
+        return bounds;
+      }, initial);
+    }
+
+    function getExistingDuplicateAabbs(pack) {
+      return (pack.cases || [])
+        .filter(inst => inst && inst.hidden !== true)
+        .map(inst => {
+          const dims = getDuplicateDims(inst);
+          if (!dims.length || !dims.width || !dims.height) return null;
+          return getDuplicateAabb(getDuplicatePosition(inst, dims), dims);
+        })
+        .filter(Boolean);
+    }
+
+    function duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, requireInsideTruck) {
+      const candidateAabbs = [];
+      for (const item of payload) {
+        const position = {
+          x: item.position.x + offset.x,
+          y: item.position.y + offset.y,
+          z: item.position.z + offset.z,
+        };
+        const aabb = getDuplicateAabb(position, item.dims);
+        if (requireInsideTruck && !isDuplicateInsideTruck(pack, aabb)) return false;
+        if (existingAabbs.some(existing => duplicateAabbIntersects(aabb, existing))) return false;
+        if (candidateAabbs.some(existing => duplicateAabbIntersects(aabb, existing))) return false;
+        candidateAabbs.push(aabb);
+      }
+      return true;
+    }
+
+    function findDuplicateOffset(pack, payload, existingAabbs) {
+      if (!payload.length) return null;
+      const bounds = buildDuplicateBounds(payload);
+      const spanX = Math.max(1, bounds.max.x - bounds.min.x);
+      const spanZ = Math.max(1, bounds.max.z - bounds.min.z);
+      const sourceInsideTruck = payload.every(item =>
+        isDuplicateInsideTruck(pack, getDuplicateAabb(item.position, item.dims))
+      );
+      const insideOffsets = [
+        { x: spanX, y: 0, z: 0 },
+        { x: -spanX, y: 0, z: 0 },
+        { x: 0, y: 0, z: spanZ },
+        { x: 0, y: 0, z: -spanZ },
+        { x: spanX, y: 0, z: spanZ },
+        { x: spanX, y: 0, z: -spanZ },
+        { x: -spanX, y: 0, z: spanZ },
+        { x: -spanX, y: 0, z: -spanZ },
+      ];
+      if (sourceInsideTruck) {
+        const insideOffset = insideOffsets.find(offset =>
+          duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, true)
+        );
+        if (insideOffset) return { offset: insideOffset, staged: false };
+      }
+
+      const truck = pack && pack.truck ? pack.truck : { length: 120, width: 96 };
+      const stagingGap = 12;
+      const stageStartZ = (Number(truck.width) || 96) / 2 + 24;
+      const stageStartX = 0;
+      for (let row = 0; row < 12; row += 1) {
+        for (let col = 0; col < 12; col += 1) {
+          const stageMinX = stageStartX + col * (spanX + stagingGap);
+          const stageMinZ = stageStartZ + row * (spanZ + stagingGap);
+          const offset = {
+            x: stageMinX - bounds.min.x,
+            y: 0,
+            z: stageMinZ - bounds.min.z,
+          };
+          if (duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, false)) {
+            return { offset, staged: true };
+          }
+        }
+      }
+      return null;
+    }
+
+    function duplicateSelection(pack, selectedIds) {
+      const ids = Array.isArray(selectedIds) ? selectedIds : [];
+      if (!pack || !ids.length) return;
+      const payload = buildDuplicatePayload(pack, ids);
+      if (!payload.length) return;
+      const placement = findDuplicateOffset(pack, payload, getExistingDuplicateAabbs(pack));
+      if (!placement) {
+        UIComponents.showToast('No collision-free duplicate position found', 'warning');
+        return;
+      }
+      const nextCases = [...(pack.cases || [])];
+      const newIds = [];
+      payload.forEach(item => {
+        const { inst, position } = item;
+        nextCases.push({
+          ...Utils.deepClone(inst),
+          id: Utils.uuid(),
+          transform: {
+            ...Utils.deepClone(inst.transform || {}),
+            position: {
+              x: position.x + placement.offset.x,
+              y: position.y + placement.offset.y,
+              z: position.z + placement.offset.z,
+            },
+          },
+          hidden: false,
+        });
+        newIds.push(nextCases[nextCases.length - 1].id);
+      });
+      if (!newIds.length) return;
+      PackLibrary.update(pack.id, { cases: nextCases });
+      StateStore.set({ selectedInstanceIds: newIds }, { skipHistory: true });
+      CaseScene.setSelected(newIds);
+      UIComponents.showToast(
+        placement.staged
+          ? `Duplicated ${newIds.length} case(s) to staging`
+          : `Duplicated ${newIds.length} case(s)`,
+        'success'
+      );
+      render();
+    }
+
+    function openSetCategoryModal(pack, selectedIds) {
+      const selected = Array.isArray(selectedIds) ? selectedIds : [];
+      const selectedCaseIds = new Set();
+      const currentKeys = new Set();
+      selected.forEach(id => {
+        const inst = (pack.cases || []).find(i => i.id === id);
+        if (!inst || !inst.caseId) return;
+        selectedCaseIds.add(inst.caseId);
+        const c = CaseLibrary.getById(inst.caseId);
+        if (c && c.category) currentKeys.add(c.category);
+      });
+
+      const initialKey = currentKeys.size === 1 ? Array.from(currentKeys)[0] : 'default';
+      const initialMeta = CategoryService.meta(initialKey);
+
+      const content = document.createElement('div');
+      content.className = 'tp3d-editor-card-grid-gap-12';
+
+      const modalHint = document.createElement('div');
+      modalHint.className = 'muted tp3d-editor-fs-sm';
+      modalHint.textContent =
+        'This updates the Category for the underlying Case templates used by the selection, so the whole app (chips, labels, colors, textures) stays consistent.';
+      content.appendChild(modalHint);
+
+      const row1 = document.createElement('div');
+      row1.className = 'row';
+      row1.style.alignItems = 'center';
+
+      const nameLabel = document.createElement('div');
+      nameLabel.className = 'muted';
+      nameLabel.style.minWidth = '90px';
+      nameLabel.textContent = 'Name';
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.value = initialMeta.name || '';
+      nameInput.placeholder = 'e.g. Cables';
+      nameInput.style.flex = '1';
+      row1.appendChild(nameLabel);
+      row1.appendChild(nameInput);
+      content.appendChild(row1);
+
+      const row2 = document.createElement('div');
+      row2.className = 'row';
+      row2.style.alignItems = 'center';
+
+      const colorLabel = document.createElement('div');
+      colorLabel.className = 'muted';
+      colorLabel.style.minWidth = '90px';
+      colorLabel.textContent = 'Color';
+      const colorWrap = document.createElement('label');
+      colorWrap.classList.add('tp3d-cases-cat-swatch');
+      colorWrap.style.background = initialMeta.color || '#9ca3af';
+      colorWrap.setAttribute('aria-label', 'Category color');
+      colorWrap.setAttribute('title', 'Category color');
+      const colorInput = document.createElement('input');
+      colorInput.type = 'color';
+      colorInput.className = 'tp3d-cases-cat-color-input';
+      colorInput.value = initialMeta.color || '#9ca3af';
+      colorInput.setAttribute('aria-label', 'Category color');
+      colorInput.addEventListener('input', () => {
+        colorWrap.style.background = colorInput.value || '#9ca3af';
+      });
+      colorWrap.appendChild(colorInput);
+      row2.appendChild(colorLabel);
+      row2.appendChild(colorWrap);
+      content.appendChild(row2);
+
+      const row3 = document.createElement('div');
+      row3.className = 'row';
+      row3.style.alignItems = 'center';
+
+      const renameLabel = document.createElement('div');
+      renameLabel.className = 'muted';
+      renameLabel.style.minWidth = '90px';
+      renameLabel.textContent = 'Labels';
+
+      const renameWrap = document.createElement('label');
+      renameWrap.style.display = 'inline-flex';
+      renameWrap.style.alignItems = 'center';
+      renameWrap.style.gap = '8px';
+
+      const renameCheckbox = document.createElement('input');
+      renameCheckbox.type = 'checkbox';
+      renameCheckbox.checked = true;
+      const renameText = document.createElement('span');
+      renameText.textContent = 'Update box labels (case names) to match';
+
+      renameWrap.appendChild(renameCheckbox);
+      renameWrap.appendChild(renameText);
+      row3.appendChild(renameLabel);
+      row3.appendChild(renameWrap);
+      content.appendChild(row3);
+
+      UIComponents.showModal({
+        title: `Set category for ${selected.length} selected`,
+        content,
+        actions: [
+          { label: 'Cancel', variant: 'ghost' },
+          {
+            label: 'Apply',
+            variant: 'primary',
+            onClick: () => {
+              const name = String(nameInput.value || '').trim();
+              if (!name) {
+                UIComponents.showToast('Category name is required', 'warning');
+                return false;
+              }
+              const color = String(colorInput.value || '').trim();
+              const meta = CategoryService.upsert({ name, color });
+              let updated = 0;
+              selectedCaseIds.forEach(caseId => {
+                const c = CaseLibrary.getById(caseId);
+                if (!c) return;
+                const next = { ...c, category: meta.key };
+                if (renameCheckbox.checked) next.name = name;
+                if ((c.category || 'default') === meta.key && (!renameCheckbox.checked || c.name === name)) return;
+                CaseLibrary.upsert(next);
+                updated += 1;
+              });
+              UIComponents.showToast(
+                updated
+                  ? `Updated category to “${meta.name}” for ${updated} case template(s)`
+                  : `Category already “${meta.name}”`,
+                'success'
+              );
+              render();
+              return true;
+            },
+          },
+        ],
+      });
+    }
+
     function renderTruckInspector(pack, prefs) {
+      const lengthUnit = getLengthUnit(prefs);
       const card = document.createElement('div');
       card.className = 'card';
       card.classList.add('tp3d-editor-card-grid-gap-12');
 
       const stats = PackLibrary.computeStats(pack);
-      card.appendChild(cardHeaderWithInfo('Truck', 'Edit dimensions in inches (internal units). Display units follow Settings.'));
+      card.appendChild(cardHeaderWithInfo('Truck', 'Display units follow Settings. Geometry is saved internally in inches.'));
 
       const presetRow = document.createElement('div');
       presetRow.className = 'row';
@@ -2033,9 +2545,9 @@ export function createEditorScreen({
       const dimsRow = document.createElement('div');
       dimsRow.className = 'row';
       dimsRow.classList.add('tp3d-editor-dims-row');
-      const fL = smallField('Length (in)', pack.truck.length);
-      const fW = smallField('Width (in)', pack.truck.width);
-      const fH = smallField('Height (in)', pack.truck.height);
+      const fL = smallField(`Length (${lengthUnit})`, Utils.inchesToUnit(pack.truck.length, lengthUnit));
+      const fW = smallField(`Width (${lengthUnit})`, Utils.inchesToUnit(pack.truck.width, lengthUnit));
+      const fH = smallField(`Height (${lengthUnit})`, Utils.inchesToUnit(pack.truck.height, lengthUnit));
       [fL.wrap, fW.wrap, fH.wrap].forEach(wrap => wrap.classList.add('tp3d-editor-field-wrap-full'));
       dimsRow.appendChild(fL.wrap);
       dimsRow.appendChild(fW.wrap);
@@ -2049,9 +2561,9 @@ export function createEditorScreen({
       btnSave.addEventListener('click', () => {
         const next = {
           ...pack.truck,
-          length: Math.max(24, Number(fL.input.value) || pack.truck.length),
-          width: Math.max(24, Number(fW.input.value) || pack.truck.width),
-          height: Math.max(24, Number(fH.input.value) || pack.truck.height),
+          length: Math.max(24, displayLengthToInches(fL.input.value, pack.truck.length, lengthUnit)),
+          width: Math.max(24, displayLengthToInches(fW.input.value, pack.truck.width, lengthUnit)),
+          height: Math.max(24, displayLengthToInches(fH.input.value, pack.truck.height, lengthUnit)),
           shapeMode:
             pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
               ? pack.truck.shapeMode
@@ -2179,7 +2691,7 @@ export function createEditorScreen({
         if (currentMode === 'frontBonus') {
           cfgCard.appendChild(cardHeaderWithInfo(
             'Front Overhang',
-            'Extra space at the front of the truck (cab side). Dimensions in inches. Must not exceed container bounds.'
+            'Extra space at the front of the truck (cab side). Display units follow Settings. Must not exceed container bounds.'
           ));
 
           const defBL = Math.round(0.12 * tL);
@@ -2191,9 +2703,9 @@ export function createEditorScreen({
 
           const cfgRow = document.createElement('div');
           cfgRow.className = 'tp3d-editor-dims-row';
-          const fBL = smallField('Length', bonusLength);
-          const fBW = smallField('Width', bonusWidth);
-          const fBH = smallField('Height', bonusHeight);
+          const fBL = smallField(`Length (${lengthUnit})`, Utils.inchesToUnit(bonusLength, lengthUnit));
+          const fBW = smallField(`Width (${lengthUnit})`, Utils.inchesToUnit(bonusWidth, lengthUnit));
+          const fBH = smallField(`Height (${lengthUnit})`, Utils.inchesToUnit(bonusHeight, lengthUnit));
           [fBL.wrap, fBW.wrap, fBH.wrap].forEach(w => w.classList.add('tp3d-editor-field-wrap-full'));
           cfgRow.appendChild(fBL.wrap);
           cfgRow.appendChild(fBW.wrap);
@@ -2210,9 +2722,9 @@ export function createEditorScreen({
           cfgSave.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Update';
           cfgSave.addEventListener('click', () => {
             const nextCfg = {
-              bonusLength: Utils.clamp(Number(fBL.input.value) || 0, 0, tL),
-              bonusWidth: Utils.clamp(Number(fBW.input.value) || 0, 0, tW),
-              bonusHeight: Utils.clamp(Number(fBH.input.value) || 0, 0, tH),
+              bonusLength: Utils.clamp(displayLengthToInches(fBL.input.value, bonusLength, lengthUnit), 0, tL),
+              bonusWidth: Utils.clamp(displayLengthToInches(fBW.input.value, bonusWidth, lengthUnit), 0, tW),
+              bonusHeight: Utils.clamp(displayLengthToInches(fBH.input.value, bonusHeight, lengthUnit), 0, tH),
             };
             const nextTruck = { ...pack.truck, shapeConfig: nextCfg };
             PackLibrary.update(pack.id, { truck: nextTruck });
@@ -2225,9 +2737,9 @@ export function createEditorScreen({
           cfgReset.innerHTML = '<i class="fa-solid fa-arrow-rotate-left"></i> Reset';
           cfgReset.setAttribute('data-tooltip', 'Reset to defaults for this truck size');
           cfgReset.addEventListener('click', () => {
-            fBL.input.value = String(defBL.toFixed(1));
-            fBW.input.value = String(defBW.toFixed(1));
-            fBH.input.value = String(defBH.toFixed(1));
+            fBL.input.value = String(Utils.inchesToUnit(defBL, lengthUnit).toFixed(1));
+            fBW.input.value = String(Utils.inchesToUnit(defBW, lengthUnit).toFixed(1));
+            fBH.input.value = String(Utils.inchesToUnit(defBH, lengthUnit).toFixed(1));
             const nextCfg = { bonusLength: defBL, bonusWidth: defBW, bonusHeight: defBH };
             const nextTruck = { ...pack.truck, shapeConfig: nextCfg };
             PackLibrary.update(pack.id, { truck: nextTruck });
@@ -2242,7 +2754,7 @@ export function createEditorScreen({
         if (currentMode === 'wheelWells') {
           cfgCard.appendChild(cardHeaderWithInfo(
             'Wheel Wells',
-            'Blocked zones on each side of the truck. Dimensions in inches. Wells are symmetric left/right.'
+            'Blocked zones on each side of the truck. Display units follow Settings. Wells are symmetric left/right.'
           ));
 
           const defWH = Math.round(0.35 * tH);
@@ -2256,16 +2768,16 @@ export function createEditorScreen({
 
           const cfgRow1 = document.createElement('div');
           cfgRow1.className = 'tp3d-editor-dims-row';
-          const fWH = smallField('Height', wellHeight);
-          const fWW = smallField('Width', wellWidth);
-          const fWL = smallField('Length', wellLength);
+          const fWH = smallField(`Height (${lengthUnit})`, Utils.inchesToUnit(wellHeight, lengthUnit));
+          const fWW = smallField(`Width (${lengthUnit})`, Utils.inchesToUnit(wellWidth, lengthUnit));
+          const fWL = smallField(`Length (${lengthUnit})`, Utils.inchesToUnit(wellLength, lengthUnit));
           [fWH.wrap, fWW.wrap, fWL.wrap].forEach(w => w.classList.add('tp3d-editor-field-wrap-full'));
           cfgRow1.appendChild(fWH.wrap);
           cfgRow1.appendChild(fWW.wrap);
           cfgRow1.appendChild(fWL.wrap);
           cfgCard.appendChild(cfgRow1);
 
-          const fWO = smallField('Offset from rear', wellOffset);
+          const fWO = smallField(`Offset from rear (${lengthUnit})`, Utils.inchesToUnit(wellOffset, lengthUnit));
           fWO.wrap.classList.add('tp3d-editor-field-wrap-full');
           cfgCard.appendChild(fWO.wrap);
 
@@ -2279,10 +2791,10 @@ export function createEditorScreen({
           cfgSave.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Update';
           cfgSave.addEventListener('click', () => {
             const nextCfg = {
-              wellHeight: Utils.clamp(Number(fWH.input.value) || 0, 0, tH),
-              wellWidth: Utils.clamp(Number(fWW.input.value) || 0, 0, tW / 2),
-              wellLength: Utils.clamp(Number(fWL.input.value) || 0, 0, tL),
-              wellOffsetFromRear: Utils.clamp(Number(fWO.input.value) || 0, 0, tL),
+              wellHeight: Utils.clamp(displayLengthToInches(fWH.input.value, wellHeight, lengthUnit), 0, tH),
+              wellWidth: Utils.clamp(displayLengthToInches(fWW.input.value, wellWidth, lengthUnit), 0, tW / 2),
+              wellLength: Utils.clamp(displayLengthToInches(fWL.input.value, wellLength, lengthUnit), 0, tL),
+              wellOffsetFromRear: Utils.clamp(displayLengthToInches(fWO.input.value, wellOffset, lengthUnit), 0, tL),
             };
             if (nextCfg.wellOffsetFromRear + nextCfg.wellLength > tL) {
               nextCfg.wellLength = tL - nextCfg.wellOffsetFromRear;
@@ -2298,10 +2810,10 @@ export function createEditorScreen({
           cfgReset.innerHTML = '<i class="fa-solid fa-arrow-rotate-left"></i> Reset';
           cfgReset.setAttribute('data-tooltip', 'Reset to defaults for this truck size');
           cfgReset.addEventListener('click', () => {
-            fWH.input.value = String(defWH.toFixed(1));
-            fWW.input.value = String(defWW.toFixed(1));
-            fWL.input.value = String(defWL.toFixed(1));
-            fWO.input.value = String(defWO.toFixed(1));
+            fWH.input.value = String(Utils.inchesToUnit(defWH, lengthUnit).toFixed(1));
+            fWW.input.value = String(Utils.inchesToUnit(defWW, lengthUnit).toFixed(1));
+            fWL.input.value = String(Utils.inchesToUnit(defWL, lengthUnit).toFixed(1));
+            fWO.input.value = String(Utils.inchesToUnit(defWO, lengthUnit).toFixed(1));
             const nextCfg = {
               wellHeight: defWH, wellWidth: defWW,
               wellLength: defWL, wellOffsetFromRear: defWO,
@@ -2331,10 +2843,6 @@ export function createEditorScreen({
       title.classList.add('tp3d-editor-fw-semibold');
       title.textContent = `${selected.length} cases selected`;
       card.appendChild(title);
-      const hint = document.createElement('div');
-      hint.className = 'muted tp3d-editor-fs-sm';
-      hint.textContent = 'Shift+Click to add/remove. Ctrl/Cmd+A select all. Delete to remove.';
-      card.appendChild(hint);
       inspectorEl.appendChild(card);
 
       // === Batch Rotation Card ===
@@ -2385,170 +2893,45 @@ export function createEditorScreen({
 
       const actRow = document.createElement('div');
       actRow.className = 'row';
+      configureActionGrid(actRow);
 
-      const btnSetCategory = document.createElement('button');
-      btnSetCategory.className = 'btn';
-      btnSetCategory.type = 'button';
-      btnSetCategory.innerHTML = '<i class="fa-solid fa-tag"></i> Set Category';
-      btnSetCategory.addEventListener('click', () => {
-        const selectedCaseIds = new Set();
-        const currentKeys = new Set();
-        selected.forEach(id => {
-          const inst = (pack.cases || []).find(i => i.id === id);
-          if (!inst || !inst.caseId) return;
-          selectedCaseIds.add(inst.caseId);
-          const c = CaseLibrary.getById(inst.caseId);
-          if (c && c.category) currentKeys.add(c.category);
-        });
+      const btnSelectAll = makeSelectAllButton(pack, selected.length);
 
-        const initialKey = currentKeys.size === 1 ? Array.from(currentKeys)[0] : 'default';
-        const initialMeta = CategoryService.meta(initialKey);
-
-        const content = document.createElement('div');
-        content.className = 'tp3d-editor-card-grid-gap-12';
-
-        const modalHint = document.createElement('div');
-        modalHint.className = 'muted tp3d-editor-fs-sm';
-        modalHint.textContent =
-          'This updates the Category for the underlying Case templates used by the selection, so the whole app (chips, labels, colors, textures) stays consistent.';
-        content.appendChild(modalHint);
-
-        const row1 = document.createElement('div');
-        row1.className = 'row';
-        row1.style.alignItems = 'center';
-
-        const nameLabel = document.createElement('div');
-        nameLabel.className = 'muted';
-        nameLabel.style.minWidth = '90px';
-        nameLabel.textContent = 'Name';
-        const nameInput = document.createElement('input');
-        nameInput.type = 'text';
-        nameInput.value = initialMeta.name || '';
-        nameInput.placeholder = 'e.g. Cables';
-        nameInput.style.flex = '1';
-        row1.appendChild(nameLabel);
-        row1.appendChild(nameInput);
-        content.appendChild(row1);
-
-        const row2 = document.createElement('div');
-        row2.className = 'row';
-        row2.style.alignItems = 'center';
-
-        const colorLabel = document.createElement('div');
-        colorLabel.className = 'muted';
-        colorLabel.style.minWidth = '90px';
-        colorLabel.textContent = 'Color';
-        const colorInput = document.createElement('input');
-        colorInput.type = 'color';
-        colorInput.value = initialMeta.color || '#9ca3af';
-        row2.appendChild(colorLabel);
-        row2.appendChild(colorInput);
-        content.appendChild(row2);
-
-        const row3 = document.createElement('div');
-        row3.className = 'row';
-        row3.style.alignItems = 'center';
-
-        const renameLabel = document.createElement('div');
-        renameLabel.className = 'muted';
-        renameLabel.style.minWidth = '90px';
-        renameLabel.textContent = 'Labels';
-
-        const renameWrap = document.createElement('label');
-        renameWrap.style.display = 'inline-flex';
-        renameWrap.style.alignItems = 'center';
-        renameWrap.style.gap = '8px';
-
-        const renameCheckbox = document.createElement('input');
-        renameCheckbox.type = 'checkbox';
-        renameCheckbox.checked = true;
-        const renameText = document.createElement('span');
-        renameText.textContent = 'Update box labels (case names) to match';
-
-        renameWrap.appendChild(renameCheckbox);
-        renameWrap.appendChild(renameText);
-        row3.appendChild(renameLabel);
-        row3.appendChild(renameWrap);
-        content.appendChild(row3);
-
-        UIComponents.showModal({
-          title: `Set category for ${selected.length} selected`,
-          content,
-          actions: [
-            { label: 'Cancel', variant: 'ghost' },
-            {
-              label: 'Apply',
-              variant: 'primary',
-              onClick: () => {
-                const name = String(nameInput.value || '').trim();
-                if (!name) {
-                  UIComponents.showToast('Category name is required', 'warning');
-                  return false;
-                }
-                const color = String(colorInput.value || '').trim();
-                const meta = CategoryService.upsert({ name, color });
-                let updated = 0;
-                selectedCaseIds.forEach(caseId => {
-                  const c = CaseLibrary.getById(caseId);
-                  if (!c) return;
-                  const next = { ...c, category: meta.key };
-                  if (renameCheckbox.checked) next.name = name;
-                  if ((c.category || 'default') === meta.key && (!renameCheckbox.checked || c.name === name)) return;
-                  CaseLibrary.upsert(next);
-                  updated += 1;
-                });
-                UIComponents.showToast(
-                  updated
-                    ? `Updated category to “${meta.name}” for ${updated} case template(s)`
-                    : `Category already “${meta.name}”`,
-                  'success'
-                );
-                render();
-                return true;
-              },
-            },
-          ],
-        });
+      const btnSetCategory = makeActionButton({
+        label: 'Set Category',
+        iconClass: 'fa-solid fa-tag',
+        onClick: () => openSetCategoryModal(pack, selected),
+      });
+      const btnVisibility = makeVisibilityButton(pack, selected);
+      const btnClear = makeActionButton({
+        label: 'Deselect',
+        iconClass: 'fa-solid fa-xmark',
+        onClick: () => InteractionManager.setSelection([]),
+      });
+      const btnDuplicate = makeActionButton({
+        label: 'Duplicate',
+        iconClass: 'fa-solid fa-copy',
+        onClick: () => duplicateSelection(pack, selected),
+      });
+      const btnDelete = makeActionButton({
+        label: `Delete (${selected.length})`,
+        iconClass: 'fa-solid fa-trash',
+        danger: true,
+        onClick: () => InteractionManager.deleteSelection(),
       });
 
-      const btnHide = document.createElement('button');
-      btnHide.className = 'btn';
-      btnHide.type = 'button';
-      btnHide.innerHTML = '<i class="fa-solid fa-eye-slash"></i> Hide';
-      btnHide.addEventListener('click', () => {
-        selected.forEach(id => PackLibrary.updateInstance(pack.id, id, { hidden: true }));
-      });
-
-      const btnShow = document.createElement('button');
-      btnShow.className = 'btn';
-      btnShow.type = 'button';
-      btnShow.innerHTML = '<i class="fa-solid fa-eye"></i> Show';
-      btnShow.addEventListener('click', () => {
-        selected.forEach(id => PackLibrary.updateInstance(pack.id, id, { hidden: false }));
-      });
-
-      const btnClear = document.createElement('button');
-      btnClear.className = 'btn';
-      btnClear.type = 'button';
-      btnClear.innerHTML = '<i class="fa-solid fa-xmark"></i> Deselect';
-      btnClear.addEventListener('click', () => StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true }));
-
-      const btnDelete = document.createElement('button');
-      btnDelete.className = 'btn btn-danger';
-      btnDelete.type = 'button';
-      btnDelete.innerHTML = `<i class="fa-solid fa-trash"></i> Delete (${selected.length})`;
-      btnDelete.addEventListener('click', () => InteractionManager.deleteSelection());
-
-      actRow.appendChild(btnHide);
-      actRow.appendChild(btnShow);
       actRow.appendChild(btnSetCategory);
+      actRow.appendChild(btnVisibility);
+      actRow.appendChild(btnSelectAll);
       actRow.appendChild(btnClear);
+      actRow.appendChild(btnDuplicate);
       actRow.appendChild(btnDelete);
       actCard.appendChild(actRow);
       inspectorEl.appendChild(actCard);
     }
 
     function renderSingleInspector(pack, inst, caseData, prefs) {
+      const lengthUnit = getLengthUnit(prefs);
       const card = document.createElement('div');
       card.className = 'card';
       card.classList.add('tp3d-editor-card-grid-gap-12');
@@ -2563,7 +2946,7 @@ export function createEditorScreen({
       sub.classList.add('tp3d-editor-sub-sm');
       const mfg = caseData.manufacturer ? caseData.manufacturer : '—';
       const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
-      sub.textContent = `${mfg} • ${d.length}×${d.width}×${d.height} in`;
+      sub.textContent = `${mfg} • ${Utils.formatDims(d, lengthUnit)}`;
       header.appendChild(title);
       header.appendChild(sub);
       card.appendChild(header);
@@ -2583,11 +2966,11 @@ export function createEditorScreen({
       transformCard.appendChild(posTitle);
 
       const posRow = document.createElement('div');
-      posRow.className = 'tp3d-editor-dims-row';
+      posRow.className = 'tp3d-editor-dims-row tp3d-editor-position-row';
       const pos = inst.transform.position || { x: 0, y: 0, z: 0 };
-      const fX = smallField(`X (${prefs.units.length})`, Utils.inchesToUnit(pos.x, prefs.units.length));
-      const fY = smallField(`Y (${prefs.units.length})`, Utils.inchesToUnit(pos.y, prefs.units.length));
-      const fZ = smallField(`Z (${prefs.units.length})`, Utils.inchesToUnit(pos.z, prefs.units.length));
+      const fX = inlinePositionField('X', lengthUnit, Utils.inchesToUnit(pos.x, lengthUnit));
+      const fY = inlinePositionField('Y', lengthUnit, Utils.inchesToUnit(pos.y, lengthUnit));
+      const fZ = inlinePositionField('Z', lengthUnit, Utils.inchesToUnit(pos.z, lengthUnit));
       [fX.wrap, fY.wrap, fZ.wrap].forEach(w => w.classList.add('tp3d-editor-field-wrap-full'));
       posRow.appendChild(fX.wrap);
       posRow.appendChild(fY.wrap);
@@ -2601,9 +2984,9 @@ export function createEditorScreen({
       savePos.innerHTML = '<i class="fa-solid fa-location-crosshairs"></i> Apply position';
       savePos.addEventListener('click', () => {
         const nextPos = {
-          x: Utils.unitToInches(Number(fX.input.value) || 0, prefs.units.length),
-          y: Utils.unitToInches(Number(fY.input.value) || 0, prefs.units.length),
-          z: Utils.unitToInches(Number(fZ.input.value) || 0, prefs.units.length),
+          x: Utils.unitToInches(Number(fX.input.value) || 0, lengthUnit),
+          y: Utils.unitToInches(Number(fY.input.value) || 0, lengthUnit),
+          z: Utils.unitToInches(Number(fZ.input.value) || 0, lengthUnit),
         };
         const obj = CaseScene.getObject(inst.id);
         const originalWorld = obj ? obj.position.clone() : null;
@@ -2700,24 +3083,44 @@ export function createEditorScreen({
 
       const actRow = document.createElement('div');
       actRow.className = 'row';
-      actRow.classList.add('tp3d-editor-row-gap-10');
-      const hide = document.createElement('button');
-      hide.className = 'btn';
-      hide.type = 'button';
-      hide.innerHTML = inst.hidden
-        ? '<i class="fa-solid fa-eye"></i> Unhide'
-        : '<i class="fa-solid fa-eye-slash"></i> Hide';
-      hide.addEventListener('click', () => PackLibrary.updateInstance(pack.id, inst.id, { hidden: !inst.hidden }));
-      const remove = document.createElement('button');
-      remove.className = 'btn btn-danger';
-      remove.type = 'button';
-      remove.innerHTML = '<i class="fa-solid fa-trash"></i> Remove';
-      remove.addEventListener('click', () => {
-        PackLibrary.removeInstances(pack.id, [inst.id]);
-        StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
+      configureActionGrid(actRow);
+
+      const selectAll = makeSelectAllButton(pack, 1);
+      const setCategory = makeActionButton({
+        label: 'Set Category',
+        iconClass: 'fa-solid fa-tag',
+        onClick: () => openSetCategoryModal(pack, [inst.id]),
       });
-      actRow.appendChild(hide);
-      actRow.appendChild(remove);
+      const visibility = makeVisibilityButton(pack, [inst.id]);
+      const clear = makeActionButton({
+        label: 'Deselect',
+        iconClass: 'fa-solid fa-xmark',
+        onClick: () => {
+          StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
+          CaseScene.setSelected([]);
+        },
+      });
+      const duplicate = makeActionButton({
+        label: 'Duplicate',
+        iconClass: 'fa-solid fa-copy',
+        onClick: () => duplicateSelection(pack, [inst.id]),
+      });
+      const deleteButton = makeActionButton({
+        label: 'Delete',
+        iconClass: 'fa-solid fa-trash',
+        danger: true,
+        onClick: () => {
+          PackLibrary.removeInstances(pack.id, [inst.id]);
+          StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
+          CaseScene.setSelected([]);
+        },
+      });
+      actRow.appendChild(setCategory);
+      actRow.appendChild(visibility);
+      actRow.appendChild(selectAll);
+      actRow.appendChild(clear);
+      actRow.appendChild(duplicate);
+      actRow.appendChild(deleteButton);
       actCard.appendChild(actRow);
       inspectorEl.appendChild(actCard);
     }
@@ -2744,6 +3147,33 @@ export function createEditorScreen({
       }
 
       return header;
+    }
+
+    function getLengthUnit(prefs) {
+      return prefs && prefs.units && prefs.units.length ? prefs.units.length : 'in';
+    }
+
+    function displayLengthToInches(value, fallbackInches, unit) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return fallbackInches;
+      return Utils.unitToInches(n, unit || 'in');
+    }
+
+    function inlinePositionField(axis, unit, value) {
+      const wrap = document.createElement('div');
+      wrap.className = 'field tp3d-editor-inline-position-field';
+      wrap.classList.add('tp3d-editor-minw-90');
+      const l = document.createElement('div');
+      l.className = 'label';
+      l.textContent = `${axis} (${unit || 'in'})`;
+      const input = document.createElement('input');
+      input.className = 'input';
+      input.type = 'number';
+      input.step = '0.1';
+      input.value = String(Number(value).toFixed(1));
+      wrap.appendChild(l);
+      wrap.appendChild(input);
+      return { wrap, input };
     }
 
     function smallField(label, value) {

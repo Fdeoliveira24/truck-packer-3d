@@ -212,6 +212,10 @@ export function createUIComponents() {
         header.style.padding = '10px 12px';
         header.style.fontWeight = 'var(--font-semibold)';
         header.style.borderBottom = '1px solid var(--border-subtle)';
+        header.style.position = 'sticky';
+        header.style.top = '0';
+        header.style.background = 'var(--bg-secondary)';
+        header.style.zIndex = '1';
         header.textContent = String(item.label || '');
         wrap.appendChild(header);
         return;
@@ -287,19 +291,28 @@ export function createUIComponents() {
       } else if (item.rightIcon) {
         const iconRight = document.createElement('i');
         iconRight.className = item.rightIcon;
-        iconRight.style.marginLeft = 'auto';
         iconRight.style.color = item.rightIconColor || 'var(--accent-primary)';
         if (item.rightOnClick) {
           iconRight.style.cursor = 'pointer';
-          iconRight.setAttribute('data-tooltip', item.rightTitle ? String(item.rightTitle) : '');
-          iconRight.addEventListener('click', ev => {
+          // Wrap in a span for the tooltip: putting data-tooltip directly on <i> triggers
+          // [data-tooltip]::before{content:""} in main.css which wipes the Font Awesome glyph.
+          const iconWrap = document.createElement('span');
+          iconWrap.style.marginLeft = 'auto';
+          iconWrap.style.display = 'inline-flex';
+          iconWrap.style.alignItems = 'center';
+          if (item.rightTitle) iconWrap.setAttribute('data-tooltip', String(item.rightTitle));
+          iconWrap.addEventListener('click', ev => {
             ev.stopPropagation();
             if (btn.disabled) return;
             closeAllDropdowns();
             item.rightOnClick && item.rightOnClick();
           });
+          iconWrap.appendChild(iconRight);
+          btn.appendChild(iconWrap);
+        } else {
+          iconRight.style.marginLeft = 'auto';
+          btn.appendChild(iconRight);
         }
-        btn.appendChild(iconRight);
       }
       btn.addEventListener('click', ev => {
         ev.stopPropagation();

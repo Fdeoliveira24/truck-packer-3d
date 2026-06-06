@@ -77,6 +77,7 @@ export function createPacksScreen({
     const filtersRowEl = document.getElementById('packs-filters');
     let foldersButtonEl = null;
     let foldersButtonLabelEl = null;
+    let filtersOutsideClickHandler = null;
 
     function formatTruckDims(truck, lengthUnit) {
       const unit = lengthUnit || 'in';
@@ -133,7 +134,7 @@ export function createPacksScreen({
           openTrailerPresetsMenu(btnTrailerPresets);
         });
       }
-      btnFiltersToggle && btnFiltersToggle.addEventListener('click', () => toggleFiltersVisible());
+      btnFiltersToggle && btnFiltersToggle.addEventListener('click', ev => { ev.stopPropagation(); toggleFiltersVisible(); });
       btnCardDisplay &&
         btnCardDisplay.addEventListener('click', () => {
           // TODO: Add keyboard shortcut + update Keyboard Shortcuts modal later
@@ -206,6 +207,27 @@ export function createPacksScreen({
       filtersRowEl.classList.toggle('is-open', visible);
       filtersRowEl.style.display = '';
       btnFiltersToggle && btnFiltersToggle.classList.toggle('btn-primary', visible);
+      // Manage outside-click handler
+      if (filtersOutsideClickHandler) {
+        document.removeEventListener('click', filtersOutsideClickHandler);
+        filtersOutsideClickHandler = null;
+      }
+      if (visible) {
+        filtersOutsideClickHandler = function(ev) {
+          const anchor = filtersRowEl.closest('.tp3d-packs-filter-anchor');
+          if (!anchor || !anchor.contains(/** @type {Node} */ (ev.target))) {
+            const prefs = PreferencesManager.get();
+            prefs.packsFiltersVisible = false;
+            PreferencesManager.set(prefs);
+            applyFiltersVisibility();
+          }
+        };
+        window.setTimeout(() => {
+          if (filtersOutsideClickHandler) {
+            document.addEventListener('click', filtersOutsideClickHandler);
+          }
+        }, 0);
+      }
     }
 
     function getSafeFolders() {

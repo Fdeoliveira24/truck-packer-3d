@@ -661,7 +661,7 @@ textarea:focus {
   flex-wrap: nowrap;
   position: absolute;
   top: 35px;
-  left: 0;
+  right: 0;
   z-index: 60;
   padding: var(--space-3);
   width: min(220px, 100%);
@@ -669,7 +669,7 @@ textarea:focus {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
-  max-height: min(42vh, 360px);
+  max-height: min(80vh, 520px);
   overflow-y: auto;
   overflow-x: hidden;
   gap: 6px;
@@ -703,7 +703,7 @@ textarea:focus {
   #packs-filters {
     width: 100%;
     right: 0;
-    max-height: min(42vh, 300px);
+    max-height: min(70vh, 400px);
   }
 }
 
@@ -1321,6 +1321,22 @@ tr:hover td {
   z-index: 1000;
 }
 
+/* Floating dropdown container — owns the visual decoration so box-shadow
+   isn't clipped by the overflow-y:auto scroll container. */
+[data-dropdown="1"] {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden; /* clips border-radius; overflow-y:auto is set inline by JS */
+}
+[data-dropdown="1"] .dropdown-menu {
+  box-shadow: none;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
 .dropdown-item {
   width: 100%;
   border: 0;
@@ -1347,6 +1363,20 @@ tr:hover td {
 
 .dropdown-item[data-variant='danger'] i {
   color: var(--error);
+}
+
+.dropdown-item[data-variant='primary'] {
+  background: var(--accent-primary);
+  color: var(--text-inverse);
+  border-radius: var(--radius-sm);
+}
+
+.dropdown-item[data-variant='primary']:hover {
+  background: var(--accent-hover);
+}
+
+.dropdown-item[data-variant='primary'] i {
+  color: var(--text-inverse);
 }
 
 /* ================================

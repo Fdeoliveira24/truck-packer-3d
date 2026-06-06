@@ -63,6 +63,7 @@ export function createCasesScreen({
     let casesFooterMountEl = null;
     let lastCasePageMeta = null;
     let filteredCases = [];
+    let filtersOutsideClickHandler = null;
 
     function initCasesUI() {
       searchEl.addEventListener(
@@ -85,7 +86,7 @@ export function createCasesScreen({
         });
       btnViewGrid && btnViewGrid.addEventListener('click', () => setViewMode('grid'));
       btnViewList && btnViewList.addEventListener('click', () => setViewMode('list'));
-      btnFiltersToggle && btnFiltersToggle.addEventListener('click', () => toggleFiltersVisible());
+      btnFiltersToggle && btnFiltersToggle.addEventListener('click', ev => { ev.stopPropagation(); toggleFiltersVisible(); });
 
       btnCardDisplay &&
         btnCardDisplay.addEventListener('click', () => {
@@ -130,6 +131,27 @@ export function createCasesScreen({
       const visible = PreferencesManager.get().casesFiltersVisible !== false;
       filtersEl.classList.toggle('is-open', visible);
       btnFiltersToggle && btnFiltersToggle.classList.toggle('btn-primary', visible);
+      // Manage outside-click handler
+      if (filtersOutsideClickHandler) {
+        document.removeEventListener('click', filtersOutsideClickHandler);
+        filtersOutsideClickHandler = null;
+      }
+      if (visible) {
+        filtersOutsideClickHandler = function(ev) {
+          const anchor = filtersEl.closest('.tp3d-cases-filter-anchor');
+          if (!anchor || !anchor.contains(/** @type {Node} */ (ev.target))) {
+            const prefs = PreferencesManager.get();
+            prefs.casesFiltersVisible = false;
+            PreferencesManager.set(prefs);
+            applyFiltersVisibility();
+          }
+        };
+        window.setTimeout(() => {
+          if (filtersOutsideClickHandler) {
+            document.addEventListener('click', filtersOutsideClickHandler);
+          }
+        }, 0);
+      }
     }
 
     function clearSelection() {
@@ -508,6 +530,18 @@ export function createCasesScreen({
       const list = CategoryService.listWithCounts(cases);
       filtersEl.innerHTML = '';
 
+      const filterHeader = document.createElement('div');
+      filterHeader.style.fontWeight = 'var(--font-semibold)';
+      filterHeader.style.paddingBottom = '6px';
+      filterHeader.style.borderBottom = '1px solid var(--border-subtle)';
+      filterHeader.style.marginBottom = '2px';
+      filterHeader.style.position = 'sticky';
+      filterHeader.style.top = '0';
+      filterHeader.style.background = 'var(--bg-secondary)';
+      filterHeader.style.zIndex = '1';
+      filterHeader.textContent = 'Filters';
+      filtersEl.appendChild(filterHeader);
+
       const allChip = chip(
         'All',
         'all',
@@ -837,6 +871,14 @@ export function createCasesScreen({
       items.push({ type: 'header', label: 'Categories' });
 
       items.push({
+        label: 'New Category',
+        icon: 'fa-solid fa-plus',
+        variant: 'primary',
+        onClick: () => createCategoryAndEdit(),
+      });
+      items.push({ type: 'divider' });
+
+      items.push({
         label: `All (${cases.length})`,
         icon: 'fa-solid fa-circle',
         iconColor: '#9b9ba8',
@@ -860,17 +902,10 @@ export function createCasesScreen({
             render();
           },
           rightIcon: 'fa-solid fa-pen',
-          rightIconColor: 'var(--text-muted)',
+          rightIconColor: 'var(--text-secondary)',
           rightTitle: 'Edit',
           rightOnClick: () => openEditCategoryModal(cat),
         });
-      });
-
-      items.push({ type: 'divider' });
-      items.push({
-        label: 'New category',
-        icon: 'fa-solid fa-plus',
-        onClick: () => createCategoryAndEdit(),
       });
 
       const rect = anchorEl.getBoundingClientRect();

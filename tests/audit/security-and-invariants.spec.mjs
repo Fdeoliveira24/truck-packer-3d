@@ -1062,6 +1062,94 @@ test('import-cases dialog parsed state uses compact file chip not the large drop
 
 // ── End import-cases dialog polish checks ──────────────────────────────────
 
+// ── PACK-IMPORT-BATCH-1 ────────────────────────────────────────────────────
+
+test('PACK-IMPORT-BATCH-1 parsePackBatchImportJSON is exported from import-export.js', async () => {
+  const src = await fs.readFile(importExportPath, 'utf8');
+  assert.match(src, /export function parsePackBatchImportJSON/,
+    'parsePackBatchImportJSON must be exported from import-export.js');
+});
+
+test('PACK-IMPORT-BATCH-1 parsePackBatchImportJSON accepts valid batch envelope at runtime', async () => {
+  const ImportExport = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  const batch = JSON.stringify({
+    exportType: 'pack-batch',
+    schemaVersion: 1,
+    packs: [
+      { pack: { truck: { dimensions: { length: 20, width: 8, height: 8 } }, cases: [] }, bundledCases: [] },
+      { pack: { truck: { dimensions: { length: 20, width: 8, height: 8 } }, cases: [] }, bundledCases: [] },
+    ],
+  });
+  const payloads = ImportExport.parsePackBatchImportJSON(batch);
+  assert.equal(payloads.length, 2, 'batch parser must return one payload per packs entry');
+  assert.ok(payloads[0] && payloads[0].pack, 'each payload must have a pack key');
+});
+
+test('PACK-IMPORT-BATCH-1 parsePackBatchImportJSON rejects wrong exportType', async () => {
+  const ImportExport = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  assert.throws(
+    () => ImportExport.parsePackBatchImportJSON(JSON.stringify({ packs: [{ pack: { truck: {}, cases: [] } }] })),
+    /pack batch/i,
+    'must throw on missing or wrong exportType',
+  );
+});
+
+test('PACK-IMPORT-BATCH-1 parsePackBatchImportJSON rejects App JSON', async () => {
+  const ImportExport = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  assert.throws(
+    () => ImportExport.parsePackBatchImportJSON(JSON.stringify({
+      exportType: 'pack-batch',
+      packLibrary: [],
+      caseLibrary: [],
+      packs: [{ pack: { truck: {}, cases: [] } }],
+    })),
+    /App JSON|App Backup/i,
+    'batch parser must reject App JSON shape',
+  );
+});
+
+test('PACK-IMPORT-BATCH-1 parsePackBatchImportJSON rejects workspace exportType', async () => {
+  const ImportExport = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  assert.throws(
+    () => ImportExport.parsePackBatchImportJSON(JSON.stringify({
+      exportType: 'workspace',
+      data: { packLibrary: [], caseLibrary: [] },
+    })),
+    /Workspace/i,
+    'batch parser must reject workspace export',
+  );
+});
+
+test('PACK-IMPORT-BATCH-1 parsePackBatchImportJSON rejects empty packs array', async () => {
+  const ImportExport = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  assert.throws(
+    () => ImportExport.parsePackBatchImportJSON(JSON.stringify({ exportType: 'pack-batch', packs: [] })),
+    /non-empty/i,
+    'batch parser must reject an empty packs array',
+  );
+});
+
+test('PACK-IMPORT-BATCH-1 parsePackBatchImportJSON rejects top-level array', async () => {
+  const ImportExport = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  assert.throws(
+    () => ImportExport.parsePackBatchImportJSON(JSON.stringify([{ pack: { truck: {}, cases: [] } }])),
+    /Invalid JSON|Not a pack batch|pack batch/i,
+    'batch parser must reject a top-level array',
+  );
+});
+
+test('PACK-IMPORT-BATCH-1 import-pack-dialog routes pack-batch exportType to batch handler', async () => {
+  const src = await fs.readFile(importPackDialogPath, 'utf8');
+  assert.match(src, /['"]pack-batch['"]/,
+    'import-pack-dialog must detect pack-batch exportType');
+  assert.match(src, /parsePackBatchImportJSON/,
+    'import-pack-dialog must call parsePackBatchImportJSON for batch files');
+  assert.match(src, /parsePackImportJSON/,
+    'import-pack-dialog must still call parsePackImportJSON for single-pack files');
+});
+
+// ── End PACK-IMPORT-BATCH-1 ────────────────────────────────────────────────
+
 test('UI-STABILIZATION-1 changed files stay in approved scope', async () => {
   const [unstaged, staged] = await Promise.all([
     execFileAsync('git', ['diff', '--name-only']),
@@ -1102,6 +1190,7 @@ test('AUTO-PACK-A0/A0B changed files stay in approved orientation lock scope', a
       !autoPackA1R1Files.has(file) &&
       !autoPackA1Clean1Files.has(file) &&
       !autoPackA1Clean2Files.has(file) &&
+      !uiCopyExportImportFiles.has(file) &&
       !editorInspectorPolishFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
@@ -1126,6 +1215,7 @@ test('AUTO-PACK-A1-2 changed files stay in approved floor-pass scope', async () 
       !autoPackA1Clean1Files.has(file) &&
       !autoPackA1Clean2Files.has(file) &&
       !autoPackEditorCollisionFiles.has(file) &&
+      !uiCopyExportImportFiles.has(file) &&
       !editorInspectorPolishFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],
@@ -1209,6 +1299,7 @@ test('AUTO-PACK-A1-R1 changed files stay in approved logistics scaffold scope', 
       !autoPackA1Clean1Files.has(file) &&
       !autoPackA1Clean2Files.has(file) &&
       !autoPackEditorCollisionFiles.has(file) &&
+      !uiCopyExportImportFiles.has(file) &&
       !editorInspectorPolishFiles.has(file));
 
   assert.deepEqual(unexpectedFiles, [],

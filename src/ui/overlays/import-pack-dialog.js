@@ -57,8 +57,10 @@ export function createImportPackDialog({
     }
 
     // Detect "App JSON" early to provide a clear hint.
+    let _peeked = null;
     try {
       const parsed = Utils && Utils.safeJsonParse ? Utils.safeJsonParse(text, null) : JSON.parse(text);
+      _peeked = parsed;
       if (
         parsed &&
         typeof parsed === 'object' &&
@@ -69,6 +71,12 @@ export function createImportPackDialog({
       }
     } catch {
       // Continue to standard parsePackImportJSON error reporting below.
+    }
+
+    // Detect batch pack JSON and route to batch handler.
+    if (_peeked && typeof _peeked === 'object' && _peeked.exportType === 'pack-batch') {
+      await handleBatchFile(text, resultsEl, modal);
+      return;
     }
 
     try {
@@ -90,6 +98,47 @@ export function createImportPackDialog({
     } catch (err) {
       UIComponents.showToast('Import failed: ' + (err && err.message), 'error');
     }
+  }
+
+  async function handleBatchFile(text, resultsEl, modal) {
+    let payloads;
+    try {
+      payloads = ImportExport.parsePackBatchImportJSON(text);
+    } catch (err) {
+      UIComponents.showToast('Batch import failed: ' + (err && err.message), 'error');
+      return;
+    }
+
+    let imported = 0;
+    let skipped = 0;
+    (payloads || []).forEach(payload => {
+      try {
+        PackLibrary.importPackPayload(payload);
+        imported++;
+      } catch {
+        skipped++;
+      }
+    });
+
+    const msg = skipped > 0
+      ? `Imported ${imported} pack${imported !== 1 ? 's' : ''} · ${skipped} skipped`
+      : `Imported ${imported} pack${imported !== 1 ? 's' : ''}`;
+
+    const summary = doc.createElement('div');
+    summary.className = 'card';
+    summary.innerHTML = `
+      <div class="tp3d-import-summary-title">Batch Import Result</div>
+      <div class="tp3d-import-summary-spacer"></div>
+      <div class="badge tp3d-import-badge-success">Imported: ${imported} pack(s)</div>
+      ${skipped > 0 ? `<div class="muted tp3d-import-summary-meta">${skipped} skipped (invalid)</div>` : ''}
+    `;
+    resultsEl.classList.add('is-visible');
+    resultsEl.innerHTML = '';
+    resultsEl.appendChild(summary);
+
+    UIComponents.showToast(msg, imported > 0 ? 'success' : 'warning');
+    // Do not auto-close — user reviews summary and dismisses manually.
+    void modal;
   }
 
   function open() {

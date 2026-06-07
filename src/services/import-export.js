@@ -272,6 +272,32 @@ export function parsePackImportJSON(jsonText) {
   return payload;
 }
 
+export function parsePackBatchImportJSON(jsonText) {
+  const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Invalid JSON');
+  }
+  // Guard: reject App JSON mistakenly used here.
+  if (Array.isArray(parsed.packLibrary) || Array.isArray(parsed.caseLibrary) || parsed.preferences) {
+    throw new Error('This looks like App JSON. Use Import App Backup instead.');
+  }
+  // Guard: reject Workspace JSON.
+  if (parsed.exportType === 'workspace') {
+    throw new Error('This is a Workspace export. Use Import Workspace Backup instead.');
+  }
+  if (parsed.exportType !== 'pack-batch') {
+    throw new Error('Not a pack batch export. Expected exportType "pack-batch".');
+  }
+  if (!Array.isArray(parsed.packs) || parsed.packs.length === 0) {
+    throw new Error('Pack batch file must contain a non-empty packs array.');
+  }
+  // Normalize each entry to { pack, bundledCases } — same shape importPackPayload expects.
+  return parsed.packs.map(entry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    return entry.pack ? entry : { pack: entry };
+  });
+}
+
 export function buildAppExportJSON() {
   return CoreStorage.exportAppJSON();
 }

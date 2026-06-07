@@ -142,6 +142,8 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
   const errors = [];
   const duplicates = [];
   const valid = [];
+  const invalidRows = []; // additive: [{rowNum, record, reasons}]
+  const duplicateRows = []; // additive: [{rowNum, record}]
 
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r];
@@ -175,18 +177,20 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
     const nameKey = record.name.toLowerCase();
     if (record.name && seenNames.has(nameKey)) {
       duplicates.push(`Row ${rowNum}: Duplicate name "${record.name}" (skipped)`);
+      duplicateRows.push({ rowNum, record });
       continue;
     }
 
     if (rowErrors.length) {
       errors.push(...rowErrors);
+      invalidRows.push({ rowNum, record, reasons: rowErrors.map(e => e.replace(`Row ${rowNum}: `, '')) });
       continue;
     }
     seenNames.add(nameKey);
     valid.push(record);
   }
 
-  return { valid, errors, duplicates };
+  return { valid, errors, duplicates, invalidRows, duplicateRows };
 }
 
 export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {

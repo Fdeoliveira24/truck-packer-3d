@@ -2539,6 +2539,429 @@ tr:hover td {
 }
 
 /* ================================
+  TP3D Import Cases Dialog (tp3d-ic-*)
+================================== */
+
+/* Wider modal — capped so it never overflows the viewport */
+.tp3d-ic-modal {
+  width: min(740px, 100%);
+  max-height: min(92vh, 820px);
+  display: flex;
+  flex-direction: column;
+}
+
+.tp3d-ic-modal .modal-body {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Body grid — areas stack with consistent gap */
+.tp3d-ic-body {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.tp3d-ic-subtitle {
+  font-size: var(--text-sm);
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* Hidden state for area toggles */
+.tp3d-ic-hidden {
+  display: none !important;
+}
+
+/* ── Dropzone ────────────────────────────────── */
+.tp3d-ic-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  padding: 32px 24px;
+  cursor: default;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.tp3d-ic-drop.is-dragover {
+  border-color: var(--accent-primary);
+  background: var(--accent-primary-12);
+  box-shadow: 0 0 0 3px var(--accent-primary-12);
+}
+
+/* ── Column chips ────────────────────────────── */
+.tp3d-ic-cols {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.tp3d-ic-cols-label {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+.tp3d-ic-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.tp3d-ic-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: var(--text-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.tp3d-ic-chip--required {
+  border-color: var(--accent-primary-25);
+  color: var(--text-primary);
+}
+
+.tp3d-ic-chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  flex-shrink: 0;
+}
+
+/* ── Parsing card ────────────────────────────── */
+.tp3d-ic-parsing-card {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5);
+}
+
+.tp3d-ic-parsing-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.tp3d-ic-spinner {
+  color: var(--accent-primary);
+  font-size: var(--text-lg);
+  flex-shrink: 0;
+}
+
+.tp3d-ic-parsing-name {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp3d-ic-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.tp3d-ic-progress-bar {
+  height: 100%;
+  width: 60%;
+  background: var(--accent-primary);
+  border-radius: 2px;
+  animation: tp3d-ic-slide 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes tp3d-ic-slide {
+  from { margin-left: 0; }
+  to   { margin-left: 40%; }
+}
+
+/* ── File chip (after parse) ─────────────────── */
+.tp3d-ic-file-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+
+.tp3d-ic-file-icon {
+  font-size: var(--text-xl);
+  color: var(--accent-primary);
+  flex-shrink: 0;
+}
+
+.tp3d-ic-file-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.tp3d-ic-file-name {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp3d-ic-file-meta {
+  font-size: var(--text-xs);
+  margin-top: 1px;
+}
+
+.tp3d-ic-replace-btn {
+  font-size: var(--text-sm);
+  color: var(--accent-primary);
+  flex-shrink: 0;
+}
+
+.tp3d-ic-replace-btn:hover {
+  background: var(--accent-primary-12);
+}
+
+/* ── Stat cards ──────────────────────────────── */
+.tp3d-ic-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.tp3d-ic-stat {
+  display: grid;
+  gap: 4px;
+  padding: var(--space-3) var(--space-4);
+  cursor: pointer;
+  transition: box-shadow 0.12s ease, border-color 0.12s ease;
+  user-select: none;
+}
+
+.tp3d-ic-stat:hover {
+  border-color: var(--accent-primary-25);
+}
+
+.tp3d-ic-stat--active {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px var(--accent-primary-12);
+}
+
+.tp3d-ic-stat-count {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tp3d-ic-stat-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tp3d-ic-dot--success { background: var(--success); }
+.tp3d-ic-dot--info    { background: var(--info); }
+.tp3d-ic-dot--error   { background: var(--error); }
+
+.tp3d-ic-stat-num {
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
+  line-height: 1;
+}
+
+.tp3d-ic-stat-label {
+  font-size: var(--text-xs);
+}
+
+/* ── Preview table ───────────────────────────── */
+.tp3d-ic-preview {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.tp3d-ic-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tp3d-ic-preview-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-ic-table-wrap {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  overflow-y: auto;
+  max-height: 220px;
+}
+
+.tp3d-ic-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.tp3d-ic-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 7px 10px;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  text-align: left;
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.tp3d-ic-table thead th:first-child {
+  width: 32px;
+  text-align: center;
+}
+
+.tp3d-ic-table tbody tr {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.tp3d-ic-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.tp3d-ic-table tbody td {
+  padding: 8px 10px;
+  vertical-align: top;
+}
+
+.tp3d-ic-row--invalid {
+  background: rgba(239, 68, 68, 0.04);
+}
+
+.tp3d-ic-row--duplicate {
+  opacity: 0.65;
+}
+
+.tp3d-ic-td-status {
+  width: 32px;
+  text-align: center;
+  padding-top: 10px !important;
+  vertical-align: middle !important;
+}
+
+.tp3d-ic-td-name {
+  min-width: 140px;
+}
+
+.tp3d-ic-td-dim,
+.tp3d-ic-td-weight,
+.tp3d-ic-td-cat {
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+/* Row status circles — soft background + icon */
+.tp3d-ic-status-circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.tp3d-ic-status-circle--success {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--success);
+}
+
+.tp3d-ic-status-circle--error {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--error);
+}
+
+.tp3d-ic-status-circle--muted {
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+}
+
+/* Category color dot */
+.tp3d-ic-cat-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  flex-shrink: 0;
+  vertical-align: middle;
+  position: relative;
+  top: -1px;
+}
+
+.tp3d-ic-dup-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--info);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  vertical-align: middle;
+}
+
+.tp3d-ic-row-reason {
+  margin-top: 3px;
+  font-size: var(--text-xs);
+  color: var(--error);
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.tp3d-ic-empty-row {
+  text-align: center;
+  padding: 20px !important;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+
+/* ── Footer left ─────────────────────────────── */
+.tp3d-ic-footer-left {
+  margin-right: auto;
+  display: flex;
+  align-items: center;
+}
+
+@media (max-width: 768px) {
+  .tp3d-ic-stats {
+    gap: var(--space-2);
+  }
+
+  .tp3d-ic-stat-num {
+    font-size: var(--text-xl);
+  }
+
+  .tp3d-ic-table-wrap {
+    max-height: 160px;
+  }
+}
+
+/* ================================
   Toasts
 ================================== */
 #toast-container {

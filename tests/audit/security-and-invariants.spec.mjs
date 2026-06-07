@@ -12,6 +12,7 @@ const appPath = new URL('../../src/app.js', import.meta.url);
 const indexHtmlPath = new URL('../../index.html', import.meta.url);
 const storagePath = new URL('../../src/core/storage.js', import.meta.url);
 const importExportPath = new URL('../../src/services/import-export.js', import.meta.url);
+const importCasesDialogPath = new URL('../../src/ui/overlays/import-cases-dialog.js', import.meta.url);
 const folderLibraryPath = new URL('../../src/services/folder-library.js', import.meta.url);
 const caseLibraryPath = new URL('../../src/services/case-library.js', import.meta.url);
 const packLibraryPath = new URL('../../src/services/pack-library.js', import.meta.url);
@@ -104,6 +105,9 @@ const uiCopyExportImportFiles = new Set([
   'src/ui/overlays/help-modal.js',
   'src/ui/overlays/import-app-dialog.js',
   'src/ui/overlays/import-pack-dialog.js',
+  'src/ui/overlays/import-cases-dialog.js',
+  'src/ui/helpers/import-dialog-utils.js',
+  'src/services/import-export.js',
   'src/ui/overlays/settings-overlay.js',
   'docs/product/TP3D-MASTER-TODO-V3.md',
   'tests/audit/security-and-invariants.spec.mjs',
@@ -157,8 +161,12 @@ const editorInspectorPolishFiles = new Set([
   'src/screens/editor-screen.js',
   'src/screens/packs-screen.js',
   'src/services/case-library.js',
+  'src/services/import-export.js',
+  'src/ui/helpers/import-dialog-utils.js',
   'src/ui/overlays/case-modal.js',
+  'src/ui/overlays/import-cases-dialog.js',
   'src/ui/overlays/settings-overlay.js',
+  'docs/product/TP3D-MASTER-TODO-V3.md',
   'styles/main.css',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);
@@ -1009,6 +1017,50 @@ test('UI-COPY-EXPORT-IMPORT-1 changed files stay in approved copy-only scope', a
   assert.deepEqual(unexpectedFiles, [],
     'UI-COPY-EXPORT-IMPORT-1 must stay inside approved UI copy and docs files');
 });
+
+// ── Import-cases dialog polish checks ──────────────────────────────────────
+
+test('import-cases dialog file chip clear does not close modal', async () => {
+  const src = await fs.readFile(importCasesDialogPath, 'utf8');
+  assert.match(src, /ev\.stopPropagation\(\)/,
+    'file chip clear x must call ev.stopPropagation() to avoid closing the modal');
+});
+
+test('import-cases dialog preview renders category color dots', async () => {
+  const src = await fs.readFile(importCasesDialogPath, 'utf8');
+  assert.match(src, /tp3d-ic-cat-dot/,
+    'category cells must render a tp3d-ic-cat-dot element for the color indicator');
+});
+
+test('import-cases dialog preview uses status circle elements', async () => {
+  const src = await fs.readFile(importCasesDialogPath, 'utf8');
+  assert.match(src, /tp3d-ic-status-circle/,
+    'status icons must be wrapped in tp3d-ic-status-circle for the soft circular background');
+  assert.match(src, /tp3d-ic-status-circle--success/,
+    'valid rows must use tp3d-ic-status-circle--success');
+  assert.match(src, /tp3d-ic-status-circle--error/,
+    'invalid rows must use tp3d-ic-status-circle--error');
+});
+
+test('import-cases dialog error report button uses bordered style', async () => {
+  const src = await fs.readFile(importCasesDialogPath, 'utf8');
+  assert.match(src, /errReportBtn\.className\s*=\s*['"]btn['"]/,
+    'error report button must use the base btn class (bordered secondary style)');
+  assert.doesNotMatch(src, /errReportBtn\.className\s*=\s*['"]btn btn-ghost['"]/,
+    'error report button must not be ghost (borderless)');
+  assert.doesNotMatch(src, /errReportBtn\.className\s*=\s*['"]tp3d-ic-err-report-btn['"]/,
+    'error report button must not use one-off custom class');
+});
+
+test('import-cases dialog parsed state uses compact file chip not the large dropzone', async () => {
+  const src = await fs.readFile(importCasesDialogPath, 'utf8');
+  assert.match(src, /tp3d-ic-file-chip/,
+    'parsed state must use a compact file chip element');
+  assert.match(src, /showState\('dropzone'\)/,
+    'file chip clear must call showState dropzone to return to empty state');
+});
+
+// ── End import-cases dialog polish checks ──────────────────────────────────
 
 test('UI-STABILIZATION-1 changed files stay in approved scope', async () => {
   const [unstaged, staged] = await Promise.all([

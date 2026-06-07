@@ -222,7 +222,7 @@ export function createPacksScreen({
             applyFiltersVisibility();
           }
         };
-        window.setTimeout(() => {
+        setTimeout(() => {
           if (filtersOutsideClickHandler) {
             document.addEventListener('click', filtersOutsideClickHandler);
           }

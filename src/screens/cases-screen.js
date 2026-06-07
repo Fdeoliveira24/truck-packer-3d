@@ -63,7 +63,6 @@ export function createCasesScreen({
     let casesFooterMountEl = null;
     let lastCasePageMeta = null;
     let filteredCases = [];
-    let filtersOutsideClickHandler = null;
 
     function initCasesUI() {
       searchEl.addEventListener(
@@ -131,27 +130,6 @@ export function createCasesScreen({
       const visible = PreferencesManager.get().casesFiltersVisible !== false;
       filtersEl.classList.toggle('is-open', visible);
       btnFiltersToggle && btnFiltersToggle.classList.toggle('btn-primary', visible);
-      // Manage outside-click handler
-      if (filtersOutsideClickHandler) {
-        document.removeEventListener('click', filtersOutsideClickHandler);
-        filtersOutsideClickHandler = null;
-      }
-      if (visible) {
-        filtersOutsideClickHandler = function(ev) {
-          const anchor = filtersEl.closest('.tp3d-cases-filter-anchor');
-          if (!anchor || !anchor.contains(/** @type {Node} */ (ev.target))) {
-            const prefs = PreferencesManager.get();
-            prefs.casesFiltersVisible = false;
-            PreferencesManager.set(prefs);
-            applyFiltersVisibility();
-          }
-        };
-        window.setTimeout(() => {
-          if (filtersOutsideClickHandler) {
-            document.addEventListener('click', filtersOutsideClickHandler);
-          }
-        }, 0);
-      }
     }
 
     function clearSelection() {

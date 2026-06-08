@@ -430,7 +430,7 @@ export function createImportPackDialog({
     function renderPackSummary(pack, bundledCases) {
       packSummary.textContent = '';
 
-      const truck = (pack.truck && pack.truck.dimensions) ? pack.truck.dimensions : {};
+      const truck = pack.truck || {};
       const lengthUnit = Utils && Utils.lengthUnits ? 'm' : 'm';
       const weightUnit = 'lb';
 
@@ -590,9 +590,12 @@ export function createImportPackDialog({
         return;
       }
 
+      let unresolvedCount = 0;
       instances.forEach(inst => {
-        const def = bundledById.get(inst.caseId) || {};
-        const dims = def.dimensions || {};
+        const def = bundledById.get(inst.caseId);
+        const hasDef = Boolean(def);
+        if (!hasDef) unresolvedCount++;
+        const dims = (def && def.dimensions) || {};
 
         const tr = doc.createElement('tr');
         tr.className = 'tp3d-ic-row tp3d-ic-row--valid';
@@ -601,9 +604,9 @@ export function createImportPackDialog({
         const statusTd = doc.createElement('td');
         statusTd.className = 'tp3d-ic-td-status';
         const statusCircle = doc.createElement('span');
-        statusCircle.className = 'tp3d-ic-status-circle tp3d-ic-status-circle--success';
+        statusCircle.className = 'tp3d-ic-status-circle tp3d-ic-status-circle--' + (hasDef ? 'success' : 'muted');
         const statusIcon = doc.createElement('i');
-        statusIcon.className = 'fa-solid fa-check';
+        statusIcon.className = hasDef ? 'fa-solid fa-check' : 'fa-solid fa-minus';
         statusCircle.appendChild(statusIcon);
         statusTd.appendChild(statusCircle);
 
@@ -611,34 +614,49 @@ export function createImportPackDialog({
         const nameTd = doc.createElement('td');
         nameTd.className = 'tp3d-ic-td-name';
         const nameSpan = doc.createElement('span');
-        nameSpan.textContent = def.name || '—';
+        if (hasDef) {
+          nameSpan.textContent = def.name || '—';
+        } else {
+          nameSpan.className = 'muted';
+          nameSpan.textContent = inst.caseId || '—';
+        }
         nameTd.appendChild(nameSpan);
 
         // Dimensions cell
         const dimTd = doc.createElement('td');
         dimTd.className = 'tp3d-ic-td-dim';
-        dimTd.textContent = (Utils && Utils.formatDims && dims.length)
+        dimTd.textContent = (hasDef && dims.length && Utils && Utils.formatDims)
           ? Utils.formatDims(dims, 'm')
-          : ((dims.length || '?') + ' × ' + (dims.width || '?') + ' × ' + (dims.height || '?'));
+          : (hasDef && dims.length
+              ? (dims.length + ' × ' + dims.width + ' × ' + dims.height)
+              : '—');
 
         // Weight cell
         const wtTd = doc.createElement('td');
         wtTd.className = 'tp3d-ic-td-weight';
-        const wt = Number(def.weight);
-        wtTd.textContent = Number.isFinite(wt) && wt > 0
-          ? ((Utils && Utils.formatWeight) ? Utils.formatWeight(wt, 'lb', 0) : wt + ' lb')
-          : '—';
+        if (hasDef) {
+          const wt = Number(def.weight);
+          wtTd.textContent = Number.isFinite(wt) && wt > 0
+            ? ((Utils && Utils.formatWeight) ? Utils.formatWeight(wt, 'lb', 0) : wt + ' lb')
+            : '—';
+        } else {
+          wtTd.textContent = '—';
+        }
 
         // Category cell
         const catTd = doc.createElement('td');
         catTd.className = 'tp3d-ic-td-cat';
-        const catName = def.category || 'default';
-        const catDot = doc.createElement('span');
-        catDot.className = 'tp3d-ic-cat-dot';
-        // Derive color from category key — minimal inline style for dot only
-        catDot.style.background = getCategoryColor(catName);
-        catTd.appendChild(catDot);
-        catTd.appendChild(doc.createTextNode(catName.charAt(0).toUpperCase() + catName.slice(1)));
+        if (hasDef) {
+          const catName = def.category || 'default';
+          const catDot = doc.createElement('span');
+          catDot.className = 'tp3d-ic-cat-dot';
+          // Derive color from category key — minimal inline style for dot only
+          catDot.style.background = getCategoryColor(catName);
+          catTd.appendChild(catDot);
+          catTd.appendChild(doc.createTextNode(catName.charAt(0).toUpperCase() + catName.slice(1)));
+        } else {
+          catTd.textContent = '—';
+        }
 
         tr.appendChild(statusTd);
         tr.appendChild(nameTd);
@@ -647,6 +665,20 @@ export function createImportPackDialog({
         tr.appendChild(catTd);
         tbody.appendChild(tr);
       });
+
+      // Footer note when case definitions are not bundled in the file
+      if (unresolvedCount > 0) {
+        const noteRow = doc.createElement('tr');
+        const noteTd = doc.createElement('td');
+        noteTd.colSpan = 5;
+        noteTd.className = 'tp3d-ic-empty-row';
+        noteTd.textContent = unresolvedCount === instances.length
+          ? 'Case definitions not bundled — pack will reference your local case library on import'
+          : unresolvedCount + ' case' + (unresolvedCount !== 1 ? 's' : '') +
+            ' not bundled — will reference local library';
+        noteRow.appendChild(noteTd);
+        tbody.appendChild(noteRow);
+      }
     }
 
     // ── Render batch list ─────────────────────────────────────────────────
@@ -662,6 +694,12 @@ export function createImportPackDialog({
           const p = payload.pack;
           if (!p || !p.truck || !Array.isArray(p.cases)) {
             return { valid: false, payload, reason: 'Missing truck or cases' };
+          }
+          const tL = Number(p.truck.length);
+          const tW = Number(p.truck.width);
+          const tH = Number(p.truck.height);
+          if (!Number.isFinite(tL) || tL <= 0 || !Number.isFinite(tW) || tW <= 0 || !Number.isFinite(tH) || tH <= 0) {
+            return { valid: false, payload, reason: 'Invalid truck dimensions' };
           }
           validCount++;
           return { valid: true, payload };
@@ -704,7 +742,7 @@ export function createImportPackDialog({
 
       rows.forEach(({ valid, payload: p, reason }) => {
         const pack = (p && p.pack) || {};
-        const truck = (pack.truck && pack.truck.dimensions) ? pack.truck.dimensions : {};
+        const truck = pack.truck || {};
         const caseCount = Array.isArray(pack.cases) ? pack.cases.length : '?';
 
         const tr = doc.createElement('tr');
@@ -815,7 +853,8 @@ export function createImportPackDialog({
           ? Utils.safeJsonParse(text, null)
           : JSON.parse(text);
         if (peek && typeof peek === 'object' &&
-            (Array.isArray(peek.packLibrary) || Array.isArray(peek.caseLibrary) || peek.preferences)) {
+            (Array.isArray(peek.packLibrary) || Array.isArray(peek.caseLibrary) || peek.preferences ||
+             peek.exportType === 'app-backup')) {
           showState('dropzone');
           UIComponents.showToast('This looks like App JSON. Use Import App JSON instead.', 'warning');
           return;
@@ -855,6 +894,14 @@ export function createImportPackDialog({
 
         if (!pack || !pack.truck || !Array.isArray(pack.cases)) {
           throw new Error('Invalid pack format — missing truck or cases list.');
+        }
+        const truckL = Number(pack.truck.length);
+        const truckW = Number(pack.truck.width);
+        const truckH = Number(pack.truck.height);
+        if (!Number.isFinite(truckL) || truckL <= 0 ||
+            !Number.isFinite(truckW) || truckW <= 0 ||
+            !Number.isFinite(truckH) || truckH <= 0) {
+          throw new Error('Invalid pack — truck dimensions must be positive numbers.');
         }
 
         const caseCount = pack.cases.length;

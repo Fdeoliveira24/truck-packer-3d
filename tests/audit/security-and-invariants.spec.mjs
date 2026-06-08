@@ -1151,6 +1151,56 @@ test('PACK-IMPORT-BATCH-1 import-pack-dialog routes pack-batch exportType to bat
 
 // ── End PACK-IMPORT-BATCH-1 ────────────────────────────────────────────────
 
+// ── PACK-IMPORT-SCHEMA-1 ───────────────────────────────────────────────────
+
+test('PACK-IMPORT-SCHEMA-1 import-pack-dialog reads flat truck schema (not .dimensions)', async () => {
+  const src = await fs.readFile(importPackDialogPath, 'utf8');
+  assert.ok(
+    !src.includes('pack.truck.dimensions'),
+    'import-pack-dialog must not read pack.truck.dimensions (flat schema: pack.truck.length/width/height)'
+  );
+  assert.match(src, /pack\.truck\s*\|\|/,
+    'import-pack-dialog must use pack.truck || {} for truck accessor');
+});
+
+test('PACK-IMPORT-SCHEMA-1 import-pack-dialog validates truck dimensions are positive finite numbers', async () => {
+  const src = await fs.readFile(importPackDialogPath, 'utf8');
+  assert.match(src, /Number\.isFinite.*truckL|Number\.isFinite.*tL/,
+    'import-pack-dialog must check Number.isFinite for truck length');
+  assert.match(src, /truckL\s*<=\s*0|tL\s*<=\s*0/,
+    'import-pack-dialog must reject truck.length <= 0');
+});
+
+test('PACK-IMPORT-SCHEMA-1 import-pack-dialog App JSON guard catches exportType app-backup', async () => {
+  const src = await fs.readFile(importPackDialogPath, 'utf8');
+  assert.match(src, /exportType.*app-backup|app-backup.*exportType/,
+    'import-pack-dialog must detect exportType === "app-backup" as App JSON');
+});
+
+test('PACK-IMPORT-SCHEMA-1 import-pack-dialog renderCasesTable does not use .dimensions fallback for missing bundled cases', async () => {
+  const src = await fs.readFile(importPackDialogPath, 'utf8');
+  assert.ok(
+    !src.includes("bundledById.get(inst.caseId) || {}"),
+    'import-pack-dialog must not fallback to {} for missing bundled case (hides unresolved data)'
+  );
+  assert.match(src, /hasDef|isResolved/,
+    'import-pack-dialog must track whether case definition was resolved from bundledCases');
+});
+
+test('PACK-IMPORT-SCHEMA-1 import-pack-dialog shows unbundled case note in cases table', async () => {
+  const src = await fs.readFile(importPackDialogPath, 'utf8');
+  assert.match(src, /not bundled/,
+    'import-pack-dialog must show a note when case definitions are not bundled');
+});
+
+test('PACK-IMPORT-SCHEMA-1 import-pack-dialog batch row validation checks truck dimensions', async () => {
+  const src = await fs.readFile(importPackDialogPath, 'utf8');
+  assert.match(src, /Invalid truck dimensions/,
+    'import-pack-dialog batch validation must report "Invalid truck dimensions"');
+});
+
+// ── End PACK-IMPORT-SCHEMA-1 ──────────────────────────────────────────────
+
 test('UI-STABILIZATION-1 changed files stay in approved scope', async () => {
   const [unstaged, staged] = await Promise.all([
     execFileAsync('git', ['diff', '--name-only']),

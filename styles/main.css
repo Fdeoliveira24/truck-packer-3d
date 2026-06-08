@@ -2962,6 +2962,213 @@ tr:hover td {
 }
 
 /* ================================
+  TP3D Import Pack Dialog (tp3d-ip-*)
+================================== */
+
+/* Single-pack detail wrapper */
+.tp3d-ip-single {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  margin-top: var(--space-3, 12px);
+}
+
+/* Pack summary card */
+.tp3d-ip-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+  padding: var(--space-4, 16px);
+}
+
+.tp3d-ip-summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2, 8px);
+}
+
+.tp3d-ip-summary-title {
+  font-size: var(--text-base, 15px);
+  font-weight: var(--font-semibold, 600);
+  color: var(--text-primary);
+}
+
+.tp3d-ip-summary-meta {
+  display: flex;
+  gap: var(--space-3, 12px);
+  font-size: var(--text-sm, 13px);
+  flex-wrap: wrap;
+}
+
+.tp3d-ip-summary-truck {
+  font-size: var(--text-sm, 13px);
+}
+
+/* Fit badge */
+.tp3d-ip-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm, 4px);
+  font-size: var(--text-xs, 11px);
+  font-weight: var(--font-semibold, 600);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.tp3d-ip-badge-ok {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--success, #22c55e);
+}
+
+.tp3d-ip-badge-warn {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--warning, #f59e0b);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+/* Stat row below summary */
+.tp3d-ip-stat-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-2, 8px);
+  border-top: 1px solid var(--border-subtle, var(--border));
+  padding-top: var(--space-3, 12px);
+}
+
+.tp3d-ip-stat-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tp3d-ip-stat-value {
+  font-size: var(--text-lg, 18px);
+  font-weight: var(--font-semibold, 600);
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.tp3d-ip-stat-label {
+  font-size: var(--text-xs, 11px);
+  letter-spacing: 0.04em;
+}
+
+/* Truck fill bar */
+.tp3d-ip-fill {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+  border-top: 1px solid var(--border-subtle, var(--border));
+  padding-top: var(--space-3, 12px);
+}
+
+.tp3d-ip-fill-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--text-sm, 13px);
+  font-weight: var(--font-medium, 500);
+}
+
+.tp3d-ip-fill-pct--ok {
+  color: var(--success, #22c55e);
+  font-weight: var(--font-semibold, 600);
+}
+.tp3d-ip-fill-pct--warn {
+  color: var(--warning, #f59e0b);
+  font-weight: var(--font-semibold, 600);
+}
+
+.tp3d-ip-fill-track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-tertiary, var(--bg-secondary));
+  overflow: hidden;
+}
+
+.tp3d-ip-fill-bar {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--success, #22c55e);
+  transition: width 0.4s ease;
+}
+
+.tp3d-ip-fill-bar--warn {
+  background: var(--warning, #f59e0b);
+}
+
+.tp3d-ip-fill-note {
+  font-size: var(--text-xs, 11px);
+  line-height: 1.4;
+}
+
+/* Import button count badge */
+.tp3d-ip-btn-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  margin-left: 8px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.25);
+  font-size: var(--text-xs, 11px);
+  font-weight: var(--font-semibold, 600);
+  line-height: 1;
+}
+
+/* Batch detail wrapper */
+.tp3d-ip-batch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  margin-top: var(--space-3, 12px);
+}
+
+/* Inline error card */
+.tp3d-ip-error {
+  margin-top: var(--space-3, 12px);
+}
+
+.tp3d-ip-error-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3, 12px);
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-md, 8px);
+}
+
+.tp3d-ip-error-icon {
+  color: var(--error, #ef4444);
+  font-size: 18px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.tp3d-ip-error-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tp3d-ip-error-heading {
+  font-size: var(--text-sm, 13px);
+  font-weight: var(--font-semibold, 600);
+  color: var(--error, #ef4444);
+}
+
+.tp3d-ip-error-text {
+  font-size: var(--text-sm, 13px);
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+/* ================================
   Toasts
 ================================== */
 #toast-container {

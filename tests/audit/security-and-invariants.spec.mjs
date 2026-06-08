@@ -109,6 +109,7 @@ const uiCopyExportImportFiles = new Set([
   'src/ui/helpers/import-dialog-utils.js',
   'src/services/import-export.js',
   'src/ui/overlays/settings-overlay.js',
+  'styles/main.css',
   'docs/product/TP3D-MASTER-TODO-V3.md',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);

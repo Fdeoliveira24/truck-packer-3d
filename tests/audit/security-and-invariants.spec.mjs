@@ -108,7 +108,9 @@ const uiCopyExportImportFiles = new Set([
   'src/ui/overlays/import-cases-dialog.js',
   'src/ui/helpers/import-dialog-utils.js',
   'src/services/import-export.js',
+  'src/services/pack-library.js',
   'src/ui/overlays/settings-overlay.js',
+  'styles/main.css',
   'docs/product/TP3D-MASTER-TODO-V3.md',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);
@@ -963,8 +965,10 @@ test('UI-COPY-EXPORT-IMPORT-1 copy uses scoped backup import export wording', as
     'App export modal must use backup title and CTA');
   assert.match(app, /title:\s*['"]Export Workspace Backup['"][\s\S]*label:\s*['"]Export Workspace Backup['"]/,
     'Workspace export modal must use backup title and CTA');
-  assert.match(index, /Import Pack JSON/,
-    'Packs screen header button must use Import Pack JSON');
+  assert.match(index, /id="btn-import-pack"[\s\S]*?Import pack/,
+    'Packs screen header button must use Import pack (no JSON suffix)');
+  assert.match(importPack, /title:\s*['"]Import Pack JSON['"]/,
+    'Import Pack dialog must keep its Import Pack JSON title');
   assert.match(index, /Download Cases Template[\s\S]*Import Cases/,
     'Cases buttons must use explicit template and import labels');
   assert.match(importApp, /title:\s*['"]Import App Backup['"]/,

@@ -3763,6 +3763,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       UIComponents,
       ImportExport,
       PackLibrary,
+      CaseLibrary,
       Utils,
     });
     const ImportCasesDialog = createImportCasesDialog({

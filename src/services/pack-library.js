@@ -540,9 +540,6 @@ export function importPackPayload(payload) {
     {
       caseLibrary: CaseLibrary.getCases(),
       packLibrary: [...currentPacks, pack],
-      currentPackId: pack.id,
-      currentScreen: 'editor',
-      selectedInstanceIds: [],
     },
     { skipHistory: false }
   );

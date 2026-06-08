@@ -2538,6 +2538,71 @@ tr:hover td {
   border-color: rgba(59, 130, 246, 0.24);
 }
 
+.tp3d-import-case-list {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin-top: var(--space-2);
+}
+
+.tp3d-import-case-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+
+.tp3d-import-case-row-missing {
+  border-color: rgba(239, 68, 68, 0.35);
+  color: var(--error);
+}
+
+.tp3d-import-case-name {
+  font-weight: var(--font-medium);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp3d-import-case-dim,
+.tp3d-import-case-weight {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.tp3d-import-case-cat {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.tp3d-import-cat-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+
+.tp3d-import-preview-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-2);
+}
+
+.tp3d-import-batch-list {
+  display: grid;
+  gap: 12px;
+}
+
 /* ================================
   TP3D Import Cases Dialog (tp3d-ic-*)
 ================================== */

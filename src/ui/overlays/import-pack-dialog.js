@@ -40,6 +40,7 @@ export function createImportPackDialog({
   function open() {
     // Per-open mutable state — fresh on every open() call so no stale leakage.
     let parsedPayload = null; // { type: 'single'|'batch', payload, file }
+    let activeCaseFilter = 'all'; // all | ready | duplicates | invalid
 
     // Hidden file input.
     const fileInput = doc.createElement('input');
@@ -225,6 +226,10 @@ export function createImportPackDialog({
     casesHeader.appendChild(casesCount);
 
     casesSection.appendChild(casesHeader);
+
+    const casesStatus = doc.createElement('div');
+    casesStatus.className = 'tp3d-ip-cases-status';
+    casesSection.appendChild(casesStatus);
 
     const tableWrap = doc.createElement('div');
     tableWrap.className = 'tp3d-ic-table-wrap';
@@ -456,6 +461,18 @@ export function createImportPackDialog({
       // Fit badge
       const badgeClass = fillPct >= 90 ? 'tp3d-ip-badge-warn' : 'tp3d-ip-badge-ok';
 
+      const summaryTop = doc.createElement('div');
+      summaryTop.className = 'tp3d-ip-summary-top';
+
+      const summaryIcon = doc.createElement('div');
+      summaryIcon.className = 'tp3d-ip-summary-icon';
+      summaryIcon.innerHTML = '<i class="fa-solid fa-truck"></i>';
+      summaryTop.appendChild(summaryIcon);
+
+      const summaryMain = doc.createElement('div');
+      summaryMain.className = 'tp3d-ip-summary-main';
+      summaryTop.appendChild(summaryMain);
+
       // Header row: pack title + badge
       const headerRow = doc.createElement('div');
       headerRow.className = 'tp3d-ip-summary-header';
@@ -469,22 +486,30 @@ export function createImportPackDialog({
       fitBadge.className = 'tp3d-ip-badge ' + badgeClass;
       fitBadge.textContent = fillPct >= 90 ? 'TIGHT FIT' : 'FITS';
       headerRow.appendChild(fitBadge);
-      packSummary.appendChild(headerRow);
+      summaryMain.appendChild(headerRow);
 
       const detailsEl = doc.createElement('div');
       detailsEl.className = 'tp3d-ip-summary-details';
-      const appendDetail = (label, value) => {
+      const createDetailItem = (label, value) => {
         if (value === null || value === undefined || value === '') return;
-        const row = doc.createElement('div');
-        row.className = 'tp3d-ip-summary-detail';
+        const item = doc.createElement('div');
+        item.className = 'tp3d-ip-summary-meta-item';
         const labelEl = doc.createElement('span');
         labelEl.className = 'tp3d-ip-summary-detail-label';
         labelEl.textContent = label + ': ';
         const valueEl = doc.createElement('span');
         valueEl.className = 'tp3d-ip-summary-detail-value';
         valueEl.textContent = String(value);
-        row.appendChild(labelEl);
-        row.appendChild(valueEl);
+        item.appendChild(labelEl);
+        item.appendChild(valueEl);
+        return item;
+      };
+      const appendDetailRow = (...items) => {
+        const validItems = items.filter(Boolean);
+        if (!validItems.length) return;
+        const row = doc.createElement('div');
+        row.className = 'tp3d-ip-summary-detail';
+        validItems.forEach(item => row.appendChild(item));
         detailsEl.appendChild(row);
       };
       const clientText = pack.client || pack.clientName || '';
@@ -497,12 +522,17 @@ export function createImportPackDialog({
       const truckText = (Utils && Utils.formatDims)
         ? Utils.formatDims(truck, 'm')
         : (truck.length || '?') + ' × ' + (truck.width || '?') + ' × ' + (truck.height || '?');
-      appendDetail('Title', pack.title || 'Untitled Pack');
-      appendDetail('Project', pack.projectName);
-      appendDetail('Client', clientText);
-      appendDetail('Truck size', truckText);
-      appendDetail('Categories', categorySet.size > 0 ? String(categorySet.size) : '');
-      if (detailsEl.childNodes.length) packSummary.appendChild(detailsEl);
+      appendDetailRow(
+        createDetailItem('Client', clientText),
+        createDetailItem('Project', pack.projectName)
+      );
+      appendDetailRow(
+        createDetailItem('Truck', truckText),
+        createDetailItem('Categories', categorySet.size > 0 ? String(categorySet.size) : '')
+      );
+      if (detailsEl.childNodes.length) summaryMain.appendChild(detailsEl);
+
+      packSummary.appendChild(summaryTop);
 
       // Stat row: cases · weight · volume
       const statRow = doc.createElement('div');
@@ -578,6 +608,7 @@ export function createImportPackDialog({
     // ── Render cases table ────────────────────────────────────────────────
     function renderCasesTable(pack, bundledCases) {
       tbody.textContent = '';
+      casesStatus.textContent = '';
       const bundledById = new Map((bundledCases || []).map(c => [c.id, c]));
       const instances = pack.cases || [];
       casesCount.textContent = instances.length + ' case' + (instances.length !== 1 ? 's' : '');
@@ -594,14 +625,62 @@ export function createImportPackDialog({
       }
 
       let unresolvedCount = 0;
+      let duplicateCount = 0;
+      const seenInstanceIds = new Set();
+      const rows = [];
       instances.forEach(inst => {
+        let isDuplicate = false;
+        if (inst && inst.id) {
+          if (seenInstanceIds.has(inst.id)) {
+            duplicateCount++;
+            isDuplicate = true;
+          } else {
+            seenInstanceIds.add(inst.id);
+          }
+        }
         const def = bundledById.get(inst.caseId);
         const hasDef = Boolean(def);
         if (!hasDef) unresolvedCount++;
         const dims = (def && def.dimensions) || {};
 
-        const tr = doc.createElement('tr');
-        tr.className = 'tp3d-ic-row tp3d-ic-row--valid';
+        const statusKey = !hasDef
+          ? 'invalid'
+          : (isDuplicate ? 'duplicates' : 'ready');
+
+        rows.push({ inst, def, dims, hasDef, statusKey });
+      });
+
+      const invalidCount = unresolvedCount;
+      const readyCount = Math.max(0, instances.length - invalidCount - duplicateCount);
+      const statusCards = [
+        { key: 'ready', count: readyCount, label: 'Ready' },
+        { key: 'duplicates', count: duplicateCount, label: 'Duplicates' },
+        { key: 'invalid', count: invalidCount, label: 'Invalid' },
+      ];
+
+      const renderFilteredRows = () => {
+        tbody.textContent = '';
+        const filteredRows = activeCaseFilter === 'all'
+          ? rows
+          : rows.filter(r => r.statusKey === activeCaseFilter);
+
+        if (!filteredRows.length) {
+          const tr = doc.createElement('tr');
+          const td = doc.createElement('td');
+          td.colSpan = 5;
+          td.className = 'tp3d-ic-empty-row';
+          td.textContent = activeCaseFilter === 'ready'
+            ? 'No ready cases.'
+            : (activeCaseFilter === 'duplicates' ? 'No duplicates.' : 'No invalid.' );
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+          return;
+        }
+
+        filteredRows.forEach(({ inst, def, dims, hasDef, statusKey }) => {
+          const tr = doc.createElement('tr');
+          tr.className = 'tp3d-ic-row tp3d-ic-row--valid';
+          if (statusKey === 'duplicates') tr.classList.add('tp3d-ic-row--duplicate');
 
         // Status cell
         const statusTd = doc.createElement('td');
@@ -667,21 +746,53 @@ export function createImportPackDialog({
         tr.appendChild(wtTd);
         tr.appendChild(catTd);
         tbody.appendChild(tr);
+        });
+
+        // Footer note when case definitions are not bundled in the file
+        if (activeCaseFilter === 'all' && unresolvedCount > 0) {
+          const noteRow = doc.createElement('tr');
+          const noteTd = doc.createElement('td');
+          noteTd.colSpan = 5;
+          noteTd.className = 'tp3d-ic-empty-row';
+          noteTd.textContent = unresolvedCount === instances.length
+            ? 'Case definitions not bundled — this pack will use matching local cases if available'
+            : unresolvedCount + ' case' + (unresolvedCount !== 1 ? 's' : '') +
+              ' not bundled — this pack will use matching local cases if available';
+          noteRow.appendChild(noteTd);
+          tbody.appendChild(noteRow);
+        }
+      };
+
+      statusCards.forEach(({ key, count, label }) => {
+        const card = doc.createElement('button');
+        card.type = 'button';
+        card.className = 'card tp3d-ic-stat tp3d-ip-cases-status-card tp3d-ip-cases-status-card--' + key;
+        const isActive = activeCaseFilter === key;
+        card.classList.toggle('tp3d-ic-stat--active', isActive);
+        card.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        card.setAttribute('title', 'Filter by ' + label);
+        const valueRow = doc.createElement('div');
+        valueRow.className = 'tp3d-ip-cases-status-value tp3d-ip-cases-status-value--' + key;
+        const dot = doc.createElement('span');
+        dot.className = 'tp3d-ip-cases-status-dot tp3d-ip-cases-status-dot--' + key;
+        const num = doc.createElement('span');
+        num.textContent = String(count);
+        valueRow.appendChild(dot);
+        valueRow.appendChild(num);
+        const lbl = doc.createElement('div');
+        lbl.className = 'tp3d-ip-cases-status-label';
+        lbl.textContent = label;
+        card.appendChild(valueRow);
+        card.appendChild(lbl);
+        casesStatus.appendChild(card);
+
+        card.addEventListener('click', () => {
+          activeCaseFilter = activeCaseFilter === key ? 'all' : key;
+          renderCasesTable(pack, bundledCases);
+        });
       });
 
-      // Footer note when case definitions are not bundled in the file
-      if (unresolvedCount > 0) {
-        const noteRow = doc.createElement('tr');
-        const noteTd = doc.createElement('td');
-        noteTd.colSpan = 5;
-        noteTd.className = 'tp3d-ic-empty-row';
-        noteTd.textContent = unresolvedCount === instances.length
-          ? 'Case definitions not bundled — this pack will use matching local cases if available'
-          : unresolvedCount + ' case' + (unresolvedCount !== 1 ? 's' : '') +
-            ' not bundled — this pack will use matching local cases if available';
-        noteRow.appendChild(noteTd);
-        tbody.appendChild(noteRow);
-      }
+      renderFilteredRows();
     }
 
     // ── Render batch list ─────────────────────────────────────────────────
@@ -802,7 +913,7 @@ export function createImportPackDialog({
     }
 
     // ── Inline error card ─────────────────────────────────────────────────
-    function renderError(message) {
+    function renderError(message, headingText = 'Import error') {
       errorArea.textContent = '';
       const card = doc.createElement('div');
       card.className = 'tp3d-ip-error-card';
@@ -816,7 +927,7 @@ export function createImportPackDialog({
 
       const heading = doc.createElement('div');
       heading.className = 'tp3d-ip-error-heading';
-      heading.textContent = 'Import error';
+      heading.textContent = headingText;
 
       const text = doc.createElement('div');
       text.className = 'tp3d-ip-error-text';
@@ -832,6 +943,7 @@ export function createImportPackDialog({
     // ── File handler ──────────────────────────────────────────────────────
     async function handleFile(file) {
       if (!file) return;
+      activeCaseFilter = 'all';
 
       // Show file chip immediately with filename
       fileChipName.textContent = file.name;
@@ -845,8 +957,12 @@ export function createImportPackDialog({
       try {
         text = await file.text();
       } catch (err) {
-        showState('dropzone');
-        UIComponents.showToast('Could not read file: ' + (err && err.message), 'error');
+        const normalized = normalizeImportError(err, 'Could not read this file. Please try again.');
+        fileChipMeta.textContent = kb + ' KB · read failed';
+        renderError(normalized.message, normalized.heading);
+        parsedPayload = null;
+        showState('error');
+        updateFooter();
         return;
       }
 
@@ -858,8 +974,14 @@ export function createImportPackDialog({
         if (peek && typeof peek === 'object' &&
             (Array.isArray(peek.packLibrary) || Array.isArray(peek.caseLibrary) || peek.preferences ||
              peek.exportType === 'app-backup')) {
-          showState('dropzone');
-          UIComponents.showToast('This looks like App JSON. Use Import App JSON instead.', 'warning');
+          fileChipMeta.textContent = kb + ' KB · parsed just now';
+          renderError(
+            'This looks like an App JSON backup. Use Import App JSON instead.',
+            'Wrong file type'
+          );
+          parsedPayload = null;
+          showState('error');
+          updateFooter();
           return;
         }
 
@@ -870,7 +992,8 @@ export function createImportPackDialog({
             payloads = ImportExport.parsePackBatchImportJSON(text);
           } catch (err) {
             fileChipMeta.textContent = kb + ' KB · parsed just now';
-            renderError(err && err.message);
+            const normalized = normalizeImportError(err, 'Could not parse this batch file.');
+            renderError(normalized.message, normalized.heading);
             parsedPayload = null;
             showState('error');
             updateFooter();
@@ -920,7 +1043,8 @@ export function createImportPackDialog({
         updateFooter();
       } catch (err) {
         fileChipMeta.textContent = kb + ' KB · parsed just now';
-        renderError(err && err.message);
+        const normalized = normalizeImportError(err, 'Could not parse this pack file.');
+        renderError(normalized.message, normalized.heading);
         parsedPayload = null;
         showState('error');
         updateFooter();
@@ -976,6 +1100,39 @@ export function createImportPackDialog({
       default: '#9ca3af',
     };
     return colors[String(key || '').toLowerCase()] || colors.default;
+  }
+
+  function normalizeImportError(err, fallbackMessage) {
+    const rawMessage = String((err && err.message) || fallbackMessage || 'Unknown error').trim();
+    if (!rawMessage) {
+      return { heading: 'Import error', message: 'Unknown error' };
+    }
+
+    if (/unexpected token|json|position\s+\d+/i.test(rawMessage)) {
+      return {
+        heading: 'Invalid JSON file',
+        message: 'This file could not be parsed as valid JSON. Export the pack again and retry.',
+      };
+    }
+
+    if (/missing|required|missing truck or cases/i.test(rawMessage)) {
+      return {
+        heading: 'Missing required fields',
+        message: rawMessage,
+      };
+    }
+
+    if (/truck dimensions|truck size|positive numbers/i.test(rawMessage)) {
+      return {
+        heading: 'Invalid truck size',
+        message: rawMessage,
+      };
+    }
+
+    return {
+      heading: 'Import error',
+      message: rawMessage,
+    };
   }
 
   // ---------------------------------------------------------------------------

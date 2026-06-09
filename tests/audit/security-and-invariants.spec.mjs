@@ -1301,24 +1301,56 @@ test('PACK-IMPORT-SCHEMA-1 import-pack-dialog shows unbundled case note in cases
 
 test('PACK-IMPORT-SCHEMA-1 import-pack-dialog labels preview summary and hides unsupported Thumbnail chip', async () => {
   const src = await fs.readFile(importPackDialogPath, 'utf8');
-  assert.match(src, /appendDetail\(['"]Title['"]/,
-    'Pack import preview must label the title row');
-  assert.match(src, /appendDetail\(['"]Project['"]/,
-    'Pack import preview must label the project row');
-  assert.match(src, /appendDetail\(['"]Client['"]/,
-    'Pack import preview must label the client row');
-  assert.match(src, /appendDetail\(['"]Truck size['"]/,
-    'Pack import preview must label the truck size row');
-  assert.match(src, /appendDetail\(['"]Categories['"]/,
-    'Pack import preview must label the categories row');
-  assert.doesNotMatch(src, /appendDetail\(['"]Status['"]/,
-    'Pack import preview must not duplicate FITS/TIGHT FIT chip with a status detail row');
+  assert.match(src, /fa-solid fa-truck/,
+    'Pack import preview summary must show a professional truck icon in the header block');
+  assert.doesNotMatch(src, /createDetailItem\(['"]Title['"]/,
+    'Pack import preview metadata must not duplicate title row under the summary header');
+  assert.match(src, /createDetailItem\(['"]Project['"]/,
+    'Pack import preview must label the project metadata item');
+  assert.match(src, /createDetailItem\(['"]Client['"]/,
+    'Pack import preview must label the client metadata item');
+  assert.match(src, /createDetailItem\(['"]Truck['"]/,
+    'Pack import preview must label the truck metadata item');
+  assert.match(src, /createDetailItem\(['"]Categories['"]/,
+    'Pack import preview must label the categories metadata item');
+  assert.match(src, /tp3d-ip-summary-meta-item/,
+    'Pack import preview must render compact inline metadata groups');
+  assert.match(src, /tp3d-ip-summary-detail-value/,
+    'Pack import preview metadata values must be rendered in dedicated value spans');
+  assert.match(src, /tp3d-ip-cases-status-card/,
+    'Pack import preview must render cases status cards');
+  assert.match(src, /let activeCaseFilter = ['"]all['"]/,
+    'Pack import preview must keep a local activeCaseFilter state for card toggles');
+  assert.match(src, /activeCaseFilter === key \? ['"]all['"] : key/,
+    'Cases status cards must toggle on/off by clicking the active filter again');
+  assert.match(src, /renderCasesTable\(pack, bundledCases\)/,
+    'Cases status card clicks must re-render the table with the selected filter');
+  assert.match(src, /label:\s*['"]Ready['"]/, 
+    'Pack import preview must include Ready status label');
+  assert.match(src, /label:\s*['"]Duplicates['"]/, 
+    'Pack import preview must include Duplicates status label');
+  assert.match(src, /label:\s*['"]Invalid['"]/, 
+    'Pack import preview must include Invalid status label');
   assert.match(src, /labelEl\.textContent\s*=\s*label \+ ['"]: ['"]/,
     'Pack import preview labels must include a visible colon-space separator');
   assert.match(src, /const clientText = pack\.client \|\| pack\.clientName \|\| ['"]/,
     'Pack import preview must support client fallback from pack.clientName');
   assert.doesNotMatch(src, /label:\s*['"]Thumbnail['"]/,
     'Pack import empty-state structure chips must not show Thumbnail');
+});
+
+test('PACK-IMPORT-SCHEMA-1 import-pack-dialog normalizes invalid/edge-case errors with specific headings', async () => {
+  const src = await fs.readFile(importPackDialogPath, 'utf8');
+  assert.match(src, /function normalizeImportError\(/,
+    'Import dialog must normalize edge-case errors before rendering');
+  assert.match(src, /heading:\s*['"]Invalid JSON file['"]/, 
+    'Import dialog must label JSON parse failures clearly');
+  assert.match(src, /heading:\s*['"]Missing required fields['"]/, 
+    'Import dialog must label missing required fields clearly');
+  assert.match(src, /heading:\s*['"]Invalid truck size['"]/, 
+    'Import dialog must label invalid truck dimension failures clearly');
+  assert.match(src, /renderError\(normalized\.message, normalized\.heading\)/,
+    'Import dialog must pass normalized heading and message into inline error cards');
 });
 
 test('PACK-IMPORT-SCHEMA-1 single import success path closes modal after import', async () => {

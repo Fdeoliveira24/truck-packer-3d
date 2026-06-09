@@ -3031,6 +3031,33 @@ tr:hover td {
   color: var(--text-primary);
 }
 
+.tp3d-ip-summary-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tp3d-ip-summary-detail {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+  line-height: 1.35;
+}
+
+.tp3d-ip-summary-detail-label {
+  font-family: var(--font-family);
+  font-size: 14px;
+  font-weight: var(--font-semibold, 600);
+  color: var(--text-secondary);
+}
+
+.tp3d-ip-summary-detail-value {
+  font-family: var(--font-family);
+  font-size: 12px;
+  font-weight: var(--font-normal, 400);
+  color: var(--text-primary);
+}
+
 .tp3d-ip-summary-meta {
   display: flex;
   gap: var(--space-3, 12px);

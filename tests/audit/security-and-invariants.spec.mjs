@@ -121,6 +121,7 @@ const importEditorSafeFiles = new Set([
   'src/screens/editor-screen.js',
   'src/services/pack-library.js',
   'src/ui/overlays/import-pack-dialog.js',
+  'styles/main.css',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);
 const uiStabilization1Files = new Set([

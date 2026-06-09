@@ -104,6 +104,7 @@ const uiCopyExportImportFiles = new Set([
   'index.html',
   'src/app.js',
   'src/screens/packs-screen.js',
+  'src/services/pack-library.js',
   'src/ui/overlays/help-modal.js',
   'src/ui/overlays/import-app-dialog.js',
   'src/ui/overlays/import-pack-dialog.js',
@@ -113,6 +114,13 @@ const uiCopyExportImportFiles = new Set([
   'src/ui/overlays/settings-overlay.js',
   'styles/main.css',
   'docs/product/TP3D-MASTER-TODO-V3.md',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
+const importEditorSafeFiles = new Set([
+  'index.html',
+  'src/screens/editor-screen.js',
+  'src/services/pack-library.js',
+  'src/ui/overlays/import-pack-dialog.js',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);
 const uiStabilization1Files = new Set([
@@ -188,6 +196,7 @@ function isNotCurrentReleaseGateCheckoutPatch(file) {
     !autoPackA1Clean1Files.has(file) &&
     !autoPackA1Clean2Files.has(file) &&
     !autoPackEditorCollisionFiles.has(file) &&
+    !importEditorSafeFiles.has(file) &&
     !editorInspectorPolishFiles.has(file);
 }
 
@@ -969,8 +978,10 @@ test('UI-COPY-EXPORT-IMPORT-1 copy uses scoped backup import export wording', as
     'App export modal must use backup title and CTA');
   assert.match(app, /title:\s*['"]Export Workspace Backup['"][\s\S]*label:\s*['"]Export Workspace Backup['"]/,
     'Workspace export modal must use backup title and CTA');
-  assert.match(index, /Import Pack JSON/,
-    'Packs screen header button must use Import Pack JSON');
+  assert.match(index, /Import Pack\(s\)/,
+    'Packs screen header button must use Import Pack(s)');
+  assert.doesNotMatch(index, />\s*Import Pack JSON\s*</,
+    'Packs screen toolbar button must not say Import Pack JSON');
   assert.match(index, /Download Cases Template[\s\S]*Import Cases/,
     'Cases buttons must use explicit template and import labels');
   assert.match(importApp, /title:\s*['"]Import App Backup['"]/,
@@ -1158,6 +1169,95 @@ test('PACK-IMPORT-BATCH-1 import-pack-dialog routes pack-batch exportType to bat
 
 // ── PACK-IMPORT-SCHEMA-1 ───────────────────────────────────────────────────
 
+function makePackImportSafeCase(overrides = {}) {
+  const dimensions = overrides.dimensions || { length: 10, width: 10, height: 10 };
+  return {
+    id: overrides.id || 'case-import-safe',
+    name: overrides.name || 'Import Safe Box',
+    manufacturer: overrides.manufacturer || 'QA',
+    category: overrides.category || 'Default',
+    color: overrides.color || '#9ca3af',
+    dimensions,
+    weight: overrides.weight || 10,
+    volume: dimensions.length * dimensions.width * dimensions.height,
+    canFlip: overrides.canFlip ?? true,
+    stackable: overrides.stackable ?? true,
+    ...overrides,
+  };
+}
+
+function makePackImportInstance(caseId, overrides = {}) {
+  return {
+    id: overrides.id || `inst-${Math.random().toString(36).slice(2)}`,
+    caseId,
+    transform: overrides.transform,
+    hidden: false,
+    groupId: null,
+    ...overrides,
+  };
+}
+
+function getPackImportDims(inst, caseData) {
+  return inst.orientedDims || caseData.dimensions;
+}
+
+function getPackImportAabb(inst, caseData) {
+  const dims = getPackImportDims(inst, caseData);
+  const pos = inst.transform.position;
+  return {
+    min: {
+      x: pos.x - dims.length / 2,
+      y: pos.y - dims.height / 2,
+      z: pos.z - dims.width / 2,
+    },
+    max: {
+      x: pos.x + dims.length / 2,
+      y: pos.y + dims.height / 2,
+      z: pos.z + dims.width / 2,
+    },
+  };
+}
+
+function packImportAabbsOverlap(a, b) {
+  const EPS = 0.001;
+  return (
+    a.min.x < b.max.x - EPS &&
+    a.max.x > b.min.x + EPS &&
+    a.min.y < b.max.y - EPS &&
+    a.max.y > b.min.y + EPS &&
+    a.min.z < b.max.z - EPS &&
+    a.max.z > b.min.z + EPS
+  );
+}
+
+function assertPackImportNoOverlaps(instances, caseData) {
+  for (let i = 0; i < instances.length; i++) {
+    for (let j = i + 1; j < instances.length; j++) {
+      assert.equal(
+        packImportAabbsOverlap(
+          getPackImportAabb(instances[i], caseData),
+          getPackImportAabb(instances[j], caseData)
+        ),
+        false,
+        `instances ${i} and ${j} must not overlap`
+      );
+    }
+  }
+}
+
+function makePackImportPayload(caseData, instances, overrides = {}) {
+  return {
+    pack: {
+      id: overrides.packId || `pack-import-${Math.random().toString(36).slice(2)}`,
+      title: overrides.title || 'Import Safety Pack',
+      truck: overrides.truck || { length: 120, width: 60, height: 60 },
+      cases: instances,
+      folderId: overrides.folderId || null,
+    },
+    bundledCases: overrides.bundledCases === undefined ? [caseData] : overrides.bundledCases,
+  };
+}
+
 test('PACK-IMPORT-SCHEMA-1 import-pack-dialog reads flat truck schema (not .dimensions)', async () => {
   const src = await fs.readFile(importPackDialogPath, 'utf8');
   assert.ok(
@@ -1198,10 +1298,231 @@ test('PACK-IMPORT-SCHEMA-1 import-pack-dialog shows unbundled case note in cases
     'import-pack-dialog must show a note when case definitions are not bundled');
 });
 
+test('PACK-IMPORT-SCHEMA-1 import-pack-dialog labels preview summary and hides unsupported Thumbnail chip', async () => {
+  const src = await fs.readFile(importPackDialogPath, 'utf8');
+  assert.match(src, /appendDetail\(['"]Title['"]/,
+    'Pack import preview must label the title row');
+  assert.match(src, /appendDetail\(['"]Project['"]/,
+    'Pack import preview must label the project row');
+  assert.match(src, /appendDetail\(['"]Client['"]/,
+    'Pack import preview must label the client row');
+  assert.match(src, /appendDetail\(['"]Truck size['"]/,
+    'Pack import preview must label the truck size row');
+  assert.match(src, /appendDetail\(['"]Categories['"]/,
+    'Pack import preview must label the categories row');
+  assert.doesNotMatch(src, /appendDetail\(['"]Status['"]/,
+    'Pack import preview must not duplicate FITS/TIGHT FIT chip with a status detail row');
+  assert.match(src, /labelEl\.textContent\s*=\s*label \+ ['"]: ['"]/,
+    'Pack import preview labels must include a visible colon-space separator');
+  assert.match(src, /const clientText = pack\.client \|\| pack\.clientName \|\| ['"]/,
+    'Pack import preview must support client fallback from pack.clientName');
+  assert.doesNotMatch(src, /label:\s*['"]Thumbnail['"]/,
+    'Pack import empty-state structure chips must not show Thumbnail');
+});
+
+test('PACK-IMPORT-SCHEMA-1 single import success path closes modal after import', async () => {
+  const src = await fs.readFile(importPackDialogPath, 'utf8');
+  assert.match(src, /PackLibrary\.importPackPayload\(parsedPayload\.payload\)[\s\S]*modalObj\.close\(\)/,
+    'Single-pack import success must close the modal after importing');
+});
+
+test('PACK-IMPORT-SAFE-1 editor addCaseToPack uses PackLibrary safe staging and preserves explicit drop positions', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function addCaseToPack(caseId, positionInches)');
+  const end = src.indexOf('\n\n    function unpackAll()', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0,
+    'editor-screen must define addCaseToPack(caseId, positionInches) before unpackAll');
+  assert.doesNotMatch(block, /const cols\s*=\s*6/,
+    'addCaseToPack must not keep hardcoded 6-column staging');
+  assert.doesNotMatch(block, /stagedCount/,
+    'addCaseToPack must not compute a custom stagedCount layout path');
+  assert.match(block, /\?\s*PackLibrary\.addInstance\(packId,\s*caseId,\s*positionInches\)/,
+    'addCaseToPack must preserve explicit positionInches for drag/drop placement');
+  assert.match(block, /:\s*PackLibrary\.addInstance\(packId,\s*caseId\)/,
+    'addCaseToPack must call PackLibrary.addInstance(packId, caseId) for normal Add button staging');
+});
+
+test('PACK-IMPORT-SCHEMA-1 import-pack-dialog distinguishes bundled and unresolved case definitions', async () => {
+  const src = await fs.readFile(importPackDialogPath, 'utf8');
+  assert.match(src, /Utils\.formatDims\(dims,\s*['"]m['"]\)/,
+    'Bundled cases must show real formatted dimensions');
+  assert.match(src, /Utils\.formatWeight\(wt,\s*['"]lb['"]/,
+    'Bundled cases must show real formatted weight');
+  assert.match(src, /getCategoryColor\(catName\)/,
+    'Bundled case categories must render their category color');
+  assert.match(src, /nameSpan\.textContent\s*=\s*inst\.caseId/,
+    'Missing bundled cases must show the unresolved caseId');
+  assert.match(src, /Case definitions not bundled/,
+    'Missing bundled cases must show a clear unresolved note');
+  assert.doesNotMatch(src, /\?\s*×\s*\?\s*×\s*\?/,
+    'Missing bundled cases must not show fake unknown dimensions');
+});
+
 test('PACK-IMPORT-SCHEMA-1 import-pack-dialog batch row validation checks truck dimensions', async () => {
   const src = await fs.readFile(importPackDialogPath, 'utf8');
   assert.match(src, /Invalid truck dimensions/,
     'import-pack-dialog batch validation must report "Invalid truck dimensions"');
+});
+
+test('PACK-IMPORT-SAFE-1 import stays on Packs and does not auto-open imported pack', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-import-route' });
+
+  StateStore.init({
+    caseLibrary: [caseData],
+    packLibrary: [
+      { id: 'existing-pack', title: 'Existing Pack', truck: { length: 100, width: 60, height: 60 }, cases: [] },
+    ],
+    folderLibrary: [],
+    preferences: {},
+    currentScreen: 'packs',
+    currentPackId: 'existing-pack',
+    selectedInstanceIds: ['selected-before-import'],
+  });
+
+  const importedPack = PackLibrary.importPackPayload(makePackImportPayload(
+    caseData,
+    [makePackImportInstance(caseData.id, { id: 'inst-route' })],
+    { packId: 'pack-import-route', title: 'Route Import' }
+  ));
+
+  assert.equal(StateStore.get('currentScreen'), 'packs',
+    'Pack import must not switch currentScreen to editor');
+  assert.equal(StateStore.get('currentPackId'), 'existing-pack',
+    'Pack import must not auto-open the imported pack');
+  assert.deepEqual(StateStore.get('selectedInstanceIds'), [],
+    'Pack import should clear stale editor selections');
+  assert.ok(
+    PackLibrary.getPacks().some(pack => pack.id === importedPack.id),
+    'Imported pack must be added to the pack library for the Packs screen'
+  );
+});
+
+test('PACK-IMPORT-SAFE-1 invalid imported transforms are staged without overlap outside the truck', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-import-invalid', dimensions: { length: 12, width: 12, height: 12 } });
+
+  StateStore.init({ caseLibrary: [caseData], packLibrary: [], folderLibrary: [], preferences: {} });
+  const importedPack = PackLibrary.importPackPayload(makePackImportPayload(
+    caseData,
+    [
+      makePackImportInstance(caseData.id, { transform: null }),
+      makePackImportInstance(caseData.id, { transform: { position: { x: 'bad', y: 6, z: 0 } } }),
+      makePackImportInstance(caseData.id, { transform: { position: { x: 12, z: 0 } } }),
+      makePackImportInstance(caseData.id, { transform: { position: { x: 999, y: 6, z: 999 } } }),
+    ],
+    { truck: { length: 120, width: 60, height: 60 } }
+  ));
+
+  assertPackImportNoOverlaps(importedPack.cases, caseData);
+  assert.ok(
+    importedPack.cases.every(inst => inst.transform.position.z > importedPack.truck.width / 2),
+    'Invalid or missing imported transforms must stage outside the truck footprint'
+  );
+  assert.equal(PackLibrary.computeStats(importedPack, [caseData]).packedCases, 0,
+    'Staged repaired instances must not count as packed in the truck');
+});
+
+test('PACK-IMPORT-SAFE-1 duplicate imported transforms preserve one safe placement and stage the collision', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-import-dupe', dimensions: { length: 10, width: 10, height: 10 } });
+  const duplicateTransform = { position: { x: 5, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } };
+
+  StateStore.init({ caseLibrary: [caseData], packLibrary: [], folderLibrary: [], preferences: {} });
+  const importedPack = PackLibrary.importPackPayload(makePackImportPayload(
+    caseData,
+    [
+      makePackImportInstance(caseData.id, { transform: duplicateTransform }),
+      makePackImportInstance(caseData.id, { transform: duplicateTransform }),
+    ],
+    { truck: { length: 120, width: 60, height: 60 } }
+  ));
+
+  assertPackImportNoOverlaps(importedPack.cases, caseData);
+  assert.equal(
+    importedPack.cases.filter(inst => inst.transform.position.z <= importedPack.truck.width / 2).length,
+    1,
+    'Exactly one duplicate safe in-truck placement should be preserved'
+  );
+  assert.equal(
+    importedPack.cases.filter(inst => inst.transform.position.z > importedPack.truck.width / 2).length,
+    1,
+    'Colliding duplicate imported placement should be staged'
+  );
+});
+
+test('PACK-IMPORT-SAFE-1 valid explicit non-overlapping in-truck placements are preserved', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-import-valid', dimensions: { length: 10, width: 10, height: 10 } });
+
+  StateStore.init({ caseLibrary: [caseData], packLibrary: [], folderLibrary: [], preferences: {} });
+  const importedPack = PackLibrary.importPackPayload(makePackImportPayload(
+    caseData,
+    [
+      makePackImportInstance(caseData.id, { transform: { position: { x: 5, y: 5, z: -10 } } }),
+      makePackImportInstance(caseData.id, { transform: { position: { x: 20, y: 5, z: -10 } } }),
+    ],
+    { truck: { length: 120, width: 60, height: 60 } }
+  ));
+
+  assertPackImportNoOverlaps(importedPack.cases, caseData);
+  assert.deepEqual(
+    importedPack.cases.map(inst => inst.transform.position.x).sort((a, b) => a - b),
+    [5, 20],
+    'Safe explicit imported X positions must be preserved'
+  );
+  assert.equal(PackLibrary.computeStats(importedPack, [caseData]).packedCases, 2,
+    'Safe explicit imported placements should remain packed');
+});
+
+test('PACK-IMPORT-SAFE-1 addInstance default placement uses dynamic non-overlapping staging rows', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-add-staging', dimensions: { length: 10, width: 10, height: 10 } });
+
+  StateStore.init({
+    caseLibrary: [caseData],
+    packLibrary: [{ id: 'pack-add-staging', title: 'Add Staging', truck: { length: 220, width: 80, height: 80 }, cases: [] }],
+    folderLibrary: [],
+    preferences: {},
+  });
+
+  for (let i = 0; i < 12; i++) {
+    PackLibrary.addInstance('pack-add-staging', caseData.id);
+  }
+  const pack = PackLibrary.getById('pack-add-staging');
+  assertPackImportNoOverlaps(pack.cases, caseData);
+
+  const firstRowZ = Math.min(...pack.cases.map(inst => inst.transform.position.z));
+  const firstRowCount = pack.cases.filter(inst => Math.abs(inst.transform.position.z - firstRowZ) < 0.001).length;
+  assert.ok(firstRowCount > 6,
+    'Dynamic staging grid should place more than six items in a row when the truck length allows it');
+  assert.ok(pack.cases.every(inst => inst.transform.position.z > pack.truck.width / 2),
+    'Default added instances should stage outside the truck until manually packed');
+});
+
+test('PACK-IMPORT-SAFE-1 changed files stay in approved import/editor staging scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'PACK-IMPORT-SAFE-1 must stay inside approved import/editor staging files');
 });
 
 // ── End PACK-IMPORT-SCHEMA-1 ──────────────────────────────────────────────
@@ -2967,6 +3288,25 @@ test('EDITOR movement paths reject collisions before persisting moved positions'
     'inspector position apply must reject immediate collision candidates before PackLibrary persistence');
   assert.match(applyBlock, /CaseScene\.checkCollision\(inst\.id, obj\.position, ignoreSet\)[\s\S]*PackLibrary\.updateInstance/,
     'inspector position apply must re-check collision after gravity settling before PackLibrary persistence');
+});
+
+test('EDITOR rotate and flip paths reject unsafe candidates before persistence', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const rotateStart = src.indexOf('function rotateSelection(axis, delta)');
+  const rotateEnd = src.indexOf('/**\n     * Nudge selected instances', rotateStart);
+  const rotateBlock = rotateStart >= 0 && rotateEnd > rotateStart ? src.slice(rotateStart, rotateEnd) : '';
+  const checkIndex = rotateBlock.indexOf('const check = CaseScene.checkCollision(id, obj.position, ignoreSet);');
+  const rejectIndex = rotateBlock.indexOf('if (check.collides || (originalInsideTruck && !check.insideTruck))');
+  const persistIndex = rotateBlock.indexOf('PackLibrary.updateInstance(packId, id, {', rejectIndex);
+
+  assert.match(rotateBlock, /lockPatch\.orientedDims[\s\S]*obj\.userData\.halfWorld/,
+    'manual rotate/flip validation must update the temporary oriented footprint before collision checks');
+  assert.ok(checkIndex >= 0 && rejectIndex > checkIndex && persistIndex > rejectIndex,
+    'manual rotate/flip must check collision and truck containment before PackLibrary persistence');
+  assert.match(rotateBlock, /obj\.position\.copy\(originalWorld\);[\s\S]*obj\.rotation\.copy\(originalRotation\);/,
+    'unsafe manual rotate/flip candidates must restore the visible object before returning');
+  assert.match(rotateBlock, /Cannot rotate here: collision or truck boundary detected/,
+    'unsafe manual rotate/flip candidates must notify the user instead of silently saving');
 });
 
 test('AUTO-PACK-A0 AutoPack respects locked orientation and keeps unlocked orientation generation', async () => {

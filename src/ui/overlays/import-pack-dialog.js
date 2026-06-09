@@ -104,7 +104,6 @@ export function createImportPackDialog({
       { label: 'Client', required: false },
       { label: 'Project name', required: false },
       { label: 'Notes', required: false },
-      { label: 'Thumbnail', required: false },
     ].forEach(col => {
       const chip = doc.createElement('span');
       chip.className = col.required ? 'tp3d-ic-chip tp3d-ic-chip--required' : 'tp3d-ic-chip';
@@ -431,7 +430,6 @@ export function createImportPackDialog({
       packSummary.textContent = '';
 
       const truck = pack.truck || {};
-      const lengthUnit = Utils && Utils.lengthUnits ? 'm' : 'm';
       const weightUnit = 'lb';
 
       // Compute volume and weight from bundled cases + instances
@@ -457,7 +455,6 @@ export function createImportPackDialog({
 
       // Fit badge
       const badgeClass = fillPct >= 90 ? 'tp3d-ip-badge-warn' : 'tp3d-ip-badge-ok';
-      const badgeText = fillPct >= 90 ? '⚠️ TIGHT FIT' : '✓ FITS';
 
       // Header row: pack title + badge
       const headerRow = doc.createElement('div');
@@ -474,32 +471,38 @@ export function createImportPackDialog({
       headerRow.appendChild(fitBadge);
       packSummary.appendChild(headerRow);
 
-      // Meta row: client · project · truck
-      const metaEl = doc.createElement('div');
-      metaEl.className = 'tp3d-ip-summary-meta muted';
-
-      const metaParts = [];
-      if (pack.client) metaParts.push('Client ' + pack.client);
-      if (pack.projectName) metaParts.push('Project ' + pack.projectName);
-
-      metaParts.forEach((part, i) => {
-        const span = doc.createElement('span');
-        span.textContent = part;
-        metaEl.appendChild(span);
-        if (i < metaParts.length - 1) {
-          metaEl.appendChild(doc.createTextNode('  '));
-        }
+      const detailsEl = doc.createElement('div');
+      detailsEl.className = 'tp3d-ip-summary-details';
+      const appendDetail = (label, value) => {
+        if (value === null || value === undefined || value === '') return;
+        const row = doc.createElement('div');
+        row.className = 'tp3d-ip-summary-detail';
+        const labelEl = doc.createElement('span');
+        labelEl.className = 'tp3d-ip-summary-detail-label';
+        labelEl.textContent = label + ': ';
+        const valueEl = doc.createElement('span');
+        valueEl.className = 'tp3d-ip-summary-detail-value';
+        valueEl.textContent = String(value);
+        row.appendChild(labelEl);
+        row.appendChild(valueEl);
+        detailsEl.appendChild(row);
+      };
+      const clientText = pack.client || pack.clientName || '';
+      const categorySet = new Set();
+      (pack.cases || []).forEach(inst => {
+        const def = bundledById.get(inst.caseId);
+        if (!def) return;
+        categorySet.add(String(def.category || 'default'));
       });
-      if (metaParts.length) packSummary.appendChild(metaEl);
-
-      // Truck row
-      const truckRow = doc.createElement('div');
-      truckRow.className = 'tp3d-ip-summary-truck muted';
       const truckText = (Utils && Utils.formatDims)
-        ? 'Truck ' + Utils.formatDims(truck, 'm')
-        : 'Truck ' + (truck.length || '?') + ' × ' + (truck.width || '?') + ' × ' + (truck.height || '?');
-      truckRow.textContent = truckText;
-      packSummary.appendChild(truckRow);
+        ? Utils.formatDims(truck, 'm')
+        : (truck.length || '?') + ' × ' + (truck.width || '?') + ' × ' + (truck.height || '?');
+      appendDetail('Title', pack.title || 'Untitled Pack');
+      appendDetail('Project', pack.projectName);
+      appendDetail('Client', clientText);
+      appendDetail('Truck size', truckText);
+      appendDetail('Categories', categorySet.size > 0 ? String(categorySet.size) : '');
+      if (detailsEl.childNodes.length) packSummary.appendChild(detailsEl);
 
       // Stat row: cases · weight · volume
       const statRow = doc.createElement('div');
@@ -673,9 +676,9 @@ export function createImportPackDialog({
         noteTd.colSpan = 5;
         noteTd.className = 'tp3d-ic-empty-row';
         noteTd.textContent = unresolvedCount === instances.length
-          ? 'Case definitions not bundled — pack will reference your local case library on import'
+          ? 'Case definitions not bundled — this pack will use matching local cases if available'
           : unresolvedCount + ' case' + (unresolvedCount !== 1 ? 's' : '') +
-            ' not bundled — will reference local library';
+            ' not bundled — this pack will use matching local cases if available';
         noteRow.appendChild(noteTd);
         tbody.appendChild(noteRow);
       }

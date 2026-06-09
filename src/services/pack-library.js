@@ -220,6 +220,182 @@ export function clearOrientationLockPatch() {
   };
 }
 
+function isFinitePositive(value) {
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0;
+}
+
+function finiteOr(value, fallback) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function normalizeTransformPosition(position) {
+  if (!position || typeof position !== 'object') return null;
+  const x = Number(position.x);
+  const y = Number(position.y);
+  const z = Number(position.z);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+  return { x, y, z };
+}
+
+function normalizeTransformRotation(rotation) {
+  const src = rotation && typeof rotation === 'object' ? rotation : {};
+  return {
+    x: finiteOr(src.x, 0),
+    y: finiteOr(src.y, 0),
+    z: finiteOr(src.z, 0),
+  };
+}
+
+function normalizeTransformScale(scale) {
+  const src = scale && typeof scale === 'object' ? scale : {};
+  return {
+    x: isFinitePositive(src.x) ? Number(src.x) : 1,
+    y: isFinitePositive(src.y) ? Number(src.y) : 1,
+    z: isFinitePositive(src.z) ? Number(src.z) : 1,
+  };
+}
+
+function normalizeDims(dims, fallback = { length: 24, width: 24, height: 24 }) {
+  const src = dims && typeof dims === 'object' ? dims : {};
+  const fb = fallback && typeof fallback === 'object' ? fallback : {};
+  return {
+    length: isFinitePositive(src.length) ? Number(src.length) : finiteOr(fb.length, 24),
+    width: isFinitePositive(src.width) ? Number(src.width) : finiteOr(fb.width, 24),
+    height: isFinitePositive(src.height) ? Number(src.height) : finiteOr(fb.height, 24),
+  };
+}
+
+function getInstanceEffectiveDims(inst, caseData) {
+  const baseDims = normalizeDims(caseData && caseData.dimensions);
+  const orientedDims = inst && inst.orientedDims;
+  if (
+    orientedDims &&
+    isFinitePositive(orientedDims.length) &&
+    isFinitePositive(orientedDims.width) &&
+    isFinitePositive(orientedDims.height)
+  ) {
+    return normalizeDims(orientedDims, baseDims);
+  }
+  return baseDims;
+}
+
+function makeAabb(position, dims) {
+  return {
+    min: {
+      x: position.x - dims.length / 2,
+      y: position.y - dims.height / 2,
+      z: position.z - dims.width / 2,
+    },
+    max: {
+      x: position.x + dims.length / 2,
+      y: position.y + dims.height / 2,
+      z: position.z + dims.width / 2,
+    },
+  };
+}
+
+function aabbsOverlap(a, b) {
+  const EPS = 0.001;
+  return (
+    a.min.x < b.max.x - EPS &&
+    a.max.x > b.min.x + EPS &&
+    a.min.y < b.max.y - EPS &&
+    a.max.y > b.min.y + EPS &&
+    a.min.z < b.max.z - EPS &&
+    a.max.z > b.min.z + EPS
+  );
+}
+
+function overlapsAny(aabb, acceptedAabbs) {
+  return (acceptedAabbs || []).some(other => aabbsOverlap(aabb, other));
+}
+
+function getSafeImportedPlacement(pack, inst, caseData, acceptedAabbs) {
+  const position = normalizeTransformPosition(inst && inst.transform && inst.transform.position);
+  if (!position) return null;
+  const dims = getInstanceEffectiveDims(inst, caseData);
+  const aabb = makeAabb(position, dims);
+  const zones = getTrailerUsableZones(pack && pack.truck);
+  if (!isAabbContainedInAnyZone(aabb, zones)) return null;
+  if (overlapsAny(aabb, acceptedAabbs)) return null;
+  return { position, dims, aabb };
+}
+
+function findSafeStagingPosition(pack, dims, acceptedAabbs) {
+  const truck = pack && pack.truck ? pack.truck : {};
+  const truckL = Math.max(Number(truck.length) || 120, dims.length);
+  const truckW = Math.max(Number(truck.width) || 96, dims.width);
+  const gap = 12;
+  const stepX = Math.max(1, dims.length + gap);
+  const stepZ = Math.max(1, dims.width + gap);
+  const minX = dims.length / 2;
+  const maxX = Math.max(minX, truckL - dims.length / 2);
+  const availableX = Math.max(0, maxX - minX);
+  const cols = Math.max(1, Math.floor(availableX / stepX) + 1);
+  const startZ = truckW / 2 + gap + dims.width / 2;
+
+  for (let row = 0; row < 200; row++) {
+    for (let col = 0; col < cols; col++) {
+      const position = {
+        x: Math.min(minX + col * stepX, maxX),
+        y: Math.max(1, dims.height / 2),
+        z: startZ + row * stepZ,
+      };
+      const aabb = makeAabb(position, dims);
+      if (!overlapsAny(aabb, acceptedAabbs)) return { position, aabb };
+    }
+  }
+
+  const fallback = {
+    x: -gap - dims.length / 2,
+    y: Math.max(1, dims.height / 2),
+    z: startZ,
+  };
+  return { position: fallback, aabb: makeAabb(fallback, dims) };
+}
+
+function buildAcceptedAabbs(pack, instances, caseLibrary) {
+  const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
+  const acceptedAabbs = [];
+  (instances || []).forEach(inst => {
+    const caseData = caseMap.get(inst && inst.caseId);
+    const position = normalizeTransformPosition(inst && inst.transform && inst.transform.position);
+    if (!position) return;
+    const dims = getInstanceEffectiveDims(inst, caseData);
+    acceptedAabbs.push(makeAabb(position, dims));
+  });
+  return acceptedAabbs;
+}
+
+function repairPackInstancePlacements(pack, caseLibrary) {
+  const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
+  const acceptedAabbs = [];
+  const nextCases = (pack.cases || []).map(inst => {
+    const next = Utils.deepClone(inst);
+    const caseData = caseMap.get(next.caseId);
+    const dims = getInstanceEffectiveDims(next, caseData);
+    next.transform = next.transform && typeof next.transform === 'object' ? next.transform : {};
+    next.transform.rotation = normalizeTransformRotation(next.transform.rotation);
+    next.transform.scale = normalizeTransformScale(next.transform.scale);
+
+    const safeImported = getSafeImportedPlacement(pack, next, caseData, acceptedAabbs);
+    if (safeImported) {
+      next.transform.position = safeImported.position;
+      acceptedAabbs.push(safeImported.aabb);
+      return next;
+    }
+
+    const staged = findSafeStagingPosition(pack, dims, acceptedAabbs);
+    next.transform.position = staged.position;
+    acceptedAabbs.push(staged.aabb);
+    return next;
+  });
+
+  return { ...pack, cases: nextCases };
+}
+
 export { getTrailerUsableZones, getTrailerCapacityInches3, isAabbContainedInAnyZone };
 
 export function getPacks() {
@@ -337,13 +513,20 @@ export function addInstance(packId, caseId, position) {
   if (!pack) return null;
   const caseData = CaseLibrary.getById(caseId);
   if (!caseData) return null;
-  const truckLen = Number(pack.truck && pack.truck.length) || 0;
-  const spawnX = truckLen > 0 ? Math.min(10, Math.max(1, truckLen - 1)) : 10;
+  const explicitPosition = normalizeTransformPosition(position);
+  const dims = normalizeDims(caseData.dimensions);
+  const staged = explicitPosition
+    ? null
+    : findSafeStagingPosition(
+        pack,
+        dims,
+        buildAcceptedAabbs(pack, pack.cases || [], CaseLibrary.getCases())
+      );
   const instance = {
     id: Utils.uuid(),
     caseId,
     transform: {
-      position: position || { x: spawnX, y: Math.max(1, caseData.dimensions.height / 2), z: 0 },
+      position: explicitPosition || staged.position,
       rotation: { x: 0, y: 0, z: 0 },
       scale: { x: 1, y: 1, z: 1 },
     },
@@ -520,19 +703,13 @@ export function importPackPayload(payload) {
     const next = Utils.deepClone(inst);
     next.id = Utils.uuid();
     next.caseId = caseIdMap.get(next.caseId) || next.caseId;
-    if (!next.transform) {
-      next.transform = {
-        position: { x: -80, y: 10, z: 0 },
-        rotation: { x: 0, y: 0, z: 0 },
-        scale: { x: 1, y: 1, z: 1 },
-      };
-    }
-    if (!next.transform.position) next.transform.position = { x: -80, y: 10, z: 0 };
     return next;
   });
 
   const rawTruck = pack.truck && typeof pack.truck === 'object' ? pack.truck : {};
   pack.truck = CoreNormalizer.normalizeTruck(rawTruck);
+  const repairedPack = repairPackInstancePlacements(pack, CaseLibrary.getCases());
+  pack.cases = repairedPack.cases;
 
   pack.stats = computeStats(pack, CaseLibrary.getCases());
 
@@ -540,8 +717,6 @@ export function importPackPayload(payload) {
     {
       caseLibrary: CaseLibrary.getCases(),
       packLibrary: [...currentPacks, pack],
-      currentPackId: pack.id,
-      currentScreen: 'editor',
       selectedInstanceIds: [],
     },
     { skipHistory: false }

@@ -777,6 +777,8 @@ export function createInteractionManager({
       const packId = StateStore.get('currentPackId');
       const pack = PackLibrary.getById(packId);
       if (!pack) { return; }
+      let rotatedCount = 0;
+      let blockedCount = 0;
       ids.forEach(id => {
         const inst = (pack.cases || []).find(i => i.id === id);
         if (!inst) { return; }
@@ -784,25 +786,59 @@ export function createInteractionManager({
         rot[axis] = ((Number(rot[axis]) || 0) + delta) % (2 * Math.PI);
         const lockPatch = createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, rot);
         const lockedRotation = lockPatch.lockedRotation || rot;
+        const obj = CaseScene.getObject(id);
+        if (obj) {
+          const originalWorld = obj.position.clone();
+          const originalRotation = obj.rotation.clone();
+          const originalHalfWorld = obj.userData && obj.userData.halfWorld
+            ? { ...obj.userData.halfWorld }
+            : null;
+          const ignoreSet = new Set([id]);
+          const originalInsideTruck = CaseScene.checkCollision(id, obj.position, ignoreSet).insideTruck;
+          if (lockPatch.orientedDims && obj.userData) {
+            obj.userData.halfWorld = {
+              x: SceneManager.toWorld(lockPatch.orientedDims.length) / 2,
+              y: SceneManager.toWorld(lockPatch.orientedDims.height) / 2,
+              z: SceneManager.toWorld(lockPatch.orientedDims.width) / 2,
+            };
+          }
+          obj.rotation.set(
+            Number(lockedRotation.x) || 0,
+            Number(lockedRotation.y) || 0,
+            Number(lockedRotation.z) || 0
+          );
+          const settledY = CaseScene.settleY(id);
+          if (settledY !== null) {
+            const halfY = obj.userData && obj.userData.halfWorld ? obj.userData.halfWorld.y : 0;
+            obj.position.y = Math.max(settledY, halfY || settledY);
+          }
+          const check = CaseScene.checkCollision(id, obj.position, ignoreSet);
+          if (check.collides || (originalInsideTruck && !check.insideTruck)) {
+            obj.position.copy(originalWorld);
+            obj.rotation.copy(originalRotation);
+            if (originalHalfWorld && obj.userData) obj.userData.halfWorld = originalHalfWorld;
+            const restoredCheck = CaseScene.checkCollision(id, obj.position, ignoreSet);
+            CaseScene.setCollision(id, restoredCheck.collides);
+            blockedCount += 1;
+            return;
+          }
+          CaseScene.setCollision(id, false);
+          const posInches = SceneManager.vecWorldToInches(obj.position);
+          PackLibrary.updateInstance(packId, id, {
+            ...lockPatch,
+            transform: { ...inst.transform, rotation: lockedRotation, position: posInches },
+          });
+          rotatedCount += 1;
+          return;
+        }
         PackLibrary.updateInstance(packId, id, {
           ...lockPatch,
           transform: { ...inst.transform, rotation: lockedRotation },
         });
-        // Gravity after rotation
-        requestAnimationFrame(() => {
-          const settledY = CaseScene.settleY(id);
-          if (settledY !== null) {
-            const obj = CaseScene.getObject(id);
-            if (obj) { obj.position.y = settledY; }
-            const posInches = SceneManager.vecWorldToInches(obj.position);
-            PackLibrary.updateInstance(packId, id, {
-              ...lockPatch,
-              transform: { ...inst.transform, rotation: lockedRotation, position: posInches },
-            });
-          }
-        });
+        rotatedCount += 1;
       });
-      UIComponents.showToast(`Rotated ${ids.length} case(s)`, 'info');
+      if (rotatedCount) UIComponents.showToast(`Rotated ${rotatedCount} case(s)`, 'info');
+      if (blockedCount) UIComponents.showToast('Cannot rotate here: collision or truck boundary detected', 'error');
     }
 
     /**
@@ -1893,57 +1929,9 @@ export function createEditorScreen({
 
       const caseData = CaseLibrary.getById(caseId);
       if (!caseData) return;
-      const dims = caseData.dimensions || { length: 24, width: 24, height: 24 };
-      const truckW = (pack.truck && pack.truck.width) || 102;
-      const gap = 4;
-
-      // Determine how many cases are currently staged (outside the truck).
-      // Using total count caused new cases to spawn extremely far away after AutoPack.
-      const zonesInches = TrailerGeometry.getTrailerUsableZones(pack.truck || {});
-      const stagedCount = (pack.cases || []).reduce((acc, inst) => {
-        if (!inst || inst.hidden) return acc;
-        const c = CaseLibrary.getById(inst.caseId);
-        if (!c) return acc;
-        const d = c.dimensions || { length: 0, width: 0, height: 0 };
-        const od = inst.orientedDims || null;
-        const usedDims = {
-          length: od ? od.length : d.length,
-          width: od ? od.width : d.width,
-          height: od ? od.height : d.height,
-        };
-        const p = (inst.transform && inst.transform.position) || { x: 0, y: 0, z: 0 };
-        const aabb = {
-          min: { x: p.x - usedDims.length / 2, y: p.y - usedDims.height / 2, z: p.z - usedDims.width / 2 },
-          max: { x: p.x + usedDims.length / 2, y: p.y + usedDims.height / 2, z: p.z + usedDims.width / 2 },
-        };
-        const inside = TrailerGeometry.isAabbContainedInAnyZone(aabb, zonesInches);
-        return inside ? acc : acc + 1;
-      }, 0);
-
-      // Place beside the truck, but cap how far we go in Z.
-      // Once the staging pad is full, start a new "page" behind the truck (negative X)
-      // instead of pushing Z farther and farther out.
-      const cols = 6;
-      const stageZBase = (truckW / 2) + 10 + dims.width / 2;
-      const stagingDepth = 180; // inches away from the truck wall (keeps staging near)
-      const rowsMax = Math.max(1, Math.floor(stagingDepth / Math.max(1, dims.width + gap)));
-      const pageSize = cols * rowsMax;
-      const page = Math.floor(stagedCount / pageSize);
-      const within = stagedCount % pageSize;
-      const col = within % cols;
-      const row = Math.floor(within / cols);
-
-      const stageZ = stageZBase + row * (dims.width + gap);
-      let stageX;
-      if (page === 0) {
-        stageX = dims.length / 2 + col * (dims.length + gap);
-      } else {
-        const pageStride = cols * (dims.length + gap) + 20;
-        stageX = -20 - dims.length / 2 - col * (dims.length + gap) - (page - 1) * pageStride;
-      }
-
-      const pos = positionInches || { x: stageX, y: Math.max(1, dims.height / 2), z: stageZ };
-      const inst = PackLibrary.addInstance(packId, caseId, pos);
+      const inst = positionInches
+        ? PackLibrary.addInstance(packId, caseId, positionInches)
+        : PackLibrary.addInstance(packId, caseId);
       if (inst) {
         StateStore.set({ selectedInstanceIds: [inst.id] }, { skipHistory: true });
         UIComponents.showToast('Case added to pack', 'success');

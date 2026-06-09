@@ -120,6 +120,7 @@ const importEditorSafeFiles = new Set([
   'index.html',
   'src/screens/editor-screen.js',
   'src/services/pack-library.js',
+  'src/services/autopack-engine.js',
   'src/ui/overlays/import-pack-dialog.js',
   'styles/main.css',
   'tests/audit/security-and-invariants.spec.mjs',
@@ -164,6 +165,12 @@ const autoPackEditorCollisionFiles = new Set([
   'src/screens/editor-screen.js',
   'tests/audit/security-and-invariants.spec.mjs',
 ]);
+const placementSettleFiles = new Set([
+  'src/services/pack-library.js',
+  'src/screens/editor-screen.js',
+  'src/services/autopack-engine.js',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
 const editorInspectorPolishFiles = new Set([
   'index.html',
   'src/app.js',
@@ -197,6 +204,7 @@ function isNotCurrentReleaseGateCheckoutPatch(file) {
     !autoPackA1Clean1Files.has(file) &&
     !autoPackA1Clean2Files.has(file) &&
     !autoPackEditorCollisionFiles.has(file) &&
+    !placementSettleFiles.has(file) &&
     !importEditorSafeFiles.has(file) &&
     !editorInspectorPolishFiles.has(file);
 }
@@ -2976,10 +2984,10 @@ test('AUTO-PACK-A0 manual editor rotate and flip paths set per-instance orientat
     'editor must have a narrow helper for manual orientation locks');
   assert.match(rotateBlock, /createManualOrientationLockPatch\(PackLibrary, CaseLibrary, inst, rot\)/,
     'keyboard rotate/flip path must lock manual orientation');
-  assert.match(multiBlock, /createManualOrientationLockPatch\(PackLibrary, CaseLibrary, inst, rot\)/,
-    'multi-select rotate/flip buttons must lock manual orientation');
-  assert.match(singleBlock, /createManualOrientationLockPatch\(PackLibrary, CaseLibrary, inst, curRot\)/,
-    'single inspector rotate/flip buttons must lock manual orientation');
+  assert.match(multiBlock, /rotateSelection\(axis,\s*delta\)/,
+    'multi-select Rotate All must route through rotateSelection (not direct PackLibrary.updateInstance per item)');
+  assert.match(singleBlock, /rotateSelection\(axis,\s*delta\)/,
+    'single inspector Rotate/Flip must route through rotateSelection (not a deferred rAF+direct-persist path)');
   assert.match(singleBlock, /TODO\(AUTO-PACK-A0\): when reset-orientation UI is added, apply PackLibrary\.clearOrientationLockPatch\(\)/,
     'no reset UI exists yet, so reset support must remain documented without broad UI changes');
 });
@@ -3515,8 +3523,8 @@ test('AUTO-PACK-A0C staged unpacked items keep oriented spacing and current rota
   const persistEnd = src.indexOf('\n      PackLibrary.update(packId, { cases: nextCases });', persistStart);
   const persistBlock = persistStart >= 0 && persistEnd > persistStart ? src.slice(persistStart, persistEnd) : '';
 
-  assert.match(stagingBlock, /item\.inst && item\.inst\.orientedDims/,
-    'staging must use stored oriented dimensions when an unpacked item already has a locked/manual orientation');
+  assert.doesNotMatch(stagingBlock, /item\.inst && item\.inst\.orientedDims/,
+    'getStagingDims must not read stale inst.orientedDims from a previous AutoPack run as primary height source (RC-4 fix)');
   assert.match(stagingBlock, /item\.orientations\[0\][\s\S]*length: Number\(ori\.l\)[\s\S]*width: Number\(ori\.w\)[\s\S]*height: Number\(ori\.h\)/,
     'staging must fall back to the generated AutoPack orientation dimensions, not raw case dimensions');
   assert.match(persistBlock, /const currentRotation =[\s\S]*inst\.transform && inst\.transform\.rotation/,
@@ -8521,4 +8529,250 @@ test('phase 0.7C-4B avoids native dialogs and forbidden file scope', async () =>
     'Packs screen must not use native prompt(), alert(), or confirm() calls');
   assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
     'folder persistence and compact move UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
+});
+
+// ============================================================================
+// Phase 0: Shared placement validation helpers (pack-library.js exports)
+// ============================================================================
+
+test('placement-settle-0 pack-library exports PLACEMENT_EPS, MIN_SUPPORT_FRACTION, computeSupportFraction', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  assert.equal(typeof PackLibrary.PLACEMENT_EPS, 'number',
+    'PLACEMENT_EPS must be a named number export');
+  assert.equal(PackLibrary.PLACEMENT_EPS, 0.001,
+    'PLACEMENT_EPS must be 0.001 to match existing solver and pack-library overlap checks');
+  assert.equal(typeof PackLibrary.MIN_SUPPORT_FRACTION, 'number',
+    'MIN_SUPPORT_FRACTION must be a named number export');
+  assert.equal(PackLibrary.MIN_SUPPORT_FRACTION, 0.5,
+    'MIN_SUPPORT_FRACTION must be 0.5 to match autopack-solver requirement');
+  assert.equal(typeof PackLibrary.computeSupportFraction, 'function',
+    'computeSupportFraction must be a named function export');
+});
+
+test('placement-settle-0 computeSupportFraction full footprint support returns 1', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  // 20×20 candidate (inches) resting exactly on a 20×20 supporter
+  const candidate = { min: { x: -10, y: 10, z: -10 }, max: { x: 10, y: 20, z: 10 } };
+  const supporter = { min: { x: -10, y: 0,  z: -10 }, max: { x: 10, y: 10, z: 10 } };
+  const frac = PackLibrary.computeSupportFraction(candidate, [supporter]);
+  assert.equal(frac, 1,
+    'full footprint overlap must return fraction 1');
+});
+
+test('placement-settle-0 computeSupportFraction half support equals 0.5', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  // 20×20 candidate; supporter covers only the left 10×20 half
+  const candidate = { min: { x: 0, y: 10, z: -10 }, max: { x: 20, y: 20, z: 10 } };
+  const supporter = { min: { x: 0, y: 0,  z: -10 }, max: { x: 10, y: 10, z: 10 } };
+  const frac = PackLibrary.computeSupportFraction(candidate, [supporter]);
+  assert.ok(Math.abs(frac - 0.5) < 1e-9,
+    'half-footprint overlap must return fraction 0.5');
+});
+
+test('placement-settle-0 computeSupportFraction tiny corner is below MIN_SUPPORT_FRACTION', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  // 20×20 candidate; supporter overlaps only a 1×1 corner (1/400 = 0.25% of footprint)
+  const candidate = { min: { x: 0,  y: 10, z: 0  }, max: { x: 20, y: 20, z: 20 } };
+  const supporter = { min: { x: 19, y: 0,  z: 19 }, max: { x: 21, y: 10, z: 21 } };
+  const frac = PackLibrary.computeSupportFraction(candidate, [supporter]);
+  assert.ok(frac < PackLibrary.MIN_SUPPORT_FRACTION,
+    'tiny 1×1 corner overlap on 20×20 footprint must be below MIN_SUPPORT_FRACTION');
+});
+
+test('placement-settle-0 computeSupportFraction no supporters returns 0', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const candidate = { min: { x: -10, y: 10, z: -10 }, max: { x: 10, y: 20, z: 10 } };
+  assert.equal(PackLibrary.computeSupportFraction(candidate, []), 0,
+    'empty supporter list must return fraction 0');
+  assert.equal(PackLibrary.computeSupportFraction(candidate, null), 0,
+    'null supporter list must return fraction 0 (floor fallback handled by caller)');
+});
+
+test('placement-settle-0 computeSupportFraction ignores Y-misaligned supporters', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  // Candidate bottom at y=10; supporter top at y=5 (5 inches gap — not flush)
+  const candidate = { min: { x: -10, y: 10, z: -10 }, max: { x: 10, y: 20, z: 10 } };
+  const floatingBelow = { min: { x: -10, y: 0,  z: -10 }, max: { x: 10, y: 5,  z: 10 } };
+  const frac = PackLibrary.computeSupportFraction(candidate, [floatingBelow]);
+  assert.equal(frac, 0,
+    'supporter whose top is not flush with candidate bottom must be ignored');
+});
+
+// ============================================================================
+// Phase 1: computeSettleY (pure gravity function exported from editor-screen.js)
+// ============================================================================
+
+test('placement-settle-1 computeSettleY is exported from editor-screen', async () => {
+  const EditorScreen = await import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
+  assert.equal(typeof EditorScreen.computeSettleY, 'function',
+    'computeSettleY must be a named export of editor-screen');
+});
+
+test('placement-settle-1 computeSettleY with no other boxes settles to floor', async () => {
+  const EditorScreen = await import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
+  const half = { x: 12, y: 12, z: 12 };
+  const y = EditorScreen.computeSettleY(half, 0, 0, [], 0.5);
+  assert.equal(y, 12,
+    'floor fallback must equal halfWorld.y when there are no supporters');
+});
+
+test('placement-settle-1 computeSettleY full support settles on top of box', async () => {
+  const EditorScreen = await import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
+  const half = { x: 12, y: 12, z: 12 };
+  // Supporter: wide box with top at y=24
+  const supporter = { min: { x: -24, y: 0, z: -24 }, max: { x: 24, y: 24, z: 24 } };
+  const y = EditorScreen.computeSettleY(half, 0, 0, [supporter], 0.5);
+  assert.equal(y, 36,
+    'candidate center must be supporter.max.y + halfY when fully supported');
+});
+
+test('placement-settle-1 computeSettleY half support is accepted', async () => {
+  const EditorScreen = await import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
+  // Candidate: 24×24 footprint centered at x=0
+  const half = { x: 12, y: 12, z: 12 };
+  // Supporter covers exactly the left half (50% of candidate footprint)
+  const halfSupporter = { min: { x: -12, y: 0, z: -12 }, max: { x: 0, y: 24, z: 12 } };
+  const y = EditorScreen.computeSettleY(half, 0, 0, [halfSupporter], 0.5);
+  assert.equal(y, 36,
+    '50% footprint support must be accepted and settle on top of box');
+});
+
+test('placement-settle-1 computeSettleY tiny corner support is rejected and falls to floor', async () => {
+  const EditorScreen = await import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
+  // Candidate: 24×24 footprint centered at x=0, z=0
+  const half = { x: 12, y: 12, z: 12 };
+  // Tiny 1×1 corner overlap at the edge — well below 50%
+  const tinyCorner = { min: { x: 11.5, y: 0, z: 11.5 }, max: { x: 13, y: 24, z: 13 } };
+  const y = EditorScreen.computeSettleY(half, 0, 0, [tinyCorner], 0.5);
+  assert.equal(y, 12,
+    'tiny corner overlap must be rejected; candidate must fall to floor (halfY)');
+});
+
+test('placement-settle-1 computeSettleY picks highest valid support among multiple boxes', async () => {
+  const EditorScreen = await import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
+  const half = { x: 12, y: 12, z: 12 };
+  const low  = { min: { x: -24, y: 0, z: -24 }, max: { x: 24, y: 12, z: 24 } }; // top at 12
+  const high = { min: { x: -24, y: 0, z: -24 }, max: { x: 24, y: 24, z: 24 } }; // top at 24
+  const y = EditorScreen.computeSettleY(half, 0, 0, [low, high], 0.5);
+  assert.equal(y, 36,
+    'must pick the highest valid surface (top=24 + halfY=12 = 36)');
+});
+
+test('placement-settle-1 computeSettleY result is never below floor', async () => {
+  const EditorScreen = await import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
+  // Supporter below floor level (top at y=-5) — should be ignored; candidate falls to floor
+  const half = { x: 12, y: 12, z: 12 };
+  const belowFloor = { min: { x: -24, y: -20, z: -24 }, max: { x: 24, y: -5, z: 24 } };
+  const y = EditorScreen.computeSettleY(half, 0, 0, [belowFloor], 0.5);
+  assert.ok(y >= half.y,
+    'settled Y must never be below floor (halfY) even with below-floor supporters');
+});
+
+test('placement-settle-1 editor-screen settleY uses MIN_SUPPORT_FRACTION from pack-library', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  assert.match(src, /import\s*\{[^}]*MIN_SUPPORT_FRACTION[^}]*\}\s*from\s*['"]\.\.\/services\/pack-library\.js['"]/,
+    'editor-screen must import MIN_SUPPORT_FRACTION from pack-library');
+  assert.match(src, /MIN_SUPPORT_FRACTION/,
+    'settleY must reference MIN_SUPPORT_FRACTION (not a magic 0.5 literal)');
+  assert.match(src, /export function computeSettleY\(/,
+    'computeSettleY must be an exported named function');
+  assert.match(src, /return computeSettleY\(/,
+    'inner settleY must delegate to computeSettleY');
+});
+
+test('placement-settle-1 rotate/flip paths still call settleY before saving position', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  // rotateSelection block: settleY must be called before PackLibrary.updateInstance
+  const rotateStart = src.indexOf('function rotateSelection(');
+  assert.ok(rotateStart >= 0, 'rotateSelection must exist');
+  const rotateEnd = src.indexOf('\n    function ', rotateStart + 1);
+  const rotateBlock = rotateEnd > rotateStart ? src.slice(rotateStart, rotateEnd) : src.slice(rotateStart);
+  const settlePos = rotateBlock.indexOf('settleY(');
+  const savePos = rotateBlock.indexOf('PackLibrary.updateInstance(');
+  assert.ok(settlePos >= 0, 'rotateSelection must call settleY');
+  assert.ok(savePos >= 0, 'rotateSelection must call PackLibrary.updateInstance');
+  assert.ok(settlePos < savePos,
+    'rotateSelection must call settleY before PackLibrary.updateInstance');
+});
+
+// ─── P0-A: Inspector rotate/flip routing ────────────────────────────────────
+
+test('placement-safety-P0A single inspector Rotate/Flip routes through rotateSelection', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const singleStart = src.indexOf('function renderSingleInspector(pack, inst, caseData, prefs)');
+  const singleEnd = src.indexOf('\n    /**\n     * Creates a card header row', singleStart);
+  const singleBlock = singleStart >= 0 && singleEnd > singleStart ? src.slice(singleStart, singleEnd) : '';
+
+  assert.match(singleBlock, /InteractionManager\.rotateSelection\(axis,\s*delta\)/,
+    'single inspector rotate/flip buttons must route through InteractionManager.rotateSelection');
+  // The deferred rAF+double-updateInstance pattern without collision guard must be gone.
+  // (rotateSelection handles settle + collision check internally before any persist.)
+  assert.doesNotMatch(singleBlock, /requestAnimationFrame[\s\S]{0,300}PackLibrary\.updateInstance[\s\S]{0,300}rotation:/,
+    'single inspector rotate/flip must not persist rotation via deferred rAF without collision guard');
+});
+
+test('placement-safety-P0A multi-select Rotate All routes through rotateSelection', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const multiStart = src.indexOf('function renderMultiInspector(pack, selected)');
+  const multiEnd = src.indexOf('// === Actions Card ===', multiStart);
+  const multiBlock = multiStart >= 0 && multiEnd > multiStart ? src.slice(multiStart, multiEnd) : '';
+
+  assert.match(multiBlock, /InteractionManager\.rotateSelection\(axis,\s*delta\)/,
+    'multi-select Rotate All must route through InteractionManager.rotateSelection');
+  assert.doesNotMatch(multiBlock, /selected\.forEach[\s\S]*PackLibrary\.updateInstance/,
+    'multi-select Rotate All must not iterate selected items and directly call PackLibrary.updateInstance');
+});
+
+// ─── P0-B: applyTransform always resets halfWorld ────────────────────────────
+
+test('placement-safety-P0B createInstanceGroup stores baseHalfWorld for reset fallback', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const createStart = src.indexOf('function createInstanceGroup(inst, caseData)');
+  const createEnd = src.indexOf('\n    function ', createStart + 1);
+  const createBlock = createEnd > createStart ? src.slice(createStart, createEnd) : src.slice(createStart);
+
+  assert.match(createBlock, /group\.userData\.baseHalfWorld\s*=\s*\{/,
+    'createInstanceGroup must store baseHalfWorld so applyTransform can reset to base dims');
+});
+
+test('placement-safety-P0B applyTransform resets halfWorld to base dims when orientedDims absent', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const applyStart = src.indexOf('function applyTransform(group, inst)');
+  const applyEnd = src.indexOf('\n    function ', applyStart + 1);
+  const applyBlock = applyEnd > applyStart ? src.slice(applyStart, applyEnd) : src.slice(applyStart);
+
+  assert.match(applyBlock, /else if \(group\.userData\.baseHalfWorld\)/,
+    'applyTransform must have an else-if branch to reset halfWorld from baseHalfWorld when orientedDims absent');
+  assert.match(applyBlock, /group\.userData\.halfWorld\s*=\s*\{\s*\.\.\.\s*group\.userData\.baseHalfWorld\s*\}/,
+    'applyTransform must spread baseHalfWorld into halfWorld on the reset path');
+});
+
+// ─── P0-C: staged/unpacked items do not inherit stale orientedDims ───────────
+
+test('placement-safety-P0C getStagingDims uses solver orientations and case dims, not stale inst.orientedDims', async () => {
+  const src = await fs.readFile(autoPackEnginePath, 'utf8');
+  const stagingStart = src.indexOf('function getStagingDims(item)');
+  const stagingEnd = src.indexOf('\n  function buildStagingMap', stagingStart);
+  const stagingBlock = stagingStart >= 0 && stagingEnd > stagingStart ? src.slice(stagingStart, stagingEnd) : '';
+
+  assert.doesNotMatch(stagingBlock, /item\.inst\.orientedDims/,
+    'getStagingDims must not read stale inst.orientedDims from a previous AutoPack run');
+  assert.match(stagingBlock, /item\.orientations\[0\]/,
+    'getStagingDims must use fresh solver orientation candidates as first source');
+  assert.match(stagingBlock, /item\.caseData\.dimensions/,
+    'getStagingDims must fall back to base case dimensions');
+});
+
+test('placement-safety-P0C nextCases loop deletes stale orientedDims from staged items', async () => {
+  const src = await fs.readFile(autoPackEnginePath, 'utf8');
+  const persistStart = src.indexOf('const nextCases = (packData.cases || []).map(inst => {');
+  const persistEnd = src.indexOf('\n      PackLibrary.update(packId, { cases: nextCases });', persistStart);
+  const persistBlock = persistStart >= 0 && persistEnd > persistStart ? src.slice(persistStart, persistEnd) : '';
+
+  assert.match(persistBlock, /delete next\.orientedDims/,
+    'nextCases must delete stale orientedDims on staged items when no fresh solver dims exist');
+  assert.match(persistBlock, /if \(od\)[\s\S]*next\.orientedDims = od/,
+    'nextCases must still write fresh orientedDims for packed items from orientedDimsMap');
+  assert.match(persistBlock, /else[\s\S]*delete next\.orientedDims/,
+    'nextCases else branch must delete orientedDims so applyTransform resets to base dims');
 });

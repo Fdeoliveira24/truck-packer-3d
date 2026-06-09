@@ -251,7 +251,14 @@ export function createAutoPackEngine({
           },
           hidden: false,
         };
-        if (od) { next.orientedDims = od; }
+        if (od) {
+          next.orientedDims = od;
+        } else {
+          // Staged/unpacked items have no fresh solver orientedDims. Explicitly
+          // remove the stale value spread from ...inst so applyTransform resets
+          // halfWorld to base case dimensions instead of a previous run's dims.
+          delete next.orientedDims;
+        }
         return next;
       });
       PackLibrary.update(packId, { cases: nextCases });
@@ -338,10 +345,9 @@ export function createAutoPackEngine({
   }
 
   function getStagingDims(item) {
-    const od = item && item.inst && item.inst.orientedDims;
-    if (od && Number(od.length) > 0 && Number(od.width) > 0 && Number(od.height) > 0) {
-      return { length: Number(od.length), width: Number(od.width), height: Number(od.height) };
-    }
+    // Use freshly computed solver orientation candidates first, then base case dims.
+    // Do NOT read stale orientedDims from a previous AutoPack run — that produces
+    // wrong staging heights when the item was in a different orientation (RC-4 fix).
     const ori = item && Array.isArray(item.orientations) ? item.orientations[0] : null;
     if (ori && Number(ori.l) > 0 && Number(ori.w) > 0 && Number(ori.h) > 0) {
       return { length: Number(ori.l), width: Number(ori.w), height: Number(ori.h) };

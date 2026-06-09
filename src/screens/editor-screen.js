@@ -13,6 +13,7 @@
 
 import { createCaseGeometry } from '../editor/geometry-factory.js';
 import { openCaseModal as openSharedCaseModal } from '../ui/overlays/case-modal.js';
+import { MIN_SUPPORT_FRACTION } from '../services/pack-library.js';
 
 // Editor screen + 3D interaction helpers (extracted from src/app.js; behavior preserved)
 
@@ -25,6 +26,52 @@ function createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, rotati
     ? PackLibrary.normalizeRightAngleRotation(rotation)
     : rotation;
   return { orientationLocked: true, lockedRotation };
+}
+
+/**
+ * Pure gravity simulation: find the settled center Y for a box at the given X,Z position.
+ *
+ * Rules:
+ * - Floor (Y = halfWorld.y) is always valid support.
+ * - A supporter is accepted only if its XZ overlap covers >= minSupportFraction of the
+ *   candidate's footprint. This prevents tiny-corner contact from acting as support.
+ * - The highest valid resting surface wins. No upper-bound filter — the caller's
+ *   collision check handles cases where the result would penetrate something above.
+ *
+ * Exported for unit testing. The inner settleY() calls this with live instance state.
+ *
+ * @param {{ x: number, y: number, z: number }} halfWorld - half-extents in world units
+ * @param {number} cx - candidate center X in world units
+ * @param {number} cz - candidate center Z in world units
+ * @param {Array<{ min: {x,y,z}, max: {x,y,z} }>} otherAabbs - world-space AABBs of other boxes
+ * @param {number} minSupportFraction - required XZ overlap fraction (pass MIN_SUPPORT_FRACTION)
+ * @returns {number} settled center Y in world units (always >= halfWorld.y)
+ */
+export function computeSettleY(halfWorld, cx, cz, otherAabbs, minSupportFraction) {
+  const halfX = halfWorld.x;
+  const halfY = halfWorld.y;
+  const halfZ = halfWorld.z;
+
+  let bestY = halfY; // floor fallback: center Y = half-height
+
+  for (const otherAabb of otherAabbs || []) {
+    if (!otherAabb) continue;
+    const potentialY = otherAabb.max.y + halfY;
+    if (potentialY <= bestY) continue; // not an improvement
+
+    // Compute what fraction of the candidate's footprint is over this supporter's top face.
+    const overlapL = Math.max(0, Math.min(cx + halfX, otherAabb.max.x) - Math.max(cx - halfX, otherAabb.min.x));
+    const overlapW = Math.max(0, Math.min(cz + halfZ, otherAabb.max.z) - Math.max(cz - halfZ, otherAabb.min.z));
+    const overlapArea = overlapL * overlapW;
+    const footprintArea = (halfX * 2) * (halfZ * 2);
+    const fraction = footprintArea > 1e-9 ? overlapArea / footprintArea : 0;
+
+    if (fraction >= minSupportFraction) {
+      bestY = potentialY;
+    }
+  }
+
+  return bestY;
 }
 
 export function createCaseScene({
@@ -225,6 +272,7 @@ export function createCaseScene({
       const widthW = SceneManager.toWorld(dims.width);
       const heightW = SceneManager.toWorld(dims.height);
       group.userData.halfWorld = { x: lengthW / 2, y: heightW / 2, z: widthW / 2 };
+      group.userData.baseHalfWorld = { x: lengthW / 2, y: heightW / 2, z: widthW / 2 };
 
       const catColor = CategoryService.meta(caseData.category).color;
       const baseColor = String(catColor || caseData.color || '#ff9f1c');
@@ -293,16 +341,18 @@ export function createCaseScene({
       const rot = inst.transform.rotation || { x: 0, y: 0, z: 0 };
       const worldPos = SceneManager.vecInchesToWorld(pos);
 
-      // When orientedDims exists (from AutoPack), update halfWorld on the group
-      // so that ALL downstream code (getAabbWorld, settleY, snapToNearest, drag
-      // floor clamping) uses the correct rotated dimensions — not the originals.
-      // Without this, flipped/rotated boxes float, snap wrong, and collide wrong.
+      // Always set halfWorld from current effective dimensions so stale values
+      // from a previous rotation, AutoPack run, or import cannot persist on a
+      // reused THREE.Group. Uses orientedDims when present (rotated/AutoPacked),
+      // otherwise resets to the base case dimensions stored at group creation.
       if (inst.orientedDims) {
         group.userData.halfWorld = {
           x: SceneManager.toWorld(inst.orientedDims.length) / 2,
           y: SceneManager.toWorld(inst.orientedDims.height) / 2,
           z: SceneManager.toWorld(inst.orientedDims.width) / 2,
         };
+      } else if (group.userData.baseHalfWorld) {
+        group.userData.halfWorld = { ...group.userData.baseHalfWorld };
       }
 
       const halfY = group.userData.halfWorld ? group.userData.halfWorld.y : 0;
@@ -521,31 +571,26 @@ export function createCaseScene({
       return { collides: false, insideTruck };
     }
 
-    /** Settle a case down via gravity: find highest surface below and place on it. */
+    /** Settle a case down via gravity: find highest valid support surface at current X,Z. */
     function settleY(instanceId) {
       const group = instances.get(instanceId);
       if (!group || !group.userData.halfWorld) return null;
-      const halfY = group.userData.halfWorld.y;
-      const myAabb = getAabbWorld(instanceId);
-      if (!myAabb) return null;
 
-      // Find the highest top surface of any other box that is directly below
-      let floorY = halfY; // default: ground floor
+      const otherAabbs = [];
       for (const [otherId, otherGroup] of instances.entries()) {
         if (otherId === instanceId) continue;
         if (!otherGroup || otherGroup.visible === false) continue;
         const otherAabb = getAabbWorld(otherId);
-        if (!otherAabb) continue;
-        // Check XZ overlap (is this box above the other one?)
-        if (myAabb.max.x > otherAabb.min.x && myAabb.min.x < otherAabb.max.x &&
-            myAabb.max.z > otherAabb.min.z && myAabb.min.z < otherAabb.max.z) {
-          const topY = otherAabb.max.y + halfY;
-          if (topY > floorY && otherAabb.max.y <= myAabb.min.y + 0.01) {
-            floorY = topY;
-          }
-        }
+        if (otherAabb) otherAabbs.push(otherAabb);
       }
-      return floorY;
+
+      return computeSettleY(
+        group.userData.halfWorld,
+        group.position.x,
+        group.position.z,
+        otherAabbs,
+        MIN_SUPPORT_FRACTION,
+      );
     }
 
     function getSnapWallCandidatesWorld() {
@@ -1331,7 +1376,7 @@ export function createInteractionManager({
       UIComponents.showToast(`Deleted ${ids.length} case(s)`, 'info');
     }
 
-    return { init: initInteraction, setSelection, selectAllInPack, deleteSelection };
+    return { init: initInteraction, setSelection, selectAllInPack, deleteSelection, rotateSelection };
   })();
 
   return InteractionManager;
@@ -2862,17 +2907,7 @@ export function createEditorScreen({
         btn.type = 'button';
         btn.innerHTML = `<i class="fa-solid fa-rotate-right"></i> ${label}`;
         btn.addEventListener('click', () => {
-          selected.forEach(id => {
-            const inst = (pack.cases || []).find(i => i.id === id);
-            if (!inst) { return; }
-            const rot = { ...(inst.transform.rotation || { x: 0, y: 0, z: 0 }) };
-            rot[axis] = ((Number(rot[axis]) || 0) + delta) % (2 * Math.PI);
-            const lockPatch = createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, rot);
-            PackLibrary.updateInstance(pack.id, id, {
-              ...lockPatch,
-              transform: { ...inst.transform, rotation: lockPatch.lockedRotation || rot },
-            });
-          });
+          InteractionManager.rotateSelection(axis, delta);
         });
         rotRow.appendChild(btn);
       });
@@ -3027,7 +3062,6 @@ export function createEditorScreen({
       transformCard.appendChild(rotTitle);
       // TODO(AUTO-PACK-A0): when reset-orientation UI is added, apply PackLibrary.clearOrientationLockPatch().
 
-      const rot = inst.transform.rotation || { x: 0, y: 0, z: 0 };
       const halfPI = Math.PI / 2;
       const rotRow = document.createElement('div');
       rotRow.className = 'tp3d-editor-rot-grid';
@@ -3042,27 +3076,7 @@ export function createEditorScreen({
         btn.type = 'button';
         btn.innerHTML = `<i class="fa-solid ${icon}"></i> ${label}`;
         btn.addEventListener('click', () => {
-          const curRot = { ...rot };
-          curRot[axis] = ((Number(curRot[axis]) || 0) + delta) % (2 * Math.PI);
-          const lockPatch = createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, curRot);
-          const lockedRotation = lockPatch.lockedRotation || curRot;
-          PackLibrary.updateInstance(pack.id, inst.id, {
-            ...lockPatch,
-            transform: { ...inst.transform, rotation: lockedRotation },
-          });
-          // Apply gravity after rotation
-          requestAnimationFrame(() => {
-            const settledY = CaseScene.settleY(inst.id);
-            if (settledY !== null) {
-              const obj = CaseScene.getObject(inst.id);
-              if (obj) { obj.position.y = settledY; }
-              const posInches = SceneManager.vecWorldToInches(obj.position);
-              PackLibrary.updateInstance(pack.id, inst.id, {
-                ...lockPatch,
-                transform: { ...inst.transform, rotation: lockedRotation, position: posInches },
-              });
-            }
-          });
+          InteractionManager.rotateSelection(axis, delta);
         });
         rotRow.appendChild(btn);
       });

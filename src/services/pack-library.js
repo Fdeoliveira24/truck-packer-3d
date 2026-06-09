@@ -398,6 +398,51 @@ function repairPackInstancePlacements(pack, caseLibrary) {
 
 export { getTrailerUsableZones, getTrailerCapacityInches3, isAabbContainedInAnyZone };
 
+// ============================================================================
+// SECTION: SHARED PLACEMENT VALIDATION CONSTANTS AND HELPERS
+// These are exported so that editor-screen.js and future placement validators
+// all use the same epsilon and support-fraction threshold.
+// ============================================================================
+
+/** Shared epsilon for AABB overlap checks across all placement code paths. */
+export const PLACEMENT_EPS = 0.001;
+
+/** Minimum fraction of a case's bottom face that must be covered by supporters. */
+export const MIN_SUPPORT_FRACTION = 0.5;
+
+/**
+ * Compute what fraction of the candidate's bottom face is covered by supporter AABBs.
+ * Works with plain {min,max} objects in any consistent coordinate space (inches or world units).
+ *
+ * Floor is not a supporter — callers should treat fraction=0 as "falls to floor".
+ * Touching faces (otherAabb.max.y === candidate.min.y ± tolerance) count as support.
+ * Tiny-corner overlap produces a fraction well below MIN_SUPPORT_FRACTION.
+ *
+ * @param {{ min: {x,y,z}, max: {x,y,z} }} candidateAabb
+ * @param {Array<{ min: {x,y,z}, max: {x,y,z} }>} supporterAabbs
+ * @param {number} [tolerance=PLACEMENT_EPS] - Y tolerance for flush-top detection
+ * @returns {number} fraction in [0, 1]
+ */
+export function computeSupportFraction(candidateAabb, supporterAabbs, tolerance = PLACEMENT_EPS) {
+  if (!candidateAabb) return 0;
+  const footprintL = candidateAabb.max.x - candidateAabb.min.x;
+  const footprintW = candidateAabb.max.z - candidateAabb.min.z;
+  const candidateArea = Math.max(1e-9, footprintL * footprintW);
+  const bottom = candidateAabb.min.y;
+  let supportArea = 0;
+
+  for (const sup of supporterAabbs || []) {
+    if (!sup) continue;
+    // Only count surfaces whose top face is flush with the candidate's bottom face.
+    if (Math.abs(bottom - sup.max.y) > tolerance) continue;
+    const overlapL = Math.max(0, Math.min(candidateAabb.max.x, sup.max.x) - Math.max(candidateAabb.min.x, sup.min.x));
+    const overlapW = Math.max(0, Math.min(candidateAabb.max.z, sup.max.z) - Math.max(candidateAabb.min.z, sup.min.z));
+    supportArea += overlapL * overlapW;
+  }
+
+  return Math.min(1, supportArea / candidateArea);
+}
+
 export function getPacks() {
   return StateStore.get('packLibrary') || [];
 }

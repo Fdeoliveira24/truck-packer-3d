@@ -1359,6 +1359,19 @@ test('PACK-IMPORT-SCHEMA-1 single import success path closes modal after import'
     'Single-pack import success must close the modal after importing');
 });
 
+test('PACK-IMPORT-SCHEMA-1 pack import modal uses pack-only class and batch close is gated by imported count', async () => {
+  const src = await fs.readFile(importPackDialogPath, 'utf8');
+  assert.match(src, /classList\.add\(['"]tp3d-ic-modal['"],\s*['"]tp3d-ip-modal['"]\)/,
+    'Pack import modal must include pack-only tp3d-ip-modal class alongside shared tp3d-ic-modal');
+  assert.match(
+    src,
+    /UIComponents\.showToast\(msg, imported > 0 \? ['"]success['"] : ['"]warning['"]\);\s*if\s*\(imported\s*>\s*0\)\s*\{\s*modalObj\.close\(\);\s*\}/,
+    'Batch import should close modal only when imported > 0'
+  );
+  assert.doesNotMatch(src, /imported\s*===\s*0[\s\S]*modalObj\.close\(\)/,
+    'Batch import with zero successful imports must keep modal open');
+});
+
 test('PACK-IMPORT-SAFE-1 editor addCaseToPack uses PackLibrary safe staging and preserves explicit drop positions', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const start = src.indexOf('function addCaseToPack(caseId, positionInches)');
@@ -1432,6 +1445,57 @@ test('PACK-IMPORT-SAFE-1 import stays on Packs and does not auto-open imported p
     PackLibrary.getPacks().some(pack => pack.id === importedPack.id),
     'Imported pack must be added to the pack library for the Packs screen'
   );
+});
+
+test('PACK-IMPORT-SAFE-1 duplicate pack id is regenerated, title is suffixed, and duplicate bundled cases are reused', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  const existingCase = makePackImportSafeCase({
+    id: 'case-existing',
+    name: 'Shared Case Name',
+    dimensions: { length: 12, width: 10, height: 8 },
+  });
+
+  StateStore.init({
+    caseLibrary: [existingCase],
+    packLibrary: [
+      {
+        id: 'pack-existing-id',
+        title: 'Existing Pack',
+        truck: { length: 120, width: 60, height: 60 },
+        cases: [],
+      },
+    ],
+    folderLibrary: [],
+    preferences: {},
+  });
+
+  const importedPack = PackLibrary.importPackPayload({
+    pack: {
+      id: 'pack-existing-id',
+      title: 'Duplicate Id Pack',
+      truck: { length: 120, width: 60, height: 60 },
+      cases: [
+        makePackImportInstance('case-existing', { id: 'inst-1', transform: { position: { x: 8, y: 4, z: -8 } } }),
+        makePackImportInstance('incoming-dup-name', { id: 'inst-2', transform: { position: { x: 24, y: 4, z: -8 } } }),
+      ],
+    },
+    bundledCases: [
+      makePackImportSafeCase({ id: 'case-existing', name: 'Shared Case Name' }),
+      makePackImportSafeCase({ id: 'incoming-dup-name', name: 'Shared Case Name' }),
+    ],
+  });
+
+  const casesAfter = StateStore.get('caseLibrary') || [];
+  assert.equal(casesAfter.length, 1,
+    'Duplicate bundled cases by id/name must be reused and not added again');
+  assert.ok(importedPack.id !== 'pack-existing-id',
+    'Duplicate incoming pack id must be regenerated');
+  assert.equal(importedPack.title, 'Duplicate Id Pack (Imported)',
+    'Imported pack title must be suffixed with (Imported)');
+  assert.ok(importedPack.cases.every(inst => inst.caseId === 'case-existing'),
+    'Imported instances should reuse existing case ids for duplicate bundled definitions');
 });
 
 test('PACK-IMPORT-SAFE-1 invalid imported transforms are staged without overlap outside the truck', async () => {

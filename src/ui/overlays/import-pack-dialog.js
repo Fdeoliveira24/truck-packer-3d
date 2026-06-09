@@ -329,7 +329,7 @@ export function createImportPackDialog({
       ],
     });
 
-    modalObj.modal.classList.add('tp3d-ic-modal');
+    modalObj.modal.classList.add('tp3d-ic-modal', 'tp3d-ip-modal');
 
     const importBtn = modalObj.modal.querySelector('.modal-footer .btn-primary');
     importBtn.disabled = true;
@@ -1081,7 +1081,9 @@ export function createImportPackDialog({
         ? 'Imported ' + imported + ' pack' + (imported !== 1 ? 's' : '') + ' · ' + skipped + ' skipped'
         : 'Imported ' + imported + ' pack' + (imported !== 1 ? 's' : '');
       UIComponents.showToast(msg, imported > 0 ? 'success' : 'warning');
-      // Do not auto-close after batch — user reviews summary
+      if (imported > 0) {
+        modalObj.close();
+      }
     }
   }
 

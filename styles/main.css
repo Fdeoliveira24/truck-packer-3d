@@ -2587,6 +2587,16 @@ tr:hover td {
   flex-direction: column;
 }
 
+.tp3d-ip-modal {
+  width: min(700px, 100%);
+}
+
+.tp3d-ip-modal .tp3d-ip-summary,
+.tp3d-ip-modal .tp3d-ic-preview .card,
+.tp3d-ip-modal .tp3d-ic-table-wrap {
+  background: var(--bg-primary);
+}
+
 .tp3d-ic-modal .modal-body {
   overflow-y: auto;
   flex: 1;

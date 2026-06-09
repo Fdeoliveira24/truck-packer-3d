@@ -22,6 +22,7 @@ const autoPackSolverPath = new URL('../../src/services/autopack-solver.js', impo
 const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 const casesScreenPath = new URL('../../src/screens/cases-screen.js', import.meta.url);
+const categoryServicePath = new URL('../../src/services/category-service.js', import.meta.url);
 const stylesMainPath = new URL('../../styles/main.css', import.meta.url);
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
 const normalizerPath = new URL('../../src/core/normalizer.js', import.meta.url);
@@ -33,6 +34,7 @@ const supabasePath = new URL('../../src/core/supabase-client.js', import.meta.ur
 const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.meta.url);
 const settingsOverlayPath = new URL('../../src/ui/overlays/settings-overlay.js', import.meta.url);
 const caseModalPath = new URL('../../src/ui/overlays/case-modal.js', import.meta.url);
+const cardDisplayOverlayPath = new URL('../../src/ui/overlays/card-display-overlay.js', import.meta.url);
 const helpModalPath = new URL('../../src/ui/overlays/help-modal.js', import.meta.url);
 const importAppDialogPath = new URL('../../src/ui/overlays/import-app-dialog.js', import.meta.url);
 const importPackDialogPath = new URL('../../src/ui/overlays/import-pack-dialog.js', import.meta.url);
@@ -162,11 +164,14 @@ const editorInspectorPolishFiles = new Set([
   'src/screens/editor-screen.js',
   'src/screens/packs-screen.js',
   'src/services/case-library.js',
+  'src/services/category-service.js',
   'src/services/import-export.js',
   'src/ui/helpers/import-dialog-utils.js',
+  'src/ui/overlays/card-display-overlay.js',
   'src/ui/overlays/case-modal.js',
   'src/ui/overlays/import-cases-dialog.js',
   'src/ui/overlays/settings-overlay.js',
+  'src/ui/ui-components.js',
   'docs/product/TP3D-MASTER-TODO-V3.md',
   'styles/main.css',
   'tests/audit/security-and-invariants.spec.mjs',
@@ -2816,12 +2821,35 @@ test('CASE filters normalize imported category keys before matching cases', asyn
 test('CASE and editor filter panels render as bounded vertical lists', async () => {
   const src = await fs.readFile(stylesMainPath, 'utf8');
   const casesSrc = await fs.readFile(casesScreenPath, 'utf8');
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  const packsSrc = await fs.readFile(packsScreenPath, 'utf8');
+  const uiSrc = await fs.readFile(new URL('../../src/ui/ui-components.js', import.meta.url), 'utf8');
+  const cardDisplaySrc = await fs.readFile(cardDisplayOverlayPath, 'utf8');
   const indexSrc = await fs.readFile(indexHtmlPath, 'utf8');
+  const categorySrc = await fs.readFile(categoryServicePath, 'utf8');
 
   assert.match(src, /\.tp3d-cases-filter-anchor,[\s\S]*\.tp3d-packs-filter-anchor \{[\s\S]*position: relative;/,
     'Cases screen filters must be anchored to the search toolbar');
-  assert.match(src, /#cases-filters,[\s\S]*#packs-filters \{[\s\S]*position: absolute;[\s\S]*top: 35px;[\s\S]*left: 0;/,
+  assert.match(src, /#cases-filters,[\s\S]*#packs-filters \{[\s\S]*position: absolute;[\s\S]*top: 35px;[\s\S]*right: 0;/,
     'Cases and Packs filters must overlay below the toolbar instead of pushing page content down');
+  assert.match(src, /\.tp3d-filter-popover-title \{[\s\S]*position: sticky;[\s\S]*border-bottom: 1px solid var\(--border-subtle\);/,
+    'Cases and Packs filter popups must use a consistent sticky title with a divider');
+  assert.match(src, /\.tp3d-filter-popover-title \{[\s\S]*margin: calc\(var\(--space-3\) \* -1\) calc\(var\(--space-3\) \* -1\) 10px;/,
+    'Cases and Packs filter popups must leave breathing room below the title divider');
+  assert.match(src, /#cases-filters \.tp3d-filter-popover-title \+ \.chip,[\s\S]*#packs-filters \.tp3d-filter-popover-title \+ \.chip \{[\s\S]*margin-top: 8px;/,
+    'Cases and Packs filter popups must keep the first chip below the title divider');
+  assert.match(casesSrc, /filterHeader\.className = 'tp3d-filter-popover-title'/,
+    'Cases filter popup must render the shared title class');
+  assert.match(indexSrc, /id="packs-filters"[\s\S]*class="tp3d-filter-popover-title">Filters<\/div>/,
+    'Packs filter popup must render the shared title class');
+  assert.match(casesSrc, /let filtersOutsideClickHandler = null;/,
+    'Cases filter popup must track the outside-click listener like Packs');
+  assert.match(casesSrc, /prefs\.casesFiltersVisible = prefs\.casesFiltersVisible !== true;/,
+    'Cases filter popup must toggle with an explicit open state');
+  assert.match(casesSrc, /document\.addEventListener\('click', filtersOutsideClickHandler\)/,
+    'Cases filter popup must close from a document outside-click handler');
+  assert.match(casesSrc, /prefs\.casesFiltersVisible = false;[\s\S]*PreferencesManager\.set\(prefs\);[\s\S]*applyFiltersVisibility\(\);/,
+    'Cases filter outside click must persist the closed state');
   assert.match(src, /#cases-filters,[\s\S]*#packs-filters \{[\s\S]*flex-direction: column;/,
     'Cases and Packs filters must render as vertical lists');
   assert.match(src, /#cases-filters,[\s\S]*#packs-filters \{[\s\S]*width: min\(220px, 100%\);/,
@@ -2832,6 +2860,12 @@ test('CASE and editor filter panels render as bounded vertical lists', async () 
     'filter chip labels must truncate instead of overflowing or clipping the side panel');
   assert.match(src, /\.dropdown\[data-role='categories'\] \{[\s\S]*top: 195px !important;[\s\S]*width: min\(240px, calc\(100vw - 16px\)\) !important;/,
     'Cases category management dropdown must sit lower and stay compact');
+  assert.match(casesSrc, /items\.push\(\{ type: 'header', label: 'Categories' \}\);[\s\S]*label: 'New Category'[\s\S]*variant: 'primary'[\s\S]*items\.push\(\{ type: 'divider' \}\);/,
+    'Cases category management dropdown must keep the New Category action above the category list');
+  assert.match(src, /\.dropdown\[data-role='categories'\] \.dropdown-menu > div:first-child \{[\s\S]*z-index: 4;/,
+    'Cases category management dropdown must keep the title fixed above the category list');
+  assert.match(src, /\.dropdown\[data-role='categories'\] \.dropdown-item\[data-variant='primary'\] \{[\s\S]*position: sticky;[\s\S]*top: 45px;[\s\S]*justify-content: center;/,
+    'Cases category dropdown New Category action must stay sticky and use the primary yellow action styling');
   assert.match(src, /#editor-case-chips \{[\s\S]*left: var\(--space-3\);/,
     'Editor Case Browser filters must be bounded by the fixed search block');
   assert.match(src, /#editor-case-chips \{[\s\S]*right: var\(--space-3\);/,
@@ -2844,8 +2878,24 @@ test('CASE and editor filter panels render as bounded vertical lists', async () 
     'Editor Case Browser filters must layer above the case list');
   assert.doesNotMatch(indexSrc, /id="(?:cases|editor-case)-filters-toggle"[\s\S]{0,180}data-tooltip="Toggle filters"/,
     'filter toggle buttons must not render a tooltip over the open filter panel');
-  assert.doesNotMatch(casesSrc, /Close filter popup when clicking outside|casesFiltersVisible = false[\s\S]*applyFiltersVisibility\(\);[\s\S]*document\.addEventListener\('click'/,
-    'Cases screen filters are an in-page list and must not use stale outside-click popover closing');
+  assert.match(uiSrc, /const activeAnchorClass = String\(options\.activeAnchorClass \|\| ''\)\.trim\(\)/,
+    'shared dropdowns must support opt-in active styling for popup trigger buttons');
+  assert.match(uiSrc, /dropdownActiveAnchorClasses\.forEach\(className => anchorEl\.classList\.add\(className\)\)/,
+    'shared dropdowns must apply the active styling class while open');
+  assert.match(uiSrc, /dropdownActiveAnchorClasses\.forEach\(className => dropdownActiveAnchorEl\.classList\.remove\(className\)\)/,
+    'shared dropdowns must remove active styling when closed');
+  assert.match(cardDisplaySrc, /role:\s*'card-display'[\s\S]*activeAnchorClass:\s*'btn-primary'/,
+    'Packs and Cases card display popup buttons must be yellow while their popup is open');
+  assert.match(casesSrc, /role:\s*'categories'[\s\S]*activeAnchorClass:\s*'btn-primary'/,
+    'Cases category management popup button must be yellow while its popup is open');
+  assert.match(packsSrc, /role:\s*'trailer-presets'[\s\S]*activeAnchorClass:\s*'btn-primary'/,
+    'Packs trailer preset popup button must be yellow while its popup is open');
+  assert.match(categorySrc, /export function resetToDefaultIfNoCases\(cases\)/,
+    'Category service must expose an explicit empty-library reset path');
+  assert.match(casesSrc, /CategoryService\.resetToDefaultIfNoCases\(cases\)[\s\S]*activeCategories\.clear\(\)/,
+    'Cases filters must clear stale category selections when the case library is empty');
+  assert.match(editorSrc, /CategoryService\.resetToDefaultIfNoCases\(allCases\)[\s\S]*browserCats\.clear\(\);[\s\S]*browserManufacturers\.clear\(\);/,
+    'Editor Case Browser filters must clear stale category and manufacturer selections when the case library is empty');
 });
 
 test('EDITOR and Packs filter popups include total All counts', async () => {
@@ -2853,7 +2903,7 @@ test('EDITOR and Packs filter popups include total All counts', async () => {
   const packsSrc = await fs.readFile(packsScreenPath, 'utf8');
   const indexSrc = await fs.readFile(indexHtmlPath, 'utf8');
 
-  assert.match(editorSrc, /const allFilterCount = CaseLibrary\.getCases\(\)\.length/,
+  assert.match(editorSrc, /const allFilterCount = allCases\.length/,
     'Editor Case Browser filter popup must compute the total case count');
   assert.match(editorSrc, /`All: \$\{allFilterCount\}`/,
     'Editor Case Browser All filter must display its count');
@@ -2880,7 +2930,7 @@ test('EDITOR Case Browser filter popup supports manufacturer grouping', async ()
     'manufacturer tab must filter visible cases by selected manufacturer chips');
   assert.match(src, /const activeBrowserFilters = caseBrowserGroupBy === 'manufacturer' \? browserManufacturers : browserCats/,
     'filter chip state must switch between manufacturer and category mode');
-  assert.match(src, /caseBrowserGroupBy === 'manufacturer'[\s\S]*getManufacturerFilterOptions\(CaseLibrary\.getCases\(\)\)[\s\S]*CategoryService\.listWithCounts\(CaseLibrary\.getCases\(\)\)/,
+  assert.match(src, /caseBrowserGroupBy === 'manufacturer'[\s\S]*getManufacturerFilterOptions\(allCases\)[\s\S]*CategoryService\.listWithCounts\(allCases\)/,
     'filter popup must render manufacturer options in manufacturer mode and category options otherwise');
   assert.doesNotMatch(src, /caseChipsEl\.hidden = true; caseChipsEl\.style\.display = 'none'/,
     'manufacturer mode must not disable the filter popup');

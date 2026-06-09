@@ -672,12 +672,23 @@ textarea:focus {
   max-height: min(80vh, 520px);
   overflow-y: auto;
   overflow-x: hidden;
-  gap: 6px;
+  gap: 4px;
 }
 
 #cases-filters.is-open,
 #packs-filters.is-open {
   display: flex;
+}
+
+.tp3d-filter-popover-title {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 10px 12px 8px;
+  margin: calc(var(--space-3) * -1) calc(var(--space-3) * -1) 10px;
+  font-weight: var(--font-semibold);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 #cases-filters .chip,
@@ -687,6 +698,11 @@ textarea:focus {
   min-width: 0;
   max-width: 100%;
   justify-content: flex-start;
+}
+
+#cases-filters .tp3d-filter-popover-title + .chip,
+#packs-filters .tp3d-filter-popover-title + .chip {
+  margin-top: 8px;
 }
 
 #cases-filters .chip span:last-child,
@@ -734,7 +750,7 @@ textarea:focus {
   align-items: stretch;
   flex-wrap: nowrap;
   gap: 6px;
-  padding: 10px;
+  padding: 8px 10px 10px;
   width: auto;
   max-width: none;
   border: 1px solid var(--border-subtle);
@@ -743,7 +759,7 @@ textarea:focus {
   box-shadow: var(--shadow-lg);
   height: auto;
   min-height: 0;
-  max-height: min(45vh, 260px);
+  max-height: min(48vh, 320px);
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
@@ -764,6 +780,27 @@ textarea:focus {
 .dropdown[data-role='categories'] .dropdown-menu {
   width: 100%;
   min-width: 0;
+}
+
+.dropdown[data-role='categories'] .dropdown-menu > div:first-child {
+  z-index: 4;
+}
+
+.dropdown[data-role='categories'] .dropdown-item[data-variant='primary'] {
+  position: sticky;
+  top: 45px;
+  z-index: 4;
+  justify-content: center;
+  width: calc(100% - 16px);
+  margin: 8px 8px 6px;
+}
+
+.dropdown[data-role='categories'] .dropdown-item[data-variant='primary'] span {
+  flex: 0;
+}
+
+.dropdown[data-role='categories'] .dropdown-menu > div[role='separator'] {
+  margin-top: 6px;
 }
 
 #editor-case-chips[hidden] {

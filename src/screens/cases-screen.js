@@ -63,6 +63,7 @@ export function createCasesScreen({
     let casesFooterMountEl = null;
     let lastCasePageMeta = null;
     let filteredCases = [];
+    let filtersOutsideClickHandler = null;
 
     function initCasesUI() {
       searchEl.addEventListener(
@@ -120,16 +121,34 @@ export function createCasesScreen({
 
     function toggleFiltersVisible() {
       const prefs = PreferencesManager.get();
-      prefs.casesFiltersVisible = !prefs.casesFiltersVisible;
+      prefs.casesFiltersVisible = prefs.casesFiltersVisible !== true;
       PreferencesManager.set(prefs);
       applyFiltersVisibility();
     }
 
     function applyFiltersVisibility() {
       if (!filtersEl) return;
-      const visible = PreferencesManager.get().casesFiltersVisible !== false;
+      const visible = PreferencesManager.get().casesFiltersVisible === true;
       filtersEl.classList.toggle('is-open', visible);
       btnFiltersToggle && btnFiltersToggle.classList.toggle('btn-primary', visible);
+      if (filtersOutsideClickHandler) {
+        document.removeEventListener('click', filtersOutsideClickHandler);
+        filtersOutsideClickHandler = null;
+      }
+      if (visible) {
+        filtersOutsideClickHandler = function(ev) {
+          const anchor = filtersEl.closest('.tp3d-cases-filter-anchor');
+          if (!anchor || !anchor.contains(/** @type {Node} */ (ev.target))) {
+            const prefs = PreferencesManager.get();
+            prefs.casesFiltersVisible = false;
+            PreferencesManager.set(prefs);
+            applyFiltersVisibility();
+          }
+        };
+        setTimeout(() => {
+          if (filtersOutsideClickHandler) document.addEventListener('click', filtersOutsideClickHandler);
+        }, 0);
+      }
     }
 
     function clearSelection() {
@@ -505,18 +524,18 @@ export function createCasesScreen({
 
     function renderFilters() {
       const cases = CaseLibrary.getCases();
+      if (CategoryService.resetToDefaultIfNoCases(cases)) {
+        activeCategories.clear();
+      }
       const list = CategoryService.listWithCounts(cases);
+      const validKeys = new Set(list.map(cat => cat.key));
+      Array.from(activeCategories).forEach(key => {
+        if (!validKeys.has(key)) activeCategories.delete(key);
+      });
       filtersEl.innerHTML = '';
 
       const filterHeader = document.createElement('div');
-      filterHeader.style.fontWeight = 'var(--font-semibold)';
-      filterHeader.style.paddingBottom = '6px';
-      filterHeader.style.borderBottom = '1px solid var(--border-subtle)';
-      filterHeader.style.marginBottom = '2px';
-      filterHeader.style.position = 'sticky';
-      filterHeader.style.top = '0';
-      filterHeader.style.background = 'var(--bg-secondary)';
-      filterHeader.style.zIndex = '1';
+      filterHeader.className = 'tp3d-filter-popover-title';
       filterHeader.textContent = 'Filters';
       filtersEl.appendChild(filterHeader);
 
@@ -891,6 +910,7 @@ export function createCasesScreen({
         align: 'right',
         width: Math.max(220, Math.min(rect.width, 240)),
         role: 'categories',
+        activeAnchorClass: 'btn-primary',
       });
     }
 

@@ -191,6 +191,7 @@ export function createPacksScreen({
         align: 'right',
         width: Math.max(260, rect.width),
         role: 'trailer-presets',
+        activeAnchorClass: 'btn-primary',
       });
     }
 

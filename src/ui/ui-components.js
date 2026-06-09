@@ -18,6 +18,8 @@ export function createUIComponents() {
   let dropdownRepositionListener = null;
   let dropdownDocClickListener = null;
   let dropdownDocClickTimer = null;
+  let dropdownActiveAnchorEl = null;
+  let dropdownActiveAnchorClasses = [];
 
   const toastTypes = {
     success: { title: 'Success', color: 'var(--success)', icon: '✓' },
@@ -197,6 +199,12 @@ export function createUIComponents() {
 
   function openDropdown(anchorEl, items, options = {}) {
     closeAllDropdowns();
+    const activeAnchorClass = String(options.activeAnchorClass || '').trim();
+    if (activeAnchorClass && anchorEl && anchorEl.classList) {
+      dropdownActiveAnchorEl = anchorEl;
+      dropdownActiveAnchorClasses = activeAnchorClass.split(/\s+/).filter(Boolean);
+      dropdownActiveAnchorClasses.forEach(className => anchorEl.classList.add(className));
+    }
     const wrap = document.createElement('div');
     wrap.className = 'dropdown-menu';
     // The stylesheet defines `.dropdown-menu` as `position:absolute` for inline dropdowns.
@@ -403,6 +411,11 @@ export function createUIComponents() {
 
   function closeAllDropdowns() {
     document.querySelectorAll('[data-dropdown="1"]').forEach(el => el.remove());
+    if (dropdownActiveAnchorEl && dropdownActiveAnchorClasses.length) {
+      dropdownActiveAnchorClasses.forEach(className => dropdownActiveAnchorEl.classList.remove(className));
+    }
+    dropdownActiveAnchorEl = null;
+    dropdownActiveAnchorClasses = [];
     if (dropdownDocClickTimer) {
       window.clearTimeout(dropdownDocClickTimer);
       dropdownDocClickTimer = null;

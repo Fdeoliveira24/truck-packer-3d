@@ -102,6 +102,25 @@ export function listWithCounts(cases) {
   return ordered.filter((k, idx, arr) => arr.indexOf(k) === idx).map(k => ({ ...meta(k), count: counts[k] || 0 }));
 }
 
+export function resetToDefaultIfNoCases(cases) {
+  if (Array.isArray(cases) && cases.length > 0) return false;
+  const defaultCategory = meta('default');
+  const nextDefault = {
+    key: 'default',
+    name: 'Default',
+    color: normalizeHex(defaultCategory.color) || colorForKey('default'),
+  };
+  const prefs = getPreferences() || {};
+  const current = Array.isArray(prefs.categories) ? prefs.categories : [];
+  const alreadyDefaultOnly =
+    current.length === 1 &&
+    normalizeKey(current[0].key || current[0].name) === 'default' &&
+    normalizeHex(current[0].color) === nextDefault.color;
+  if (alreadyDefaultOnly) return false;
+  savePreferences({ ...prefs, categories: [nextDefault] });
+  return true;
+}
+
 export function upsert({ key, name, color }) {
   const k = normalizeKey(key || name) || 'default';
   if (!k) return meta('default');
@@ -168,4 +187,4 @@ export function rename(oldKey, name, color) {
   return meta(to);
 }
 
-export default { all, meta, listWithCounts, upsert, remove, rename };
+export default { all, meta, listWithCounts, resetToDefaultIfNoCases, upsert, remove, rename };

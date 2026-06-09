@@ -167,6 +167,7 @@ export function createCardDisplayOverlay({
       width: 260,
       align: 'left',
       role: 'card-display',
+      activeAnchorClass: 'btn-primary',
       closeOnCheckboxChange: false,
     });
   }

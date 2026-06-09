@@ -1649,6 +1649,20 @@ export function createEditorScreen({
         btn.classList.toggle('btn-primary', btn.dataset.groupBy === caseBrowserGroupBy);
       });
 
+      const allCases = CaseLibrary.getCases();
+      if (CategoryService.resetToDefaultIfNoCases(allCases)) {
+        browserCats.clear();
+        browserManufacturers.clear();
+      }
+      const activeBrowserFilters = caseBrowserGroupBy === 'manufacturer' ? browserManufacturers : browserCats;
+      const browserFilterOptions = caseBrowserGroupBy === 'manufacturer'
+        ? getManufacturerFilterOptions(allCases)
+        : CategoryService.listWithCounts(allCases);
+      const validFilterKeys = new Set(browserFilterOptions.map(option => option.key));
+      Array.from(activeBrowserFilters).forEach(key => {
+        if (!validFilterKeys.has(key)) activeBrowserFilters.delete(key);
+      });
+      const allFilterCount = allCases.length;
       const q = String(caseSearchEl.value || '').trim();
       const prefs = PreferencesManager.get ? PreferencesManager.get() : { units: { length: 'in', weight: 'lb' } };
       const lengthUnit = (prefs.units && prefs.units.length) || 'in';
@@ -1657,11 +1671,6 @@ export function createEditorScreen({
         cases = cases.filter(c => browserManufacturers.has(getManufacturerFilterKey(c && c.manufacturer)));
       }
       cases = cases.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-      const activeBrowserFilters = caseBrowserGroupBy === 'manufacturer' ? browserManufacturers : browserCats;
-      const browserFilterOptions = caseBrowserGroupBy === 'manufacturer'
-        ? getManufacturerFilterOptions(CaseLibrary.getCases())
-        : CategoryService.listWithCounts(CaseLibrary.getCases());
-      const allFilterCount = CaseLibrary.getCases().length;
 
       caseChipsEl.innerHTML = '';
       caseChipsEl.appendChild(

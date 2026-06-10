@@ -824,7 +824,6 @@ export function createInteractionManager({
       if (!pack) { return; }
       let rotatedCount = 0;
       let blockedCount = 0;
-      let stagingBlockedCount = 0;
       let policyBlockedCount = 0;
       ids.forEach(id => {
         const inst = (pack.cases || []).find(i => i.id === id);
@@ -866,26 +865,13 @@ export function createInteractionManager({
           }
           const check = CaseScene.checkCollision(id, obj.position, ignoreSet);
           const posInches = SceneManager.vecWorldToInches(obj.position);
-          let outsideStagingZone = false;
-          if (!check.collides && !check.insideTruck) {
-            const dims = lockPatch.orientedDims || (caseData && caseData.dimensions) || { length: 0, width: 0, height: 0 };
-            const aabb = {
-              min: { x: posInches.x - dims.length / 2, y: posInches.y - dims.height / 2, z: posInches.z - dims.width / 2 },
-              max: { x: posInches.x + dims.length / 2, y: posInches.y + dims.height / 2, z: posInches.z + dims.width / 2 },
-            };
-            outsideStagingZone = !PackLibrary.isAabbInStagingZone(pack, aabb);
-          }
-          if (check.collides || (originalInsideTruck && !check.insideTruck) || outsideStagingZone) {
+          if (check.collides || (originalInsideTruck && !check.insideTruck)) {
             obj.position.copy(originalWorld);
             obj.rotation.copy(originalRotation);
             if (originalHalfWorld && obj.userData) obj.userData.halfWorld = originalHalfWorld;
             const restoredCheck = CaseScene.checkCollision(id, obj.position, ignoreSet);
             CaseScene.setCollision(id, restoredCheck.collides);
-            if (outsideStagingZone && !check.collides && !(originalInsideTruck && !check.insideTruck)) {
-              stagingBlockedCount += 1;
-            } else {
-              blockedCount += 1;
-            }
+            blockedCount += 1;
             return;
           }
           CaseScene.setCollision(id, false);
@@ -905,7 +891,6 @@ export function createInteractionManager({
       });
       if (rotatedCount) UIComponents.showToast(`Rotated ${rotatedCount} case(s)`, 'info');
       if (blockedCount) UIComponents.showToast('Cannot rotate here: collision or truck boundary detected', 'error');
-      if (stagingBlockedCount) UIComponents.showToast('Cannot rotate: would leave the staging area', 'error');
       if (policyBlockedCount) UIComponents.showToast('Cannot rotate: this item is orientation-locked.', 'error');
     }
 
@@ -1333,7 +1318,6 @@ export function createInteractionManager({
 
       const zonesInches = PackLibrary.getTrailerUsableZones(pack.truck);
       const placementById = new Map();
-      let anyOutsideAllowedZones = false;
       groupIds.forEach(id => {
         const pos = nextPositions.get(id);
         if (!pos) return;
@@ -1347,21 +1331,8 @@ export function createInteractionManager({
           min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
           max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
         };
-        if (PackLibrary.isAabbContainedInAnyZone(aabb, zonesInches)) {
-          placementById.set(id, 'packed');
-        } else if (PackLibrary.isAabbInStagingZone(pack, aabb)) {
-          placementById.set(id, 'staged');
-        } else {
-          anyOutsideAllowedZones = true;
-        }
+        placementById.set(id, PackLibrary.isAabbContainedInAnyZone(aabb, zonesInches) ? 'packed' : 'staged');
       });
-
-      if (anyOutsideAllowedZones) {
-        revertGroupToStart(groupIds, startMap);
-        UIComponents.showToast('Cannot place here: outside the staging area', 'error');
-        resetDrag();
-        return;
-      }
 
       const nextCases = (pack.cases || []).map(inst => {
         const pos = nextPositions.get(inst.id);

@@ -400,12 +400,11 @@ export function findSafeStagingPosition(pack, dims, acceptedAabbs) {
 }
 
 /**
- * Canonical staging/work-area bounds derived from the same S1 staging layout
- * used by findSafeStagingPosition. Defines the region where a staged item is
- * allowed to live: alongside the trailer footprint (with a small margin) and
- * out to a generous depth in the staging direction, so manual drag/rotate of
- * staged items can be validated without letting them drift arbitrarily far
- * from the trailer.
+ * Canonical staging-row bounds derived from the same S1 staging layout used
+ * by findSafeStagingPosition: a tight envelope around the neat row/column
+ * grid where AutoPack overflow, Unpack All, Add Case, and Duplicate fallback
+ * place items beside the trailer. This is intentionally small — it is not
+ * the manual work area (see getStagingWorkAreaBounds).
  */
 export function getStagingBounds(truck, options = {}) {
   const layout = getStagingLayout(truck, options);
@@ -418,11 +417,33 @@ export function getStagingBounds(truck, options = {}) {
 }
 
 /**
- * Whether an inch-based AABB is inside the canonical staging/work area for
- * this pack's truck. Used to validate manual drag/rotate of staged items.
+ * Large manual "work floor" bounds around the trailer/container. Unlike
+ * getStagingBounds (the tight canonical staging-row envelope), this spans
+ * both sides of the trailer in Z and a generous margin before/after it in X,
+ * so users can drag staged items several feet away to organize, group, and
+ * inspect them from any camera angle. Scales with truck size instead of a
+ * fixed constant.
+ */
+export function getStagingWorkAreaBounds(truck, options = {}) {
+  const t = truck && typeof truck === 'object' ? truck : {};
+  const truckL = Math.max(Number(t.length) || 120, 1);
+  const truckW = Math.max(Number(t.width) || 96, 1);
+  const marginX = Number(options.marginX) > 0 ? Number(options.marginX) : Math.max(120, truckL * 0.25);
+  const marginZ = Number(options.marginZ) > 0 ? Number(options.marginZ) : Math.max(180, truckW * 3);
+  return {
+    min: { x: -marginX, y: 0, z: -(truckW / 2 + marginZ) },
+    max: { x: truckL + marginX, y: Infinity, z: truckW / 2 + marginZ },
+  };
+}
+
+/**
+ * Whether an inch-based AABB is inside the large manual staging work area
+ * for this pack's truck. Used to validate manual drag/rotate/flip of staged
+ * items so they can be organized away from the trailer without drifting off
+ * the visible work floor.
  */
 export function isAabbInStagingZone(pack, aabb, options = {}) {
-  const bounds = getStagingBounds(pack && pack.truck, options);
+  const bounds = getStagingWorkAreaBounds(pack && pack.truck, options);
   const EPS = 0.05;
   return (
     aabb.min.x >= bounds.min.x - EPS &&

@@ -291,6 +291,8 @@ export function normalizeInstance(inst, caseMap) {
     : null;
   const deliverySequenceRaw = Number(inst && inst.deliverySequence);
   const deliverySequence = Number.isFinite(deliverySequenceRaw) ? deliverySequenceRaw : null;
+  const placement =
+    inst && (inst.placement === 'packed' || inst.placement === 'staged') ? inst.placement : null;
 
   return {
     id: safeId(inst && inst.id),
@@ -318,6 +320,7 @@ export function normalizeInstance(inst, caseMap) {
     lockedRotation,
     orientedDims,
     deliverySequence,
+    placement,
   };
 }
 

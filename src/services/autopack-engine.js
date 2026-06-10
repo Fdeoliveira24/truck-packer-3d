@@ -250,6 +250,7 @@ export function createAutoPackEngine({
             rotation: rot,
           },
           hidden: false,
+          placement: placements.has(inst.id) ? 'packed' : 'staged',
         };
         if (od) {
           next.orientedDims = od;

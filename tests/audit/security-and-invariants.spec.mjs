@@ -121,6 +121,7 @@ const importEditorSafeFiles = new Set([
   'src/screens/editor-screen.js',
   'src/services/pack-library.js',
   'src/services/autopack-engine.js',
+  'src/core/normalizer.js',
   'src/ui/overlays/import-pack-dialog.js',
   'styles/main.css',
   'tests/audit/security-and-invariants.spec.mjs',
@@ -1631,6 +1632,160 @@ test('PACK-IMPORT-SAFE-1 changed files stay in approved import/editor staging sc
 });
 
 // ── End PACK-IMPORT-SCHEMA-1 ──────────────────────────────────────────────
+
+// ── PLACEMENT-STATE-S2 ─────────────────────────────────────────────────────
+
+test('PLACEMENT-STATE-S2 addInstance writes "staged" placement by default', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-placement-default', dimensions: { length: 10, width: 10, height: 10 } });
+
+  StateStore.init({
+    caseLibrary: [caseData],
+    packLibrary: [{ id: 'pack-placement-default', title: 'Placement Default', truck: { length: 220, width: 80, height: 80 }, cases: [] }],
+    folderLibrary: [],
+    preferences: {},
+  });
+
+  const instance = PackLibrary.addInstance('pack-placement-default', caseData.id);
+  assert.equal(instance.placement, 'staged',
+    'addInstance without an explicit position must default to staged placement');
+
+  const pack = PackLibrary.getById('pack-placement-default');
+  assert.equal(pack.cases[0].placement, 'staged',
+    'persisted instance must record staged placement');
+});
+
+test('PLACEMENT-STATE-S2 explicit in-truck addInstance writes "packed" placement', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-placement-packed', dimensions: { length: 10, width: 10, height: 10 } });
+
+  StateStore.init({
+    caseLibrary: [caseData],
+    packLibrary: [{ id: 'pack-placement-packed', title: 'Placement Packed', truck: { length: 220, width: 80, height: 80 }, cases: [] }],
+    folderLibrary: [],
+    preferences: {},
+  });
+
+  const instance = PackLibrary.addInstance('pack-placement-packed', caseData.id, { x: 50, y: 5, z: 0 });
+  assert.equal(instance.placement, 'packed',
+    'an explicit position inside the trailer usable zone must be recorded as packed');
+});
+
+test('PLACEMENT-STATE-S2 explicit outside-truck addInstance writes "staged" placement', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-placement-outside', dimensions: { length: 10, width: 10, height: 10 } });
+
+  StateStore.init({
+    caseLibrary: [caseData],
+    packLibrary: [{ id: 'pack-placement-outside', title: 'Placement Outside', truck: { length: 220, width: 80, height: 80 }, cases: [] }],
+    folderLibrary: [],
+    preferences: {},
+  });
+
+  const instance = PackLibrary.addInstance('pack-placement-outside', caseData.id, { x: 50, y: 5, z: 60 });
+  assert.equal(instance.placement, 'staged',
+    'an explicit position outside the trailer usable zone must be recorded as staged');
+});
+
+test('PLACEMENT-STATE-S2 AutoPack records placement from solver results', async () => {
+  const src = await fs.readFile(autoPackEnginePath, 'utf8');
+  assert.match(src, /placement: placements\.has\(inst\.id\) \? 'packed' : 'staged',/,
+    'AutoPack must mark solver-placed cases as packed and overflow/staged cases as staged');
+});
+
+test('PLACEMENT-STATE-S2 unpackAll records "staged" placement for every case', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function unpackAll()');
+  const end = src.indexOf('\n    }', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0, 'editor-screen must define unpackAll()');
+  assert.match(block, /placement:\s*'staged',/,
+    'unpackAll must mark every case as staged placement');
+});
+
+test('PLACEMENT-STATE-S2 duplicateSelection records placement from staging fallback', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function duplicateSelection(pack, selectedIds)');
+  const end = src.indexOf('\n    }', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0, 'editor-screen must define duplicateSelection(pack, selectedIds)');
+  assert.match(block, /placement:\s*placement\.staged \? 'staged' : 'packed',/,
+    'duplicateSelection must mark in-truck duplicates as packed and staging fallback duplicates as staged');
+});
+
+test('PLACEMENT-STATE-S2 finishDrag records placement from final zone containment', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function finishDrag()');
+  const end = src.indexOf('\n    }', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0, 'editor-screen must define finishDrag()');
+  assert.match(block, /PackLibrary\.isAabbContainedInAnyZone\(aabb, zonesInches\) \? 'packed' : 'staged'/,
+    'finishDrag must derive placement from the final AABB against trailer usable zones');
+  assert.match(block, /placement:\s*placementValue/,
+    'finishDrag must write the computed placement onto each moved instance');
+});
+
+test('PLACEMENT-STATE-S2 normalizer keeps old packs without a placement field loadable', async () => {
+  const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  const normalized = Normalizer.normalizeAppData({
+    caseLibrary: [
+      {
+        id: 'case-legacy-placement',
+        name: 'Legacy Case',
+        dimensions: { length: 24, width: 24, height: 24 },
+      },
+    ],
+    packLibrary: [
+      {
+        id: 'pack-legacy-placement',
+        title: 'Legacy Pack',
+        truck: { length: 120, width: 48, height: 48 },
+        cases: [
+          {
+            id: 'inst-legacy-no-placement',
+            caseId: 'case-legacy-placement',
+            transform: { position: { x: 10, y: 12, z: 0 } },
+          },
+        ],
+      },
+    ],
+    folderLibrary: [],
+    preferences: {},
+  });
+
+  const instance = normalized.packLibrary[0].cases[0];
+  assert.equal(instance.id, 'inst-legacy-no-placement',
+    'old packs without a placement field must still load their instances');
+  assert.equal(instance.placement, null,
+    'instances without a placement field must normalize to null, not throw or default to a guessed state');
+});
+
+test('PLACEMENT-STATE-S2 changed files stay inside the allowed scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'PLACEMENT-STATE-S2 must stay inside approved placement-state files');
+});
+
+// ── End PLACEMENT-STATE-S2 ─────────────────────────────────────────────────
 
 test('UI-STABILIZATION-1 changed files stay in approved scope', async () => {
   const [unstaged, staged] = await Promise.all([

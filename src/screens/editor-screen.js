@@ -1307,10 +1307,20 @@ export function createInteractionManager({
         nextPositions.set(id, posInches);
       });
 
+      const zonesInches = PackLibrary.getTrailerUsableZones(pack.truck);
       const nextCases = (pack.cases || []).map(inst => {
         const pos = nextPositions.get(inst.id);
         if (!pos) return inst;
-        return { ...inst, transform: { ...(inst.transform || {}), position: pos } };
+        const c = CaseLibrary.getById(inst.caseId);
+        const baseDims = (c && c.dimensions) || { length: 24, width: 24, height: 24 };
+        const dims = inst.orientedDims || baseDims;
+        const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
+        const aabb = {
+          min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
+          max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
+        };
+        const placementValue = PackLibrary.isAabbContainedInAnyZone(aabb, zonesInches) ? 'packed' : 'staged';
+        return { ...inst, transform: { ...(inst.transform || {}), position: pos }, placement: placementValue };
       });
       PackLibrary.update(packId, { cases: nextCases });
 
@@ -2017,6 +2027,7 @@ export function createEditorScreen({
             ...inst.transform,
             position: staged.position,
           },
+          placement: 'staged',
         };
       });
       PackLibrary.update(packId, { cases: nextCases });
@@ -2332,6 +2343,7 @@ export function createEditorScreen({
             },
           },
           hidden: false,
+          placement: placement.staged ? 'staged' : 'packed',
         });
         newIds.push(nextCases[nextCases.length - 1].id);
       });

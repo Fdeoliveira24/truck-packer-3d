@@ -399,6 +399,16 @@ export function findSafeStagingPosition(pack, dims, acceptedAabbs) {
   return { position: fallback, aabb: makeAabb(fallback, dims) };
 }
 
+/**
+ * Derive the "packed" | "staged" placement state for an instance from its
+ * final AABB: inside the trailer's usable zones is "packed", anything
+ * outside (including the staging zone) is "staged".
+ */
+function getPlacementForAabb(pack, aabb) {
+  const zones = getTrailerUsableZones(pack && pack.truck);
+  return isAabbContainedInAnyZone(aabb, zones) ? 'packed' : 'staged';
+}
+
 function buildAcceptedAabbs(pack, instances, caseLibrary) {
   const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
   const acceptedAabbs = [];
@@ -426,12 +436,14 @@ function repairPackInstancePlacements(pack, caseLibrary) {
     const safeImported = getSafeImportedPlacement(pack, next, caseData, acceptedAabbs);
     if (safeImported) {
       next.transform.position = safeImported.position;
+      next.placement = 'packed';
       acceptedAabbs.push(safeImported.aabb);
       return next;
     }
 
     const staged = findSafeStagingPosition(pack, dims, acceptedAabbs);
     next.transform.position = staged.position;
+    next.placement = 'staged';
     acceptedAabbs.push(staged.aabb);
     return next;
   });
@@ -610,16 +622,18 @@ export function addInstance(packId, caseId, position) {
         dims,
         buildAcceptedAabbs(pack, pack.cases || [], CaseLibrary.getCases())
       );
+  const finalPosition = explicitPosition || staged.position;
   const instance = {
     id: Utils.uuid(),
     caseId,
     transform: {
-      position: explicitPosition || staged.position,
+      position: finalPosition,
       rotation: { x: 0, y: 0, z: 0 },
       scale: { x: 1, y: 1, z: 1 },
     },
     hidden: false,
     groupId: null,
+    placement: getPlacementForAabb(pack, makeAabb(finalPosition, dims)),
   };
   const nextCases = [...(pack.cases || []), instance];
   update(packId, { cases: nextCases });

@@ -1997,15 +1997,7 @@ export function createEditorScreen({
         UIComponents.showToast('Nothing to unpack', 'info');
         return;
       }
-      const truck = pack.truck || {};
-      const truckW = truck.width || 102;
-      const truckL = truck.length || 636;
-      const gap = 4;
-      // Place cases beside the truck (offset in Z), arranged in rows along X
-      const stageZStart = (truckW / 2) + 10; // 10 inches beside the truck
-      let curX = 0;
-      let curZ = stageZStart;
-      let rowMaxWidth = 0;
+      const acceptedAabbs = [];
       const nextCases = (pack.cases || []).map(inst => {
         const c = CaseLibrary.getById(inst.caseId);
         const baseDims = (c && c.dimensions) || { length: 24, width: 24, height: 24 };
@@ -2017,22 +2009,13 @@ export function createEditorScreen({
           width: od ? od.width : baseDims.width,
           height: od ? od.height : baseDims.height,
         };
-        // If we've gone past the truck length, start a new row (further from truck)
-        if (curX + dims.length > truckL && curX > 0) {
-          curZ += rowMaxWidth + gap;
-          curX = 0;
-          rowMaxWidth = 0;
-        }
-        const posX = curX + dims.length / 2;
-        const posZ = curZ + dims.width / 2;
-        const posY = Math.max(1, dims.height / 2);
-        curX += dims.length + gap;
-        rowMaxWidth = Math.max(rowMaxWidth, dims.width);
+        const staged = PackLibrary.findSafeStagingPosition(pack, dims, acceptedAabbs);
+        acceptedAabbs.push(staged.aabb);
         return {
           ...inst,
           transform: {
             ...inst.transform,
-            position: { x: posX, y: posY, z: posZ },
+            position: staged.position,
           },
         };
       });
@@ -2301,23 +2284,24 @@ export function createEditorScreen({
         if (insideOffset) return { offset: insideOffset, staged: false };
       }
 
-      const truck = pack && pack.truck ? pack.truck : { length: 120, width: 96 };
-      const stagingGap = 12;
-      const stageStartZ = (Number(truck.width) || 96) / 2 + 24;
-      const stageStartX = 0;
-      for (let row = 0; row < 12; row += 1) {
-        for (let col = 0; col < 12; col += 1) {
-          const stageMinX = stageStartX + col * (spanX + stagingGap);
-          const stageMinZ = stageStartZ + row * (spanZ + stagingGap);
-          const offset = {
-            x: stageMinX - bounds.min.x,
-            y: 0,
-            z: stageMinZ - bounds.min.z,
-          };
-          if (duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, false)) {
-            return { offset, staged: true };
-          }
-        }
+      const groupDims = {
+        length: spanX,
+        width: spanZ,
+        height: Math.max(1, bounds.max.y - bounds.min.y),
+      };
+      const staged = PackLibrary.findSafeStagingPosition(pack, groupDims, existingAabbs);
+      const groupCenter = {
+        x: (bounds.min.x + bounds.max.x) / 2,
+        y: (bounds.min.y + bounds.max.y) / 2,
+        z: (bounds.min.z + bounds.max.z) / 2,
+      };
+      const offset = {
+        x: staged.position.x - groupCenter.x,
+        y: staged.position.y - groupCenter.y,
+        z: staged.position.z - groupCenter.z,
+      };
+      if (duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, false)) {
+        return { offset, staged: true };
       }
       return null;
     }

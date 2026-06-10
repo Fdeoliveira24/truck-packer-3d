@@ -345,18 +345,39 @@ function getSafeImportedPlacement(pack, inst, caseData, acceptedAabbs) {
   return { position, dims, aabb };
 }
 
-function findSafeStagingPosition(pack, dims, acceptedAabbs) {
+/**
+ * Canonical staging-zone layout shared by every "place outside the trailer"
+ * path (Add Case default placement, AutoPack overflow/unpacked items, Unpack
+ * All, and Duplicate-to-staging). Defines a single gap and origin so staged
+ * items always land in one consistent strip beside the trailer instead of
+ * each caller drifting with its own offset formula.
+ */
+export function getStagingLayout(truck, options = {}) {
+  const t = truck && typeof truck === 'object' ? truck : {};
+  const truckL = Math.max(Number(t.length) || 120, 1);
+  const truckW = Math.max(Number(t.width) || 96, 1);
+  const gap = Number(options.gap) > 0 ? Number(options.gap) : 12;
+  return {
+    gap,
+    truckL,
+    truckW,
+    originX: 0,
+    originZ: truckW / 2 + gap,
+  };
+}
+
+export function findSafeStagingPosition(pack, dims, acceptedAabbs) {
   const truck = pack && pack.truck ? pack.truck : {};
-  const truckL = Math.max(Number(truck.length) || 120, dims.length);
-  const truckW = Math.max(Number(truck.width) || 96, dims.width);
-  const gap = 12;
+  const layout = getStagingLayout(truck);
+  const truckL = Math.max(layout.truckL, dims.length);
+  const gap = layout.gap;
   const stepX = Math.max(1, dims.length + gap);
   const stepZ = Math.max(1, dims.width + gap);
-  const minX = dims.length / 2;
+  const minX = layout.originX + dims.length / 2;
   const maxX = Math.max(minX, truckL - dims.length / 2);
   const availableX = Math.max(0, maxX - minX);
   const cols = Math.max(1, Math.floor(availableX / stepX) + 1);
-  const startZ = truckW / 2 + gap + dims.width / 2;
+  const startZ = layout.originZ + dims.width / 2;
 
   for (let row = 0; row < 200; row++) {
     for (let col = 0; col < cols; col++) {
@@ -371,7 +392,7 @@ function findSafeStagingPosition(pack, dims, acceptedAabbs) {
   }
 
   const fallback = {
-    x: -gap - dims.length / 2,
+    x: layout.originX - gap - dims.length / 2,
     y: Math.max(1, dims.height / 2),
     z: startZ,
   };

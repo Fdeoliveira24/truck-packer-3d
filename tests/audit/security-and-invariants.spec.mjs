@@ -1746,9 +1746,87 @@ test('AUTO-PACK-A1-3 AutoPack validates support, containment, and staging separa
     'final validation must reject unsupported/floating placements');
   assert.match(src, /const finalValidation = validatePackedPlacements\(packed, zones, geometry\);[\s\S]*placements\.delete\(id\);[\s\S]*rotations\.delete\(id\);/,
     'placements rejected by final validation must be staged instead of persisted as packed');
-  assert.match(stagingBlock, /const stageZStart = \(truckW \/ 2\) \+ Math\.max\(36, truckW \* 0\.35\);/,
-    'staged/unpacked items must be clearly separated from the trailer side');
+  assert.match(stagingBlock, /PackLibrary\.findSafeStagingPosition\(\{ truck \}, dims, acceptedAabbs\)/,
+    'staged/unpacked items must use the canonical staging helper, clearly separated from the trailer side');
 });
+
+// ── S1: Canonical Staging Zone ────────────────────────────────────────────
+
+test('STAGING-S1 pack-library exposes one canonical staging layout helper', async () => {
+  const src = await fs.readFile(packLibraryPath, 'utf8');
+
+  assert.match(src, /export function getStagingLayout\(truck, options = \{\}\)/,
+    'pack-library must export a single canonical getStagingLayout(truck, options) helper');
+  assert.match(src, /export function findSafeStagingPosition\(pack, dims, acceptedAabbs\)/,
+    'findSafeStagingPosition must be exported for reuse by AutoPack and the editor');
+
+  const findStart = src.indexOf('export function findSafeStagingPosition(pack, dims, acceptedAabbs)');
+  const findEnd = src.indexOf('\nfunction buildAcceptedAabbs', findStart);
+  const findBlock = findStart >= 0 && findEnd > findStart ? src.slice(findStart, findEnd) : '';
+  assert.match(findBlock, /const layout = getStagingLayout\(truck\);/,
+    'findSafeStagingPosition must derive its geometry from the canonical getStagingLayout helper');
+});
+
+test('STAGING-S1 unpackAll uses the canonical staging helper instead of a hardcoded offset', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function unpackAll()');
+  const end = src.indexOf('\n    function renderInspectorNoPack', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0, 'editor-screen must define unpackAll()');
+  assert.match(block, /PackLibrary\.findSafeStagingPosition\(pack, dims, acceptedAabbs\)/,
+    'unpackAll must place staged cases through the canonical staging helper');
+  assert.doesNotMatch(block, /stageZStart|truckW|truckL/,
+    'unpackAll must not keep its own hardcoded staging offset');
+});
+
+test('STAGING-S1 duplicate staging fallback uses the canonical staging helper instead of a hardcoded grid', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function findDuplicateOffset(pack, payload, existingAabbs)');
+  const end = src.indexOf('\n    function duplicateSelection(pack, selectedIds)', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0, 'editor-screen must define findDuplicateOffset(pack, payload, existingAabbs)');
+  assert.match(block, /PackLibrary\.findSafeStagingPosition\(pack, groupDims, existingAabbs\)/,
+    'duplicate staging fallback must reuse the canonical staging helper for the group bounding box');
+  assert.doesNotMatch(block, /stagingGap|stageStartZ|stageStartX/,
+    'duplicate staging fallback must not keep its own hardcoded staging grid constants');
+});
+
+test('STAGING-S1 canonical staging position grounds items and stays outside the trailer width', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 240, width: 96, height: 96 };
+  const dims = { length: 30, width: 20, height: 40 };
+  const staged = PackLibrary.findSafeStagingPosition({ truck }, dims, []);
+
+  assert.equal(staged.position.y, dims.height / 2,
+    'staged item center Y must equal half its height (grounded on the floor)');
+  assert.ok(staged.position.z > truck.width / 2,
+    'staged item must sit outside the trailer width');
+});
+
+test('STAGING-S1 staging rows wrap instead of drifting indefinitely in X', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 100, width: 96, height: 96 };
+  const dims = { length: 30, width: 20, height: 24 };
+  const acceptedAabbs = [];
+  const positions = [];
+  for (let i = 0; i < 10; i++) {
+    const staged = PackLibrary.findSafeStagingPosition({ truck }, dims, acceptedAabbs);
+    positions.push(staged.position);
+    acceptedAabbs.push(staged.aabb);
+  }
+
+  const maxX = Math.max(...positions.map(p => p.x));
+  assert.ok(maxX <= truck.length + 0.001,
+    'staging columns must stay within the trailer length instead of drifting endlessly in X');
+
+  const rows = new Set(positions.map(p => Math.round(p.z * 1000)));
+  assert.ok(rows.size > 1,
+    'staging must wrap into additional rows once a row fills up');
+});
+
+// ── End S1: Canonical Staging Zone ────────────────────────────────────────
 
 test('AUTO-PACK-A1-3 X anchor cap keeps front and middle anchors available', async () => {
   const src = await fs.readFile(autoPackLegacySolverPath, 'utf8');

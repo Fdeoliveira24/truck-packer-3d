@@ -356,25 +356,13 @@ export function createAutoPackEngine({
   }
 
   function buildStagingMap(packItems, truck) {
-    const gap = 8;
-    const truckW = truck.width || 102;
-    const truckL = truck.length || 636;
-    const stageZStart = (truckW / 2) + Math.max(36, truckW * 0.35);
+    const acceptedAabbs = [];
     const map = new Map();
-    let curX = 0;
-    let curZ = stageZStart;
-    let rowMaxWidth = 0;
     packItems.forEach((item) => {
       const dims = getStagingDims(item);
-      if (curX + dims.length > truckL && curX > 0) {
-        curZ += rowMaxWidth + gap;
-        curX = 0;
-        rowMaxWidth = 0;
-      }
-      const y = Math.max(1, dims.height / 2);
-      map.set(item.inst.id, { x: curX + dims.length / 2, y, z: curZ + dims.width / 2 });
-      curX += dims.length + gap;
-      rowMaxWidth = Math.max(rowMaxWidth, dims.width);
+      const staged = PackLibrary.findSafeStagingPosition({ truck }, dims, acceptedAabbs);
+      map.set(item.inst.id, staged.position);
+      acceptedAabbs.push(staged.aabb);
     });
     return map;
   }

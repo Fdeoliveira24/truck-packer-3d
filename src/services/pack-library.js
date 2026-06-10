@@ -400,6 +400,41 @@ export function findSafeStagingPosition(pack, dims, acceptedAabbs) {
 }
 
 /**
+ * Canonical staging/work-area bounds derived from the same S1 staging layout
+ * used by findSafeStagingPosition. Defines the region where a staged item is
+ * allowed to live: alongside the trailer footprint (with a small margin) and
+ * out to a generous depth in the staging direction, so manual drag/rotate of
+ * staged items can be validated without letting them drift arbitrarily far
+ * from the trailer.
+ */
+export function getStagingBounds(truck, options = {}) {
+  const layout = getStagingLayout(truck, options);
+  const margin = Number(options.margin) > 0 ? Number(options.margin) : layout.gap;
+  const depth = Number(options.depth) > 0 ? Number(options.depth) : Math.max(layout.truckL, layout.truckW * 2);
+  return {
+    min: { x: layout.originX - margin, y: 0, z: layout.originZ - margin },
+    max: { x: layout.truckL + margin, y: Infinity, z: layout.originZ + depth },
+  };
+}
+
+/**
+ * Whether an inch-based AABB is inside the canonical staging/work area for
+ * this pack's truck. Used to validate manual drag/rotate of staged items.
+ */
+export function isAabbInStagingZone(pack, aabb, options = {}) {
+  const bounds = getStagingBounds(pack && pack.truck, options);
+  const EPS = 0.05;
+  return (
+    aabb.min.x >= bounds.min.x - EPS &&
+    aabb.max.x <= bounds.max.x + EPS &&
+    aabb.min.y >= bounds.min.y - EPS &&
+    aabb.max.y <= bounds.max.y + EPS &&
+    aabb.min.z >= bounds.min.z - EPS &&
+    aabb.max.z <= bounds.max.z + EPS
+  );
+}
+
+/**
  * Derive the "packed" | "staged" placement state for an instance from its
  * final AABB: inside the trailer's usable zones is "packed", anything
  * outside (including the staging zone) is "staged".

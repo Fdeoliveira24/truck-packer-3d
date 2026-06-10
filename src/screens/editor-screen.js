@@ -824,6 +824,7 @@ export function createInteractionManager({
       if (!pack) { return; }
       let rotatedCount = 0;
       let blockedCount = 0;
+      let stagingBlockedCount = 0;
       let policyBlockedCount = 0;
       ids.forEach(id => {
         const inst = (pack.cases || []).find(i => i.id === id);
@@ -864,20 +865,34 @@ export function createInteractionManager({
             obj.position.y = Math.max(settledY, halfY || settledY);
           }
           const check = CaseScene.checkCollision(id, obj.position, ignoreSet);
-          if (check.collides || (originalInsideTruck && !check.insideTruck)) {
+          const posInches = SceneManager.vecWorldToInches(obj.position);
+          let outsideStagingZone = false;
+          if (!check.collides && !check.insideTruck) {
+            const dims = lockPatch.orientedDims || (caseData && caseData.dimensions) || { length: 0, width: 0, height: 0 };
+            const aabb = {
+              min: { x: posInches.x - dims.length / 2, y: posInches.y - dims.height / 2, z: posInches.z - dims.width / 2 },
+              max: { x: posInches.x + dims.length / 2, y: posInches.y + dims.height / 2, z: posInches.z + dims.width / 2 },
+            };
+            outsideStagingZone = !PackLibrary.isAabbInStagingZone(pack, aabb);
+          }
+          if (check.collides || (originalInsideTruck && !check.insideTruck) || outsideStagingZone) {
             obj.position.copy(originalWorld);
             obj.rotation.copy(originalRotation);
             if (originalHalfWorld && obj.userData) obj.userData.halfWorld = originalHalfWorld;
             const restoredCheck = CaseScene.checkCollision(id, obj.position, ignoreSet);
             CaseScene.setCollision(id, restoredCheck.collides);
-            blockedCount += 1;
+            if (outsideStagingZone && !check.collides && !(originalInsideTruck && !check.insideTruck)) {
+              stagingBlockedCount += 1;
+            } else {
+              blockedCount += 1;
+            }
             return;
           }
           CaseScene.setCollision(id, false);
-          const posInches = SceneManager.vecWorldToInches(obj.position);
           PackLibrary.updateInstance(packId, id, {
             ...lockPatch,
             transform: { ...inst.transform, rotation: lockedRotation, position: posInches },
+            placement: check.insideTruck ? 'packed' : 'staged',
           });
           rotatedCount += 1;
           return;
@@ -890,6 +905,7 @@ export function createInteractionManager({
       });
       if (rotatedCount) UIComponents.showToast(`Rotated ${rotatedCount} case(s)`, 'info');
       if (blockedCount) UIComponents.showToast('Cannot rotate here: collision or truck boundary detected', 'error');
+      if (stagingBlockedCount) UIComponents.showToast('Cannot rotate: would leave the staging area', 'error');
       if (policyBlockedCount) UIComponents.showToast('Cannot rotate: this item is orientation-locked.', 'error');
     }
 
@@ -1202,6 +1218,39 @@ export function createInteractionManager({
       }
     }
 
+    /**
+     * Tween (or snap) a drag group's objects back to their pre-drag world
+     * positions, clearing collision/drag highlight state once settled.
+     */
+    function revertGroupToStart(groupIds, startMap) {
+      const Tween = window.TWEEN || null;
+      groupIds.forEach(id => {
+        const o = CaseScene.getObject(id);
+        const s = startMap.get(id);
+        if (!o || !s) return;
+        if (Tween) {
+          new Tween.Tween(o.position)
+            .to({ x: s.x, y: s.y, z: s.z }, 240)
+            .easing(Tween.Easing.Cubic.Out)
+            .start();
+        } else {
+          o.position.copy(s);
+        }
+        CaseScene.setCollision(id, false);
+      });
+
+      if (Tween) {
+        // Ensure hover/drag visuals restore once the tweens complete.
+        window.setTimeout(() => {
+          CaseScene.setDragging(null);
+          CaseScene.setHover(hoveredId);
+        }, 260);
+      } else {
+        CaseScene.setDragging(null);
+        CaseScene.setHover(hoveredId);
+      }
+    }
+
     function finishDrag() {
       const instanceId = draggingId;
       const obj = CaseScene.getObject(instanceId);
@@ -1244,32 +1293,7 @@ export function createInteractionManager({
       });
 
       if (anyCollides) {
-        const Tween = window.TWEEN || null;
-        groupIds.forEach(id => {
-          const o = CaseScene.getObject(id);
-          const s = startMap.get(id);
-          if (!o || !s) return;
-          if (Tween) {
-            new Tween.Tween(o.position)
-              .to({ x: s.x, y: s.y, z: s.z }, 240)
-              .easing(Tween.Easing.Cubic.Out)
-              .start();
-          } else {
-            o.position.copy(s);
-          }
-          CaseScene.setCollision(id, false);
-        });
-
-        if (Tween) {
-          // Ensure hover/drag visuals restore once the tweens complete.
-          window.setTimeout(() => {
-            CaseScene.setDragging(null);
-            CaseScene.setHover(hoveredId);
-          }, 260);
-        } else {
-          CaseScene.setDragging(null);
-          CaseScene.setHover(hoveredId);
-        }
+        revertGroupToStart(groupIds, startMap);
         UIComponents.showToast('Cannot place here: collision detected', 'error');
         resetDrag();
         return;
@@ -1308,9 +1332,13 @@ export function createInteractionManager({
       });
 
       const zonesInches = PackLibrary.getTrailerUsableZones(pack.truck);
-      const nextCases = (pack.cases || []).map(inst => {
-        const pos = nextPositions.get(inst.id);
-        if (!pos) return inst;
+      const placementById = new Map();
+      let anyOutsideAllowedZones = false;
+      groupIds.forEach(id => {
+        const pos = nextPositions.get(id);
+        if (!pos) return;
+        const inst = (pack.cases || []).find(i => i.id === id);
+        if (!inst) return;
         const c = CaseLibrary.getById(inst.caseId);
         const baseDims = (c && c.dimensions) || { length: 24, width: 24, height: 24 };
         const dims = inst.orientedDims || baseDims;
@@ -1319,7 +1347,26 @@ export function createInteractionManager({
           min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
           max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
         };
-        const placementValue = PackLibrary.isAabbContainedInAnyZone(aabb, zonesInches) ? 'packed' : 'staged';
+        if (PackLibrary.isAabbContainedInAnyZone(aabb, zonesInches)) {
+          placementById.set(id, 'packed');
+        } else if (PackLibrary.isAabbInStagingZone(pack, aabb)) {
+          placementById.set(id, 'staged');
+        } else {
+          anyOutsideAllowedZones = true;
+        }
+      });
+
+      if (anyOutsideAllowedZones) {
+        revertGroupToStart(groupIds, startMap);
+        UIComponents.showToast('Cannot place here: outside the staging area', 'error');
+        resetDrag();
+        return;
+      }
+
+      const nextCases = (pack.cases || []).map(inst => {
+        const pos = nextPositions.get(inst.id);
+        if (!pos) return inst;
+        const placementValue = placementById.get(inst.id) || 'staged';
         return { ...inst, transform: { ...(inst.transform || {}), position: pos }, placement: placementValue };
       });
       PackLibrary.update(packId, { cases: nextCases });

@@ -1725,8 +1725,10 @@ test('PLACEMENT-STATE-S2 finishDrag records placement from final zone containmen
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(block.length > 0, 'editor-screen must define finishDrag()');
-  assert.match(block, /PackLibrary\.isAabbContainedInAnyZone\(aabb, zonesInches\) \? 'packed' : 'staged'/,
+  assert.match(block, /PackLibrary\.isAabbContainedInAnyZone\(aabb, zonesInches\)/,
     'finishDrag must derive placement from the final AABB against trailer usable zones');
+  assert.match(block, /placementById\.set\(id, 'packed'\)/,
+    'finishDrag must mark instances inside the trailer usable zones as packed');
   assert.match(block, /placement:\s*placementValue/,
     'finishDrag must write the computed placement onto each moved instance');
 });
@@ -1786,6 +1788,104 @@ test('PLACEMENT-STATE-S2 changed files stay inside the allowed scope', async () 
 });
 
 // ── End PLACEMENT-STATE-S2 ─────────────────────────────────────────────────
+
+// ── STAGING-S3 ──────────────────────────────────────────────────────────────
+
+test('STAGING-S3 pack-library exposes staging bounds derived from the canonical staging layout', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 240, width: 96, height: 96 };
+  const layout = PackLibrary.getStagingLayout(truck);
+  const bounds = PackLibrary.getStagingBounds(truck);
+
+  assert.equal(bounds.min.z, layout.originZ - layout.gap,
+    'staging bounds must start at the canonical staging origin (minus margin) in Z');
+  assert.ok(bounds.min.z >= truck.width / 2 - 0.001,
+    'staging bounds must not overlap the trailer usable width');
+  assert.ok(bounds.max.x > layout.truckL,
+    'staging bounds must extend at least to the trailer length in X');
+  assert.ok(bounds.max.z > bounds.min.z,
+    'staging bounds must define a non-empty depth');
+});
+
+test('STAGING-S3 isAabbInStagingZone accepts canonical staged positions and rejects far drift', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 240, width: 96, height: 96 };
+  const pack = { truck };
+  const dims = { length: 30, width: 20, height: 24 };
+  const staged = PackLibrary.findSafeStagingPosition(pack, dims, []);
+
+  assert.equal(PackLibrary.isAabbInStagingZone(pack, staged.aabb), true,
+    'an item placed by findSafeStagingPosition must be inside the canonical staging zone');
+
+  const farAabb = {
+    min: { x: 5000, y: 0, z: 5000 },
+    max: { x: 5030, y: 24, z: 5020 },
+  };
+  assert.equal(PackLibrary.isAabbInStagingZone(pack, farAabb), false,
+    'an AABB drifted far away from the trailer must not be considered inside the staging zone');
+});
+
+test('STAGING-S3 rotateSelection validates staged rotations against the staging zone and writes placement', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function rotateSelection(axis, delta)');
+  const end = src.indexOf('\n    /**\n     * Nudge selected instances', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0, 'editor-screen must define rotateSelection(axis, delta)');
+  assert.match(block, /PackLibrary\.isAabbInStagingZone\(pack, aabb\)/,
+    'rotateSelection must check rotated staged items against the canonical staging zone');
+  assert.match(block, /placement:\s*check\.insideTruck \? 'packed' : 'staged',/,
+    'rotateSelection must record placement based on the rotated item\'s final trailer containment');
+});
+
+test('STAGING-S3 finishDrag rejects final placement outside both trailer and staging zones', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function finishDrag()');
+  const end = src.indexOf('\n    }', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block.length > 0, 'editor-screen must define finishDrag()');
+  assert.match(block, /anyOutsideAllowedZones/,
+    'finishDrag must track whether any moved instance lands outside both the trailer and staging zones');
+  assert.match(block, /revertGroupToStart\(groupIds, startMap\)/,
+    'finishDrag must revert the drag group when placement is invalid');
+  assert.match(block, /Cannot place here: outside the staging area/,
+    'finishDrag must show a clear toast when the drop is outside both the trailer and staging zones');
+});
+
+test('STAGING-S3 finishDrag computes placement from trailer and staging zone containment before persisting', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function finishDrag()');
+  const end = src.indexOf('\n    }', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.match(block, /placementById\.set\(id, 'packed'\)/,
+    'finishDrag must mark instances inside the trailer usable zones as packed');
+  assert.match(block, /PackLibrary\.isAabbInStagingZone\(pack, aabb\)/,
+    'finishDrag must check instances outside the trailer against the canonical staging zone');
+  assert.match(block, /placementById\.set\(id, 'staged'\)/,
+    'finishDrag must mark instances inside the staging zone (but outside the trailer) as staged');
+});
+
+test('STAGING-S3 changed files stay inside the allowed scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'STAGING-S3 must stay inside approved staging-validation files');
+});
+
+// ── End STAGING-S3 ──────────────────────────────────────────────────────────
 
 test('UI-STABILIZATION-1 changed files stay in approved scope', async () => {
   const [unstaged, staged] = await Promise.all([
@@ -3634,7 +3734,7 @@ test('EDITOR rotate and flip paths reject unsafe candidates before persistence',
   const rotateEnd = src.indexOf('/**\n     * Nudge selected instances', rotateStart);
   const rotateBlock = rotateStart >= 0 && rotateEnd > rotateStart ? src.slice(rotateStart, rotateEnd) : '';
   const checkIndex = rotateBlock.indexOf('const check = CaseScene.checkCollision(id, obj.position, ignoreSet);');
-  const rejectIndex = rotateBlock.indexOf('if (check.collides || (originalInsideTruck && !check.insideTruck))');
+  const rejectIndex = rotateBlock.indexOf('if (check.collides || (originalInsideTruck && !check.insideTruck) || outsideStagingZone)');
   const persistIndex = rotateBlock.indexOf('PackLibrary.updateInstance(packId, id, {', rejectIndex);
 
   assert.match(rotateBlock, /lockPatch\.orientedDims[\s\S]*obj\.userData\.halfWorld/,

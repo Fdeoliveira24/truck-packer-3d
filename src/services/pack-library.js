@@ -157,25 +157,26 @@ function rotateVectorXYZ(vec, rotation) {
   const rx = normalizeRightAngle(rotation.x);
   const ry = normalizeRightAngle(rotation.y);
   const rz = normalizeRightAngle(rotation.z);
-  const cosX = Math.cos(rx);
-  const sinX = Math.sin(rx);
-  const y1 = y * cosX - z * sinX;
-  const z1 = y * sinX + z * cosX;
-  y = y1;
-  z = z1;
-
-  const cosY = Math.cos(ry);
-  const sinY = Math.sin(ry);
-  const x2 = x * cosY + z * sinY;
-  const z2 = -x * sinY + z * cosY;
-  x = x2;
-  z = z2;
-
+  // Apply Z first (THREE.js Euler 'XYZ' is matrix Rx*Ry*Rz, so Rz acts on the vector first)
   const cosZ = Math.cos(rz);
   const sinZ = Math.sin(rz);
-  const x3 = x * cosZ - y * sinZ;
-  const y3 = x * sinZ + y * cosZ;
-  return { x: x3, y: y3, z };
+  const xz = x * cosZ - y * sinZ;
+  const yz = x * sinZ + y * cosZ;
+  x = xz;
+  y = yz;
+  // Apply Y second
+  const cosY = Math.cos(ry);
+  const sinY = Math.sin(ry);
+  const xy = x * cosY + z * sinY;
+  const zy = -x * sinY + z * cosY;
+  x = xy;
+  z = zy;
+  // Apply X last
+  const cosX = Math.cos(rx);
+  const sinX = Math.sin(rx);
+  const yx = y * cosX - z * sinX;
+  const zx = y * sinX + z * cosX;
+  return { x, y: yx, z: zx };
 }
 
 export function getOrientedDimsForRotation(dimensions = {}, rotation = {}) {
@@ -218,6 +219,27 @@ export function clearOrientationLockPatch() {
     lockedRotation: null,
     orientedDims: null,
   };
+}
+
+/**
+ * Returns true if the given rotation is permitted by the case's orientation policy.
+ * Mirrors the orientation gates AutoPack uses in buildOrientationCandidates() without
+ * importing the solver.
+ *
+ * - 'upright'        : only Y-axis rotation allowed (rx === 0 and rz === 0 after normalization)
+ * - 'onside'/'on-side': only non-upright rotations allowed
+ * - 'any' or missing : all rotations allowed (no restriction)
+ */
+export function isOrientationAllowedByCasePolicy(caseData = {}, rotation = {}) {
+  const locked = normalizeRightAngleRotation(rotation);
+  const rx = normalizeRightAngle(locked.x);
+  const rz = normalizeRightAngle(locked.z);
+  const isUpright = rx === 0 && rz === 0;
+  const rawLock = String(caseData.orientationLock || 'any').trim().toLowerCase();
+  const lock = rawLock === 'on-side' ? 'onside' : rawLock;
+  if (lock === 'upright') return isUpright;
+  if (lock === 'onside') return !isUpright;
+  return true;
 }
 
 function isFinitePositive(value) {

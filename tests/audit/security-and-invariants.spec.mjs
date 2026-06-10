@@ -8776,3 +8776,157 @@ test('placement-safety-P0C nextCases loop deletes stale orientedDims from staged
   assert.match(persistBlock, /else[\s\S]*delete next\.orientedDims/,
     'nextCases else branch must delete orientedDims so applyTransform resets to base dims');
 });
+
+// ─── P1-A: orientation policy parity — manual rotate must respect caseData.orientationLock ──
+
+test('placement-safety-P1A isOrientationAllowedByCasePolicy exported from pack-library', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  assert.strictEqual(typeof PackLibrary.isOrientationAllowedByCasePolicy, 'function',
+    'isOrientationAllowedByCasePolicy must be exported from pack-library.js');
+});
+
+test('placement-safety-P1A isOrientationAllowedByCasePolicy blocks X-rotation for upright-lock case', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const halfPI = Math.PI / 2;
+  const result = PackLibrary.isOrientationAllowedByCasePolicy(
+    { orientationLock: 'upright' },
+    { x: halfPI, y: 0, z: 0 }
+  );
+  assert.strictEqual(result, false,
+    'upright-locked case must reject X-axis rotation (would tip on its side)');
+});
+
+test('placement-safety-P1A isOrientationAllowedByCasePolicy blocks Z-rotation for upright-lock case', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const halfPI = Math.PI / 2;
+  const result = PackLibrary.isOrientationAllowedByCasePolicy(
+    { orientationLock: 'upright' },
+    { x: 0, y: 0, z: halfPI }
+  );
+  assert.strictEqual(result, false,
+    'upright-locked case must reject Z-axis rotation (would tip on its side)');
+});
+
+test('placement-safety-P1A isOrientationAllowedByCasePolicy allows Y-rotation for upright-lock case', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const halfPI = Math.PI / 2;
+  const result = PackLibrary.isOrientationAllowedByCasePolicy(
+    { orientationLock: 'upright' },
+    { x: 0, y: halfPI, z: 0 }
+  );
+  assert.strictEqual(result, true,
+    'upright-locked case must allow Y-axis rotation (stays flat, just turns)');
+});
+
+test('placement-safety-P1A isOrientationAllowedByCasePolicy allows all rotations when lock is missing or "any"', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const halfPI = Math.PI / 2;
+  // No lock set — default 'any' — must not block TVs, mattresses, doors, flat panels
+  assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({}, { x: halfPI, y: 0, z: 0 }), true,
+    'no-lock case must allow X rotation');
+  assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({}, { x: 0, y: halfPI, z: 0 }), true,
+    'no-lock case must allow Y rotation');
+  assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({}, { x: 0, y: 0, z: halfPI }), true,
+    'no-lock case must allow Z rotation');
+  assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({ orientationLock: 'any' }, { x: halfPI, y: 0, z: 0 }), true,
+    'explicit "any" lock must allow X rotation');
+});
+
+test('placement-safety-P1A isOrientationAllowedByCasePolicy handles onside and on-side consistently', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const halfPI = Math.PI / 2;
+  // 'onside' and 'on-side' must be treated identically
+  // onside allows X/Z rotations but blocks Y-only (upright) orientation
+  assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({ orientationLock: 'onside' }, { x: halfPI, y: 0, z: 0 }), true,
+    '"onside" must allow X rotation');
+  assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({ orientationLock: 'on-side' }, { x: halfPI, y: 0, z: 0 }), true,
+    '"on-side" must allow X rotation (normalized same as "onside")');
+  assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({ orientationLock: 'onside' }, { x: 0, y: halfPI, z: 0 }), false,
+    '"onside" must block pure Y rotation (upright orientation not allowed)');
+  assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({ orientationLock: 'on-side' }, { x: 0, y: 0, z: 0 }), false,
+    '"on-side" must block the neutral upright orientation');
+});
+
+test('placement-safety-P1A rotateSelection checks orientation policy before CaseScene.getObject mutation', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const fnStart = src.indexOf('function rotateSelection(axis, delta)');
+  const fnEnd = src.indexOf('\n    /**', fnStart + 1);
+  const fnBlock = fnStart >= 0 && fnEnd > fnStart ? src.slice(fnStart, fnEnd) : src.slice(fnStart, fnStart + 2000);
+
+  assert.match(fnBlock, /isOrientationAllowedByCasePolicy/,
+    'rotateSelection must call isOrientationAllowedByCasePolicy');
+  assert.match(fnBlock, /policyBlockedCount\s*\+=\s*1/,
+    'rotateSelection must track policy-blocked items separately from collision-blocked items');
+  // Policy check must come before getObject so no scene mutation occurs for rejected items
+  const policyPos = fnBlock.indexOf('isOrientationAllowedByCasePolicy');
+  const getObjPos = fnBlock.indexOf('CaseScene.getObject(id)');
+  assert.ok(policyPos >= 0 && getObjPos >= 0 && policyPos < getObjPos,
+    'isOrientationAllowedByCasePolicy check must appear before CaseScene.getObject in rotateSelection');
+  // Confirm policy-blocked path cannot reach PackLibrary.updateInstance
+  // The early return exits the forEach callback before any scene writes
+  assert.doesNotMatch(
+    fnBlock.slice(policyPos, fnBlock.indexOf('return;', policyPos) + 7),
+    /PackLibrary\.updateInstance/,
+    'the policy-blocked early-return path must not call PackLibrary.updateInstance'
+  );
+});
+
+// ─── rotateVectorXYZ Euler order (Z→Y→X matches THREE.js Euler 'XYZ') ───────
+// Single-axis smoke tests confirm existing behavior is unchanged.
+// Compound-rotation tests confirm the fix: wrong X→Y→Z order caused the
+// dominant axis to be misidentified, producing halfWorld.y ≈ 6" for a 120"
+// truss → settle height 6" → visual bottom at −54" below floor.
+
+test('placement-safety-euler-order getOrientedDimsForRotation single-axis Y unchanged', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const halfPI = Math.PI / 2;
+  // Y-only rotate swaps length↔width; height stays 30 — identical for any application order
+  const result = PackLibrary.getOrientedDimsForRotation(
+    { length: 48, width: 24, height: 30 },
+    { x: 0, y: halfPI, z: 0 }
+  );
+  assert.deepEqual(result, { length: 24, width: 48, height: 30 },
+    'Y-only rotation must swap length and width; height must be unchanged');
+});
+
+test('placement-safety-euler-order getOrientedDimsForRotation single-axis X unchanged', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const halfPI = Math.PI / 2;
+  // X-only rotate swaps width↔height; length stays 48 — identical for any application order
+  const result = PackLibrary.getOrientedDimsForRotation(
+    { length: 48, width: 24, height: 30 },
+    { x: halfPI, y: 0, z: 0 }
+  );
+  assert.deepEqual(result, { length: 48, width: 30, height: 24 },
+    'X-only rotation must swap width and height; length must be unchanged');
+});
+
+test('placement-safety-euler-order getOrientedDimsForRotation compound Y+Z truss must give correct height', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const halfPI = Math.PI / 2;
+  // A 120"×12"×12" truss standing upright (height=120) after Z-rotation then Y-rotation:
+  // The long axis must end up in the Y-world direction (height 120) so settleY=60 (floor at y=0).
+  // Old X→Y→Z order produced {length:12, height:12, width:120} → settleY=6 → visual bottom −54" below floor.
+  const result = PackLibrary.getOrientedDimsForRotation(
+    { length: 120, width: 12, height: 12 },
+    { x: 0, y: halfPI, z: halfPI }
+  );
+  assert.deepEqual(result, { length: 12, height: 120, width: 12 },
+    'compound Y+Z rotation must raise the 120" axis into the vertical (height) slot so settleY=60 keeps the case on the floor');
+});
+
+test('placement-safety-euler-order getOrientedDimsForRotation compound X+Z gives THREE.js-correct AABB', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const halfPI = Math.PI / 2;
+  // Verified against THREE.js matrix Rx*Ry*Rz applied to each local axis vector:
+  //   length {48,0,0} → Rz→Ry→Rx → {0,0,48}  (contributes z=48 → width)
+  //   height {0,30,0} → Rz→Ry→Rx → {-30,0,0} (contributes x=30 → length)
+  //   width  {0,0,24} → Rz→Ry→Rx → {0,-24,0} (contributes y=24 → height)
+  // Old X→Y→Z order: {length:24, height:48, width:30} — wrong; height≠visual height
+  const result = PackLibrary.getOrientedDimsForRotation(
+    { length: 48, width: 24, height: 30 },
+    { x: halfPI, y: 0, z: halfPI }
+  );
+  assert.deepEqual(result, { length: 30, height: 24, width: 48 },
+    'compound X+Z rotation AABB must match THREE.js matrix Rx*Ry*Rz applied in Rz-first order');
+});

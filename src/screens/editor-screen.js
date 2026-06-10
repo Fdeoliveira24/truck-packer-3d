@@ -824,6 +824,7 @@ export function createInteractionManager({
       if (!pack) { return; }
       let rotatedCount = 0;
       let blockedCount = 0;
+      let policyBlockedCount = 0;
       ids.forEach(id => {
         const inst = (pack.cases || []).find(i => i.id === id);
         if (!inst) { return; }
@@ -831,6 +832,11 @@ export function createInteractionManager({
         rot[axis] = ((Number(rot[axis]) || 0) + delta) % (2 * Math.PI);
         const lockPatch = createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, rot);
         const lockedRotation = lockPatch.lockedRotation || rot;
+        const caseData = CaseLibrary.getById(inst.caseId);
+        if (!caseData || !PackLibrary.isOrientationAllowedByCasePolicy(caseData, lockedRotation)) {
+          policyBlockedCount += 1;
+          return;
+        }
         const obj = CaseScene.getObject(id);
         if (obj) {
           const originalWorld = obj.position.clone();
@@ -884,6 +890,7 @@ export function createInteractionManager({
       });
       if (rotatedCount) UIComponents.showToast(`Rotated ${rotatedCount} case(s)`, 'info');
       if (blockedCount) UIComponents.showToast('Cannot rotate here: collision or truck boundary detected', 'error');
+      if (policyBlockedCount) UIComponents.showToast('Cannot rotate: this item is orientation-locked.', 'error');
     }
 
     /**

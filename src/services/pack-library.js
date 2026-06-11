@@ -93,6 +93,26 @@ export function getTruckDirectionModel(truck) {
   };
 }
 
+/**
+ * Shape-mode semantics for getTrailerUsableZones(truck) (G2 audit, G2.1 doc):
+ *  - 'rect' (Standard): the entire 0..truck.length x 0..height x
+ *    -width/2..width/2 box is a single usable zone.
+ *  - 'wheelWells' (Box + Wheel Wells): the outer box/mesh is unchanged; the
+ *    wheel-well volumes (low-height strips near the side walls) are not part
+ *    of any returned zone, so an item placed there can render inside the
+ *    outer trailer box while still being classified outside the usable
+ *    zones (placement 'staged').
+ *  - 'frontBonus' (Box + Front Overhang): currently a cab-side
+ *    reduced/narrow usable zone carved out of the existing 0..truck.length
+ *    box - bonusWidth/bonusHeight are clamped to <= width/height, and the
+ *    bonus zone's max.x is always truck.length. This does NOT add length or
+ *    extend the trailer beyond truck.length; it can only shrink the usable
+ *    footprint of the front segment. With default bonusWidth/bonusHeight
+ *    (== width/height), frontBonus is geometrically equivalent to 'rect'.
+ *    Whether frontBonus should instead represent a true extension beyond
+ *    truck.length is an open product decision (see G2 audit) and is not
+ *    changed by this comment.
+ */
 function getTrailerUsableZones(truck) {
   const { length: L, width: W, height: H } = getDims(truck);
   const mode = getMode(truck);
@@ -155,6 +175,16 @@ function getTrailerCapacityInches3(truck) {
   }, 0);
 }
 
+/**
+ * EPS/tolerance note (G2 audit, G2.1 doc): this file's EPS = 0.05 (inches)
+ * matches autopack-solver.js's isAabbContainedInAnyZone(aabb, zones,
+ * epsilon = 0.05) default - persisted manual placement
+ * (getPlacementForAabb), computeStats/OOG, and the active AutoPack solver
+ * all agree on this 0.05" tolerance. src/app.js's TrailerGeometry has its
+ * own isAabbContainedInAnyZone with a separate tolerance expressed in scene
+ * world units (not inches); that copy is intentionally not changed here -
+ * see the G2 audit for the cross-implementation tolerance comparison.
+ */
 function isAabbContainedInAnyZone(aabb, zones) {
   // Bug 5 fix: add small epsilon tolerance for floating-point rounding.
   // AutoPack places items with fp arithmetic, so a box at x=0.0000000001

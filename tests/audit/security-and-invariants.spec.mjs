@@ -2162,6 +2162,190 @@ test('G1-DIRECTION changed files stay inside the allowed scope', async () => {
 
 // ── End G1-DIRECTION ────────────────────────────────────────────────────────
 
+// ── G2-SHAPE-CONTRACT ────────────────────────────────────────────────────────
+
+test('G2-SHAPE-CONTRACT rect shape produces a single full-box usable zone', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 240, width: 96, height: 72, shapeMode: 'rect' };
+  const zones = PackLibrary.getTrailerUsableZones(truck);
+
+  assert.equal(zones.length, 1, 'rect must produce exactly one usable zone');
+  assert.deepEqual(zones[0], {
+    min: { x: 0, y: 0, z: -truck.width / 2 },
+    max: { x: truck.length, y: truck.height, z: truck.width / 2 },
+  }, 'rect zone must span the full 0..length x 0..height x -width/2..width/2 box');
+});
+
+test('G2-SHAPE-CONTRACT wheelWells produces multiple usable zones and excludes the wheel-well floor region', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 100,
+    width: 100,
+    height: 100,
+    shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 35, wellWidth: 15, wellLength: 35, wellOffsetFromRear: 25 },
+  };
+  const zones = PackLibrary.getTrailerUsableZones(truck);
+
+  assert.ok(zones.length > 1, 'wheelWells must produce multiple usable zones');
+
+  const blockedAabb = {
+    min: { x: 30, y: 0, z: -48 },
+    max: { x: 40, y: 10, z: -40 },
+  };
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(blockedAabb, zones), false,
+    'a box inside a wheel-well blocked floor region must not be contained in any usable zone');
+});
+
+test('G2-SHAPE-CONTRACT a box visually inside the outer trailer box but inside a wheel-well region is classified outside usable zones', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 100,
+    width: 100,
+    height: 100,
+    shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 35, wellWidth: 15, wellLength: 35, wellOffsetFromRear: 25 },
+  };
+  const zones = PackLibrary.getTrailerUsableZones(truck);
+
+  const outerBox = {
+    min: { x: 0, y: 0, z: -truck.width / 2 },
+    max: { x: truck.length, y: truck.height, z: truck.width / 2 },
+  };
+  const wheelWellAabb = {
+    min: { x: 30, y: 0, z: -48 },
+    max: { x: 40, y: 10, z: -40 },
+  };
+
+  const insideOuterBox =
+    wheelWellAabb.min.x >= outerBox.min.x && wheelWellAabb.max.x <= outerBox.max.x &&
+    wheelWellAabb.min.y >= outerBox.min.y && wheelWellAabb.max.y <= outerBox.max.y &&
+    wheelWellAabb.min.z >= outerBox.min.z && wheelWellAabb.max.z <= outerBox.max.z;
+
+  assert.equal(insideOuterBox, true,
+    'sanity check: the wheel-well box must be inside the outer trailer box bounds');
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(wheelWellAabb, zones), false,
+    'the same box must be classified outside the shape-aware usable zones');
+});
+
+test('G2-SHAPE-CONTRACT frontBonus zones stay fully inside x=0..truck.length', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 240,
+    width: 96,
+    height: 72,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 60, bonusWidth: 54, bonusHeight: 24 },
+  };
+  const zones = PackLibrary.getTrailerUsableZones(truck);
+
+  assert.ok(zones.length >= 2, 'frontBonus must produce at least two usable zones');
+  for (const z of zones) {
+    assert.ok(z.min.x >= 0, 'every frontBonus zone must start at or after x=0');
+    assert.ok(z.max.x <= truck.length, 'every frontBonus zone must end at or before x=truck.length');
+  }
+});
+
+test('G2-SHAPE-CONTRACT frontBonus does not extend beyond truck.length', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 240,
+    width: 96,
+    height: 72,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 60, bonusWidth: 54, bonusHeight: 24 },
+  };
+  const zones = PackLibrary.getTrailerUsableZones(truck);
+  const maxX = Math.max(...zones.map(z => z.max.x));
+
+  assert.equal(maxX, truck.length,
+    'frontBonus must not introduce any zone reaching past x=truck.length');
+});
+
+test('G2-SHAPE-CONTRACT default frontBonus configuration is geometrically equivalent to rect', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const baseTruck = { length: 240, width: 96, height: 72 };
+  const rectTruck = { ...baseTruck, shapeMode: 'rect' };
+  const frontBonusTruck = { ...baseTruck, shapeMode: 'frontBonus', shapeConfig: {} };
+
+  const rectCapacity = PackLibrary.getTrailerCapacityInches3(rectTruck);
+  const frontBonusCapacity = PackLibrary.getTrailerCapacityInches3(frontBonusTruck);
+
+  assert.ok(Math.abs(rectCapacity - frontBonusCapacity) < 1e-6,
+    'default frontBonus usable volume must match rect usable volume');
+
+  const frontBonusZones = PackLibrary.getTrailerUsableZones(frontBonusTruck);
+  for (const z of frontBonusZones) {
+    assert.equal(z.min.y, 0, 'default frontBonus zones must keep the full height (min.y=0)');
+    assert.equal(z.max.y, baseTruck.height, 'default frontBonus zones must keep the full height (max.y=height)');
+    assert.equal(z.min.z, -baseTruck.width / 2, 'default frontBonus zones must keep the full width (min.z=-width/2)');
+    assert.equal(z.max.z, baseTruck.width / 2, 'default frontBonus zones must keep the full width (max.z=width/2)');
+  }
+});
+
+test('G2-SHAPE-CONTRACT frontBonus with reduced bonusWidth/bonusHeight creates a reduced cab-side region, not an extension', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const baseTruck = { length: 240, width: 96, height: 72 };
+  const rectTruck = { ...baseTruck, shapeMode: 'rect' };
+  const reducedTruck = {
+    ...baseTruck,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 60, bonusWidth: 48, bonusHeight: 36 },
+  };
+
+  const zones = PackLibrary.getTrailerUsableZones(reducedTruck);
+  const bonusZone = zones.find(z => z.max.x === reducedTruck.length);
+
+  assert.ok(bonusZone, 'reduced frontBonus must still include a zone reaching x=truck.length');
+  assert.equal(bonusZone.max.x, reducedTruck.length, 'bonus zone must not exceed truck.length');
+  assert.ok(bonusZone.max.z - bonusZone.min.z < baseTruck.width,
+    'reduced bonusWidth must produce a narrower-than-full-width cab-side zone');
+  assert.ok(bonusZone.max.y - bonusZone.min.y < baseTruck.height,
+    'reduced bonusHeight must produce a shorter-than-full-height cab-side zone');
+
+  const rectCapacity = PackLibrary.getTrailerCapacityInches3(rectTruck);
+  const reducedCapacity = PackLibrary.getTrailerCapacityInches3(reducedTruck);
+  assert.ok(reducedCapacity < rectCapacity,
+    'reduced frontBonus usable volume must be smaller than rect, not larger (no extension)');
+});
+
+test('G2-SHAPE-CONTRACT pack-library.js and autopack-solver.js both document/use inch EPS 0.05', async () => {
+  const packSrc = await fs.readFile(packLibraryPath, 'utf8');
+  const solverSrc = await fs.readFile(autoPackSolverPath, 'utf8');
+
+  assert.match(packSrc, /EPS = 0\.05/,
+    'pack-library.js isAabbContainedInAnyZone must use EPS = 0.05 inches');
+  assert.match(solverSrc, /epsilon\s*=\s*0\.05/,
+    'autopack-solver.js isAabbContainedInAnyZone must default to epsilon = 0.05 inches');
+});
+
+test('G2-SHAPE-CONTRACT solveLegacyAutoPack remains unused by the active AutoPack engine', async () => {
+  const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
+
+  assert.doesNotMatch(engineSrc, /solveLegacyAutoPack/,
+    'autopack-engine.js must not import or call solveLegacyAutoPack');
+});
+
+test('G2-SHAPE-CONTRACT changed files stay inside the allowed scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'G2-SHAPE-CONTRACT must stay inside approved files');
+});
+
+// ── End G2-SHAPE-CONTRACT ────────────────────────────────────────────────────
+
 test('UI-STABILIZATION-1 changed files stay in approved scope', async () => {
   const [unstaged, staged] = await Promise.all([
     execFileAsync('git', ['diff', '--name-only']),

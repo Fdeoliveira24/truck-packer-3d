@@ -51,6 +51,48 @@ function sanitizeZones(zones) {
   });
 }
 
+/**
+ * Truck/container coordinate convention (inches), shared by usable-zone
+ * geometry, canonical staging (getStagingLayout), and manual placement:
+ *  - X = truck length, x=0 is the rear / loading-door end, x=truck.length
+ *    is the front / cab end (frontBonus sits at the high-X end).
+ *  - Y = height, y=0 is the floor.
+ *  - Z = width, centered on 0 (z=-truck.width/2 is left, z=+truck.width/2
+ *    is right); wheel wells are measured from the rear (low-X) end via
+ *    wellOffsetFromRear.
+ * This is documentation of the existing convention only - no geometry here
+ * changes as a result.
+ */
+export const TRUCK_DIRECTION_MODEL = Object.freeze({
+  lengthAxis: 'x',
+  widthAxis: 'z',
+  heightAxis: 'y',
+  rear: { axis: 'x', value: 0 },
+  front: { axis: 'x', value: 'truck.length' },
+  floor: { axis: 'y', value: 0 },
+  left: { axis: 'z', value: '-truck.width / 2' },
+  right: { axis: 'z', value: 'truck.width / 2' },
+});
+
+/**
+ * Resolve TRUCK_DIRECTION_MODEL's symbolic bounds to concrete numbers for a
+ * given truck. Pure description of the existing coordinate convention; does
+ * not affect any geometry or placement math.
+ */
+export function getTruckDirectionModel(truck) {
+  const { length: L, width: W } = getDims(truck);
+  return {
+    lengthAxis: TRUCK_DIRECTION_MODEL.lengthAxis,
+    widthAxis: TRUCK_DIRECTION_MODEL.widthAxis,
+    heightAxis: TRUCK_DIRECTION_MODEL.heightAxis,
+    rear: { axis: 'x', value: 0 },
+    front: { axis: 'x', value: L },
+    floor: { axis: 'y', value: 0 },
+    left: { axis: 'z', value: -W / 2 },
+    right: { axis: 'z', value: W / 2 },
+  };
+}
+
 function getTrailerUsableZones(truck) {
   const { length: L, width: W, height: H } = getDims(truck);
   const mode = getMode(truck);
@@ -351,6 +393,10 @@ function getSafeImportedPlacement(pack, inst, caseData, acceptedAabbs) {
  * All, and Duplicate-to-staging). Defines a single gap and origin so staged
  * items always land in one consistent strip beside the trailer instead of
  * each caller drifting with its own offset formula.
+ *
+ * originX: 0 matches the rear / loading-door end of TRUCK_DIRECTION_MODEL
+ * (x=0); the staging row runs alongside the trailer from the rear toward
+ * the front (x=truck.length).
  */
 export function getStagingLayout(truck, options = {}) {
   const t = truck && typeof truck === 'object' ? truck : {};

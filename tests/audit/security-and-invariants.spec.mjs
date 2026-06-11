@@ -2054,6 +2054,114 @@ test('STAGING-S3.2 changed files stay inside the allowed scope', async () => {
 
 // ── End STAGING-S3.2 ────────────────────────────────────────────────────────
 
+// ── G1-DIRECTION ────────────────────────────────────────────────────────────
+
+test('G1-DIRECTION pack-library exports a truck direction model contract', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  assert.ok(PackLibrary.TRUCK_DIRECTION_MODEL, 'TRUCK_DIRECTION_MODEL must be exported');
+  assert.equal(PackLibrary.TRUCK_DIRECTION_MODEL.lengthAxis, 'x', 'length must be modeled along X');
+  assert.equal(PackLibrary.TRUCK_DIRECTION_MODEL.widthAxis, 'z', 'width must be modeled along Z');
+  assert.equal(PackLibrary.TRUCK_DIRECTION_MODEL.heightAxis, 'y', 'height must be modeled along Y');
+
+  assert.equal(typeof PackLibrary.getTruckDirectionModel, 'function',
+    'getTruckDirectionModel(truck) must be exported');
+});
+
+test('G1-DIRECTION rear/loading-door maps to x=0 and front/cab maps to x=truck.length', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 240, width: 96, height: 72 };
+  const model = PackLibrary.getTruckDirectionModel(truck);
+
+  assert.deepEqual(model.rear, { axis: 'x', value: 0 },
+    'rear / loading-door side must be x=0');
+  assert.deepEqual(model.front, { axis: 'x', value: truck.length },
+    'front / cab side must be x=truck.length');
+});
+
+test('G1-DIRECTION width is centered on Z and floor maps to y=0', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 240, width: 96, height: 72 };
+  const model = PackLibrary.getTruckDirectionModel(truck);
+
+  assert.deepEqual(model.left, { axis: 'z', value: -truck.width / 2 },
+    'left side must be z=-truck.width/2');
+  assert.deepEqual(model.right, { axis: 'z', value: truck.width / 2 },
+    'right side must be z=+truck.width/2');
+  assert.deepEqual(model.floor, { axis: 'y', value: 0 },
+    'floor must be y=0');
+});
+
+test('G1-DIRECTION getStagingLayout still starts at originX=0, matching the rear/loading-door origin', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 240, width: 96, height: 72 };
+  const layout = PackLibrary.getStagingLayout(truck);
+  const model = PackLibrary.getTruckDirectionModel(truck);
+
+  assert.equal(layout.originX, model.rear.value,
+    'canonical staging origin must align with the rear/loading-door end of the direction model');
+});
+
+test('G1-DIRECTION frontBonus zone remains anchored at the front/high-X side', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 240,
+    width: 96,
+    height: 72,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 60, bonusWidth: 54, bonusHeight: 24 },
+  };
+  const zones = PackLibrary.getTrailerUsableZones(truck);
+  const model = PackLibrary.getTruckDirectionModel(truck);
+  const bonusZone = zones.find(z => z.max.x === truck.length);
+
+  assert.ok(bonusZone, 'frontBonus geometry must include a zone reaching the front (x=truck.length)');
+  assert.equal(bonusZone.max.x, model.front.value,
+    'frontBonus zone must be anchored at the front/cab side of the direction model');
+  assert.ok(bonusZone.min.x > 0,
+    'frontBonus zone must not start at the rear (x=0)');
+});
+
+test('G1-DIRECTION wheel well offset remains measured from the rear/low-X side', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 100,
+    width: 100,
+    height: 100,
+    shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 20, wellWidth: 20, wellLength: 40, wellOffsetFromRear: 30 },
+  };
+  const zones = PackLibrary.getTrailerUsableZones(truck);
+  const model = PackLibrary.getTruckDirectionModel(truck);
+  const rearZone = zones.find(z => z.min.x === 0);
+
+  assert.ok(rearZone, 'wheelWells geometry must include a zone starting at the rear (x=0)');
+  assert.equal(rearZone.min.x, model.rear.value,
+    'wheel-well rear zone must start at the rear/loading-door origin');
+  assert.equal(rearZone.max.x, truck.shapeConfig.wellOffsetFromRear,
+    'wellOffsetFromRear must be measured starting from the rear (x=0), not the front');
+});
+
+test('G1-DIRECTION changed files stay inside the allowed scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'G1-DIRECTION must stay inside approved files');
+});
+
+// ── End G1-DIRECTION ────────────────────────────────────────────────────────
+
 test('UI-STABILIZATION-1 changed files stay in approved scope', async () => {
   const [unstaged, staged] = await Promise.all([
     execFileAsync('git', ['diff', '--name-only']),

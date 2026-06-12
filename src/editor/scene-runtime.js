@@ -267,6 +267,18 @@ export function createSceneRuntime({
       }
     }
 
+    // G2.2C: total visual length includes the front-overhang extension
+    // (truck.length + bonusLength) for frontBonus shapes with bonusLength > 0.
+    // Used to size the grid/floor/shadow bounds and camera target so the
+    // overhang is fully visible.
+    function getTotalTruckLengthInches(truckInches) {
+      const baseLength = Number(truckInches && truckInches.length) || 0;
+      if (!truckInches || truckInches.shapeMode !== 'frontBonus') return baseLength;
+      const bonus = TrailerGeometry.getFrontBonusZone(truckInches);
+      if (!bonus) return baseLength;
+      return baseLength + (bonus.max.x - bonus.min.x);
+    }
+
     function calcEnvironmentSize(lengthW, widthW) {
       const base = Math.max(lengthW * 2.2, widthW * 6);
       return Math.max(40, Math.ceil(base));
@@ -309,9 +321,9 @@ export function createSceneRuntime({
 
     function updateEnvironmentForTruck(truckInches) {
       if (!truckInches) return;
-      const lengthW = toWorld(truckInches.length || 0);
       const widthW = toWorld(truckInches.width || 0);
-      const nextSize = calcEnvironmentSize(lengthW, widthW);
+      const totalLengthW = toWorld(getTotalTruckLengthInches(truckInches));
+      const nextSize = calcEnvironmentSize(totalLengthW, widthW);
       if (!environmentSize || Math.abs(nextSize - environmentSize) > 0.5) {
         rebuildEnvironment(nextSize);
       }
@@ -600,6 +612,11 @@ export function createSceneRuntime({
       group.add(wire);
     }
 
+    // The front overhang's raised deck is rendered as a real attached volume
+    // in setTruck(). The "cab void" beneath that deck (x: truck.length..
+    // truck.length+bonusLength, y: 0..bonusHeight, full width) is structural
+    // and can never hold cargo, so it is rendered the same way as the
+    // wheelWells blocked region: a translucent red guide box.
     function updateTrailerShapeGuides(truckInches) {
       if (!scene) return;
       const mode = truckInches && truckInches.shapeMode ? truckInches.shapeMode : 'rect';
@@ -608,8 +625,7 @@ export function createSceneRuntime({
       if (mode === 'wheelWells') {
         guideZones = TrailerGeometry.getWheelWellsBlockedZones(truckInches);
       } else if (mode === 'frontBonus') {
-        const bonus = TrailerGeometry.getFrontBonusZone(truckInches);
-        guideZones = bonus ? [bonus] : [];
+        guideZones = TrailerGeometry.getFrontBonusBlockedZones(truckInches);
       }
 
       const nextSig = buildGuideSig(mode, guideZones);
@@ -627,15 +643,9 @@ export function createSceneRuntime({
       const group = new THREE.Group();
       group.name = 'truckShapeGuides';
 
-      if (mode === 'wheelWells') {
-        guideZones.forEach(z => {
-          addGuideBox(group, z, { fillColor: 0xff3b30, lineColor: 0xff3b30, opacity: 0.18, lineOpacity: 0.6 });
-        });
-      } else if (mode === 'frontBonus') {
-        guideZones.forEach(z => {
-          addGuideBox(group, z, { fillColor: 0x4a9eff, lineColor: 0x4a9eff, opacity: 0.14, lineOpacity: 0.55 });
-        });
-      }
+      guideZones.forEach(z => {
+        addGuideBox(group, z, { fillColor: 0xff3b30, lineColor: 0xff3b30, opacity: 0.18, lineOpacity: 0.6 });
+      });
 
       if (!group.children.length) return;
       truck.add(group);
@@ -643,20 +653,91 @@ export function createSceneRuntime({
       if (scene.userData) scene.userData.shapeGuides = group;
     }
 
+    // Adds a translucent trailer volume (walls + wireframe edges + floor)
+    // centered at centerX, sharing materials with the main cargo box so the
+    // front overhang reads as the same usable cargo space, just narrower.
+    // openMinX/openMaxX omit the end-cap wall+wireframe at that face so two
+    // adjacent volumes (main box <-> front overhang) read as one continuous
+    // connected space instead of two boxes separated by an internal wall.
+    // opts.baseY (default 0) raises the entire volume's floor/ceiling span
+    // to baseY..baseY+heightW, so a raised over-cab overhang can render as a
+    // platform flush with the main box's ceiling instead of a floor-level
+    // box. opts.minXLineMat/opts.maxXLineMat optionally override the
+    // wireframe color of the min-X/max-X end caps for direction cues.
+    function addTrailerVolume(group, lengthW, heightW, widthW, centerX, mat, lineMat, floorMat, opts = {}) {
+      const baseY = Number.isFinite(opts.baseY) ? opts.baseY : 0;
+      const x0 = centerX - lengthW / 2;
+      const x1 = centerX + lengthW / 2;
+      const yMid = baseY + heightW / 2;
+      const yTop = baseY + heightW;
+
+      function addFace(geo, position, rotation, faceLineMat) {
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.copy(position);
+        if (rotation) mesh.rotation.copy(rotation);
+        mesh.receiveShadow = false;
+        group.add(mesh);
+
+        const edges = new THREE.EdgesGeometry(geo);
+        const wire = new THREE.LineSegments(edges, faceLineMat || lineMat);
+        wire.position.copy(mesh.position);
+        if (rotation) wire.rotation.copy(rotation);
+        group.add(wire);
+      }
+
+      if (!opts.openMinX) {
+        addFace(
+          new THREE.PlaneGeometry(widthW, heightW),
+          new THREE.Vector3(x0, yMid, 0),
+          new THREE.Euler(0, Math.PI / 2, 0),
+          opts.minXLineMat
+        );
+      }
+      if (!opts.openMaxX) {
+        addFace(
+          new THREE.PlaneGeometry(widthW, heightW),
+          new THREE.Vector3(x1, yMid, 0),
+          new THREE.Euler(0, Math.PI / 2, 0),
+          opts.maxXLineMat
+        );
+      }
+
+      addFace(new THREE.PlaneGeometry(lengthW, heightW), new THREE.Vector3(centerX, yMid, -widthW / 2));
+      addFace(new THREE.PlaneGeometry(lengthW, heightW), new THREE.Vector3(centerX, yMid, widthW / 2));
+      addFace(
+        new THREE.PlaneGeometry(lengthW, widthW),
+        new THREE.Vector3(centerX, yTop, 0),
+        new THREE.Euler(-Math.PI / 2, 0, 0)
+      );
+
+      const floorGeo = new THREE.PlaneGeometry(lengthW, widthW);
+      const floor = new THREE.Mesh(floorGeo, floorMat);
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.set(centerX, baseY + 0.001, 0);
+      floor.receiveShadow = true;
+      group.add(floor);
+    }
+
     function setTruck(truckInches) {
       if (!scene) return;
-      const sig = `${truckInches.length}x${truckInches.width}x${truckInches.height}`;
+      const mode = truckInches && truckInches.shapeMode ? truckInches.shapeMode : 'rect';
+      const bonus = mode === 'frontBonus' ? TrailerGeometry.getFrontBonusZone(truckInches) : null;
+      const bonusKey = bonus
+        ? `${bonus.max.x - bonus.min.x}x${bonus.max.y - bonus.min.y}x${bonus.max.z - bonus.min.z}`
+        : '0';
+      const sig = `${truckInches.length}x${truckInches.width}x${truckInches.height}:${mode}:${bonusKey}`;
       const lengthW = toWorld(truckInches.length);
       const widthW = toWorld(truckInches.width);
       const heightW = toWorld(truckInches.height);
+      const totalLengthW = toWorld(getTotalTruckLengthInches(truckInches));
 
       if (truck && truckSignature === sig) {
         truckBoundsWorld = new THREE.Box3(
           new THREE.Vector3(0, 0, -widthW / 2),
-          new THREE.Vector3(lengthW, heightW, widthW / 2)
+          new THREE.Vector3(totalLengthW, heightW, widthW / 2)
         );
-        controls.target.set(lengthW / 2, Math.min(6, heightW / 2), 0);
-        updateShadowBounds(lengthW, widthW, heightW);
+        controls.target.set(totalLengthW / 2, Math.min(6, heightW / 2), 0);
+        updateShadowBounds(totalLengthW, widthW, heightW);
         updateEnvironmentForTruck(truckInches);
         updateTrailerShapeGuides(truckInches);
         return;
@@ -673,7 +754,6 @@ export function createSceneRuntime({
       truck = new THREE.Group();
       truck.name = 'truck';
 
-      const geo = new THREE.BoxGeometry(lengthW, heightW, widthW);
       const accent = Utils.getCssVar('--accent-primary') || '#ff9f1c';
 
       // Semi-transparent container walls with slight blue tint
@@ -686,47 +766,83 @@ export function createSceneRuntime({
         metalness: 0.15,
         depthWrite: false,
       });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(lengthW / 2, heightW / 2, 0);
-      mesh.receiveShadow = false;
-      truck.add(mesh);
 
       // Thicker, more visible container wireframe edges
-      const edges = new THREE.EdgesGeometry(geo);
       const lineMat = new THREE.LineBasicMaterial({
         color: new THREE.Color(accent),
         transparent: true,
         opacity: 0.92,
         linewidth: 2,
       });
-      const wire = new THREE.LineSegments(edges, lineMat);
-      wire.position.copy(mesh.position);
-      truck.add(wire);
 
       // Plywood-colored floor with subtle ridged appearance
-      const floorGeo = new THREE.PlaneGeometry(lengthW, widthW);
       const floorMat = new THREE.MeshStandardMaterial({
         color: 0xa89070,
         roughness: 0.92,
         metalness: 0.0,
         side: THREE.FrontSide,
       });
-      const floor = new THREE.Mesh(floorGeo, floorMat);
-      floor.rotation.x = -Math.PI / 2;
-      floor.position.set(lengthW / 2, 0.001, 0);
-      floor.receiveShadow = true;
-      truck.add(floor);
+
+      // G2.2E: low-risk, non-sprite direction cues - the rear/loading-door
+      // end cap (x=0) is always green, and the front-most/cab-side end cap
+      // (the main box's +X cap, or the overhang's +X cap when present) is
+      // always red, so front/rear stay visually distinguishable from any
+      // angle without adding text sprites.
+      const doorLineMat = new THREE.LineBasicMaterial({
+        color: new THREE.Color(0x26c97a),
+        transparent: true,
+        opacity: 0.95,
+        linewidth: 2,
+      });
+      const cabLineMat = new THREE.LineBasicMaterial({
+        color: new THREE.Color(0xf7385c),
+        transparent: true,
+        opacity: 0.95,
+        linewidth: 2,
+      });
+
+      // Main cargo box: x=0..truck.length, full width/height, floor at y=0.
+      // x=0 is the rear/loading-door end (green cue). When a front overhang
+      // is attached, omit the +X end cap so the two volumes read as one
+      // connected cargo space; otherwise the +X end cap is the front/cab
+      // side (red cue).
+      addTrailerVolume(truck, lengthW, heightW, widthW, lengthW / 2, mat, lineMat, floorMat, {
+        openMaxX: Boolean(bonus),
+        minXLineMat: doorLineMat,
+        maxXLineMat: bonus ? undefined : cabLineMat,
+      });
+
+      // G2.2: front overhang is a raised over-cab deck, not a floor-level
+      // extension. x: truck.length..truck.length+bonusLength, full trailer
+      // width, y: bonusHeight..truck.height - flush with the main box's
+      // ceiling, starting at the deck height / cab clearance (bonusHeight)
+      // measured from the main floor. The space below it (y: 0..bonusHeight)
+      // is the blocked "cab void" - see updateTrailerShapeGuides(). Its far
+      // end cap is the front/cab side (red cue).
+      if (bonus) {
+        const bonusLengthW = toWorld(bonus.max.x - bonus.min.x);
+        const bonusHeightW = toWorld(bonus.max.y - bonus.min.y);
+        const bonusWidthW = toWorld(bonus.max.z - bonus.min.z);
+        const bonusCenterX = toWorld(bonus.min.x) + bonusLengthW / 2;
+        const bonusBaseY = toWorld(bonus.min.y);
+        addTrailerVolume(truck, bonusLengthW, bonusHeightW, bonusWidthW, bonusCenterX, mat, lineMat, floorMat, {
+          openMinX: true,
+          baseY: bonusBaseY,
+          maxXLineMat: cabLineMat,
+        });
+      }
 
       scene.add(truck);
 
       truckBoundsWorld = new THREE.Box3(
         new THREE.Vector3(0, 0, -widthW / 2),
-        new THREE.Vector3(lengthW, heightW, widthW / 2)
+        new THREE.Vector3(totalLengthW, heightW, widthW / 2)
       );
 
-      // Move camera target near the center of the truck
-      controls.target.set(lengthW / 2, Math.min(6, heightW / 2), 0);
-      updateShadowBounds(lengthW, widthW, heightW);
+      // Move camera target near the center of the full visual extent
+      // (including the front overhang, if any)
+      controls.target.set(totalLengthW / 2, Math.min(6, heightW / 2), 0);
+      updateShadowBounds(totalLengthW, widthW, heightW);
       updateEnvironmentForTruck(truckInches);
       updateTrailerShapeGuides(truckInches);
     }

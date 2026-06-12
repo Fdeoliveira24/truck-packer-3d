@@ -21,6 +21,7 @@ const autoPackLegacySolverPath = new URL('../../src/services/autopack-legacy-sol
 const autoPackSolverPath = new URL('../../src/services/autopack-solver.js', import.meta.url);
 const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
+const sceneRuntimePath = new URL('../../src/editor/scene-runtime.js', import.meta.url);
 const casesScreenPath = new URL('../../src/screens/cases-screen.js', import.meta.url);
 const categoryServicePath = new URL('../../src/services/category-service.js', import.meta.url);
 const stylesMainPath = new URL('../../styles/main.css', import.meta.url);
@@ -118,7 +119,10 @@ const uiCopyExportImportFiles = new Set([
 ]);
 const importEditorSafeFiles = new Set([
   'index.html',
+  'src/app.js',
+  'src/editor/scene-runtime.js',
   'src/screens/editor-screen.js',
+  'src/screens/packs-screen.js',
   'src/services/pack-library.js',
   'src/services/autopack-engine.js',
   'src/core/normalizer.js',
@@ -175,6 +179,7 @@ const placementSettleFiles = new Set([
 const editorInspectorPolishFiles = new Set([
   'index.html',
   'src/app.js',
+  'src/editor/scene-runtime.js',
   'src/core/utils.js',
   'src/core/utils/index.js',
   'src/screens/cases-screen.js',
@@ -2102,7 +2107,7 @@ test('G1-DIRECTION getStagingLayout still starts at originX=0, matching the rear
     'canonical staging origin must align with the rear/loading-door end of the direction model');
 });
 
-test('G1-DIRECTION frontBonus zone remains anchored at the front/high-X side', async () => {
+test('G1-DIRECTION frontBonus overhang zone extends beyond the front/high-X side', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = {
     length: 240,
@@ -2113,13 +2118,17 @@ test('G1-DIRECTION frontBonus zone remains anchored at the front/high-X side', a
   };
   const zones = PackLibrary.getTrailerUsableZones(truck);
   const model = PackLibrary.getTruckDirectionModel(truck);
-  const bonusZone = zones.find(z => z.max.x === truck.length);
+  const mainZone = zones.find(z => z.min.x === 0);
+  const overhangZone = zones.find(z => z.min.x === truck.length);
 
-  assert.ok(bonusZone, 'frontBonus geometry must include a zone reaching the front (x=truck.length)');
-  assert.equal(bonusZone.max.x, model.front.value,
-    'frontBonus zone must be anchored at the front/cab side of the direction model');
-  assert.ok(bonusZone.min.x > 0,
-    'frontBonus zone must not start at the rear (x=0)');
+  assert.ok(mainZone, 'frontBonus geometry must include a main zone starting at the rear (x=0)');
+  assert.equal(mainZone.max.x, model.front.value,
+    'frontBonus main zone must span the full main box up to the front/cab side');
+  assert.ok(overhangZone, 'frontBonus geometry must include an overhang zone starting at the front (x=truck.length)');
+  assert.equal(overhangZone.min.x, model.front.value,
+    'frontBonus overhang zone must start at the front/cab side of the direction model');
+  assert.equal(overhangZone.max.x, truck.length + truck.shapeConfig.bonusLength,
+    'frontBonus overhang zone must extend beyond truck.length by bonusLength');
 });
 
 test('G1-DIRECTION wheel well offset remains measured from the rear/low-X side', async () => {
@@ -2228,7 +2237,7 @@ test('G2-SHAPE-CONTRACT a box visually inside the outer trailer box but inside a
     'the same box must be classified outside the shape-aware usable zones');
 });
 
-test('G2-SHAPE-CONTRACT frontBonus zones stay fully inside x=0..truck.length', async () => {
+test('G2-SHAPE-CONTRACT frontBonus main zone spans the full main box from x=0 to x=truck.length', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = {
     length: 240,
@@ -2238,75 +2247,177 @@ test('G2-SHAPE-CONTRACT frontBonus zones stay fully inside x=0..truck.length', a
     shapeConfig: { bonusLength: 60, bonusWidth: 54, bonusHeight: 24 },
   };
   const zones = PackLibrary.getTrailerUsableZones(truck);
+  const mainZone = zones.find(z => z.min.x === 0);
 
-  assert.ok(zones.length >= 2, 'frontBonus must produce at least two usable zones');
-  for (const z of zones) {
-    assert.ok(z.min.x >= 0, 'every frontBonus zone must start at or after x=0');
-    assert.ok(z.max.x <= truck.length, 'every frontBonus zone must end at or before x=truck.length');
-  }
+  assert.ok(mainZone, 'frontBonus must include a main zone starting at x=0');
+  assert.equal(mainZone.max.x, truck.length, 'frontBonus main zone must span the full main box up to x=truck.length');
+  assert.equal(mainZone.min.y, 0, 'frontBonus main zone must keep the full height (min.y=0)');
+  assert.equal(mainZone.max.y, truck.height, 'frontBonus main zone must keep the full height (max.y=height)');
+  assert.equal(mainZone.min.z, -truck.width / 2, 'frontBonus main zone must keep the full width (min.z=-width/2)');
+  assert.equal(mainZone.max.z, truck.width / 2, 'frontBonus main zone must keep the full width (max.z=width/2)');
 });
 
-test('G2-SHAPE-CONTRACT frontBonus does not extend beyond truck.length', async () => {
+test('G2-SHAPE-CONTRACT frontBonus overhang zone is a raised platform flush with the ceiling, spanning the full trailer width', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = {
     length: 240,
     width: 96,
     height: 72,
     shapeMode: 'frontBonus',
-    shapeConfig: { bonusLength: 60, bonusWidth: 54, bonusHeight: 24 },
+    // bonusWidth is intentionally different from truck.width here to prove
+    // it is ignored - the overhang must always span the full trailer width.
+    shapeConfig: { bonusLength: 60, bonusWidth: 30, bonusHeight: 24 },
   };
   const zones = PackLibrary.getTrailerUsableZones(truck);
-  const maxX = Math.max(...zones.map(z => z.max.x));
+  const overhangZone = zones.find(z => z.min.x === truck.length);
 
-  assert.equal(maxX, truck.length,
-    'frontBonus must not introduce any zone reaching past x=truck.length');
+  assert.ok(overhangZone, 'frontBonus must include an overhang zone starting at x=truck.length');
+  assert.equal(overhangZone.max.x, truck.length + truck.shapeConfig.bonusLength,
+    'frontBonus overhang zone must end at x=truck.length+bonusLength');
+  assert.equal(overhangZone.min.y, truck.shapeConfig.bonusHeight,
+    'frontBonus overhang zone must be a raised platform starting at y=bonusHeight (deck height / cab clearance from the main floor)');
+  assert.equal(overhangZone.max.y, truck.height,
+    'frontBonus overhang zone must be flush with the main box ceiling (max.y=truck.height)');
+  assert.equal(overhangZone.min.z, -truck.width / 2,
+    'frontBonus overhang zone must span the full trailer width (min.z=-truck.width/2), ignoring bonusWidth');
+  assert.equal(overhangZone.max.z, truck.width / 2,
+    'frontBonus overhang zone must span the full trailer width (max.z=truck.width/2), ignoring bonusWidth');
 });
 
-test('G2-SHAPE-CONTRACT default frontBonus configuration is geometrically equivalent to rect', async () => {
+test('G2-SHAPE-CONTRACT missing/invalid/non-finite bonusLength defaults to 0 and frontBonus becomes equivalent to rect', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const baseTruck = { length: 240, width: 96, height: 72 };
   const rectTruck = { ...baseTruck, shapeMode: 'rect' };
-  const frontBonusTruck = { ...baseTruck, shapeMode: 'frontBonus', shapeConfig: {} };
-
+  const rectZones = PackLibrary.getTrailerUsableZones(rectTruck);
   const rectCapacity = PackLibrary.getTrailerCapacityInches3(rectTruck);
-  const frontBonusCapacity = PackLibrary.getTrailerCapacityInches3(frontBonusTruck);
 
-  assert.ok(Math.abs(rectCapacity - frontBonusCapacity) < 1e-6,
-    'default frontBonus usable volume must match rect usable volume');
+  const variants = [
+    { ...baseTruck, shapeMode: 'frontBonus', shapeConfig: {} },
+    { ...baseTruck, shapeMode: 'frontBonus', shapeConfig: { bonusLength: -10 } },
+    { ...baseTruck, shapeMode: 'frontBonus', shapeConfig: { bonusLength: 'not-a-number' } },
+    { ...baseTruck, shapeMode: 'frontBonus', shapeConfig: { bonusLength: NaN } },
+    { ...baseTruck, shapeMode: 'frontBonus', shapeConfig: { bonusLength: Infinity } },
+  ];
 
-  const frontBonusZones = PackLibrary.getTrailerUsableZones(frontBonusTruck);
-  for (const z of frontBonusZones) {
-    assert.equal(z.min.y, 0, 'default frontBonus zones must keep the full height (min.y=0)');
-    assert.equal(z.max.y, baseTruck.height, 'default frontBonus zones must keep the full height (max.y=height)');
-    assert.equal(z.min.z, -baseTruck.width / 2, 'default frontBonus zones must keep the full width (min.z=-width/2)');
-    assert.equal(z.max.z, baseTruck.width / 2, 'default frontBonus zones must keep the full width (max.z=width/2)');
+  for (const frontBonusTruck of variants) {
+    const frontBonusCapacity = PackLibrary.getTrailerCapacityInches3(frontBonusTruck);
+    assert.ok(Math.abs(rectCapacity - frontBonusCapacity) < 1e-6,
+      `frontBonus with bonusLength=${JSON.stringify(frontBonusTruck.shapeConfig.bonusLength)} must match rect usable volume`);
+
+    const frontBonusZones = PackLibrary.getTrailerUsableZones(frontBonusTruck);
+    assert.equal(frontBonusZones.length, 1,
+      `frontBonus with bonusLength=${JSON.stringify(frontBonusTruck.shapeConfig.bonusLength)} must collapse to a single zone (no overhang)`);
+    assert.equal(frontBonusZones[0].max.x, rectZones[0].max.x, 'frontBonus zone must match rect zone bounds (max.x)');
+    assert.equal(frontBonusZones[0].min.y, 0, 'default frontBonus zone must keep the full height (min.y=0)');
+    assert.equal(frontBonusZones[0].max.y, baseTruck.height, 'default frontBonus zone must keep the full height (max.y=height)');
+    assert.equal(frontBonusZones[0].min.z, -baseTruck.width / 2, 'default frontBonus zone must keep the full width (min.z=-width/2)');
+    assert.equal(frontBonusZones[0].max.z, baseTruck.width / 2, 'default frontBonus zone must keep the full width (max.z=width/2)');
   }
 });
 
-test('G2-SHAPE-CONTRACT frontBonus with reduced bonusWidth/bonusHeight creates a reduced cab-side region, not an extension', async () => {
+test('G2-SHAPE-CONTRACT getTrailerCapacityInches3 for frontBonus adds the overhang volume to the rect capacity', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const baseTruck = { length: 240, width: 96, height: 72 };
   const rectTruck = { ...baseTruck, shapeMode: 'rect' };
-  const reducedTruck = {
+  const frontBonusTruck = {
     ...baseTruck,
     shapeMode: 'frontBonus',
     shapeConfig: { bonusLength: 60, bonusWidth: 48, bonusHeight: 36 },
   };
 
-  const zones = PackLibrary.getTrailerUsableZones(reducedTruck);
-  const bonusZone = zones.find(z => z.max.x === reducedTruck.length);
-
-  assert.ok(bonusZone, 'reduced frontBonus must still include a zone reaching x=truck.length');
-  assert.equal(bonusZone.max.x, reducedTruck.length, 'bonus zone must not exceed truck.length');
-  assert.ok(bonusZone.max.z - bonusZone.min.z < baseTruck.width,
-    'reduced bonusWidth must produce a narrower-than-full-width cab-side zone');
-  assert.ok(bonusZone.max.y - bonusZone.min.y < baseTruck.height,
-    'reduced bonusHeight must produce a shorter-than-full-height cab-side zone');
-
   const rectCapacity = PackLibrary.getTrailerCapacityInches3(rectTruck);
-  const reducedCapacity = PackLibrary.getTrailerCapacityInches3(reducedTruck);
-  assert.ok(reducedCapacity < rectCapacity,
-    'reduced frontBonus usable volume must be smaller than rect, not larger (no extension)');
+  const frontBonusCapacity = PackLibrary.getTrailerCapacityInches3(frontBonusTruck);
+  const { bonusLength, bonusHeight } = frontBonusTruck.shapeConfig;
+  // Overhang spans the full trailer width (truck.width), not bonusWidth, and its
+  // usable height is (truck.height - bonusHeight) since the deck starts at y=bonusHeight.
+  const overhangVolume = bonusLength * baseTruck.width * (baseTruck.height - bonusHeight);
+
+  assert.ok(Math.abs(frontBonusCapacity - (rectCapacity + overhangVolume)) < 1e-6,
+    'frontBonus capacity with bonusLength>0 must equal rect capacity plus the overhang volume (full trailer width x (height - bonusHeight))');
+});
+
+test('G2-SHAPE-CONTRACT a box in the raised front overhang is contained only when within its raised platform bounds', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 240,
+    width: 96,
+    height: 72,
+    // bonusWidth is intentionally != truck.width to prove it is ignored.
+    shapeConfig: { bonusLength: 60, bonusWidth: 30, bonusHeight: 36 },
+    shapeMode: 'frontBonus',
+  };
+  const zones = PackLibrary.getTrailerUsableZones(truck);
+  // Overhang zone: x:240..300, y:36..72 (bonusHeight..height), z:-48..48 (full width).
+  // Cab void: x:240..300, y:0..36 (0..bonusHeight), z:-48..48 (full width).
+
+  const insideOverhang = {
+    min: { x: 250, y: 40, z: -10 },
+    max: { x: 290, y: 60, z: 10 },
+  };
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(insideOverhang, zones), true,
+    'a box fully inside the raised overhang platform must be contained in a usable zone');
+
+  const beyondOverhangLength = {
+    min: { x: 295, y: 40, z: -10 },
+    max: { x: 310, y: 60, z: 10 },
+  };
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(beyondOverhangLength, zones), false,
+    'a box extending beyond truck.length+bonusLength must not be contained in any usable zone');
+
+  const penetratesCabVoidBelowDeck = {
+    min: { x: 250, y: 20, z: -10 },
+    max: { x: 290, y: 50, z: 10 },
+  };
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(penetratesCabVoidBelowDeck, zones), false,
+    'a box extending below the overhang deck (y < bonusHeight, into the cab void) must not be contained in any usable zone');
+
+  const straddlesMainAndOverhangGap = {
+    min: { x: 230, y: 50, z: -10 },
+    max: { x: 250, y: 65, z: 10 },
+  };
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(straddlesMainAndOverhangGap, zones), false,
+    'a box straddling the main box and the raised overhang (passing through the overhang structure) must not be contained in any usable zone');
+
+  const overhangZone = zones.find(z => z.min.x === truck.length);
+  assert.equal(overhangZone.min.z, -truck.width / 2, 'overhang width must be the full trailer width, not bonusWidth');
+  assert.equal(overhangZone.max.z, truck.width / 2, 'overhang width must be the full trailer width, not bonusWidth');
+});
+
+test('G2-SHAPE-CONTRACT computeStats does not flag a properly placed item in the raised front overhang as protrudesFront', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 240,
+    width: 96,
+    height: 72,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 60, bonusWidth: 48, bonusHeight: 36 },
+  };
+  // Overhang zone: x:240..300, y:36..72 (bonusHeight..height), z:-48..48.
+  const caseData = {
+    id: 'overhang-test-case',
+    name: 'Overhang Test Case',
+    dimensions: { length: 40, width: 20, height: 20 },
+    volume: 40 * 20 * 20,
+    weight: 100,
+  };
+  const pack = {
+    truck,
+    cases: [
+      {
+        id: 'inst-overhang-1',
+        caseId: caseData.id,
+        hidden: false,
+        // Resting on the raised overhang deck: y = bonusHeight + height/2 = 36 + 10 = 46.
+        transform: { position: { x: 270, y: 46, z: 0 } },
+      },
+    ],
+  };
+
+  const stats = PackLibrary.computeStats(pack, [caseData]);
+
+  assert.equal(stats.packedCases, 1, 'an item correctly placed on the raised front overhang deck must count as packed');
+  assert.deepEqual(stats.oogWarnings, [],
+    'an item correctly placed on the raised front overhang deck must not produce any OOG warnings (e.g. protrudesFront)');
 });
 
 test('G2-SHAPE-CONTRACT pack-library.js and autopack-solver.js both document/use inch EPS 0.05', async () => {
@@ -2343,6 +2454,606 @@ test('G2-SHAPE-CONTRACT changed files stay inside the allowed scope', async () =
   assert.deepEqual(unexpectedFiles, [],
     'G2-SHAPE-CONTRACT must stay inside approved files');
 });
+
+// ── G2.2-CAB-OVERHANG ─────────────────────────────────────────────────────────
+//
+// G2.2 corrects the frontBonus ("Box + Front Overhang") shape: bonusHeight is the
+// deck height / cab clearance measured from the main floor, NOT the overhang's
+// usable cargo height. The usable overhang zone is x: truck.length..
+// truck.length+bonusLength, y: bonusHeight..truck.height, z: -truck.width/2..
+// truck.width/2 (flush with the main box ceiling; usable overhang cargo height =
+// truck.height - bonusHeight). The space below it, x: truck.length..
+// truck.length+bonusLength, y: 0..bonusHeight, is the "cab void" (see
+// getFrontBonusBlockedZones) and is never usable.
+
+test('G2.2-CAB-OVERHANG getFrontBonusZone() returns the raised deck starting at y=bonusHeight (deck height / cab clearance)', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const start = appSrc.indexOf('function getFrontBonusZone(truck)');
+  const end = appSrc.indexOf('\n      function getFrontBonusBlockedZones', start);
+  const block = start >= 0 && end > start ? appSrc.slice(start, end) : '';
+
+  assert.ok(block, 'getFrontBonusZone must be defined in app.js TrailerGeometry');
+  assert.match(
+    block,
+    /zone\(\{ x: L, y: bonusHeight, z: -W \/ 2 \}, \{ x: L \+ bonusLength, y: H, z: W \/ 2 \}\)/,
+    'getFrontBonusZone must return a raised deck starting at y=bonusHeight (deck height / cab clearance), flush with the ceiling (max.y=H), spanning the full trailer width (z: -W/2..W/2)'
+  );
+  assert.doesNotMatch(
+    block,
+    /y: H - bonusHeight/,
+    'getFrontBonusZone must not derive the deck floor as height-bonusHeight (G2.2: bonusHeight IS the deck height, not the usable cargo height)'
+  );
+  assert.doesNotMatch(
+    block,
+    /bonusWidth/,
+    'getFrontBonusZone must not use bonusWidth - the overhang always spans the full trailer width'
+  );
+  assert.doesNotMatch(
+    block,
+    /\{ x: 0, y: 0, z: -W \/ 2 \}/,
+    'getFrontBonusZone must not return a zone starting at x=0 (old internal cab-side carve-out)'
+  );
+});
+
+test('G2.2-CAB-OVERHANG getFrontBonusBlockedZones() returns the cab void below the deck (pack-library.js and app.js)', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const appSrc = await fs.readFile(appPath, 'utf8');
+
+  const truck = {
+    length: 200,
+    width: 90,
+    height: 80,
+    shapeMode: 'frontBonus',
+    // bonusWidth is intentionally != truck.width to prove it is ignored.
+    shapeConfig: { bonusLength: 40, bonusWidth: 60, bonusHeight: 30 },
+  };
+
+  assert.equal(typeof PackLibrary.getFrontBonusBlockedZones, 'function',
+    'pack-library.js must export getFrontBonusBlockedZones');
+
+  const blocked = PackLibrary.getFrontBonusBlockedZones(truck);
+  assert.equal(blocked.length, 1, 'frontBonus with bonusLength>0 must produce exactly one cab-void zone');
+  assert.deepEqual(blocked[0], {
+    min: { x: truck.length, y: 0, z: -truck.width / 2 },
+    max: { x: truck.length + truck.shapeConfig.bonusLength, y: truck.shapeConfig.bonusHeight, z: truck.width / 2 },
+  }, 'cab void must span x:truck.length..truck.length+bonusLength, y:0..bonusHeight, full trailer width');
+
+  assert.deepEqual(PackLibrary.getFrontBonusBlockedZones({ ...truck, shapeMode: 'rect' }), [],
+    'non-frontBonus shapes must not have a cab void');
+  assert.deepEqual(
+    PackLibrary.getFrontBonusBlockedZones({ ...truck, shapeConfig: { ...truck.shapeConfig, bonusLength: 0 } }),
+    [],
+    'frontBonus with bonusLength=0 must not have a cab void'
+  );
+
+  assert.match(appSrc, /function getFrontBonusBlockedZones\(truck\)/,
+    'app.js TrailerGeometry must define getFrontBonusBlockedZones for visual/settle use');
+  assert.match(appSrc, /getFrontBonusBlockedZones,\n\s*\};/,
+    'app.js TrailerGeometry must export getFrontBonusBlockedZones from its returned object');
+});
+
+test('G2.2-CAB-OVERHANG scene-runtime accounts for total visual length including the front overhang', async () => {
+  const src = await fs.readFile(sceneRuntimePath, 'utf8');
+
+  assert.match(src, /function getTotalTruckLengthInches\(truckInches\)/,
+    'scene-runtime must define getTotalTruckLengthInches');
+  assert.match(src, /TrailerGeometry\.getFrontBonusZone\(truckInches\)/,
+    'getTotalTruckLengthInches must derive the overhang extent from TrailerGeometry.getFrontBonusZone');
+  assert.match(src, /baseLength \+ \(bonus\.max\.x - bonus\.min\.x\)/,
+    'total visual length must be truck.length + bonusLength when an overhang zone is present');
+  assert.match(src, /const totalLengthW = toWorld\(getTotalTruckLengthInches\(truckInches\)\)/,
+    'setTruck must size truckBoundsWorld/camera/shadow/grid bounds from the total visual length');
+});
+
+test('G2.2-CAB-OVERHANG front overhang renders as a raised platform flush with the main box ceiling, open toward it', async () => {
+  const src = await fs.readFile(sceneRuntimePath, 'utf8');
+
+  assert.match(src, /const bonus = mode === 'frontBonus' \? TrailerGeometry\.getFrontBonusZone\(truckInches\) : null;/,
+    'setTruck must derive the overhang volume from getFrontBonusZone');
+  assert.match(src, /const bonusCenterX = toWorld\(bonus\.min\.x\) \+ bonusLengthW \/ 2;/,
+    'overhang volume must be positioned starting at x=truck.length (bonus.min.x)');
+  assert.match(src, /const bonusBaseY = toWorld\(bonus\.min\.y\);/,
+    'overhang volume must derive its raised floor/deck height from bonus.min.y (bonusHeight, the deck height / cab clearance)');
+  assert.match(
+    src,
+    /addTrailerVolume\(truck, bonusLengthW, bonusHeightW, bonusWidthW, bonusCenterX, mat, lineMat, floorMat, \{[\s\S]{0,120}openMinX: true,[\s\S]{0,120}baseY: bonusBaseY,/,
+    'overhang volume must be rendered as a real attached mesh sized by the bonus zone, raised to baseY, open toward the main box'
+  );
+  assert.match(
+    src,
+    /addTrailerVolume\(truck, lengthW, heightW, widthW, lengthW \/ 2, mat, lineMat, floorMat, \{[\s\S]{0,120}openMaxX: Boolean\(bonus\),/,
+    'main cargo box must remain x=0..truck.length, floor at y=0, and open toward the overhang when present'
+  );
+
+  // addTrailerVolume itself must support a baseY offset for raised volumes.
+  assert.match(src, /function addTrailerVolume\(group, lengthW, heightW, widthW, centerX, mat, lineMat, floorMat, opts = \{\}\)/,
+    'addTrailerVolume must accept an opts object');
+  assert.match(src, /const baseY = Number\.isFinite\(opts\.baseY\) \? opts\.baseY : 0;/,
+    'addTrailerVolume must support opts.baseY to raise a volume off the floor');
+});
+
+test('G2.2-CAB-OVERHANG scene-runtime renders the cab void below the deck as a blocked/no-load guide volume', async () => {
+  const src = await fs.readFile(sceneRuntimePath, 'utf8');
+
+  const start = src.indexOf('function updateTrailerShapeGuides(truckInches)');
+  const end = src.indexOf('\n    function addTrailerVolume', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block, 'updateTrailerShapeGuides must be defined in scene-runtime.js');
+  assert.match(block, /mode === 'frontBonus'/,
+    'updateTrailerShapeGuides must branch on the frontBonus shape mode to render the cab void');
+  assert.match(block, /TrailerGeometry\.getFrontBonusBlockedZones\(truckInches\)/,
+    'updateTrailerShapeGuides must render the frontBonus cab void using getFrontBonusBlockedZones');
+  assert.match(block, /addGuideBox\(group, z, \{ fillColor: 0xff3b30/,
+    'the cab void must be rendered with the same blocked/no-load guide-box style used for wheel wells');
+});
+
+test('G2.2-CAB-OVERHANG rear/loading-door and front/cab-side end caps get distinct direction-cue wireframe colors (no sprites)', async () => {
+  const src = await fs.readFile(sceneRuntimePath, 'utf8');
+
+  assert.match(src, /const doorLineMat = new THREE\.LineBasicMaterial\(/,
+    'setTruck must define a distinct line material for the rear/loading-door end cap');
+  assert.match(src, /const cabLineMat = new THREE\.LineBasicMaterial\(/,
+    'setTruck must define a distinct line material for the front/cab-side end cap');
+
+  const cuesStart = src.indexOf('const doorLineMat = new THREE.LineBasicMaterial(');
+  const cuesEnd = src.indexOf('maxXLineMat: cabLineMat', cuesStart);
+  const cuesBlock = cuesStart >= 0 && cuesEnd > cuesStart ? src.slice(cuesStart, cuesEnd) : '';
+  assert.ok(cuesBlock, 'direction-cue setup block must be present in setTruck');
+  assert.doesNotMatch(cuesBlock, /THREE\.Sprite/,
+    'direction cues must not use THREE.Sprite (avoids the shared-geometry singleton dispose risk)');
+  assert.match(src, /minXLineMat: doorLineMat/,
+    'main cargo box rear end cap (x=0) must use the door/rear line material');
+  assert.match(src, /maxXLineMat: cabLineMat/,
+    'the front-most end cap (main box when no overhang, or the overhang) must use the cab/front line material');
+});
+
+test('G2.2-CAB-OVERHANG rendered overhang volume bounds match the usable-zone overhang used for collision', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  const truck = {
+    length: 200,
+    width: 90,
+    height: 80,
+    shapeMode: 'frontBonus',
+    // bonusWidth is intentionally != truck.width to prove it is ignored.
+    shapeConfig: { bonusLength: 40, bonusWidth: 60, bonusHeight: 30 },
+  };
+
+  const zones = PackLibrary.getTrailerUsableZones(truck);
+  const overhangZone = zones.find(z => z.min.x >= truck.length);
+  assert.ok(overhangZone, 'getTrailerUsableZones must produce an overhang zone for collision/containment');
+
+  // Mirrors getFrontBonusZone()'s formula (app.js TrailerGeometry) for the same truck/config.
+  // bonusHeight is the deck height / cab clearance, so the deck (and the rendered
+  // overhang volume) starts at y=bonusHeight, not y=height-bonusHeight.
+  const { length: L, width: W, height: H } = truck;
+  const cfg = truck.shapeConfig;
+  const bonusLength = Math.max(0, cfg.bonusLength);
+  const bonusHeight = Math.min(Math.max(cfg.bonusHeight, 0), H);
+  const expectedRenderZone = {
+    min: { x: L, y: bonusHeight, z: -W / 2 },
+    max: { x: L + bonusLength, y: H, z: W / 2 },
+  };
+
+  assert.deepEqual(overhangZone, expectedRenderZone,
+    'the visual overhang volume (getFrontBonusZone) and the collision overhang zone (getTrailerUsableZones) must describe the same x/y/z bounds');
+});
+
+test('G2.2-CAB-OVERHANG Inspector labels the height control "Deck Height" (not ambiguous "Overhang height") and has no Width input', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf("if (currentMode === 'frontBonus') {");
+  const end = src.indexOf("if (currentMode === 'wheelWells') {", start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(block, 'Front Overhang config card block must be present in editor-screen.js');
+
+  // Req #14: the height field must be labeled "Deck Height", not the ambiguous
+  // "Overhang height" (which could mean usable cargo height or deck height).
+  assert.match(block, /Deck Height \(\$\{lengthUnit\}\)/,
+    'Front Overhang card must label the deck-height field "Deck Height (<unit>)"');
+  assert.doesNotMatch(block, /Overhang [Hh]eight \(\$\{lengthUnit\}\)/,
+    'Front Overhang card must not label the height field "Overhang height"');
+  assert.match(block, /Usable overhang height = trailer height - deck height/,
+    'Front Overhang card should explain how usable overhang height relates to deck height');
+
+  // Req #13: Front Overhang Width input is absent; bonusWidth is normalized to truck.width.
+  assert.doesNotMatch(block, /Width \(\$\{lengthUnit\}\)/,
+    'Front Overhang card must not render a Width input field');
+  assert.doesNotMatch(block, /\bfBW\b/,
+    'Front Overhang card must not reference a width field control');
+  assert.match(block, /bonusWidth: tW/,
+    'Front Overhang save/reset must silently normalize bonusWidth to the trailer width for backward compatibility');
+});
+
+test('G2.2-CAB-OVERHANG a case in the cab void is not packed; a case on the deck within bounds is packed', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 200,
+    width: 90,
+    height: 80,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 40, bonusWidth: 60, bonusHeight: 30 },
+  };
+  const zones = PackLibrary.getTrailerUsableZones(truck);
+  const blockedZones = PackLibrary.getFrontBonusBlockedZones(truck);
+  // Usable overhang zone: x:200..240, y:30..80, z:-45..45.
+  // Cab void: x:200..240, y:0..30, z:-45..45.
+
+  // Req #5: a case entirely in the cab void (below the deck) must not be packed.
+  const inCabVoid = { min: { x: 210, y: 5, z: -10 }, max: { x: 230, y: 25, z: 10 } };
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(inCabVoid, zones), false,
+    'a case in the cab void below the deck must not be contained in any usable zone');
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(inCabVoid, blockedZones), true,
+    'sanity check: the case sits inside the cab-void blocked zone');
+
+  // Req #6: a case resting on the deck and fitting under the roof must be packed.
+  const onDeck = { min: { x: 210, y: 30, z: -10 }, max: { x: 230, y: 70, z: 10 } };
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(onDeck, zones), true,
+    'a case resting on the raised deck and fitting under the roof must be contained in a usable zone');
+
+  // Req #7: a case above the overhang ceiling must not be packed.
+  const aboveCeiling = { min: { x: 210, y: 30, z: -10 }, max: { x: 230, y: 85, z: 10 } };
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(aboveCeiling, zones), false,
+    'a case extending above the overhang ceiling (truck.height) must not be contained in any usable zone');
+
+  // Req #8: a case past the overhang's front end must not be packed.
+  const pastFrontEnd = { min: { x: 230, y: 30, z: -10 }, max: { x: 250, y: 70, z: 10 } };
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(pastFrontEnd, zones), false,
+    'a case extending past truck.length+bonusLength must not be contained in any usable zone');
+});
+
+test('G2.2-CAB-OVERHANG computeSettleY supports a floorY offset for settling onto the raised overhang deck', async () => {
+  const EditorScreen = await import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
+  const half = { x: 12, y: 12, z: 12 };
+
+  // Req #9: with no supporters, an item over the overhang deck settles at
+  // floorY + halfY (the deck surface), not y=halfY (the main floor).
+  const onDeck = EditorScreen.computeSettleY(half, 0, 0, [], 0.5, 30);
+  assert.equal(onDeck, 42, 'an item with floorY=30 (deck height) must settle at floorY + halfY = 42, not the main floor');
+
+  // Req #10: main-floor items (floorY=0, the default) still settle to y=halfY.
+  const onFloor = EditorScreen.computeSettleY(half, 0, 0, [], 0.5);
+  assert.equal(onFloor, 12, 'an item with the default floorY=0 must still settle to the main floor (halfY)');
+
+  // A supporter above the deck still wins over the deck floor.
+  const supporter = { min: { x: -24, y: 30, z: -24 }, max: { x: 24, y: 54, z: 24 } };
+  const onSupporter = EditorScreen.computeSettleY(half, 0, 0, [supporter], 0.5, 30);
+  assert.equal(onSupporter, 66, 'a supporter above the deck must still win over the deck floor (supporter.max.y + halfY)');
+
+  // The result must never settle below floorY + halfY even with below-deck supporters
+  // (the cab void must never act as a floor).
+  const belowDeck = { min: { x: -24, y: 0, z: -24 }, max: { x: 24, y: 10, z: 24 } };
+  const stillOnDeck = EditorScreen.computeSettleY(half, 0, 0, [belowDeck], 0.5, 30);
+  assert.equal(stillOnDeck, 42, 'a supporter entirely below the deck must not pull the result below floorY + halfY');
+});
+
+test('G2.2-CAB-OVERHANG editor-screen settleY derives the overhang deck floor from getFrontBonusZone and never settles into the cab void', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  assert.match(src, /function getFrontOverhangDeckFloorYWorld\(cx, cz, halfX, halfZ\)/,
+    'editor-screen must define a helper to resolve the overhang deck floor in world units, taking the full X/Z footprint');
+  assert.match(src, /TrailerGeometry\.getFrontBonusZone\(truck\)/,
+    'getFrontOverhangDeckFloorYWorld must derive the deck zone from TrailerGeometry.getFrontBonusZone');
+  assert.match(src, /return zoneWorld\.min\.y/,
+    'getFrontOverhangDeckFloorYWorld must return the deck zone min.y (the deck surface, never the cab void below it)');
+
+  const settleStart = src.indexOf('function settleY(instanceId)');
+  const settleEnd = src.indexOf('\n    function getSnapWallCandidatesWorld', settleStart);
+  const settleBlock = settleStart >= 0 && settleEnd > settleStart ? src.slice(settleStart, settleEnd) : '';
+  assert.ok(settleBlock, 'settleY must be defined in editor-screen.js');
+  assert.match(settleBlock, /const deckFloorY = getFrontOverhangDeckFloorYWorld\(group\.position\.x, group\.position\.z, halfWorld\.x, halfWorld\.z\);/,
+    'settleY must compute the overhang deck floor from the case current X\\/Z position and full footprint');
+  assert.match(settleBlock, /deckFloorY !== null \? deckFloorY : 0/,
+    'settleY must pass the deck floor (or 0 for the main floor) as computeSettleY floorY argument');
+});
+
+test('G2.2-CAB-OVERHANG AutoPack uses the raised overhang deck only when an item fits above the deck and below the roof, and never the cab void', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const { solveAutoPack, isAabbContainedInAnyZone } = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  // Main floor footprint (24x18) exactly matches the truck's main-zone footprint, and the
+  // overhang footprint (24x18) exactly matches the overhang zone's footprint, so each zone
+  // holds exactly one footprint "column". bonusHeight=20 makes the deck height (20) and the
+  // usable overhang cargo height (72-20=52) clearly distinct from each other.
+  const truck = {
+    length: 24,
+    width: 18,
+    height: 72,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 24, bonusWidth: 48, bonusHeight: 20 },
+  };
+  const zones = PackLibrary.getTrailerUsableZones(truck);
+  const blockedZones = PackLibrary.getFrontBonusBlockedZones(truck);
+  const overhangZone = zones.find(z => z.min.x >= truck.length);
+  const EPS = 0.06;
+
+  const items = [
+    { instanceId: 'short-1', dims: { l: 24, w: 18, h: 16 }, canFlip: true, orientationLock: 'any', stackable: true, maxStackCount: 2 },
+    { instanceId: 'short-2', dims: { l: 24, w: 18, h: 16 }, canFlip: true, orientationLock: 'any', stackable: true, maxStackCount: 2 },
+    { instanceId: 'tall-1', dims: { l: 24, w: 18, h: 60 }, canFlip: false, orientationLock: 'upright', stackable: true, maxStackCount: 1 },
+  ];
+
+  const result = solveAutoPack({
+    truck: { length: truck.length, width: truck.width, height: truck.height },
+    zones,
+    loadFrontFirst: true,
+    items,
+  });
+
+  assert.equal(result.unpacked.length, 0, 'all items must be packed across the main zone and the raised overhang deck');
+
+  const placedAabbs = [];
+  for (const [id, pos] of result.placements.entries()) {
+    const od = result.orientedDims.get(id);
+    const half = { x: od.length / 2, y: od.height / 2, z: od.width / 2 };
+    const aabb = {
+      min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
+      max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
+    };
+    assert.ok(isAabbContainedInAnyZone(aabb, zones),
+      `${id} must be fully contained within a usable zone (main or overhang deck)`);
+    placedAabbs.push({ id, aabb });
+  }
+
+  // Req #11: AutoPack must never place an item inside the cab void.
+  for (const p of placedAabbs) {
+    assert.equal(isAabbContainedInAnyZone(p.aabb, blockedZones), false,
+      `${p.id} must not be placed inside the cab void below the overhang deck`);
+  }
+
+  // Req #12: the short items (h=16) fit above the deck and below the roof (16 <= 72-20),
+  // so AutoPack must be able to use the overhang deck for them.
+  const inOverhang = placedAabbs.filter(p => p.aabb.min.x >= overhangZone.min.x - EPS);
+  assert.ok(inOverhang.length > 0, 'AutoPack must be able to place items on the raised overhang deck');
+  for (const p of inOverhang) {
+    assert.ok(p.aabb.min.y >= overhangZone.min.y - EPS,
+      `${p.id} placed on the overhang must rest at/above the deck (zone.min.y = bonusHeight), not in the cab void`);
+    assert.ok(p.aabb.max.y <= overhangZone.max.y + EPS,
+      `${p.id} placed on the overhang must not extend above the ceiling`);
+  }
+
+  // Req #12 (continued): the tall item (h=60) does not fit above the deck and below the
+  // roof (60 > 72-20=52), so it must be placed in the main zone, not the overhang deck.
+  const tall = placedAabbs.find(p => p.id === 'tall-1');
+  assert.ok(tall.aabb.min.x < overhangZone.min.x - EPS,
+    'an item taller than the usable overhang height (height - bonusHeight) must not be placed on the overhang deck');
+
+  function overlaps(a, b) {
+    const OEPS = 0.05;
+    return a.min.x < b.max.x - OEPS && a.max.x > b.min.x + OEPS &&
+      a.min.y < b.max.y - OEPS && a.max.y > b.min.y + OEPS &&
+      a.min.z < b.max.z - OEPS && a.max.z > b.min.z + OEPS;
+  }
+  for (let i = 0; i < placedAabbs.length; i++) {
+    for (let j = i + 1; j < placedAabbs.length; j++) {
+      assert.equal(overlaps(placedAabbs[i].aabb, placedAabbs[j].aabb), false,
+        `${placedAabbs[i].id} and ${placedAabbs[j].id} must not overlap`);
+    }
+  }
+});
+
+test('G2.2-CAB-OVERHANG changed files stay inside the allowed scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'G2.2-CAB-OVERHANG must stay inside approved files');
+});
+
+// ── End G2.2-CAB-OVERHANG ──────────────────────────────────────────────────────
+
+// ── G2.2-CLEANUP ──────────────────────────────────────────────────────────────
+//
+// Small pre-commit cleanup pass on top of G2.2: (1) computeShapeAwareOOGWarnings'
+// front-boundary diagnostics use the shape-aware max usable X (truck.length for
+// rect/wheelWells, truck.length+bonusLength for frontBonus) instead of raw
+// truck.length, so a case past truck.length but still within the cab-over
+// overhang extent is not incorrectly flagged protrudesFront; and (2)
+// getFrontOverhangDeckFloorYWorld checks the full X/Z footprint against the
+// overhang deck zone (not just the low-X edge) before settling an item onto the
+// raised deck.
+
+test('G2.2-CLEANUP frontBonus item past raw truck.length but within the overhang extent does not get protrudesFront', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 240,
+    width: 96,
+    height: 72,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 60, bonusHeight: 36 },
+  };
+  // Overhang zone: x:240..300, y:36..72, z:-48..48. Cab void: x:240..300, y:0..36, z:-48..48.
+  const caseData = {
+    id: 'cab-void-straddle',
+    name: 'Cab Void Straddle',
+    dimensions: { length: 40, width: 20, height: 50 },
+    volume: 40 * 20 * 50,
+    weight: 10,
+  };
+  const pack = {
+    truck,
+    cases: [{
+      id: 'inst-straddle',
+      caseId: caseData.id,
+      hidden: false,
+      // x:250..290 (past truck.length=240, within the overhang extent 240..300),
+      // y:0..50 (straddles the cab void 0..36 and the deck zone 36..72).
+      transform: { position: { x: 270, y: 25, z: 0 } },
+    }],
+  };
+
+  const warnings = PackLibrary.computeStats(pack, [caseData]).oogWarnings;
+  assert.equal(warnings.length, 1, 'a case straddling the cab void must still be flagged as outside a usable zone');
+  assert.ok(!warnings[0].issues.includes('protrudesFront'),
+    'a case past raw truck.length but within truck.length+bonusLength must not be flagged protrudesFront');
+  assert.deepEqual(warnings[0].issues, ['outsideUsableZone'],
+    'a case straddling the cab void is outside usable zones for height reasons, not because it protrudes past the front');
+});
+
+test('G2.2-CLEANUP frontBonus item past truck.length+bonusLength receives protrudesFront', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 240,
+    width: 96,
+    height: 72,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 60, bonusHeight: 36 },
+  };
+  const caseData = {
+    id: 'past-overhang-front',
+    name: 'Past Overhang Front',
+    dimensions: { length: 40, width: 20, height: 36 },
+    volume: 40 * 20 * 36,
+    weight: 10,
+  };
+  const pack = {
+    truck,
+    cases: [{
+      id: 'inst-past-front',
+      caseId: caseData.id,
+      hidden: false,
+      // x:290..330 (max.x=330 > truck.length+bonusLength=300), y:36..72 (on the deck), z:0.
+      transform: { position: { x: 310, y: 54, z: 0 } },
+    }],
+  };
+
+  const warnings = PackLibrary.computeStats(pack, [caseData]).oogWarnings;
+  assert.equal(warnings.length, 1, 'a case extending past truck.length+bonusLength must be flagged');
+  assert.ok(warnings[0].issues.includes('protrudesFront'),
+    'a case extending past truck.length+bonusLength (the true usable front boundary) must be flagged protrudesFront');
+});
+
+test('G2.2-CLEANUP rect and wheelWells front-protrusion warnings remain based on raw truck.length', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = {
+    id: 'past-rect-front',
+    name: 'Past Rect Front',
+    dimensions: { length: 40, width: 20, height: 20 },
+    volume: 40 * 20 * 20,
+    weight: 10,
+  };
+
+  const rectTruck = { length: 100, width: 50, height: 50, shapeMode: 'rect', shapeConfig: {} };
+  const rectPack = {
+    truck: rectTruck,
+    cases: [{
+      id: 'inst-rect-front',
+      caseId: caseData.id,
+      hidden: false,
+      // x:90..130, max.x=130 > truck.length=100.
+      transform: { position: { x: 110, y: 10, z: 0 } },
+    }],
+  };
+  const rectWarnings = PackLibrary.computeStats(rectPack, [caseData]).oogWarnings;
+  assert.equal(rectWarnings.length, 1, 'a rect case extending past truck.length must be flagged');
+  assert.ok(rectWarnings[0].issues.includes('protrudesFront'),
+    'rect protrudesFront must still trigger at raw truck.length (maxUsableX === truck.length for rect)');
+
+  const wheelTruck = {
+    length: 100,
+    width: 100,
+    height: 100,
+    shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 20, wellWidth: 20, wellLength: 40, wellOffsetFromRear: 30 },
+  };
+  const wheelPack = {
+    truck: wheelTruck,
+    cases: [{
+      id: 'inst-wheel-front',
+      caseId: caseData.id,
+      hidden: false,
+      // x:90..130, max.x=130 > truck.length=100.
+      transform: { position: { x: 110, y: 10, z: 0 } },
+    }],
+  };
+  const wheelWarnings = PackLibrary.computeStats(wheelPack, [caseData]).oogWarnings;
+  assert.equal(wheelWarnings.length, 1, 'a wheelWells case extending past truck.length must be flagged');
+  assert.ok(wheelWarnings[0].issues.includes('protrudesFront'),
+    'wheelWells protrudesFront must still trigger at raw truck.length (maxUsableX === truck.length for wheelWells)');
+});
+
+test('G2.2-CLEANUP getFrontOverhangDeckFloorYWorld checks the full X/Z footprint against the overhang deck zone', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  const start = src.indexOf('function getFrontOverhangDeckFloorYWorld(cx, cz, halfX, halfZ)');
+  const end = src.indexOf('\n    /** Settle a case down via gravity', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+  assert.ok(block, 'getFrontOverhangDeckFloorYWorld must be defined with a (cx, cz, halfX, halfZ) signature');
+
+  // Req #4/#5: the X footprint must be fully inside the deck zone on both edges,
+  // not just the low-X edge.
+  assert.match(block, /cx - halfX >= zoneWorld\.min\.x - EPS/,
+    'the deck-settle guard must check the footprint low-X edge against the overhang zone min.x');
+  assert.match(block, /cx \+ halfX <= zoneWorld\.max\.x \+ EPS/,
+    'the deck-settle guard must check the footprint high-X edge against the overhang zone max.x (Fix 2 - previously unchecked)');
+
+  // Req #6: the Z footprint must be fully inside the deck zone on both edges (overhang width).
+  assert.match(block, /cz - halfZ >= zoneWorld\.min\.z - EPS/,
+    'the deck-settle guard must check the footprint low-Z edge against the overhang zone min.z (Fix 2 - previously unchecked)');
+  assert.match(block, /cz \+ halfZ <= zoneWorld\.max\.z \+ EPS/,
+    'the deck-settle guard must check the footprint high-Z edge against the overhang zone max.z (Fix 2 - previously unchecked)');
+
+  // The deck floor is only returned when the whole footprint is inside; otherwise fall back
+  // to null (main floor / existing support logic in settleY).
+  assert.match(block, /if \(fitsX && fitsZ\) return zoneWorld\.min\.y;\n\s+return null;/,
+    'a footprint that is not fully inside the overhang deck zone must fall back to null, not settle on the deck');
+});
+
+test('G2.2-CLEANUP new/edit pack flows initialize positive frontBonus defaults and normalize missing shapeConfig', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+
+  assert.match(src, /function normalizeFrontBonusShapeConfig\(shapeConfig, truck\)/,
+    'packs-screen.js must define a helper to normalize frontBonus shapeConfig defaults');
+  assert.match(src, /if \(!Number\.isFinite\(cfg\.bonusLength\)\) cfg\.bonusLength = 0\.12 \* length;/,
+    'missing bonusLength must default to a positive value (12% of truck length)');
+  assert.match(src, /if \(!Number\.isFinite\(cfg\.bonusHeight\)\) cfg\.bonusHeight = 0\.45 \* height;/,
+    'missing bonusHeight must default to a positive value (45% of truck height)');
+
+  const newPackStart = src.indexOf('function openNewPackModal()');
+  const newPackEnd = src.indexOf('\n    function openEditPackModal', newPackStart);
+  const newPackBlock = newPackStart >= 0 && newPackEnd > newPackStart ? src.slice(newPackStart, newPackEnd) : '';
+  assert.ok(newPackBlock, 'openNewPackModal must be defined in packs-screen.js');
+  assert.match(newPackBlock, /if \(newTruck\.shapeMode === 'frontBonus'\) \{\s*\n\s*newTruck\.shapeConfig = normalizeFrontBonusShapeConfig\(newTruck\.shapeConfig, newTruck\);/,
+    'creating a new pack with the frontBonus shape mode must initialize valid positive bonusLength/bonusHeight defaults');
+
+  const editPackStart = src.indexOf('function openEditPackModal(packId)');
+  const editPackEnd = src.indexOf('\n    function openRename', editPackStart);
+  const editPackBlock = editPackStart >= 0 && editPackEnd > editPackStart ? src.slice(editPackStart, editPackEnd) : '';
+  assert.ok(editPackBlock, 'openEditPackModal must be defined in packs-screen.js');
+  assert.match(editPackBlock, /if \(nextTruck\.shapeMode === 'frontBonus'\) \{\s*\n\s*nextTruck\.shapeConfig = normalizeFrontBonusShapeConfig\(nextTruck\.shapeConfig, nextTruck\);/,
+    'switching a pack to the frontBonus shape mode in Edit Pack must normalize missing shapeConfig with valid positive defaults');
+});
+
+test('G2.2-CLEANUP changed files stay inside the allowed scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'G2.2-CLEANUP must stay inside approved files');
+});
+
+// ── End G2.2-CLEANUP ──────────────────────────────────────────────────────────
 
 // ── End G2-SHAPE-CONTRACT ────────────────────────────────────────────────────
 
@@ -4437,21 +5148,44 @@ test('AUTO-PACK-A0 trailer geometry helpers block wheel wells and preserve front
     width: 100,
     height: 50,
     shapeMode: 'frontBonus',
+    // bonusWidth is intentionally != truck.width to prove it is ignored.
     shapeConfig: { bonusLength: 20, bonusWidth: 40, bonusHeight: 30 },
   };
   const frontZones = PackLibrary.getTrailerUsableZones(frontBonusTruck);
+  // Overhang zone (raised deck): x:100..120, y:30..50 (bonusHeight..height), z:-50..50 (full width).
+  // Cab void (blocked): x:100..120, y:0..30 (0..bonusHeight), z:-50..50 (full width).
   assert.equal(frontZones.length, 2,
-    'frontBonus geometry must remain split between main body and bonus zone');
+    'frontBonus geometry must remain split between main body and front overhang zone');
   assert.equal(PackLibrary.isAabbContainedInAnyZone({
     min: { x: 85, y: 5, z: -10 },
     max: { x: 95, y: 25, z: 10 },
   }, frontZones), true,
-  'box inside the narrower/lower front bonus zone must be placeable');
+  'box inside the main body near the front must be placeable');
   assert.equal(PackLibrary.isAabbContainedInAnyZone({
     min: { x: 85, y: 35, z: -10 },
     max: { x: 95, y: 45, z: 10 },
+  }, frontZones), true,
+  'box inside the main body up to its full height must be placeable, even near the front');
+  assert.equal(PackLibrary.isAabbContainedInAnyZone({
+    min: { x: 105, y: 35, z: -10 },
+    max: { x: 115, y: 45, z: 10 },
+  }, frontZones), true,
+  'box resting on the raised overhang deck (y >= bonusHeight) must be placeable');
+  assert.equal(PackLibrary.isAabbContainedInAnyZone({
+    min: { x: 105, y: 5, z: -10 },
+    max: { x: 115, y: 25, z: 10 },
   }, frontZones), false,
-  'box above front bonus height must not fit merely because the base truck rectangle would fit');
+  'box entirely below the deck (in the cab void) must not be placeable');
+  assert.equal(PackLibrary.isAabbContainedInAnyZone({
+    min: { x: 105, y: 35, z: -40 },
+    max: { x: 115, y: 45, z: 40 },
+  }, frontZones), true,
+  'overhang spans the full trailer width (ignoring bonusWidth=40); a box wider than bonusWidth but within truck.width must be placeable on the deck');
+  assert.equal(PackLibrary.isAabbContainedInAnyZone({
+    min: { x: 95, y: 30, z: -10 },
+    max: { x: 105, y: 45, z: 10 },
+  }, frontZones), false,
+  'a box straddling the main box and the raised overhang must not be placeable (cannot pass through the overhang structure)');
 });
 
 test('AUTO-PACK-A0 AutoPack keeps zone containment and stacking guards wired', async () => {

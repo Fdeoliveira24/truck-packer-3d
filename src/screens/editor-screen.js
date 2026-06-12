@@ -32,7 +32,9 @@ function createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, rotati
  * Pure gravity simulation: find the settled center Y for a box at the given X,Z position.
  *
  * Rules:
- * - Floor (Y = halfWorld.y) is always valid support.
+ * - The floor surface (Y = floorY + halfWorld.y) is always valid support. floorY is
+ *   normally 0 (main cargo floor), but is raised to the front-overhang deck height
+ *   when the candidate's footprint sits over the overhang (see settleY()).
  * - A supporter is accepted only if its XZ overlap covers >= minSupportFraction of the
  *   candidate's footprint. This prevents tiny-corner contact from acting as support.
  * - The highest valid resting surface wins. No upper-bound filter — the caller's
@@ -45,14 +47,15 @@ function createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, rotati
  * @param {number} cz - candidate center Z in world units
  * @param {Array<{ min: {x,y,z}, max: {x,y,z} }>} otherAabbs - world-space AABBs of other boxes
  * @param {number} minSupportFraction - required XZ overlap fraction (pass MIN_SUPPORT_FRACTION)
- * @returns {number} settled center Y in world units (always >= halfWorld.y)
+ * @param {number} [floorY] - world Y of the floor surface beneath this footprint (default 0)
+ * @returns {number} settled center Y in world units (always >= floorY + halfWorld.y)
  */
-export function computeSettleY(halfWorld, cx, cz, otherAabbs, minSupportFraction) {
+export function computeSettleY(halfWorld, cx, cz, otherAabbs, minSupportFraction, floorY = 0) {
   const halfX = halfWorld.x;
   const halfY = halfWorld.y;
   const halfZ = halfWorld.z;
 
-  let bestY = halfY; // floor fallback: center Y = half-height
+  let bestY = floorY + halfY; // floor fallback: center Y = floor surface + half-height
 
   for (const otherAabb of otherAabbs || []) {
     if (!otherAabb) continue;
@@ -571,6 +574,35 @@ export function createCaseScene({
       return { collides: false, insideTruck };
     }
 
+    /**
+     * Resolve the world-Y of the raised front-overhang deck for a footprint centered at
+     * (cx, cz) with the given half-extents, or null if the truck has no front-overhang
+     * deck or the footprint is not entirely over it. The cab void below the deck is
+     * never a valid floor, so this is the only non-zero floor offset settleY() uses.
+     */
+    function getFrontOverhangDeckFloorYWorld(cx, cz, halfX, halfZ) {
+      const packId = StateStore.get('currentPackId');
+      const pack = packId ? PackLibrary.getById(packId) : null;
+      const truck = pack && pack.truck ? pack.truck : null;
+      if (!truck || truck.shapeMode !== 'frontBonus') return null;
+      if (!TrailerGeometry || typeof TrailerGeometry.getFrontBonusZone !== 'function') return null;
+
+      const zoneInches = TrailerGeometry.getFrontBonusZone(truck);
+      if (!zoneInches) return null;
+      const zoneWorld = TrailerGeometry.zonesInchesToWorld([zoneInches])[0];
+      if (!zoneWorld) return null;
+
+      const EPS = 1e-6;
+      // Only settle onto the deck when the whole footprint sits over the overhang -
+      // a footprint straddling the seam, extending past the front of the deck, or
+      // spilling outside the deck's width still rests on the main floor / falls
+      // back to the existing floor/support logic.
+      const fitsX = cx - halfX >= zoneWorld.min.x - EPS && cx + halfX <= zoneWorld.max.x + EPS;
+      const fitsZ = cz - halfZ >= zoneWorld.min.z - EPS && cz + halfZ <= zoneWorld.max.z + EPS;
+      if (fitsX && fitsZ) return zoneWorld.min.y;
+      return null;
+    }
+
     /** Settle a case down via gravity: find highest valid support surface at current X,Z. */
     function settleY(instanceId) {
       const group = instances.get(instanceId);
@@ -584,12 +616,16 @@ export function createCaseScene({
         if (otherAabb) otherAabbs.push(otherAabb);
       }
 
+      const halfWorld = group.userData.halfWorld;
+      const deckFloorY = getFrontOverhangDeckFloorYWorld(group.position.x, group.position.z, halfWorld.x, halfWorld.z);
+
       return computeSettleY(
-        group.userData.halfWorld,
+        halfWorld,
         group.position.x,
         group.position.z,
         otherAabbs,
         MIN_SUPPORT_FRACTION,
+        deckFloorY !== null ? deckFloorY : 0,
       );
     }
 
@@ -2649,7 +2685,10 @@ export function createEditorScreen({
         } else if (next.shapeMode === 'frontBonus') {
           const cfg = next.shapeConfig || {};
           if (Number.isFinite(cfg.bonusLength)) cfg.bonusLength = Utils.clamp(Number(cfg.bonusLength), 0, next.length);
-          if (Number.isFinite(cfg.bonusWidth)) cfg.bonusWidth = Utils.clamp(Number(cfg.bonusWidth), 0, next.width);
+          // bonusWidth is no longer used in overhang geometry (the overhang
+          // always spans the full trailer width). Kept on shapeConfig for
+          // backward compatibility only, normalized to truck.width.
+          if (Number.isFinite(cfg.bonusWidth)) cfg.bonusWidth = next.width;
           if (Number.isFinite(cfg.bonusHeight)) cfg.bonusHeight = Utils.clamp(Number(cfg.bonusHeight), 0, next.height);
           next.shapeConfig = cfg;
         }
@@ -2684,11 +2723,13 @@ export function createEditorScreen({
         } else if (nextTruck.shapeMode === 'frontBonus') {
           const cfg = nextTruck.shapeConfig || {};
           if (!Number.isFinite(cfg.bonusLength)) cfg.bonusLength = 0.12 * nextTruck.length;
-          if (!Number.isFinite(cfg.bonusWidth)) cfg.bonusWidth = nextTruck.width;
-          if (!Number.isFinite(cfg.bonusHeight)) cfg.bonusHeight = nextTruck.height;
+          if (!Number.isFinite(cfg.bonusHeight)) cfg.bonusHeight = 0.45 * nextTruck.height;
           cfg.bonusLength = Utils.clamp(Number(cfg.bonusLength) || 0, 0, nextTruck.length);
-          cfg.bonusWidth = Utils.clamp(Number(cfg.bonusWidth) || 0, 0, nextTruck.width);
           cfg.bonusHeight = Utils.clamp(Number(cfg.bonusHeight) || 0, 0, nextTruck.height);
+          // bonusWidth is no longer used in overhang geometry (the overhang
+          // always spans the full trailer width). Kept on shapeConfig for
+          // backward compatibility only, normalized to truck.width.
+          cfg.bonusWidth = nextTruck.width;
           nextTruck.shapeConfig = cfg;
         }
 
@@ -2754,26 +2795,28 @@ export function createEditorScreen({
         if (currentMode === 'frontBonus') {
           cfgCard.appendChild(cardHeaderWithInfo(
             'Front Overhang',
-            'Extra space at the front of the truck (cab side). Display units follow Settings. Must not exceed container bounds.'
+            'A raised over-cab deck attached to the front (cab side) of the truck, flush with the ceiling and spanning the full trailer width. Length sets how far it extends past the front; deck height sets how high the deck sits above the main floor (cab clearance) - the space below the deck is blocked and cannot hold cargo. Usable overhang cargo height = trailer height - deck height. Display units follow Settings.'
           ));
 
           const defBL = Math.round(0.12 * tL);
           const defBW = tW;
-          const defBH = tH;
+          const defBH = Math.round(0.45 * tH);
           const bonusLength = Number.isFinite(cfg.bonusLength) ? cfg.bonusLength : defBL;
-          const bonusWidth = Number.isFinite(cfg.bonusWidth) ? cfg.bonusWidth : defBW;
           const bonusHeight = Number.isFinite(cfg.bonusHeight) ? cfg.bonusHeight : defBH;
 
           const cfgRow = document.createElement('div');
           cfgRow.className = 'tp3d-editor-dims-row';
           const fBL = smallField(`Length (${lengthUnit})`, Utils.inchesToUnit(bonusLength, lengthUnit));
-          const fBW = smallField(`Width (${lengthUnit})`, Utils.inchesToUnit(bonusWidth, lengthUnit));
-          const fBH = smallField(`Height (${lengthUnit})`, Utils.inchesToUnit(bonusHeight, lengthUnit));
-          [fBL.wrap, fBW.wrap, fBH.wrap].forEach(w => w.classList.add('tp3d-editor-field-wrap-full'));
+          const fBH = smallField(`Deck Height (${lengthUnit})`, Utils.inchesToUnit(bonusHeight, lengthUnit));
+          [fBL.wrap, fBH.wrap].forEach(w => w.classList.add('tp3d-editor-field-wrap-full'));
           cfgRow.appendChild(fBL.wrap);
-          cfgRow.appendChild(fBW.wrap);
           cfgRow.appendChild(fBH.wrap);
           cfgCard.appendChild(cfgRow);
+
+          const cfgHint = document.createElement('div');
+          cfgHint.className = 'muted tp3d-editor-fs-sm';
+          cfgHint.textContent = 'Usable overhang height = trailer height - deck height.';
+          cfgCard.appendChild(cfgHint);
 
           const btnRow = document.createElement('div');
           btnRow.className = 'row';
@@ -2786,7 +2829,10 @@ export function createEditorScreen({
           cfgSave.addEventListener('click', () => {
             const nextCfg = {
               bonusLength: Utils.clamp(displayLengthToInches(fBL.input.value, bonusLength, lengthUnit), 0, tL),
-              bonusWidth: Utils.clamp(displayLengthToInches(fBW.input.value, bonusWidth, lengthUnit), 0, tW),
+              // Width is fixed to the trailer's full width for this mode and
+              // is not user-editable. Kept on shapeConfig for backward
+              // compatibility only.
+              bonusWidth: tW,
               bonusHeight: Utils.clamp(displayLengthToInches(fBH.input.value, bonusHeight, lengthUnit), 0, tH),
             };
             const nextTruck = { ...pack.truck, shapeConfig: nextCfg };
@@ -2801,7 +2847,6 @@ export function createEditorScreen({
           cfgReset.setAttribute('data-tooltip', 'Reset to defaults for this truck size');
           cfgReset.addEventListener('click', () => {
             fBL.input.value = String(Utils.inchesToUnit(defBL, lengthUnit).toFixed(1));
-            fBW.input.value = String(Utils.inchesToUnit(defBW, lengthUnit).toFixed(1));
             fBH.input.value = String(Utils.inchesToUnit(defBH, lengthUnit).toFixed(1));
             const nextCfg = { bonusLength: defBL, bonusWidth: defBW, bonusHeight: defBH };
             const nextTruck = { ...pack.truck, shapeConfig: nextCfg };

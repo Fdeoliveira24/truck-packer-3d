@@ -2904,17 +2904,19 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
         if (mode === 'frontBonus') {
           const bonusLengthRaw = Number(cfg.bonusLength);
-          const bonusWidthRaw = Number(cfg.bonusWidth);
           const bonusHeightRaw = Number(cfg.bonusHeight);
 
-          const bonusLength = Utils.clamp(Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0.12 * L, 0, L);
-          const bonusWidth = Utils.clamp(Number.isFinite(bonusWidthRaw) ? bonusWidthRaw : W, 0, W);
-          const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : H, 0, H);
+          const bonusLength = Math.max(0, Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0);
+          const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : 0.45 * H, 0, H);
 
-          const splitX = L - bonusLength;
+          // Raised over-cab deck: flush with the main box's ceiling, full
+          // trailer width, starting at y = bonusHeight (the deck height /
+          // cab clearance measured from the main floor). The "cab void"
+          // below it (x > L, y < bonusHeight) is intentionally not part of
+          // any usable zone - see getFrontBonusBlockedZones().
           const zones = [
-            zone({ x: 0, y: 0, z: -W / 2 }, { x: splitX, y: H, z: W / 2 }),
-            zone({ x: splitX, y: 0, z: -bonusWidth / 2 }, { x: L, y: bonusHeight, z: bonusWidth / 2 }),
+            zone({ x: 0, y: 0, z: -W / 2 }, { x: L, y: H, z: W / 2 }),
+            zone({ x: L, y: bonusHeight, z: -W / 2 }, { x: L + bonusLength, y: H, z: W / 2 }),
           ];
           return sanitizeZones(zones);
         }
@@ -3041,6 +3043,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return sanitizeZones(zones);
       }
 
+      // G2.2: getFrontBonusZone() returns the raised over-cab deck zone
+      // (x: truck.length..truck.length+bonusLength, y: bonusHeight..
+      // truck.height, full trailer width), matching the
+      // getTrailerUsableZones() overhang zone. bonusHeight is the deck
+      // height / cab clearance measured from the main floor. This is a
+      // visual-only helper: it is used by scene-runtime to render the
+      // overhang as a real attached volume flush with the main box's
+      // ceiling, not a floor-level carve-out of the main box.
       function getFrontBonusZone(truck) {
         const { length: L, width: W, height: H } = getDims(truck);
         const mode = getMode(truck);
@@ -3049,16 +3059,36 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (!L || !W || !H) return null;
 
         const bonusLengthRaw = Number(cfg.bonusLength);
-        const bonusWidthRaw = Number(cfg.bonusWidth);
         const bonusHeightRaw = Number(cfg.bonusHeight);
 
-        const bonusLength = Utils.clamp(Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0.12 * L, 0, L);
-        const bonusWidth = Utils.clamp(Number.isFinite(bonusWidthRaw) ? bonusWidthRaw : W, 0, W);
-        const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : H, 0, H);
+        const bonusLength = Math.max(0, Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0);
+        const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : 0.45 * H, 0, H);
 
-        const splitX = L - bonusLength;
-        const zones = [zone({ x: splitX, y: 0, z: -bonusWidth / 2 }, { x: L, y: bonusHeight, z: bonusWidth / 2 })];
+        const zones = [zone({ x: L, y: bonusHeight, z: -W / 2 }, { x: L + bonusLength, y: H, z: W / 2 })];
         return sanitizeZones(zones)[0] || null;
+      }
+
+      // G2.2: getFrontBonusBlockedZones() returns the "cab void" beneath the
+      // raised over-cab deck (x: truck.length..truck.length+bonusLength,
+      // y: 0..bonusHeight, full trailer width). This space is structurally
+      // occupied by the cab and is never part of a usable zone - mirrors
+      // getWheelWellsBlockedZones() so visuals/tests/warning logic can treat
+      // it the same way as a blocked wheel-well volume.
+      function getFrontBonusBlockedZones(truck) {
+        const { length: L, width: W, height: H } = getDims(truck);
+        const mode = getMode(truck);
+        const cfg = getConfig(truck);
+        if (mode !== 'frontBonus') return [];
+        if (!L || !W || !H) return [];
+
+        const bonusLengthRaw = Number(cfg.bonusLength);
+        const bonusHeightRaw = Number(cfg.bonusHeight);
+
+        const bonusLength = Math.max(0, Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0);
+        const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : 0.45 * H, 0, H);
+
+        const zones = [zone({ x: L, y: 0, z: -W / 2 }, { x: L + bonusLength, y: bonusHeight, z: W / 2 })];
+        return sanitizeZones(zones);
       }
 
       return {
@@ -3069,6 +3099,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         zonesToSpacesInches,
         getWheelWellsBlockedZones,
         getFrontBonusZone,
+        getFrontBonusBlockedZones,
       };
     })();
 

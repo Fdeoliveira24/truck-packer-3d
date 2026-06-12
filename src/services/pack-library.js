@@ -94,7 +94,8 @@ export function getTruckDirectionModel(truck) {
 }
 
 /**
- * Shape-mode semantics for getTrailerUsableZones(truck) (G2 audit, G2.1 doc):
+ * Shape-mode semantics for getTrailerUsableZones(truck) (G2 audit; G2.2B
+ * true front-overhang update):
  *  - 'rect' (Standard): the entire 0..truck.length x 0..height x
  *    -width/2..width/2 box is a single usable zone.
  *  - 'wheelWells' (Box + Wheel Wells): the outer box/mesh is unchanged; the
@@ -102,16 +103,24 @@ export function getTruckDirectionModel(truck) {
  *    of any returned zone, so an item placed there can render inside the
  *    outer trailer box while still being classified outside the usable
  *    zones (placement 'staged').
- *  - 'frontBonus' (Box + Front Overhang): currently a cab-side
- *    reduced/narrow usable zone carved out of the existing 0..truck.length
- *    box - bonusWidth/bonusHeight are clamped to <= width/height, and the
- *    bonus zone's max.x is always truck.length. This does NOT add length or
- *    extend the trailer beyond truck.length; it can only shrink the usable
- *    footprint of the front segment. With default bonusWidth/bonusHeight
- *    (== width/height), frontBonus is geometrically equivalent to 'rect'.
- *    Whether frontBonus should instead represent a true extension beyond
- *    truck.length is an open product decision (see G2 audit) and is not
- *    changed by this comment.
+ *  - 'frontBonus' (Box + Front Overhang): the main zone is always the full
+ *    0..truck.length x 0..height x -width/2..width/2 box (identical to
+ *    'rect'). bonusHeight is the deck height / cab clearance, measured from
+ *    the main floor (NOT the usable cargo height of the overhang). When
+ *    bonusLength > 0, a second zone is appended immediately in front of the
+ *    main box, modeling a raised over-cab deck that is flush with the main
+ *    box's ceiling and spans the full trailer width:
+ *    x: truck.length..truck.length+bonusLength, y: bonusHeight..height,
+ *    z: -width/2..width/2 (bonusHeight clamped to <= height; usable overhang
+ *    cargo height = height - bonusHeight). The space below the deck
+ *    (x > truck.length, y < bonusHeight) is the unusable "cab void" - see
+ *    getFrontBonusBlockedZones() - and is not part of any usable zone.
+ *    bonusWidth is retained on shapeConfig for backward compatibility only
+ *    and is not used in this geometry. A missing, invalid, or non-positive
+ *    bonusLength defaults to 0, the overhang zone is then sanitized away,
+ *    and frontBonus is geometrically equivalent to 'rect'. A missing or
+ *    invalid bonusHeight defaults to 0.45 * height so the overhang never
+ *    accidentally creates a floor-level deck.
  */
 function getTrailerUsableZones(truck) {
   const { length: L, width: W, height: H } = getDims(truck);
@@ -122,17 +131,14 @@ function getTrailerUsableZones(truck) {
 
   if (mode === 'frontBonus') {
     const bonusLengthRaw = Number(cfg.bonusLength);
-    const bonusWidthRaw = Number(cfg.bonusWidth);
     const bonusHeightRaw = Number(cfg.bonusHeight);
 
-    const bonusLength = Utils.clamp(Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0.12 * L, 0, L);
-    const bonusWidth = Utils.clamp(Number.isFinite(bonusWidthRaw) ? bonusWidthRaw : W, 0, W);
-    const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : H, 0, H);
+    const bonusLength = Math.max(0, Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0);
+    const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : 0.45 * H, 0, H);
 
-    const splitX = L - bonusLength;
     const zones = [
-      zone({ x: 0, y: 0, z: -W / 2 }, { x: splitX, y: H, z: W / 2 }),
-      zone({ x: splitX, y: 0, z: -bonusWidth / 2 }, { x: L, y: bonusHeight, z: bonusWidth / 2 }),
+      zone({ x: 0, y: 0, z: -W / 2 }, { x: L, y: H, z: W / 2 }),
+      zone({ x: L, y: bonusHeight, z: -W / 2 }, { x: L + bonusLength, y: H, z: W / 2 }),
     ];
     return sanitizeZones(zones);
   }
@@ -163,6 +169,31 @@ function getTrailerUsableZones(truck) {
   }
 
   return [zone({ x: 0, y: 0, z: -W / 2 }, { x: L, y: H, z: W / 2 })];
+}
+
+/**
+ * G2.2: getFrontBonusBlockedZones() returns the "cab void" beneath the
+ * raised over-cab deck (x: truck.length..truck.length+bonusLength,
+ * y: 0..bonusHeight, full trailer width). This space is structurally
+ * occupied by the cab and is never part of a usable zone - mirrors the
+ * wheel-well blocked-zone shape so visuals/tests/warning logic can treat it
+ * the same way as a blocked wheel-well volume.
+ */
+function getFrontBonusBlockedZones(truck) {
+  const { length: L, width: W, height: H } = getDims(truck);
+  const mode = getMode(truck);
+  const cfg = getConfig(truck);
+  if (mode !== 'frontBonus') return [];
+  if (!L || !W || !H) return [];
+
+  const bonusLengthRaw = Number(cfg.bonusLength);
+  const bonusHeightRaw = Number(cfg.bonusHeight);
+
+  const bonusLength = Math.max(0, Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0);
+  const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : 0.45 * H, 0, H);
+
+  const zones = [zone({ x: L, y: 0, z: -W / 2 }, { x: L + bonusLength, y: bonusHeight, z: W / 2 })];
+  return sanitizeZones(zones);
 }
 
 function getTrailerCapacityInches3(truck) {
@@ -583,7 +614,7 @@ function repairPackInstancePlacements(pack, caseLibrary) {
   return { ...pack, cases: nextCases };
 }
 
-export { getTrailerUsableZones, getTrailerCapacityInches3, isAabbContainedInAnyZone };
+export { getTrailerUsableZones, getTrailerCapacityInches3, isAabbContainedInAnyZone, getFrontBonusBlockedZones };
 
 // ============================================================================
 // SECTION: SHARED PLACEMENT VALIDATION CONSTANTS AND HELPERS
@@ -795,6 +826,11 @@ function computeShapeAwareOOGWarnings(pack, caseLibrary) {
   const truckW = Number(truck.width) || 0;
   const truckH = Number(truck.height) || 0;
   const halfW = truckW / 2;
+  // Shape-aware front boundary: for frontBonus this is truck.length + bonusLength
+  // (the far edge of the cab-over overhang deck), not raw truck.length. For
+  // rect/wheelWells every zone's max.x is truck.length, so this is equivalent
+  // to the previous truckL-based check.
+  const maxUsableX = zonesInches.length ? Math.max(...zonesInches.map(z => z.max.x)) : truckL;
   const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
   const warnings = [];
 
@@ -813,7 +849,7 @@ function computeShapeAwareOOGWarnings(pack, caseLibrary) {
 
     const issues = [];
     if (aabb.min.x < -0.05) issues.push('protrudesRear');
-    if (aabb.max.x > truckL + 0.05) issues.push('protrudesFront');
+    if (aabb.max.x > maxUsableX + 0.05) issues.push('protrudesFront');
     if (aabb.min.y < -0.05) issues.push('belowFloor');
     if (aabb.max.y > truckH + 0.05) issues.push('exceedsHeight');
     if (aabb.min.z < -halfW - 0.05) issues.push('protrudesLeft');

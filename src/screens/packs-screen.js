@@ -94,6 +94,24 @@ export function createPacksScreen({
       return 'Standard';
     }
 
+    // Mirrors the frontBonus normalization in editor-screen.js's shape-mode
+    // change handler: fills in missing bonusLength/bonusHeight with sensible
+    // positive defaults (12% of length, 45% of height) and locks bonusWidth
+    // to the trailer width, so packs created/edited here never end up with a
+    // zero-length (invisible) overhang.
+    function normalizeFrontBonusShapeConfig(shapeConfig, truck) {
+      const cfg = shapeConfig && typeof shapeConfig === 'object' && !Array.isArray(shapeConfig) ? { ...shapeConfig } : {};
+      const length = Number(truck.length) || 0;
+      const height = Number(truck.height) || 0;
+      const width = Number(truck.width) || 0;
+      if (!Number.isFinite(cfg.bonusLength)) cfg.bonusLength = 0.12 * length;
+      if (!Number.isFinite(cfg.bonusHeight)) cfg.bonusHeight = 0.45 * height;
+      cfg.bonusLength = Utils.clamp(Number(cfg.bonusLength) || 0, 0, length);
+      cfg.bonusHeight = Utils.clamp(Number(cfg.bonusHeight) || 0, 0, height);
+      cfg.bonusWidth = width;
+      return cfg;
+    }
+
     function formatPackStats(stats, prefs) {
       const loaded = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : 0;
       const packed = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : 0;
@@ -1510,20 +1528,24 @@ export function createPacksScreen({
                 title.input.focus();
                 return;
               }
+              const newTruck = {
+                length: Number(tL.input.value) || 636,
+                width: Number(tW.input.value) || 102,
+                height: Number(tH.input.value) || 98,
+                shapeMode:
+                  modeSelect.value === 'wheelWells' || modeSelect.value === 'frontBonus' ? modeSelect.value : 'rect',
+                shapeConfig: {},
+              };
+              if (newTruck.shapeMode === 'frontBonus') {
+                newTruck.shapeConfig = normalizeFrontBonusShapeConfig(newTruck.shapeConfig, newTruck);
+              }
               const pack = PackLibrary.create({
                 title: t,
                 client: String(client.input.value || '').trim(),
                 projectName: String(projectName.input.value || '').trim(),
                 drawnBy: String(drawnBy.input.value || '').trim(),
                 notes: String(notes.textarea.value || '').trim(),
-                truck: {
-                  length: Number(tL.input.value) || 636,
-                  width: Number(tW.input.value) || 102,
-                  height: Number(tH.input.value) || 98,
-                  shapeMode:
-                    modeSelect.value === 'wheelWells' || modeSelect.value === 'frontBonus' ? modeSelect.value : 'rect',
-                  shapeConfig: {},
-                },
+                truck: newTruck,
               });
               UIComponents.showToast('Pack created', 'success');
               PackLibrary.open(pack.id);
@@ -1704,6 +1726,9 @@ export function createPacksScreen({
                 shapeMode,
                 shapeConfig,
               };
+              if (nextTruck.shapeMode === 'frontBonus') {
+                nextTruck.shapeConfig = normalizeFrontBonusShapeConfig(nextTruck.shapeConfig, nextTruck);
+              }
               PackLibrary.update(packId, {
                 title: t,
                 client: String(client.input.value || '').trim(),

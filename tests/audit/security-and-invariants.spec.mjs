@@ -10459,31 +10459,27 @@ test('placement-safety-euler-order getOrientedDimsForRotation compound X+Z gives
 
 // ── G1.1B-SCENE-CUE-CLEANUP ──────────────────────────────────────────────────
 
-const g11bSceneCueCleanupFiles = new Set([
-  'src/editor/scene-runtime.js',
-  'tests/audit/security-and-invariants.spec.mjs',
-]);
-
-test('G1.1B-SCENE-CUE-CLEANUP changed files stay inside the approved narrow scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
+test('G1.1B-SCENE-CUE-CLEANUP scene cue cleanup lives in scene-runtime.js and is not duplicated into AutoPack', async () => {
+  const [sceneSrc, autopackEngineSrc, autopackSolverSrc] = await Promise.all([
+    fs.readFile(sceneRuntimePath, 'utf8'),
+    fs.readFile(autoPackEnginePath, 'utf8'),
+    fs.readFile(autoPackSolverPath, 'utf8'),
   ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !g11bSceneCueCleanupFiles.has(file));
 
-  assert.deepEqual(unexpectedFiles, [],
-    'G1.1B-SCENE-CUE-CLEANUP must stay inside src/editor/scene-runtime.js and this test file only');
-  assert.ok(!changedFiles.has('src/services/autopack-engine.js'),
-    'G1.1B-SCENE-CUE-CLEANUP must not touch src/services/autopack-engine.js');
-  assert.ok(!changedFiles.has('src/services/autopack-solver.js'),
-    'G1.1B-SCENE-CUE-CLEANUP must not touch src/services/autopack-solver.js');
+  // Source-of-truth markers for the G1.1B scene-cue cleanup: the seam-trim
+  // helper and the tuned door/cab end-cap cue materials must live in
+  // scene-runtime.js (the owner module for scene visuals).
+  assert.match(sceneSrc, /function trimSeamEdges\(edgesGeo, seamLocalXs\)/,
+    'scene-runtime.js must own the G1.1B seam-trim helper (trimSeamEdges)');
+  assert.match(sceneSrc, /const doorLineMat = new THREE\.LineBasicMaterial\(/,
+    'scene-runtime.js must own the G1.1B rear/loading-door end-cap cue material (doorLineMat)');
+  assert.match(sceneSrc, /const cabLineMat = new THREE\.LineBasicMaterial\(/,
+    'scene-runtime.js must own the G1.1B front/cab end-cap cue material (cabLineMat)');
+
+  assert.doesNotMatch(autopackEngineSrc, /trimSeamEdges|doorLineMat|cabLineMat/,
+    'G1.1B scene-cue cleanup must not be duplicated into src/services/autopack-engine.js');
+  assert.doesNotMatch(autopackSolverSrc, /trimSeamEdges|doorLineMat|cabLineMat/,
+    'G1.1B scene-cue cleanup must not be duplicated into src/services/autopack-solver.js');
 });
 
 test('G1.1B-SCENE-CUE-CLEANUP scene-runtime defines no ArrowHelper or other large default direction-arrow indicators', async () => {
@@ -10622,37 +10618,37 @@ test('G1.1B-SCENE-CUE-CLEANUP cab-over/frontBonus geometry contracts remain unto
 
 // ── G1.1C-EXTERIOR-RAILS ───────────────────────────────────────────────────────
 
-const g11cExteriorRailsFiles = new Set([
-  'src/editor/scene-runtime.js',
-  'tests/audit/security-and-invariants.spec.mjs',
-]);
-
-test('G1.1C-EXTERIOR-RAILS changed files stay inside the approved narrow scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
+test('G1.1C-EXTERIOR-RAILS exterior-rail helpers live in scene-runtime.js and are not duplicated elsewhere', async () => {
+  const [sceneSrc, autopackEngineSrc, autopackSolverSrc, appSrc, packLibSrc, editorSrc] = await Promise.all([
+    fs.readFile(sceneRuntimePath, 'utf8'),
+    fs.readFile(autoPackEnginePath, 'utf8'),
+    fs.readFile(autoPackSolverPath, 'utf8'),
+    fs.readFile(appPath, 'utf8'),
+    fs.readFile(packLibraryPath, 'utf8'),
+    fs.readFile(editorScreenPath, 'utf8'),
   ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !g11cExteriorRailsFiles.has(file));
 
-  assert.deepEqual(unexpectedFiles, [],
-    'G1.1C-EXTERIOR-RAILS must stay inside src/editor/scene-runtime.js and this test file only');
-  assert.ok(!changedFiles.has('src/services/autopack-engine.js'),
-    'G1.1C-EXTERIOR-RAILS must not touch src/services/autopack-engine.js');
-  assert.ok(!changedFiles.has('src/services/autopack-solver.js'),
-    'G1.1C-EXTERIOR-RAILS must not touch src/services/autopack-solver.js');
-  assert.ok(!changedFiles.has('src/app.js'),
-    'G1.1C-EXTERIOR-RAILS must not touch src/app.js');
-  assert.ok(!changedFiles.has('src/services/pack-library.js'),
-    'G1.1C-EXTERIOR-RAILS must not touch src/services/pack-library.js');
-  assert.ok(!changedFiles.has('src/screens/editor-screen.js'),
-    'G1.1C-EXTERIOR-RAILS must not touch src/screens/editor-screen.js');
+  // Source-of-truth markers for the G1.1C exterior rails: the rail-mesh
+  // helpers and the truckOuterRails group must live in scene-runtime.js
+  // (the owner module for scene visuals).
+  assert.match(sceneSrc, /function addRailEdge\(group, a, b, material\)/,
+    'scene-runtime.js must own the G1.1C addRailEdge helper');
+  assert.match(sceneSrc, /function addBoxRails\(group, x0, x1, y0, y1, z0, z1, opts = \{\}\)/,
+    'scene-runtime.js must own the G1.1C addBoxRails helper');
+  assert.match(sceneSrc, /railsGroup\.name = 'truckOuterRails';/,
+    'scene-runtime.js must own the G1.1C truckOuterRails group');
+
+  const otherSources = {
+    'src/services/autopack-engine.js': autopackEngineSrc,
+    'src/services/autopack-solver.js': autopackSolverSrc,
+    'src/app.js': appSrc,
+    'src/services/pack-library.js': packLibSrc,
+    'src/screens/editor-screen.js': editorSrc,
+  };
+  for (const [file, src] of Object.entries(otherSources)) {
+    assert.doesNotMatch(src, /addRailEdge|addBoxRails|truckOuterRails/,
+      `G1.1C exterior-rail helpers must not be duplicated into ${file}`);
+  }
 });
 
 test('G1.1C-EXTERIOR-RAILS truck outer rails are built from mesh geometry, not line-only wireframe', async () => {
@@ -10771,3 +10767,155 @@ test('G1.1C-EXTERIOR-RAILS wheel-well blocked guide zones are not railed as truc
 });
 
 // ── End G1.1C-EXTERIOR-RAILS ───────────────────────────────────────────────────
+
+// ── G1.2B-CASE-BROWSER-POLISH ────────────────────────────────────────────────
+
+const g12bCaseBrowserFiles = new Set([
+  'src/screens/editor-screen.js',
+  'styles/main.css',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
+
+test('G1.2B-CASE-BROWSER-POLISH changed files stay inside the approved narrow scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !g12bCaseBrowserFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'G1.2B-CASE-BROWSER-POLISH must stay inside editor-screen.js, main.css, and this test file only');
+  assert.ok(!changedFiles.has('src/editor/scene-runtime.js'),
+    'G1.2B-CASE-BROWSER-POLISH must not touch src/editor/scene-runtime.js');
+  assert.ok(!changedFiles.has('src/app.js'),
+    'G1.2B-CASE-BROWSER-POLISH must not touch src/app.js');
+  assert.ok(!changedFiles.has('src/services/pack-library.js'),
+    'G1.2B-CASE-BROWSER-POLISH must not touch src/services/pack-library.js');
+  assert.ok(!changedFiles.has('src/services/autopack-engine.js'),
+    'G1.2B-CASE-BROWSER-POLISH must not touch src/services/autopack-engine.js');
+  assert.ok(!changedFiles.has('src/services/autopack-solver.js'),
+    'G1.2B-CASE-BROWSER-POLISH must not touch src/services/autopack-solver.js');
+  assert.ok(!changedFiles.has('src/screens/packs-screen.js'),
+    'G1.2B-CASE-BROWSER-POLISH must not touch src/screens/packs-screen.js');
+});
+
+test('G1.2B-CASE-BROWSER-POLISH Case Browser cards are built by one shared helper, not duplicated per grouping', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  assert.match(src, /function buildCaseBrowserCard\(c, lengthUnit, prefs, isSelected\)/,
+    'a shared buildCaseBrowserCard(c, lengthUnit, prefs, isSelected) helper must exist');
+
+  const addCaseCalls = src.match(/addCaseToPack\(c\.id\)/g) || [];
+  assert.equal(addCaseCalls.length, 1,
+    'addCaseToPack(c.id) must appear exactly once now that Category and Manufacturer card bodies share one helper');
+});
+
+test('G1.2B-CASE-BROWSER-POLISH selected-case cue is derived from selectedInstanceIds and the current pack', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  const renderStart = src.indexOf('function renderCaseBrowser');
+  const helperStart = src.indexOf('function buildCaseBrowserCard');
+  assert.ok(renderStart >= 0 && helperStart > renderStart,
+    'renderCaseBrowser and buildCaseBrowserCard must both be present in order');
+  const renderBlock = src.slice(renderStart, helperStart);
+
+  assert.match(renderBlock, /StateStore\.get\('selectedInstanceIds'\)/,
+    'renderCaseBrowser must read selectedInstanceIds from StateStore');
+  assert.match(renderBlock, /PackLibrary\.getById\(StateStore\.get\('currentPackId'\)\)/,
+    'renderCaseBrowser must resolve the current pack via PackLibrary.getById(StateStore.get(\'currentPackId\'))');
+  assert.match(renderBlock, /selectedCaseIds\.add\(inst\.caseId\)/,
+    'renderCaseBrowser must map selected instance ids to their case ids via inst.caseId');
+});
+
+test('G1.2B-CASE-BROWSER-POLISH selected cue is applied per-card via selectedCaseIds.has(c.id)', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  assert.match(src, /card\.classList\.toggle\('tp3d-editor-case-browser-card--selected', Boolean\(isSelected\)\)/,
+    'buildCaseBrowserCard must toggle the selected modifier class based on isSelected');
+
+  const callSites = src.match(/buildCaseBrowserCard\(c, lengthUnit, prefs, selectedCaseIds\.has\(c\.id\)\)/g) || [];
+  assert.equal(callSites.length, 2,
+    'both the Category and Manufacturer grouped branches must call buildCaseBrowserCard with selectedCaseIds.has(c.id)');
+});
+
+test('G1.2B-CASE-BROWSER-POLISH Case Browser cards add no staged/packed badges or thumbnails', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  const helperStart = src.indexOf('function buildCaseBrowserCard');
+  const helperEnd = src.indexOf('\n    function openEditorNewCaseModal', helperStart);
+  const helperBlock = helperStart >= 0 && helperEnd > helperStart
+    ? src.slice(helperStart, helperEnd)
+    : '';
+  assert.ok(helperBlock, 'buildCaseBrowserCard helper body must be locatable');
+
+  assert.doesNotMatch(helperBlock, /staged|packed|Staged|Packed/,
+    'buildCaseBrowserCard must not introduce staged/packed badges');
+  assert.doesNotMatch(helperBlock, /<img|thumbnail|placeholder/i,
+    'buildCaseBrowserCard must not introduce thumbnails or placeholder images');
+});
+
+test('G1.2B-CASE-BROWSER-POLISH manufacturer group header no longer uses inline style.cssText', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  assert.doesNotMatch(src, /hdr\.style\.cssText/,
+    'the manufacturer group header must not use hdr.style.cssText for layout/typography');
+  assert.match(src, /hdr\.className = 'tp3d-editor-mfg-group-header'/,
+    'the manufacturer group header must use the new tp3d-editor-mfg-group-header class');
+});
+
+test('G1.2B-CASE-BROWSER-POLISH Case Browser block introduces no new inline CSS beyond the existing category-dot color', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  const renderStart = src.indexOf('function renderCaseBrowser');
+  const helperStart = src.indexOf('function buildCaseBrowserCard');
+  const helperEnd = src.indexOf('\n    function openEditorNewCaseModal', helperStart);
+  const block = src.slice(renderStart, helperEnd);
+
+  const styleAssignments = block.match(/\.style\.\w+\s*=/g) || [];
+  assert.deepEqual(styleAssignments, ['.style.background ='],
+    'the only inline style assignment in the Case Browser block must be the pre-existing catDot.style.background = catMeta.color pattern');
+});
+
+test('G1.2B-CASE-BROWSER-POLISH Add and drag-to-pack behavior is preserved in the shared card helper', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  const helperStart = src.indexOf('function buildCaseBrowserCard');
+  const helperEnd = src.indexOf('\n    function openEditorNewCaseModal', helperStart);
+  const helperBlock = src.slice(helperStart, helperEnd);
+
+  assert.match(helperBlock, /card\.draggable = true/,
+    'cards must remain draggable');
+  assert.match(helperBlock, /ev\.dataTransfer\.setData\('text\/plain', c\.id\)/,
+    'dragstart must still set text/plain to the case id');
+  assert.match(helperBlock, /addBtn\.addEventListener\('click', \(\) => addCaseToPack\(c\.id\)\)/,
+    'the Add button must still call addCaseToPack(c.id)');
+});
+
+test('G1.2B-CASE-BROWSER-POLISH new CSS classes use existing design tokens only', async () => {
+  const css = await fs.readFile(stylesMainPath, 'utf8');
+
+  const selectedMatch = css.match(/\.tp3d-editor-case-browser-card--selected\s*\{([^}]*)\}/);
+  assert.ok(selectedMatch, '.tp3d-editor-case-browser-card--selected must be defined in main.css');
+  assert.match(selectedMatch[1], /var\(--accent-primary-25\)/,
+    'the selected card border must use var(--accent-primary-25)');
+  assert.match(selectedMatch[1], /var\(--accent-primary-12\)/,
+    'the selected card background must use var(--accent-primary-12)');
+
+  const headerMatch = css.match(/\.tp3d-editor-mfg-group-header\s*\{([^}]*)\}/);
+  assert.ok(headerMatch, '.tp3d-editor-mfg-group-header must be defined in main.css');
+  assert.match(headerMatch[1], /var\(--text-secondary\)/,
+    'the manufacturer group header color must use var(--text-secondary)');
+  assert.match(headerMatch[1], /var\(--text-xs\)/,
+    'the manufacturer group header font-size must use var(--text-xs)');
+  assert.match(headerMatch[1], /var\(--font-semibold\)/,
+    'the manufacturer group header font-weight must use var(--font-semibold)');
+});
+
+// ── End G1.2B-CASE-BROWSER-POLISH ────────────────────────────────────────────

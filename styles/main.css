@@ -4183,6 +4183,20 @@ body.modal-open {
   margin-bottom: 2px;
 }
 
+.tp3d-editor-case-browser-card--selected {
+  border-color: var(--accent-primary-25);
+  background: var(--accent-primary-12);
+}
+
+.tp3d-editor-mfg-group-header {
+  padding: 8px 0 4px;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .tp3d-editor-card-dims.tp3d-editor-case-meta-primary,
 .tp3d-editor-card-dims.tp3d-editor-case-meta-secondary {
   font-size: var(--text-sm);
@@ -4250,6 +4264,42 @@ body.modal-open {
   align-items: center;
   padding-top: 10px;
   background: var(--bg-secondary);
+}
+
+.tp3d-editor-browser-group-tabs {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.tp3d-editor-browser-group-tabs .tp3d-browser-tab {
+  flex: 1;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  border-radius: var(--radius-sm);
+}
+
+.tp3d-editor-browser-group-tabs .tp3d-browser-tab:hover {
+  background: var(--bg-hover);
+  box-shadow: none;
+  transform: none;
+}
+
+.tp3d-editor-browser-group-tabs .tp3d-browser-tab.btn-primary {
+  background: var(--accent-primary);
+  color: var(--text-inverse);
+}
+
+.tp3d-editor-browser-group-tabs .tp3d-browser-tab.btn-primary:hover {
+  background: var(--accent-hover);
 }
 
 .tp3d-editor-new-case-btn {

@@ -680,6 +680,65 @@ export function createSceneRuntime({
       return trimmed;
     }
 
+    // G1.1C: thin solid BoxGeometry "rails" along the truck's exterior
+    // edges. THREE.LineBasicMaterial.linewidth is set on the existing
+    // wireframe but is not reliably honored by WebGL (most browsers clamp
+    // it to 1px), so the outer silhouette can look thin/unconfident. A
+    // small extruded box per edge stays visible regardless of linewidth
+    // support, without changing any truck/case geometry.
+    const RAIL_THICKNESS = 0.05;
+
+    // Adds one rail as a BoxGeometry mesh spanning the axis-aligned segment
+    // a->b, extended by half-thickness on each end so adjoining rails meet
+    // cleanly at corners.
+    function addRailEdge(group, a, b, material) {
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const dz = b.z - a.z;
+      const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (length <= 1e-6) return;
+
+      let sx = RAIL_THICKNESS;
+      let sy = RAIL_THICKNESS;
+      let sz = RAIL_THICKNESS;
+      if (Math.abs(dx) >= Math.abs(dy) && Math.abs(dx) >= Math.abs(dz)) {
+        sx = length + RAIL_THICKNESS;
+      } else if (Math.abs(dy) >= Math.abs(dz)) {
+        sy = length + RAIL_THICKNESS;
+      } else {
+        sz = length + RAIL_THICKNESS;
+      }
+
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), material);
+      mesh.position.set((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+      group.add(mesh);
+    }
+
+    // Adds the 12 outer-edge rails of an axis-aligned box (x0..x1, y0..y1,
+    // z0..z1). opts.openMinX/opts.openMaxX skip the 4 rails on that end-cap
+    // face - matching addTrailerVolume's trimSeamEdges so the shared seam
+    // between the main box and a front overhang is never railed and no
+    // internal divider returns. opts.minXMat/opts.maxXMat/opts.sideMat pick
+    // the rail material per face.
+    function addBoxRails(group, x0, x1, y0, y1, z0, z1, opts = {}) {
+      if (!opts.openMinX) {
+        addRailEdge(group, new THREE.Vector3(x0, y0, z0), new THREE.Vector3(x0, y1, z0), opts.minXMat);
+        addRailEdge(group, new THREE.Vector3(x0, y0, z1), new THREE.Vector3(x0, y1, z1), opts.minXMat);
+        addRailEdge(group, new THREE.Vector3(x0, y0, z0), new THREE.Vector3(x0, y0, z1), opts.minXMat);
+        addRailEdge(group, new THREE.Vector3(x0, y1, z0), new THREE.Vector3(x0, y1, z1), opts.minXMat);
+      }
+      if (!opts.openMaxX) {
+        addRailEdge(group, new THREE.Vector3(x1, y0, z0), new THREE.Vector3(x1, y1, z0), opts.maxXMat);
+        addRailEdge(group, new THREE.Vector3(x1, y0, z1), new THREE.Vector3(x1, y1, z1), opts.maxXMat);
+        addRailEdge(group, new THREE.Vector3(x1, y0, z0), new THREE.Vector3(x1, y0, z1), opts.maxXMat);
+        addRailEdge(group, new THREE.Vector3(x1, y1, z0), new THREE.Vector3(x1, y1, z1), opts.maxXMat);
+      }
+      addRailEdge(group, new THREE.Vector3(x0, y0, z0), new THREE.Vector3(x1, y0, z0), opts.sideMat);
+      addRailEdge(group, new THREE.Vector3(x0, y0, z1), new THREE.Vector3(x1, y0, z1), opts.sideMat);
+      addRailEdge(group, new THREE.Vector3(x0, y1, z0), new THREE.Vector3(x1, y1, z0), opts.sideMat);
+      addRailEdge(group, new THREE.Vector3(x0, y1, z1), new THREE.Vector3(x1, y1, z1), opts.sideMat);
+    }
+
     // Adds a translucent trailer volume (walls + wireframe edges + floor)
     // centered at centerX, sharing materials with the main cargo box so the
     // front overhang reads as the same usable cargo space, just narrower.
@@ -860,6 +919,25 @@ export function createSceneRuntime({
         linewidth: 2,
       });
 
+      // G1.1C: mesh-based exterior rails - same color coding as the
+      // door/cab end-cap cues above, but as solid BoxGeometry so the
+      // outer silhouette reads clearly regardless of WebGL linewidth.
+      const railAccentMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(accent),
+        transparent: true,
+        opacity: 0.9,
+      });
+      const railDoorMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(0x26c97a),
+        transparent: true,
+        opacity: 0.9,
+      });
+      const railCabMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(0xf7385c),
+        transparent: true,
+        opacity: 0.9,
+      });
+
       // Main cargo box: x=0..truck.length, full width/height, floor at y=0.
       // x=0 is the rear/loading-door end (green cue). When a front overhang
       // is attached, omit the +X end cap so the two volumes read as one
@@ -890,6 +968,37 @@ export function createSceneRuntime({
           maxXLineMat: cabLineMat,
         });
       }
+
+      // G1.1C: mesh-based exterior rails for the truck/trailer outer
+      // silhouette. Main box rails mirror addTrailerVolume's openMaxX/
+      // openMinX seam handling above, so the shared seam at x=lengthW is
+      // never railed and no internal divider returns when an overhang is
+      // present.
+      const railsGroup = new THREE.Group();
+      railsGroup.name = 'truckOuterRails';
+      addBoxRails(railsGroup, 0, lengthW, 0, heightW, -widthW / 2, widthW / 2, {
+        openMaxX: Boolean(bonus),
+        minXMat: railDoorMat,
+        maxXMat: bonus ? undefined : railCabMat,
+        sideMat: railAccentMat,
+      });
+      if (bonus) {
+        addBoxRails(
+          railsGroup,
+          toWorld(bonus.min.x),
+          toWorld(bonus.max.x),
+          toWorld(bonus.min.y),
+          toWorld(bonus.max.y),
+          toWorld(bonus.min.z),
+          toWorld(bonus.max.z),
+          {
+            openMinX: true,
+            maxXMat: railCabMat,
+            sideMat: railAccentMat,
+          }
+        );
+      }
+      truck.add(railsGroup);
 
       scene.add(truck);
 

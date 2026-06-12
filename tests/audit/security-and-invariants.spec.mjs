@@ -10619,3 +10619,155 @@ test('G1.1B-SCENE-CUE-CLEANUP cab-over/frontBonus geometry contracts remain unto
 });
 
 // ── End G1.1B-SCENE-CUE-CLEANUP ───────────────────────────────────────────────
+
+// ── G1.1C-EXTERIOR-RAILS ───────────────────────────────────────────────────────
+
+const g11cExteriorRailsFiles = new Set([
+  'src/editor/scene-runtime.js',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
+
+test('G1.1C-EXTERIOR-RAILS changed files stay inside the approved narrow scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !g11cExteriorRailsFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'G1.1C-EXTERIOR-RAILS must stay inside src/editor/scene-runtime.js and this test file only');
+  assert.ok(!changedFiles.has('src/services/autopack-engine.js'),
+    'G1.1C-EXTERIOR-RAILS must not touch src/services/autopack-engine.js');
+  assert.ok(!changedFiles.has('src/services/autopack-solver.js'),
+    'G1.1C-EXTERIOR-RAILS must not touch src/services/autopack-solver.js');
+  assert.ok(!changedFiles.has('src/app.js'),
+    'G1.1C-EXTERIOR-RAILS must not touch src/app.js');
+  assert.ok(!changedFiles.has('src/services/pack-library.js'),
+    'G1.1C-EXTERIOR-RAILS must not touch src/services/pack-library.js');
+  assert.ok(!changedFiles.has('src/screens/editor-screen.js'),
+    'G1.1C-EXTERIOR-RAILS must not touch src/screens/editor-screen.js');
+});
+
+test('G1.1C-EXTERIOR-RAILS truck outer rails are built from mesh geometry, not line-only wireframe', async () => {
+  const src = await fs.readFile(sceneRuntimePath, 'utf8');
+
+  assert.match(src, /function addRailEdge\(group, a, b, material\)/,
+    'a rail-edge helper must exist for the mesh-based exterior rails');
+  assert.match(src, /new THREE\.Mesh\(new THREE\.BoxGeometry\(sx, sy, sz\), material\)/,
+    'each exterior rail must be a THREE.BoxGeometry mesh, not a LineSegments/EdgesGeometry overlay');
+
+  assert.match(src, /function addBoxRails\(group, x0, x1, y0, y1, z0, z1, opts = \{\}\)/,
+    'an addBoxRails helper must build the 12 outer-edge rails of an axis-aligned box');
+
+  // truckOuterRails group exists and is added under the truck group.
+  assert.match(src, /const railsGroup = new THREE\.Group\(\);\s*railsGroup\.name = 'truckOuterRails';/,
+    'a truckOuterRails group must be created');
+  assert.match(src, /truck\.add\(railsGroup\);/,
+    'truckOuterRails group must be added under the truck group so existing disposal cleans it up');
+});
+
+test('G1.1C-EXTERIOR-RAILS introduces no sprites, CSS2D labels, or arrow indicators', async () => {
+  const src = await fs.readFile(sceneRuntimePath, 'utf8');
+
+  // Scope to the new rail helpers + truckOuterRails construction block, not
+  // the whole module (the axis gizmo elsewhere in scene-runtime.js already
+  // legitimately uses THREE.Sprite and predates G1.1C).
+  const railHelpersStart = src.indexOf('function addRailEdge(group, a, b, material)');
+  const railHelpersEnd = src.indexOf('\n    function addTrailerVolume', railHelpersStart);
+  const railHelpersBlock = railHelpersStart >= 0 && railHelpersEnd > railHelpersStart
+    ? src.slice(railHelpersStart, railHelpersEnd)
+    : '';
+  assert.ok(railHelpersBlock, 'addRailEdge/addBoxRails helpers must be defined in scene-runtime.js');
+
+  const railsGroupStart = src.indexOf("railsGroup.name = 'truckOuterRails'");
+  const railsGroupEnd = src.indexOf('truck.add(railsGroup);', railsGroupStart);
+  const railsGroupBlock = railsGroupStart >= 0 && railsGroupEnd > railsGroupStart
+    ? src.slice(railsGroupStart, railsGroupEnd)
+    : '';
+  assert.ok(railsGroupBlock, 'truckOuterRails construction block must exist in setTruck');
+
+  const railBlocks = `${railHelpersBlock}\n${railsGroupBlock}`;
+  assert.doesNotMatch(railBlocks, /THREE\.Sprite|CSS2DObject|CSS2DRenderer/,
+    'exterior rails must not use THREE.Sprite or CSS2D labels');
+  assert.doesNotMatch(railBlocks, /ArrowHelper/,
+    'exterior rails must not add THREE.ArrowHelper-based direction indicators');
+  assert.doesNotMatch(railBlocks, /Arrow/,
+    'exterior rails must not define arrow-shaped indicators');
+});
+
+test('G1.1C-EXTERIOR-RAILS standard/rect mode rails the main box with door (green) and cab (red) end-cap rails', async () => {
+  const src = await fs.readFile(sceneRuntimePath, 'utf8');
+
+  // Rail materials reuse the same door/cab colors as the G2.2E/G1.1B
+  // end-cap line cues, as solid mesh materials.
+  assert.match(src, /const railDoorMat = new THREE\.MeshBasicMaterial\(\{\s*color: new THREE\.Color\(0x26c97a\),/,
+    'rear/loading-door rail material must be green (0x26c97a)');
+  assert.match(src, /const railCabMat = new THREE\.MeshBasicMaterial\(\{\s*color: new THREE\.Color\(0xf7385c\),/,
+    'front/cab rail material must be red (0xf7385c)');
+  assert.match(src, /const railAccentMat = new THREE\.MeshBasicMaterial\(\{\s*color: new THREE\.Color\(accent\),/,
+    'long side/top/floor rails must use the neutral accent color');
+
+  // Main box rail call wires minX -> door (green), maxX -> cab (red) when no
+  // overhang is present, matching the G1 direction model (rear=x:0,
+  // front=x:truck.length).
+  assert.match(src, /addBoxRails\(railsGroup, 0, lengthW, 0, heightW, -widthW \/ 2, widthW \/ 2, \{\s*openMaxX: Boolean\(bonus\),\s*minXMat: railDoorMat,\s*maxXMat: bonus \? undefined : railCabMat,\s*sideMat: railAccentMat,\s*\}\)/,
+    'main box outer rails must use railDoorMat at x=0 (rear) and railCabMat at x=truck.length (front) when no overhang is present');
+});
+
+test('G1.1C-EXTERIOR-RAILS frontBonus rails the stepped silhouette without railing the open internal seam', async () => {
+  const src = await fs.readFile(sceneRuntimePath, 'utf8');
+
+  // Main box: maxX rails are skipped (openMaxX) when an overhang is
+  // present, so the shared seam at x=lengthW is never railed - mirrors
+  // addTrailerVolume's openMaxX/trimSeamEdges handling from G1.1B.
+  const mainRailsMatch = src.match(/addBoxRails\(railsGroup, 0, lengthW, 0, heightW, -widthW \/ 2, widthW \/ 2, \{([\s\S]*?)\}\);/);
+  assert.ok(mainRailsMatch, 'main box rail call must exist');
+  assert.match(mainRailsMatch[1], /openMaxX: Boolean\(bonus\)/,
+    'main box rails must skip the +X end-cap rails when a frontBonus overhang is present (open seam)');
+
+  // Overhang volume: minX rails are skipped (openMinX), so the overhang
+  // side of the same seam is also never railed.
+  const bonusBlockStart = src.indexOf('if (bonus) {', src.indexOf('railsGroup.name'));
+  const bonusBlockEnd = src.indexOf('truck.add(railsGroup);', bonusBlockStart);
+  const bonusRailsBlock = bonusBlockStart >= 0 && bonusBlockEnd > bonusBlockStart
+    ? src.slice(bonusBlockStart, bonusBlockEnd)
+    : '';
+  assert.ok(bonusRailsBlock, 'frontBonus rail block must exist');
+  assert.match(bonusRailsBlock, /openMinX: true/,
+    'overhang rails must skip the -X end-cap rails (open seam shared with the main box)');
+  assert.match(bonusRailsBlock, /maxXMat: railCabMat/,
+    'overhang far end cap (front-most, x=truck.length+bonusLength) must use railCabMat (red)');
+});
+
+test('G1.1C-EXTERIOR-RAILS wheel-well blocked guide zones are not railed as truck frame edges', async () => {
+  const src = await fs.readFile(sceneRuntimePath, 'utf8');
+
+  // The wheel-well blocked-zone guide boxes (addGuideBox + getWheelWellsBlockedZones)
+  // must remain a separate translucent guide path, not part of addBoxRails.
+  const guidesStart = src.indexOf('function updateTrailerShapeGuides(truckInches)');
+  const guidesEnd = src.indexOf('\n    function trimSeamEdges', guidesStart);
+  const guidesBlock = guidesStart >= 0 && guidesEnd > guidesStart ? src.slice(guidesStart, guidesEnd) : '';
+  assert.ok(guidesBlock, 'updateTrailerShapeGuides must be defined in scene-runtime.js');
+  assert.doesNotMatch(guidesBlock, /addBoxRails|addRailEdge|railsGroup/,
+    'wheel-well/cab-void blocked-zone guides must not call the rail helpers');
+
+  // The rail-building call sites (in setTruck) must not reference the
+  // wheel-well/cab-void guide zone helpers.
+  const railsGroupStart = src.indexOf("railsGroup.name = 'truckOuterRails'");
+  const railsGroupEnd = src.indexOf('truck.add(railsGroup);', railsGroupStart);
+  const railsBlock = railsGroupStart >= 0 && railsGroupEnd > railsGroupStart
+    ? src.slice(railsGroupStart, railsGroupEnd)
+    : '';
+  assert.ok(railsBlock, 'truckOuterRails construction block must exist in setTruck');
+  assert.doesNotMatch(railsBlock, /getWheelWellsBlockedZones|getFrontBonusBlockedZones|addGuideBox/,
+    'truck outer rails must not be derived from wheel-well/cab-void blocked-zone guide geometry');
+});
+
+// ── End G1.1C-EXTERIOR-RAILS ───────────────────────────────────────────────────

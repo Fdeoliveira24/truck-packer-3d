@@ -644,13 +644,40 @@ export function createSceneRuntime({
       group.name = 'truckShapeGuides';
 
       guideZones.forEach(z => {
-        addGuideBox(group, z, { fillColor: 0xff3b30, lineColor: 0xff3b30, opacity: 0.18, lineOpacity: 0.6 });
+        // G1.1B: raised from opacity 0.13/lineOpacity 0.48 - blocked/no-load
+        // zones (wheel wells, cab void) still read as too faint to clearly
+        // signal "no cargo here". Still translucent, but the fill and
+        // outline are now strong enough to read as a blocked zone at a
+        // glance.
+        addGuideBox(group, z, { fillColor: 0xff3b30, lineColor: 0xff3b30, opacity: 0.16, lineOpacity: 0.55 });
       });
 
       if (!group.children.length) return;
       truck.add(group);
       trailerShapeGuides = group;
       if (scene.userData) scene.userData.shapeGuides = group;
+    }
+
+    // Drops edge segments that lie exactly on one of the given local-X
+    // planes from an EdgesGeometry. Used by addTrailerVolume() to remove the
+    // "ghost" outline edges left behind at a seam where an end cap was
+    // intentionally omitted (openMinX/openMaxX). Geometry-only change to the
+    // wireframe; the underlying box dimensions/positions are untouched.
+    function trimSeamEdges(edgesGeo, seamLocalXs) {
+      const pos = edgesGeo.getAttribute('position');
+      const EPS = 1e-4;
+      const kept = [];
+      for (let i = 0; i < pos.count; i += 2) {
+        const ax = pos.getX(i);
+        const bx = pos.getX(i + 1);
+        const onSeam = seamLocalXs.some(sx => Math.abs(ax - sx) < EPS && Math.abs(bx - sx) < EPS);
+        if (onSeam) continue;
+        kept.push(pos.getX(i), pos.getY(i), pos.getZ(i), pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1));
+      }
+      edgesGeo.dispose();
+      const trimmed = new THREE.BufferGeometry();
+      trimmed.setAttribute('position', new THREE.Float32BufferAttribute(kept, 3));
+      return trimmed;
     }
 
     // Adds a translucent trailer volume (walls + wireframe edges + floor)
@@ -671,14 +698,17 @@ export function createSceneRuntime({
       const yMid = baseY + heightW / 2;
       const yTop = baseY + heightW;
 
-      function addFace(geo, position, rotation, faceLineMat) {
+      function addFace(geo, position, rotation, faceLineMat, seamLocalXs) {
         const mesh = new THREE.Mesh(geo, mat);
         mesh.position.copy(position);
         if (rotation) mesh.rotation.copy(rotation);
         mesh.receiveShadow = false;
         group.add(mesh);
 
-        const edges = new THREE.EdgesGeometry(geo);
+        const edges =
+          seamLocalXs && seamLocalXs.length
+            ? trimSeamEdges(new THREE.EdgesGeometry(geo), seamLocalXs)
+            : new THREE.EdgesGeometry(geo);
         const wire = new THREE.LineSegments(edges, faceLineMat || lineMat);
         wire.position.copy(mesh.position);
         if (rotation) wire.rotation.copy(rotation);
@@ -702,12 +732,37 @@ export function createSceneRuntime({
         );
       }
 
-      addFace(new THREE.PlaneGeometry(lengthW, heightW), new THREE.Vector3(centerX, yMid, -widthW / 2));
-      addFace(new THREE.PlaneGeometry(lengthW, heightW), new THREE.Vector3(centerX, yMid, widthW / 2));
+      // G1.1B: side walls and ceiling each carry their own edge along the
+      // seam where an end cap was omitted (openMinX/openMaxX). Left as-is,
+      // that edge still draws a "ghost" outline of the removed cap, and for
+      // the front overhang it duplicates part of the main box's edge at the
+      // same X - the extra internal divider/seam lines seen in Box + Front
+      // Overhang. Trim those edges so the two volumes read as one
+      // continuous space with no inner seam line.
+      const seamLocalXs = [];
+      if (opts.openMinX) seamLocalXs.push(-lengthW / 2);
+      if (opts.openMaxX) seamLocalXs.push(lengthW / 2);
+
+      addFace(
+        new THREE.PlaneGeometry(lengthW, heightW),
+        new THREE.Vector3(centerX, yMid, -widthW / 2),
+        null,
+        null,
+        seamLocalXs
+      );
+      addFace(
+        new THREE.PlaneGeometry(lengthW, heightW),
+        new THREE.Vector3(centerX, yMid, widthW / 2),
+        null,
+        null,
+        seamLocalXs
+      );
       addFace(
         new THREE.PlaneGeometry(lengthW, widthW),
         new THREE.Vector3(centerX, yTop, 0),
-        new THREE.Euler(-Math.PI / 2, 0, 0)
+        new THREE.Euler(-Math.PI / 2, 0, 0),
+        null,
+        seamLocalXs
       );
 
       const floorGeo = new THREE.PlaneGeometry(lengthW, widthW);
@@ -788,16 +843,20 @@ export function createSceneRuntime({
       // (the main box's +X cap, or the overhang's +X cap when present) is
       // always red, so front/rear stay visually distinguishable from any
       // angle without adding text sprites.
+      // G1.1B: opacity raised from 0.78 - at 0.78 the end-cap cues still
+      // read as barely-visible in browser review. 0.9 keeps them short
+      // line segments (not full sprites/labels) while making the
+      // rear/front color coding actually useful at a glance.
       const doorLineMat = new THREE.LineBasicMaterial({
         color: new THREE.Color(0x26c97a),
         transparent: true,
-        opacity: 0.95,
+        opacity: 0.9,
         linewidth: 2,
       });
       const cabLineMat = new THREE.LineBasicMaterial({
         color: new THREE.Color(0xf7385c),
         transparent: true,
-        opacity: 0.95,
+        opacity: 0.9,
         linewidth: 2,
       });
 

@@ -10456,3 +10456,166 @@ test('placement-safety-euler-order getOrientedDimsForRotation compound X+Z gives
   assert.deepEqual(result, { length: 30, height: 24, width: 48 },
     'compound X+Z rotation AABB must match THREE.js matrix Rx*Ry*Rz applied in Rz-first order');
 });
+
+// ── G1.1B-SCENE-CUE-CLEANUP ──────────────────────────────────────────────────
+
+const g11bSceneCueCleanupFiles = new Set([
+  'src/editor/scene-runtime.js',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
+
+test('G1.1B-SCENE-CUE-CLEANUP changed files stay inside the approved narrow scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !g11bSceneCueCleanupFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'G1.1B-SCENE-CUE-CLEANUP must stay inside src/editor/scene-runtime.js and this test file only');
+  assert.ok(!changedFiles.has('src/services/autopack-engine.js'),
+    'G1.1B-SCENE-CUE-CLEANUP must not touch src/services/autopack-engine.js');
+  assert.ok(!changedFiles.has('src/services/autopack-solver.js'),
+    'G1.1B-SCENE-CUE-CLEANUP must not touch src/services/autopack-solver.js');
+});
+
+test('G1.1B-SCENE-CUE-CLEANUP scene-runtime defines no ArrowHelper or other large default direction-arrow indicators', async () => {
+  const src = await fs.readFile(sceneRuntimePath, 'utf8');
+
+  assert.doesNotMatch(src, /ArrowHelper/,
+    'scene-runtime must not add THREE.ArrowHelper-based direction indicators to the default scene');
+  assert.doesNotMatch(src, /Arrow/,
+    'scene-runtime must not define arrow-shaped direction indicators');
+});
+
+test('G1.1B-SCENE-CUE-CLEANUP direction-cue and shape-guide code paths use no THREE.Sprite or CSS2D labels', async () => {
+  const src = await fs.readFile(sceneRuntimePath, 'utf8');
+
+  // Direction-cue block (door/cab end-cap line materials).
+  const cuesStart = src.indexOf('const doorLineMat = new THREE.LineBasicMaterial(');
+  const cuesEnd = src.indexOf('maxXLineMat: cabLineMat', cuesStart);
+  const cuesBlock = cuesStart >= 0 && cuesEnd > cuesStart ? src.slice(cuesStart, cuesEnd) : '';
+  assert.ok(cuesBlock, 'direction-cue setup block must be present in setTruck');
+  assert.doesNotMatch(cuesBlock, /THREE\.Sprite|CSS2DObject/,
+    'rear/front end-cap direction cues must not use THREE.Sprite or CSS2DObject');
+
+  // Cab-void / wheel-well guide-box block.
+  const guidesStart = src.indexOf('function updateTrailerShapeGuides(truckInches)');
+  const guidesEnd = src.indexOf('\n    function addTrailerVolume', guidesStart);
+  const guidesBlock = guidesStart >= 0 && guidesEnd > guidesStart ? src.slice(guidesStart, guidesEnd) : '';
+  assert.ok(guidesBlock, 'updateTrailerShapeGuides must be defined in scene-runtime.js');
+  assert.doesNotMatch(guidesBlock, /THREE\.Sprite|CSS2DObject/,
+    'cab-void/wheel-well blocked-zone guides must not use THREE.Sprite or CSS2DObject');
+
+  assert.doesNotMatch(src, /CSS2DRenderer|CSS2DObject/,
+    'scene-runtime must not introduce CSS2D label rendering');
+});
+
+test('G1.1B-SCENE-CUE-CLEANUP end-cap direction cues remain subtle (reduced opacity) but still distinct and correctly mapped', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const src = await fs.readFile(sceneRuntimePath, 'utf8');
+  const truck = { length: 240, width: 96, height: 72 };
+  const model = PackLibrary.getTruckDirectionModel(truck);
+
+  assert.equal(model.rear.value, 0, 'G1 direction model: rear/loading-door is x=0');
+  assert.equal(model.front.value, truck.length, 'G1 direction model: front/cab is x=truck.length');
+
+  // doorLineMat (green) maps to the rear/loading-door end (x=0, minX cap).
+  assert.match(src, /const doorLineMat = new THREE\.LineBasicMaterial\(\{\s*color: new THREE\.Color\(0x26c97a\),\s*transparent: true,\s*opacity: 0\.9,/,
+    'rear/loading-door end-cap cue must remain green and be tuned to opacity 0.9 (clearly visible, was 0.78)');
+  assert.match(src, /minXLineMat: doorLineMat/,
+    'main cargo box minX cap (x=0, rear/loading-door per G1 direction model) must use doorLineMat');
+
+  // cabLineMat (red) maps to the front/cab end (the main box's maxX cap, or
+  // the overhang's maxX cap when a frontBonus overhang is present).
+  assert.match(src, /const cabLineMat = new THREE\.LineBasicMaterial\(\{\s*color: new THREE\.Color\(0xf7385c\),\s*transparent: true,\s*opacity: 0\.9,/,
+    'front/cab end-cap cue must remain red and be tuned to opacity 0.9 (clearly visible, was 0.78)');
+  assert.match(src, /maxXLineMat: bonus \? undefined : cabLineMat/,
+    'main cargo box maxX cap (x=truck.length, front/cab per G1 direction model) must use cabLineMat when no overhang is present');
+  assert.match(src, /maxXLineMat: cabLineMat/,
+    'overhang volume maxX cap (front/cab side) must use cabLineMat when a frontBonus overhang is present');
+});
+
+test('G1.1B-SCENE-CUE-CLEANUP cab-void/wheel-well guide box intensity is reduced but still rendered (not removed)', async () => {
+  const src = await fs.readFile(sceneRuntimePath, 'utf8');
+
+  assert.match(src, /addGuideBox\(group, z, \{ fillColor: 0xff3b30, lineColor: 0xff3b30, opacity: 0\.16, lineOpacity: 0\.55 \}\)/,
+    'blocked/no-load guide box (cab void + wheel wells) must remain present with tuned opacity/lineOpacity (readable but translucent, was 0.13/0.48)');
+
+  // Still wired up for both shape modes that rely on it.
+  assert.match(src, /TrailerGeometry\.getWheelWellsBlockedZones\(truckInches\)/,
+    'wheel-well blocked zones must still be rendered via the guide-box helper');
+  assert.match(src, /TrailerGeometry\.getFrontBonusBlockedZones\(truckInches\)/,
+    'frontBonus cab-void zone must still be rendered via the guide-box helper');
+});
+
+test('G1.1B-SCENE-CUE-CLEANUP front-overhang seam edges are trimmed without touching end-cap or geometry contracts', async () => {
+  const src = await fs.readFile(sceneRuntimePath, 'utf8');
+
+  // A dedicated, geometry-only helper trims the "ghost" outline edges left
+  // at an omitted end cap (openMinX/openMaxX) - this is what removes the
+  // extra internal divider/seam lines in Box + Front Overhang.
+  assert.match(src, /function trimSeamEdges\(edgesGeo, seamLocalXs\)/,
+    'a trimSeamEdges helper must exist to remove ghost seam-line edges at omitted end caps');
+
+  const addTrailerVolumeStart = src.indexOf('function addTrailerVolume(');
+  const addTrailerVolumeEnd = src.indexOf('\n    function setTruck(', addTrailerVolumeStart);
+  const volumeBlock = addTrailerVolumeStart >= 0 && addTrailerVolumeEnd > addTrailerVolumeStart
+    ? src.slice(addTrailerVolumeStart, addTrailerVolumeEnd)
+    : '';
+  assert.ok(volumeBlock, 'addTrailerVolume must be defined in scene-runtime.js');
+
+  // Side walls and ceiling pass seamLocalXs derived from openMinX/openMaxX so
+  // their edges are trimmed at a seam where an end cap was omitted.
+  assert.match(volumeBlock, /const seamLocalXs = \[\];/,
+    'addTrailerVolume must compute which local-X seam(s), if any, to trim');
+  assert.match(volumeBlock, /if \(opts\.openMinX\) seamLocalXs\.push\(-lengthW \/ 2\);/,
+    'an omitted minX end cap must trim the matching -lengthW/2 seam edge');
+  assert.match(volumeBlock, /if \(opts\.openMaxX\) seamLocalXs\.push\(lengthW \/ 2\);/,
+    'an omitted maxX end cap must trim the matching lengthW/2 seam edge');
+
+  // End-cap faces (minX/maxX, which carry the door/cab direction cues when
+  // present) must keep their full, untrimmed EdgesGeometry - only the
+  // side-wall/ceiling seam edges are trimmed.
+  const minXFaceEnd = volumeBlock.indexOf('opts.minXLineMat');
+  const minXFaceBlock = volumeBlock.slice(0, minXFaceEnd);
+  assert.match(minXFaceBlock, /new THREE\.EdgesGeometry\(geo\)/,
+    'minX end-cap face must still call addFace without seam trimming');
+
+  const maxXFaceStart = volumeBlock.indexOf('opts.openMaxX');
+  const maxXFaceBlock = volumeBlock.slice(maxXFaceStart, volumeBlock.indexOf('seamLocalXs', maxXFaceStart));
+  assert.doesNotMatch(maxXFaceBlock, /seamLocalXs/,
+    'maxX end-cap face must not be passed seamLocalXs (direction cue outline stays intact)');
+});
+
+test('G1.1B-SCENE-CUE-CLEANUP cab-over/frontBonus geometry contracts remain untouched', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 240,
+    width: 96,
+    height: 72,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 60, bonusWidth: 54, bonusHeight: 24 },
+  };
+
+  const zones = PackLibrary.getTrailerUsableZones(truck);
+  const overhangZone = zones.find(z => z.min.x === truck.length);
+  assert.ok(overhangZone, 'frontBonus overhang usable zone must still start at x=truck.length');
+  assert.equal(overhangZone.max.x, truck.length + truck.shapeConfig.bonusLength,
+    'frontBonus overhang usable zone must still extend by bonusLength (geometry untouched by visual cue cleanup)');
+
+  const blocked = PackLibrary.getFrontBonusBlockedZones(truck);
+  assert.deepEqual(blocked[0], {
+    min: { x: truck.length, y: 0, z: -truck.width / 2 },
+    max: { x: truck.length + truck.shapeConfig.bonusLength, y: truck.shapeConfig.bonusHeight, z: truck.width / 2 },
+  }, 'cab-void blocked zone must remain x:truck.length..truck.length+bonusLength, y:0..bonusHeight, full width');
+});
+
+// ── End G1.1B-SCENE-CUE-CLEANUP ───────────────────────────────────────────────

@@ -138,9 +138,12 @@ export function createAutoPackEngine({
       const truckH = truck.height || 98;
       const zones = TrailerGeometry.getTrailerUsableZones(truck);
 
-      // For frontBonus, keep the current front-to-rear behavior.
-      // For everything else, pack rear-to-front (low X first).
-      const loadFrontFirst = mode === 'frontBonus';
+      // All truck modes default to front-first loading (high X first), keeping
+      // Standard, Wheel Wells, and Front Overhang consistent. This flag only
+      // affects placement ordering/anchoring; usable and blocked zones (wheel
+      // wells, cab void) are resolved separately via getTrailerUsableZones and
+      // are unaffected by load direction.
+      const loadFrontFirst = true;
       const xStep = Math.max(2, Math.min(12, truckL / 60));
       const zStep = Math.max(2, Math.min(12, truckW / 20));
 

@@ -515,10 +515,10 @@ Release-gate items block **public launch**, not isolated product development. Pr
 ### 5A — Near-Term Correctness Fixes
 | Status | Item |
 |--------|------|
-| ⬜ | **A1.1B — Fix default packing direction**: Standard and Wheel Wells pack rear-first today. All three modes should pack front-first. Change `const loadFrontFirst = mode === 'frontBonus'` to always `true`. Files: `src/services/autopack-engine.js`, `tests/audit/security-and-invariants.spec.mjs`. |
-| ⬜ | Standard packs front-first |
-| ⬜ | Wheel Wells packs front-first while respecting wheel-well zones |
-| ⬜ | Front Overhang remains front-first and cab-void safe (no change needed) |
+| 🔄 | **A1.1B — Fix default packing direction** — Implemented, awaiting manual browser review. Changed `const loadFrontFirst = mode === 'frontBonus'` → `const loadFrontFirst = true` in `src/services/autopack-engine.js` so all three modes pack front-first. Engine-only change; `loadFrontFirst` only affects placement ordering/anchoring (zones resolved separately, so containment/blocked zones unchanged). Added source-ownership test in `tests/audit/security-and-invariants.spec.mjs`; full suite 549/549, lint 0 errors, typecheck clean. |
+| 🔄 | Standard packs front-first — engine default now `true` (mode `rect`); awaiting manual browser review |
+| 🔄 | Wheel Wells packs front-first while respecting wheel-well zones — engine default now `true` (mode `wheelWells`); blocked zones come from `getTrailerUsableZones` and are unaffected by direction; awaiting manual browser review |
+| ✅ | Front Overhang remains front-first and cab-void safe (no change needed) — already front-first; behavior unchanged |
 | 🚫 | **Fix stacking bug**: `noStackOnTop` / `stackable: false` not enforced in `findRestingY()` or `collides()` — **blocked until geometry epsilon (3B) is unified** |
 | 🚫 | **Fix stacking bug**: `maxStackCount` not enforced in AutoPack — **blocked until geometry epsilon (3B) is unified** |
 | 🚫 | **Fix scoring bug**: `STACKING_BONUS` flat +1200 cancels gravity penalty at ~80" height — scale the bonus or remove gravity penalty for already-stacked placements — **blocked until geometry epsilon (3B) is unified** |

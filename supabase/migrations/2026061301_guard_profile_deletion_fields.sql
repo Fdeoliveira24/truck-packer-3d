@@ -26,6 +26,12 @@ language plpgsql
 -- Runs with invoker rights (the default) so current_user reflects the real
 -- caller's role and service-role / authenticated can be distinguished. Do not
 -- change it to run with definer rights.
+--
+-- search_path is locked to '' so name resolution can never be redirected by a
+-- caller-controlled search_path. The body only uses pg_catalog built-ins
+-- (current_setting, nullif, the jsonb cast and ->> operator, current_user),
+-- which still resolve under an empty search_path.
+set search_path = ''
 as $$
 declare
   claim_role text;
@@ -69,3 +75,20 @@ drop trigger if exists tp3d_profiles_guard_deletion_fields on public.profiles;
 create trigger tp3d_profiles_guard_deletion_fields
 before update on public.profiles
 for each row execute function public.tp3d_guard_profile_deletion_fields();
+
+-- Defense in depth: this is a trigger function and cannot be invoked directly
+-- (PostgreSQL rejects direct calls to trigger-returning functions and PostgREST
+-- never exposes them as RPC). Revoke EXECUTE from client-reachable roles anyway
+-- so it can never appear on any callable surface. Trigger execution does NOT
+-- depend on the caller holding EXECUTE on the function, so the guard keeps
+-- firing for every UPDATE regardless of these revokes.
+revoke execute on function public.tp3d_guard_profile_deletion_fields() from public;
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'revoke execute on function public.tp3d_guard_profile_deletion_fields() from anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'revoke execute on function public.tp3d_guard_profile_deletion_fields() from authenticated';
+  end if;
+end $$;

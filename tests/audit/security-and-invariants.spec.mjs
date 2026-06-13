@@ -11011,22 +11011,22 @@ test('G1.2C-INSPECTOR-CARD-POLISH Rotate/Flip buttons keep the same axes/deltas 
   assert.equal(rotateCalls.length, 2,
     'both the multi-selection and single-selection Rotate/Flip buttons must call InteractionManager.rotateSelection(axis, delta)');
 
-  assert.match(src, /\{ label: 'Y 90°', axis: 'y', delta: halfPI \}/,
-    'multi-selection Rotate All must keep the Y 90° axis/delta');
-  assert.match(src, /\{ label: 'X 90°', axis: 'x', delta: halfPI \}/,
-    'multi-selection Rotate All must keep the X 90° axis/delta');
-  assert.match(src, /\{ label: 'Z 90°', axis: 'z', delta: halfPI \}/,
-    'multi-selection Rotate All must keep the Z 90° axis/delta');
-  assert.match(src, /\{ label: 'Flip', axis: 'x', delta: Math\.PI \}/,
+  assert.match(src, /\{ label: 'Turn', icon: 'fa-rotate', tone: 'turn', axis: 'y', delta: halfPI \}/,
+    'multi-selection Rotate All must keep the Turn/Y 90° axis/delta');
+  assert.match(src, /\{ label: 'Tip', icon: 'fa-rotate-left', tone: 'tip', axis: 'x', delta: halfPI \}/,
+    'multi-selection Rotate All must keep the Tip/X 90° axis/delta');
+  assert.match(src, /\{ label: 'Roll', icon: 'fa-rotate-right', tone: 'roll', axis: 'z', delta: halfPI \}/,
+    'multi-selection Rotate All must keep the Roll/Z 90° axis/delta');
+  assert.match(src, /\{ label: 'Flip', icon: 'fa-arrows-up-down', tone: 'flip', axis: 'x', delta: Math\.PI \}/,
     'multi-selection Rotate All must keep the Flip axis/delta');
 
-  assert.match(src, /\{ label: 'Y 90°', icon: 'fa-rotate-right', axis: 'y', delta: halfPI \}/,
-    'single-selection Rotate / Flip must keep the Y 90° icon/axis/delta');
-  assert.match(src, /\{ label: 'X 90°', icon: 'fa-rotate-right', axis: 'x', delta: halfPI \}/,
-    'single-selection Rotate / Flip must keep the X 90° icon/axis/delta');
-  assert.match(src, /\{ label: 'Z 90°', icon: 'fa-rotate-right', axis: 'z', delta: halfPI \}/,
-    'single-selection Rotate / Flip must keep the Z 90° icon/axis/delta');
-  assert.match(src, /\{ label: 'Flip', icon: 'fa-arrows-up-down', axis: 'x', delta: Math\.PI \}/,
+  assert.match(src, /\{ label: 'Turn', icon: 'fa-rotate', tone: 'turn', axis: 'y', delta: halfPI \}/,
+    'single-selection Rotate / Flip must keep the Turn/Y 90° icon/axis/delta');
+  assert.match(src, /\{ label: 'Tip', icon: 'fa-rotate-left', tone: 'tip', axis: 'x', delta: halfPI \}/,
+    'single-selection Rotate / Flip must keep the Tip/X 90° icon/axis/delta');
+  assert.match(src, /\{ label: 'Roll', icon: 'fa-rotate-right', tone: 'roll', axis: 'z', delta: halfPI \}/,
+    'single-selection Rotate / Flip must keep the Roll/Z 90° icon/axis/delta');
+  assert.match(src, /\{ label: 'Flip', icon: 'fa-arrows-up-down', tone: 'flip', axis: 'x', delta: Math\.PI \}/,
     'single-selection Rotate / Flip must keep the Flip icon/axis/delta');
 });
 
@@ -11042,9 +11042,9 @@ test('G1.2C-INSPECTOR-CARD-POLISH Rotate/Flip icons remain FontAwesome (no SVG/e
 
   const rotCardStart = src.indexOf('// === Batch Rotation Card ===');
   const rotCardEnd = src.indexOf('inspectorEl.appendChild(rotCard)');
-  const transformCardStart = src.indexOf('// === Transform Card');
-  const transformCardEnd = src.indexOf('inspectorEl.appendChild(transformCard)');
-  const rotBlocks = src.slice(rotCardStart, rotCardEnd) + src.slice(transformCardStart, transformCardEnd);
+  const singleRotCardStart = src.indexOf('// === Rotate / Flip Card ===');
+  const singleRotCardEnd = src.indexOf('// === Actions Card ===', singleRotCardStart);
+  const rotBlocks = src.slice(rotCardStart, rotCardEnd) + src.slice(singleRotCardStart, singleRotCardEnd);
 
   assert.doesNotMatch(rotBlocks, /<svg/i, 'Rotate/Flip controls must not introduce custom SVG icons');
   assert.doesNotMatch(rotBlocks, /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u,
@@ -11244,3 +11244,140 @@ test('G1.2C-INSPECTOR-CARD-POLISH Inspector help tooltips keep keyboard accessib
 });
 
 // ── End G1.2C-INSPECTOR-CARD-POLISH ──────────────────────────────────────────
+
+// ── G1.2D-INSPECTOR-FINAL-POLISH ─────────────────────────────────────────────
+
+const g12dInspectorFinalPolishFiles = new Set([
+  'src/screens/editor-screen.js',
+  'styles/main.css',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
+
+const g12dRecoveredUntrackedFiles = new Set([
+  'docs/archive/2026-03-old-todos/TP3D-MASTER-TODO-V3.md',
+  'docs/product/TP3D-MASTER-TODO-V4.md',
+  'docs/tp3d-pack-and-cases-upload-tests/',
+]);
+
+test('G1.2D-INSPECTOR-FINAL-POLISH changed files stay inside the approved narrow scope', async () => {
+  const [unstaged, staged, status] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+    execFileAsync('git', ['status', '--porcelain=v1']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !g12dInspectorFinalPolishFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'G1.2D-INSPECTOR-FINAL-POLISH must stay inside editor-screen.js, main.css, and this test file only');
+
+  const recoveredUntracked = status.stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.startsWith('?? '))
+    .map(line => line.slice(3))
+    .filter(file => g12dRecoveredUntrackedFiles.has(file));
+
+  assert.deepEqual(recoveredUntracked.filter(file => changedFiles.has(file)), [],
+    'recovered untracked documentation/test assets must be ignored by the tracked-file scope test');
+});
+
+test('G1.2D-INSPECTOR-FINAL-POLISH single selection separates Rotate / Flip without changing handlers', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  const singleStart = src.indexOf('function renderSingleInspector(pack, inst, caseData, prefs)');
+  const singleEnd = src.indexOf('function cardHeaderWithInfo', singleStart);
+  assert.ok(singleStart >= 0 && singleEnd > singleStart, 'renderSingleInspector must be locatable');
+  const singleBlock = src.slice(singleStart, singleEnd);
+
+  assert.match(singleBlock, /inspectorEl\.appendChild\(transformCard\);[\s\S]*\/\/ === Rotate \/ Flip Card ===/,
+    'single-selection Rotate / Flip must render as its own card after the Transform card');
+  assert.match(singleBlock, /rotCard\.appendChild\(cardHeaderWithInfo\('Rotate \/ Flip', rotateFlipHelp\)\)/,
+    'single-selection Rotate / Flip card must keep the shared help header');
+  assert.doesNotMatch(singleBlock, /tp3d-editor-transform-divider/,
+    'the old in-card Transform divider must not remain after the visual split');
+
+  const rotateCalls = singleBlock.match(/InteractionManager\.rotateSelection\(axis, delta\)/g) || [];
+  assert.equal(rotateCalls.length, 1,
+    'single-selection Rotate / Flip card must keep routing through InteractionManager.rotateSelection(axis, delta)');
+});
+
+test('G1.2D-INSPECTOR-FINAL-POLISH Front Overhang uses a true two-column field row', async () => {
+  const [src, css] = await Promise.all([
+    fs.readFile(editorScreenPath, 'utf8'),
+    fs.readFile(stylesMainPath, 'utf8'),
+  ]);
+
+  assert.match(src, /cfgRow\.className = 'tp3d-editor-dims-row tp3d-editor-dims-row--two'/,
+    'Front Overhang Length and Deck Height fields must share a two-column row class');
+  assert.match(css, /\.tp3d-editor-dims-row--two\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/s,
+    'the Front Overhang two-column row must use equal-width grid columns');
+});
+
+test('G1.2D-INSPECTOR-FINAL-POLISH visual CSS is scoped, tokenized, and keeps tooltip/reset constraints', async () => {
+  const [src, css] = await Promise.all([
+    fs.readFile(editorScreenPath, 'utf8'),
+    fs.readFile(stylesMainPath, 'utf8'),
+  ]);
+
+  assert.match(css, /#inspector-body \.card \.label\s*\{[^}]*font-size:\s*var\(--text-xs\)[^}]*font-weight:\s*var\(--font-medium\)/s,
+    'general Inspector labels must remain 12px and medium weight');
+  assert.match(css, /#inspector-body \.card \.tp3d-editor-dims-row \.field \.label,\n#inspector-body \.card > \.field\.tp3d-editor-field-wrap-full \.label,\n#inspector-body \.card \.tp3d-editor-inline-position-field \.label\s*\{[^}]*font-size:\s*var\(--text-sm\)[^}]*font-weight:\s*var\(--font-medium\)/s,
+    'dimension, full-width offset, and X/Y/Z position labels must use 14px and medium weight through specific structural selectors');
+  assert.match(css, /#inspector-body \.card \.input,\n#inspector-body \.card \.select\s*\{[^}]*min-height:\s*36px[^}]*border-radius:\s*var\(--radius-sm\)[^}]*font-size:\s*var\(--text-sm\)/s,
+    'Inspector inputs/selects must use the compact 14px scale and shared 6px radius under #inspector-body');
+  assert.match(css, /#inspector-body \.card \.btn\s*\{[^}]*min-height:\s*36px[^}]*border-radius:\s*var\(--radius-sm\)[^}]*font-weight:\s*var\(--font-medium\)/s,
+    'Inspector buttons must use the shared 6px radius and medium weight under #inspector-body');
+  assert.match(css, /\.tp3d-editor-chip-mini\s*\{[^}]*width:\s*100%[^}]*border-radius:\s*var\(--radius-sm\)/s,
+    'the selected-case category chip must be full-width and use the same 6px radius');
+  assert.match(css, /\.tp3d-editor-inline-position-field\s*\{[^}]*display:\s*grid/s,
+    'X/Y/Z position fields must stack label over input so narrow Inspector widths do not clip values');
+  assert.match(css, /\.tp3d-editor-dims-row \.tp3d-editor-minw-90\s*\{[^}]*min-width:\s*0/s,
+    'dimension fields inside grid rows must be allowed to shrink without overflowing');
+  assert.match(css, /\.tp3d-editor-info-icon\s*\{[^}]*color:\s*inherit/s,
+    'Inspector help icons must keep the inherited dark header color instead of a muted override');
+  assert.match(src, /cfgHint\.className = 'muted tp3d-editor-fs-xs'/,
+    'Front Overhang usable-height helper must use the existing 12px tp3d-editor-fs-xs utility');
+  assert.doesNotMatch(src, /cfgHint\.className = 'muted tp3d-editor-fs-sm'/,
+    'Front Overhang usable-height helper must not keep the 14px tp3d-editor-fs-sm utility');
+
+  const statsCardMatch = css.match(/\.tp3d-editor-stats-card\s*\{([^}]*)\}/);
+  assert.ok(statsCardMatch, 'Stats card CSS block must remain defined');
+  assert.match(statsCardMatch[1], /background:\s*var\(--bg-primary\)/,
+    'Stats card must use the theme-driven bg-primary token');
+  assert.doesNotMatch(statsCardMatch[1], /#f6f7fb|#F6F7FB/,
+    'Stats card must not hard-code the light theme #F6F7FB value');
+  assert.match(css, /:root\s*\{[\s\S]*--bg-primary:\s*#f6f7fb/i,
+    'light theme bg-primary must continue to provide the requested #F6F7FB value');
+  assert.match(css, /\[data-theme='dark'\]\s*\{[\s\S]*--bg-primary:/,
+    'dark mode must continue to override bg-primary through existing theme tokens');
+  assert.doesNotMatch(css, /\[data-theme='dark'\]\s+\.tp3d-editor-stats-card/,
+    'Stats card must not need a special dark-mode override');
+
+  [
+    ['turn', 'success'],
+    ['tip', 'error'],
+    ['roll', 'info'],
+    ['flip', 'text-secondary'],
+  ].forEach(([tone, token]) => {
+    const toneMatch = css.match(new RegExp(`\\.tp3d-editor-rot-btn--${tone} i\\s*\\{([^}]*)\\}`));
+    assert.ok(toneMatch, `Rotate / Flip ${tone} tone class must be defined`);
+    assert.match(toneMatch[1], new RegExp(`var\\(--${token}\\)`),
+      `Rotate / Flip ${tone} icon color must use var(--${token})`);
+    assert.doesNotMatch(toneMatch[1], /#[0-9a-fA-F]{3,6}/,
+      `Rotate / Flip ${tone} icon color must not hard-code a hex value`);
+  });
+
+  assert.doesNotMatch(src, /cfgReset\.setAttribute\('data-tooltip'/,
+    'Reset buttons must remain tooltip-free');
+  assert.doesNotMatch(src, /function positionInfoTooltip|tp3d-editor-info-icon--tooltip-below/,
+    'the approved CSS-only tooltip system must not regain JS placement or below-class logic');
+});
+
+// ── End G1.2D-INSPECTOR-FINAL-POLISH ─────────────────────────────────────────

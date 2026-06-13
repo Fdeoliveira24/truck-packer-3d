@@ -2794,7 +2794,7 @@ export function createEditorScreen({
           const bonusHeight = Number.isFinite(cfg.bonusHeight) ? cfg.bonusHeight : defBH;
 
           const cfgRow = document.createElement('div');
-          cfgRow.className = 'tp3d-editor-dims-row';
+          cfgRow.className = 'tp3d-editor-dims-row tp3d-editor-dims-row--two';
           const fBL = smallField(`Length (${lengthUnit})`, Utils.inchesToUnit(bonusLength, lengthUnit));
           const fBH = smallField(`Deck Height (${lengthUnit})`, Utils.inchesToUnit(bonusHeight, lengthUnit));
           [fBL.wrap, fBH.wrap].forEach(w => w.classList.add('tp3d-editor-field-wrap-full'));
@@ -2804,7 +2804,7 @@ export function createEditorScreen({
 
           const usableOverhangHeight = Math.max(0, tH - bonusHeight);
           const cfgHint = document.createElement('div');
-          cfgHint.className = 'muted tp3d-editor-fs-sm';
+          cfgHint.className = 'muted tp3d-editor-fs-xs';
           cfgHint.textContent =
             `Usable overhang height: ${Utils.inchesToUnit(usableOverhangHeight, lengthUnit).toFixed(1)} ${lengthUnit} ` +
             '(trailer height − deck height)';
@@ -2954,15 +2954,15 @@ export function createEditorScreen({
       const rotRow = document.createElement('div');
       rotRow.className = 'tp3d-editor-rot-grid';
       [
-        { label: 'Y 90°', axis: 'y', delta: halfPI },
-        { label: 'X 90°', axis: 'x', delta: halfPI },
-        { label: 'Z 90°', axis: 'z', delta: halfPI },
-        { label: 'Flip', axis: 'x', delta: Math.PI },
-      ].forEach(({ label, axis, delta }) => {
+        { label: 'Turn', icon: 'fa-rotate', tone: 'turn', axis: 'y', delta: halfPI },
+        { label: 'Tip', icon: 'fa-rotate-left', tone: 'tip', axis: 'x', delta: halfPI },
+        { label: 'Roll', icon: 'fa-rotate-right', tone: 'roll', axis: 'z', delta: halfPI },
+        { label: 'Flip', icon: 'fa-arrows-up-down', tone: 'flip', axis: 'x', delta: Math.PI },
+      ].forEach(({ label, icon, tone, axis, delta }) => {
         const btn = document.createElement('button');
-        btn.className = 'btn tp3d-editor-rot-btn';
+        btn.className = `btn tp3d-editor-rot-btn tp3d-editor-rot-btn--${tone}`;
         btn.type = 'button';
-        btn.innerHTML = `<i class="fa-solid fa-rotate-right"></i><span>${label}</span>`;
+        btn.innerHTML = `<i class="fa-solid ${icon}"></i><span>${label}</span>`;
         btn.addEventListener('click', () => {
           InteractionManager.rotateSelection(axis, delta);
         });
@@ -3110,26 +3110,27 @@ export function createEditorScreen({
         UIComponents.showToast('Position updated', 'success');
       });
       transformCard.appendChild(savePos);
+      inspectorEl.appendChild(transformCard);
 
-      const divider = document.createElement('div');
-      divider.className = 'tp3d-editor-transform-divider';
-      transformCard.appendChild(divider);
-
+      // === Rotate / Flip Card ===
+      const rotCard = document.createElement('div');
+      rotCard.className = 'card';
+      rotCard.classList.add('tp3d-editor-card-grid-gap-12');
       const rotateFlipHelp = 'Turn: Y axis. Tip: X axis. Roll: Z axis. Flip: 180°.';
-      transformCard.appendChild(cardHeaderWithInfo('Rotate / Flip', rotateFlipHelp));
+      rotCard.appendChild(cardHeaderWithInfo('Rotate / Flip', rotateFlipHelp));
       // TODO(AUTO-PACK-A0): when reset-orientation UI is added, apply PackLibrary.clearOrientationLockPatch().
 
       const halfPI = Math.PI / 2;
       const rotRow = document.createElement('div');
       rotRow.className = 'tp3d-editor-rot-grid';
       [
-        { label: 'Y 90°', icon: 'fa-rotate-right', axis: 'y', delta: halfPI },
-        { label: 'X 90°', icon: 'fa-rotate-right', axis: 'x', delta: halfPI },
-        { label: 'Z 90°', icon: 'fa-rotate-right', axis: 'z', delta: halfPI },
-        { label: 'Flip', icon: 'fa-arrows-up-down', axis: 'x', delta: Math.PI },
-      ].forEach(({ label, icon, axis, delta }) => {
+        { label: 'Turn', icon: 'fa-rotate', tone: 'turn', axis: 'y', delta: halfPI },
+        { label: 'Tip', icon: 'fa-rotate-left', tone: 'tip', axis: 'x', delta: halfPI },
+        { label: 'Roll', icon: 'fa-rotate-right', tone: 'roll', axis: 'z', delta: halfPI },
+        { label: 'Flip', icon: 'fa-arrows-up-down', tone: 'flip', axis: 'x', delta: Math.PI },
+      ].forEach(({ label, icon, tone, axis, delta }) => {
         const btn = document.createElement('button');
-        btn.className = 'btn tp3d-editor-rot-btn';
+        btn.className = `btn tp3d-editor-rot-btn tp3d-editor-rot-btn--${tone}`;
         btn.type = 'button';
         btn.innerHTML = `<i class="fa-solid ${icon}"></i><span>${label}</span>`;
         btn.addEventListener('click', () => {
@@ -3137,8 +3138,8 @@ export function createEditorScreen({
         });
         rotRow.appendChild(btn);
       });
-      transformCard.appendChild(rotRow);
-      inspectorEl.appendChild(transformCard);
+      rotCard.appendChild(rotRow);
+      inspectorEl.appendChild(rotCard);
 
       // === Actions Card ===
       const actCard = document.createElement('div');

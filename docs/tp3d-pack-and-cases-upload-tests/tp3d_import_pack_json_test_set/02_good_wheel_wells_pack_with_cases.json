@@ -1,0 +1,229 @@
+{
+  "app": "Truck Packer 3D",
+  "version": "test-fixture-2026-06-08",
+  "exportedAt": "2026-06-08T00:00:00Z",
+  "pack": {
+    "id": "pack-import-good-wheel-wells-001",
+    "title": "Import Test - Good Wheel Wells",
+    "clientName": "TP3D Test Client",
+    "projectName": "Pack JSON Import QA",
+    "drawnBy": "Import Test",
+    "notes": "Valid wheel-well pack with bundledCases included.",
+    "status": "draft",
+    "truck": {
+      "preset": "wheel-well-test",
+      "length": 180,
+      "width": 84,
+      "height": 84,
+      "shapeMode": "wheelWells",
+      "shapeConfig": {
+        "wellHeight": 16,
+        "wellWidth": 12,
+        "wellLength": 48,
+        "wellOffsetFromRear": 60
+      }
+    },
+    "cases": [
+      {
+        "id": "gw-medium-01",
+        "caseId": "case-medium-utility-30",
+        "transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "hidden": false,
+        "groupId": null,
+        "orientationLocked": false,
+        "lockedRotation": null,
+        "orientedDims": null,
+        "deliverySequence": null
+      },
+      {
+        "id": "gw-medium-02",
+        "caseId": "case-medium-utility-30",
+        "transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "hidden": false,
+        "groupId": null,
+        "orientationLocked": false,
+        "lockedRotation": null,
+        "orientedDims": null,
+        "deliverySequence": null
+      },
+      {
+        "id": "gw-medium-03",
+        "caseId": "case-medium-utility-30",
+        "transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "hidden": false,
+        "groupId": null,
+        "orientationLocked": false,
+        "lockedRotation": null,
+        "orientedDims": null,
+        "deliverySequence": null
+      },
+      {
+        "id": "gw-wheel-item-01",
+        "caseId": "case-wheel-well-36",
+        "transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "hidden": false,
+        "groupId": null,
+        "orientationLocked": false,
+        "lockedRotation": null,
+        "orientedDims": null,
+        "deliverySequence": null
+      },
+      {
+        "id": "gw-wheel-item-02",
+        "caseId": "case-wheel-well-36",
+        "transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "hidden": false,
+        "groupId": null,
+        "orientationLocked": false,
+        "lockedRotation": null,
+        "orientedDims": null,
+        "deliverySequence": null
+      },
+      {
+        "id": "gw-small-01",
+        "caseId": "case-small-cube-12",
+        "transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "hidden": false,
+        "groupId": null,
+        "orientationLocked": false,
+        "lockedRotation": null,
+        "orientedDims": null,
+        "deliverySequence": null
+      }
+    ],
+    "createdAt": "2026-06-08T00:00:00Z",
+    "updatedAt": "2026-06-08T00:00:00Z",
+    "thumbnail": null
+  },
+  "bundledCases": [
+    {
+      "id": "case-medium-utility-30",
+      "name": "Medium Utility Case 30",
+      "manufacturer": "TP3D QA",
+      "category": "road cases",
+      "color": "#38a3d1",
+      "dimensions": {
+        "length": 30,
+        "width": 24,
+        "height": 24
+      },
+      "weight": 135,
+      "volume": 17280,
+      "canFlip": true,
+      "orientationLock": "any",
+      "stackable": true,
+      "noStackOnTop": false,
+      "maxStackCount": 2,
+      "laneItem": false,
+      "notes": "Standard utility road case."
+    },
+    {
+      "id": "case-small-cube-12",
+      "name": "Small Cube Filler 12",
+      "manufacturer": "TP3D QA",
+      "category": "fillers",
+      "color": "#f59e0b",
+      "dimensions": {
+        "length": 12,
+        "width": 12,
+        "height": 12
+      },
+      "weight": 25,
+      "volume": 1728,
+      "canFlip": true,
+      "orientationLock": "any",
+      "stackable": true,
+      "noStackOnTop": false,
+      "maxStackCount": 4,
+      "laneItem": false,
+      "notes": "Small filler cube."
+    },
+    {
+      "id": "case-wheel-well-36",
+      "name": "Above Wheel Well Case 36",
+      "manufacturer": "TP3D QA",
+      "category": "wheel well",
+      "color": "#38bdf8",
+      "dimensions": {
+        "length": 36,
+        "width": 12,
+        "height": 12
+      },
+      "weight": 30,
+      "volume": 5184,
+      "canFlip": true,
+      "orientationLock": "any",
+      "stackable": true,
+      "noStackOnTop": false,
+      "maxStackCount": 3,
+      "laneItem": false,
+      "notes": "Small item intended for wheel-well shape tests."
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+name,manufacturer,category,length,width,height,weight,canFlip,notes
+Large Heavy Road Case 48,Calzone,Road Cases,48,48,36,500,false,Large heavy base case; good for heavy-low tests.
+Large Heavy Road Case 60,Calzone,Road Cases,60,40,36,620,false,Large heavy floor case; should avoid stacking on weak supports.
+Medium Utility Case 36,Pelican,Road Cases,36,24,24,150,true,General medium case; flippable.
+Medium Utility Case 30,Pelican,Road Cases,30,24,24,135,true,Medium filler road case.
+Small Cube Filler 12,Starter Set,Fillers,12,12,12,25,true,Small cube filler for gap tests.
+Small Cube Filler 18,Starter Set,Fillers,18,18,18,40,true,Small cube filler for stacking and row tests.
+Long Tube 120,Global Truss,Long Items,120,8,8,40,false,Long non-flippable tube; tests orientation and aisle fit.
+Long Pipe Bundle 96,Global Truss,Long Items,96,10,10,55,false,Long non-flippable pipe bundle.
+Flippable Truss 72,Global Truss,Truss,72,30,18,80,true,Flippable truss; tests orientation choice.
+Flat Deck Panel 60,StageRight,Stage,60,20,10,60,true,Flat panel; good for manual orientation lock tests.
+Tall Non Flippable 72,Gator Cases,Tall Items,30,30,72,180,false,Tall case; should remain upright.
+Tall Wardrobe 84,Encore,Tall Items,36,24,84,210,false,Very tall item; should not enter low front bonus.
+No Stack Electronics 30,SKB,Electronics,30,24,24,120,true,Electronics; use as no-stack scenario manually if supported.
+Rack Case 24U,EWI,Electronics,36,24,48,220,false,Heavy rack case; should sit low.
+Rack Case 12U,EWI,Electronics,24,24,30,140,true,Medium rack case.
+Speaker Sub Crate,ProX,Audio,48,30,36,180,false,Subwoofer crate; heavy and non-flippable.
+Line Array Case,L-Acoustics,Audio,48,30,36,160,false,Audio case; same dims as sub but lighter.
+Monitor Wedge Case,Gator Cases,Audio,36,24,24,90,true,Monitor case; flippable.
+Cable Trunk Large,Custom,Cable,48,24,24,130,true,Heavy cable trunk.
+Cable Trunk Small,Custom,Cable,24,18,18,55,true,Small cable trunk.
+Lighting Moving Head Case,Chauvet,Lighting,30,24,30,95,true,Lighting case; medium height.
+Lighting Bar Case 96,Chauvet,Lighting,96,18,18,75,true,Long lighting bar case; flippable.
+LED Tile Crate,Absen,Video,42,28,36,165,false,Video crate; keep upright.
+Video Wall Processor Rack,Blackmagic,Video,24,24,24,85,true,Compact electronics rack.
+Tool Chest,Milwaukee,Tools,36,24,30,190,false,Heavy tool chest; floor preferred.
+Genie Lift Base,Genie,Rigging,48,32,24,240,false,Heavy low base; should load low.
+Rigging Motor Case,CM,Rigging,24,24,24,110,true,Motor case.
+Chain Bag Bin,CM,Rigging,18,18,18,65,true,Small heavy cube.
+Wardrobe Rack Folded,Encore,Wardrobe,72,24,12,70,true,Flat long item; can flip.
+Merch Bin,Rubbermaid,Merch,24,18,18,35,true,Light bin.
+Palletized Cases 48x40,Standard,Pallet,48,40,48,700,false,Pallet-sized load; heavy and tall.
+Euro Pallet Stack,Standard,Pallet,47,31,42,520,false,Euro-pallet sized load.
+Drum 24x36,Generic,Cylinders,24,24,36,160,false,Cylinder-like item; imported as box unless shape edited later.
+Cable Reel 30,Generic,Cylinders,30,30,24,180,true,Round reel approximation; flippable.
+Fragile Prop Crate,Custom,Fragile,36,24,36,70,false,Fragile; manually mark no-stack if field is available.
+Glass Panel Crate,Custom,Fragile,72,12,48,160,false,Tall narrow fragile crate.
+Foam Filler Block,Custom,Fillers,24,24,12,8,true,Light filler block.
+Short Bonus Fit Case,Starter Set,Front Bonus,30,20,20,45,true,Short/narrow case; should fit front bonus zones.
+Low Wheel Well Filler,Starter Set,Wheel Well,36,12,12,30,true,Low narrow filler for wheel-well adjacent tests.
+Above Wheel Well Case,Starter Set,Wheel Well,42,18,18,60,true,Tests above-well zones when height allows.
+Wide Flat Scenic Panel,Scenic,Scenic,96,48,6,95,true,Wide flat panel; tests large footprint.
+Scenic Column,Scenic,Scenic,18,18,84,120,false,Tall scenic column.
+Keyboard Case,SKB,Backline,54,18,12,55,true,Long low backline case.
+Guitar Vault,Jan-Al,Backline,48,30,36,130,true,Large backline vault.
+Amp Head Case,SKB,Backline,36,24,24,70,false,Amp head case; non-flip.
+Mic Stand Trunk,Custom,Backline,48,18,18,60,true,Long trunk.
+Hospitality Bin,Cambro,Catering,24,18,18,35,true,Light catering bin.
+Cooler Chest,Yeti,Catering,36,18,18,75,false,Cooler; keep upright.
+Office Tote,Sterilite,Office,20,16,14,22,true,Small tote.
+Document Box,Bankers Box,Office,15,12,10,18,true,Small box; good for filler rows.

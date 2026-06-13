@@ -1,0 +1,94 @@
+{
+  "app": "Truck Packer 3D",
+  "version": "test-fixture-2026-06-08",
+  "exportedAt": "2026-06-08T00:00:00Z",
+  "pack": {
+    "id": "pack-import-existing-library-only-001",
+    "title": "Import Test - Existing Library Only",
+    "clientName": "TP3D Test Client",
+    "projectName": "Pack JSON Import QA",
+    "drawnBy": "Import Test",
+    "notes": "This file has no bundledCases. It should only preview fully if matching cases already exist in CaseLibrary.",
+    "status": "draft",
+    "truck": {
+      "preset": "53ft-dry-van",
+      "length": 636,
+      "width": 102,
+      "height": 98,
+      "shapeMode": "rect",
+      "shapeConfig": {}
+    },
+    "cases": [
+      {
+        "id": "el-road-heavy-01",
+        "caseId": "case-road-heavy-48",
+        "transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "hidden": false,
+        "groupId": null,
+        "orientationLocked": false,
+        "lockedRotation": null,
+        "orientedDims": null,
+        "deliverySequence": null
+      },
+      {
+        "id": "el-utility-01",
+        "caseId": "case-medium-utility-36",
+        "transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "hidden": false,
+        "groupId": null,
+        "orientationLocked": false,
+        "lockedRotation": null,
+        "orientedDims": null,
+        "deliverySequence": null
+      },
+      {
+        "id": "el-filler-01",
+        "caseId": "case-small-cube-12",
+        "transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "hidden": false,
+        "groupId": null,
+        "orientationLocked": false,
+        "lockedRotation": null,
+        "orientedDims": null,
+        "deliverySequence": null
+      }
+    ],
+    "createdAt": "2026-06-08T00:00:00Z",
+    "updatedAt": "2026-06-08T00:00:00Z",
+    "thumbnail": null
+  },
+  "bundledCases": []
+}

@@ -1,0 +1,19 @@
+{
+  "app": "Truck Packer 3D",
+  "version": "test-fixture-2026-06-08",
+  "exportedAt": "2026-06-08T00:00:00Z",
+  "pack": {
+    "id": "pack-import-missing-cases-array-001",
+    "title": "Import Test - Missing Cases Array",
+    "truck": {
+      "preset": "53ft-dry-van",
+      "length": 636,
+      "width": 102,
+      "height": 98,
+      "shapeMode": "rect",
+      "shapeConfig": {}
+    },
+    "notes": "Invalid fixture: pack.cases is missing."
+  },
+  "bundledCases": []
+}

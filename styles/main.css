@@ -4392,15 +4392,6 @@ body.modal-open {
   margin-left: auto;
 }
 
-.tp3d-editor-transform-card>.row.space-between .tp3d-editor-info-icon {
-  position: absolute;
-  right: 0;
-  top: calc(100% - 102px);
-  z-index: 10;
-
-  /* was: 2 — raised to clear sibling content for tooltip visibility */
-}
-
 .tp3d-editor-transform-divider {
   height: 1px;
   background: var(--border-subtle);
@@ -4417,9 +4408,29 @@ body.modal-open {
   padding: 5px 8px;
 }
 
+.tp3d-editor-rot-btn i {
+  width: 16px;
+  flex-shrink: 0;
+  text-align: center;
+}
+
 .tp3d-editor-rot-btn[data-tooltip]::before,
 .tp3d-editor-rot-btn[data-tooltip]::after {
   display: none !important;
+}
+
+.tp3d-editor-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  align-items: stretch;
+}
+
+.tp3d-editor-action-grid .btn {
+  width: 100%;
+  justify-content: center;
+  min-width: 0;
+  white-space: nowrap;
 }
 
 .tp3d-editor-mb-6 {
@@ -5465,29 +5476,29 @@ body.modal-open {
   transform: none;
 }
 
-/* Final override: keep editor help-tooltips readable and in-bounds. */
+/* Final override: keep editor help-tooltips beside their trigger icon. */
 #screen-editor .tp3d-editor-info-icon[data-tooltip]::after {
-  top: calc(100% + 10px);
+  top: 50%;
   bottom: auto;
   left: auto;
-  right: 0;
-  transform: none;
+  right: calc(100% + 10px);
+  transform: translateY(-50%);
   width: max-content;
-  min-width: 180px;
-  max-width: min(220px, calc(100vw - 24px));
+  min-width: 0;
+  max-width: min(220px, calc(100vw - 48px));
   white-space: normal;
   text-align: left;
 }
 
 #screen-editor .tp3d-editor-info-icon[data-tooltip]::before {
-  top: calc(100% + 5px);
+  top: 50%;
   bottom: auto;
   left: auto;
-  right: 8px;
-  transform: none;
+  right: calc(100% + 5px);
+  transform: translateY(-50%);
   border: 5px solid transparent;
-  border-bottom-color: var(--text-primary);
-  border-top: 0;
+  border-left-color: var(--text-primary);
+  border-right: 0;
 }
 
 .tp3d-billing-org-skeleton {

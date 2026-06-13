@@ -2654,7 +2654,9 @@ test('G2.2-CAB-OVERHANG Inspector labels the height control "Deck Height" (not a
     'Front Overhang card must label the deck-height field "Deck Height (<unit>)"');
   assert.doesNotMatch(block, /Overhang [Hh]eight \(\$\{lengthUnit\}\)/,
     'Front Overhang card must not label the height field "Overhang height"');
-  assert.match(block, /Usable overhang height = trailer height - deck height/,
+  assert.match(block, /Usable overhang height: \$\{Utils\.inchesToUnit\(usableOverhangHeight, lengthUnit\)\.toFixed\(1\)\} \$\{lengthUnit\}/,
+    'Front Overhang card should display the computed usable overhang height');
+  assert.match(block, /\(trailer height [−-] deck height\)/,
     'Front Overhang card should explain how usable overhang height relates to deck height');
 
   // Req #13: Front Overhang Width input is absent; bonusWidth is normalized to truck.width.
@@ -4523,10 +4525,17 @@ test('EDITOR selection Actions cards stay minimal, ordered, and bound to existin
     'multi-select Actions card must render the custom stacked-select icon with Select All');
   assert.match(makeSelectBlock, /selectedCount\s*>=\s*totalCount/,
     'Select All should disable itself once the full pack is already selected');
-  assert.match(makeSelectBlock, /function makeActionButton\(\{ label,[\s\S]*btn\.style\.width = '100%'[\s\S]*btn\.style\.justifyContent = 'center'[\s\S]*btn\.style\.minWidth = '0'/,
-    'Actions buttons must share one equal-width button helper without adding new CSS classes');
-  assert.match(makeSelectBlock, /function configureActionGrid\(row\)[\s\S]*row\.style\.display = 'grid'[\s\S]*row\.style\.gridTemplateColumns = 'repeat\(2, minmax\(0, 1fr\)\)'/,
-    'Actions cards must use an equal two-column layout without new CSS classes');
+  assert.match(makeSelectBlock, /function makeActionButton\(\{ label,/,
+    'Actions buttons must share one equal-width button helper');
+  const css = await fs.readFile(stylesMainPath, 'utf8');
+  assert.match(css, /\.tp3d-editor-action-grid \.btn\s*\{[\s\S]*width: 100%[\s\S]*justify-content: center[\s\S]*min-width: 0[\s\S]*\}/,
+    'Actions buttons must be equal-width and centered via the shared tp3d-editor-action-grid .btn rule');
+  assert.match(css, /\.tp3d-editor-action-grid\s*\{[\s\S]*display: grid[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)[\s\S]*\}/,
+    'Actions cards must use an equal two-column layout via the shared tp3d-editor-action-grid rule');
+  assert.match(multiBlock, /actRow\.className = 'tp3d-editor-action-grid'/,
+    'multi-select Actions card must apply the tp3d-editor-action-grid layout class');
+  assert.match(singleBlock, /actRow\.className = 'tp3d-editor-action-grid'/,
+    'single-item Actions card must apply the tp3d-editor-action-grid layout class');
   assert.match(makeSelectBlock, /function makeVisibilityButton\(pack, selectedIds\)[\s\S]*instances\.every\(inst => inst\.hidden === true\)[\s\S]*label: showSelection \? 'Show' : 'Hide'[\s\S]*hidden: !showSelection/,
     'Actions cards must use one consistent Show/Hide toggle based on selected hidden state');
   assert.match(makeSelectBlock, /function duplicateAabbIntersects\(a,\s*b\)[\s\S]*a\.min\.x < b\.max\.x - EPS[\s\S]*a\.max\.z > b\.min\.z \+ EPS/,
@@ -10919,3 +10928,319 @@ test('G1.2B-CASE-BROWSER-POLISH new CSS classes use existing design tokens only'
 });
 
 // ── End G1.2B-CASE-BROWSER-POLISH ────────────────────────────────────────────
+
+// ── G1.2C-INSPECTOR-CARD-POLISH ──────────────────────────────────────────────
+
+const g12cInspectorCardFiles = new Set([
+  'src/screens/editor-screen.js',
+  'styles/main.css',
+  'tests/audit/security-and-invariants.spec.mjs',
+]);
+
+test('G1.2C-INSPECTOR-CARD-POLISH changed files stay inside the approved narrow scope', async () => {
+  const [unstaged, staged] = await Promise.all([
+    execFileAsync('git', ['diff', '--name-only']),
+    execFileAsync('git', ['diff', '--cached', '--name-only']),
+  ]);
+  const changedFiles = new Set(
+    `${unstaged.stdout}\n${staged.stdout}`
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+  );
+  const unexpectedFiles = Array.from(changedFiles).filter(file => !g12cInspectorCardFiles.has(file));
+
+  assert.deepEqual(unexpectedFiles, [],
+    'G1.2C-INSPECTOR-CARD-POLISH must stay inside editor-screen.js, main.css, and this test file only');
+  assert.ok(!changedFiles.has('src/editor/scene-runtime.js'),
+    'G1.2C-INSPECTOR-CARD-POLISH must not touch src/editor/scene-runtime.js');
+  assert.ok(!changedFiles.has('src/app.js'),
+    'G1.2C-INSPECTOR-CARD-POLISH must not touch src/app.js');
+  assert.ok(!changedFiles.has('src/services/pack-library.js'),
+    'G1.2C-INSPECTOR-CARD-POLISH must not touch src/services/pack-library.js');
+  assert.ok(!changedFiles.has('src/services/case-library.js'),
+    'G1.2C-INSPECTOR-CARD-POLISH must not touch src/services/case-library.js');
+  assert.ok(!changedFiles.has('src/services/autopack-engine.js'),
+    'G1.2C-INSPECTOR-CARD-POLISH must not touch src/services/autopack-engine.js');
+  assert.ok(!changedFiles.has('src/services/autopack-solver.js'),
+    'G1.2C-INSPECTOR-CARD-POLISH must not touch src/services/autopack-solver.js');
+  assert.ok(!changedFiles.has('src/screens/packs-screen.js'),
+    'G1.2C-INSPECTOR-CARD-POLISH must not touch src/screens/packs-screen.js');
+});
+
+test('G1.2C-INSPECTOR-CARD-POLISH Stats card uses label/value rows and keeps the same stat labels', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  const statsStart = src.indexOf('const statsEl = document.createElement');
+  const statsEnd = src.indexOf('card.appendChild(shapeRow)', statsStart);
+  assert.ok(statsStart >= 0 && statsEnd > statsStart, 'the Stats card block must be locatable');
+  const statsBlock = src.slice(statsStart, statsEnd);
+
+  const labelValueRows = statsBlock.match(/<div class="row space-between">/g) || [];
+  assert.equal(labelValueRows.length, 4,
+    'Stats card must render exactly 4 label/value rows using the existing row space-between pattern');
+
+  ['Cases loaded', 'Packed (in truck)', 'Volume used', 'Total weight'].forEach(label => {
+    const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.match(statsBlock, new RegExp(`<span class="muted tp3d-editor-fs-sm">${escapedLabel}</span>`),
+      `Stats card must keep the "${label}" label`);
+  });
+
+  assert.match(statsBlock, /\$\{stats\.totalCases\}/, 'Stats card must keep using stats.totalCases');
+  assert.match(statsBlock, /\$\{stats\.packedCases\}/, 'Stats card must keep using stats.packedCases');
+  assert.match(statsBlock, /\$\{stats\.volumePercent\.toFixed\(1\)\}%/, 'Stats card must keep using stats.volumePercent');
+  assert.match(statsBlock, /\$\{Utils\.formatWeight\(stats\.totalWeight, prefs\.units\.weight\)\}/,
+    'Stats card must keep using Utils.formatWeight(stats.totalWeight, ...)');
+
+  assert.doesNotMatch(statsBlock, /ft³|ft3|capacity|cubicFt|packedVolume/i,
+    'Stats card must not invent packed/capacity ft³ values');
+});
+
+test('G1.2C-INSPECTOR-CARD-POLISH PackLibrary.computeStats(pack) usage is unchanged', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  const calls = src.match(/PackLibrary\.computeStats\(pack\)/g) || [];
+  assert.equal(calls.length, 1, 'PackLibrary.computeStats(pack) must still be called exactly once in renderTruckInspector');
+});
+
+test('G1.2C-INSPECTOR-CARD-POLISH Rotate/Flip buttons keep the same axes/deltas and InteractionManager.rotateSelection routing', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  const rotateCalls = src.match(/InteractionManager\.rotateSelection\(axis, delta\)/g) || [];
+  assert.equal(rotateCalls.length, 2,
+    'both the multi-selection and single-selection Rotate/Flip buttons must call InteractionManager.rotateSelection(axis, delta)');
+
+  assert.match(src, /\{ label: 'Y 90°', axis: 'y', delta: halfPI \}/,
+    'multi-selection Rotate All must keep the Y 90° axis/delta');
+  assert.match(src, /\{ label: 'X 90°', axis: 'x', delta: halfPI \}/,
+    'multi-selection Rotate All must keep the X 90° axis/delta');
+  assert.match(src, /\{ label: 'Z 90°', axis: 'z', delta: halfPI \}/,
+    'multi-selection Rotate All must keep the Z 90° axis/delta');
+  assert.match(src, /\{ label: 'Flip', axis: 'x', delta: Math\.PI \}/,
+    'multi-selection Rotate All must keep the Flip axis/delta');
+
+  assert.match(src, /\{ label: 'Y 90°', icon: 'fa-rotate-right', axis: 'y', delta: halfPI \}/,
+    'single-selection Rotate / Flip must keep the Y 90° icon/axis/delta');
+  assert.match(src, /\{ label: 'X 90°', icon: 'fa-rotate-right', axis: 'x', delta: halfPI \}/,
+    'single-selection Rotate / Flip must keep the X 90° icon/axis/delta');
+  assert.match(src, /\{ label: 'Z 90°', icon: 'fa-rotate-right', axis: 'z', delta: halfPI \}/,
+    'single-selection Rotate / Flip must keep the Z 90° icon/axis/delta');
+  assert.match(src, /\{ label: 'Flip', icon: 'fa-arrows-up-down', axis: 'x', delta: Math\.PI \}/,
+    'single-selection Rotate / Flip must keep the Flip icon/axis/delta');
+});
+
+test('G1.2C-INSPECTOR-CARD-POLISH Rotate/Flip icons remain FontAwesome (no SVG/emoji/custom icons) and have no stray leading-space text nodes', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  const rotButtonMarkup = src.match(/<i class="fa-solid [^"]+"><\/i><span>\$\{label\}<\/span>/g) || [];
+  assert.equal(rotButtonMarkup.length, 2,
+    'both Rotate/Flip button blocks must render a FontAwesome <i> icon followed by a <span> label with no stray leading space');
+
+  assert.doesNotMatch(src, /<\/i> \$\{label\}/,
+    'Rotate/Flip button markup must not contain a stray leading-space text node before the label');
+
+  const rotCardStart = src.indexOf('// === Batch Rotation Card ===');
+  const rotCardEnd = src.indexOf('inspectorEl.appendChild(rotCard)');
+  const transformCardStart = src.indexOf('// === Transform Card');
+  const transformCardEnd = src.indexOf('inspectorEl.appendChild(transformCard)');
+  const rotBlocks = src.slice(rotCardStart, rotCardEnd) + src.slice(transformCardStart, transformCardEnd);
+
+  assert.doesNotMatch(rotBlocks, /<svg/i, 'Rotate/Flip controls must not introduce custom SVG icons');
+  assert.doesNotMatch(rotBlocks, /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u,
+    'Rotate/Flip controls must not introduce emoji icons');
+});
+
+test('G1.2C-INSPECTOR-CARD-POLISH Actions card preserves all six actions and Delete danger styling', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  const multiStart = src.indexOf('function renderMultiInspector');
+  const multiEnd = src.indexOf('function renderSingleInspector');
+  const singleStart = multiEnd;
+  const singleEnd = src.indexOf('function cardHeaderWithInfo');
+  const multiBlock = src.slice(multiStart, multiEnd);
+  const singleBlock = src.slice(singleStart, singleEnd);
+
+  [multiBlock, singleBlock].forEach((block, idx) => {
+    const label = idx === 0 ? 'multi-selection' : 'single-selection';
+    assert.match(block, /label: 'Set Category'/, `${label} Actions card must keep Set Category`);
+    assert.match(block, /makeVisibilityButton\(pack, /, `${label} Actions card must keep the Hide/Show visibility button`);
+    assert.match(block, /makeSelectAllButton\(pack, /, `${label} Actions card must keep Select All`);
+    assert.match(block, /label: 'Deselect'/, `${label} Actions card must keep Deselect`);
+    assert.match(block, /label: 'Duplicate'/, `${label} Actions card must keep Duplicate`);
+    assert.match(block, /danger: true/, `${label} Actions card must keep danger styling on Delete`);
+  });
+
+  assert.match(multiBlock, /onClick: \(\) => InteractionManager\.deleteSelection\(\)/,
+    'multi-selection Delete must keep calling InteractionManager.deleteSelection()');
+  assert.match(singleBlock, /PackLibrary\.removeInstances\(pack\.id, \[inst\.id\]\)/,
+    'single-selection Delete must keep calling PackLibrary.removeInstances(pack.id, [inst.id])');
+});
+
+test('G1.2C-INSPECTOR-CARD-POLISH Actions card layout has no inline layout CSS', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  assert.doesNotMatch(src, /configureActionGrid/,
+    'configureActionGrid must be removed in favor of a CSS class');
+  assert.doesNotMatch(src, /btn\.style\.(width|justifyContent|minWidth|whiteSpace)/,
+    'makeActionButton must not set layout via inline styles');
+
+  const actionGridAssignments = src.match(/actRow\.className = 'tp3d-editor-action-grid';/g) || [];
+  assert.equal(actionGridAssignments.length, 2,
+    'both the multi-selection and single-selection Actions cards must use the tp3d-editor-action-grid class');
+});
+
+test('G1.2C-INSPECTOR-CARD-POLISH new CSS additions reuse existing tokens and layout primitives', async () => {
+  const css = await fs.readFile(stylesMainPath, 'utf8');
+
+  const rotIconMatch = css.match(/\.tp3d-editor-rot-btn i\s*\{([^}]*)\}/);
+  assert.ok(rotIconMatch, '.tp3d-editor-rot-btn i must be defined to give rotate/flip icons a fixed-width box');
+  assert.doesNotMatch(rotIconMatch[1], /#[0-9a-fA-F]{3,6}/, '.tp3d-editor-rot-btn i must not introduce hard-coded colors');
+
+  const actionGridMatch = css.match(/\.tp3d-editor-action-grid\s*\{([^}]*)\}/);
+  assert.ok(actionGridMatch, '.tp3d-editor-action-grid must be defined');
+  assert.match(actionGridMatch[1], /display:\s*grid/, '.tp3d-editor-action-grid must be a grid container');
+  assert.match(actionGridMatch[1], /grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/,
+    '.tp3d-editor-action-grid must keep the existing 2-column action layout');
+
+  const actionGridBtnMatch = css.match(/\.tp3d-editor-action-grid \.btn\s*\{([^}]*)\}/);
+  assert.ok(actionGridBtnMatch, '.tp3d-editor-action-grid .btn must be defined to replace the removed inline button styles');
+  assert.doesNotMatch(actionGridBtnMatch[1], /#[0-9a-fA-F]{3,6}/,
+    '.tp3d-editor-action-grid .btn must not introduce hard-coded colors');
+});
+
+test('G1.2C-INSPECTOR-CARD-POLISH Front Overhang usable-height hint is display-only and reuses existing values', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  const overhangStart = src.indexOf("currentMode === 'frontBonus'");
+  const overhangEnd = src.indexOf('cfgCard.appendChild(cfgHint)');
+  assert.ok(overhangStart >= 0 && overhangEnd > overhangStart, 'the Front Overhang config block must be locatable');
+  const overhangBlock = src.slice(overhangStart, overhangEnd);
+
+  assert.match(overhangBlock, /const usableOverhangHeight = Math\.max\(0, tH - bonusHeight\)/,
+    'usable overhang height must be derived from the existing tH and bonusHeight values only');
+  assert.match(overhangBlock, /Utils\.inchesToUnit\(usableOverhangHeight, lengthUnit\)/,
+    'usable overhang height must be formatted with the existing Utils.inchesToUnit helper');
+  assert.doesNotMatch(overhangBlock, /TrailerGeometry\./,
+    'usable overhang height must not call into TrailerGeometry geometry helpers');
+});
+
+test('G1.2C-INSPECTOR-CARD-POLISH G1.2B Case Browser polish remains intact', async () => {
+  const [src, css] = await Promise.all([
+    fs.readFile(editorScreenPath, 'utf8'),
+    fs.readFile(stylesMainPath, 'utf8'),
+  ]);
+
+  assert.match(src, /function buildCaseBrowserCard\(c, lengthUnit, prefs, isSelected\)/,
+    'the G1.2B shared buildCaseBrowserCard helper must remain unchanged');
+  assert.match(src, /card\.classList\.toggle\('tp3d-editor-case-browser-card--selected', Boolean\(isSelected\)\)/,
+    'the G1.2B selected-case cue toggle must remain unchanged');
+  assert.match(css, /\.tp3d-editor-case-browser-card--selected/,
+    'the G1.2B selected-case CSS class must remain defined');
+  assert.match(css, /\.tp3d-editor-mfg-group-header/,
+    'the G1.2B manufacturer group header CSS class must remain defined');
+});
+
+test('G1.2C-INSPECTOR-CARD-POLISH Inspector help tooltip is anchored to its triggering icon, not a card-height offset', async () => {
+  const css = await fs.readFile(stylesMainPath, 'utf8');
+
+  assert.doesNotMatch(css, /top:\s*calc\(100% - \d+px\)/,
+    'no Inspector tooltip rule may use a fragile card-height-based "top: calc(100% - Npx)" offset');
+  assert.doesNotMatch(css, /tp3d-editor-transform-card>\.row\.space-between \.tp3d-editor-info-icon\s*\{[^}]*position:\s*absolute/s,
+    'the old absolutely-positioned Transform-card info-icon override must be removed');
+
+  const afterMatch = css.match(/#screen-editor \.tp3d-editor-info-icon\[data-tooltip\]::after\s*\{([^}]*)\}/);
+  assert.ok(afterMatch, '#screen-editor .tp3d-editor-info-icon[data-tooltip]::after must define the anchored tooltip box');
+  assert.match(afterMatch[1], /right:\s*calc\(100% \+ \d+px\)/,
+    'the tooltip box must be anchored beside the triggering icon using right: calc(100% + Npx)');
+  assert.match(afterMatch[1], /top:\s*50%/,
+    'the tooltip box must be vertically anchored to the triggering icon');
+  assert.match(afterMatch[1], /transform:\s*translateY\(-50%\)/,
+    'the tooltip box must stay centered beside the triggering icon');
+
+  const beforeMatch = css.match(/#screen-editor \.tp3d-editor-info-icon\[data-tooltip\]::before\s*\{([^}]*)\}/);
+  assert.ok(beforeMatch, '#screen-editor .tp3d-editor-info-icon[data-tooltip]::before must define the tooltip arrow');
+  assert.match(beforeMatch[1], /right:\s*calc\(100% \+ \d+px\)/,
+    'the tooltip arrow must be anchored beside the triggering icon using right: calc(100% + Npx)');
+  assert.match(beforeMatch[1], /border-left-color:\s*var\(--text-primary\)/,
+    'the tooltip arrow must point from the tooltip box back toward the triggering icon');
+});
+
+test('G1.2C-INSPECTOR-CARD-POLISH Inspector help tooltip is compact and CSS-only', async () => {
+  const css = await fs.readFile(stylesMainPath, 'utf8');
+
+  const afterMatch = css.match(/#screen-editor \.tp3d-editor-info-icon\[data-tooltip\]::after\s*\{([^}]*)\}/);
+  assert.ok(afterMatch, '#screen-editor .tp3d-editor-info-icon[data-tooltip]::after must define the tooltip box');
+  assert.match(afterMatch[1], /max-width:\s*min\(220px, calc\(100vw - 48px\)\)/,
+    'the tooltip box must keep a responsive max-width that shrinks on narrow viewports');
+  assert.match(afterMatch[1], /white-space:\s*normal/,
+    'the tooltip text must wrap naturally instead of forcing a single line');
+  assert.doesNotMatch(css, /tp3d-editor-info-icon--tooltip-below/,
+    'the rejected tooltip-below placement class must not remain in CSS');
+});
+
+test('G1.2C-INSPECTOR-CARD-POLISH Inspector help tooltip placement has no JavaScript measurement or inline styles', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  assert.doesNotMatch(src, /function positionInfoTooltip/,
+    'the rejected positionInfoTooltip JavaScript placement helper must be removed');
+  assert.doesNotMatch(src, /tp3d-editor-info-icon--tooltip-below/,
+    'the rejected tooltip-below placement class must not remain in editor-screen.js');
+
+  const cardHeaderStart = src.indexOf('function cardHeaderWithInfo(titleText, tooltipText)');
+  const cardHeaderEnd = src.indexOf('\n    }\n', cardHeaderStart);
+  const cardHeaderBody = src.slice(cardHeaderStart, cardHeaderEnd);
+  assert.doesNotMatch(cardHeaderBody, /getBoundingClientRect\(\)/,
+    'Inspector help tooltip placement must not depend on runtime DOM measurement inside cardHeaderWithInfo');
+  assert.doesNotMatch(cardHeaderBody, /addEventListener\('mouseenter'/,
+    'cardHeaderWithInfo must not attach tooltip placement listeners on hover');
+  assert.doesNotMatch(cardHeaderBody, /addEventListener\('focus'/,
+    'cardHeaderWithInfo must not attach tooltip placement listeners on focus');
+  assert.doesNotMatch(cardHeaderBody, /\.style\./,
+    'cardHeaderWithInfo must not introduce inline layout/positioning styles for the tooltip');
+});
+
+test('G1.2C-INSPECTOR-CARD-POLISH Inspector help tooltip copy is concise and Reset buttons have no tooltip', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  [
+    'Display units follow Settings. Dimensions are stored internally in inches.',
+    'Adds a raised deck above the cab. Length controls how far it extends. Deck Height controls cab clearance; the space below is blocked.',
+    'Defines matching blocked zones on both sides of the truck. Offset is measured from the rear/loading door.',
+    'Position uses the selected display units. Changes are checked against collisions and usable truck zones.',
+    'Turn: Y axis. Tip: X axis. Roll: Z axis. Flip: 180°.',
+  ].forEach(copy => {
+    const escapedCopy = copy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.match(src, new RegExp(escapedCopy), `Inspector help tooltip copy must include: ${copy}`);
+  });
+
+  assert.doesNotMatch(src, /Reset to defaults for this truck size/,
+    'Reset buttons must not keep the rejected tooltip copy');
+  assert.doesNotMatch(src, /cfgReset\.setAttribute\('data-tooltip'/,
+    'Front Overhang and Wheel Wells Reset buttons must not have data-tooltip attributes');
+});
+
+test('G1.2C-INSPECTOR-CARD-POLISH Inspector help tooltips keep keyboard accessibility and use a single shared helper', async () => {
+  const [src, css] = await Promise.all([
+    fs.readFile(editorScreenPath, 'utf8'),
+    fs.readFile(stylesMainPath, 'utf8'),
+  ]);
+
+  const cardHeaderCalls = src.match(/cardHeaderWithInfo\(/g) || [];
+  assert.ok(cardHeaderCalls.length >= 6,
+    'Truck, Front Overhang, Wheel Wells, Rotate All, Transform, and Rotate / Flip must all keep using the shared cardHeaderWithInfo helper');
+
+  assert.match(css, /\.tp3d-editor-info-icon\[data-tooltip\]:focus::before,/,
+    'keyboard :focus tooltip visibility must be preserved');
+  assert.match(css, /\.tp3d-editor-info-icon\[data-tooltip\]:focus-visible::before,/,
+    'keyboard :focus-visible tooltip visibility must be preserved');
+  assert.match(css, /\.tp3d-editor-info-icon\[data-tooltip\]:focus-within::before,/,
+    'keyboard :focus-within tooltip visibility must be preserved');
+
+  assert.doesNotMatch(src, /new\s+(Tooltip|Popper|Popover)\(/,
+    'the tooltip fix must not introduce a tooltip/positioning library');
+  assert.doesNotMatch(src, /createElement\('div'\)\.className = 'tp3d-tooltip-overlay'/,
+    'the tooltip fix must not introduce a new global overlay element');
+});
+
+// ── End G1.2C-INSPECTOR-CARD-POLISH ──────────────────────────────────────────

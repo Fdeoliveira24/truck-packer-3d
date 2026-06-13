@@ -2172,21 +2172,10 @@ export function createEditorScreen({
       const btn = document.createElement('button');
       btn.className = danger ? 'btn btn-danger' : 'btn';
       btn.type = 'button';
-      btn.style.width = '100%';
-      btn.style.justifyContent = 'center';
-      btn.style.minWidth = '0';
-      btn.style.whiteSpace = 'nowrap';
       btn.innerHTML = `${iconHtml || `<i class="${iconClass}"></i>`} ${label}`;
       btn.disabled = Boolean(disabled);
       if (typeof onClick === 'function') btn.addEventListener('click', onClick);
       return btn;
-    }
-
-    function configureActionGrid(row) {
-      row.style.display = 'grid';
-      row.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
-      row.style.gap = '8px';
-      row.style.alignItems = 'stretch';
     }
 
     function makeVisibilityButton(pack, selectedIds) {
@@ -2554,7 +2543,7 @@ export function createEditorScreen({
       card.classList.add('tp3d-editor-card-grid-gap-12');
 
       const stats = PackLibrary.computeStats(pack);
-      card.appendChild(cardHeaderWithInfo('Truck', 'Display units follow Settings. Geometry is saved internally in inches.'));
+      card.appendChild(cardHeaderWithInfo('Truck', 'Display units follow Settings. Dimensions are stored internally in inches.'));
 
       const presetRow = document.createElement('div');
       presetRow.className = 'row';
@@ -2768,10 +2757,10 @@ export function createEditorScreen({
       statsEl.classList.add('tp3d-editor-stats-card');
       statsEl.innerHTML = `
               <div class="tp3d-editor-fw-semibold">Stats</div>
-              <div class="muted tp3d-editor-fs-sm">Cases loaded: <b class="tp3d-text-primary">${stats.totalCases}</b></div>
-              <div class="muted tp3d-editor-fs-sm">Packed (in truck): <b class="tp3d-text-primary">${stats.packedCases}</b></div>
-              <div class="muted tp3d-editor-fs-sm">Volume used: <b class="tp3d-text-primary">${stats.volumePercent.toFixed(1)}%</b></div>
-              <div class="muted tp3d-editor-fs-sm">Total weight: <b class="tp3d-text-primary">${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}</b></div>
+              <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Cases loaded</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${stats.totalCases}</b></div>
+              <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Packed (in truck)</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${stats.packedCases}</b></div>
+              <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Volume used</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${stats.volumePercent.toFixed(1)}%</b></div>
+              <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Total weight</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}</b></div>
             `;
 
       card.appendChild(shapeRow);
@@ -2795,7 +2784,7 @@ export function createEditorScreen({
         if (currentMode === 'frontBonus') {
           cfgCard.appendChild(cardHeaderWithInfo(
             'Front Overhang',
-            'A raised over-cab deck attached to the front (cab side) of the truck, flush with the ceiling and spanning the full trailer width. Length sets how far it extends past the front; deck height sets how high the deck sits above the main floor (cab clearance) - the space below the deck is blocked and cannot hold cargo. Usable overhang cargo height = trailer height - deck height. Display units follow Settings.'
+            'Adds a raised deck above the cab. Length controls how far it extends. Deck Height controls cab clearance; the space below is blocked.'
           ));
 
           const defBL = Math.round(0.12 * tL);
@@ -2813,9 +2802,12 @@ export function createEditorScreen({
           cfgRow.appendChild(fBH.wrap);
           cfgCard.appendChild(cfgRow);
 
+          const usableOverhangHeight = Math.max(0, tH - bonusHeight);
           const cfgHint = document.createElement('div');
           cfgHint.className = 'muted tp3d-editor-fs-sm';
-          cfgHint.textContent = 'Usable overhang height = trailer height - deck height.';
+          cfgHint.textContent =
+            `Usable overhang height: ${Utils.inchesToUnit(usableOverhangHeight, lengthUnit).toFixed(1)} ${lengthUnit} ` +
+            '(trailer height − deck height)';
           cfgCard.appendChild(cfgHint);
 
           const btnRow = document.createElement('div');
@@ -2844,7 +2836,6 @@ export function createEditorScreen({
           cfgReset.className = 'btn';
           cfgReset.type = 'button';
           cfgReset.innerHTML = '<i class="fa-solid fa-arrow-rotate-left"></i> Reset';
-          cfgReset.setAttribute('data-tooltip', 'Reset to defaults for this truck size');
           cfgReset.addEventListener('click', () => {
             fBL.input.value = String(Utils.inchesToUnit(defBL, lengthUnit).toFixed(1));
             fBH.input.value = String(Utils.inchesToUnit(defBH, lengthUnit).toFixed(1));
@@ -2862,7 +2853,7 @@ export function createEditorScreen({
         if (currentMode === 'wheelWells') {
           cfgCard.appendChild(cardHeaderWithInfo(
             'Wheel Wells',
-            'Blocked zones on each side of the truck. Display units follow Settings. Wells are symmetric left/right.'
+            'Defines matching blocked zones on both sides of the truck. Offset is measured from the rear/loading door.'
           ));
 
           const defWH = Math.round(0.35 * tH);
@@ -2916,7 +2907,6 @@ export function createEditorScreen({
           cfgReset.className = 'btn';
           cfgReset.type = 'button';
           cfgReset.innerHTML = '<i class="fa-solid fa-arrow-rotate-left"></i> Reset';
-          cfgReset.setAttribute('data-tooltip', 'Reset to defaults for this truck size');
           cfgReset.addEventListener('click', () => {
             fWH.input.value = String(Utils.inchesToUnit(defWH, lengthUnit).toFixed(1));
             fWW.input.value = String(Utils.inchesToUnit(defWW, lengthUnit).toFixed(1));
@@ -2957,7 +2947,8 @@ export function createEditorScreen({
       const rotCard = document.createElement('div');
       rotCard.className = 'card';
       rotCard.classList.add('tp3d-editor-card-grid-gap-12');
-      rotCard.appendChild(cardHeaderWithInfo('Rotate All', 'Keys: R=Y90° T=X90° E=Z90° F=Flip'));
+      const rotateFlipHelp = 'Turn: Y axis. Tip: X axis. Roll: Z axis. Flip: 180°.';
+      rotCard.appendChild(cardHeaderWithInfo('Rotate All', rotateFlipHelp));
 
       const halfPI = Math.PI / 2;
       const rotRow = document.createElement('div');
@@ -2971,7 +2962,7 @@ export function createEditorScreen({
         const btn = document.createElement('button');
         btn.className = 'btn tp3d-editor-rot-btn';
         btn.type = 'button';
-        btn.innerHTML = `<i class="fa-solid fa-rotate-right"></i> ${label}`;
+        btn.innerHTML = `<i class="fa-solid fa-rotate-right"></i><span>${label}</span>`;
         btn.addEventListener('click', () => {
           InteractionManager.rotateSelection(axis, delta);
         });
@@ -2990,8 +2981,7 @@ export function createEditorScreen({
       actCard.appendChild(actTitle);
 
       const actRow = document.createElement('div');
-      actRow.className = 'row';
-      configureActionGrid(actRow);
+      actRow.className = 'tp3d-editor-action-grid';
 
       const btnSelectAll = makeSelectAllButton(pack, selected.length);
 
@@ -3056,7 +3046,10 @@ export function createEditorScreen({
       const transformCard = document.createElement('div');
       transformCard.className = 'card';
       transformCard.classList.add('tp3d-editor-card-grid-gap-12', 'tp3d-editor-transform-card');
-      transformCard.appendChild(cardHeaderWithInfo('Transform', 'Keys: R=Y90° T=X90° E=Z90° F=Flip'));
+      transformCard.appendChild(cardHeaderWithInfo(
+        'Transform',
+        'Position uses the selected display units. Changes are checked against collisions and usable truck zones.'
+      ));
 
       const posTitle = document.createElement('div');
       posTitle.className = 'label';
@@ -3122,10 +3115,8 @@ export function createEditorScreen({
       divider.className = 'tp3d-editor-transform-divider';
       transformCard.appendChild(divider);
 
-      const rotTitle = document.createElement('div');
-      rotTitle.className = 'label';
-      rotTitle.textContent = 'Rotate / Flip';
-      transformCard.appendChild(rotTitle);
+      const rotateFlipHelp = 'Turn: Y axis. Tip: X axis. Roll: Z axis. Flip: 180°.';
+      transformCard.appendChild(cardHeaderWithInfo('Rotate / Flip', rotateFlipHelp));
       // TODO(AUTO-PACK-A0): when reset-orientation UI is added, apply PackLibrary.clearOrientationLockPatch().
 
       const halfPI = Math.PI / 2;
@@ -3140,7 +3131,7 @@ export function createEditorScreen({
         const btn = document.createElement('button');
         btn.className = 'btn tp3d-editor-rot-btn';
         btn.type = 'button';
-        btn.innerHTML = `<i class="fa-solid ${icon}"></i> ${label}`;
+        btn.innerHTML = `<i class="fa-solid ${icon}"></i><span>${label}</span>`;
         btn.addEventListener('click', () => {
           InteractionManager.rotateSelection(axis, delta);
         });
@@ -3159,8 +3150,7 @@ export function createEditorScreen({
       actCard.appendChild(actTitle);
 
       const actRow = document.createElement('div');
-      actRow.className = 'row';
-      configureActionGrid(actRow);
+      actRow.className = 'tp3d-editor-action-grid';
 
       const selectAll = makeSelectAllButton(pack, 1);
       const setCategory = makeActionButton({

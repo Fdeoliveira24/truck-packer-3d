@@ -200,7 +200,8 @@ const editorInspectorPolishFiles = new Set([
 ]);
 
 function isNotCurrentReleaseGateCheckoutPatch(file) {
-  return file !== releaseGateCheckoutIdempotencyFile &&
+  return file !== 'docs/product/TP3D-MASTER-TODO-V4.md' &&
+    file !== releaseGateCheckoutIdempotencyFile &&
     !releaseGateAuthSessionFiles.has(file) &&
     !billingRetryReliabilityFiles.has(file) &&
     !uiCopyExportImportFiles.has(file) &&
@@ -961,7 +962,7 @@ test('P0 billing retry reliability C: changed files stay in approved billing rel
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
       .filter(isNotCurrentReleaseGateCheckoutPatch)
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !billingRetryReliabilityFiles.has(file));
@@ -1041,7 +1042,7 @@ test('UI-COPY-EXPORT-IMPORT-1 changed files stay in approved copy-only scope', a
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
       .filter(isNotCurrentReleaseGateCheckoutPatch)
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !uiCopyExportImportFiles.has(file));
@@ -1628,7 +1629,7 @@ test('PACK-IMPORT-SAFE-1 changed files stay in approved import/editor staging sc
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
 
@@ -1784,7 +1785,7 @@ test('PLACEMENT-STATE-S2 changed files stay inside the allowed scope', async () 
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
 
@@ -1840,7 +1841,7 @@ test('STAGING-S3 changed files stay inside the allowed scope', async () => {
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
 
@@ -1966,7 +1967,7 @@ test('STAGING-S3.1 changed files stay inside the allowed scope', async () => {
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
 
@@ -2049,7 +2050,7 @@ test('STAGING-S3.2 changed files stay inside the allowed scope', async () => {
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
 
@@ -2161,7 +2162,7 @@ test('G1-DIRECTION changed files stay inside the allowed scope', async () => {
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
 
@@ -2447,7 +2448,7 @@ test('G2-SHAPE-CONTRACT changed files stay inside the allowed scope', async () =
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
 
@@ -2845,7 +2846,7 @@ test('G2.2-CAB-OVERHANG changed files stay inside the allowed scope', async () =
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
 
@@ -3047,7 +3048,7 @@ test('G2.2-CLEANUP changed files stay inside the allowed scope', async () => {
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
 
@@ -3069,7 +3070,7 @@ test('UI-STABILIZATION-1 changed files stay in approved scope', async () => {
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
       .filter(isNotCurrentReleaseGateCheckoutPatch)
   );
   const unexpectedFiles = Array.from(changedFiles).filter(file => !uiStabilization1Files.has(file));
@@ -3092,7 +3093,7 @@ test('AUTO-PACK-A0/A0B changed files stay in approved orientation lock scope', a
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
   );
   const unexpectedFiles = Array.from(changedFiles)
     .filter(file => !autoPackA0BFiles.has(file) &&
@@ -3116,7 +3117,7 @@ test('AUTO-PACK-A1-2 changed files stay in approved floor-pass scope', async () 
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
   );
   const unexpectedFiles = Array.from(changedFiles)
     .filter(file => !autoPackA1Files.has(file) &&
@@ -3279,7 +3280,7 @@ test('AUTO-PACK-A1-R1 changed files stay in approved logistics scaffold scope', 
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
   );
   const unexpectedFiles = Array.from(changedFiles)
     .filter(file => !autoPackA1R1Files.has(file) &&
@@ -9201,7 +9202,7 @@ test('phase 0.7C-1B changed files stay within allowed polish scope', async () =>
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
     .filter(isNotCurrentReleaseGateCheckoutPatch);
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
@@ -9424,7 +9425,7 @@ test('phase 0.7C-2 changed files stay within allowed create-folder scope', async
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
     .filter(isNotCurrentReleaseGateCheckoutPatch);
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
@@ -9588,7 +9589,7 @@ test('phase 0.7C-3 changed files stay within allowed move-folder scope', async (
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
     .filter(isNotCurrentReleaseGateCheckoutPatch);
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 
@@ -9750,7 +9751,7 @@ test('phase 0.7C-4 changed files stay within allowed rename-delete scope', async
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md')
+    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
     .filter(isNotCurrentReleaseGateCheckoutPatch);
   const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
 

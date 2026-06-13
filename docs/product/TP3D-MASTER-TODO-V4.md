@@ -297,7 +297,7 @@ Release-gate items block **public launch**, not isolated product development. Pr
 | ⬜ | Add regression test for `interval` and `currentPeriodEnd` returned by `/billing-status` for all Pro states |
 | ⬜ | Add stress-test coverage for 200+ case loads (performance + correctness) |
 | ⬜ | Reduce regex-heavy audit tests gradually; replace with direct behavior tests |
-| ⬜ | Keep phase tests based on source ownership or behavior, not live working-tree file lists |
+| 🔄 | Keep phase tests based on source ownership or behavior, not live working-tree file lists — retired the three stale `git diff`-based "changed files stay inside scope" guards for the merged G1.2B/G1.2C/G1.2D polish phases (they false-failed on any later valid change to forbidden files such as `autopack-engine.js`). Behavior/source-ownership tests for those phases are kept. Remaining: audit other phases (e.g. G2-SHAPE-CONTRACT, 0.7C) for the same working-tree pattern. |
 
 ### 3D — Code Quality
 | Status | Item |

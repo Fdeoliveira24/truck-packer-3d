@@ -2231,18 +2231,30 @@ export async function updateProfile(updates) {
   return data;
 }
 
-export async function getUserOrganizations() {
+/**
+ * Core organization fetch that also reports whether the result is
+ * authoritative. `authoritative: false` means the list could NOT be confirmed
+ * (client session not ready, no resolved user id, RPC+fallback query error).
+ * Callers deciding "the user has zero workspaces" must treat a
+ * non-authoritative empty list as uncertain, never as a confirmed empty
+ * result. This is the fix for the false "Create or join a workspace" banner
+ * during slow/failed organization refresh: a failed fetch must not be
+ * indistinguishable from a genuine empty result.
+ * @returns {Promise<{ orgs: Object[], authoritative: boolean }>}
+ * @private
+ */
+async function _fetchUserOrganizations() {
   const client = requireClient();
   const clientSessionOk = await ensureClientSession();
-  if (!clientSessionOk) return [];
+  if (!clientSessionOk) return { orgs: [], authoritative: false };
   const userId = await getAuthedUserId();
-  if (!userId) return [];
+  if (!userId) return { orgs: [], authoritative: false };
   const isActiveOrgRow = org => Boolean(org && !org.archived_at);
 
   // 1) Primary path: RPC (preferred when installed)
   try {
     const { data, error } = await client.rpc('get_user_organizations');
-    if (!error && Array.isArray(data)) return data.filter(isActiveOrgRow);
+    if (!error && Array.isArray(data)) return { orgs: data.filter(isActiveOrgRow), authoritative: true };
 
     // If the RPC exists but RLS blocks it, we still try fallback.
     // If the function truly does not exist, Postgres will raise 42883.
@@ -2292,15 +2304,16 @@ export async function getUserOrganizations() {
     .eq('user_id', userId);
 
   if (qErr) {
-    // If RLS blocks or table not visible, treat as empty list.
-    return [];
+    // Query failed (RLS, network, transient Supabase error). This is NOT an
+    // authoritative empty result — callers must not read it as "no workspaces".
+    return { orgs: [], authoritative: false };
   }
 
   const safe = Array.isArray(rows) ? rows : [];
 
   // Shape the result to match the RPC output the UI expects:
   // org fields + role + joined_at
-  return safe
+  const orgs = safe
     .map(r => {
       const orgRel = r.organizations;
       const org = Array.isArray(orgRel) ? orgRel[0] : orgRel;
@@ -2311,6 +2324,23 @@ export async function getUserOrganizations() {
       };
     })
     .filter(isActiveOrgRow);
+  return { orgs, authoritative: true };
+}
+
+export async function getUserOrganizations() {
+  // Preserve the established array contract for all existing callers.
+  const { orgs } = await _fetchUserOrganizations();
+  return orgs;
+}
+
+/**
+ * Like getUserOrganizations() but also reports whether the list is
+ * authoritative. Used by the account bundle so a failed or uncertain fetch is
+ * marked partial instead of being mistaken for an authoritative empty result.
+ * @returns {Promise<{ orgs: Object[], authoritative: boolean }>}
+ */
+export async function getUserOrganizationsAuthoritative() {
+  return _fetchUserOrganizations();
 }
 
 export async function getUserArchivedOrganizations() {
@@ -2538,7 +2568,7 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
       }
 
       const orgsWrap = await withTimeout(
-        getUserOrganizations().catch(() => null),
+        getUserOrganizationsAuthoritative().catch(() => null),
         ACCOUNT_FETCH_TIMEOUT_MS,
         null
       );
@@ -2556,13 +2586,23 @@ export async function getAccountBundleSingleFlight({ force = false } = {}) {
       }
 
       let profileResult = profileWrap.value;
-      let orgsResult = orgsWrap.value;
+      // orgsWrap.value is { orgs, authoritative } on success, or null on
+      // throw/timeout. A fetch is only authoritative when it confirmed the list
+      // and did not time out; a failed/uncertain fetch (session not ready,
+      // userId missing, query error, timeout) must never look like an
+      // authoritative empty list.
+      const orgsAuthResult =
+        orgsWrap.value && typeof orgsWrap.value === 'object' && Array.isArray(orgsWrap.value.orgs)
+          ? orgsWrap.value
+          : null;
+      const orgsFetchAuthoritative = Boolean(orgsAuthResult && orgsAuthResult.authoritative) && !orgsWrap.timedOut;
+      let orgsResult = orgsFetchAuthoritative && orgsAuthResult ? orgsAuthResult.orgs : null;
       let membershipResult = membershipWrap.value;
       const hadTimeout = Boolean(profileWrap.timedOut || orgsWrap.timedOut || membershipWrap.timedOut);
       const reasonParts = [];
       let usedCachedOrgs = false;
-      const orgsFetchReturnedArray = Array.isArray(orgsResult) && !orgsWrap.timedOut;
-      const orgsFetchUncertain = Boolean(orgsWrap.timedOut || !Array.isArray(orgsResult));
+      const orgsFetchReturnedArray = orgsFetchAuthoritative && Array.isArray(orgsResult);
+      const orgsFetchUncertain = Boolean(orgsWrap.timedOut || !orgsFetchAuthoritative);
 
       if ((profileWrap.timedOut || !profileResult) && cachedProfile) {
         profileResult = cachedProfile;
@@ -3463,6 +3503,7 @@ try {
     getMyProfileStatus,
     updateProfile,
     getUserOrganizations,
+    getUserOrganizationsAuthoritative,
     getUserArchivedOrganizations,
     getMyMembership,
     getOrganization,

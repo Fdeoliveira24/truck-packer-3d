@@ -6973,8 +6973,8 @@ test('phase 0.6C Supabase client hides archived workspaces and disables direct a
   const src = await fs.readFile(supabasePath, 'utf8');
 
   assert.match(src, /const isActiveOrgRow = org => Boolean\(org && !org\.archived_at\)/,
-    'getUserOrganizations must define an active-org safety filter');
-  assert.match(src, /client\.rpc\('get_user_organizations'\)[\s\S]*return data\.filter\(isActiveOrgRow\)/,
+    'organization fetch must define an active-org safety filter');
+  assert.match(src, /client\.rpc\('get_user_organizations'\)[\s\S]*?orgs: data\.filter\(isActiveOrgRow\), authoritative: true/,
     'RPC org rows must be client-side filtered as a safety net');
   assert.match(src, /organizations \([\s\S]*archived_at[\s\S]*\)/,
     'fallback organization join must include archived_at');
@@ -7115,16 +7115,16 @@ test('phase 0.6C-2 account bundle treats fresh empty active org list as authorit
   const bundleFn = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(bundleFn, 'getAccountBundleSingleFlight must be extractable');
-  assert.match(bundleFn, /getUserOrganizations\(\)\.catch\(\(\) => null\)/,
-    'org fetch errors must be represented as null so an empty array stays authoritative');
+  assert.match(bundleFn, /getUserOrganizationsAuthoritative\(\)\.catch\(\(\) => null\)/,
+    'org fetch must use the authoritative variant so a failed fetch is distinguishable from an empty list');
   assert.match(bundleFn, /ACCOUNT_FETCH_TIMEOUT_MS,\s*null\s*\)/,
     'org fetch timeout fallback must be null, not an empty array that looks successful');
   assert.doesNotMatch(bundleFn, /orgsResult\.length === 0/,
     'account bundle must not treat an authoritative empty org list as a cache miss');
-  assert.match(bundleFn, /const orgsFetchUncertain = Boolean\(orgsWrap\.timedOut \|\| !Array\.isArray\(orgsResult\)\)/,
-    'null, non-array, and timeout org results must be treated as uncertain');
+  assert.match(bundleFn, /const orgsFetchUncertain = Boolean\(orgsWrap\.timedOut \|\| !orgsFetchAuthoritative\)/,
+    'timeout or non-authoritative org results must be treated as uncertain');
   assert.match(bundleFn, /if \(orgsFetchUncertain && cachedOrgs\.length > 0\)/,
-    'cached orgs may be reused only for invalid org results or timeouts');
+    'cached orgs may be reused only for uncertain org results or timeouts');
 });
 
 test('phase 0.6C-3 account bundle marks failed org fetch as partial, not confirmed no-org', async () => {
@@ -7134,10 +7134,12 @@ test('phase 0.6C-3 account bundle marks failed org fetch as partial, not confirm
   const bundleFn = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(bundleFn, 'getAccountBundleSingleFlight must be extractable');
-  assert.match(bundleFn, /const orgsFetchReturnedArray = Array\.isArray\(orgsResult\) && !orgsWrap\.timedOut/,
-    'only an actual non-timeout array result may be authoritative');
-  assert.match(bundleFn, /const orgsFetchUncertain = Boolean\(orgsWrap\.timedOut \|\| !Array\.isArray\(orgsResult\)\)/,
-    'null, failed, timeout, or non-array org fetch results must be uncertain');
+  assert.match(bundleFn, /const orgsFetchAuthoritative = Boolean\(orgsAuthResult && orgsAuthResult\.authoritative\) && !orgsWrap\.timedOut/,
+    'a fetch is authoritative only when it confirmed the list and did not time out');
+  assert.match(bundleFn, /const orgsFetchReturnedArray = orgsFetchAuthoritative && Array\.isArray\(orgsResult\)/,
+    'only an authoritative, non-timeout array result may be a returned array');
+  assert.match(bundleFn, /const orgsFetchUncertain = Boolean\(orgsWrap\.timedOut \|\| !orgsFetchAuthoritative\)/,
+    'null, failed, timeout, or non-authoritative org fetch results must be uncertain');
   assert.match(bundleFn, /else if \(orgsFetchUncertain\) \{[\s\S]*reasonParts\.push\('orgs unavailable'\)/,
     'failed org fetch with no cached orgs must carry an uncertainty reason');
   assert.match(bundleFn, /const partial = Boolean\(!orgsAuthoritative \|\|/,
@@ -7157,6 +7159,71 @@ test('phase 0.6C-3 cached org rescue after failed org fetch remains partial', as
     'cached org rescue must not be treated as an authoritative fresh org list');
   assert.match(bundleFn, /const partial = Boolean\(!orgsAuthoritative \|\|/,
     'cached org rescue must remain partial so it cannot confirm zero active workspaces');
+});
+
+// ── False no-workspace state during slow/failed organization refresh ─────────
+
+test('false-no-workspace: authoritative org fetch distinguishes failure from a genuine empty list', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const start = src.indexOf('async function _fetchUserOrganizations()');
+  const end = src.indexOf('export async function getUserOrganizationsAuthoritative()', start);
+  const core = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(core, '_fetchUserOrganizations core must be extractable');
+  // Transient failure branches must be non-authoritative (never a confirmed empty result).
+  assert.match(core, /if \(!clientSessionOk\) return \{ orgs: \[\], authoritative: false \}/,
+    'client session not ready must be non-authoritative, not an empty result');
+  assert.match(core, /if \(!userId\) return \{ orgs: \[\], authoritative: false \}/,
+    'missing resolved user id must be non-authoritative');
+  assert.match(core, /if \(qErr\) \{[\s\S]*return \{ orgs: \[\], authoritative: false \}/,
+    'a failed membership query must be non-authoritative, never a confirmed empty list');
+  // A successful fetch — including a genuinely empty list — IS authoritative.
+  assert.match(core, /return \{ orgs, authoritative: true \}/,
+    'a successful fetch (including a genuinely empty list) must be authoritative');
+});
+
+test('false-no-workspace: getUserOrganizations preserves its array contract for existing callers', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const start = src.indexOf('export async function getUserOrganizations()');
+  const end = src.indexOf('export async function getUserOrganizationsAuthoritative()', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'getUserOrganizations wrapper must be extractable');
+  assert.match(fn, /const \{ orgs \} = await _fetchUserOrganizations\(\);\s*\n\s*return orgs;/,
+    'getUserOrganizations must still resolve to a plain array for all existing callers');
+});
+
+test('false-no-workspace: account bundle confirms zero workspaces only from a non-partial authoritative result', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('async function applyOrgContextFromBundle(');
+  const end = src.indexOf('async function refreshOrgContext(', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'applyOrgContextFromBundle must be extractable');
+  // A partial bundle with a known workspace hint must retain the workspace, not clear it.
+  assert.match(fn, /if \(bundle && bundle\.partial && readLocalOrgId\(\)\) \{[\s\S]*?return null;/,
+    'a partial bundle with a known workspace hint must retain the workspace');
+  // confirmedNoOrg may only be derived from a non-partial empty result.
+  assert.match(fn, /confirmedNoOrg: Boolean\(!bundle\?\.partial && Array\.isArray\(resolved\.orgs\) && resolved\.orgs\.length === 0\)/,
+    'confirmed no-org may only be derived from a non-partial empty result');
+  // A mismatched active org may only be cleared from a non-partial bundle.
+  assert.match(fn, /if \(nextOrgId && !nextOrgInActiveList && !\(bundle && bundle\.partial\)\)/,
+    'a mismatched active org may only be cleared from a non-partial bundle');
+});
+
+test('false-no-workspace: no-org banner requires a resolved confirmed-empty result and is suppressed while busy', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function applyOrgRequiredUi(');
+  const anchor = src.indexOf('const showNoOrgBanner', start);
+  const fn = start >= 0 && anchor > start ? src.slice(start, anchor + 600) : '';
+
+  assert.ok(fn, 'applyOrgRequiredUi must be extractable');
+  assert.match(fn, /const hasResolvedNoActiveOrg = Boolean\([\s\S]*?confirmedNoOrg &&[\s\S]*?orgContextResolved &&[\s\S]*?orgs\.length === 0/,
+    'the no-org banner must require a confirmed, resolved, empty org context');
+  assert.match(fn, /const orgContextBusy = Boolean\(orgContextInFlight \|\| authRehydratePromise\)/,
+    'banner gating must know when an org refresh or auth rehydrate is in flight');
+  assert.match(fn, /showNoOrgBanner = Boolean\([\s\S]*?hasResolvedNoActiveOrg &&[\s\S]*?!authNotSettled &&[\s\S]*?!orgContextBusy/,
+    'the no-org banner must never show while auth is unsettled or an org refresh is in flight');
 });
 
 test('phase 0.6C-2 account bundle does not expose stale profile or membership org ids as active', async () => {

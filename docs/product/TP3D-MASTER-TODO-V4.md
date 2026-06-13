@@ -168,8 +168,8 @@ Release-gate items block **public launch**, not isolated product development. Pr
 | ✅ | Admin cannot remove another Admin (server + RLS) | Migration `2026050702` + deployed |
 | ✅ | `billing-status` returns `billing_unavailable` for archived resolved workspaces | Code |
 | ✅ | Support-assisted `cancel-account-deletion` endpoint deployed | Live curl 200 |
-| ⚠️ | **P0 — `profiles` deletion fields only protected client-side.** `profiles_update_own` RLS lets any authenticated user update their own profile row directly via the Supabase API. The block on `deletion_status`, `deleted_at`, and `purge_after` exists only in `src/core/supabase-client.js` (browser client). No DB trigger or column-level policy prevents a direct API write. Fix: add a `BEFORE UPDATE` trigger or column-level security to reject writes to these three fields from non-service-role callers. | Codex/Claude audit |
-| ⬜ | Add targeted tests: non-service-role calls cannot mutate `profiles.deletion_status`, `deleted_at`, `purge_after` | — |
+| 🔄 | **P0 — `profiles` deletion fields server-side guard — code written, migration NOT yet applied to live DB.** `profiles_update_own` RLS let any authenticated user update their own profile row via the Supabase API, with only a client-side block in `src/core/supabase-client.js`. Fix implemented: `supabase/migrations/2026061301_guard_profile_deletion_fields.sql` adds a `BEFORE UPDATE` trigger (`tp3d_guard_profile_deletion_fields`, SECURITY INVOKER) that rejects any change to `deletion_status`/`deleted_at`/`purge_after` with errcode 42501 unless the caller is `service_role` (Edge Functions all use `serviceClient()`) or a privileged maintenance role. Unchanged-field updates pass the fast path so normal profile edits are unaffected. Remaining: apply migration to live DB and verify a direct authenticated REST write is rejected while the three deletion Edge Functions still succeed. | Migration + static tests (security-and-invariants.spec.mjs); awaiting live DB apply |
+| 🔄 | Add targeted tests: non-service-role calls cannot mutate `profiles.deletion_status`, `deleted_at`, `purge_after` — static migration/invariant tests added (3 tests: trigger present, blocks 3 fields w/ 42501, allows service-role + privileged roles, not SECURITY DEFINER). Remaining: live DB integration test once migration applied. | security-and-invariants.spec.mjs |
 | ❓ | Define paid-subscription deletion policy: must cancel first, or support-assisted cancel during delete flow | — |
 | ⬜ | Verify Admin cannot remove Admin in live browser | — |
 | ⬜ | Verify Admin can still remove Member in live browser | — |
@@ -293,7 +293,7 @@ Release-gate items block **public launch**, not isolated product development. Pr
 | Status | Item |
 |--------|------|
 | ⬜ | **Add live integration tests (currently only audit/static checks exist)**: checkout owner/member denial, portal wrong-workspace preselection, webhook out-of-order + idempotent replay, billing-status after workspace switch, expired invite, accepted-invite same-email guard, account deletion owner block, RLS member/non-member select denial, import/export large-workspace quota |
-| ⬜ | Add test: non-service-role calls cannot mutate `profiles.deletion_status`, `deleted_at`, `purge_after` |
+| 🔄 | Add test: non-service-role calls cannot mutate `profiles.deletion_status`, `deleted_at`, `purge_after` — static migration/invariant tests added in `security-and-invariants.spec.mjs`; live DB integration test still pending migration apply |
 | ⬜ | Add regression test for `interval` and `currentPeriodEnd` returned by `/billing-status` for all Pro states |
 | ⬜ | Add stress-test coverage for 200+ case loads (performance + correctness) |
 | ⬜ | Reduce regex-heavy audit tests gradually; replace with direct behavior tests |
@@ -832,7 +832,7 @@ Release-gate items block **public launch**, not isolated product development. Pr
 *All must be checked before any public launch.*
 
 - [ ] BUG-01 through BUG-07 from QA report resolved and regression-tested
-- [ ] `profiles` deletion-field server-side guard implemented and tested
+- [ ] `profiles` deletion-field server-side guard implemented and tested — migration `2026061301_guard_profile_deletion_fields.sql` + static tests done; awaiting live DB apply + verification
 - [ ] P0 billing invariants pass for User1/User2/User3/User4
 - [ ] Two-tab removed-member access loss verified live
 - [ ] Portal sign-off: deep-link, schedule-managed fallback, stale-sub fallback

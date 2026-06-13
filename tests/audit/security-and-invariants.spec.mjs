@@ -90,6 +90,10 @@ const accountPurgeStatusMigrationPath = new URL(
   '../../supabase/migrations/2026050804_account_purge_status.sql',
   import.meta.url
 );
+const guardProfileDeletionFieldsMigrationPath = new URL(
+  '../../supabase/migrations/2026061301_guard_profile_deletion_fields.sql',
+  import.meta.url
+);
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
   const entries = await fs.readdir(dirUrl, { withFileTypes: true });
   const sources = [];
@@ -6503,6 +6507,41 @@ test('phase 0.6D-pre Supabase client rejects direct account deletion state updat
     'updateProfile must list account deletion state fields as blocked');
   assert.match(fn, /blockedDeletionFields\.some\(field => Object\.prototype\.hasOwnProperty\.call\(updates \|\| \{\}, field\)\)[\s\S]*Direct account deletion state updates are disabled\. Use the account deletion flow\./,
     'updateProfile must reject direct account deletion state updates');
+});
+
+test('release-gate profiles deletion fields are protected server-side by a BEFORE UPDATE trigger', async () => {
+  const sql = await fs.readFile(guardProfileDeletionFieldsMigrationPath, 'utf8');
+
+  assert.match(sql, /create or replace function public\.tp3d_guard_profile_deletion_fields\(\)/,
+    'migration must define the deletion-field guard trigger function');
+  assert.match(sql, /before update on public\.profiles\s+for each row execute function public\.tp3d_guard_profile_deletion_fields\(\)/,
+    'migration must attach the guard as a BEFORE UPDATE row trigger on public.profiles');
+  // The guard must inspect all three protected lifecycle fields.
+  for (const field of ['deletion_status', 'deleted_at', 'purge_after']) {
+    assert.match(sql, new RegExp(`new\\.${field} is not distinct from old\\.${field}`),
+      `guard must detect changes to ${field}`);
+  }
+  assert.match(sql, /raise exception[\s\S]*using errcode = '42501'/,
+    'guard must reject blocked writes with insufficient_privilege (42501)');
+});
+
+test('release-gate profiles deletion guard allows service-role and privileged maintenance writes', async () => {
+  const sql = await fs.readFile(guardProfileDeletionFieldsMigrationPath, 'utf8');
+  const fnStart = sql.indexOf('create or replace function public.tp3d_guard_profile_deletion_fields()');
+  const fnEnd = sql.indexOf('drop trigger if exists', fnStart);
+  const fn = fnStart >= 0 && fnEnd > fnStart ? sql.slice(fnStart, fnEnd) : '';
+
+  assert.ok(fn, 'guard function body must be extractable');
+  // Edge Functions (request/cancel/purge account deletion) all use serviceClient();
+  // the guard must let the service role through.
+  assert.match(fn, /claim_role = 'service_role'/,
+    'guard must allow PostgREST service_role JWT writes (Edge Functions)');
+  assert.match(fn, /current_user in \('service_role', 'postgres', 'supabase_admin', 'supabase_auth_admin'\)/,
+    'guard must allow privileged database roles for migrations/admin');
+  // Must not be SECURITY DEFINER, otherwise current_user would always be the
+  // function owner and the role check would be meaningless.
+  assert.doesNotMatch(fn, /security\s+definer/i,
+    'guard must run as SECURITY INVOKER so current_user reflects the real caller');
 });
 
 test('phase 0.6D-pre direct client mutation guards avoid lifecycle billing and reload scope creep', async () => {

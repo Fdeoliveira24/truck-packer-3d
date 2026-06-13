@@ -7008,32 +7008,147 @@ test('release-gate profiles deletion fields are protected server-side by a BEFOR
     'migration must define the deletion-field guard trigger function');
   assert.match(sql, /before update on public\.profiles\s+for each row execute function public\.tp3d_guard_profile_deletion_fields\(\)/,
     'migration must attach the guard as a BEFORE UPDATE row trigger on public.profiles');
-  // The guard must inspect all three protected lifecycle fields.
+  // The guard must inspect all three protected lifecycle fields with a
+  // NULL-safe comparison (these columns are nullable).
   for (const field of ['deletion_status', 'deleted_at', 'purge_after']) {
     assert.match(sql, new RegExp(`new\\.${field} is not distinct from old\\.${field}`),
-      `guard must detect changes to ${field}`);
+      `guard must NULL-safely detect changes to ${field}`);
   }
+  assert.doesNotMatch(sql, /new\.(deletion_status|deleted_at|purge_after)\s*=\s*old\./,
+    'guard must not use plain = for nullable columns (= is not NULL-safe)');
   assert.match(sql, /raise exception[\s\S]*using errcode = '42501'/,
     'guard must reject blocked writes with insufficient_privilege (42501)');
+  // Idempotent / replayable.
+  assert.match(sql, /create or replace function public\.tp3d_guard_profile_deletion_fields/,
+    'function must be create-or-replace for safe replay');
+  assert.match(sql, /drop trigger if exists tp3d_profiles_guard_deletion_fields on public\.profiles/,
+    'trigger must be dropped-if-exists for safe replay');
 });
 
-test('release-gate profiles deletion guard allows service-role and privileged maintenance writes', async () => {
+test('release-gate profiles deletion guard fast-path allows an update only when ALL three fields are unchanged', async () => {
+  const sql = await fs.readFile(guardProfileDeletionFieldsMigrationPath, 'utf8');
+
+  // The unchanged fast-path must AND all three comparisons together so that a
+  // change to ANY one (or several at once) falls through to the role gate.
+  assert.match(
+    sql,
+    /if new\.deletion_status is not distinct from old\.deletion_status\s*\n\s*and new\.deleted_at is not distinct from old\.deleted_at\s*\n\s*and new\.purge_after is not distinct from old\.purge_after then\s*\n\s*return new;/,
+    'guard fast-path must require every protected field to be unchanged (AND), so a single- or multi-field change is gated');
+});
+
+test('release-gate profiles deletion guard only trusts service-role JWT and privileged DB roles', async () => {
   const sql = await fs.readFile(guardProfileDeletionFieldsMigrationPath, 'utf8');
   const fnStart = sql.indexOf('create or replace function public.tp3d_guard_profile_deletion_fields()');
   const fnEnd = sql.indexOf('drop trigger if exists', fnStart);
   const fn = fnStart >= 0 && fnEnd > fnStart ? sql.slice(fnStart, fnEnd) : '';
 
   assert.ok(fn, 'guard function body must be extractable');
-  // Edge Functions (request/cancel/purge account deletion) all use serviceClient();
-  // the guard must let the service role through.
+  // Trust comes ONLY from the verified PostgREST JWT role claim (service_role)
+  // or a privileged database role — both unreachable from a browser user JWT.
   assert.match(fn, /claim_role = 'service_role'/,
     'guard must allow PostgREST service_role JWT writes (Edge Functions)');
   assert.match(fn, /current_user in \('service_role', 'postgres', 'supabase_admin', 'supabase_auth_admin'\)/,
     'guard must allow privileged database roles for migrations/admin');
-  // Must not be SECURITY DEFINER, otherwise current_user would always be the
-  // function owner and the role check would be meaningless.
-  assert.doesNotMatch(fn, /security\s+definer/i,
+  // Role is read from the verified request claims, not client-controlled data.
+  assert.match(fn, /nullif\(current_setting\('request\.jwt\.claims', true\), ''\)::jsonb ->> 'role'/,
+    'guard must read the role from the verified PostgREST JWT claims');
+  // current_user (real role after SET ROLE), never session_user (always the
+  // authenticator login role and therefore identical for user and service calls).
+  assert.match(fn, /current_user in \(/,
+    'guard must inspect current_user (the effective role)');
+  assert.doesNotMatch(fn, /session_user/,
+    'guard must not key off session_user (it stays authenticator for both user and service calls)');
+});
+
+test('release-gate profiles deletion guard has no owner/admin/member or client-claim bypass', async () => {
+  const sql = await fs.readFile(guardProfileDeletionFieldsMigrationPath, 'utf8');
+  // Strip SQL line comments so explanatory prose (which mentions admin tasks and
+  // current_organization_id) cannot mask a real bypass in the executable code.
+  const code = sql.split('\n').map(line => line.replace(/--.*$/, '')).join('\n');
+
+  // Authorization must never depend on a workspace role literal. The privileged
+  // DB roles supabase_admin / supabase_auth_admin are not workspace roles and do
+  // not match these quoted literals.
+  assert.doesNotMatch(code, /'owner'|'admin'|'member'/i,
+    'guard must not grant a workspace owner/admin/member browser bypass');
+  assert.doesNotMatch(code, /organization|org_member|workspace|is_owner/i,
+    'guard must not consult organization/workspace state for authorization');
+  assert.doesNotMatch(code, /user_metadata|raw_user_meta_data|app_metadata/i,
+    'guard must not trust user/app metadata for authorization');
+  assert.doesNotMatch(code, /auth\.uid\(\)|\bemail\b/i,
+    'guard must not authorize based on the caller account id or email');
+});
+
+test('release-gate profiles deletion guard runs as SECURITY INVOKER with a locked search_path', async () => {
+  const sql = await fs.readFile(guardProfileDeletionFieldsMigrationPath, 'utf8');
+  const fnStart = sql.indexOf('create or replace function public.tp3d_guard_profile_deletion_fields()');
+  const fnEnd = sql.indexOf('as $$', fnStart);
+  const header = fnStart >= 0 && fnEnd > fnStart ? sql.slice(fnStart, fnEnd) : '';
+
+  assert.ok(header, 'guard function header must be extractable');
+  // SECURITY INVOKER (default): current_user must reflect the real caller, so
+  // the function must NOT be SECURITY DEFINER (that would make current_user the
+  // function owner and defeat the role check).
+  assert.doesNotMatch(header, /security\s+definer/i,
     'guard must run as SECURITY INVOKER so current_user reflects the real caller');
+  // Locked search_path closes any name-resolution redirection.
+  assert.match(header, /set search_path = ''/,
+    'guard function must lock search_path to prevent name-resolution attacks');
+});
+
+test('release-gate profiles deletion guard function is not exposed for direct/RPC execution', async () => {
+  const sql = await fs.readFile(guardProfileDeletionFieldsMigrationPath, 'utf8');
+
+  assert.match(sql, /revoke execute on function public\.tp3d_guard_profile_deletion_fields\(\) from public;/,
+    'EXECUTE on the guard function must be revoked from PUBLIC');
+  assert.match(sql, /revoke execute on function public\.tp3d_guard_profile_deletion_fields\(\) from anon/,
+    'EXECUTE must be revoked from anon when the role exists');
+  assert.match(sql, /revoke execute on function public\.tp3d_guard_profile_deletion_fields\(\) from authenticated/,
+    'EXECUTE must be revoked from authenticated when the role exists');
+  // The conditional revokes must be guarded by role existence so replay stays
+  // safe in environments without the Supabase anon/authenticated roles.
+  assert.match(sql, /if exists \(select 1 from pg_roles where rolname = 'anon'\)/,
+    'anon revoke must be guarded by role existence for safe replay');
+  assert.match(sql, /if exists \(select 1 from pg_roles where rolname = 'authenticated'\)/,
+    'authenticated revoke must be guarded by role existence for safe replay');
+});
+
+test('release-gate account-deletion Edge Functions write the protected fields only via the service client', async () => {
+  const [requestSrc, cancelSrc, purgeSrc] = await Promise.all([
+    fs.readFile(requestAccountDeletionPath, 'utf8'),
+    fs.readFile(cancelAccountDeletionPath, 'utf8'),
+    fs.readFile(purgeDeletedAccountsPath, 'utf8'),
+  ]);
+
+  for (const [name, src] of [
+    ['request-account-deletion', requestSrc],
+    ['cancel-account-deletion', cancelSrc],
+    ['purge-deleted-accounts', purgeSrc],
+  ]) {
+    assert.match(src, /serviceClient\(\)/,
+      `${name} must obtain a service-role client so the DB guard permits its deletion-field writes`);
+  }
+  // The legitimate writers must actually touch the protected fields (otherwise
+  // this test would silently pass against a refactor that moved the writes).
+  assert.match(requestSrc, /deletion_status:\s*"requested"/,
+    'request-account-deletion must set deletion_status via the service client');
+  assert.match(cancelSrc, /deletion_status:\s*"canceled"/,
+    'cancel-account-deletion must set deletion_status via the service client');
+  assert.match(purgeSrc, /deletion_status:\s*"purged"/,
+    'purge-deleted-accounts must set deletion_status via the service client');
+});
+
+test('release-gate browser client still refuses direct deletion-field writes (defense in depth)', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const start = src.indexOf('export async function updateProfile(updates)');
+  const end = src.indexOf('export async function getUserOrganizations()', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'updateProfile must be extractable');
+  assert.match(fn, /const blockedDeletionFields = \['deletion_status', 'deleted_at', 'purge_after'\]/,
+    'updateProfile must still list the deletion fields as blocked on the client');
+  assert.match(fn, /blockedDeletionFields\.some\(field => Object\.prototype\.hasOwnProperty\.call\(updates \|\| \{\}, field\)\)[\s\S]*Direct account deletion state updates are disabled/,
+    'updateProfile must still reject direct deletion-field writes from the browser');
 });
 
 test('phase 0.6D-pre direct client mutation guards avoid lifecycle billing and reload scope creep', async () => {

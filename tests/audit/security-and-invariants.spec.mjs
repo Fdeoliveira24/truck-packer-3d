@@ -2437,6 +2437,20 @@ test('G2-SHAPE-CONTRACT solveLegacyAutoPack remains unused by the active AutoPac
     'autopack-engine.js must not import or call solveLegacyAutoPack');
 });
 
+test('A1.1B AutoPack engine defaults every truck mode to front-first loading', async () => {
+  const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
+
+  // The single source of truth for load direction is the loadFrontFirst flag.
+  // It must be unconditionally true so Standard, Wheel Wells, and Front Overhang
+  // all pack front-first.
+  assert.match(engineSrc, /const loadFrontFirst = true;/,
+    'autopack-engine.js must set loadFrontFirst = true for all truck modes');
+  // It must no longer gate the direction on a single mode (the old rear-first
+  // default for Standard/Wheel Wells).
+  assert.doesNotMatch(engineSrc, /loadFrontFirst\s*=\s*mode\s*===\s*['"]frontBonus['"]/,
+    'autopack-engine.js must not restrict front-first loading to frontBonus');
+});
+
 test('G2-SHAPE-CONTRACT changed files stay inside the allowed scope', async () => {
   const [unstaged, staged] = await Promise.all([
     execFileAsync('git', ['diff', '--name-only']),

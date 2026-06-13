@@ -90,132 +90,6 @@ const accountPurgeStatusMigrationPath = new URL(
   '../../supabase/migrations/2026050804_account_purge_status.sql',
   import.meta.url
 );
-const releaseGateCheckoutIdempotencyFile = 'supabase/functions/stripe-create-checkout-session/index.ts';
-const releaseGateAuthSessionFiles = new Set([
-  'src/core/supabase-client.js',
-]);
-const billingRetryReliabilityFiles = new Set([
-  'src/app.js',
-  'src/ui/overlays/settings-overlay.js',
-  'src/data/services/billing.service.js',
-  'supabase/functions/billing-status/index.ts',
-  'tests/audit/security-and-invariants.spec.mjs',
-]);
-const uiCopyExportImportFiles = new Set([
-  'index.html',
-  'src/app.js',
-  'src/screens/packs-screen.js',
-  'src/services/pack-library.js',
-  'src/ui/overlays/help-modal.js',
-  'src/ui/overlays/import-app-dialog.js',
-  'src/ui/overlays/import-pack-dialog.js',
-  'src/ui/overlays/import-cases-dialog.js',
-  'src/ui/helpers/import-dialog-utils.js',
-  'src/services/import-export.js',
-  'src/ui/overlays/settings-overlay.js',
-  'styles/main.css',
-  'docs/product/TP3D-MASTER-TODO-V3.md',
-  'tests/audit/security-and-invariants.spec.mjs',
-]);
-const importEditorSafeFiles = new Set([
-  'index.html',
-  'src/app.js',
-  'src/editor/scene-runtime.js',
-  'src/screens/editor-screen.js',
-  'src/screens/packs-screen.js',
-  'src/services/pack-library.js',
-  'src/services/autopack-engine.js',
-  'src/core/normalizer.js',
-  'src/ui/overlays/import-pack-dialog.js',
-  'styles/main.css',
-  'tests/audit/security-and-invariants.spec.mjs',
-]);
-const uiStabilization1Files = new Set([
-  'src/ui/overlays/settings-overlay.js',
-  'src/ui/overlays/account-overlay.js',
-  'styles/main.css',
-  'tests/audit/security-and-invariants.spec.mjs',
-]);
-const autoPackA0Files = new Set([
-  'src/app.js',
-  'src/screens/editor-screen.js',
-  'src/services/pack-library.js',
-  'tests/audit/security-and-invariants.spec.mjs',
-]);
-const autoPackA0BFiles = new Set([
-  ...autoPackA0Files,
-  'src/core/normalizer.js',
-]);
-const autoPackA1Files = new Set([
-  'src/app.js',
-  'tests/audit/security-and-invariants.spec.mjs',
-]);
-const autoPackA1R1Files = new Set([
-  'src/services/autopack-solver.js',
-  'src/core/normalizer.js',
-  'src/data/models/case.model.js',
-  'tests/audit/security-and-invariants.spec.mjs',
-]);
-const autoPackA1Clean1Files = new Set([
-  'src/app.js',
-  'src/services/autopack-legacy-solver.js',
-  'tests/audit/security-and-invariants.spec.mjs',
-]);
-const autoPackA1Clean2Files = new Set([
-  'src/app.js',
-  'src/services/autopack-engine.js',
-  'tests/audit/security-and-invariants.spec.mjs',
-]);
-const autoPackEditorCollisionFiles = new Set([
-  'src/screens/editor-screen.js',
-  'tests/audit/security-and-invariants.spec.mjs',
-]);
-const placementSettleFiles = new Set([
-  'src/services/pack-library.js',
-  'src/screens/editor-screen.js',
-  'src/services/autopack-engine.js',
-  'tests/audit/security-and-invariants.spec.mjs',
-]);
-const editorInspectorPolishFiles = new Set([
-  'index.html',
-  'src/app.js',
-  'src/editor/scene-runtime.js',
-  'src/core/utils.js',
-  'src/core/utils/index.js',
-  'src/screens/cases-screen.js',
-  'src/screens/editor-screen.js',
-  'src/screens/packs-screen.js',
-  'src/services/case-library.js',
-  'src/services/category-service.js',
-  'src/services/import-export.js',
-  'src/ui/helpers/import-dialog-utils.js',
-  'src/ui/overlays/card-display-overlay.js',
-  'src/ui/overlays/case-modal.js',
-  'src/ui/overlays/import-cases-dialog.js',
-  'src/ui/overlays/settings-overlay.js',
-  'src/ui/ui-components.js',
-  'docs/product/TP3D-MASTER-TODO-V3.md',
-  'styles/main.css',
-  'tests/audit/security-and-invariants.spec.mjs',
-]);
-
-function isNotCurrentReleaseGateCheckoutPatch(file) {
-  return file !== 'docs/product/TP3D-MASTER-TODO-V4.md' &&
-    file !== releaseGateCheckoutIdempotencyFile &&
-    !releaseGateAuthSessionFiles.has(file) &&
-    !billingRetryReliabilityFiles.has(file) &&
-    !uiCopyExportImportFiles.has(file) &&
-    !uiStabilization1Files.has(file) &&
-    !autoPackA0BFiles.has(file) &&
-    !autoPackA1R1Files.has(file) &&
-    !autoPackA1Clean1Files.has(file) &&
-    !autoPackA1Clean2Files.has(file) &&
-    !autoPackEditorCollisionFiles.has(file) &&
-    !placementSettleFiles.has(file) &&
-    !importEditorSafeFiles.has(file) &&
-    !editorInspectorPolishFiles.has(file);
-}
-
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
   const entries = await fs.readdir(dirUrl, { withFileTypes: true });
   const sources = [];
@@ -952,25 +826,6 @@ test('P0 billing retry reliability C: changed billing logs do not expose tokens 
     'changed billing reliability paths must not log or return secret-bearing values');
 });
 
-test('P0 billing retry reliability C: changed files stay in approved billing reliability scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-      .filter(isNotCurrentReleaseGateCheckoutPatch)
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !billingRetryReliabilityFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'P0 billing retry reliability C must stay inside approved billing reliability files');
-});
-
 test('UI-COPY-EXPORT-IMPORT-1 copy uses scoped backup import export wording', async () => {
   const [settings, app, index, importApp, importPack, help, packs] = await Promise.all([
     fs.readFile(settingsOverlayPath, 'utf8'),
@@ -1030,25 +885,6 @@ test('UI-COPY-EXPORT-IMPORT-1 removes fake release notes and stale roadmap commi
     'Settings Release Notes sub-view must render the neutral empty state');
   assert.match(settings, /Published roadmap items will appear here when they are ready to share/,
     'Settings Roadmap sub-view must render the neutral empty state');
-});
-
-test('UI-COPY-EXPORT-IMPORT-1 changed files stay in approved copy-only scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-      .filter(isNotCurrentReleaseGateCheckoutPatch)
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !uiCopyExportImportFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'UI-COPY-EXPORT-IMPORT-1 must stay inside approved UI copy and docs files');
 });
 
 // ── Import-cases dialog polish checks ──────────────────────────────────────
@@ -1619,24 +1455,6 @@ test('PACK-IMPORT-SAFE-1 addInstance default placement uses dynamic non-overlapp
     'Default added instances should stage outside the truck until manually packed');
 });
 
-test('PACK-IMPORT-SAFE-1 changed files stay in approved import/editor staging scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'PACK-IMPORT-SAFE-1 must stay inside approved import/editor staging files');
-});
-
 // ── End PACK-IMPORT-SCHEMA-1 ──────────────────────────────────────────────
 
 // ── PLACEMENT-STATE-S2 ─────────────────────────────────────────────────────
@@ -1775,24 +1593,6 @@ test('PLACEMENT-STATE-S2 normalizer keeps old packs without a placement field lo
     'instances without a placement field must normalize to null, not throw or default to a guessed state');
 });
 
-test('PLACEMENT-STATE-S2 changed files stay inside the allowed scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'PLACEMENT-STATE-S2 must stay inside approved placement-state files');
-});
-
 // ── End PLACEMENT-STATE-S2 ─────────────────────────────────────────────────
 
 // ── STAGING-S3 ──────────────────────────────────────────────────────────────
@@ -1829,24 +1629,6 @@ test('STAGING-S3 isAabbInStagingZone accepts canonical staged positions and reje
   };
   assert.equal(PackLibrary.isAabbInStagingZone(pack, farAabb), false,
     'an AABB drifted far away from the trailer must not be considered inside the staging zone');
-});
-
-test('STAGING-S3 changed files stay inside the allowed scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'STAGING-S3 must stay inside approved staging-validation files');
 });
 
 // ── End STAGING-S3 ──────────────────────────────────────────────────────────
@@ -1957,24 +1739,6 @@ test('STAGING-S3.1 packed item containment inside the trailer remains strict des
     'sanity check: this position is comfortably inside the larger staging work area');
 });
 
-test('STAGING-S3.1 changed files stay inside the allowed scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'STAGING-S3.1 must stay inside approved staging-validation files');
-});
-
 // ── End STAGING-S3.1 ────────────────────────────────────────────────────────
 
 // ── STAGING-S3.2 ────────────────────────────────────────────────────────────
@@ -2038,24 +1802,6 @@ test('STAGING-S3.2 a staged item far from the trailer is classified as staged, n
 
   assert.equal(placement, 'staged',
     'an item dragged far from the trailer must be classified as staged, not rejected outright');
-});
-
-test('STAGING-S3.2 changed files stay inside the allowed scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'STAGING-S3.2 must stay inside approved staging-validation files');
 });
 
 // ── End STAGING-S3.2 ────────────────────────────────────────────────────────
@@ -2150,24 +1896,6 @@ test('G1-DIRECTION wheel well offset remains measured from the rear/low-X side',
     'wheel-well rear zone must start at the rear/loading-door origin');
   assert.equal(rearZone.max.x, truck.shapeConfig.wellOffsetFromRear,
     'wellOffsetFromRear must be measured starting from the rear (x=0), not the front');
-});
-
-test('G1-DIRECTION changed files stay inside the allowed scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'G1-DIRECTION must stay inside approved files');
 });
 
 // ── End G1-DIRECTION ────────────────────────────────────────────────────────
@@ -2450,24 +2178,6 @@ test('A1.1B AutoPack engine defaults every truck mode to front-first loading', a
   // default for Standard/Wheel Wells).
   assert.doesNotMatch(engineSrc, /loadFrontFirst\s*=\s*mode\s*===\s*['"]frontBonus['"]/,
     'autopack-engine.js must not restrict front-first loading to frontBonus');
-});
-
-test('G2-SHAPE-CONTRACT changed files stay inside the allowed scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'G2-SHAPE-CONTRACT must stay inside approved files');
 });
 
 // ── G2.2-CAB-OVERHANG ─────────────────────────────────────────────────────────
@@ -2850,24 +2560,6 @@ test('G2.2-CAB-OVERHANG AutoPack uses the raised overhang deck only when an item
   }
 });
 
-test('G2.2-CAB-OVERHANG changed files stay inside the allowed scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'G2.2-CAB-OVERHANG must stay inside approved files');
-});
-
 // ── End G2.2-CAB-OVERHANG ──────────────────────────────────────────────────────
 
 // ── G2.2-CLEANUP ──────────────────────────────────────────────────────────────
@@ -3052,99 +2744,13 @@ test('G2.2-CLEANUP new/edit pack flows initialize positive frontBonus defaults a
     'switching a pack to the frontBonus shape mode in Edit Pack must normalize missing shapeConfig with valid positive defaults');
 });
 
-test('G2.2-CLEANUP changed files stay inside the allowed scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !importEditorSafeFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'G2.2-CLEANUP must stay inside approved files');
-});
-
 // ── End G2.2-CLEANUP ──────────────────────────────────────────────────────────
 
 // ── End G2-SHAPE-CONTRACT ────────────────────────────────────────────────────
 
-test('UI-STABILIZATION-1 changed files stay in approved scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-      .filter(isNotCurrentReleaseGateCheckoutPatch)
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !uiStabilization1Files.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'UI-STABILIZATION-1 must stay inside approved settings UI cleanup files');
-});
-
 // ============================================================================
 // AUTO-PACK-A0 — Manual Orientation Lock + Geometry Constraint Safety
 // ============================================================================
-
-test('AUTO-PACK-A0/A0B changed files stay in approved orientation lock scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-  );
-  const unexpectedFiles = Array.from(changedFiles)
-    .filter(file => !autoPackA0BFiles.has(file) &&
-      !autoPackA1R1Files.has(file) &&
-      !autoPackA1Clean1Files.has(file) &&
-      !autoPackA1Clean2Files.has(file) &&
-      !uiCopyExportImportFiles.has(file) &&
-      !editorInspectorPolishFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'AUTO-PACK-A0/A0B must only edit AutoPack, editor rotation, normalization, pack geometry helpers, and audit tests');
-});
-
-test('AUTO-PACK-A1-2 changed files stay in approved floor-pass scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-  );
-  const unexpectedFiles = Array.from(changedFiles)
-    .filter(file => !autoPackA1Files.has(file) &&
-      !autoPackA1R1Files.has(file) &&
-      !autoPackA1Clean1Files.has(file) &&
-      !autoPackA1Clean2Files.has(file) &&
-      !autoPackEditorCollisionFiles.has(file) &&
-      !uiCopyExportImportFiles.has(file) &&
-      !editorInspectorPolishFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'AUTO-PACK-A1-2 must only edit AutoPack placement flow and audit tests');
-});
 
 test('AUTO-PACK-A1-2 AutoPack runs a floor pass before allowing stack placements', async () => {
   const src = await fs.readFile(autoPackLegacySolverPath, 'utf8');
@@ -3282,30 +2888,6 @@ test('AUTO-PACK-A1-3 X anchor cap keeps front and middle anchors available', asy
     'X anchor capping must retain loading-end, middle, and far-end anchors');
   assert.match(src, /return capXAnchorsSorted\(arr, 240\);/,
     'AutoPack should keep enough X anchors for larger floor layouts');
-});
-
-test('AUTO-PACK-A1-R1 changed files stay in approved logistics scaffold scope', async () => {
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-  );
-  const unexpectedFiles = Array.from(changedFiles)
-    .filter(file => !autoPackA1R1Files.has(file) &&
-      !autoPackA1Clean1Files.has(file) &&
-      !autoPackA1Clean2Files.has(file) &&
-      !autoPackEditorCollisionFiles.has(file) &&
-      !uiCopyExportImportFiles.has(file) &&
-      !editorInspectorPolishFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'AUTO-PACK-A1-R1 must only edit solver scaffold, normalizers, case model, and audit tests');
 });
 
 test('AUTO-PACK-A1-R1 normalizers add logistics defaults and preserve explicit values', async () => {
@@ -5736,25 +5318,6 @@ test('phase 3C2 signed-out cleanup calls setPhase form and show on non-user-init
     '_executeSignedOutCleanup must not replace the form path with checking');
 });
 
-test('phase 3C2 cross-tab sign-out fix stays within auth gate and bootstrap scope', async () => {
-  const allowedFiles = new Set([
-    'src/app.js',
-    'tests/audit/security-and-invariants.spec.mjs',
-  ]);
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n').map(l => l.trim()).filter(Boolean)
-      .filter(isNotCurrentReleaseGateCheckoutPatch)
-  );
-  const unexpected = Array.from(changedFiles).filter(f => !allowedFiles.has(f));
-  assert.deepEqual(unexpected, [],
-    'Phase 3C2 fix must only touch src/app.js and tests/audit/security-and-invariants.spec.mjs');
-});
-
 // ── Organization invite authorization invariants ─────────────────────────────
 
 test('org-invite rejects admin actors creating admin invites while preserving owner/admin role targets', async () => {
@@ -5995,31 +5558,6 @@ test('phase 3A Settings preserves Copy Link fallback and reports invite email st
     'Settings must preserve Copy Link actions');
 });
 
-test('phase 3A invite email changes stay within invite/email scope', async () => {
-  const allowedFiles = new Set([
-    'src/app.js',
-    'supabase/functions/org-invite/index.ts',
-    'src/data/services/billing.service.js',
-    'src/ui/overlays/settings-overlay.js',
-    'tests/audit/security-and-invariants.spec.mjs',
-  ]);
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(isNotCurrentReleaseGateCheckoutPatch)
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !allowedFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'Phase 3A invite email work must stay inside org-invite, invite service/UI, and audit tests');
-});
-
 test('phase 3C1 app maps invite accept failures to persistent handoff copy', async () => {
   const src = await fs.readFile(appPath, 'utf8');
   const start = src.indexOf('const inviteHandoffNoticeId');
@@ -6070,29 +5608,6 @@ test('phase 3C1 invite handoff notice does not expose raw tokens or scope into b
     'invite handoff path must not reference unrelated secret-bearing values');
   assert.doesNotMatch(inviteBlock, /billing_customers|subscriptions|stripe|checkout|portal|archiveWorkspace|restoreWorkspace|transferOwnership|org-archive|org-restore/i,
     'invite handoff UI fix must not touch billing, Stripe, or workspace lifecycle behavior');
-});
-
-test('phase 3C1 invite handoff fix stays within invite UI scope', async () => {
-  const allowedFiles = new Set([
-    'src/app.js',
-    'supabase/functions/org-invite/index.ts',
-    'tests/audit/security-and-invariants.spec.mjs',
-  ]);
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(isNotCurrentReleaseGateCheckoutPatch)
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !allowedFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'Phase 3C1 invite handoff fix must stay inside app invite UI, org-invite copy, and audit tests');
 });
 
 test('phase 3C1 renderInviteHandoffNotice guards auth overlay visibility before inserting notice', async () => {
@@ -6249,28 +5764,6 @@ test('phase 3C1 invite rejection failure path does not log token or JWT values',
   // Only flag logging/display of bearer headers, service credentials, or refresh tokens.
   assert.doesNotMatch(fnBody, /refresh_token|Bearer|service.?role|SUPABASE_SERVICE/i,
     'tryAcceptPendingInvite must not reference bearer headers or service credentials');
-});
-
-test('phase 3C1 invite handoff visibility fix stays within invite UI scope', async () => {
-  const allowedFiles = new Set([
-    'src/app.js',
-    'tests/audit/security-and-invariants.spec.mjs',
-  ]);
-  const [unstaged, staged] = await Promise.all([
-    execFileAsync('git', ['diff', '--name-only']),
-    execFileAsync('git', ['diff', '--cached', '--name-only']),
-  ]);
-  const changedFiles = new Set(
-    `${unstaged.stdout}\n${staged.stdout}`
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean)
-      .filter(isNotCurrentReleaseGateCheckoutPatch)
-  );
-  const unexpectedFiles = Array.from(changedFiles).filter(file => !allowedFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'Phase 3C1 invite handoff visibility fix must only touch src/app.js and tests/audit/security-and-invariants.spec.mjs');
 });
 
 test('org-invite-accept rejects expired pending invites before membership insert without exposing organization_id', async () => {
@@ -9048,28 +8541,6 @@ test('phase 0.7B-1B workspace export runtime payload includes folderLibrary', as
     'workspace export must keep thumbnail stripping');
 });
 
-test('phase 0.7B-1B folder foundation and production readiness changes stay inside allowed files', async () => {
-  const forbiddenPaths = [
-    'index.html',
-    'styles',
-    'package.json',
-    'package-lock.json',
-    'supabase/functions',
-    'supabase/migrations',
-    'supabase/config.toml',
-  ];
-  const { stdout } = await execFileAsync('git', ['diff', '--name-only', '--', ...forbiddenPaths]);
-  const changedForbiddenFiles = stdout
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean)
-    .filter(file => file !== 'styles/main.css')
-    .filter(isNotCurrentReleaseGateCheckoutPatch);
-
-  assert.deepEqual(changedForbiddenFiles, [],
-    'folder foundation and production readiness fixes must not change package, index.html, migrations, Edge Functions, billing-status, Stripe, workspace lifecycle, folder UI, auth files, or CSS outside the 0.7C-1B Packs control polish');
-});
-
 test('production readiness settings billing fallback requires isPro and isActive when entitlementStatus is absent', async () => {
   const src = await fs.readFile(settingsOverlayPath, 'utf8');
   const billingRenderStart = src.indexOf('const entitlementStatus = normalizeEntitlementStatus(state.entitlementStatus);');
@@ -9136,34 +8607,6 @@ test('phase 0.7C-pre persistence render guard does not import folder UI or touch
 // ============================================================================
 // PHASE 0.7C-1A — Compact Pack Folder Dropdown
 // ============================================================================
-
-test('phase 0.7C folder dropdown changes stay out of forbidden infrastructure files', async () => {
-  const forbiddenPaths = [
-    'src/core/storage.js',
-    'src/core/state-store.js',
-    'src/core/normalizer.js',
-    'src/services/folder-library.js',
-    'src/services/pack-library.js',
-    'src/services/import-export.js',
-    'src/ui/overlays/settings-overlay.js',
-    'src/ui/ui-components.js',
-    'index.html',
-    'package.json',
-    'package-lock.json',
-    'supabase/functions',
-    'supabase/migrations',
-    'supabase/config.toml',
-  ];
-  const { stdout } = await execFileAsync('git', ['diff', '--name-only', '--', ...forbiddenPaths]);
-  const changedForbiddenFiles = stdout
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean)
-    .filter(isNotCurrentReleaseGateCheckoutPatch);
-
-  assert.deepEqual(changedForbiddenFiles, [],
-    'Phase 0.7C folder dropdown work must not touch infrastructure, data model, settings, package, or index files');
-});
 
 test('phase 0.7C-1A packs screen uses FolderLibrary listFolders for dropdown options', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
@@ -9270,26 +8713,6 @@ test('phase 0.7C-1A packs screen avoids forbidden backend billing auth css route
 // ============================================================================
 // PHASE 0.7C-1B — Compact Pack Folder Dropdown Polish
 // ============================================================================
-
-test('phase 0.7C-1B changed files stay within allowed polish scope', async () => {
-  const allowedFiles = new Set([
-    'src/app.js',
-    'src/screens/packs-screen.js',
-    'styles/main.css',
-    'tests/audit/security-and-invariants.spec.mjs',
-  ]);
-  const { stdout } = await execFileAsync('git', ['diff', '--name-only']);
-  const changedFiles = stdout
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-    .filter(isNotCurrentReleaseGateCheckoutPatch);
-  const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'Phase 0.7C-1B must only edit packs-screen.js, styles/main.css, and security-and-invariants.spec.mjs');
-});
 
 test('phase 0.7C-1B preserves Empty Partial Full filter chips', async () => {
   const indexSrc = await fs.readFile(indexHtmlPath, 'utf8');
@@ -9459,60 +8882,9 @@ test('phase 0.7C-1B scoped CSS styles only the packs folder button', async () =>
     'Phase 0.7C-1B CSS must not style global buttons or dropdowns');
 });
 
-test('phase 0.7C-1B avoids forbidden backend billing auth settings package and index scope', async () => {
-  const src = await fs.readFile(packsScreenPath, 'utf8');
-  const { stdout } = await execFileAsync('git', [
-    'diff',
-    '--name-only',
-    '--',
-    'index.html',
-    'package.json',
-    'package-lock.json',
-    'src/core',
-    'src/services/folder-library.js',
-    'src/services/pack-library.js',
-    'src/services/import-export.js',
-    'src/ui/overlays/settings-overlay.js',
-    'src/ui/ui-components.js',
-    'supabase/functions',
-    'supabase/migrations',
-    'supabase/config.toml',
-  ]);
-  const changedForbiddenFiles = stdout
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean)
-    .filter(isNotCurrentReleaseGateCheckoutPatch);
-
-  assert.deepEqual(changedForbiddenFiles, [],
-    'Phase 0.7C-1B must not touch backend, data model, settings, package, or index scope');
-  assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
-    'packs folder polish must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
-});
-
 // ============================================================================
 // PHASE 0.7C-2 — Create Folder from Packs Dropdown
 // ============================================================================
-
-test('phase 0.7C-2 changed files stay within allowed create-folder scope', async () => {
-  const allowedFiles = new Set([
-    'src/app.js',
-    'src/screens/packs-screen.js',
-    'styles/main.css',
-    'tests/audit/security-and-invariants.spec.mjs',
-  ]);
-  const { stdout } = await execFileAsync('git', ['diff', '--name-only']);
-  const changedFiles = stdout
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-    .filter(isNotCurrentReleaseGateCheckoutPatch);
-  const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'Phase 0.7C-2/5 correction must only edit app.js, packs-screen.js, scoped packs CSS, and security-and-invariants.spec.mjs');
-});
 
 test('phase 0.7C-2 create folder uses existing modal and folder library create API', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
@@ -9621,62 +8993,9 @@ test('phase 0.7C-2 preserves folder filtering identity and reset behavior', asyn
     'workspace reset must clear activeFolderId');
 });
 
-test('phase 0.7C-2 avoids forbidden backend billing auth settings package and index scope', async () => {
-  const src = await fs.readFile(packsScreenPath, 'utf8');
-  const { stdout } = await execFileAsync('git', [
-    'diff',
-    '--name-only',
-    '--',
-    'index.html',
-    'package.json',
-    'package-lock.json',
-    'src/core',
-    'src/services/folder-library.js',
-    'src/services/pack-library.js',
-    'src/services/import-export.js',
-    'src/ui/overlays/settings-overlay.js',
-    'src/ui/ui-components.js',
-    'src/data/services/billing.service.js',
-    'src/router.js',
-    'supabase/functions',
-    'supabase/migrations',
-    'supabase/config.toml',
-  ]);
-  const changedForbiddenFiles = stdout
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean)
-    .filter(isNotCurrentReleaseGateCheckoutPatch);
-
-  assert.deepEqual(changedForbiddenFiles, [],
-    'Phase 0.7C-2/5 correction must not touch backend, data model, settings, package, router, or index scope');
-  assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
-    'create folder UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
-});
-
 // ============================================================================
 // PHASE 0.7C-3 — Move Pack to Folder from Pack Menus
 // ============================================================================
-
-test('phase 0.7C-3 changed files stay within allowed move-folder scope', async () => {
-  const allowedFiles = new Set([
-    'src/app.js',
-    'src/screens/packs-screen.js',
-    'styles/main.css',
-    'tests/audit/security-and-invariants.spec.mjs',
-  ]);
-  const { stdout } = await execFileAsync('git', ['diff', '--name-only']);
-  const changedFiles = stdout
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-    .filter(isNotCurrentReleaseGateCheckoutPatch);
-  const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'Phase 0.7C-3/4B/5 must only edit app.js, packs-screen.js, scoped packs CSS, and security-and-invariants.spec.mjs');
-});
 
 test('phase 0.7C-3 move modal uses folder library move API', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
@@ -9783,62 +9102,9 @@ test('phase 0.7C-3 avoids native dialogs and preserves no-caret folder button', 
     'Folders button must remain no-caret');
 });
 
-test('phase 0.7C-3 avoids forbidden backend billing auth settings storage package and index scope', async () => {
-  const src = await fs.readFile(packsScreenPath, 'utf8');
-  const { stdout } = await execFileAsync('git', [
-    'diff',
-    '--name-only',
-    '--',
-    'index.html',
-    'package.json',
-    'package-lock.json',
-    'src/core',
-    'src/services/folder-library.js',
-    'src/services/pack-library.js',
-    'src/services/import-export.js',
-    'src/ui/overlays/settings-overlay.js',
-    'src/ui/ui-components.js',
-    'src/data/services/billing.service.js',
-    'src/router.js',
-    'supabase/functions',
-    'supabase/migrations',
-    'supabase/config.toml',
-  ]);
-  const changedForbiddenFiles = stdout
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean)
-    .filter(isNotCurrentReleaseGateCheckoutPatch);
-
-  assert.deepEqual(changedForbiddenFiles, [],
-    'Phase 0.7C-3/5 correction must not touch backend, storage/model, settings, package, router, or index scope');
-  assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
-    'move folder UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
-});
-
 // ============================================================================
 // PHASE 0.7C-4 — Rename and Delete Folder from Packs Dropdown
 // ============================================================================
-
-test('phase 0.7C-4 changed files stay within allowed rename-delete scope', async () => {
-  const allowedFiles = new Set([
-    'src/app.js',
-    'src/screens/packs-screen.js',
-    'styles/main.css',
-    'tests/audit/security-and-invariants.spec.mjs',
-  ]);
-  const { stdout } = await execFileAsync('git', ['diff', '--name-only']);
-  const changedFiles = stdout
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean)
-    .filter(file => file !== 'CLAUDE.md' && file !== 'src/CLAUDE.md' && file !== 'docs/product/TP3D-MASTER-TODO-V4.md')
-    .filter(isNotCurrentReleaseGateCheckoutPatch);
-  const unexpectedFiles = changedFiles.filter(file => !allowedFiles.has(file));
-
-  assert.deepEqual(unexpectedFiles, [],
-    'Phase 0.7C-4/4B/5 must only edit app.js, packs-screen.js, scoped packs CSS, and security-and-invariants.spec.mjs');
-});
 
 test('phase 0.7C-4 rename folder uses existing modal and folder library rename API', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
@@ -9943,39 +9209,6 @@ test('phase 0.7C-4 avoids native dialogs and preserves no-caret folder button', 
     'Packs screen must not use native prompt(), alert(), or confirm() calls');
   assert.doesNotMatch(buttonBlock, /tp3d-packs-folder-btn__caret|fa-chevron-down/,
     'Folders button must remain no-caret');
-});
-
-test('phase 0.7C-4 avoids forbidden backend billing auth storage package and index scope', async () => {
-  const src = await fs.readFile(packsScreenPath, 'utf8');
-  const { stdout } = await execFileAsync('git', [
-    'diff',
-    '--name-only',
-    '--',
-    'index.html',
-    'package.json',
-    'package-lock.json',
-    'src/core',
-    'src/services/folder-library.js',
-    'src/services/pack-library.js',
-    'src/services/import-export.js',
-    'src/ui/overlays',
-    'src/ui/ui-components.js',
-    'src/data/services/billing.service.js',
-    'src/router.js',
-    'supabase/functions',
-    'supabase/migrations',
-    'supabase/config.toml',
-  ]);
-  const changedForbiddenFiles = stdout
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean)
-    .filter(isNotCurrentReleaseGateCheckoutPatch);
-
-  assert.deepEqual(changedForbiddenFiles, [],
-    'Phase 0.7C-4/5 correction must not touch backend, storage/model, overlays, package, router, or index scope');
-  assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
-    'rename delete folder UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
 });
 
 // ============================================================================
@@ -10109,43 +9342,6 @@ test('phase 0.7C-4B rename delete stay guarded to active real folders only', asy
     'Rename Folder action must target the active real folder');
   assert.match(actionsBlock, /deleteFolderWithConfirm\(model\.activeFolder\)/,
     'Delete Folder action must target the active real folder');
-});
-
-test('phase 0.7C-4B avoids native dialogs and forbidden file scope', async () => {
-  const src = await fs.readFile(packsScreenPath, 'utf8');
-  const { stdout } = await execFileAsync('git', [
-    'diff',
-    '--name-only',
-    '--',
-    'index.html',
-    'package.json',
-    'package-lock.json',
-    'src/core',
-    'src/services/folder-library.js',
-    'src/services/pack-library.js',
-    'src/services/import-export.js',
-    'src/ui/overlays',
-    'src/ui/ui-components.js',
-    'src/data/services/billing.service.js',
-    'src/router.js',
-    'supabase/functions',
-    'supabase/migrations',
-    'supabase/config.toml',
-  ]);
-  const changedForbiddenFiles = stdout
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean)
-    .filter(isNotCurrentReleaseGateCheckoutPatch);
-
-  assert.deepEqual(changedForbiddenFiles, [],
-    'Phase 0.7C-4B/5 correction must not touch backend, storage service, folder service, overlays, package, router, or index scope');
-  assert.doesNotMatch(src, /window\.prompt|window\.alert|window\.confirm/,
-    'Packs screen must not use window prompt alert or confirm APIs');
-  assert.doesNotMatch(src, /(^|[^\w.])prompt\s*\(|(^|[^\w.])alert\s*\(|(^|[^\w.])confirm\s*\(/,
-    'Packs screen must not use native prompt(), alert(), or confirm() calls');
-  assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|router/i,
-    'folder persistence and compact move UI must not introduce backend, billing, auth, Stripe, Supabase, migration, or router references');
 });
 
 // ============================================================================

@@ -517,6 +517,21 @@ export function createCaseScene({
       };
     }
 
+    function aabbWorldToInches(aabb) {
+      return {
+        min: {
+          x: SceneManager.toInches(aabb.min.x),
+          y: SceneManager.toInches(aabb.min.y),
+          z: SceneManager.toInches(aabb.min.z),
+        },
+        max: {
+          x: SceneManager.toInches(aabb.max.x),
+          y: SceneManager.toInches(aabb.max.y),
+          z: SceneManager.toInches(aabb.max.z),
+        },
+      };
+    }
+
     function aabbIntersects(a, b) {
       const EPS = 1e-6;
       return (
@@ -535,8 +550,8 @@ export function createCaseScene({
       const truck = pack && pack.truck ? pack.truck : null;
       if (truck) {
         const zonesInches = TrailerGeometry.getTrailerUsableZones(truck);
-        const zonesWorld = TrailerGeometry.zonesInchesToWorld(zonesInches);
-        return TrailerGeometry.isAabbContainedInAnyZone(aabb, zonesWorld);
+        const aabbInches = aabbWorldToInches(aabb);
+        return TrailerGeometry.isAabbContainedInAnyZone(aabbInches, zonesInches);
       }
 
       // Fallback: full rectangular bounds (should only happen before a pack is loaded)

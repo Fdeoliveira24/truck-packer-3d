@@ -1,3 +1,5 @@
+import { CONTAINMENT_EPS_INCHES } from './pack-library.js';
+
 const RIGHT_ANGLE_RAD = Math.PI / 2;
 const LONG_RATIO = 4;
 const LONG_MIN_IN = 96;
@@ -311,7 +313,7 @@ function normalizeZones(zones = []) {
     );
 }
 
-function isAabbContainedInZone(aabb, zone, epsilon = 0.05) {
+function isAabbContainedInZone(aabb, zone, epsilon = CONTAINMENT_EPS_INCHES) {
   return aabb.min.x >= zone.min.x - epsilon &&
     aabb.max.x <= zone.max.x + epsilon &&
     aabb.min.y >= zone.min.y - epsilon &&
@@ -320,7 +322,7 @@ function isAabbContainedInZone(aabb, zone, epsilon = 0.05) {
     aabb.max.z <= zone.max.z + epsilon;
 }
 
-export function isAabbContainedInAnyZone(aabb, zones = [], epsilon = 0.05) {
+export function isAabbContainedInAnyZone(aabb, zones = [], epsilon = CONTAINMENT_EPS_INCHES) {
   return (zones || []).some(zone => isAabbContainedInZone(aabb, zone, epsilon));
 }
 

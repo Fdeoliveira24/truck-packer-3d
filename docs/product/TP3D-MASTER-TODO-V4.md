@@ -6,11 +6,11 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `8f4bbfc` |
-| Active branch | (none — between phases; 3B starts on a dedicated geometry-only branch) |
-| Active phase | 3B — Geometry tolerance unification (audit complete, implementation pending) |
-| Next planned phase | 3B implementation, followed by 5A stacking constraints |
-| Waiting for | Approval to start 3B on a geometry-only branch |
+| Stable main commit | `734783d` |
+| Active branch | `fix/3b-geometry-tolerance-unification` |
+| Active phase | 3B — Geometry tolerance unification (code and automated checks pass; browser drag checklist pending) |
+| Next planned phase | Complete 3B browser review, then 5A stacking constraints |
+| Waiting for | Manual/browser review and commit approval |
 | Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, or AutoPack realism (5B) |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
@@ -22,7 +22,7 @@
 
 *Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified.*
 
-1. Unify geometry epsilon across `app.js`, `pack-library.js`, and the solver (3B)
+1. Complete browser review and commit geometry epsilon unification (3B)
 2. Fix `noStackOnTop` and `stackable: false` enforcement in AutoPack
 3. Enforce `maxStackCount` in AutoPack
 4. Correct the stacking score (flat STACKING_BONUS cancels gravity penalty)
@@ -283,7 +283,7 @@ Release-gate items block **public launch**, not isolated product development. Pr
 
 | Status | Item |
 |--------|------|
-| ⚠️ | **Unify trailer geometry tolerance — technical blocker for placement work.** Root cause is a UNIT-CONTRACT defect, not just a number mismatch. `pack-library.js` and the active solver (`autopack-solver.js`) use `EPS = 0.05` in INCH space consistently (persisted packed/staged, AutoPack final validation, stats/OOG) — the canonical paths. But `app.js`'s `TrailerGeometry.isAabbContainedInAnyZone` hardcodes `EPS = 0.01` and is called with BOTH inch-space zones (Stats packed flag, duplicate-inside check, shape-change OOB warning → **0.01-inch** physical) AND world-space zones (editor drag "isInsideTruck" feedback, via `zonesInchesToWorld` → 0.01 world = **0.2-inch** physical, since `INCH_TO_WORLD = 0.05`). Net: three different physical tolerances (0.05" / 0.01" / 0.2") across active paths. Correction is one inch-space contract: route all containment through a single named inch epsilon (0.05"), and make world-space callers convert their AABB to inches first (not zones to world). Intended tolerance 0.05" (= 0.0025 world units): imperceptible visually, far above FP noise, and already governs the authoritative paths so it changes the fewest accepted placements. Must precede 3A `TrailerGeometry` extraction and all deeper AutoPack placement work. Add regression tests covering the epsilon boundary in both inch and world callers. |
+| 🔄 | **Unify trailer geometry tolerance — technical blocker for placement work.** Implemented the canonical inch-space containment contract on `fix/3b-geometry-tolerance-unification`: `pack-library.js` now exports `CONTAINMENT_EPS_INCHES = 0.05`; `autopack-solver.js` and `app.js` reference that shared constant; editor drag feedback now converts the world-space object AABB to inches and passes inch-space usable zones instead of converting zones to world. Automated validation completed with targeted 3B tests passing (4/4), full audit suite passing (532/532), lint zero errors (existing warnings only), typecheck passing, and diff whitespace checks passing. Browser drag/drop checklist remains pending, so do not mark 3B fully complete until Standard, Wheel Wells, and Front Overhang live editor checks agree at exact boundary, 0.04" tolerance, and 0.06" rejection cases. |
 | ⬜ | After tolerance is unified: consolidate `TrailerGeometry` into a single canonical module (currently duplicated between `app.js` and `pack-library.js`) |
 | ⬜ | `solveLegacyAutoPack()` — confirm truly unused (`rg` shows only its own definition; no production caller found), then delete |
 | ⬜ | `buildLegacyAutoPackItems()` — still live (imported and called in `autopack-engine.js`); do NOT remove yet |

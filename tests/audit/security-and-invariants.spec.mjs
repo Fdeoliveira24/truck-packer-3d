@@ -2153,14 +2153,233 @@ test('G2-SHAPE-CONTRACT computeStats does not flag a properly placed item in the
     'an item correctly placed on the raised front overhang deck must not produce any OOG warnings (e.g. protrudesFront)');
 });
 
-test('G2-SHAPE-CONTRACT pack-library.js and autopack-solver.js both document/use inch EPS 0.05', async () => {
+test('3B-GEOMETRY-TOLERANCE uses one shared inch-space containment tolerance', async () => {
   const packSrc = await fs.readFile(packLibraryPath, 'utf8');
   const solverSrc = await fs.readFile(autoPackSolverPath, 'utf8');
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  const productionSrc = [packSrc, solverSrc, appSrc, editorSrc].join('\n');
 
-  assert.match(packSrc, /EPS = 0\.05/,
-    'pack-library.js isAabbContainedInAnyZone must use EPS = 0.05 inches');
-  assert.match(solverSrc, /epsilon\s*=\s*0\.05/,
-    'autopack-solver.js isAabbContainedInAnyZone must default to epsilon = 0.05 inches');
+  const definitions = productionSrc.match(/\bconst\s+CONTAINMENT_EPS_INCHES\s*=/g) || [];
+  assert.equal(definitions.length, 1,
+    'CONTAINMENT_EPS_INCHES must have exactly one production definition');
+  assert.match(packSrc, /export const CONTAINMENT_EPS_INCHES = 0\.05;/,
+    'pack-library.js must export the canonical 0.05 inch containment tolerance');
+  assert.match(packSrc, /const EPS = CONTAINMENT_EPS_INCHES;/,
+    'pack-library.js containment helper must use the shared tolerance constant');
+  assert.match(solverSrc, /import \{ CONTAINMENT_EPS_INCHES \} from '\.\/pack-library\.js';/,
+    'autopack-solver.js must import the shared containment tolerance');
+  assert.match(solverSrc, /epsilon = CONTAINMENT_EPS_INCHES/,
+    'autopack-solver.js containment defaults must reference the shared tolerance');
+
+  const appHelperStart = appSrc.indexOf('function isAabbContainedInAnyZone(aabb, zones)');
+  const appHelperEnd = appSrc.indexOf('\n      function zonesInchesToWorld', appHelperStart);
+  const appHelperBlock = appHelperStart >= 0 && appHelperEnd > appHelperStart
+    ? appSrc.slice(appHelperStart, appHelperEnd)
+    : '';
+  assert.ok(appHelperBlock, 'app.js TrailerGeometry containment helper must be present');
+  assert.match(appHelperBlock, /CorePackLibrary\.CONTAINMENT_EPS_INCHES/,
+    'app.js TrailerGeometry containment helper must reference the shared inch tolerance');
+  assert.doesNotMatch(appHelperBlock, /0\.01/,
+    'app.js TrailerGeometry containment helper must not retain the old 0.01 world-unit tolerance');
+
+  const editorHelperStart = editorSrc.indexOf('function isInsideTruck(aabb)');
+  const editorHelperEnd = editorSrc.indexOf('\n    function checkCollision', editorHelperStart);
+  const editorHelperBlock = editorHelperStart >= 0 && editorHelperEnd > editorHelperStart
+    ? editorSrc.slice(editorHelperStart, editorHelperEnd)
+    : '';
+  assert.ok(editorHelperBlock, 'editor-screen.js isInsideTruck helper must be present');
+  assert.match(editorHelperBlock, /const aabbInches = aabbWorldToInches\(aabb\);/,
+    'editor live containment path must convert the world-space AABB to inches');
+  assert.match(editorHelperBlock, /TrailerGeometry\.isAabbContainedInAnyZone\(aabbInches, zonesInches\)/,
+    'editor live containment path must call containment with inch-space AABB and inch-space zones');
+  assert.doesNotMatch(editorHelperBlock, /zonesInchesToWorld\(zonesInches\)/,
+    'editor live containment path must not pass world-space zones into the inch-space containment helper');
+  assert.doesNotMatch(productionSrc, /containmentEpsWorld|worldContainmentEps|epsilonWorld|worldEpsilon/i,
+    'production code must not add a parallel world-space containment epsilon');
+});
+
+test('3B-GEOMETRY-TOLERANCE canonical containment boundary behavior covers all active trailer shapes', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const rectTruck = { length: 100, width: 50, height: 40, shapeMode: 'rect' };
+  const rectZones = PackLibrary.getTrailerUsableZones(rectTruck);
+
+  assert.equal(PackLibrary.CONTAINMENT_EPS_INCHES, 0.05,
+    'canonical containment tolerance must be 0.05 inches');
+
+  const exactAllBoundaries = {
+    min: { x: 0, y: 0, z: -25 },
+    max: { x: 100, y: 40, z: 25 },
+  };
+  const outsideBy004 = {
+    min: { x: -0.04, y: -0.04, z: -25.04 },
+    max: { x: 100.04, y: 40.04, z: 25.04 },
+  };
+  const outsideBy006 = {
+    min: { x: -0.06, y: -0.06, z: -25.06 },
+    max: { x: 100.06, y: 40.06, z: 25.06 },
+  };
+
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(exactAllBoundaries, rectZones), true,
+    'a box exactly on all standard trailer boundaries must be contained');
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(outsideBy004, rectZones), true,
+    'a box outside the standard trailer by 0.04 inches must remain contained by tolerance');
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(outsideBy006, rectZones), false,
+    'a box outside the standard trailer by 0.06 inches must be rejected');
+  assert.equal(Solver.isAabbContainedInAnyZone(outsideBy004, rectZones), true,
+    'AutoPack solver containment must share the 0.05 inch tolerance');
+  assert.equal(Solver.isAabbContainedInAnyZone(outsideBy006, rectZones), false,
+    'AutoPack solver containment must reject protrusions beyond the shared tolerance');
+
+  const wheelTruck = {
+    length: 100,
+    width: 100,
+    height: 80,
+    shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 30, wellWidth: 15, wellLength: 30, wellOffsetFromRear: 20 },
+  };
+  const wheelZones = PackLibrary.getTrailerUsableZones(wheelTruck);
+  const wheelBlockedVolume = {
+    min: { x: 25, y: 0, z: -48 },
+    max: { x: 35, y: 10, z: -40 },
+  };
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(wheelBlockedVolume, wheelZones), false,
+    'wheel-well blocked lower volume must remain rejected');
+
+  const frontBonusTruck = {
+    length: 100,
+    width: 50,
+    height: 60,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 30, bonusWidth: 20, bonusHeight: 24 },
+  };
+  const frontBonusZones = PackLibrary.getTrailerUsableZones(frontBonusTruck);
+  const overhangDeckVolume = {
+    min: { x: 104, y: 28, z: -8 },
+    max: { x: 124, y: 48, z: 8 },
+  };
+  const cabVoidVolume = {
+    min: { x: 104, y: 4, z: -8 },
+    max: { x: 124, y: 20, z: 8 },
+  };
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(overhangDeckVolume, frontBonusZones), true,
+    'front overhang deck volume above the cab must remain accepted');
+  assert.equal(PackLibrary.isAabbContainedInAnyZone(cabVoidVolume, frontBonusZones), false,
+    'front overhang cab void below the deck must remain rejected');
+});
+
+test('3B-GEOMETRY-TOLERANCE stats, packed state, and AutoPack final validation share canonical containment', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 100, width: 50, height: 40, shapeMode: 'rect' };
+  const zones = PackLibrary.getTrailerUsableZones(truck);
+  const caseData = {
+    id: 'tol-case',
+    name: 'Tolerance Case',
+    dimensions: { length: 10, width: 10, height: 10 },
+    volume: 1000,
+    weight: 25,
+  };
+  const makeInstance = (id, x) => ({
+    id,
+    caseId: caseData.id,
+    hidden: false,
+    transform: { position: { x, y: 5, z: 0 } },
+  });
+  const pack = {
+    truck,
+    cases: [
+      makeInstance('exact-front-boundary', 95),
+      makeInstance('within-tolerance-front', 95.04),
+      makeInstance('beyond-tolerance-front', 95.06),
+    ],
+  };
+  const stats = PackLibrary.computeStats(pack, [caseData]);
+
+  assert.equal(stats.packedCases, 2,
+    'Stats must count exact-boundary and 0.04 inch protrusions as packed, and reject a 0.06 inch protrusion');
+  assert.equal(stats.oogWarnings.length, 1,
+    'Stats/OOG must flag the case protruding beyond the 0.05 inch containment tolerance');
+  assert.equal(stats.oogWarnings[0].instanceId, 'beyond-tolerance-front',
+    'OOG warning must identify the beyond-tolerance instance');
+  assert.ok(stats.oogWarnings[0].issues.includes('protrudesFront'),
+    '0.06 inch front protrusion must be classified as protrudesFront');
+
+  const placementForAabb = aabb => PackLibrary.isAabbContainedInAnyZone(aabb, zones) ? 'packed' : 'staged';
+  assert.equal(placementForAabb({
+    min: { x: 90, y: 0, z: -5 },
+    max: { x: 100.04, y: 10, z: 5 },
+  }), 'packed', 'packed/staged classification must allow a 0.04 inch protrusion');
+  assert.equal(placementForAabb({
+    min: { x: 90, y: 0, z: -5 },
+    max: { x: 100.06, y: 10, z: 5 },
+  }), 'staged', 'packed/staged classification must stage a 0.06 inch protrusion');
+
+  const autoPackResult = Solver.solveAutoPack({
+    truck,
+    zones,
+    items: [
+      { instanceId: 'auto-1', dims: { l: 10, w: 10, h: 10 }, canFlip: true, orientationLock: 'any', stackable: true },
+      { instanceId: 'auto-2', dims: { l: 20, w: 10, h: 10 }, canFlip: true, orientationLock: 'any', stackable: true },
+    ],
+    loadFrontFirst: true,
+  });
+  assert.equal(autoPackResult.unpacked.length, 0, 'simple AutoPack fixture must fully pack');
+  for (const [id, pos] of autoPackResult.placements.entries()) {
+    const dims = autoPackResult.orientedDims.get(id);
+    const aabb = Solver.getAabb(pos, { l: dims.length, w: dims.width, h: dims.height });
+    assert.equal(PackLibrary.isAabbContainedInAnyZone(aabb, zones), true,
+      `${id} final AutoPack placement must pass canonical PackLibrary containment`);
+  }
+});
+
+test('3B-GEOMETRY-TOLERANCE world drag feedback converts AABBs to inches before classification', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const INCH_TO_WORLD = 0.05;
+  const truck = { length: 100, width: 50, height: 40, shapeMode: 'rect' };
+  const zones = PackLibrary.getTrailerUsableZones(truck);
+  const toWorld = value => value * INCH_TO_WORLD;
+  const toInches = value => value / INCH_TO_WORLD;
+  const aabbInchesToWorld = aabb => ({
+    min: { x: toWorld(aabb.min.x), y: toWorld(aabb.min.y), z: toWorld(aabb.min.z) },
+    max: { x: toWorld(aabb.max.x), y: toWorld(aabb.max.y), z: toWorld(aabb.max.z) },
+  });
+  const aabbWorldToInches = aabb => ({
+    min: { x: toInches(aabb.min.x), y: toInches(aabb.min.y), z: toInches(aabb.min.z) },
+    max: { x: toInches(aabb.max.x), y: toInches(aabb.max.y), z: toInches(aabb.max.z) },
+  });
+  const dragClassification = worldAabb =>
+    PackLibrary.isAabbContainedInAnyZone(aabbWorldToInches(worldAabb), zones) ? 'packed' : 'staged';
+  const persistedDropClassification = inchAabb =>
+    PackLibrary.isAabbContainedInAnyZone(inchAabb, zones) ? 'packed' : 'staged';
+  const cases = [
+    {
+      label: 'exact boundary',
+      aabb: { min: { x: 90, y: 0, z: -5 }, max: { x: 100, y: 10, z: 5 } },
+      expected: 'packed',
+    },
+    {
+      label: '0.04 inch protrusion',
+      aabb: { min: { x: 90, y: 0, z: -5 }, max: { x: 100.04, y: 10, z: 5 } },
+      expected: 'packed',
+    },
+    {
+      label: '0.06 inch protrusion',
+      aabb: { min: { x: 90, y: 0, z: -5 }, max: { x: 100.06, y: 10, z: 5 } },
+      expected: 'staged',
+    },
+  ];
+
+  for (const c of cases) {
+    const worldAabb = aabbInchesToWorld(c.aabb);
+    assert.equal(dragClassification(worldAabb), c.expected,
+      `drag feedback must classify ${c.label} using the same physical tolerance as persisted state`);
+    assert.equal(persistedDropClassification(c.aabb), c.expected,
+      `persisted drop state must classify ${c.label} using the canonical helper`);
+    assert.equal(dragClassification(worldAabb), persistedDropClassification(c.aabb),
+      `drag feedback and persisted drop classification must agree for ${c.label}`);
+  }
 });
 
 test('G2-SHAPE-CONTRACT solveLegacyAutoPack remains unused by the active AutoPack engine', async () => {

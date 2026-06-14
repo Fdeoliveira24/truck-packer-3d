@@ -206,21 +206,18 @@ function getTrailerCapacityInches3(truck) {
   }, 0);
 }
 
+export const CONTAINMENT_EPS_INCHES = 0.05;
+
 /**
- * EPS/tolerance note (G2 audit, G2.1 doc): this file's EPS = 0.05 (inches)
- * matches autopack-solver.js's isAabbContainedInAnyZone(aabb, zones,
- * epsilon = 0.05) default - persisted manual placement
- * (getPlacementForAabb), computeStats/OOG, and the active AutoPack solver
- * all agree on this 0.05" tolerance. src/app.js's TrailerGeometry has its
- * own isAabbContainedInAnyZone with a separate tolerance expressed in scene
- * world units (not inches); that copy is intentionally not changed here -
- * see the G2 audit for the cross-implementation tolerance comparison.
+ * Inch-space containment contract: all AABBs and usable zones passed here use
+ * inches, and all active trailer-containment callers share the same physical
+ * tolerance through CONTAINMENT_EPS_INCHES.
  */
 function isAabbContainedInAnyZone(aabb, zones) {
   // Bug 5 fix: add small epsilon tolerance for floating-point rounding.
   // AutoPack places items with fp arithmetic, so a box at x=0.0000000001
   // would fail an exact >= 0 check. 0.05 inches is imperceptible visually.
-  const EPS = 0.05;
+  const EPS = CONTAINMENT_EPS_INCHES;
   for (const z of zones || []) {
     if (
       aabb.min.x >= z.min.x - EPS &&

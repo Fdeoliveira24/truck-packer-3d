@@ -2970,7 +2970,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       function isAabbContainedInAnyZone(aabb, zones) {
-        const EPS = 0.01; // small tolerance for floating point
+        // Inch-space containment only; callers must pass inch-space AABBs and zones.
+        const EPS = CorePackLibrary.CONTAINMENT_EPS_INCHES;
         for (const z of zones || []) {
           if (
             aabb.min.x >= z.min.x - EPS &&

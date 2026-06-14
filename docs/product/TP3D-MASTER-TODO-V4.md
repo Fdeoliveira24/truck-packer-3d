@@ -1,17 +1,17 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-06-13 | Synthesized from all prior TODO versions + QA report + comparison research + competitive landscape + Codex/Copilot/Claude audit cross-check + storage/space planning vertical
+**Last updated:** 2026-06-14 | Synthesized from all prior TODO versions + QA report + comparison research + competitive landscape + Codex/Copilot/Claude audit cross-check + storage/space planning vertical
 
 ---
 
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `322a8c0` |
-| Active branch | `g1-2c-inspector-card-polish` |
-| Active phase | G1.2C — Inspector Card Polish + Help Tooltip Positioning |
+| Stable main commit | `e8c0b3f` |
+| Active branch | `security/profile-deletion-field-guard-live-verification` |
+| Active phase | Post-deployment security verification — profile deletion-field guard |
 | Next planned phase | A1.1B — AutoPack front-first default direction |
-| Waiting for | G1.2C corrective implementation report, manual browser review, audit, commit, and merge |
-| Do not start simultaneously | Billing patches, geometry epsilon fix, AutoPack realism (A1), or Settings changes |
+| Waiting for | Review and merge of the live verification branch |
+| Do not start simultaneously | Stripe/billing patches, geometry epsilon fix, AutoPack realism (A1), or unrelated Settings changes |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
@@ -168,8 +168,8 @@ Release-gate items block **public launch**, not isolated product development. Pr
 | ✅ | Admin cannot remove another Admin (server + RLS) | Migration `2026050702` + deployed |
 | ✅ | `billing-status` returns `billing_unavailable` for archived resolved workspaces | Code |
 | ✅ | Support-assisted `cancel-account-deletion` endpoint deployed | Live curl 200 |
-| 🔄 | **P0 — `profiles` deletion fields server-side guard — code complete + security-audited (v2), migration NOT yet applied to live DB.** `profiles_update_own` RLS let any authenticated user update their own profile row via the Supabase API, with only a client-side block in `src/core/supabase-client.js`. Fix: `supabase/migrations/2026061301_guard_profile_deletion_fields.sql` adds a `BEFORE UPDATE` row trigger (`tp3d_guard_profile_deletion_fields`, SECURITY INVOKER) that rejects any change to `deletion_status`/`deleted_at`/`purge_after` with errcode 42501 unless the caller is `service_role` (verified PostgREST JWT claim) or a privileged DB role (`postgres`/`supabase_admin`/`supabase_auth_admin`). NULL-safe `is not distinct from` fast path leaves normal profile edits unaffected. v2 hardening: locked `set search_path = ''` and `revoke execute` from PUBLIC/anon/authenticated (role-existence guarded). Audit verdict: no authenticated/owner/admin/member bypass, no metadata/email/auth.uid trust, service-role deletion Edge Functions still permitted (all use `serviceClient()`). Remaining: apply migration to live DB and run the live REST/SQL verification (authenticated write rejected, service-role write allowed). | Migration + 8 static invariant tests; awaiting live DB apply |
-| 🔄 | Add targeted tests: non-service-role calls cannot mutate `profiles.deletion_status`, `deleted_at`, `purge_after` — 8 static migration/invariant tests added (trigger present; NULL-safe per field; fast-path requires ALL three unchanged; 42501 raise; service-role + privileged-role only; no owner/admin/member/metadata bypass; SECURITY INVOKER + locked search_path; EXECUTE revoked; Edge Functions use serviceClient; client guard intact). Remaining: live DB integration test once migration applied. | security-and-invariants.spec.mjs |
+| ✅ | **P0 — `profiles` deletion fields server-side guard deployed and live-verified.** Main commit `e8c0b3f` introduced `supabase/migrations/2026061301_guard_profile_deletion_fields.sql`. Remote migration history on `yduzbvijzwczjapanxbd` includes `2026061301_guard_profile_deletion_fields`. Catalog verification on 2026-06-14 found one enabled `BEFORE UPDATE` row trigger on `public.profiles` (`tp3d_profiles_guard_deletion_fields`) calling `public.tp3d_guard_profile_deletion_fields()`, PL/pgSQL, SECURITY INVOKER, locked `search_path = ''`, NULL-safe `is not distinct from` checks for `deletion_status`/`deleted_at`/`purge_after`, 42501 rejection, no `session_user`/metadata/email/auth.uid bypass, and no duplicate deletion-field trigger. `anon`, `authenticated`, and `public` have no direct EXECUTE privilege. Live rollback-only DB behavior used the disposable `test5` fixture (no Stripe customer rows, no subscription rows; no real customer data): authenticated role updates to each protected field and a combined protected update were rejected with SQLSTATE 42501; normal profile update succeeded; unchanged protected values succeeded through the fast path; service-role protected update succeeded; original values were restored and rechecked (`deletion_status=none`, `deleted_at=null`, `purge_after=null`, `bio=null`). No auth user was deleted and no purge ran. Edge request/cancel source remains service-role based, but live request/cancel flow was not run because no no-workspace disposable account exists in the visible fixtures. | Live SQL verification + static invariant tests; 2026-06-14 |
+| ✅ | Add targeted tests/proof: non-service-role calls cannot mutate `profiles.deletion_status`, `deleted_at`, `purge_after` — 8 static migration/invariant tests cover trigger/function structure, NULL-safe comparisons, fast-path, 42501 raise, trusted role model, no owner/admin/member/metadata bypass, SECURITY INVOKER + locked search path, EXECUTE revokes, Edge Function service clients, and browser client block. Live DB rollback proof on 2026-06-14 confirmed authenticated 42501 rejection for all protected fields and combined updates, normal update success, unchanged-value fast-path success, service-role success, and restoration. | `tests/audit/security-and-invariants.spec.mjs` + live SQL verification |
 | ❓ | Define paid-subscription deletion policy: must cancel first, or support-assisted cancel during delete flow | — |
 | ⬜ | Verify Admin cannot remove Admin in live browser | — |
 | ⬜ | Verify Admin can still remove Member in live browser | — |
@@ -293,7 +293,7 @@ Release-gate items block **public launch**, not isolated product development. Pr
 | Status | Item |
 |--------|------|
 | ⬜ | **Add live integration tests (currently only audit/static checks exist)**: checkout owner/member denial, portal wrong-workspace preselection, webhook out-of-order + idempotent replay, billing-status after workspace switch, expired invite, accepted-invite same-email guard, account deletion owner block, RLS member/non-member select denial, import/export large-workspace quota |
-| 🔄 | Add test: non-service-role calls cannot mutate `profiles.deletion_status`, `deleted_at`, `purge_after` — static migration/invariant tests added in `security-and-invariants.spec.mjs`; live DB integration test still pending migration apply |
+| ✅ | Add test/proof: non-service-role calls cannot mutate `profiles.deletion_status`, `deleted_at`, `purge_after` — static migration/invariant tests exist in `security-and-invariants.spec.mjs`; live DB rollback verification completed 2026-06-14 against `yduzbvijzwczjapanxbd` with authenticated 42501 rejections and service-role success |
 | ⬜ | Add regression test for `interval` and `currentPeriodEnd` returned by `/billing-status` for all Pro states |
 | ⬜ | Add stress-test coverage for 200+ case loads (performance + correctness) |
 | ⬜ | Reduce regex-heavy audit tests gradually; replace with direct behavior tests |
@@ -832,7 +832,7 @@ Release-gate items block **public launch**, not isolated product development. Pr
 *All must be checked before any public launch.*
 
 - [ ] BUG-01 through BUG-07 from QA report resolved and regression-tested
-- [ ] `profiles` deletion-field server-side guard implemented and tested — migration `2026061301_guard_profile_deletion_fields.sql` + static tests done; awaiting live DB apply + verification
+- [x] `profiles` deletion-field server-side guard implemented and tested — migration `2026061301_guard_profile_deletion_fields.sql` deployed and live-verified 2026-06-14 on disposable test fixture; no real customer data used and no user purged
 - [ ] P0 billing invariants pass for User1/User2/User3/User4
 - [ ] Two-tab removed-member access loss verified live
 - [ ] Portal sign-off: deep-link, schedule-managed fallback, stale-sub fallback

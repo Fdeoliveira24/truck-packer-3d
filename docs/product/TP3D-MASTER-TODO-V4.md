@@ -6,12 +6,12 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `e8c0b3f` |
-| Active branch | `security/profile-deletion-field-guard-live-verification` |
-| Active phase | Post-deployment security verification — profile deletion-field guard |
-| Next planned phase | A1.1B — AutoPack front-first default direction |
-| Waiting for | Review and merge of the live verification branch |
-| Do not start simultaneously | Stripe/billing patches, geometry epsilon fix, AutoPack realism (A1), or unrelated Settings changes |
+| Stable main commit | `8f4bbfc` |
+| Active branch | (none — between phases; 3B starts on a dedicated geometry-only branch) |
+| Active phase | 3B — Geometry tolerance unification (audit complete, implementation pending) |
+| Next planned phase | 3B implementation, followed by 5A stacking constraints |
+| Waiting for | Approval to start 3B on a geometry-only branch |
+| Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, or AutoPack realism (5B) |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
@@ -20,16 +20,16 @@
 ## Near-Term Execution Queue
 *Approved order. Do not combine items. Do not skip steps.*
 
-1. Finish and merge G1.2C — Inspector polish and Inspector tooltip system correction
-2. A1.1B — Make all AutoPack truck modes front-first by default
-3. Unify geometry epsilon across `app.js`, `pack-library.js`, and the solver
-4. Fix `noStackOnTop` and `stackable: false` enforcement in AutoPack
-5. Enforce `maxStackCount` in AutoPack
-6. Correct the stacking score (flat STACKING_BONUS cancels gravity penalty)
-7. Run the full A1 AutoPack realism and compaction audit
-8. Case Browser — search-clear button and self-sizing filter panel
-9. Case Browser — multi-selection and batch add/drop planning
-10. Start wider Packs, Cases, Folders, and Spaces & Equipment screen UI phases
+*Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified.*
+
+1. Unify geometry epsilon across `app.js`, `pack-library.js`, and the solver (3B)
+2. Fix `noStackOnTop` and `stackable: false` enforcement in AutoPack
+3. Enforce `maxStackCount` in AutoPack
+4. Correct the stacking score (flat STACKING_BONUS cancels gravity penalty)
+5. Run the full A1 AutoPack realism and compaction audit
+6. Case Browser — search-clear button and self-sizing filter panel
+7. Case Browser — multi-selection and batch add/drop planning
+8. Start wider Packs, Cases, Folders, and Spaces & Equipment screen UI phases
 
 ---
 
@@ -283,7 +283,7 @@ Release-gate items block **public launch**, not isolated product development. Pr
 
 | Status | Item |
 |--------|------|
-| ⚠️ | **Unify trailer geometry tolerance — technical blocker for placement work.** `app.js` uses `EPS = 0.01` in `TrailerGeometry.isAabbContainedInAnyZone`. `pack-library.js` uses `EPS = 0.05` (with a "Bug 5 fix" note). The active AutoPack solver also defaults to `0.05`. Two active code paths can produce different containment results for the same placement. Fix before Phase A extraction and before any deeper AutoPack placement work. Add regression tests covering the epsilon boundary. |
+| ⚠️ | **Unify trailer geometry tolerance — technical blocker for placement work.** Root cause is a UNIT-CONTRACT defect, not just a number mismatch. `pack-library.js` and the active solver (`autopack-solver.js`) use `EPS = 0.05` in INCH space consistently (persisted packed/staged, AutoPack final validation, stats/OOG) — the canonical paths. But `app.js`'s `TrailerGeometry.isAabbContainedInAnyZone` hardcodes `EPS = 0.01` and is called with BOTH inch-space zones (Stats packed flag, duplicate-inside check, shape-change OOB warning → **0.01-inch** physical) AND world-space zones (editor drag "isInsideTruck" feedback, via `zonesInchesToWorld` → 0.01 world = **0.2-inch** physical, since `INCH_TO_WORLD = 0.05`). Net: three different physical tolerances (0.05" / 0.01" / 0.2") across active paths. Correction is one inch-space contract: route all containment through a single named inch epsilon (0.05"), and make world-space callers convert their AABB to inches first (not zones to world). Intended tolerance 0.05" (= 0.0025 world units): imperceptible visually, far above FP noise, and already governs the authoritative paths so it changes the fewest accepted placements. Must precede 3A `TrailerGeometry` extraction and all deeper AutoPack placement work. Add regression tests covering the epsilon boundary in both inch and world callers. |
 | ⬜ | After tolerance is unified: consolidate `TrailerGeometry` into a single canonical module (currently duplicated between `app.js` and `pack-library.js`) |
 | ⬜ | `solveLegacyAutoPack()` — confirm truly unused (`rg` shows only its own definition; no production caller found), then delete |
 | ⬜ | `buildLegacyAutoPackItems()` — still live (imported and called in `autopack-engine.js`); do NOT remove yet |
@@ -297,7 +297,7 @@ Release-gate items block **public launch**, not isolated product development. Pr
 | ⬜ | Add regression test for `interval` and `currentPeriodEnd` returned by `/billing-status` for all Pro states |
 | ⬜ | Add stress-test coverage for 200+ case loads (performance + correctness) |
 | ⬜ | Reduce regex-heavy audit tests gradually; replace with direct behavior tests |
-| 🔄 | Keep phase tests based on source ownership or behavior, not live working-tree file lists — retired the three stale `git diff`-based "changed files stay inside scope" guards for the merged G1.2B/G1.2C/G1.2D polish phases (they false-failed on any later valid change to forbidden files such as `autopack-engine.js`). Behavior/source-ownership tests for those phases are kept. Remaining: audit other phases (e.g. G2-SHAPE-CONTRACT, 0.7C) for the same working-tree pattern. |
+| ✅ | Phase tests are based on source ownership/behavior, not live working-tree file lists. `8474b09` retired ALL remaining `git diff`-based "changed files stay inside scope" guards (−804 lines in `security-and-invariants.spec.mjs`), following the earlier removal of the G1.2B/G1.2C/G1.2D polish-phase guards (they false-failed on any later valid change to forbidden files such as `autopack-engine.js`). No working-tree/`git diff --name-only` scope guards remain in `tests/`. Behavior/source-ownership tests retained; suite green (529). |
 
 ### 3D — Code Quality
 | Status | Item |
@@ -515,9 +515,9 @@ Release-gate items block **public launch**, not isolated product development. Pr
 ### 5A — Near-Term Correctness Fixes
 | Status | Item |
 |--------|------|
-| 🔄 | **A1.1B — Fix default packing direction** — Implemented, awaiting manual browser review. Changed `const loadFrontFirst = mode === 'frontBonus'` → `const loadFrontFirst = true` in `src/services/autopack-engine.js` so all three modes pack front-first. Engine-only change; `loadFrontFirst` only affects placement ordering/anchoring (zones resolved separately, so containment/blocked zones unchanged). Added source-ownership test in `tests/audit/security-and-invariants.spec.mjs`; full suite 549/549, lint 0 errors, typecheck clean. |
-| 🔄 | Standard packs front-first — engine default now `true` (mode `rect`); awaiting manual browser review |
-| 🔄 | Wheel Wells packs front-first while respecting wheel-well zones — engine default now `true` (mode `wheelWells`); blocked zones come from `getTrailerUsableZones` and are unaffected by direction; awaiting manual browser review |
+| ✅ | **A1.1B — default packing direction** — Merged (`4fc8821`) and browser-verified 2026-06-14. Changed `const loadFrontFirst = mode === 'frontBonus'` → `const loadFrontFirst = true` in `src/services/autopack-engine.js` so all three modes pack front-first. Engine-only change; `loadFrontFirst` only affects placement ordering/anchoring (zones resolved separately, so containment/blocked zones unchanged). Added source-ownership test in `tests/audit/security-and-invariants.spec.mjs`; suite green, lint 0 errors, typecheck clean. |
+| ✅ | Standard packs front-first — engine default now `true` (mode `rect`); browser-verified 2026-06-14 |
+| ✅ | Wheel Wells packs front-first while respecting wheel-well zones — engine default now `true` (mode `wheelWells`); blocked zones come from `getTrailerUsableZones` and are unaffected by direction; browser-verified 2026-06-14 |
 | ✅ | Front Overhang remains front-first and cab-void safe (no change needed) — already front-first; behavior unchanged |
 | 🚫 | **Fix stacking bug**: `noStackOnTop` / `stackable: false` not enforced in `findRestingY()` or `collides()` — **blocked until geometry epsilon (3B) is unified** |
 | 🚫 | **Fix stacking bug**: `maxStackCount` not enforced in AutoPack — **blocked until geometry epsilon (3B) is unified** |

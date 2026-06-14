@@ -6,11 +6,11 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `734783d` |
-| Active branch | `fix/3b-geometry-tolerance-unification` |
-| Active phase | 3B — Geometry tolerance unification (code and automated checks pass; browser drag checklist pending) |
-| Next planned phase | Complete 3B browser review, then 5A stacking constraints |
-| Waiting for | Manual/browser review and commit approval |
+| Stable main commit | `33b362a` |
+| Active branch | `fix/5a-autopack-stacking-safety` |
+| Active phase | 5A — AutoPack stacking safety & scoring (audit + runtime tests complete; browser AutoPack spot-check pending) |
+| Next planned phase | 5A browser spot-check + commit, then A1 realism/compaction audit (5B) |
+| Waiting for | Review of the 5A audit report and commit approval |
 | Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, or AutoPack realism (5B) |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
@@ -20,16 +20,13 @@
 ## Near-Term Execution Queue
 *Approved order. Do not combine items. Do not skip steps.*
 
-*Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified.*
+*Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified; 3B geometry epsilon unification merged (`33b362a`).*
 
-1. Complete browser review and commit geometry epsilon unification (3B)
-2. Fix `noStackOnTop` and `stackable: false` enforcement in AutoPack
-3. Enforce `maxStackCount` in AutoPack
-4. Correct the stacking score (flat STACKING_BONUS cancels gravity penalty)
-5. Run the full A1 AutoPack realism and compaction audit
-6. Case Browser — search-clear button and self-sizing filter panel
-7. Case Browser — multi-selection and batch add/drop planning
-8. Start wider Packs, Cases, Folders, and Spaces & Equipment screen UI phases
+1. 5A — browser AutoPack spot-check, then commit the stacking-safety audit + runtime tests (`noStackOnTop` / `stackable:false` / `maxStackCount` confirmed enforced in the active solver; the alleged flat `STACKING_BONUS` was found nonexistent)
+2. Run the full A1 AutoPack realism and compaction audit
+3. Case Browser — search-clear button and self-sizing filter panel
+4. Case Browser — multi-selection and batch add/drop planning
+5. Start wider Packs, Cases, Folders, and Spaces & Equipment screen UI phases
 
 ---
 
@@ -506,11 +503,11 @@ Release-gate items block **public launch**, not isolated product development. Pr
 ## PART 5 — AUTOPACK ENGINE
 
 ### Dependency order for AutoPack work
-1. Front-first default fix (A1.1B) — safe to do now, does not touch containment
-2. Geometry epsilon unification (3B) — required before any further placement changes
-3. noStackOnTop / maxStackCount enforcement — after epsilon is unified
-4. Stacking score correction — after epsilon is unified
-5. Full A1 realism and compaction audit — after all above are complete
+1. Front-first default fix (A1.1B) — ✅ merged (`4fc8821`)
+2. Geometry epsilon unification (3B) — ✅ merged (`33b362a`)
+3. noStackOnTop / `stackable:false` / maxStackCount enforcement — ✅ audited: already enforced in the active solver; runtime tests added (see 5A)
+4. Stacking score correction — ✅ audited: the alleged flat `STACKING_BONUS` does not exist; active scoring is lexicographic and lower-first (see 5A)
+5. Full A1 realism and compaction audit — next, after 5A browser spot-check
 
 ### 5A — Near-Term Correctness Fixes
 | Status | Item |
@@ -519,9 +516,10 @@ Release-gate items block **public launch**, not isolated product development. Pr
 | ✅ | Standard packs front-first — engine default now `true` (mode `rect`); browser-verified 2026-06-14 |
 | ✅ | Wheel Wells packs front-first while respecting wheel-well zones — engine default now `true` (mode `wheelWells`); blocked zones come from `getTrailerUsableZones` and are unaffected by direction; browser-verified 2026-06-14 |
 | ✅ | Front Overhang remains front-first and cab-void safe (no change needed) — already front-first; behavior unchanged |
-| 🚫 | **Fix stacking bug**: `noStackOnTop` / `stackable: false` not enforced in `findRestingY()` or `collides()` — **blocked until geometry epsilon (3B) is unified** |
-| 🚫 | **Fix stacking bug**: `maxStackCount` not enforced in AutoPack — **blocked until geometry epsilon (3B) is unified** |
-| 🚫 | **Fix scoring bug**: `STACKING_BONUS` flat +1200 cancels gravity penalty at ~80" height — scale the bonus or remove gravity penalty for already-stacked placements — **blocked until geometry epsilon (3B) is unified** |
+| 🔄 | **`noStackOnTop` / `stackable: false` — already enforced in the ACTIVE solver (audit corrected the diagnosis).** Audit on branch `fix/5a-autopack-stacking-safety` (base `33b362a`) found the cited `findRestingY()` / `collides()` live only in the RETIRED legacy solver (`solveLegacyAutoPack`, no production caller), not the active path. The active solver (`autopack-solver.js` → `solveAutoPack`) blocks both flags on the support side via the shared `canSupportStack` / `supportsCandidate` checks at every stacking entry point (floor/filler/stack/repack — `findStackPlacement` is the only function that lifts an item) and re-checks them in `validatePackedPlacements`. Direct solver probes confirm: nothing rests on a `noStackOnTop` base even through filler/repack and merged supports. Confirmed product meaning: both flags mean "nothing may rest on this item" (support-side); a flagged item may itself still sit on a sturdy support — this matches the pre-existing committed test `AUTO-PACK-A1-R4 … honors noStackOnTop and stackable false`. Locked with new runtime regression tests (`5A …`). Remaining: browser AutoPack spot-check. |
+| 🔄 | **`maxStackCount` — already enforced in the ACTIVE solver** as a per-support **direct-children** cap (`getMaxStackCount` → `countDirectStackChildren` → `hasStackCapacity`), checked in `findStackPlacement` and re-checked in `validatePackedPlacements`. `0` = unlimited (by design; `noStackOnTop` is the "nothing on top" flag). It is intentionally NOT a global tower-height cap: a child placed on a child is governed by that child's own `maxStackCount`. Direct probes confirm exact boundaries for 0 / 1 / 2 and multi-layer towers with no bypass. Locked with new runtime tests. Remaining: browser AutoPack spot-check. If product wants a total-tower-height cap, that is a separate future change (see ❓ below). |
+| ✅ | **Scoring "STACKING_BONUS" bug does not exist in the active solver — original text was inaccurate.** There is no `STACKING_BONUS` constant or additive height/gravity penalty anywhere in `autopack-solver.js` (nor the legacy solver). The active solver scores candidates with **lexicographic tuples** whose first key is `aabb.min.y`, so lower/safer placements always win and lower layers fill before higher ones; no flat bonus can cancel a height preference. Verified by runtime test `5A stacking prefers the lower layer before opening a higher layer`. No code change required. |
+| ❓ | **Decision needed — should `stackable: false` also block the item from being placed ON TOP of another (child-side)?** Today `stackable:false` and `noStackOnTop` are support-side synonyms; a `stackable:false` item can still be stacked as a child when it cannot floor-fit (this is the behavior the committed tests assert). A "not stackable ⇒ stays on the floor / unpacked" reading would be strictly safer but is a product-meaning change. Not changed in this pass per scope rules — awaiting product decision before any solver change. |
 
 ### 5B — Deep AutoPack Realism Review (Phase A1)
 *Do not start until 5A correctness fixes and 3B epsilon unification are complete.*

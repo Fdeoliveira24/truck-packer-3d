@@ -3553,6 +3553,200 @@ test('AUTO-PACK-A1-R5.5 pallet supports are exempt from support-weight compariso
     'pallet support behavior should not be derived from pallet tare weight');
 });
 
+// ---------------------------------------------------------------------------
+// 5A — AutoPack stacking safety & scoring. These exercise the ACTIVE solver
+// (autopack-solver.js / solveAutoPack) at runtime, not the retired legacy
+// solver. They lock in the proven behaviour: every stacking entry point
+// (floor/filler/stack/repack) and the final validator share the same support
+// rule checks (canSupportStack / hasStackCapacity / weight / support-fraction),
+// scoring is lexicographic and prefers lower placements (there is no flat
+// stacking bonus in the active solver), and the metadata survives the data
+// pipeline.
+// ---------------------------------------------------------------------------
+
+// Reusable, solver-independent safety contract. Re-derives the rules from the
+// raw item metadata and the geometric output so it cannot be fooled by any
+// single solver helper.
+function assertStackSafeOutput(Solver, output, itemsById, zones, label) {
+  const placed = [...output.placements.keys()].map(id => {
+    const od = output.orientedDims.get(id);
+    return { id, item: itemsById.get(id), aabb: Solver.getAabb(output.placements.get(id), { l: od.length, w: od.width, h: od.height }) };
+  });
+  const canSupport = it => !(it && (it.noStackOnTop === true || it.stackable === false));
+  const xzOverlap = (a, b) =>
+    (Math.min(a.max.x, b.max.x) - Math.max(a.min.x, b.min.x)) > 0.05 &&
+    (Math.min(a.max.z, b.max.z) - Math.max(a.min.z, b.min.z)) > 0.05;
+
+  for (const p of placed) {
+    assert.equal(Solver.isAabbContainedInAnyZone(p.aabb, zones), true, `${label}: ${p.id} must stay inside a usable zone`);
+    for (const q of placed) {
+      if (q === p) continue;
+      assert.equal(Solver.aabbsOverlap(p.aabb, q.aabb), false, `${label}: ${p.id} must not overlap ${q.id}`);
+    }
+    if (p.aabb.min.y <= 0.05) continue; // floor item
+    const supports = placed.filter(q => q !== p && Math.abs(q.aabb.max.y - p.aabb.min.y) < 0.06 && xzOverlap(p.aabb, q.aabb));
+    assert.ok(supports.length > 0, `${label}: stacked ${p.id} must rest on a support, not float`);
+    for (const s of supports) {
+      assert.equal(canSupport(s.item), true, `${label}: ${p.id} must not rest on no-stack support ${s.id}`);
+      const isPallet = s.item && s.item.isPallet === true;
+      assert.ok(isPallet || (Number(p.item.weight) || 0) <= (Number(s.item.weight) || 0),
+        `${label}: heavier ${p.id} must not rest on lighter non-pallet ${s.id}`);
+    }
+    const frac = Solver.computeSupportFraction(p.aabb, supports.map(s => s.aabb));
+    assert.ok(frac >= 0.5, `${label}: ${p.id} support fraction ${frac.toFixed(2)} must be >= 0.5`);
+  }
+  // maxStackCount is a per-support direct-children cap.
+  for (const s of placed) {
+    const max = Number(s.item && s.item.maxStackCount) || 0;
+    if (max <= 0) continue;
+    const direct = placed.filter(q => q !== s && Math.abs(q.aabb.min.y - s.aabb.max.y) < 0.06 && xzOverlap(q.aabb, s.aabb)).length;
+    assert.ok(direct <= max, `${label}: support ${s.id} has ${direct} direct children, exceeds maxStackCount ${max}`);
+  }
+}
+
+test('5A noStackOnTop is honored through the filler and repack passes', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 96, width: 48, height: 120 };
+  const zones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 96, y: 120, z: 24 } }];
+  const items = [
+    { instanceId: 'frag', dims: { l: 96, w: 48, h: 24 }, weight: 2000, noStackOnTop: true },
+    ...Array.from({ length: 6 }, (_, i) => ({ instanceId: `x${i}`, dims: { l: 48, w: 24, h: 24 }, weight: 10 })),
+  ];
+  const out = Solver.solveAutoPack({ truck, zones, items, loadFrontFirst: true });
+  const od = out.orientedDims.get('frag');
+  const fragAabb = Solver.getAabb(out.placements.get('frag'), { l: od.length, w: od.width, h: od.height });
+  let onFrag = 0;
+  for (let i = 0; i < 6; i++) {
+    const pos = out.placements.get(`x${i}`);
+    if (!pos) continue;
+    const cod = out.orientedDims.get(`x${i}`);
+    const a = Solver.getAabb(pos, { l: cod.length, w: cod.width, h: cod.height });
+    if (Math.abs(a.min.y - fragAabb.max.y) < 0.06 && a.min.x < fragAabb.max.x && a.max.x > fragAabb.min.x) onFrag++;
+  }
+  assert.equal(onFrag, 0, 'no item may rest on a noStackOnTop base after the floor base covers the deck (filler + repack must not bypass it)');
+  assert.equal(out.placements.has('frag'), true, 'the noStackOnTop base itself is still floor-placed');
+});
+
+test('5A maxStackCount 0 means unlimited direct children', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 48, width: 24, height: 72 };
+  const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 48, y: 72, z: 12 } }];
+  const items = [
+    { instanceId: 'base', dims: { l: 48, w: 24, h: 24 }, weight: 1000, maxStackCount: 0, loadPriority: 5 },
+    { instanceId: 'c1', dims: { l: 24, w: 24, h: 24 }, weight: 10, loadPriority: 1 },
+    { instanceId: 'c2', dims: { l: 24, w: 24, h: 24 }, weight: 10, loadPriority: 1 },
+  ];
+  const out = Solver.solveAutoPack({ truck, zones, items, loadFrontFirst: true });
+  assert.equal(out.placements.size, 3);
+  assert.deepEqual(out.unpacked, []);
+  assert.equal(out.phaseStats.stackCount, 2, 'maxStackCount: 0 must be treated as no limit, so both children may stack on the base');
+});
+
+test('5A maxStackCount caps direct children but allows a taller multi-layer tower', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 72, width: 24, height: 72 };
+  const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 72, y: 72, z: 12 } }];
+  const items = [
+    { instanceId: 'base', dims: { l: 72, w: 24, h: 24 }, weight: 1000, maxStackCount: 2, loadPriority: 5 },
+    { instanceId: 'c1', dims: { l: 24, w: 24, h: 24 }, weight: 10, loadPriority: 1 },
+    { instanceId: 'c2', dims: { l: 24, w: 24, h: 24 }, weight: 10, loadPriority: 1 },
+    { instanceId: 'c3', dims: { l: 24, w: 24, h: 24 }, weight: 10, loadPriority: 1 },
+  ];
+  const out = Solver.solveAutoPack({ truck, zones, items, loadFrontFirst: true });
+  const aabb = id => {
+    const od = out.orientedDims.get(id);
+    return Solver.getAabb(out.placements.get(id), { l: od.length, w: od.width, h: od.height });
+  };
+  const baseTop = aabb('base').max.y;
+  const direct = ['c1', 'c2', 'c3'].filter(id => Math.abs(aabb(id).min.y - baseTop) < 0.06).length;
+  assert.equal(direct, 2, 'maxStackCount: 2 limits the base to exactly two direct children');
+  assert.equal(out.placements.size, 4, 'the third child still packs by stacking onto a child layer (per-support cap, not a global tower-height cap)');
+});
+
+test('5A stacking prefers the lower layer before opening a higher layer', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 48, width: 48, height: 120 };
+  const zones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 48, y: 120, z: 24 } }];
+  const items = [
+    { instanceId: 'A', dims: { l: 48, w: 48, h: 24 }, weight: 1000 },
+    { instanceId: 'C1', dims: { l: 24, w: 48, h: 24 }, weight: 10 },
+    { instanceId: 'C2', dims: { l: 24, w: 48, h: 24 }, weight: 10 },
+  ];
+  const out = Solver.solveAutoPack({ truck, zones, items, loadFrontFirst: true });
+  const aabb = id => {
+    const od = out.orientedDims.get(id);
+    return Solver.getAabb(out.placements.get(id), { l: od.length, w: od.width, h: od.height });
+  };
+  assert.equal(aabb('C1').min.y, 24);
+  assert.equal(aabb('C2').min.y, 24,
+    'both children fill the single lower stack layer; the lexicographic score must not push one to a needless higher layer');
+});
+
+test('5A repeated identical cases pack with no overlaps and a safe stacking contract', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 48, width: 48, height: 96 };
+  const zones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 48, y: 96, z: 24 } }];
+  const items = Array.from({ length: 12 }, (_, i) => ({ instanceId: `r${i}`, dims: { l: 24, w: 24, h: 24 }, weight: 50 }));
+  const itemsById = new Map(items.map(it => [it.instanceId, it]));
+  const out = Solver.solveAutoPack({ truck, zones, items, loadFrontFirst: true });
+  assert.equal(out.placements.size, 12);
+  assert.deepEqual(out.unpacked, []);
+  assertStackSafeOutput(Solver, out, itemsById, zones, 'repeated-cases');
+});
+
+test('5A final solver output independently satisfies the stacking-safety contract', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  // Real multi-layer stacking onto a maxStackCount-limited base.
+  const capTruck = { length: 72, width: 24, height: 72 };
+  const capZones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 72, y: 72, z: 12 } }];
+  const capItems = [
+    { instanceId: 'base', dims: { l: 72, w: 24, h: 24 }, weight: 1000, maxStackCount: 2 },
+    { instanceId: 'c1', dims: { l: 24, w: 24, h: 24 }, weight: 10 },
+    { instanceId: 'c2', dims: { l: 24, w: 24, h: 24 }, weight: 10 },
+    { instanceId: 'c3', dims: { l: 24, w: 24, h: 24 }, weight: 10 },
+  ];
+  const capOut = Solver.solveAutoPack({ truck: capTruck, zones: capZones, items: capItems, loadFrontFirst: true });
+  assertStackSafeOutput(Solver, capOut, new Map(capItems.map(it => [it.instanceId, it])), capZones, 'maxStack-tower');
+
+  // Mixed weights and a noStackOnTop base in the same run.
+  const mixTruck = { length: 48, width: 48, height: 120 };
+  const mixZones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 48, y: 120, z: 24 } }];
+  const mixItems = [
+    { instanceId: 'frag', dims: { l: 48, w: 48, h: 24 }, weight: 1500, noStackOnTop: true },
+    { instanceId: 'heavy', dims: { l: 24, w: 24, h: 24 }, weight: 900 },
+    ...Array.from({ length: 8 }, (_, i) => ({ instanceId: `m${i}`, dims: { l: 24, w: 24, h: 24 }, weight: 100 })),
+  ];
+  const mixOut = Solver.solveAutoPack({ truck: mixTruck, zones: mixZones, items: mixItems, loadFrontFirst: true });
+  assertStackSafeOutput(Solver, mixOut, new Map(mixItems.map(it => [it.instanceId, it])), mixZones, 'mixed-weights');
+});
+
+test('5A case normalizer preserves explicit stackable:false and maxStackCount:0', async () => {
+  const { normalizeCase } = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const now = Date.now();
+  // Pass an explicit id so normalization does not fall through to uuid()/window.
+  const norm = extra => normalizeCase({ id: 'case-5a', name: 'Case 5A', dimensions: { length: 48, width: 24, height: 24 }, ...extra }, now);
+  assert.equal(norm({ stackable: false }).stackable, false, 'explicit stackable:false must survive normalization');
+  assert.equal(norm({}).stackable, true, 'missing stackable must default to true');
+  assert.equal(norm({ maxStackCount: 0 }).maxStackCount, 0, 'explicit maxStackCount:0 must survive normalization');
+  assert.equal(norm({ maxStackCount: 3 }).maxStackCount, 3, 'explicit maxStackCount must survive normalization');
+  assert.equal(norm({ maxStackCount: -2 }).maxStackCount, 0, 'negative maxStackCount clamps to 0');
+  assert.equal(norm({ noStackOnTop: true }).noStackOnTop, true, 'explicit noStackOnTop:true must survive normalization');
+  assert.equal(norm({}).noStackOnTop, false, 'missing noStackOnTop must default to false');
+});
+
+test('5A engine adapter forwards stacking metadata from caseData to the solver', async () => {
+  const src = await fs.readFile(autoPackEnginePath, 'utf8');
+  const start = src.indexOf('solveAutoPack({');
+  assert.ok(start !== -1, 'engine must call solveAutoPack');
+  const block = src.slice(start, start + 1400);
+  assert.match(block, /noStackOnTop:\s*caseData\.noStackOnTop/, 'engine must forward noStackOnTop from caseData');
+  assert.match(block, /stackable:\s*caseData\.stackable/, 'engine must forward stackable from caseData');
+  assert.match(block, /maxStackCount:\s*caseData\.maxStackCount/, 'engine must forward maxStackCount from caseData');
+  assert.match(block, /isPallet:\s*caseData\.isPallet/, 'engine must forward isPallet from caseData');
+  assert.match(block, /weight:\s*caseData\.weight/, 'engine must forward weight from caseData');
+});
+
 test('AUTO-PACK-A1-R5 lane phase places long items lengthwise before normal boxes', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = { length: 120, width: 48, height: 48 };

@@ -20,6 +20,59 @@ function createField(doc, label, type = 'text', placeholder = '', required = fal
   return { wrap, input };
 }
 
+function createSelectField(doc, label, options, value, help = '') {
+  const wrap = doc.createElement('div');
+  wrap.className = 'field';
+  const l = doc.createElement('div');
+  l.className = 'label';
+  l.textContent = label;
+  const select = doc.createElement('select');
+  select.className = 'input';
+  options.forEach(([val, text]) => {
+    const opt = doc.createElement('option');
+    opt.value = val;
+    opt.textContent = text;
+    select.appendChild(opt);
+  });
+  select.value = value;
+  wrap.appendChild(l);
+  wrap.appendChild(select);
+  if (help) {
+    const h = doc.createElement('div');
+    h.className = 'tp3d-cases-handling-help';
+    h.textContent = help;
+    wrap.appendChild(h);
+  }
+  return { wrap, select };
+}
+
+function createCheckRow(doc, text, checked, help = '') {
+  const row = doc.createElement('label');
+  row.classList.add('tp3d-cases-flip-row');
+  row.classList.add('tp3d-grid-span-full');
+  const input = doc.createElement('input');
+  input.type = 'checkbox';
+  input.checked = Boolean(checked);
+  const span = doc.createElement('span');
+  span.textContent = text;
+  row.appendChild(input);
+  row.appendChild(span);
+  if (help) {
+    const h = doc.createElement('div');
+    h.className = 'tp3d-cases-handling-help';
+    h.textContent = help;
+    row.appendChild(h);
+  }
+  return { row, input };
+}
+
+export function canonicalOrientationLock(value) {
+  const s = String(value == null ? 'any' : value).trim().toLowerCase();
+  if (s === 'upright') return 'upright';
+  if (s === 'onside' || s === 'on-side' || s === 'on side') return 'onSide';
+  return 'any';
+}
+
 export function formatCaseModalNumber(value, unit) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '';
@@ -224,16 +277,88 @@ export function openCaseModal({
   const weightValue = Utils.poundsToUnit(Number(initial.weight) || 0, weightUnit);
   fWeight.input.value = String(Math.round(weightValue * 100) / 100);
 
-  const flipRow = doc.createElement('label');
-  flipRow.classList.add('tp3d-cases-flip-row');
-  flipRow.classList.add('tp3d-grid-span-full');
-  const flip = doc.createElement('input');
-  flip.type = 'checkbox';
-  flip.checked = Boolean(initial.canFlip);
-  const flipText = doc.createElement('span');
-  flipText.textContent = 'Can be flipped';
-  flipRow.appendChild(flip);
-  flipRow.appendChild(flipText);
+  // ── Handling Rules (collapsed) ──────────────────────────────────────────
+  // Only rules the active AutoPack solver honors exactly (Cargo-Rule V1).
+  const handling = doc.createElement('details');
+  handling.className = 'field tp3d-grid-span-full tp3d-cases-handling';
+  const handlingSummary = doc.createElement('summary');
+  handlingSummary.textContent = 'Handling Rules';
+  handling.appendChild(handlingSummary);
+
+  const orient = createSelectField(doc, 'Orientation', [
+    ['any', 'Any direction'],
+    ['upright', 'Keep upright'],
+    ['onSide', 'Place on side'],
+  ], canonicalOrientationLock(initial.orientationLock), 'Limits which orientations AutoPack and manual rotation may use.');
+
+  const flipRow = createCheckRow(doc, 'Allow flipping',
+    canonicalOrientationLock(initial.orientationLock) === 'any' && Boolean(initial.canFlip),
+    'Lets AutoPack place this item on another face when orientation rules allow it.');
+  const flip = flipRow.input;
+
+  const noTopRow = createCheckRow(doc, 'Do not place cargo on top',
+    initial.noStackOnTop === true || initial.stackable === false,
+    'Nothing may be stacked directly on this item.');
+  const noTop = noTopRow.input;
+
+  const fMaxStack = createField(doc, 'Max items directly on top (0 = no limit)', 'number', '', false);
+  fMaxStack.input.min = '0';
+  fMaxStack.input.step = '1';
+  fMaxStack.input.value = String(Math.max(0, parseInt(initial.maxStackCount, 10) || 0));
+
+  const palletRow = createCheckRow(doc, 'Treat as pallet / load base',
+    initial.isPallet === true,
+    'Allows heavier items to rest on this base. Does not enforce a weight limit.');
+  const pallet = palletRow.input;
+
+  const fPalletWarn = createField(doc, 'Max load — warning only', 'number', '', false);
+  fPalletWarn.input.min = '0';
+  fPalletWarn.input.step = '1';
+  fPalletWarn.input.value = String(Math.max(0, Number(initial.maxPalletWeight) || 0));
+  const palletWarnHelp = doc.createElement('div');
+  palletWarnHelp.className = 'tp3d-cases-handling-help';
+  palletWarnHelp.textContent = 'Warns if stacked weight exceeds this. It does not block AutoPack.';
+  fPalletWarn.wrap.appendChild(palletWarnHelp);
+
+  const lane = createSelectField(doc, 'Long-item lane', [
+    ['auto', 'Automatic'],
+    ['always', 'Always'],
+    ['never', 'Never'],
+  ], initial.laneItem === true ? 'always' : initial.laneItem === false ? 'never' : 'auto', 'Place long items in a lengthwise lane.');
+
+  const priority = createSelectField(doc, 'Packing priority (tie-breaker)', [
+    ['-1', 'Low'],
+    ['0', 'Normal'],
+    ['1', 'High'],
+  ], String(Number(initial.loadPriority) > 0 ? 1 : Number(initial.loadPriority) < 0 ? -1 : 0), 'Nudges the order among similar items. Fit and hard rules still win.');
+
+  // Dependencies
+  const applyOrientationDep = () => {
+    const isAny = orient.select.value === 'any';
+    flip.disabled = !isAny;
+    if (!isAny) flip.checked = false;
+  };
+  const applyNoTopDep = () => {
+    fMaxStack.input.disabled = noTop.checked;
+  };
+  const applyPalletDep = () => {
+    fPalletWarn.wrap.style.display = pallet.checked ? '' : 'none';
+  };
+  orient.select.addEventListener('change', applyOrientationDep);
+  noTop.addEventListener('change', applyNoTopDep);
+  pallet.addEventListener('change', applyPalletDep);
+  applyOrientationDep();
+  applyNoTopDep();
+  applyPalletDep();
+
+  handling.appendChild(orient.wrap);
+  handling.appendChild(flipRow.row);
+  handling.appendChild(noTopRow.row);
+  handling.appendChild(fMaxStack.wrap);
+  handling.appendChild(palletRow.row);
+  handling.appendChild(fPalletWarn.wrap);
+  handling.appendChild(lane.wrap);
+  handling.appendChild(priority.wrap);
 
   const notesWrap = doc.createElement('div');
   notesWrap.className = 'field';
@@ -255,7 +380,7 @@ export function openCaseModal({
   content.appendChild(fW.wrap);
   content.appendChild(fH.wrap);
   content.appendChild(fWeight.wrap);
-  content.appendChild(flipRow);
+  content.appendChild(handling);
   content.appendChild(notesWrap);
 
   UIComponents.showModal({
@@ -285,6 +410,9 @@ export function openCaseModal({
           const catMeta = catOptions.find(c => c.key === categoryKey) || CategoryService.meta(categoryKey);
           const categoryColor = normalizeCaseModalColor(catColorInput.value, catMeta.color || '#ff9f1c');
           CategoryService.upsert({ key: categoryKey, name: catMeta.name, color: categoryColor });
+          const orientationLock = canonicalOrientationLock(orient.select.value);
+          const laneValue = lane.select.value === 'always' ? true : lane.select.value === 'never' ? false : null;
+          const priorityValue = priority.select.value === '1' ? 1 : priority.select.value === '-1' ? -1 : 0;
           const caseData = {
             ...initial,
             name,
@@ -292,7 +420,15 @@ export function openCaseModal({
             category: categoryKey,
             dimensions: { length, width, height },
             weight: weightLb,
-            canFlip: Boolean(flip.checked),
+            // Handling rules (Cargo-Rule V1). canFlip only meaningful when policy is 'any'.
+            canFlip: orientationLock === 'any' && Boolean(flip.checked),
+            orientationLock,
+            noStackOnTop: Boolean(noTop.checked),
+            maxStackCount: Math.max(0, parseInt(fMaxStack.input.value, 10) || 0),
+            isPallet: Boolean(pallet.checked),
+            maxPalletWeight: pallet.checked ? Math.max(0, Number(fPalletWarn.input.value) || 0) : (Math.max(0, Number(initial.maxPalletWeight) || 0)),
+            laneItem: laneValue,
+            loadPriority: priorityValue,
             notes: String(notes.value || '').trim(),
             color: categoryColor,
           };

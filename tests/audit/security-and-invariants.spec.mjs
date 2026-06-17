@@ -3193,6 +3193,64 @@ test('AUTO-PACK-A1-3 X anchor cap keeps front and middle anchors available', asy
     'AutoPack should keep enough X anchors for larger floor layouts');
 });
 
+test('CARGO-RULE-V1 canonicalOrientationLock maps all accepted spellings', async () => {
+  const Modal = await import(`${caseModalPath.href}?t=${Date.now()}-${Math.random()}`);
+  assert.equal(Modal.canonicalOrientationLock('upright'), 'upright');
+  assert.equal(Modal.canonicalOrientationLock('UPRIGHT'), 'upright');
+  assert.equal(Modal.canonicalOrientationLock('onside'), 'onSide');
+  assert.equal(Modal.canonicalOrientationLock('on-side'), 'onSide');
+  assert.equal(Modal.canonicalOrientationLock('on side'), 'onSide');
+  assert.equal(Modal.canonicalOrientationLock('onSide'), 'onSide');
+  assert.equal(Modal.canonicalOrientationLock('any'), 'any');
+  assert.equal(Modal.canonicalOrientationLock(undefined), 'any');
+  assert.equal(Modal.canonicalOrientationLock('garbage'), 'any');
+});
+
+test('CARGO-RULE-V1 case duplicate preserves all handling rules', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const CaseLibrary = await import(`${caseLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const src = {
+    id: 'dup-src', name: 'Dup Source', category: 'default',
+    dimensions: { length: 30, width: 20, height: 10 }, weight: 50,
+    canFlip: true, orientationLock: 'onSide', noStackOnTop: true, stackable: false,
+    maxStackCount: 3, isPallet: true, maxPalletWeight: 1500, laneItem: false, loadPriority: 1,
+    hazmatClass: 'flammable', stopGroup: 'A',
+  };
+  StateStore.init({ caseLibrary: [src], packLibrary: [], folderLibrary: [], preferences: {} });
+  const copy = CaseLibrary.duplicate('dup-src');
+  for (const f of ['canFlip', 'orientationLock', 'noStackOnTop', 'stackable', 'maxStackCount', 'isPallet', 'maxPalletWeight', 'laneItem', 'loadPriority', 'hazmatClass', 'stopGroup']) {
+    assert.deepEqual(copy[f], src[f], `duplicate must preserve ${f}`);
+  }
+  assert.notEqual(copy.id, src.id, 'duplicate gets a new id');
+});
+
+test('CARGO-RULE-V1 case modal exposes only honest handling controls with canonical save mapping', async () => {
+  const src = await fs.readFile(caseModalPath, 'utf8');
+  // Section + controls
+  assert.match(src, /Handling Rules/, 'modal must add a Handling Rules section');
+  assert.match(src, /\['onSide', 'Place on side'\]/, 'orientation select must offer onSide canonical');
+  assert.match(src, /'Do not place cargo on top'/, 'no-top-load control label');
+  assert.match(src, /Max items directly on top \(0 = no limit\)/, 'maxStackCount control with 0=no limit copy');
+  assert.match(src, /Treat as pallet \/ load base/, 'pallet control label');
+  assert.match(src, /Max load — warning only/, 'pallet weight labeled warning-only');
+  assert.match(src, /does not block AutoPack/i, 'pallet weight help must say it does not block packing');
+  assert.match(src, /Packing priority \(tie-breaker\)/, 'priority labeled as tie-breaker');
+  // Canonical save mapping
+  assert.match(src, /canFlip:\s*orientationLock === 'any' && Boolean\(flip\.checked\)/, 'canFlip only when policy is any');
+  assert.match(src, /orientationLock,\n\s*noStackOnTop: Boolean\(noTop\.checked\)/, 'save sets orientationLock + noStackOnTop');
+  assert.match(src, /maxStackCount: Math\.max\(0, parseInt\(fMaxStack\.input\.value, 10\) \|\| 0\)/, 'maxStackCount cleaned to >= 0 integer');
+  assert.match(src, /laneItem: laneValue/, 'save sets laneItem tri-state');
+  assert.match(src, /loadPriority: priorityValue/, 'save sets loadPriority');
+  assert.match(src, /\.\.\.initial,/, 'save must spread ...initial to preserve hidden/deferred fields');
+  // Dependencies
+  assert.match(src, /flip\.disabled = !isAny/, 'flip disabled when orientation not any');
+  assert.match(src, /fMaxStack\.input\.disabled = noTop\.checked/, 'maxStackCount disabled under no-top-load');
+  assert.match(src, /fPalletWarn\.wrap\.style\.display = pallet\.checked/, 'pallet warn shown only when pallet enabled');
+  // No deferred/inert controls exposed
+  assert.ok(!/createCheckRow\(doc, '[^']*[Ff]ragile/.test(src), 'must not expose a Fragile control');
+  assert.ok(!/[Hh]azmat|stopGroup|mustLoadLast|deliverySequence/.test(src), 'must not expose deferred/inert fields');
+});
+
 test('CARGO-RULE-V1 orientation truth table: upright/onSide beat canFlip; instance lock overrides all', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);

@@ -4069,6 +4069,26 @@ body.modal-open {
   align-items: center;
   gap: 10px;
   font-size: var(--text-sm);
+  flex-wrap: wrap;
+}
+
+.tp3d-cases-handling > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: var(--text-sm);
+  padding: 4px 0;
+}
+
+.tp3d-cases-handling > .field,
+.tp3d-cases-handling > .tp3d-cases-flip-row {
+  margin-top: 10px;
+}
+
+.tp3d-cases-handling-help {
+  flex-basis: 100%;
+  font-size: var(--text-xs);
+  color: var(--text-muted, #6b7280);
+  margin-top: 2px;
 }
 
 .tp3d-textarea-minh-60 {

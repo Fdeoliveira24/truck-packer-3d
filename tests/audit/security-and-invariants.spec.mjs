@@ -3113,6 +3113,45 @@ test('AUTO-PACK-A1-3 X anchor cap keeps front and middle anchors available', asy
     'AutoPack should keep enough X anchors for larger floor layouts');
 });
 
+test('CARGO-RULE-V1 orientation truth table: upright/onSide beat canFlip; instance lock overrides all', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const dims = { l: 30, w: 20, h: 10 }; // all distinct so a tipped face has h !== 10
+  const cand = (item) => Solver.buildOrientationCandidates(dims, item);
+  const hasTipped = (cs) => cs.some(c => c.h !== dims.h);
+  const allUpright = (cs) => cs.every(c => c.h === dims.h);
+
+  // 1) any + false → upright yaw only
+  let cs = cand({ orientationLock: 'any', canFlip: false });
+  assert.equal(cs.length, 2); assert.equal(allUpright(cs), true, 'any+false must be upright only');
+  // 2) any + true → tipped faces allowed
+  cs = cand({ orientationLock: 'any', canFlip: true });
+  assert.equal(hasTipped(cs), true, 'any+true must allow tipped faces');
+  // 3) upright + false → upright only
+  cs = cand({ orientationLock: 'upright', canFlip: false });
+  assert.equal(allUpright(cs), true, 'upright+false must be upright only');
+  // 4) upright + true → STILL upright only (the fix)
+  cs = cand({ orientationLock: 'upright', canFlip: true });
+  assert.equal(allUpright(cs), true, 'upright+true must remain upright (orientation policy beats flip)');
+  // 5) onSide + false → side orientations regardless of canFlip
+  cs = cand({ orientationLock: 'onSide', canFlip: false });
+  assert.equal(cs.length > 0, true); assert.equal(hasTipped(cs), true, 'onSide+false must produce side faces');
+  // 6) onSide + true → still side orientations only
+  cs = cand({ orientationLock: 'onSide', canFlip: true });
+  assert.equal(hasTipped(cs), true, 'onSide+true side faces');
+  // 7) valid instance exact lock overrides both policy and canFlip
+  cs = cand({ orientationLock: 'any', canFlip: true, orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 } });
+  assert.equal(cs.length, 1, 'instance lock yields exactly one candidate');
+  assert.equal(cs[0].locked, true, 'instance lock candidate is marked locked');
+
+  // Manual rotate policy and AutoPack now agree: upright disallows a tipped rotation.
+  const tippedRot = { x: Math.PI / 2, y: 0, z: 0 };
+  assert.equal(PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'upright' }, tippedRot), false,
+    'manual policy: upright rejects a tipped rotation — matches AutoPack producing no tipped candidate');
+  assert.equal(PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'any' }, tippedRot), true,
+    'manual policy: any allows tipped — matches AutoPack canFlip behavior');
+});
+
 test('CARGO-RULE-V1 canFlip defaults to false across model/normalizer/import; explicit values preserved', async () => {
   const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
   const CaseModel = await import(`${caseModelPath.href}?t=${Date.now()}-${Math.random()}`);

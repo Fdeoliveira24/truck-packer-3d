@@ -144,7 +144,11 @@ export function buildOrientationCandidates(dims = {}, item = {}) {
     add(d.w, d.h, d.l, RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
   }
 
-  if (canFlip && lock !== 'onside') {
+  // canFlip may only introduce tipped (non-upright) faces when the case policy
+  // is 'any'. 'upright' must keep the item upright even when canFlip is true,
+  // and 'onside' already produced its side faces above. This matches the manual
+  // rotate policy in pack-library.isOrientationAllowedByCasePolicy.
+  if (canFlip && lock === 'any') {
     add(d.h, d.w, d.l, 0, 0, RIGHT_ANGLE_RAD);
     add(d.w, d.h, d.l, RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
     add(d.l, d.h, d.w, RIGHT_ANGLE_RAD, 0, 0);

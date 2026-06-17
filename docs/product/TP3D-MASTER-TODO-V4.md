@@ -6,11 +6,11 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `819d3de` |
-| Active branch | `docs/cargo-rule-contract` (Cargo-Rule V1 workstream, Phase 1) |
-| Active phase | Cargo-Rule V1 — Phase 1 of 9 (contract + display-parity doc); see **Cargo-Rule V1 Contract** below |
-| Next planned phase | Phase 2 canFlip default → 3 orientation fix → 4 pack-import integrity → 5 modal → 6 display parity → 7 CSV/XLSX → 8 round-trip → 9 completion doc |
-| Waiting for | (Cargo-Rule V1 proceeds now.) Separately pending: 3B + 5A **signed-in interactive editor** sign-off (drag/rotate/flip/collision/Stats, live AutoPack) — keep 🔄 |
+| Stable main commit | `dc32d9a` |
+| Active branch | `docs/cargo-rule-v1-completion` (Cargo-Rule V1, Phase 9 of 9 — completion doc) |
+| Active phase | Cargo-Rule V1 — **code phases 1–8 merged**; Phase 9 records evidence. See **Cargo-Rule V1 — Completion Evidence** below |
+| Next planned phase | 5B AutoPack realism/compaction; then deferred cargo rules (stackingPolicy/Fragile) by their own product decisions |
+| Waiting for | Signed-in interactive browser sign-off for the new handling-rules UI/display **and** the still-open 3B + 5A editor checklist (drag/rotate/flip/collision/Stats, live AutoPack) — all 🔄 |
 | Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, AutoPack realism (5B), or any deferred cargo rule (Fragile/stackingPolicy/floorOnly/multi-stop/strategies) |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
@@ -22,18 +22,18 @@
 
 *Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified; 3B geometry epsilon unification merged (`33b362a`); 5A stacking-safety audit + runtime tests merged (`0aa58c3`); 3B/5A in-browser logic verification recorded (`819d3de`).*
 
-**Active workstream — Cargo-Rule V1 (9 phases, each its own branch + FF merge):**
-1. **Phase 1** — Cargo-rule contract + display-parity requirement (docs)
-2. **Phase 2** — Canonical `canFlip:false` defaults across all paths
-3. **Phase 3** — Orientation correctness (`upright` beats flip; `solver` one-line)
-4. **Phase 4** — Pack-import case-definition data integrity (conflict remap)
-5. **Phase 5** — Case modal Handling Rules section (active fields only)
-6. **Phase 6** — Display parity (cards/list/Browser/Inspector/import preview) + fix misleading 3D pallet label
-7. **Phase 7** — CSV/XLSX + import-preview parity for handling rules
-8. **Phase 8** — Round-trip + action-binding proof tests
-9. **Phase 9** — Final completion doc + TODO reconciliation
+**Cargo-Rule V1 (9 phases, each its own branch + FF merge) — code phases 1–8 ✅ merged:**
+1. ✅ **Phase 1** — Cargo-rule contract + display-parity requirement (docs) — `007f046`
+2. ✅ **Phase 2** — Canonical `canFlip:false` defaults across all paths — `b434adf`
+3. ✅ **Phase 3** — Orientation correctness (`upright` beats flip; solver `:147`) — `c0fe57d`
+4. ✅ **Phase 4** — Pack-import case-definition data integrity (conflict remap) — `6a17e67`
+5. 🔄 **Phase 5** — Case modal Handling Rules section — `957b5eb` (source/tests done; browser sign-off pending)
+6. 🔄 **Phase 6** — Display parity (cards/list/Browser/Inspector) + 3D pallet label fix — `c5e5c56` (browser sign-off pending; import-preview landed in Phase 7)
+7. 🔄 **Phase 7** — CSV/XLSX + import-preview parity — `e9ebb8a` (source/tests done; browser sign-off pending)
+8. ✅ **Phase 8** — Round-trip + action-binding proof tests — `dc32d9a`
+9. 🔄 **Phase 9** — Completion doc (this) — in progress
 
-*Then:* 5B AutoPack realism/compaction; Case Browser search-clear + multi-select; wider screen UI. *Still separate:* 3B/5A signed-in interactive checklist.
+*Then:* 5B AutoPack realism/compaction; Case Browser search-clear + multi-select; wider screen UI. *Still separate:* 3B/5A signed-in interactive checklist; new handling-UI browser sign-off.
 
 ---
 
@@ -58,6 +58,25 @@ CSV/XLSX, JSON import/export, duplication, reload, workspace switching, and pack
 
 ### Deferred — do NOT expose as completed AutoPack rules in V1
 Fragile · floorOnly · floorOrPallet · baseOnly · stackingPolicy · hard pallet capacity · maximum supported weight · maximum total stack height · cumulative tower-weight **enforcement** · hazmat · temperature · securement · dunnage · airflow · mustLoadLast · mustUnloadFirst · stopGroup · keepTogetherGroup · deliverySequence · legal payload / axle claims · round/cylinder collision behavior. These remain future solver work; inert fields must stay hidden.
+
+---
+
+## Cargo-Rule V1 — Completion Evidence (2026-06-17)
+*All code phases merged to `main` via fast-forward, each on its own branch. Final suite: **559 tests pass / 0 fail**, lint **0 errors** (existing warnings only), typecheck clean, `git diff --check` clean.*
+
+- **Phase 2 (`b434adf`)** — `canFlip` defaults to `false` everywhere: new-case modal (`case-modal.js`), `normalizeCase` (core + model), CSV import. Preset exception: **Truss Section keeps `canFlip:true`** (square cross-section, intentional). JBL Subwoofer Crate preset corrected to `false`. Tests: `CARGO-RULE-V1 canFlip defaults…`.
+- **Phase 3 (`c0fe57d`)** — `autopack-solver.js` orientation: tipped faces only when policy is `any`, so `orientationLock:'upright'` is honored even with `canFlip:true`; matches the manual-rotate policy. Tests: 7-row orientation truth table + policy agreement.
+- **Phase 4 (`6a17e67`)** — `importPackPayload` compares cargo-defining fields before reusing a local case by id/name; on conflict it creates a new `(Imported)` case, remaps instances, never overwrites local, reports `caseConflicts` (toast, single + batch). Equivalent re-import is idempotent. Dangling-instance refs already safe (engine/stats skip null `caseData`). Tests: equivalence reuse, conflict matrix, remap, idempotent re-import, batch.
+- **Phase 5 (`957b5eb`)** — Case modal "Handling Rules" section exposes only solver-honored rules with canonical save mapping + dependencies (upright/on-side disable flipping; no-top-load disables max-on-top; pallet warning visible only for pallets). `maxPalletWeight` labeled **warning only**. Hidden/deferred fields preserved via `...initial`.
+- **Phase 6 (`c5e5c56`)** — `src/services/case-rule-summary.js` is the **single source** for active non-default rule chips, shown in Cases cards, Cases list (Flip→Handling column), Editor Case Browser, and the Inspector (case rules vs this-item lock separately). 3D pallet label fixed: `Max: X lb` → `Warning limit: X lb`.
+- **Phase 7 (`e9ebb8a`)** — CSV/XLSX import reads all eight handling fields (aliases); canonical `onSide`; invalid cells warn and fall back to default (row still imports); template matches the parser exactly; import preview shows a **Handling** column via the shared summary; 10MB/5000-row limits unchanged.
+- **Phase 8 (`dc32d9a`)** — round-trip proofs: pack JSON export→import and `normalizeAppData` preserve every handling rule; export/download action chains verified; **workspace import remains intentionally unwired** (parser exists, no UI) and the misleading pack-batch guard message was corrected.
+
+### Still open (not done in this workstream)
+- 🔄 **Browser sign-off** for the new handling UI/display (desktop/narrow/tablet/mobile, light/dark): new case, edit, duplicate, import preview, AutoPack in Standard/Wheel-Wells/Front-Overhang, pallet warning wording, no console errors.
+- 🔄 **3B + 5A** signed-in interactive editor checklist (unchanged).
+- ⬜ **Workspace import UI** — `parseWorkspaceImportJSON` exists but is deliberately not wired; build the import UI before advertising workspace import.
+- 🚫 **Deferred cargo rules** (unchanged, future solver work): Fragile, `stackingPolicy`/floorOnly/floorOrPallet/baseOnly, hard pallet capacity, max supported weight, max stack height, cumulative tower-weight enforcement, multi-stop fields, hazmat, multiple AutoPack strategies / Fits-All.
 
 ---
 
@@ -618,11 +637,11 @@ Release-gate items block **public launch**, not isolated product development. Pr
 ### 6B — Cargo Constraints (Competitive Parity)
 | Status | Item |
 |--------|------|
-| ⬜ | Stackability per case: boolean + `maxStackCount` (wire to AutoPack — see 5A) |
-| ⬜ | `"With Like"` stacking: only same case preset ID can stack on each other |
-| ⬜ | Orientation lock: "this side up" / "any" / "on side only" |
-| ⬜ | Do-not-stack flag (hard block in AutoPack) |
-| ⬜ | Fragile flag (auto-places on top layer) |
+| 🔄 | Stackability per case: `noStackOnTop` + `maxStackCount` — **already solver-enforced; now exposed in the Case modal, shown across cards/list/Browser/Inspector, and CSV/XLSX-importable (Cargo-Rule V1, `957b5eb`/`c5e5c56`/`e9ebb8a`)**. Remaining: browser sign-off. (Raw `stackable` stays internal; `noStackOnTop` is the user-facing rule.) |
+| ⬜ | `"With Like"` stacking: only same case preset ID can stack on each other (future) |
+| 🔄 | Orientation lock: Any / Keep upright / Place on side — **modal control + canonical `onSide` + solver correctness fix shipped (Cargo-Rule V1, `c0fe57d`/`957b5eb`)**. Remaining: browser sign-off |
+| 🔄 | Do-not-stack flag (`noStackOnTop`, hard block in AutoPack) — **shipped in Cargo-Rule V1**; remaining: browser sign-off |
+| 🚫 | Fragile flag — **deferred**: not a single flag. "Auto-places on top layer" + "not buried" + higher per-item support fraction require new solver scoring/phase; must not ship a broad "Fragile" checkbox that only sets `noStackOnTop`. Future solver work. |
 | ⬜ | Allowed rotations per case (subset of 0°, 90°, 180°, 270°) |
 | ⬜ | Shipment grouping: items in same group stay together in container |
 

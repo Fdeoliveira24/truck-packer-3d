@@ -3193,6 +3193,84 @@ test('AUTO-PACK-A1-3 X anchor cap keeps front and middle anchors available', asy
     'AutoPack should keep enough X anchors for larger floor layouts');
 });
 
+test('CARGO-RULE-V1 spreadsheet handling-cell parsers normalize and warn correctly', async () => {
+  const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  // Orientation
+  assert.deepEqual(IE.parseOrientationLockCell(''), { value: 'any', warning: null });
+  assert.deepEqual(IE.parseOrientationLockCell('UPRIGHT'), { value: 'upright', warning: null });
+  assert.deepEqual(IE.parseOrientationLockCell('on-side'), { value: 'onSide', warning: null });
+  assert.deepEqual(IE.parseOrientationLockCell('on side'), { value: 'onSide', warning: null });
+  assert.equal(IE.parseOrientationLockCell('sideways').value, 'any');
+  assert.ok(IE.parseOrientationLockCell('sideways').warning, 'invalid orientation warns');
+  // Non-neg int (maxStackCount)
+  assert.deepEqual(IE.parseNonNegIntCell('', 'max'), { value: 0, warning: null });
+  assert.deepEqual(IE.parseNonNegIntCell('3', 'max'), { value: 3, warning: null });
+  assert.equal(IE.parseNonNegIntCell('-1', 'max').value, 0);
+  assert.ok(IE.parseNonNegIntCell('-1', 'max').warning, 'negative warns');
+  assert.ok(IE.parseNonNegIntCell('2.5', 'max').warning, 'non-integer warns');
+  assert.ok(IE.parseNonNegIntCell('x', 'max').warning, 'non-numeric warns');
+  // Non-neg num (maxPalletWeight)
+  assert.deepEqual(IE.parseNonNegNumCell('2000', 'load'), { value: 2000, warning: null });
+  assert.ok(IE.parseNonNegNumCell('-5', 'load').warning);
+  // Lane tri-state
+  assert.equal(IE.parseLaneCell(''), null);
+  assert.equal(IE.parseLaneCell('auto'), null);
+  assert.equal(IE.parseLaneCell('always'), true);
+  assert.equal(IE.parseLaneCell('yes'), true);
+  assert.equal(IE.parseLaneCell('never'), false);
+  assert.equal(IE.parseLaneCell('0'), false);
+  // Priority
+  assert.equal(IE.parseLoadPriorityCell('low').value, -1);
+  assert.equal(IE.parseLoadPriorityCell('high').value, 1);
+  assert.equal(IE.parseLoadPriorityCell('').value, 0);
+  assert.equal(IE.parseLoadPriorityCell('5').value, 1);
+  assert.ok(IE.parseLoadPriorityCell('bogus').warning);
+});
+
+test('CARGO-RULE-V1 CSV template columns all map through the parser (template/parser parity)', async () => {
+  const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  const template = IE.buildCasesTemplateCSV();
+  const headerLine = template.split('\n')[0];
+  const normalized = headerLine.split(',').map(h => String(h || '').toLowerCase().replace(/[^a-z0-9]+/g, ''));
+  const idx = IE.indexMap(normalized);
+  for (const f of ['name', 'length', 'width', 'height', 'weight', 'canFlip', 'orientationLock', 'noStackOnTop', 'maxStackCount', 'isPallet', 'maxPalletWeight', 'laneItem', 'loadPriority', 'notes']) {
+    assert.ok(idx[f] != null, `template column for ${f} must be recognized by the parser`);
+  }
+});
+
+test('CARGO-RULE-V1 importCaseRows carries handling fields and defaults missing ones', async () => {
+  const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  const baseRow = { name: 'Full Rules', length: 48, width: 24, height: 24, weight: 100 };
+  const withRules = IE.importCaseRows([{ ...baseRow, canFlip: false, orientationLock: 'onSide', noStackOnTop: true, maxStackCount: 2, isPallet: true, maxPalletWeight: 1500, laneItem: false, loadPriority: 1 }], []);
+  const full = withRules.nextCaseLibrary.find(c => c.name === 'Full Rules');
+  assert.equal(full.orientationLock, 'onSide');
+  assert.equal(full.noStackOnTop, true);
+  assert.equal(full.maxStackCount, 2);
+  assert.equal(full.isPallet, true);
+  assert.equal(full.maxPalletWeight, 1500);
+  assert.equal(full.laneItem, false);
+  assert.equal(full.loadPriority, 1);
+
+  const noRules = IE.importCaseRows([{ name: 'Bare', length: 48, width: 24, height: 24, weight: 10 }], []);
+  const bare = noRules.nextCaseLibrary.find(c => c.name === 'Bare');
+  assert.equal(bare.canFlip, false);
+  assert.equal(bare.orientationLock, 'any');
+  assert.equal(bare.noStackOnTop, false);
+  assert.equal(bare.maxStackCount, 0);
+  assert.equal(bare.isPallet, false);
+  assert.equal(bare.maxPalletWeight, 0);
+  assert.equal(bare.laneItem, null);
+  assert.equal(bare.loadPriority, 0);
+});
+
+test('CARGO-RULE-V1 cases import preview uses the shared handling summary', async () => {
+  const dialogPath = new URL('../../src/ui/overlays/import-cases-dialog.js', import.meta.url);
+  const src = await fs.readFile(dialogPath, 'utf8');
+  assert.match(src, /import \{ getCaseHandlingSummary \} from '\.\.\/\.\.\/services\/case-rule-summary\.js'/, 'import preview imports the shared summary');
+  assert.match(src, /getCaseHandlingSummary\(record\)/, 'import preview renders the shared summary per row');
+  assert.match(src, /'HANDLING'/, 'preview table has a Handling column');
+});
+
 test('CARGO-RULE-V1 case-rule-summary returns only active non-default rules', async () => {
   const summaryPath = new URL('../../src/services/case-rule-summary.js', import.meta.url);
   const { getCaseHandlingSummary, getInstanceHandlingSummary } = await import(`${summaryPath.href}?t=${Date.now()}-${Math.random()}`);

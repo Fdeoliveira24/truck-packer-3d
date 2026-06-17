@@ -2988,6 +2988,13 @@ tr:hover td {
   color: var(--text-secondary);
 }
 
+.tp3d-ic-td-handling {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  color: var(--text-secondary);
+}
+
 /* Row status circles — soft background + icon */
 .tp3d-ic-status-circle {
   display: inline-flex;

@@ -41,7 +41,7 @@ function normalizeHeader(s) {
     .replace(/[^a-z0-9]+/g, '');
 }
 
-function indexMap(headers) {
+export function indexMap(headers) {
   const find = candidates => {
     for (const c of candidates) {
       const idx = headers.indexOf(c);
@@ -58,6 +58,13 @@ function indexMap(headers) {
     height: find(['height', 'h']),
     weight: find(['weight', 'wt']),
     canFlip: find(['canflip', 'flippable', 'canrotate', 'flip']),
+    orientationLock: find(['orientationlock', 'orientation', 'orient']),
+    noStackOnTop: find(['nostackontop', 'notopload', 'notop', 'donotstackontop']),
+    maxStackCount: find(['maxstackcount', 'maxontop', 'maxstack']),
+    isPallet: find(['ispallet', 'pallet', 'loadbase', 'base']),
+    maxPalletWeight: find(['maxpalletweight', 'maxload', 'palletmaxweight', 'loadwarning']),
+    laneItem: find(['laneitem', 'lane', 'longitemlane']),
+    loadPriority: find(['loadpriority', 'priority', 'packingpriority']),
     notes: find(['notes', 'note', 'description', 'desc']),
     color: find(['color', 'hex', 'casecolor']),
   };
@@ -76,11 +83,61 @@ function parseBool(v) {
   return ['true', '1', 'yes', 'y', 'on'].includes(s);
 }
 
+// Handling-rule cell parsers. Each returns the canonical value; the *Warned
+// variants also return a human-readable warning string when the cell was
+// present but invalid (the value falls back to the canonical default).
+export function parseOrientationLockCell(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (!s || s === 'any') return { value: 'any', warning: null };
+  if (s === 'upright') return { value: 'upright', warning: null };
+  if (s === 'onside' || s === 'on-side' || s === 'on side') return { value: 'onSide', warning: null };
+  return { value: 'any', warning: `invalid orientation "${raw}" (used Any)` };
+}
+
+export function parseNonNegIntCell(raw, fieldLabel) {
+  const s = String(raw || '').trim();
+  if (!s) return { value: 0, warning: null };
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+    return { value: 0, warning: `invalid ${fieldLabel} "${raw}" (used 0)` };
+  }
+  return { value: n, warning: null };
+}
+
+export function parseNonNegNumCell(raw, fieldLabel) {
+  const s = String(raw || '').trim();
+  if (!s) return { value: 0, warning: null };
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 0) {
+    return { value: 0, warning: `invalid ${fieldLabel} "${raw}" (used 0)` };
+  }
+  return { value: n, warning: null };
+}
+
+export function parseLaneCell(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (!s || s === 'auto' || s === 'automatic') return null;
+  if (['always', 'true', 'yes', '1', 'y'].includes(s)) return true;
+  if (['never', 'false', 'no', '0', 'n'].includes(s)) return false;
+  return null;
+}
+
+export function parseLoadPriorityCell(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (!s || s === 'normal' || s === '0') return { value: 0, warning: null };
+  if (s === 'low' || s === '-1') return { value: -1, warning: null };
+  if (s === 'high' || s === '1') return { value: 1, warning: null };
+  const n = Number(s);
+  if (Number.isFinite(n)) return { value: n > 0 ? 1 : n < 0 ? -1 : 0, warning: null };
+  return { value: 0, warning: `invalid priority "${raw}" (used Normal)` };
+}
+
 export function buildCasesTemplateCSV() {
   return [
-    'name,manufacturer,category,length,width,height,weight,canFlip,notes',
-    'Line Array Case,L-Acoustics,audio,48,24,32,125,false,',
-    'Truss Section,Global Truss,lighting,120,12,12,45,true,',
+    'name,manufacturer,category,length,width,height,weight,canFlip,orientationLock,noStackOnTop,maxStackCount,isPallet,maxPalletWeight,laneItem,loadPriority,notes',
+    'Line Array Case,L-Acoustics,audio,48,24,32,125,false,upright,true,0,false,0,auto,normal,',
+    'Truss Section,Global Truss,lighting,120,12,12,45,true,any,false,0,false,0,always,normal,',
+    'Equipment Pallet,Generic,default,48,40,6,60,false,any,false,0,true,2000,never,low,',
   ].join('\n');
 }
 
@@ -140,6 +197,7 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
   );
   const seenNames = new Set(existingNames);
   const errors = [];
+  const warnings = []; // additive: non-blocking handling-rule cell warnings
   const duplicates = [];
   const valid = [];
   const invalidRows = []; // additive: [{rowNum, record, reasons}]
@@ -149,6 +207,10 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
     const row = rows[r];
     if (!row || row.every(v => String(v || '').trim() === '')) continue;
     const rowNum = r + 1;
+    const orientationParsed = parseOrientationLockCell(getField(row, idx.orientationLock));
+    const maxStackParsed = parseNonNegIntCell(getField(row, idx.maxStackCount), 'max items on top');
+    const palletWeightParsed = parseNonNegNumCell(getField(row, idx.maxPalletWeight), 'max load');
+    const priorityParsed = parseLoadPriorityCell(getField(row, idx.loadPriority));
     const record = {
       name: String(getField(row, idx.name)).trim(),
       manufacturer: String(getField(row, idx.manufacturer)).trim(),
@@ -157,10 +219,22 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
       width: Number(getField(row, idx.width)),
       height: Number(getField(row, idx.height)),
       weight: Number(getField(row, idx.weight)),
-      canFlip: parseBool(getField(row, idx.canFlip)),
+      // Handling rules (Cargo-Rule V1). canFlip only meaningful when policy is 'any'.
+      canFlip: orientationParsed.value === 'any' && parseBool(getField(row, idx.canFlip)),
+      orientationLock: orientationParsed.value,
+      noStackOnTop: parseBool(getField(row, idx.noStackOnTop)),
+      maxStackCount: maxStackParsed.value,
+      isPallet: parseBool(getField(row, idx.isPallet)),
+      maxPalletWeight: palletWeightParsed.value,
+      laneItem: parseLaneCell(getField(row, idx.laneItem)),
+      loadPriority: priorityParsed.value,
       notes: String(getField(row, idx.notes)).trim(),
       color: String(getField(row, idx.color)).trim(),
     };
+
+    [orientationParsed.warning, maxStackParsed.warning, palletWeightParsed.warning, priorityParsed.warning]
+      .filter(Boolean)
+      .forEach(w => warnings.push(`Row ${rowNum}: ${w}`));
 
     const rowErrors = [];
     if (!record.name) rowErrors.push(`Row ${rowNum}: Missing required field 'name'`);
@@ -190,7 +264,7 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
     valid.push(record);
   }
 
-  return { valid, errors, duplicates, invalidRows, duplicateRows };
+  return { valid, errors, warnings, duplicates, invalidRows, duplicateRows };
 }
 
 export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
@@ -234,6 +308,14 @@ export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
         height,
       }),
       canFlip: Boolean(r.canFlip),
+      // Handling rules (carried from the parsed/validated record; defaults when absent).
+      orientationLock: r.orientationLock || 'any',
+      noStackOnTop: Boolean(r.noStackOnTop),
+      maxStackCount: Math.max(0, parseInt(r.maxStackCount, 10) || 0),
+      isPallet: Boolean(r.isPallet),
+      maxPalletWeight: Math.max(0, Number(r.maxPalletWeight) || 0),
+      laneItem: r.laneItem === true ? true : r.laneItem === false ? false : null,
+      loadPriority: Number(r.loadPriority) || 0,
       notes: String(r.notes || '').trim(),
       color: String(r.color || '').trim() || null,
       createdAt: now,

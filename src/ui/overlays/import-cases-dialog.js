@@ -16,6 +16,7 @@
 // helper does not support.
 
 import * as Defaults from '../../core/defaults.js';
+import { getCaseHandlingSummary } from '../../services/case-rule-summary.js';
 
 /**
  * @param {{
@@ -112,6 +113,13 @@ export function createImportCasesDialog({
       { label: 'Category', required: false },
       { label: 'Weight', required: false },
       { label: 'Flip', required: false },
+      { label: 'orientationLock', required: false },
+      { label: 'noStackOnTop', required: false },
+      { label: 'maxStackCount', required: false },
+      { label: 'isPallet', required: false },
+      { label: 'maxPalletWeight', required: false },
+      { label: 'laneItem', required: false },
+      { label: 'loadPriority', required: false },
       { label: 'Notes', required: false },
     ].forEach(col => {
       const chip = doc.createElement('span');
@@ -281,7 +289,7 @@ export function createImportCasesDialog({
 
     const thead = doc.createElement('thead');
     const headRow = doc.createElement('tr');
-    ['', 'NAME', 'L × W × H', 'WEIGHT', 'CATEGORY'].forEach(col => {
+    ['', 'NAME', 'L × W × H', 'WEIGHT', 'CATEGORY', 'HANDLING'].forEach(col => {
       const th = doc.createElement('th');
       th.textContent = col;
       headRow.appendChild(th);
@@ -396,7 +404,8 @@ export function createImportCasesDialog({
         return;
       }
       const invalidCount = parsedResult.errors ? parsedResult.errors.length : 0;
-      if (invalidCount > 0) {
+      const warnCount = parsedResult.warnings ? parsedResult.warnings.length : 0;
+      if (invalidCount > 0 || warnCount > 0) {
         footerNote.style.display = 'none';
         errReportBtn.style.display = '';
         // Build button content safely
@@ -404,7 +413,9 @@ export function createImportCasesDialog({
         const icon = doc.createElement('i');
         icon.className = 'fa-solid fa-download';
         errReportBtn.appendChild(icon);
-        errReportBtn.appendChild(doc.createTextNode(' Error report (' + invalidCount + ')'));
+        const total = invalidCount + warnCount;
+        const reportLabel = invalidCount > 0 ? ' Error report (' + total + ')' : ' Warnings (' + warnCount + ')';
+        errReportBtn.appendChild(doc.createTextNode(reportLabel));
       } else {
         footerNote.style.display = 'none';
         errReportBtn.style.display = 'none';
@@ -541,11 +552,27 @@ export function createImportCasesDialog({
         catTd.appendChild(catDot);
         catTd.appendChild(doc.createTextNode(catName.charAt(0).toUpperCase() + catName.slice(1)));
 
+        // Handling cell — active non-default rules via the shared summary source.
+        const handlingTd = doc.createElement('td');
+        handlingTd.className = 'tp3d-ic-td-handling';
+        const handlingSummary = getCaseHandlingSummary(record);
+        if (handlingSummary.length === 0) {
+          handlingTd.textContent = '—';
+        } else {
+          handlingSummary.forEach(label => {
+            const chip = doc.createElement('span');
+            chip.className = 'badge tp3d-handling-chip';
+            chip.textContent = label;
+            handlingTd.appendChild(chip);
+          });
+        }
+
         tr.appendChild(statusTd);
         tr.appendChild(nameTd);
         tr.appendChild(dimTd);
         tr.appendChild(wtTd);
         tr.appendChild(catTd);
+        tr.appendChild(handlingTd);
         tbody.appendChild(tr);
       });
     }
@@ -599,6 +626,11 @@ export function createImportCasesDialog({
       if (parsedResult.duplicates && parsedResult.duplicates.length) {
         lines.push('DUPLICATES');
         parsedResult.duplicates.forEach(e => lines.push(e));
+        lines.push('');
+      }
+      if (parsedResult.warnings && parsedResult.warnings.length) {
+        lines.push('HANDLING-RULE WARNINGS (row still imported with default)');
+        parsedResult.warnings.forEach(e => lines.push(e));
         lines.push('');
       }
       Utils.downloadText('import_errors.txt', lines.join('\n'), 'text/plain');

@@ -3193,6 +3193,77 @@ test('AUTO-PACK-A1-3 X anchor cap keeps front and middle anchors available', asy
     'AutoPack should keep enough X anchors for larger floor layouts');
 });
 
+const HANDLING_FIELDS = ['canFlip', 'orientationLock', 'noStackOnTop', 'maxStackCount', 'isPallet', 'maxPalletWeight', 'laneItem', 'loadPriority'];
+const RULED_CASE = {
+  id: 'rt-case', name: 'Ruled Case', category: 'default',
+  dimensions: { length: 36, width: 24, height: 18 }, weight: 120,
+  canFlip: false, orientationLock: 'onSide', noStackOnTop: true, stackable: false,
+  maxStackCount: 3, isPallet: true, maxPalletWeight: 1800, laneItem: false, loadPriority: 1,
+};
+
+test('CARGO-RULE-V1 pack JSON export -> import round-trips all handling rules', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  StateStore.init({
+    caseLibrary: [{ ...RULED_CASE }],
+    packLibrary: [{ id: 'rt-pack', title: 'RT', truck: { length: 240, width: 96, height: 96 }, cases: [{ id: 'i1', caseId: 'rt-case', transform: { position: { x: 20, y: 9, z: 0 } } }] }],
+    folderLibrary: [], preferences: {},
+  });
+  const pack = (StateStore.get('packLibrary') || [])[0];
+  const json = IE.buildPackExportJSON(pack);
+
+  // Wipe local data, then import the exported pack into an empty workspace.
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  PackLibrary.importPackPayload(IE.parsePackImportJSON(json));
+
+  const lib = StateStore.get('caseLibrary') || [];
+  const restored = lib.find(c => c.name === 'Ruled Case');
+  assert.ok(restored, 'case restored from pack export');
+  for (const f of HANDLING_FIELDS) {
+    assert.deepEqual(restored[f], RULED_CASE[f], `pack round-trip preserves ${f}`);
+  }
+  assert.equal(restored.stackable, false, 'pack round-trip preserves stackable');
+});
+
+test('CARGO-RULE-V1 normalizeAppData (reload/import) preserves all handling rules', async () => {
+  const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const out = Normalizer.normalizeAppData({
+    caseLibrary: [{ ...RULED_CASE }],
+    packLibrary: [],
+    folderLibrary: [],
+  });
+  const c = (out.caseLibrary || []).find(x => x.id === 'rt-case');
+  assert.ok(c, 'case survives normalizeAppData');
+  for (const f of HANDLING_FIELDS) {
+    assert.deepEqual(c[f], RULED_CASE[f], `normalizeAppData preserves ${f}`);
+  }
+});
+
+test('CARGO-RULE-V1 export/download action chains reach the right builder and sanitize filenames', async () => {
+  const casesSrc = await fs.readFile(casesScreenPath, 'utf8');
+  const packsSrc = await fs.readFile(packsScreenPath, 'utf8');
+  // Cases template
+  assert.match(casesSrc, /ImportExport\.downloadCasesTemplate\(\)/, 'cases template button calls downloadCasesTemplate');
+  // Pack export -> builder -> downloadText with sanitized filename
+  assert.match(packsSrc, /ImportExport\.buildPackExportJSON\(pack\)/, 'pack export uses buildPackExportJSON');
+  assert.match(packsSrc, /Utils\.downloadText\(`\$\{\(pack\.title \|\| 'pack'\)\.replace\(\/\[\^a-z0-9\]\+\/gi, '-'\)\}\.json`/, 'pack export filename is sanitized');
+});
+
+test('CARGO-RULE-V1 workspace import is not exposed; pack-batch guard wording is truthful', async () => {
+  const ieSrc = await fs.readFile(importExportPath, 'utf8');
+  // parseWorkspaceImportJSON exists as groundwork but must have no production caller.
+  const callers = [];
+  for (const p of ['../../src/app.js', '../../src/ui/overlays/import-pack-dialog.js', '../../src/ui/overlays/import-app-dialog.js', '../../src/ui/overlays/settings-overlay.js']) {
+    const s = await fs.readFile(new URL(p, import.meta.url), 'utf8');
+    if (/parseWorkspaceImportJSON/.test(s)) callers.push(p);
+  }
+  assert.equal(callers.length, 0, 'workspace import parser must not be wired to any UI yet');
+  assert.ok(!/Use Import Workspace Backup instead/.test(ieSrc), 'must not point users at a missing Import Workspace Backup action');
+  assert.match(ieSrc, /Workspace import is not available yet/, 'guard wording must be truthful about missing workspace import');
+});
+
 test('CARGO-RULE-V1 spreadsheet handling-cell parsers normalize and warn correctly', async () => {
   const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
   // Orientation

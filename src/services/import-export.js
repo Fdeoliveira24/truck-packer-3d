@@ -363,9 +363,10 @@ export function parsePackBatchImportJSON(jsonText) {
   if (Array.isArray(parsed.packLibrary) || Array.isArray(parsed.caseLibrary) || parsed.preferences) {
     throw new Error('This looks like App JSON. Use Import App Backup instead.');
   }
-  // Guard: reject Workspace JSON.
+  // Guard: reject Workspace JSON. Workspace import is not available yet — only
+  // workspace export exists today, so do not point users at a missing action.
   if (parsed.exportType === 'workspace') {
-    throw new Error('This is a Workspace export. Use Import Workspace Backup instead.');
+    throw new Error('This is a Workspace export. Workspace import is not available yet — use a Pack or App Backup file.');
   }
   if (parsed.exportType !== 'pack-batch') {
     throw new Error('Not a pack batch export. Expected exportType "pack-batch".');

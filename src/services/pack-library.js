@@ -914,6 +914,47 @@ export function computeStats(pack, caseLibraryOverride) {
   };
 }
 
+// Cargo-defining fields used to decide whether a bundled imported case is
+// equivalent to a local case. Transient fields (ids, timestamps, runtime
+// state, instance transforms) are intentionally excluded.
+function normalizeOrientationLockValue(v) {
+  const s = String(v == null ? 'any' : v).trim().toLowerCase();
+  if (s === 'upright') return 'upright';
+  if (s === 'onside' || s === 'on-side' || s === 'on side') return 'onside';
+  return 'any';
+}
+
+function laneTriStateValue(v) {
+  return v === true ? true : v === false ? false : null;
+}
+
+function cargoRulesEquivalent(a, b) {
+  if (!a || !b) return false;
+  const n = x => Number(x) || 0;
+  const s = x => String(x == null ? '' : x).trim().toLowerCase();
+  const ad = a.dimensions || {};
+  const bd = b.dimensions || {};
+  return (
+    s(a.name) === s(b.name) &&
+    s(a.manufacturer) === s(b.manufacturer) &&
+    s(a.category) === s(b.category) &&
+    n(ad.length) === n(bd.length) &&
+    n(ad.width) === n(bd.width) &&
+    n(ad.height) === n(bd.height) &&
+    n(a.weight) === n(b.weight) &&
+    Boolean(a.canFlip) === Boolean(b.canFlip) &&
+    normalizeOrientationLockValue(a.orientationLock) === normalizeOrientationLockValue(b.orientationLock) &&
+    Boolean(a.noStackOnTop) === Boolean(b.noStackOnTop) &&
+    (a.stackable !== false) === (b.stackable !== false) &&
+    n(a.maxStackCount) === n(b.maxStackCount) &&
+    Boolean(a.isPallet) === Boolean(b.isPallet) &&
+    n(a.maxPalletWeight) === n(b.maxPalletWeight) &&
+    laneTriStateValue(a.laneItem) === laneTriStateValue(b.laneItem) &&
+    n(a.loadPriority) === n(b.loadPriority) &&
+    s(a.shape || 'box') === s(b.shape || 'box')
+  );
+}
+
 export function importPackPayload(payload) {
   const now = Date.now();
   const incomingPack = payload && payload.pack;
@@ -935,28 +976,79 @@ export function importPackPayload(payload) {
     ])
   );
   const caseIdMap = new Map();
+  const caseConflicts = [];
 
-  bundled.forEach(c => {
-    if (!c || !c.id) return;
-    const nameKey = String(c.name || '')
-      .trim()
-      .toLowerCase();
-    if (caseById.has(c.id)) {
-      caseIdMap.set(c.id, c.id);
-      return;
+  const makeUniqueImportedName = name => {
+    const base = String(name || 'Imported Case').trim() || 'Imported Case';
+    let candidate = `${base} (Imported)`;
+    let n = 2;
+    while (caseByName.has(candidate.trim().toLowerCase())) {
+      candidate = `${base} (Imported ${n})`;
+      n += 1;
     }
-    if (nameKey && caseByName.has(nameKey)) {
-      caseIdMap.set(c.id, caseByName.get(nameKey).id);
-      return;
-    }
+    return candidate;
+  };
+
+  // Adopt a bundled case as a new local case. On a cargo conflict, regenerate
+  // the id and give a unique "(Imported)" name so the imported pack keeps its
+  // intended behavior and the existing local case is never overwritten. With
+  // no conflict the imported id is preserved so re-importing the same pack is
+  // idempotent (it will match by id next time).
+  const adoptNewCase = (c, conflictKind) => {
     const copy = Utils.deepClone(c);
+    if (conflictKind) {
+      copy.id = Utils.uuid();
+      copy.name = makeUniqueImportedName(c.name);
+    } else {
+      copy.id = c.id;
+    }
     copy.createdAt = copy.createdAt || now;
     copy.updatedAt = now;
     copy.volume = copy.volume || Utils.volumeInCubicInches(copy.dimensions || { length: 0, width: 0, height: 0 });
     CaseLibrary.upsert(copy);
     caseIdMap.set(c.id, copy.id);
     caseById.set(copy.id, copy);
-    if (nameKey) caseByName.set(nameKey, copy);
+    const newNameKey = String(copy.name || '').trim().toLowerCase();
+    if (newNameKey) caseByName.set(newNameKey, copy);
+    if (conflictKind) {
+      caseConflicts.push({
+        kind: conflictKind,
+        importedId: c.id,
+        importedName: String(c.name || ''),
+        newId: copy.id,
+        newName: copy.name,
+      });
+    }
+    return copy;
+  };
+
+  bundled.forEach(c => {
+    if (!c || !c.id) return;
+    const nameKey = String(c.name || '')
+      .trim()
+      .toLowerCase();
+    const localById = caseById.get(c.id);
+    if (localById) {
+      // Same id: reuse only when the cargo definition is equivalent.
+      if (cargoRulesEquivalent(localById, c)) {
+        caseIdMap.set(c.id, c.id);
+      } else {
+        adoptNewCase(c, 'id-conflict');
+      }
+      return;
+    }
+    const localByName = nameKey ? caseByName.get(nameKey) : null;
+    if (localByName) {
+      // Same name, different id: reuse only when the cargo definition matches.
+      if (cargoRulesEquivalent(localByName, c)) {
+        caseIdMap.set(c.id, localByName.id);
+      } else {
+        adoptNewCase(c, 'name-conflict');
+      }
+      return;
+    }
+    // No id or name match: adopt as a new local case, preserving the imported id.
+    adoptNewCase(c, null);
   });
 
   const pack = Utils.deepClone(incomingPack);
@@ -988,6 +1080,14 @@ export function importPackPayload(payload) {
     },
     { skipHistory: false }
   );
+
+  // Surface case conflicts to the import UI without persisting them on the pack
+  // (non-enumerable so JSON serialization to storage ignores it).
+  Object.defineProperty(pack, 'caseConflicts', {
+    value: caseConflicts,
+    enumerable: false,
+    configurable: true,
+  });
 
   return pack;
 }

@@ -1057,8 +1057,14 @@ export function createImportPackDialog({
 
       if (parsedPayload.type === 'single') {
         try {
-          PackLibrary.importPackPayload(parsedPayload.payload);
-          UIComponents.showToast('Pack imported successfully', 'success');
+          const result = PackLibrary.importPackPayload(parsedPayload.payload);
+          const renamed = result && Array.isArray(result.caseConflicts) ? result.caseConflicts.length : 0;
+          UIComponents.showToast(
+            renamed > 0
+              ? `Pack imported · ${renamed} case${renamed !== 1 ? 's' : ''} renamed to keep different local cargo`
+              : 'Pack imported successfully',
+            'success'
+          );
           modalObj.close();
         } catch (err) {
           UIComponents.showToast('Import failed: ' + (err && err.message), 'error');
@@ -1069,17 +1075,22 @@ export function createImportPackDialog({
       // Batch
       let imported = 0;
       let skipped = 0;
+      let renamedTotal = 0;
       (parsedPayload.payloads || []).forEach(payload => {
         try {
-          PackLibrary.importPackPayload(payload);
+          const result = PackLibrary.importPackPayload(payload);
+          if (result && Array.isArray(result.caseConflicts)) renamedTotal += result.caseConflicts.length;
           imported++;
         } catch {
           skipped++;
         }
       });
-      const msg = skipped > 0
+      let msg = skipped > 0
         ? 'Imported ' + imported + ' pack' + (imported !== 1 ? 's' : '') + ' · ' + skipped + ' skipped'
         : 'Imported ' + imported + ' pack' + (imported !== 1 ? 's' : '');
+      if (renamedTotal > 0) {
+        msg += ' · ' + renamedTotal + ' case' + (renamedTotal !== 1 ? 's' : '') + ' renamed';
+      }
       UIComponents.showToast(msg, imported > 0 ? 'success' : 'warning');
       if (imported > 0) {
         modalObj.close();

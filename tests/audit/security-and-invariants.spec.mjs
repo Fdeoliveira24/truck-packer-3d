@@ -1306,10 +1306,11 @@ test('PACK-IMPORT-SAFE-1 duplicate pack id is regenerated, title is suffixed, an
   const StateStore = await import(stateStorePath.href);
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
 
+  // Local case uses the helper's default cargo so the bundled cases below are
+  // cargo-equivalent and may be safely reused (CARGO-RULE-V1 import-integrity).
   const existingCase = makePackImportSafeCase({
     id: 'case-existing',
     name: 'Shared Case Name',
-    dimensions: { length: 12, width: 10, height: 8 },
   });
 
   StateStore.init({
@@ -1351,6 +1352,85 @@ test('PACK-IMPORT-SAFE-1 duplicate pack id is regenerated, title is suffixed, an
     'Imported pack title must be suffixed with (Imported)');
   assert.ok(importedPack.cases.every(inst => inst.caseId === 'case-existing'),
     'Imported instances should reuse existing case ids for duplicate bundled definitions');
+});
+
+test('CARGO-RULE-V1 pack import creates a renamed case on cargo conflict, remaps instances, leaves local unchanged', async () => {
+  const StateStore = await import(stateStorePath.href);
+
+  // Each scenario: a local case, and a bundled case that matches by name or id
+  // but differs in one cargo-defining field. Each must NOT reuse the local case.
+  const scenarios = [
+    { label: 'different dimensions (same name)', local: { id: 'L1', name: 'Box A' }, bundled: { id: 'B1', name: 'Box A', dimensions: { length: 99, width: 10, height: 10 } } },
+    { label: 'different canFlip (same name)', local: { id: 'L2', name: 'Box B', canFlip: true }, bundled: { id: 'B2', name: 'Box B', canFlip: false } },
+    { label: 'different orientationLock (same name)', local: { id: 'L3', name: 'Box C' }, bundled: { id: 'B3', name: 'Box C', orientationLock: 'upright' } },
+    { label: 'different stacking rule (same name)', local: { id: 'L4', name: 'Box D' }, bundled: { id: 'B4', name: 'Box D', noStackOnTop: true } },
+    { label: 'same id, different cargo', local: { id: 'SAME', name: 'Box E' }, bundled: { id: 'SAME', name: 'Box E', weight: 777 } },
+  ];
+
+  for (const sc of scenarios) {
+    const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+    const localCase = makePackImportSafeCase(sc.local);
+    StateStore.init({ caseLibrary: [localCase], packLibrary: [], folderLibrary: [], preferences: {} });
+
+    const bundledCase = makePackImportSafeCase(sc.bundled);
+    const result = PackLibrary.importPackPayload({
+      pack: {
+        id: 'p1', title: 'Conflict Pack', truck: { length: 120, width: 60, height: 60 },
+        cases: [makePackImportInstance(sc.bundled.id, { id: 'inst-x', transform: { position: { x: 10, y: 5, z: 0 } } })],
+      },
+      bundledCases: [bundledCase],
+    });
+
+    const lib = StateStore.get('caseLibrary') || [];
+    assert.equal(lib.length, 2, `${sc.label}: a new local case must be created, not reused`);
+    const original = lib.find(c => c.id === sc.local.id);
+    assert.ok(original, `${sc.label}: original local case must still exist`);
+    assert.equal(Number(original.dimensions.length), Number(localCase.dimensions.length), `${sc.label}: original local case must be unchanged`);
+    assert.equal(Number(original.weight), Number(localCase.weight), `${sc.label}: original local weight unchanged`);
+    const newCase = lib.find(c => c.id !== sc.local.id);
+    assert.ok(newCase, `${sc.label}: a distinct new case id must be created`);
+    assert.match(String(newCase.name), /\(Imported/, `${sc.label}: conflicting case must get an (Imported) name suffix`);
+    assert.equal(result.cases[0].caseId, newCase.id, `${sc.label}: imported instance must remap to the new case id`);
+    assert.equal(result.caseConflicts.length, 1, `${sc.label}: one conflict must be reported`);
+  }
+});
+
+test('CARGO-RULE-V1 re-importing the same exported pack reuses cases (idempotent, no duplicate growth)', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+
+  const bundled = [makePackImportSafeCase({ id: 'cc-1', name: 'Roundtrip Case', noStackOnTop: true, maxStackCount: 2, orientationLock: 'upright' })];
+  const payload = () => ({
+    pack: { id: 'rp', title: 'RT', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('cc-1', { id: 'i1', transform: { position: { x: 10, y: 5, z: 0 } } })] },
+    bundledCases: bundled.map(c => ({ ...c })),
+  });
+
+  PackLibrary.importPackPayload(payload());
+  assert.equal((StateStore.get('caseLibrary') || []).length, 1, 'first import creates the case');
+  const second = PackLibrary.importPackPayload(payload());
+  assert.equal((StateStore.get('caseLibrary') || []).length, 1, 'second import of the same pack reuses the case (no duplicate)');
+  assert.equal(second.caseConflicts.length, 0, 'equivalent re-import reports no conflict');
+  assert.equal(second.cases[0].caseId, 'cc-1', 'instance still references the original case id');
+});
+
+test('CARGO-RULE-V1 batch pack import applies the same cargo-conflict rule', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const localCase = makePackImportSafeCase({ id: 'bb-1', name: 'Batch Case' });
+  StateStore.init({ caseLibrary: [localCase], packLibrary: [], folderLibrary: [], preferences: {} });
+
+  // Two packs: one equivalent (reuse), one conflicting (new renamed case).
+  const equivalent = { pack: { id: 'bp1', title: 'Eq', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('bb-1', { id: 'be1', transform: { position: { x: 10, y: 5, z: 0 } } })] }, bundledCases: [makePackImportSafeCase({ id: 'bb-1', name: 'Batch Case' })] };
+  const conflicting = { pack: { id: 'bp2', title: 'Cf', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('bb-2', { id: 'be2', transform: { position: { x: 10, y: 5, z: 0 } } })] }, bundledCases: [makePackImportSafeCase({ id: 'bb-2', name: 'Batch Case', weight: 555 })] };
+
+  const r1 = PackLibrary.importPackPayload(equivalent);
+  assert.equal(r1.caseConflicts.length, 0, 'equivalent batch entry reuses local case');
+  const r2 = PackLibrary.importPackPayload(conflicting);
+  assert.equal(r2.caseConflicts.length, 1, 'conflicting batch entry creates a renamed case');
+  const lib = StateStore.get('caseLibrary') || [];
+  assert.equal(lib.length, 2, 'batch import adds exactly one new case for the conflict');
+  assert.equal(r2.cases[0].caseId, r2.caseConflicts[0].newId, 'conflicting instance remaps to the new case');
 });
 
 test('PACK-IMPORT-SAFE-1 invalid imported transforms are staged without overlap outside the truck', async () => {

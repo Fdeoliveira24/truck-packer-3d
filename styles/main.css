@@ -4091,6 +4091,26 @@ body.modal-open {
   margin-top: 2px;
 }
 
+.tp3d-handling-chip {
+  font-size: var(--text-xs);
+}
+
+.tp3d-handling-chip-instance {
+  border: 1px dashed var(--border, #d1d5db);
+}
+
+.tp3d-editor-handling-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tp3d-editor-handling-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
 .tp3d-textarea-minh-60 {
   min-height: 60px;
 }

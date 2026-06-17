@@ -3193,6 +3193,45 @@ test('AUTO-PACK-A1-3 X anchor cap keeps front and middle anchors available', asy
     'AutoPack should keep enough X anchors for larger floor layouts');
 });
 
+test('CARGO-RULE-V1 case-rule-summary returns only active non-default rules', async () => {
+  const summaryPath = new URL('../../src/services/case-rule-summary.js', import.meta.url);
+  const { getCaseHandlingSummary, getInstanceHandlingSummary } = await import(`${summaryPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  // Defaults → nothing shown
+  assert.deepEqual(getCaseHandlingSummary({ orientationLock: 'any', canFlip: false, noStackOnTop: false, maxStackCount: 0, isPallet: false, laneItem: null, loadPriority: 0 }), []);
+  // Each active rule
+  assert.deepEqual(getCaseHandlingSummary({ orientationLock: 'upright' }), ['Upright']);
+  assert.deepEqual(getCaseHandlingSummary({ orientationLock: 'onSide' }), ['On side']);
+  assert.deepEqual(getCaseHandlingSummary({ orientationLock: 'any', canFlip: true }), ['Flipping allowed']);
+  assert.deepEqual(getCaseHandlingSummary({ orientationLock: 'upright', canFlip: true }), ['Upright'], 'canFlip not shown when policy is not any');
+  assert.deepEqual(getCaseHandlingSummary({ noStackOnTop: true }), ['No top load']);
+  assert.deepEqual(getCaseHandlingSummary({ stackable: false }), ['No top load']);
+  assert.deepEqual(getCaseHandlingSummary({ maxStackCount: 2 }), ['Max 2 on top']);
+  assert.deepEqual(getCaseHandlingSummary({ isPallet: true }), ['Pallet base']);
+  assert.deepEqual(getCaseHandlingSummary({ isPallet: true, maxPalletWeight: 2000 }), ['Pallet base', 'Max load warning: 2,000 lb']);
+  assert.deepEqual(getCaseHandlingSummary({ maxPalletWeight: 2000 }), [], 'pallet warning only shown for pallets');
+  assert.deepEqual(getCaseHandlingSummary({ laneItem: true }), ['Lane: Always']);
+  assert.deepEqual(getCaseHandlingSummary({ laneItem: false }), ['Lane: Never']);
+  assert.deepEqual(getCaseHandlingSummary({ loadPriority: 1 }), ['Priority: High']);
+  assert.deepEqual(getCaseHandlingSummary({ loadPriority: -1 }), ['Priority: Low']);
+  // Instance lock shown separately
+  assert.deepEqual(getInstanceHandlingSummary({ orientationLocked: true }), ['Orientation locked (this item)']);
+  assert.deepEqual(getInstanceHandlingSummary({ orientationLocked: false }), []);
+});
+
+test('CARGO-RULE-V1 all case surfaces use the shared rule-summary source', async () => {
+  const casesSrc = await fs.readFile(casesScreenPath, 'utf8');
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  assert.match(casesSrc, /import \{ getCaseHandlingSummary \} from '\.\.\/services\/case-rule-summary\.js'/, 'cases screen imports the shared summary');
+  assert.match(casesSrc, /getCaseHandlingSummary\(c\)/, 'cases screen renders the shared summary (cards + list)');
+  assert.match(editorSrc, /import \{ getCaseHandlingSummary, getInstanceHandlingSummary \} from '\.\.\/services\/case-rule-summary\.js'/, 'editor imports the shared summary');
+  assert.match(editorSrc, /getCaseHandlingSummary\(c\)/, 'editor case browser uses the shared summary');
+  assert.match(editorSrc, /getCaseHandlingSummary\(caseData\)/, 'inspector uses the shared summary');
+  // 3D pallet label is warning-worded, not an enforced cap
+  assert.match(editorSrc, /Warning limit: \$\{caseData\.maxPalletWeight\} lb/, '3D pallet label must read as a warning limit');
+  assert.ok(!/`Max: \$\{caseData\.maxPalletWeight\} lb`/.test(editorSrc), 'must not show the old enforced-looking "Max: X lb" label');
+});
+
 test('CARGO-RULE-V1 canonicalOrientationLock maps all accepted spellings', async () => {
   const Modal = await import(`${caseModalPath.href}?t=${Date.now()}-${Math.random()}`);
   assert.equal(Modal.canonicalOrientationLock('upright'), 'upright');

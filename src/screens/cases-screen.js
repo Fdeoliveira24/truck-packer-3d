@@ -14,6 +14,7 @@
 // Cases screen (extracted from src/app.js; behavior preserved)
 
 import { openCaseModal as openSharedCaseModal } from '../ui/overlays/case-modal.js';
+import { getCaseHandlingSummary } from '../services/case-rule-summary.js';
 
 export function createCasesScreen({
   Utils,
@@ -462,6 +463,14 @@ export function createCasesScreen({
           badgesWrap.appendChild(edited);
         }
 
+        // Active non-default AutoPack handling rules (shared single source).
+        getCaseHandlingSummary(c).forEach(label => {
+          const ruleChip = document.createElement('div');
+          ruleChip.className = 'badge tp3d-handling-chip';
+          ruleChip.textContent = label;
+          badgesWrap.appendChild(ruleChip);
+        });
+
         const selectCb = document.createElement('input');
         selectCb.type = 'checkbox';
         selectCb.checked = selectedIds.has(c.id);
@@ -729,8 +738,17 @@ export function createCasesScreen({
         tr.appendChild(tdCat);
 
         const tdFlip = document.createElement('td');
-        const flipLabel = c.canFlip === true ? 'Yes' : c.canFlip === false ? 'No' : '';
-        tdFlip.textContent = flipLabel;
+        const handlingSummary = getCaseHandlingSummary(c);
+        if (handlingSummary.length === 0) {
+          tdFlip.textContent = '—';
+        } else {
+          handlingSummary.forEach(label => {
+            const ruleChip = document.createElement('span');
+            ruleChip.className = 'badge tp3d-handling-chip';
+            ruleChip.textContent = label;
+            tdFlip.appendChild(ruleChip);
+          });
+        }
         if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showFlip === false) {
           tdFlip.style.display = 'none';
         }

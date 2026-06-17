@@ -14,6 +14,7 @@
 import { createCaseGeometry } from '../editor/geometry-factory.js';
 import { openCaseModal as openSharedCaseModal } from '../ui/overlays/case-modal.js';
 import { MIN_SUPPORT_FRACTION } from '../services/pack-library.js';
+import { getCaseHandlingSummary, getInstanceHandlingSummary } from '../services/case-rule-summary.js';
 
 // Editor screen + 3D interaction helpers (extracted from src/app.js; behavior preserved)
 
@@ -143,8 +144,8 @@ export function createCaseScene({
           ctx.fillText('⇧⇧', w / 2, h * 0.8);
         }
         if (isPallet && caseData.maxPalletWeight > 0) {
-          ctx.font = `${Math.floor(h * 0.07)}px Arial, sans-serif`;
-          ctx.fillText(`Max: ${caseData.maxPalletWeight} lb`, w / 2, h * 0.8);
+          ctx.font = `${Math.floor(h * 0.06)}px Arial, sans-serif`;
+          ctx.fillText(`Warning limit: ${caseData.maxPalletWeight} lb`, w / 2, h * 0.8);
         }
       }
       const tex = new THREE.CanvasTexture(canvas);
@@ -1966,8 +1967,7 @@ export function createEditorScreen({
       catDot.className = 'chip-dot';
       catDot.style.background = catMeta.color;
       catInline.appendChild(catDot);
-      const meta2Parts = [catMeta.name];
-      if (c.canFlip) meta2Parts.push('Flippable');
+      const meta2Parts = [catMeta.name, ...getCaseHandlingSummary(c)];
       catInline.appendChild(document.createTextNode(meta2Parts.join(' · ')));
       meta2.appendChild(catInline);
 
@@ -3054,6 +3054,40 @@ export function createEditorScreen({
       header.appendChild(sub);
       card.appendChild(header);
       card.appendChild(makeMiniCategoryChip(caseData.category));
+
+      // Handling rules: case-level policy and this-instance lock, shown separately.
+      const caseRules = getCaseHandlingSummary(caseData);
+      const instRules = getInstanceHandlingSummary(inst);
+      if (caseRules.length || instRules.length) {
+        const rulesWrap = document.createElement('div');
+        rulesWrap.className = 'tp3d-editor-handling-rules';
+        const addChips = (labels, extraClass) => {
+          const chips = document.createElement('div');
+          chips.className = 'tp3d-editor-handling-chips';
+          labels.forEach(label => {
+            const chip = document.createElement('span');
+            chip.className = 'badge tp3d-handling-chip' + (extraClass ? ' ' + extraClass : '');
+            chip.textContent = label;
+            chips.appendChild(chip);
+          });
+          rulesWrap.appendChild(chips);
+        };
+        if (caseRules.length) {
+          const lbl = document.createElement('div');
+          lbl.className = 'muted tp3d-editor-sub-sm';
+          lbl.textContent = 'Handling rules (case)';
+          rulesWrap.appendChild(lbl);
+          addChips(caseRules);
+        }
+        if (instRules.length) {
+          const lbl2 = document.createElement('div');
+          lbl2.className = 'muted tp3d-editor-sub-sm';
+          lbl2.textContent = 'This item';
+          rulesWrap.appendChild(lbl2);
+          addChips(instRules, 'tp3d-handling-chip-instance');
+        }
+        card.appendChild(rulesWrap);
+      }
 
       inspectorEl.appendChild(card);
 

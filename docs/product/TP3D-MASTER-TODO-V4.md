@@ -6,12 +6,12 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `0aa58c3` |
-| Active branch | `docs/3b-5a-browser-verification` |
-| Active phase | 3B + 5A browser verification — in-browser logic verified (Chromium); interactive editor checklist remains for a signed-in human |
-| Next planned phase | Human interactive editor spot-check, then A1 realism/compaction audit (5B); separately, the case/cargo-instruction UX audit (read-only) is complete |
-| Waiting for | Interactive editor sign-off (drag/rotate/flip/collision/Stats, live AutoPack) by a signed-in user |
-| Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, or AutoPack realism (5B) |
+| Stable main commit | `819d3de` |
+| Active branch | `docs/cargo-rule-contract` (Cargo-Rule V1 workstream, Phase 1) |
+| Active phase | Cargo-Rule V1 — Phase 1 of 9 (contract + display-parity doc); see **Cargo-Rule V1 Contract** below |
+| Next planned phase | Phase 2 canFlip default → 3 orientation fix → 4 pack-import integrity → 5 modal → 6 display parity → 7 CSV/XLSX → 8 round-trip → 9 completion doc |
+| Waiting for | (Cargo-Rule V1 proceeds now.) Separately pending: 3B + 5A **signed-in interactive editor** sign-off (drag/rotate/flip/collision/Stats, live AutoPack) — keep 🔄 |
+| Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, AutoPack realism (5B), or any deferred cargo rule (Fragile/stackingPolicy/floorOnly/multi-stop/strategies) |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
@@ -20,13 +20,44 @@
 ## Near-Term Execution Queue
 *Approved order. Do not combine items. Do not skip steps.*
 
-*Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified; 3B geometry epsilon unification merged (`33b362a`).*
+*Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified; 3B geometry epsilon unification merged (`33b362a`); 5A stacking-safety audit + runtime tests merged (`0aa58c3`); 3B/5A in-browser logic verification recorded (`819d3de`).*
 
-1. 5A — browser AutoPack spot-check, then commit the stacking-safety audit + runtime tests (`noStackOnTop` / `stackable:false` / `maxStackCount` confirmed enforced in the active solver; the alleged flat `STACKING_BONUS` was found nonexistent)
-2. Run the full A1 AutoPack realism and compaction audit
-3. Case Browser — search-clear button and self-sizing filter panel
-4. Case Browser — multi-selection and batch add/drop planning
-5. Start wider Packs, Cases, Folders, and Spaces & Equipment screen UI phases
+**Active workstream — Cargo-Rule V1 (9 phases, each its own branch + FF merge):**
+1. **Phase 1** — Cargo-rule contract + display-parity requirement (docs)
+2. **Phase 2** — Canonical `canFlip:false` defaults across all paths
+3. **Phase 3** — Orientation correctness (`upright` beats flip; `solver` one-line)
+4. **Phase 4** — Pack-import case-definition data integrity (conflict remap)
+5. **Phase 5** — Case modal Handling Rules section (active fields only)
+6. **Phase 6** — Display parity (cards/list/Browser/Inspector/import preview) + fix misleading 3D pallet label
+7. **Phase 7** — CSV/XLSX + import-preview parity for handling rules
+8. **Phase 8** — Round-trip + action-binding proof tests
+9. **Phase 9** — Final completion doc + TODO reconciliation
+
+*Then:* 5B AutoPack realism/compaction; Case Browser search-clear + multi-select; wider screen UI. *Still separate:* 3B/5A signed-in interactive checklist.
+
+---
+
+## Cargo-Rule V1 Contract (approved 2026-06-17)
+*Source-verified against `main` @ `819d3de`. This is the authoritative meaning of every cargo rule the V1 UI may expose. Do not expose a rule the active solver does not honor exactly as written here.*
+
+### Approved V1 rule meanings (active in `autopack-solver.js` unless noted)
+- **`canFlip`** — canonical default **`false`** everywhere. Meaning: AutoPack may tip the item onto another face **only** when `true` **and** the orientation policy allows it.
+- **`orientationLock`** — canonical stored values **`any` / `upright` / `onSide`**. Precedence: (1) valid instance exact lock → (2) case orientation policy → (3) flip permission. Meanings: `any`+`canFlip:false` = upright yaw only; `any`+`canFlip:true` = all allowed right-angle faces; **`upright` = upright yaw only regardless of `canFlip`**; **`onSide` = supported side orientations only regardless of `canFlip`**; valid instance lock = one exact candidate.
+- **`noStackOnTop`** — nothing may rest directly on this case. **Support-side only**; it does NOT force the case itself to the floor.
+- **`maxStackCount`** — max **direct child** items resting on **one** support. `0` = unlimited. **Not** total tower height.
+- **`isPallet`** — treat as pallet/load base. Current solver behavior: allows heavier items to rest on it by **bypassing the normal child-vs-support weight check**. Global support fraction (0.5) still applies. **No hard pallet capacity enforcement.**
+- **`maxPalletWeight`** — **warning-only** (`oog-service.computePalletWarnings`, cumulative footprint sum). May be shown only as a "Max load (warning)"; must **never** appear to block AutoPack.
+- **`laneItem`** — tri-state: Automatic=`null`, Always=`true`, Never=`false`.
+- **`loadPriority`** — **soft tie-breaker only** (sort key after footprint/weight). Never present as a guaranteed load sequence. Per-instance override is currently dropped by `normalizeInstance` (case-level only in V1).
+
+### Display-parity requirement (PERMANENT — not optional polish)
+After a case is saved, **every active non-default handling rule MUST be shown consistently** in: **Cases grid cards · Cases list view · Editor Case Browser · Selected-case Inspector · Import preview · Pack reports/manifests (later)**. The Case modal must **never** be the only place a user can see rules that affect AutoPack. This requirement must not be forgotten or downgraded to polish. (Pack report/manifest parity is a written future requirement until actually implemented.)
+
+### Persistence-parity requirement
+CSV/XLSX, JSON import/export, duplication, reload, workspace switching, and pack export/import must preserve the **same** cargo-rule meanings (canonical values, defaults, and round-trip equality for every field above).
+
+### Deferred — do NOT expose as completed AutoPack rules in V1
+Fragile · floorOnly · floorOrPallet · baseOnly · stackingPolicy · hard pallet capacity · maximum supported weight · maximum total stack height · cumulative tower-weight **enforcement** · hazmat · temperature · securement · dunnage · airflow · mustLoadLast · mustUnloadFirst · stopGroup · keepTogetherGroup · deliverySequence · legal payload / axle claims · round/cylinder collision behavior. These remain future solver work; inert fields must stay hidden.
 
 ---
 

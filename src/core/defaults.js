@@ -100,7 +100,7 @@ export function seedCases() {
       isPallet: false,
       maxPalletWeight: 0,
       hazmatClass: null,
-      canFlip: true,
+      canFlip: false,
       notes: '',
       color: '#ff9f1c',
       createdAt: now,

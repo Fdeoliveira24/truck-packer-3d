@@ -80,7 +80,7 @@ export function openCaseModal({
         category: 'default',
         dimensions: { length: 48, width: 24, height: 24 },
         weight: 0,
-        canFlip: true,
+        canFlip: false,
         notes: '',
         color: CategoryService.meta('default').color,
         createdAt: now,

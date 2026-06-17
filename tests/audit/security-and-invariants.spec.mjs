@@ -3113,6 +3113,37 @@ test('AUTO-PACK-A1-3 X anchor cap keeps front and middle anchors available', asy
     'AutoPack should keep enough X anchors for larger floor layouts');
 });
 
+test('CARGO-RULE-V1 canFlip defaults to false across model/normalizer/import; explicit values preserved', async () => {
+  const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const CaseModel = await import(`${caseModelPath.href}?t=${Date.now()}-${Math.random()}`);
+  const ImportExport = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  const baseCase = { id: 'cf-1', name: 'Flip Default', dimensions: { length: 48, width: 24, height: 24 } };
+
+  // Missing canFlip → false in both normalizers
+  assert.equal(Normalizer.normalizeCase({ ...baseCase }, Date.now()).canFlip, false, 'core normalizer: missing canFlip must default to false');
+  assert.equal(CaseModel.normalizeCase({ ...baseCase }).canFlip, false, 'case model: missing canFlip must default to false');
+  // Explicit values preserved
+  assert.equal(Normalizer.normalizeCase({ ...baseCase, canFlip: true }, Date.now()).canFlip, true, 'explicit canFlip:true preserved');
+  assert.equal(Normalizer.normalizeCase({ ...baseCase, canFlip: false }, Date.now()).canFlip, false, 'explicit canFlip:false preserved');
+
+  // CSV/spreadsheet import: missing column, blank, and explicit values
+  const row = (extra = {}) => ({ name: extra.name || 'Row', length: 48, width: 24, height: 24, weight: 10, ...extra });
+  const noCol = ImportExport.importCaseRows([row({ name: 'NoFlipCol' })], []);
+  const added = noCol.nextCaseLibrary.find(c => c.name === 'NoFlipCol');
+  assert.equal(added.canFlip, false, 'import with no canFlip column must default to false');
+  const explicitFalse = ImportExport.importCaseRows([row({ name: 'FlipFalse', canFlip: false })], []);
+  assert.equal(explicitFalse.nextCaseLibrary.find(c => c.name === 'FlipFalse').canFlip, false, 'import canFlip:false stays false');
+  const explicitTrue = ImportExport.importCaseRows([row({ name: 'FlipTrue', canFlip: true })], []);
+  assert.equal(explicitTrue.nextCaseLibrary.find(c => c.name === 'FlipTrue').canFlip, true, 'import canFlip:true stays true');
+});
+
+test('CARGO-RULE-V1 new-case modal initial defaults canFlip to false', async () => {
+  const src = await fs.readFile(caseModalPath, 'utf8');
+  // The new-case branch builds an inline initial object; assert canFlip:false and no canFlip:true new-case default.
+  assert.match(src, /canFlip:\s*false/, 'case modal new-case initial must default canFlip to false');
+  assert.ok(!/\n\s*canFlip:\s*true\s*,/.test(src), 'case modal must not default a new case to canFlip:true');
+});
+
 test('AUTO-PACK-A1-R1 normalizers add logistics defaults and preserve explicit values', async () => {
   const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
   const CaseModel = await import(`${caseModelPath.href}?t=${Date.now()}-${Math.random()}`);

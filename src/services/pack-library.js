@@ -871,6 +871,7 @@ export function computeStats(pack, caseLibraryOverride) {
   let totalWeight = 0;
   let packedCases = 0;
   let hiddenCases = 0;
+  let unresolvedInstances = 0;
   const getCase = caseId => {
     if (Array.isArray(caseLibraryOverride)) return caseLibraryOverride.find(c => c.id === caseId) || null;
     return CaseLibrary.getById(caseId);
@@ -878,7 +879,12 @@ export function computeStats(pack, caseLibraryOverride) {
   (pack.cases || []).forEach(inst => {
     if (inst.hidden) hiddenCases++;
     const c = getCase(inst.caseId);
-    if (!c) return;
+    if (!c) {
+      // Instance references a missing case definition. Do not silently treat the
+      // totals as complete — surface it so the editor/Inspector can warn.
+      if (!inst.hidden) unresolvedInstances++;
+      return;
+    }
     if (inst.hidden) return;
     const dims = c.dimensions || { length: 0, width: 0, height: 0 };
     // Use oriented dimensions from AutoPack if available, else fall back to original
@@ -905,6 +911,7 @@ export function computeStats(pack, caseLibraryOverride) {
     totalCases: (pack.cases || []).length,
     hiddenCases,
     packedCases,
+    unresolvedInstances,
     volumeUsed: usedIn3,
     volumePercent,
     totalWeight,
@@ -995,6 +1002,25 @@ export function importPackPayload(payload) {
       c,
     ])
   );
+
+  // Integrity gate: every instance must reference a case that resolves to either
+  // an existing local case or a bundled case definition. Block the whole pack
+  // import otherwise — never save a partial pack as a successful import, and run
+  // this BEFORE adopting any bundled cases so a blocked import has no side effect.
+  const bundledIds = new Set(bundled.filter(b => b && b.id).map(b => b.id));
+  const unresolvedRefs = [...new Set(
+    (incomingPack.cases || [])
+      .map(inst => inst && inst.caseId)
+      .filter(cid => cid && !caseById.has(cid) && !bundledIds.has(cid))
+  )];
+  if (unresolvedRefs.length) {
+    const shown = unresolvedRefs.slice(0, 3).join(', ') + (unresolvedRefs.length > 3 ? ', …' : '');
+    throw new Error(
+      `Pack import blocked: ${unresolvedRefs.length} referenced case definition(s) are missing (${shown}). ` +
+      'The pack file must bundle every case its instances use.'
+    );
+  }
+
   const caseIdMap = new Map();
   const caseConflicts = [];
   // Index of previously-imported cases by their source fingerprint, so repeated

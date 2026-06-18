@@ -1354,6 +1354,65 @@ test('PACK-IMPORT-SAFE-1 duplicate pack id is regenerated, title is suffixed, an
     'Imported instances should reuse existing case ids for duplicate bundled definitions');
 });
 
+test('CARGO-RULE-V1 pack import with an unresolved case reference is blocked with no side effect', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const bad = {
+    pack: { id: 'p', title: 'P', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('ghost', { id: 'i', transform: { position: { x: 5, y: 5, z: 0 } } })] },
+    bundledCases: [],
+  };
+  assert.throws(() => PackLibrary.importPackPayload(bad), /missing/i, 'unresolved reference must block the import');
+  assert.equal((StateStore.get('caseLibrary') || []).length, 0, 'blocked import must not create any case (no fake fallback)');
+  assert.equal((StateStore.get('packLibrary') || []).length, 0, 'blocked import must not save the pack');
+
+  // A pack whose cases all resolve still imports (regression guard).
+  const ok = {
+    pack: { id: 'p2', title: 'P2', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('good', { id: 'j', transform: { position: { x: 5, y: 5, z: 0 } } })] },
+    bundledCases: [makePackImportSafeCase({ id: 'good', name: 'Good' })],
+  };
+  PackLibrary.importPackPayload(ok);
+  assert.equal((StateStore.get('packLibrary') || []).length, 1, 'a fully resolvable pack still imports');
+});
+
+test('CARGO-RULE-V1 batch import skips only the invalid pack; valid packs import', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const entries = [
+    { pack: { id: 'good1', title: 'G1', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('c1', { id: 'a', transform: { position: { x: 5, y: 5, z: 0 } } })] }, bundledCases: [makePackImportSafeCase({ id: 'c1', name: 'C1' })] },
+    { pack: { id: 'bad', title: 'B', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('missing', { id: 'b', transform: { position: { x: 5, y: 5, z: 0 } } })] }, bundledCases: [] },
+    { pack: { id: 'good2', title: 'G2', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('c2', { id: 'd', transform: { position: { x: 5, y: 5, z: 0 } } })] }, bundledCases: [makePackImportSafeCase({ id: 'c2', name: 'C2' })] },
+  ];
+  // Mirror the dialog's per-pack try/catch batch loop.
+  let imported = 0, skipped = 0;
+  for (const e of entries) {
+    try { PackLibrary.importPackPayload(e); imported++; } catch { skipped++; }
+  }
+  assert.equal(imported, 2, 'two valid packs import');
+  assert.equal(skipped, 1, 'the invalid pack is skipped');
+  assert.equal((StateStore.get('packLibrary') || []).length, 2, 'only valid packs are saved');
+});
+
+test('CARGO-RULE-V1 existing dangling instance: stats expose it, export preserves it, no crash', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  const dpack = { id: 'dp', title: 'Dangling', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('ghost', { id: 'i', transform: { position: { x: 5, y: 5, z: 0 } } })] };
+  StateStore.init({ caseLibrary: [], packLibrary: [dpack], folderLibrary: [], preferences: {} });
+  const stats = PackLibrary.computeStats(dpack, []);
+  assert.equal(stats.totalCases, 1, 'the stored instance is still counted');
+  assert.equal(stats.packedCases, 0, 'unresolved item is not counted as packed');
+  assert.equal(stats.unresolvedInstances, 1, 'stats expose the unresolved instance count');
+  assert.equal(stats.totalWeight, 0, 'no invented weight for the unresolved item');
+  // Export preserves the dangling reference for recovery.
+  const json = IE.buildPackExportJSON(dpack);
+  assert.match(json, /"caseId":\s*"ghost"/, 'export keeps the unresolved caseId for recovery');
+
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  assert.match(editorSrc, /renderUnresolvedCaseInspector\(inst\)/, 'Inspector shows an unresolved-case warning instead of an empty panel');
+});
+
 test('CARGO-RULE-V1 repeated conflicting pack import is idempotent (no Imported 2/3...)', async () => {
   const StateStore = await import(stateStorePath.href);
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);

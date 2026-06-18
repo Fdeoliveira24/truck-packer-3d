@@ -279,6 +279,13 @@ export function createAutoPackEngine({
           `${unpacked.length} case(s) could not fit`, 'warning', { title: 'AutoPack' }
         );
       }
+      if (stats.unresolvedInstances > 0) {
+        UIComponents.showToast(
+          `${stats.unresolvedInstances} item(s) were excluded — their case definition is missing`,
+          'warning',
+          { title: 'AutoPack' }
+        );
+      }
 
       try {
         if (diag && typeof diag.autopackEnd === 'function') {

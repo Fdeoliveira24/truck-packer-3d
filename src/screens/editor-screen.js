@@ -2144,8 +2144,27 @@ export function createEditorScreen({
         return;
       }
       const c = CaseLibrary.getById(inst.caseId);
-      if (!c) return;
+      if (!c) {
+        renderUnresolvedCaseInspector(inst);
+        return;
+      }
       renderSingleInspector(pack, inst, c, prefs);
+    }
+
+    function renderUnresolvedCaseInspector(inst) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.classList.add('tp3d-editor-card-grid-gap-12');
+      const title = document.createElement('div');
+      title.classList.add('tp3d-editor-title-lg-semibold');
+      title.textContent = 'Unresolved case';
+      const msg = document.createElement('div');
+      msg.className = 'muted';
+      msg.classList.add('tp3d-editor-sub-sm');
+      msg.textContent = `This item references a missing case definition (${inst && inst.caseId ? inst.caseId : 'unknown'}). It is excluded from AutoPack and Stats. Re-import the source pack or delete this item.`;
+      card.appendChild(title);
+      card.appendChild(msg);
+      inspectorEl.appendChild(card);
     }
 
     function selectAllCases(pack) {

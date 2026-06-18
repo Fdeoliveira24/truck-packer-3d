@@ -1,19 +1,21 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-06-14 | Synthesized from all prior TODO versions + QA report + comparison research + competitive landscape + Codex/Copilot/Claude audit cross-check + storage/space planning vertical
+**Last updated:** 2026-06-18 | Synthesized from all prior TODO versions + QA report + comparison research + competitive landscape + Codex/Copilot/Claude audit cross-check + storage/space planning vertical
 
 ---
 
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `f397f3c` |
-| Active branch | `docs/cargo-rule-v1-p1-fixes` (Cargo-Rule V1 P1-fix wave, docs) |
-| Active phase | Cargo-Rule V1 — **P1 defect fixes merged** (orientation canonicalization, import idempotence, dangling-ref handling, App-Backup oriented dims, contract enforcement). See **Cargo-Rule V1 — Completion Evidence** below |
-| Next planned phase | 5B AutoPack realism/compaction; then deferred cargo rules (stackingPolicy/Fragile) by their own product decisions |
-| Waiting for | Signed-in interactive browser sign-off for the new handling-rules UI/display **and** the still-open 3B + 5A editor checklist (drag/rotate/flip/collision/Stats, live AutoPack) — all 🔄 |
+| Stable main commit | `7000f96` |
+| Active branch | `docs/cargo-rule-integrity-final-reconciliation` (Cargo-Rule V1 integrity wave, docs) |
+| Active phase | Cargo-Rule V1 — **data-integrity correction wave merged** (8 source/test phases after two independent Codex audits). Implemented and locally verified; **awaiting independent Codex validation and signed-in browser review.** See **Cargo-Rule V1 — Integrity Correction Wave** below |
+| Next planned phase | 5B AutoPack realism/compaction — **blocked until independent Codex validation of this wave passes**; then deferred cargo rules (stackingPolicy/Fragile) by their own product decisions |
+| Waiting for | Independent Codex re-validation of the integrity wave; signed-in interactive browser sign-off for the new handling-rules UI/display **and** the still-open 3B + 5A editor checklist (drag/rotate/flip/collision/Stats, live AutoPack) — all 🔄 |
 | Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, AutoPack realism (5B), or any deferred cargo rule (Fragile/stackingPolicy/floorOnly/multi-stop/strategies) |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
+
+> **Safety constants unchanged this wave:** `CONTAINMENT_EPS_INCHES = 0.05`, `MIN_SUPPORT_FRACTION = 0.5`. No billing/auth/workspace/membership/security/Supabase code was touched.
 
 ---
 
@@ -31,9 +33,11 @@
 6. 🔄 **Phase 6** — Display parity (cards/list/Browser/Inspector) + 3D pallet label fix — `c5e5c56` (browser sign-off pending; import-preview landed in Phase 7)
 7. 🔄 **Phase 7** — CSV/XLSX + import-preview parity — `e9ebb8a` (source/tests done; browser sign-off pending)
 8. ✅ **Phase 8** — Round-trip + action-binding proof tests — `dc32d9a`
-9. 🔄 **Phase 9** — Completion doc (this) — in progress
+9. 🔄 **Phase 9** — Completion doc — done for the base wave
 
-*Then:* 5B AutoPack realism/compaction; Case Browser search-clear + multi-select; wider screen UI. *Still separate:* 3B/5A signed-in interactive checklist; new handling-UI browser sign-off.
+**Cargo-Rule V1 — Integrity Correction Wave (2026-06-18, 8 source/test branches + FF merge) — all locally green, awaiting independent Codex validation:** `9c78aa6` (oriented dims vs THREE) · `2c153af` (atomic import) · `3fd2c72` (typed canonicalization) · `62af797` (orientation single source) · `eda7d26` (dangling reporting) · `b829ec8` (spreadsheet preview details) · `c57a7cf` (handling dependency contract) · `7000f96` (restore matrix + upsert extension sanitize). See **Cargo-Rule V1 — Integrity Correction Wave** below. **Do not mark Cargo-Rule V1 complete.**
+
+*Then (blocked until independent Codex re-validation of the integrity wave passes):* 5B AutoPack realism/compaction; Case Browser search-clear + multi-select; wider screen UI. *Still separate:* 3B/5A signed-in interactive checklist; new handling-UI browser sign-off.
 
 ---
 
@@ -61,15 +65,31 @@ Fragile · floorOnly · floorOrPallet · baseOnly · stackingPolicy · hard pall
 
 ---
 
+## Cargo-Rule V1 — Integrity Correction Wave (2026-06-18, after two independent Codex audits)
+*Two independent Codex validations (incl. a Graphify-assisted audit) reached the same FAIL verdict on `main` @ `9f1116e`. The repeated findings were treated as confirmed defects and fixed forward across 8 branches (each its own FF merge). Final suite: **616 tests pass / 0 fail**, lint **0 errors** (pre-existing warnings only), typecheck clean, `git diff --check` clean. `main` = `7000f96`.*
+
+**Status: Implemented and locally verified; awaiting independent Codex validation and signed-in browser review. Cargo-Rule V1 is NOT marked complete.**
+
+- **Integrity Phase 1 — Canonical THREE oriented dims (`9c78aa6`)** — the oriented-dimension math applied right-angle swaps in X→Y→Z order (computes Rz·Ry·Rx); THREE Euler `XYZ` is Rx·Ry·Rz (effective Z→Y→X). Single-axis rotations agreed but **every compound rotation diverged**, corrupting containment/collision/packed-staged/Stats/out-of-gauge for rotated items. New single pure helper `src/core/oriented-dims.js` matches THREE exactly; `normalizer`, `pack-library`, and the solver all route through it (two of the three prior copies were buggy). `normalizeInstance` treats the case definition as authoritative and never invents dims. **Proof: helper compared against a real THREE `Box3` for every right-angle combo; restore matrix for App/Workspace/Pack/batch/autosave.** *(This supersedes the earlier single-axis-only App-Backup oriented-dims claim.)*
+- **Integrity Phase 2 — Atomic pack import (`2c153af`)** — import wrote bundled cases one-by-one and could crash mid-loop on a malformed later case, leaving orphans; blank `caseId` bypassed the missing-ref gate. Split into a pure `planPackImport()` (parse/validate/canonicalize/plan with **zero** state mutation) + a single atomic `StateStore.set`. **Proof: byte-equivalent before/after on malformed first/middle/last bundled case, blank-caseId rejection, failure-after-planned-conflict, three-import idempotence, planner purity.**
+- **Integrity Phase 3 — Typed canonical cargo representation (`3fd2c72`)** — comparison/fingerprint used JS truthiness + `Number()||0`, so `"false"`→true, malformed numbers→silent 0, invalid≡valid-default, raw≠stored, decimal stack counts inconsistent. New `src/core/cargo-canonical.js` is the single typed source for model/normalizer/upsert/spreadsheet/import/compare. Booleans accept `true/false`, `yes/no`, `1/0` only (unknown→invalid→default, never truthiness); numbers reject malformed/NaN/Infinity and clamp to data-sanity limits (1e300 can no longer make infinite volume); `maxStackCount` floors consistently; lane keeps Automatic/Always/Never distinct. In comparison an invalid value gets a distinct sentinel so it never equals a valid default. **Comparison-identity decision: manufacturer + category are display taxonomy and are EXCLUDED from physical equivalence/fingerprint; `name` + physical/handling fields define equivalence; on reuse the existing local case's metadata is authoritative.** Safe extensions survive normalize/backup/workspace; prototype keys/functions/non-finite values are dropped.
+- **Integrity Phase 4 — Orientation parsing single source (`62af797`)** — `repeatedBatchKey()` keyed on raw orientation spelling (aliases failed to batch) and the live `buildOrientations()` (via `buildLegacyAutoPackItems`) lowercased and missed `on-side`. Both now use `canonicalOrientationLock`. Removed the test-only `parseLaneCell` (duplicated production). The dead `solveLegacyAutoPack` was intentionally left (guarded by existing "unused" tests). **Proof: `repeatedBatchKey`/legacy item-prep are alias-invariant yet keep onSide and upright distinct.**
+- **Integrity Phase 5 — Dangling reference reporting (`eda7d26`)** — removed fabricated 24×24×24 fallbacks from editor placement/unpack; `computeStats` adds `stagedCases` + completeness flags (`totalsComplete`/`weightComplete`/`volumeComplete`/`utilizationComplete`). Surfaces: Stats panel unresolved row + incomplete-totals note, single-selection Delete action, multi-selection unresolved note, Packs grid count, AutoPack exclusion toast, PDF summary line + checklist id, and an export `unresolvedCaseRefs`/note. Unresolved items stay stored/exportable, never crash, never a valid AutoPack item.
+- **Integrity Phase 6 — Spreadsheet preview warning details (`b829ec8`)** — per-row structured warnings (`field` / supplied `value` / `fallback` / `reason`) shown on the affected preview row (e.g. `canFlip: "maybe" is invalid; using No`), visually distinct from blocking errors; the downloadable report uses the same messages; data-sanity limits flag extreme values. **Proof: real CSV and real XLSX File objects parsed through the production parser (not helpers) with CSV/XLSX parity.**
+- **Integrity Phase 7 — Handling dependency contract (`c57a7cf`)** — no-top-load **preserves** the saved `maxStackCount` (disabled field, solver ignores it via the noStackOnTop gate) instead of zeroing it; pallet + no-top-load shows "This pallet is marked 'No top load,' so AutoPack will not place cargo on it"; the pallet warning value stays **dormant** when not a pallet; manual-rotation block by case orientation policy no longer mislabels itself as "orientation-locked". Orientation distinction documented/tested (canFlip = AutoPack tipping; manual exact lock allowed under `any`; upright blocks both; instance lock overrides). *(This supersedes the earlier "zeroes maxStackCount under no-top-load" claim.)*
+- **Integrity Phase 8 — Restore round-trip matrix (`7000f96`)** — one hostile case driven through modal-save sink, duplicate, CSV sink, App/Workspace/autosave normalize, Pack JSON, Pack batch, and undo/redo. Exposed and fixed forward a real gap: `CaseLibrary.buildStorableCase` could store a function-valued extension and crash autosave's `structuredClone`; it now sanitizes extension fields at the storage boundary.
+
+---
+
 ## Cargo-Rule V1 — Completion Evidence (2026-06-17 base build + P1 fixes)
-*All code phases merged to `main` via fast-forward, each on its own branch. Final suite after the P1 wave: **572 tests pass / 0 fail**, lint **0 errors** (existing warnings only), typecheck clean, `git diff --check` clean. `main` = `f397f3c`.*
+*All code phases merged to `main` via fast-forward, each on its own branch. Earlier wave suite: 572 tests pass / 0 fail. The figures below predate the 2026-06-18 integrity wave (now `main` = `7000f96`, 616 tests).*
 
 ### P1 defect fixes (independent audit @ `b54eccb` → fixed)
-- **P1 orientation aliases (`b735fed`)** — one canonical helper `src/core/orientation.js` used by normalizer, case model, solver, pack-library (comparator + manual-rotate policy), case-rule-summary, modal, and the spreadsheet parser. `on-side` / `"on side"` no longer reload as `any` or produce zero solver candidates. Tests: cross-path alias matrix.
+- **P1 orientation aliases (`b735fed`)** — one canonical helper `src/core/orientation.js` used by normalizer, case model, solver, pack-library (comparator + manual-rotate policy), case-rule-summary, modal, and the spreadsheet parser. `on-side` / `"on side"` no longer reload as `any` or produce zero solver candidates. **⚠️ The "all paths canonical" claim was too broad — `repeatedBatchKey()` and the live legacy item-prep still parsed raw orientation; corrected in Integrity Phase 4 (`62af797`).**
 - **P1 pack-import idempotence (`573d074`)** — conflict-imported cases are stamped with a deterministic canonical `importSourceKey`; repeated conflicting imports reuse the first `(Imported)` case (no `(Imported 2)/(Imported 3)`). Survives reload (preserved by `normalizeCase`). `laneItem:false` stays distinct from Automatic. Decision: manufacturer/category are identity; color/notes are presentation-only.
 - **P1 unresolved/dangling refs (`31a6ea5`)** — pack/batch import is blocked (throws, no side effect, names the missing ids) when an instance has no resolvable case; existing dangling local instances now surface via `computeStats.unresolvedInstances`, an editor Inspector "Unresolved case" card, and an AutoPack "items excluded" toast; export preserves the dangling caseId; never silently deleted.
-- **P1 App-Backup oriented dims (`c54d8f8`)** — `normalizeInstance` no longer ties `orientedDims` to `orientationLocked`; for any non-identity rotation it recomputes effective dims authoritatively from case dims + rotation (preserving stored only when the case is missing), so AutoPacked tipped unlocked items keep their physical size through backup restore.
-- **P2 contract enforcement (`f397f3c`)** — `CaseLibrary.upsert` canonicalizes known cargo fields (and floors `maxStackCount`) while preserving unknown/extension fields; both normalizers floor decimal `maxStackCount`; spreadsheet import warns on invalid boolean/lane cells; the modal clears legacy `stackable:false` when no-top-load is unchecked, zeroes `maxStackCount` under no-top-load, and the lane copy now says Always is a preference.
+- **P1 App-Backup oriented dims (`c54d8f8`)** — `normalizeInstance` no longer ties `orientedDims` to `orientationLocked`; for any non-identity rotation it recomputes effective dims authoritatively from case dims + rotation (preserving stored only when the case is missing). **⚠️ This fix was correct for single-axis rotations only — compound right-angle rotations diverged from THREE and were corrected in Integrity Phase 1 (`9c78aa6`).**
+- **P2 contract enforcement (`f397f3c`)** — `CaseLibrary.upsert` canonicalizes known cargo fields (and floors `maxStackCount`) while preserving unknown/extension fields; both normalizers floor decimal `maxStackCount`; spreadsheet import warns on invalid boolean/lane cells; the modal clears legacy `stackable:false` when no-top-load is unchecked and the lane copy now says Always is a preference. **⚠️ The original "zeroes `maxStackCount` under no-top-load" behavior was reversed in Integrity Phase 7 (`c57a7cf`): the saved count is now preserved (disabled field, solver ignores it). The typed boolean/numeric canonicalization was superseded by `core/cargo-canonical.js` in Integrity Phase 3 (`3fd2c72`); extension sanitizing at the storage boundary was added in Integrity Phase 8 (`7000f96`).**
 
 ### Base build (2026-06-17)
 
@@ -82,8 +102,9 @@ Fragile · floorOnly · floorOrPallet · baseOnly · stackingPolicy · hard pall
 - **Phase 8 (`dc32d9a`)** — round-trip proofs: pack JSON export→import and `normalizeAppData` preserve every handling rule; export/download action chains verified; **workspace import remains intentionally unwired** (parser exists, no UI) and the misleading pack-batch guard message was corrected.
 
 ### Still open (not done in this workstream)
-- 🔄 **Browser visual/UX sign-off** (signed-in): the new handling UI/display across desktop/narrow/tablet/mobile + light/dark (new/edit/duplicate, spreadsheet + pack import preview, AutoPack in Standard/Wheel-Wells/Front-Overhang, pallet warning wording, no console errors). **This is the open UI visual review — do NOT mark it complete.**
-- 🔄 **3B + 5A** signed-in interactive editor checklist (unchanged).
+- 🔄 **Independent Codex re-validation of the integrity wave** — the 2026-06-18 wave is implemented and locally verified only. AutoPack 5B and the broad visual UI pass remain blocked until a fresh independent validation passes.
+- 🔄 **Browser visual/UX sign-off** (signed-in): the new handling UI/display + the integrity-wave UI surfaces (Stats unresolved row/incomplete-totals note, per-row spreadsheet warnings, pallet + no-top-load copy, corrected manual-rotation error text, AutoPack exclusion toast) across desktop/narrow/tablet/mobile + light/dark, no console errors. **This is the open UI visual review — do NOT mark it complete.**
+- 🔄 **3B + 5A** signed-in interactive editor checklist (unchanged; still required).
 - ⬜ **Pack JSON / batch import preview parity** — show handling-rule chips + predicted conflict/missing-case result in the pack-import preview (P2; spreadsheet preview already has it).
 - ⬜ **Workspace import UI** — `parseWorkspaceImportJSON` exists but is deliberately not wired; build the import UI before advertising workspace import. (The pack-batch guard no longer points to a missing "Import Workspace Backup" action.)
 - ⬜ **Visual/accessibility P2/P3 polish** (deferred to the dedicated UI phase, not started here): modal labels not `<label>`-associated, no mobile one-column modal breakpoint, no disabled-input styling, default `Flip: No` still on grid cards, list handling cell uses `display:flex`, warning/priority chips share hard-rule styling, Case Browser rule density.

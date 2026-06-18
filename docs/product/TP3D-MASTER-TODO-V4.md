@@ -6,9 +6,9 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `c47d9ef` |
-| Active branch | `docs/cargo-rule-integrity-final-reconciliation` (Repair 1D docs) |
-| Active phase | **Repair 1D — atomic pre-solver scene staging merged** (`c47d9ef`). `stageInstant()` applied only the staged position then waited two animation frames, during which the THREE object still had its old rotation/bounds → the visible transient float. It now applies position + rotation + oriented halfWorld atomically, so the rendered bounds match the staged pose on every frame. Verified with the real `createAutoPackEngine.pack()` + real THREE objects + frame capture, and a real-browser (Chromium, real `requestAnimationFrame`) check: the old onSide beam's ~68in gap is **0 on every frame**, 0 console errors; **signed-in editor sign-off still pending.** Follows Repair 1C (`038028a`) — see **Repair 1D** + **Repair 1C** below |
+| Stable main commit | `3dc9a3b` |
+| Active branch | `docs/cargo-rule-integrity-final-reconciliation` (Repair 1E docs) |
+| Active phase | **Repair 1E — Wheel Wells front-first stack scoring merged** (`3dc9a3b`). The live stack-candidate score put `wasteArea` before `xPrimary`, so center/rear supports could be filled while valid front supports stayed empty (most visible in Wheel Wells). The tuple is now `[bottomY, -supportFraction, xPrimary, wasteArea, minZ]` — front wins before waste; hard rules unchanged. Verified with production Standard Carton 24 at 188/420 in Wheel Wells (front supports filled before center/rear on the partial top layer; safe, supported, deterministic); **signed-in editor sign-off still pending.** Follows Repair 1D (`c47d9ef`) — see **Repair 1E** + **Repair 1D** below |
 | Next planned phase | Repair 2+ (not started); 5B AutoPack realism/compaction — **blocked until independent validation passes** |
 | Waiting for | Independent Codex re-validation; signed-in interactive browser sign-off showing both staged Long Beams resting correctly, plus AutoPack orientation in all three truck modes (visible 3D, collision/containment/Stats/OOG agreement, drag/rotate/flip) **and** the still-open 3B + 5A editor checklist — all 🔄 |
 | Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, AutoPack realism (5B), Repair 2+, or any deferred cargo rule (Fragile/stackingPolicy/floorOnly/multi-stop/strategies) |
@@ -16,6 +16,23 @@
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
 > **Safety constants unchanged:** `CONTAINMENT_EPS_INCHES = 0.05`, `MIN_SUPPORT_FRACTION = 0.5`. No billing/auth/workspace/membership/security/Supabase code was touched.
+
+---
+
+## Repair 1E — Wheel Wells front-first stack scoring (2026-06-18, `3dc9a3b`)
+*Branch `fix/wheelwells-front-first-stack-scoring`, FF-merged. Suite: **645 tests pass / 0 fail**, lint **0 errors** (pre-existing warnings only), typecheck clean, `git diff --check` clean (mine). Files: `src/services/autopack-solver.js`, tests.*
+
+**Root cause.** The live stack-candidate score tuple (`scoreStackCandidate`, used by `findStackPlacement` for both the main solve and repack) was `[bottomY, -supportFraction, wasteArea, xPrimary, minZ]`. Because `wasteArea` came before `xPrimary`, among equally valid same-level candidates (equal support fraction) the lower-waste option won regardless of front position. In front-first modes — especially Wheel Wells, where front floor cells are full-width and the middle is segmented — center/rear supports received stacked items while valid front supports were left empty.
+
+**Scoring tuple before/after.** before `[bottomY, -supportFraction, wasteArea, xPrimary, minZ]` → after `[bottomY, -supportFraction, xPrimary, wasteArea, minZ]`. Smallest safe change: swap two adjacent elements. Front wins before support waste; waste retained as the next tie-break. Hard rules (containment, collision, support fraction, support capacity, no-top-load, max direct children, orientation) are filtered before scoring, so a front candidate is never forced when invalid. `scoreStackCandidate` is the single shared tuple, so main-solve and repack stay consistent. Floor/lane/repeated-batch/filler/compaction scoring untouched.
+
+**188 / 420 results (Wheel Wells, production Standard Carton 24, 24×18×16).** 188 → all 188 pack; floor 40, stacked 148 across 5 levels; the partial top level (28 children on 40 supports) fills **front** supports (used minX≈81) and leaves only **rear** ones empty (unused maxX≈51) — every used support more front than every unused one (before the fix: used minX=15, unused maxX=195 — rear filled, front empty). 420 → 240 pack to capacity (top level fully used), front-first fill order, all safety properties hold. Both: no overlap, all contained (no OOB/blocked-zone), every stacked item supported ≥ `MIN_SUPPORT_FRACTION`, THREE-consistent dims, deterministic on repeat.
+
+**Regression results.** Standard mode still stacks front-first; `maxStackCount` 1 and 2 still cap direct children; Repair 1–1D tests remain green (645 total).
+
+**Files changed.** `src/services/autopack-solver.js` (the swap + `export` for the unit test), `tests/audit/security-and-invariants.spec.mjs`.
+
+**Still open (signed-in only):** signed-in editor visual confirmation that Wheel Wells fills front stacks first. **Preserved untouched:** two unrelated uncommitted local edits in the working tree (`index.html` label case, one `styles/main.css` line) — never staged or modified.
 
 ---
 

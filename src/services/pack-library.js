@@ -948,6 +948,33 @@ function cargoRulesEquivalent(a, b) {
   );
 }
 
+// Deterministic, canonical fingerprint of a case's cargo definition (the same
+// fields cargoRulesEquivalent compares, including the source name). Stamped onto
+// a conflict-imported case as `importSourceKey` so that re-importing the same
+// conflicting pack reuses the already-created imported case instead of creating
+// (Imported 2), (Imported 3), ... Number/alias/format differences are normalized
+// so they cannot break the match or create a false one.
+function cargoFingerprint(c) {
+  const c2 = c || {};
+  const n = x => Number(x) || 0;
+  const s = x => String(x == null ? '' : x).trim().toLowerCase();
+  const d = c2.dimensions || {};
+  return JSON.stringify([
+    s(c2.name), s(c2.manufacturer), s(c2.category),
+    n(d.length), n(d.width), n(d.height), n(c2.weight),
+    s(c2.shape || 'box'),
+    Boolean(c2.canFlip),
+    canonicalOrientationLock(c2.orientationLock),
+    Boolean(c2.noStackOnTop),
+    c2.stackable !== false,
+    n(c2.maxStackCount),
+    Boolean(c2.isPallet),
+    n(c2.maxPalletWeight),
+    laneTriStateValue(c2.laneItem),
+    n(c2.loadPriority),
+  ]);
+}
+
 export function importPackPayload(payload) {
   const now = Date.now();
   const incomingPack = payload && payload.pack;
@@ -970,6 +997,12 @@ export function importPackPayload(payload) {
   );
   const caseIdMap = new Map();
   const caseConflicts = [];
+  // Index of previously-imported cases by their source fingerprint, so repeated
+  // conflicting imports reuse the first imported copy (idempotence).
+  const caseByImportKey = new Map();
+  currentCases.forEach(c => {
+    if (c && c.importSourceKey) caseByImportKey.set(String(c.importSourceKey), c);
+  });
 
   const makeUniqueImportedName = name => {
     const base = String(name || 'Imported Case').trim() || 'Imported Case';
@@ -987,7 +1020,7 @@ export function importPackPayload(payload) {
   // intended behavior and the existing local case is never overwritten. With
   // no conflict the imported id is preserved so re-importing the same pack is
   // idempotent (it will match by id next time).
-  const adoptNewCase = (c, conflictKind) => {
+  const adoptNewCase = (c, conflictKind, fingerprint) => {
     const copy = Utils.deepClone(c);
     if (conflictKind) {
       copy.id = Utils.uuid();
@@ -998,9 +1031,12 @@ export function importPackPayload(payload) {
     copy.createdAt = copy.createdAt || now;
     copy.updatedAt = now;
     copy.volume = copy.volume || Utils.volumeInCubicInches(copy.dimensions || { length: 0, width: 0, height: 0 });
+    // Stamp the source fingerprint so a future identical import reuses this copy.
+    copy.importSourceKey = fingerprint;
     CaseLibrary.upsert(copy);
     caseIdMap.set(c.id, copy.id);
     caseById.set(copy.id, copy);
+    caseByImportKey.set(fingerprint, copy);
     const newNameKey = String(copy.name || '').trim().toLowerCase();
     if (newNameKey) caseByName.set(newNameKey, copy);
     if (conflictKind) {
@@ -1020,28 +1056,30 @@ export function importPackPayload(payload) {
     const nameKey = String(c.name || '')
       .trim()
       .toLowerCase();
+    const fingerprint = cargoFingerprint(c);
     const localById = caseById.get(c.id);
-    if (localById) {
-      // Same id: reuse only when the cargo definition is equivalent.
-      if (cargoRulesEquivalent(localById, c)) {
-        caseIdMap.set(c.id, c.id);
-      } else {
-        adoptNewCase(c, 'id-conflict');
-      }
+    // Same id with equivalent cargo → reuse the local case.
+    if (localById && cargoRulesEquivalent(localById, c)) {
+      caseIdMap.set(c.id, c.id);
       return;
     }
     const localByName = nameKey ? caseByName.get(nameKey) : null;
-    if (localByName) {
-      // Same name, different id: reuse only when the cargo definition matches.
-      if (cargoRulesEquivalent(localByName, c)) {
-        caseIdMap.set(c.id, localByName.id);
-      } else {
-        adoptNewCase(c, 'name-conflict');
-      }
+    // Same name (different id) with equivalent cargo → reuse the local case.
+    if (localByName && cargoRulesEquivalent(localByName, c)) {
+      caseIdMap.set(c.id, localByName.id);
       return;
     }
-    // No id or name match: adopt as a new local case, preserving the imported id.
-    adoptNewCase(c, null);
+    // Idempotence: if this exact cargo was already imported as a conflict copy,
+    // reuse it instead of creating (Imported 2), (Imported 3), ...
+    const priorImport = caseByImportKey.get(fingerprint);
+    if (priorImport) {
+      caseIdMap.set(c.id, priorImport.id);
+      return;
+    }
+    // True id/name conflict → renamed new case; otherwise a brand-new case that
+    // keeps the imported id. Both are stamped with the source fingerprint.
+    const conflictKind = localById ? 'id-conflict' : localByName ? 'name-conflict' : null;
+    adoptNewCase(c, conflictKind, fingerprint);
   });
 
   const pack = Utils.deepClone(incomingPack);

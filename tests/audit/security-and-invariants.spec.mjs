@@ -1354,6 +1354,79 @@ test('PACK-IMPORT-SAFE-1 duplicate pack id is regenerated, title is suffixed, an
     'Imported instances should reuse existing case ids for duplicate bundled definitions');
 });
 
+test('CARGO-RULE-V1 repeated conflicting pack import is idempotent (no Imported 2/3...)', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  // Local "Box" with DIFFERENT cargo so the bundled "Box" always conflicts.
+  StateStore.init({ caseLibrary: [makePackImportSafeCase({ id: 'box', name: 'Box', weight: 99 })], packLibrary: [], folderLibrary: [], preferences: {} });
+  const payload = (n) => ({
+    pack: { id: 'p', title: 'P', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('box', { id: `inst-${n}`, transform: { position: { x: 5, y: 5, z: 0 } } })] },
+    bundledCases: [makePackImportSafeCase({ id: 'box', name: 'Box', weight: 10 })],
+  });
+
+  const r1 = PackLibrary.importPackPayload(payload(1));
+  assert.equal((StateStore.get('caseLibrary') || []).length, 2, 'first conflict creates one imported case');
+  assert.equal(r1.caseConflicts.length, 1, 'first import reports one conflict');
+  const importedId = r1.caseConflicts[0].newId;
+  assert.equal(r1.cases[0].caseId, importedId, 'first instance remaps to the imported case');
+
+  for (let n = 2; n <= 3; n++) {
+    const r = PackLibrary.importPackPayload(payload(n));
+    const lib = StateStore.get('caseLibrary') || [];
+    assert.equal(lib.length, 2, `import ${n} must reuse the imported case (no growth)`);
+    assert.equal(r.caseConflicts.length, 0, `import ${n} reports no new conflict`);
+    assert.equal(r.cases[0].caseId, importedId, `import ${n} remaps to the same imported case id`);
+    assert.equal(lib.filter(c => /\(Imported/.test(c.name)).length, 1, 'exactly one (Imported) case exists');
+    assert.ok(!lib.some(c => /\(Imported [23]\)/.test(c.name)), 'no (Imported 2)/(Imported 3) names');
+  }
+  // Original local case stays unchanged.
+  const original = (StateStore.get('caseLibrary') || []).find(c => c.id === 'box');
+  assert.equal(Number(original.weight), 99, 'original local case unchanged');
+});
+
+test('CARGO-RULE-V1 idempotence holds across alias/number formats and through reload normalization', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
+  StateStore.init({ caseLibrary: [makePackImportSafeCase({ id: 'sc', name: 'Side Case', weight: 99 })], packLibrary: [], folderLibrary: [], preferences: {} });
+
+  // First import: bundled uses 'on side' alias + string dims.
+  PackLibrary.importPackPayload({
+    pack: { id: 'p1', title: 'P', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('sc', { id: 'a', transform: { position: { x: 5, y: 5, z: 0 } } })] },
+    bundledCases: [makePackImportSafeCase({ id: 'sc', name: 'Side Case', weight: 10, orientationLock: 'on side', dimensions: { length: '10', width: '10', height: '10' } })],
+  });
+  assert.equal((StateStore.get('caseLibrary') || []).length, 2);
+
+  // Simulate a reload: normalize the whole library, then re-import with canonical 'onSide' + numeric dims.
+  const reloaded = Normalizer.normalizeAppData({ caseLibrary: StateStore.get('caseLibrary'), packLibrary: [], folderLibrary: [] });
+  StateStore.init({ caseLibrary: reloaded.caseLibrary, packLibrary: [], folderLibrary: [], preferences: {} });
+  const importedCase = reloaded.caseLibrary.find(c => /\(Imported/.test(c.name));
+  assert.ok(importedCase.importSourceKey, 'importSourceKey survives reload normalization');
+
+  const r = PackLibrary.importPackPayload({
+    pack: { id: 'p2', title: 'P', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('sc', { id: 'b', transform: { position: { x: 5, y: 5, z: 0 } } })] },
+    bundledCases: [makePackImportSafeCase({ id: 'sc', name: 'Side Case', weight: 10, orientationLock: 'onSide', dimensions: { length: 10, width: 10, height: 10 } })],
+  });
+  assert.equal((StateStore.get('caseLibrary') || []).length, 2, 'alias/format-equivalent re-import after reload reuses the imported case');
+  assert.equal(r.caseConflicts.length, 0, 'no new conflict after reload');
+});
+
+test('CARGO-RULE-V1 laneItem:false does not compare equal to Automatic; distinct cargo stays separate', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  StateStore.init({ caseLibrary: [makePackImportSafeCase({ id: 'ln', name: 'Lane Case', weight: 99 })], packLibrary: [], folderLibrary: [], preferences: {} });
+  // Two conflicting bundled cases differing only by laneItem false vs automatic(null) → two distinct imported cases.
+  PackLibrary.importPackPayload({
+    pack: { id: 'pa', title: 'A', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('ln', { id: 'x', transform: { position: { x: 5, y: 5, z: 0 } } })] },
+    bundledCases: [makePackImportSafeCase({ id: 'ln', name: 'Lane Case', weight: 10, laneItem: false })],
+  });
+  PackLibrary.importPackPayload({
+    pack: { id: 'pb', title: 'B', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('ln', { id: 'y', transform: { position: { x: 5, y: 5, z: 0 } } })] },
+    bundledCases: [makePackImportSafeCase({ id: 'ln', name: 'Lane Case', weight: 10, laneItem: null })],
+  });
+  assert.equal((StateStore.get('caseLibrary') || []).length, 3, 'laneItem:false and Automatic are distinct cargo → two imported cases');
+});
+
 test('CARGO-RULE-V1 pack import creates a renamed case on cargo conflict, remaps instances, leaves local unchanged', async () => {
   const StateStore = await import(stateStorePath.href);
 

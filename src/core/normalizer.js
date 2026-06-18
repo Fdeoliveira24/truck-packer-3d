@@ -225,7 +225,7 @@ export function normalizeCase(c, now) {
   const category = safeString(c && c.category, 'default').toLowerCase();
   const color = safeString(c && c.color, '');
   const laneItem = c && c.laneItem === true ? true : c && c.laneItem === false ? false : null;
-  return {
+  const normalizedCase = {
     id: safeId(c && c.id),
     name: safeString(c && c.name, 'Unnamed Case'),
     manufacturer: safeString(c && c.manufacturer, ''),
@@ -253,6 +253,10 @@ export function normalizeCase(c, now) {
     createdAt,
     updatedAt,
   };
+  // Preserve the pack-import idempotence fingerprint when present so repeated
+  // conflicting imports stay idempotent across reloads.
+  if (c && c.importSourceKey) normalizedCase.importSourceKey = String(c.importSourceKey);
+  return normalizedCase;
 }
 
 export function normalizeTruck(truck) {

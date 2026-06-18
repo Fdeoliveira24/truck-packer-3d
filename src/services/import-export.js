@@ -352,13 +352,29 @@ export function buildPackExportPayload(pack) {
     folderId: null,
   };
   const packCases = Array.isArray(pack && pack.cases) ? pack.cases : [];
-  return {
+  // Dangling instances are preserved in the exported pack (never silently dropped),
+  // but their case definitions cannot be bundled. Report them so a reader/re-import
+  // knows the export is incomplete and will require repair.
+  const unresolvedCaseRefs = [...new Set(
+    packCases
+      .filter(i => i && !i.hidden && !CaseLibrary.getById(i.caseId))
+      .map(i => String(i.caseId || '').trim() || 'unknown')
+  )];
+  const payload = {
     app: 'Truck Packer 3D',
     version: APP_VERSION,
     exportedAt: Date.now(),
     pack: exportedPack,
     bundledCases: packCases.map(i => CaseLibrary.getById(i.caseId)).filter(Boolean),
   };
+  if (unresolvedCaseRefs.length) {
+    payload.unresolvedCaseRefs = unresolvedCaseRefs;
+    payload.unresolvedNote =
+      `${unresolvedCaseRefs.length} case definition(s) referenced by this pack are missing ` +
+      'and could not be bundled. Re-importing this pack will require repairing or removing ' +
+      'those items.';
+  }
+  return payload;
 }
 
 export function buildPackExportJSON(pack) {

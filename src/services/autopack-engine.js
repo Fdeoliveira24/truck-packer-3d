@@ -157,6 +157,20 @@ export function createAutoPackEngine({
         },
       });
 
+      // Surface dangling instances that AutoPack cannot pack: they are never given
+      // fabricated dimensions, so they are excluded rather than mis-placed.
+      const unresolvedExcluded = (packData.cases || []).filter(
+        inst => inst && !inst.hidden && !CaseLibrary.getById(inst.caseId)
+      ).length;
+      if (unresolvedExcluded > 0) {
+        toast(
+          `${unresolvedExcluded} unresolved item${unresolvedExcluded === 1 ? '' : 's'} excluded from AutoPack ` +
+          '(missing case definition).',
+          'warning',
+          { title: 'AutoPack' }
+        );
+      }
+
       const stagingMap = buildStagingMap(packItems, truck);
       stageInstant(stagingMap);
       // Let the staged layout paint before the synchronous solver starts. This

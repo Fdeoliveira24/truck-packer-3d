@@ -3607,6 +3607,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
             doc.text(`Total weight: ${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}`, margin, y);
             y += 14;
             doc.text(`Truck (in): ${pack.truck.length}×${pack.truck.width}×${pack.truck.height}`, margin, y);
+            // Make incompleteness explicit: never imply complete totals when some
+            // cargo could not be resolved.
+            const unresolved = stats.unresolvedInstances || 0;
+            if (unresolved > 0) {
+              y += 14;
+              doc.text(
+                `Unresolved cases: ${unresolved} (weight and volume totals are incomplete)`,
+                margin,
+                y
+              );
+            }
           }
 
           const totalPages = doc.getNumberOfPages();
@@ -3691,7 +3702,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const unitWt = prefs.units.weight;
         return (pack.cases || []).map(inst => {
           const c = CaseLibrary.getById(inst.caseId);
-          if (!c) return { name: 'Missing case', category: '—', dims: '—', weight: '—' };
+          if (!c) return { name: `Missing case (${inst && inst.caseId ? inst.caseId : 'unknown'})`, category: '—', dims: '—', weight: '—', packed: false };
           const meta = CategoryService.meta(c.category);
           return {
             name: c.name,

@@ -1686,6 +1686,65 @@ test('CARGO-RULE-V3 prototype-pollution keys are never preserved as extensions',
   assert.equal(({}).polluted, undefined, 'global prototype not polluted');
 });
 
+// ---------------------------------------------------------------------------
+// PHASE 5: Dangling reference reporting
+// ---------------------------------------------------------------------------
+
+test('CARGO-RULE-V5 computeStats defines totals: total/packed/staged/unresolved + completeness', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const PackLibrary = await import(`${packLibraryPath.href}${stamp}`);
+  const truck = { length: 240, width: 96, height: 96 };
+  const cases = [
+    { id: 'real', name: 'R', dimensions: { length: 20, width: 20, height: 20 }, weight: 100, volume: 8000 },
+  ];
+  const pack = { id: 'p', title: 'P', truck, cases: [
+    // packed (inside truck, near floor/center)
+    { id: 'a', caseId: 'real', transform: { position: { x: 20, y: 10, z: 0 } } },
+    // staged (far outside the truck in -X staging area)
+    { id: 'b', caseId: 'real', transform: { position: { x: -200, y: 10, z: 0 } } },
+    // unresolved (no such case)
+    { id: 'c', caseId: 'ghost', transform: { position: { x: 30, y: 10, z: 0 } } },
+  ] };
+  const stats = PackLibrary.computeStats(pack, cases);
+  assert.equal(stats.totalCases, 3, 'totalCases counts every instance');
+  assert.equal(stats.packedCases, 1, 'one packed');
+  assert.equal(stats.stagedCases, 1, 'one staged (resolved but outside truck)');
+  assert.equal(stats.unresolvedInstances, 1, 'one unresolved');
+  assert.equal(stats.totalsComplete, false, 'totals incomplete with an unresolved instance');
+  assert.equal(stats.utilizationComplete, false, 'utilization incomplete');
+  // Sanity: packed + staged + unresolved == total (hidden = 0 here).
+  assert.equal(stats.packedCases + stats.stagedCases + stats.unresolvedInstances, stats.totalCases);
+});
+
+test('CARGO-RULE-V5 editor never fabricates 24in-cube dims for dangling items', async () => {
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  assert.doesNotMatch(editorSrc, /\{\s*length:\s*24,\s*width:\s*24,\s*height:\s*24\s*\}/,
+    'no fabricated 24x24x24 fallback may remain in editor placement/movement/unpack paths');
+});
+
+test('CARGO-RULE-V5 export reports unresolved refs and AutoPack excludes them', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}${stamp}`);
+  const Legacy = await import(`${autoPackLegacySolverPath.href}${stamp}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  // Two unresolved + one resolved instance.
+  const cases = { real: { id: 'real', dimensions: { length: 10, width: 10, height: 10 }, volume: 1000, shape: 'box' } };
+  const instances = [
+    { id: 'i1', caseId: 'ghost1', hidden: false },
+    { id: 'i2', caseId: 'real', hidden: false },
+    { id: 'i3', caseId: 'ghost2', hidden: false },
+  ];
+  const items = Legacy.buildLegacyAutoPackItems({
+    instances,
+    getCaseById: (id) => cases[id] || null,
+    volumeInCubicInches: (d) => d.length * d.width * d.height,
+    orientationTools: { normalizeRightAngleRotation: PackLibrary.normalizeRightAngleRotation, getOrientedDimsForRotation: PackLibrary.getOrientedDimsForRotation },
+  });
+  assert.equal(items.length, 1, 'AutoPack item preparation drops both unresolved instances (never fake dims)');
+  assert.equal(items[0].inst.id, 'i2', 'only the resolved instance becomes an AutoPack item');
+});
+
 test('CARGO-RULE-V1 existing dangling instance: stats expose it, export preserves it, no crash', async () => {
   const StateStore = await import(stateStorePath.href);
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
@@ -1697,12 +1756,18 @@ test('CARGO-RULE-V1 existing dangling instance: stats expose it, export preserve
   assert.equal(stats.packedCases, 0, 'unresolved item is not counted as packed');
   assert.equal(stats.unresolvedInstances, 1, 'stats expose the unresolved instance count');
   assert.equal(stats.totalWeight, 0, 'no invented weight for the unresolved item');
-  // Export preserves the dangling reference for recovery.
+  assert.equal(stats.totalsComplete, false, 'totals are flagged incomplete when an instance is unresolved');
+  assert.equal(stats.weightComplete, false, 'weight completeness flag is false');
+  assert.equal(stats.volumeComplete, false, 'volume completeness flag is false');
+  // Export preserves the dangling reference for recovery AND reports it explicitly.
+  const payload = IE.buildPackExportPayload(dpack);
+  assert.deepEqual(payload.unresolvedCaseRefs, ['ghost'], 'export reports the unresolved case ref');
+  assert.match(payload.unresolvedNote, /missing/i, 'export carries a human-readable missing-definition note');
   const json = IE.buildPackExportJSON(dpack);
   assert.match(json, /"caseId":\s*"ghost"/, 'export keeps the unresolved caseId for recovery');
 
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
-  assert.match(editorSrc, /renderUnresolvedCaseInspector\(inst\)/, 'Inspector shows an unresolved-case warning instead of an empty panel');
+  assert.match(editorSrc, /renderUnresolvedCaseInspector\(pack, inst\)/, 'Inspector shows an unresolved-case warning instead of an empty panel');
 });
 
 test('CARGO-RULE-V1 repeated conflicting pack import is idempotent (no Imported 2/3...)', async () => {
@@ -11904,8 +11969,11 @@ test('G1.2C-INSPECTOR-CARD-POLISH Stats card uses label/value rows and keeps the
   const statsBlock = src.slice(statsStart, statsEnd);
 
   const labelValueRows = statsBlock.match(/<div class="row space-between">/g) || [];
-  assert.equal(labelValueRows.length, 4,
-    'Stats card must render exactly 4 label/value rows using the existing row space-between pattern');
+  // 4 always-present stat rows + 1 conditional "Unresolved cases" row (dangling refs).
+  assert.equal(labelValueRows.length, 5,
+    'Stats card renders the 4 core label/value rows plus a conditional Unresolved row');
+  assert.match(statsBlock, /Unresolved cases/, 'Stats card surfaces an Unresolved cases row');
+  assert.match(statsBlock, /unresolvedCount > 0/, 'the Unresolved row is conditional on unresolvedCount');
 
   ['Cases loaded', 'Packed (in truck)', 'Volume used', 'Total weight'].forEach(label => {
     const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

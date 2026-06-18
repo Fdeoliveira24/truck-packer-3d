@@ -810,6 +810,7 @@ export function computeStats(pack, caseLibraryOverride) {
   let usedIn3 = 0;
   let totalWeight = 0;
   let packedCases = 0;
+  let stagedCases = 0;
   let hiddenCases = 0;
   let unresolvedInstances = 0;
   const getCase = caseId => {
@@ -821,7 +822,8 @@ export function computeStats(pack, caseLibraryOverride) {
     const c = getCase(inst.caseId);
     if (!c) {
       // Instance references a missing case definition. Do not silently treat the
-      // totals as complete — surface it so the editor/Inspector can warn.
+      // totals as complete and never invent dimensions — surface it so the
+      // editor/Inspector/Stats/PDF/export can warn and the totals read incomplete.
       if (!inst.hidden) unresolvedInstances++;
       return;
     }
@@ -837,7 +839,10 @@ export function computeStats(pack, caseLibraryOverride) {
       max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
     };
     const insideTruck = isAabbContainedInAnyZone(aabb, zonesInches);
-    if (!insideTruck) return;
+    if (!insideTruck) {
+      stagedCases++;
+      return;
+    }
     packedCases++;
     usedIn3 += c.volume || Utils.volumeInCubicInches(dims);
     totalWeight += Number(c.weight) || 0;
@@ -847,10 +852,15 @@ export function computeStats(pack, caseLibraryOverride) {
   const cog = computeCoG(pack, caseLib);
   const oogWarnings = computeShapeAwareOOGWarnings(pack, caseLib);
   const palletWarnings = computePalletWarnings(pack, caseLib);
+  // Completeness: when any instance is unresolved, weight/volume/utilization totals
+  // are necessarily incomplete (we never fabricate the missing item's physical
+  // contribution). Surfaces must avoid any "complete"/"fits all" wording when false.
+  const totalsComplete = unresolvedInstances === 0;
   return {
     totalCases: (pack.cases || []).length,
     hiddenCases,
     packedCases,
+    stagedCases,
     unresolvedInstances,
     volumeUsed: usedIn3,
     volumePercent,
@@ -858,6 +868,10 @@ export function computeStats(pack, caseLibraryOverride) {
     cog,
     oogWarnings,
     palletWarnings,
+    totalsComplete,
+    weightComplete: totalsComplete,
+    volumeComplete: totalsComplete,
+    utilizationComplete: totalsComplete,
   };
 }
 

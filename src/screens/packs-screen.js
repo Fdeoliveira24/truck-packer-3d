@@ -117,7 +117,10 @@ export function createPacksScreen({
       const packed = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : 0;
       const pct = stats && Number.isFinite(stats.volumePercent) ? stats.volumePercent : 0;
       const weight = Utils.formatWeight(stats && stats.totalWeight, prefs.units.weight);
-      return `Packed: ${packed}/${loaded} • Volume: ${pct.toFixed(1)}% • Weight: ${weight}`;
+      const unresolved = stats && Number.isFinite(stats.unresolvedInstances) ? stats.unresolvedInstances : 0;
+      const base = `Packed: ${packed}/${loaded} • Volume: ${pct.toFixed(1)}% • Weight: ${weight}`;
+      // Surface incompleteness in the grid/list so totals are never read as complete.
+      return unresolved > 0 ? `${base} • ${unresolved} unresolved` : base;
     }
 
     function initPacksUI() {

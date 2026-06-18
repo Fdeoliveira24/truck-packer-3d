@@ -1376,8 +1376,11 @@ export function createInteractionManager({
         const inst = (pack.cases || []).find(i => i.id === id);
         if (!inst) return;
         const c = CaseLibrary.getById(inst.caseId);
-        const baseDims = (c && c.dimensions) || { length: 24, width: 24, height: 24 };
-        const dims = inst.orientedDims || baseDims;
+        // Never fabricate physical dimensions for an unresolved (dangling) item.
+        // Without a real case definition or stored oriented dims we cannot classify
+        // its placement, so leave it as-is rather than invent a 24in cube.
+        const dims = inst.orientedDims || (c && c.dimensions) || null;
+        if (!dims) return;
         const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
         const aabb = {
           min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
@@ -2079,14 +2082,16 @@ export function createEditorScreen({
       const acceptedAabbs = [];
       const nextCases = (pack.cases || []).map(inst => {
         const c = CaseLibrary.getById(inst.caseId);
-        const baseDims = (c && c.dimensions) || { length: 24, width: 24, height: 24 };
         // Respect any oriented dimensions produced by AutoPack (prevents overlap when
-        // cases were rotated/flipped while packed).
+        // cases were rotated/flipped while packed). Never fabricate dimensions for an
+        // unresolved (dangling) item — leave it untouched rather than invent a cube.
         const od = inst && inst.orientedDims ? inst.orientedDims : null;
+        const baseDims = od || (c && c.dimensions) || null;
+        if (!baseDims) return inst;
         const dims = {
-          length: od ? od.length : baseDims.length,
-          width: od ? od.width : baseDims.width,
-          height: od ? od.height : baseDims.height,
+          length: baseDims.length,
+          width: baseDims.width,
+          height: baseDims.height,
         };
         const staged = PackLibrary.findSafeStagingPosition(pack, dims, acceptedAabbs);
         acceptedAabbs.push(staged.aabb);
@@ -2145,13 +2150,13 @@ export function createEditorScreen({
       }
       const c = CaseLibrary.getById(inst.caseId);
       if (!c) {
-        renderUnresolvedCaseInspector(inst);
+        renderUnresolvedCaseInspector(pack, inst);
         return;
       }
       renderSingleInspector(pack, inst, c, prefs);
     }
 
-    function renderUnresolvedCaseInspector(inst) {
+    function renderUnresolvedCaseInspector(pack, inst) {
       const card = document.createElement('div');
       card.className = 'card';
       card.classList.add('tp3d-editor-card-grid-gap-12');
@@ -2164,6 +2169,18 @@ export function createEditorScreen({
       msg.textContent = `This item references a missing case definition (${inst && inst.caseId ? inst.caseId : 'unknown'}). It is excluded from AutoPack and Stats. Re-import the source pack or delete this item.`;
       card.appendChild(title);
       card.appendChild(msg);
+      // Reachable repair/remove: the user can always delete the dangling item.
+      const deleteButton = makeActionButton({
+        label: 'Delete item',
+        iconClass: 'fa-solid fa-trash',
+        danger: true,
+        onClick: () => {
+          PackLibrary.removeInstances(pack.id, [inst.id]);
+          StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
+          CaseScene.setSelected([]);
+        },
+      });
+      card.appendChild(deleteButton);
       inspectorEl.appendChild(card);
     }
 
@@ -2789,12 +2806,21 @@ export function createEditorScreen({
       const statsEl = document.createElement('div');
       statsEl.className = 'card';
       statsEl.classList.add('tp3d-editor-stats-card');
+      const unresolvedCount = stats.unresolvedInstances || 0;
+      const unresolvedRow = unresolvedCount > 0
+        ? `<div class="row space-between"><span class="muted tp3d-editor-fs-sm">Unresolved cases</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${unresolvedCount}</b></div>`
+        : '';
+      const incompleteNote = unresolvedCount > 0
+        ? `<div class="muted tp3d-editor-fs-xs">${unresolvedCount} cargo item${unresolvedCount === 1 ? '' : 's'} could not be resolved. Weight and volume totals are incomplete.</div>`
+        : '';
       statsEl.innerHTML = `
               <div class="tp3d-editor-fw-semibold">Stats</div>
               <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Cases loaded</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${stats.totalCases}</b></div>
               <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Packed (in truck)</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${stats.packedCases}</b></div>
+              ${unresolvedRow}
               <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Volume used</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${stats.volumePercent.toFixed(1)}%</b></div>
               <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Total weight</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}</b></div>
+              ${incompleteNote}
             `;
 
       card.appendChild(shapeRow);
@@ -2975,6 +3001,18 @@ export function createEditorScreen({
       title.classList.add('tp3d-editor-fw-semibold');
       title.textContent = `${selected.length} cases selected`;
       card.appendChild(title);
+      // Surface unresolved (dangling) items inside a multi-selection so the user can
+      // see they are excluded from AutoPack and Stats.
+      const unresolvedSelected = selected
+        .map(id => (pack.cases || []).find(i => i.id === id))
+        .filter(inst => inst && !CaseLibrary.getById(inst.caseId)).length;
+      if (unresolvedSelected > 0) {
+        const note = document.createElement('div');
+        note.className = 'muted';
+        note.classList.add('tp3d-editor-sub-sm');
+        note.textContent = `${unresolvedSelected} of these reference a missing case definition and are excluded from AutoPack and Stats.`;
+        card.appendChild(note);
+      }
       inspectorEl.appendChild(card);
 
       // === Batch Rotation Card ===

@@ -1,0 +1,19 @@
+﻿name,manufacturer,category,length,width,height,weight,canFlip,orientationLock,noStackOnTop,maxStackCount,isPallet,maxPalletWeight,laneItem,loadPriority,notes,color
+Standard Carton 24,SampleCo,Boxes,24,18,16,35,No,Any,No,0,No,0,Automatic,Normal,Baseline box; no special rules.,#4F46E5
+Flippable Cube 20,SampleCo,Boxes,20,20,20,28,Yes,Any,No,0,No,0,Automatic,Normal,Symmetric cube; flipping is allowed.,#2563EB
+Upright Appliance,Home Freight,Appliances,30,28,66,185,No,Upright,Yes,0,No,0,Never,High,Keep upright. Nothing may be placed on top.,#DC2626
+On-Side Roll,Industrial Roll,Cylindrical Cargo,60,20,20,90,No,On Side,No,1,No,0,Always,Normal,Tests canonical On Side orientation and lane handling.,#0891B2
+No Top Load Case,SampleCo,Fragile-Like,36,24,18,55,No,Upright,Yes,3,No,0,Automatic,High,maxStackCount is preserved but ignored while no-top-load is active.,#F59E0B
+Direct Stack Limit 1,SampleCo,Stacking Tests,48,40,12,120,No,Any,No,1,No,0,Automatic,Normal,Allows exactly one direct child on top.,#16A34A
+Direct Stack Limit 2,SampleCo,Stacking Tests,48,40,12,150,No,Any,No,2,No,0,Automatic,Normal,Allows exactly two direct children on top.,#15803D
+Unlimited Stack Base,SampleCo,Stacking Tests,48,40,14,180,No,Any,No,0,No,0,Automatic,Low,0 means unlimited direct children.,#166534
+Pallet Base 48x40,Warehouse Supply,Pallets,48,40,6,45,No,Upright,No,0,Yes,2200,Never,High,Pallet/load base. 2200 is a warning-only limit.,#92400E
+Pallet No-Top Conflict,Warehouse Supply,Pallets,48,40,6,45,No,Upright,Yes,2,Yes,1800,Never,Normal,Intentional rule combination for explanatory-copy testing.,#78350F
+Long Beam 144,Steel Works,Long Items,144,8,8,210,No,On Side,Yes,0,No,0,Always,High,Forces long-item lane handling.,#6B7280
+Long Beam No Lane,Steel Works,Long Items,120,10,10,175,No,On-Side,Yes,0,No,0,Never,Normal,Tests Never lane value and orientation alias.,#4B5563
+Priority High Box,Priority Lab,Priority Tests,30,20,20,60,No,Any,No,0,No,0,Automatic,High,Same geometry as low-priority case; high should win tie-break.,#7C3AED
+Priority Low Box,Priority Lab,Priority Tests,30,20,20,60,No,Any,No,0,No,0,Automatic,Low,Same geometry as high-priority case.,#A78BFA
+Alias OnSide,Alias Lab,Orientation Aliases,30,20,10,25,No,onSide,No,0,No,0,Automatic,Normal,Canonical spelling.,#0F766E
+Alias onside,Alias Lab,Orientation Aliases,30,20,10,25,No,onside,No,0,No,0,Automatic,Normal,Lowercase alias.,#0D9488
+Alias on-side,Alias Lab,Orientation Aliases,30,20,10,25,No,on-side,No,0,No,0,Automatic,Normal,Hyphen alias.,#14B8A6
+Alias on_side,Alias Lab,Orientation Aliases,30,20,10,25,No,on_side,No,0,No,0,Automatic,Normal,Underscore alias.,#2DD4BF

@@ -1,0 +1,13 @@
+﻿name,manufacturer,category,length,width,height,weight,canFlip,orientationLock,noStackOnTop,maxStackCount,isPallet,maxPalletWeight,laneItem,loadPriority,notes,color
+Warn Invalid Flip,QA Lab,Warnings,24,18,16,35,maybe,Any,No,0,No,0,Automatic,Normal,Expected: canFlip warning and fallback to No.,#991B1B
+Warn Invalid Orientation,QA Lab,Warnings,24,18,16,35,Yes,diagonal,No,0,No,0,Automatic,Normal,Expected: orientation warning and fallback to Any.,#9F1239
+Warn Invalid NoTop,QA Lab,Warnings,24,18,16,35,No,Any,sometimes,0,No,0,Automatic,Normal,Expected: noStackOnTop warning and fallback to No.,#BE123C
+Warn Decimal Stack,QA Lab,Warnings,24,18,16,35,No,Any,No,2.7,No,0,Automatic,Normal,Expected: stack-count warning and fallback according to parser contract.,#C2410C
+Warn Negative Stack,QA Lab,Warnings,24,18,16,35,No,Any,No,-2,No,0,Automatic,Normal,Expected: stack-count warning and fallback to 0.,#EA580C
+Warn Invalid Pallet,QA Lab,Warnings,48,40,6,45,No,Upright,No,0,perhaps,1200,Never,Normal,Expected: isPallet warning and fallback to No.,#B45309
+Warn Negative Pallet Limit,QA Lab,Warnings,48,40,6,45,No,Upright,No,0,Yes,-500,Never,Normal,Expected: maxPalletWeight warning and fallback to 0.,#A16207
+Warn Invalid Lane,QA Lab,Warnings,120,10,10,175,No,On Side,No,0,No,0,Sometimes,Normal,Expected: lane warning and fallback to Automatic.,#854D0E
+Warn Invalid Priority,QA Lab,Warnings,30,20,20,60,No,Any,No,0,No,0,Automatic,Urgent,Expected: priority warning and fallback to Normal.,#713F12
+Warn Huge Dimension,QA Lab,Warnings,1e300,20,10,25,No,Any,No,0,No,0,Automatic,Normal,Expected: data-sanity warning or rejection; must not create Infinity volume.,#7F1D1D
+Warn Huge Stack,QA Lab,Warnings,24,18,16,35,No,Any,No,999999999999999,No,0,Automatic,Normal,"Expected: bounded, warned, or rejected.",#881337
+,QA Lab,Warnings,24,18,16,35,No,Any,No,0,No,0,Automatic,Normal,Rename this cell to blank before import to test blocking validation.,#7F1D1D

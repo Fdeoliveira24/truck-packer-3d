@@ -62,21 +62,30 @@ export function getById(caseId) {
   return getCases().find(c => c.id === caseId) || null;
 }
 
-export function upsert(caseData) {
+// Pure: produce the canonical, storage-ready case object WITHOUT touching state.
+// Used by upsert and by atomic import preflight so a case can be fully prepared
+// (and validated) before any commit. Guards a missing dimensions object so a
+// malformed case never throws mid-loop and leaves a partial mutation behind.
+export function buildStorableCase(caseData) {
   const now = Date.now();
-  const cases = getCases();
-  const idx = cases.findIndex(c => c.id === caseData.id);
   const next = canonicalizeCaseCargoFields(applyCaseDefaultColor({ ...caseData }));
   next.updatedAt = now;
   if (!next.createdAt) next.createdAt = now;
+  const dims = next.dimensions && typeof next.dimensions === 'object' ? next.dimensions : {};
   next.dimensions = {
-    length: Number(next.dimensions.length) || 0,
-    width: Number(next.dimensions.width) || 0,
-    height: Number(next.dimensions.height) || 0,
+    length: Number(dims.length) || 0,
+    width: Number(dims.width) || 0,
+    height: Number(dims.height) || 0,
   };
   next.weight = Number(next.weight) || 0;
   next.volume = Utils.volumeInCubicInches(next.dimensions);
+  return next;
+}
 
+export function upsert(caseData) {
+  const cases = getCases();
+  const idx = cases.findIndex(c => c.id === caseData.id);
+  const next = buildStorableCase(caseData);
   const nextCases = idx > -1 ? cases.map((c, i) => (i === idx ? next : c)) : [...cases, next];
 
   StateStore.set({ caseLibrary: nextCases });

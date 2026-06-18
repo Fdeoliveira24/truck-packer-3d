@@ -1396,6 +1396,136 @@ test('CARGO-RULE-V1 batch import skips only the invalid pack; valid packs import
   assert.equal((StateStore.get('packLibrary') || []).length, 2, 'only valid packs are saved');
 });
 
+// ---------------------------------------------------------------------------
+// PHASE 2: Atomic pack import (pure preflight + single state commit)
+// ---------------------------------------------------------------------------
+
+// Snapshot the libraries as JSON so we can prove byte-equivalence after a failure.
+function packImportStateSnapshot(StateStore) {
+  return {
+    caseLibrary: JSON.stringify(StateStore.get('caseLibrary') || []),
+    packLibrary: JSON.stringify(StateStore.get('packLibrary') || []),
+  };
+}
+
+// A pack that bundles one good case and references one good + one extra case id
+// whose bundled definition is supplied separately (so we can corrupt position).
+function makeMultiCasePayload(bundledCases) {
+  return {
+    pack: {
+      id: 'p-multi', title: 'Multi', truck: { length: 240, width: 96, height: 96 },
+      cases: bundledCases.map((c, i) => makePackImportInstance(c.id, { id: `i-${i}`, transform: { position: { x: 8 + i * 16, y: 5, z: 0 } } })),
+    },
+    bundledCases,
+  };
+}
+
+test('CARGO-RULE-V2 atomic import: a valid import adds all cases + the pack (full before/after)', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const before = packImportStateSnapshot(StateStore);
+  const payload = makeMultiCasePayload([
+    makePackImportSafeCase({ id: 'b1', name: 'B1' }),
+    makePackImportSafeCase({ id: 'b2', name: 'B2' }),
+  ]);
+  PackLibrary.importPackPayload(payload);
+  assert.notDeepEqual(packImportStateSnapshot(StateStore), before, 'state changed on a valid import');
+  assert.equal((StateStore.get('caseLibrary') || []).length, 2, 'both bundled cases added');
+  assert.equal((StateStore.get('packLibrary') || []).length, 1, 'the pack was added');
+});
+
+for (const where of ['first', 'middle', 'last']) {
+  test(`CARGO-RULE-V2 atomic import: malformed ${where} bundled case → no mutation at all`, async () => {
+    const StateStore = await import(stateStorePath.href);
+    const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+    // Seed an existing case so we can prove the existing library is untouched too.
+    const seed = makePackImportSafeCase({ id: 'seed', name: 'Seed' });
+    StateStore.init({ caseLibrary: [seed], packLibrary: [], folderLibrary: [], preferences: {} });
+    const before = packImportStateSnapshot(StateStore);
+
+    const good1 = makePackImportSafeCase({ id: 'g1', name: 'G1' });
+    const good2 = makePackImportSafeCase({ id: 'g2', name: 'G2' });
+    const bad = { id: 'bad', name: 'Bad', dimensions: { length: 0, width: 'x', height: -3 }, weight: 5 };
+    const order = where === 'first' ? [bad, good1, good2] : where === 'middle' ? [good1, bad, good2] : [good1, good2, bad];
+
+    assert.throws(() => PackLibrary.importPackPayload(makeMultiCasePayload(order)), /blocked/i,
+      `malformed ${where} bundled case must block the import`);
+
+    const after = packImportStateSnapshot(StateStore);
+    assert.deepEqual(after, before, 'case + pack libraries are byte-equivalent after the failure (no partial mutation)');
+    assert.equal((StateStore.get('caseLibrary') || []).length, 1, 'only the pre-existing seed case remains');
+    assert.equal((StateStore.get('packLibrary') || []).length, 0, 'no pack was saved');
+  });
+}
+
+test('CARGO-RULE-V2 atomic import: blank/missing instance caseId is rejected with no side effect', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const before = packImportStateSnapshot(StateStore);
+  for (const blank of ['', '   ', null, undefined]) {
+    const payload = {
+      pack: { id: 'pb', title: 'PB', truck: { length: 120, width: 60, height: 60 },
+        cases: [makePackImportInstance(blank, { id: 'ib', transform: { position: { x: 5, y: 5, z: 0 } } })] },
+      bundledCases: [makePackImportSafeCase({ id: 'unused', name: 'Unused' })],
+    };
+    assert.throws(() => PackLibrary.importPackPayload(payload), /blank or missing/i, `blank caseId (${JSON.stringify(blank)}) must block`);
+  }
+  assert.deepEqual(packImportStateSnapshot(StateStore), before, 'no state change after blank-caseId rejections');
+});
+
+test('CARGO-RULE-V2 atomic import: failure after a planned conflict leaves no local case changed', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  // Existing case forces an id-conflict plan for the first bundled case.
+  const existing = makePackImportSafeCase({ id: 'dup', name: 'Existing Dup', weight: 999 });
+  StateStore.init({ caseLibrary: [existing], packLibrary: [], folderLibrary: [], preferences: {} });
+  const before = packImportStateSnapshot(StateStore);
+  // First bundled case conflicts (same id, different cargo → planned rename), the
+  // last is malformed → the whole plan must abort with nothing committed.
+  const conflicting = makePackImportSafeCase({ id: 'dup', name: 'Incoming Dup', weight: 1 });
+  const bad = { id: 'bad2', name: 'Bad2', dimensions: null };
+  assert.throws(() => PackLibrary.importPackPayload(makeMultiCasePayload([conflicting, bad])), /blocked/i);
+  assert.deepEqual(packImportStateSnapshot(StateStore), before, 'planned conflict + later failure leaves the library byte-equivalent');
+  assert.equal((StateStore.get('caseLibrary') || []).length, 1, 'no conflict-renamed case was created');
+});
+
+test('CARGO-RULE-V2 atomic import: repeating a conflicting import three times is idempotent', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const existing = makePackImportSafeCase({ id: 'shared', name: 'Shared', weight: 10 });
+  StateStore.init({ caseLibrary: [existing], packLibrary: [], folderLibrary: [], preferences: {} });
+  // Different cargo than the local 'shared' (heavier) → forces a conflict copy.
+  const mkConflict = () => ({
+    pack: { id: 'pc', title: 'PC', truck: { length: 120, width: 60, height: 60 },
+      cases: [makePackImportInstance('shared', { id: 'ic', transform: { position: { x: 5, y: 5, z: 0 } } })] },
+    bundledCases: [makePackImportSafeCase({ id: 'shared', name: 'Shared', weight: 250 })],
+  });
+  PackLibrary.importPackPayload(mkConflict());
+  const afterFirst = (StateStore.get('caseLibrary') || []).length;
+  PackLibrary.importPackPayload(mkConflict());
+  PackLibrary.importPackPayload(mkConflict());
+  const afterThird = (StateStore.get('caseLibrary') || []).length;
+  assert.equal(afterFirst, 2, 'first conflicting import creates exactly one (Imported) copy');
+  assert.equal(afterThird, 2, 'two further identical conflicting imports reuse the copy (no Imported 2/3)');
+  assert.equal((StateStore.get('packLibrary') || []).length, 3, 'each import still adds its pack');
+});
+
+test('CARGO-RULE-V2 planPackImport is pure: planning alone never mutates state', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const before = packImportStateSnapshot(StateStore);
+  const plan = PackLibrary.planPackImport(makeMultiCasePayload([
+    makePackImportSafeCase({ id: 'p1', name: 'P1' }),
+    makePackImportSafeCase({ id: 'p2', name: 'P2' }),
+  ]));
+  assert.deepEqual(packImportStateSnapshot(StateStore), before, 'planPackImport must not write to StateStore');
+  assert.equal(plan.newCases.length, 2, 'plan carries the two prepared new cases');
+  assert.ok(plan.pack && plan.pack.stats, 'plan carries a fully built pack with stats');
+});
+
 test('CARGO-RULE-V1 existing dangling instance: stats expose it, export preserves it, no crash', async () => {
   const StateStore = await import(stateStorePath.href);
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
@@ -9710,12 +9840,17 @@ test('phase 0.7B-1B single pack export does not carry folder assignments', async
 });
 
 test('phase 0.7B-1B single pack import clears folderId to null', async () => {
-  const src = await fs.readFile(new URL('../../src/services/pack-library.js', import.meta.url), 'utf8');
-  const start = src.indexOf('export function importPackPayload(');
-  const fn = start >= 0 ? src.slice(start) : '';
-
-  assert.ok(fn, 'importPackPayload must be extractable');
-  assert.match(fn, /pack\.folderId\s*=\s*null/,
+  // Runtime behavior: a single pack import must drop any incoming folderId because
+  // folder import is workspace-level only (replaces a brittle source-slice check).
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const imported = PackLibrary.importPackPayload(makePackImportPayload(
+    makePackImportSafeCase({ id: 'c-folder', name: 'Folder Case' }),
+    [makePackImportInstance('c-folder', { id: 'i-folder', transform: { position: { x: 5, y: 5, z: 0 } } })],
+    { folderId: 'some-folder-id' }
+  ));
+  assert.equal(imported.folderId, null,
     'single pack import must clear folderId because folder import is workspace-level only');
 });
 

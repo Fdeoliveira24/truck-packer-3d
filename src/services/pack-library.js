@@ -921,7 +921,28 @@ function cargoFingerprint(c) {
   ]);
 }
 
-export function importPackPayload(payload) {
+// A bundled case definition is "complete" (storable) only if it is an object
+// with a non-blank id and finite positive dimensions. Anything else is malformed
+// and must block the whole import before any mutation. Returns an error string,
+// or null when the definition is valid.
+function validateBundledCaseDefinition(c) {
+  if (!c || typeof c !== 'object') return 'bundled case definition is not an object';
+  if (!String(c.id || '').trim()) return 'bundled case definition is missing an id';
+  const d = c.dimensions;
+  if (!d || typeof d !== 'object') return `bundled case "${c.id}" is missing dimensions`;
+  const ok = v => Number.isFinite(Number(v)) && Number(v) > 0;
+  if (!ok(d.length) || !ok(d.width) || !ok(d.height)) {
+    return `bundled case "${c.id}" has invalid dimensions`;
+  }
+  return null;
+}
+
+// PURE preflight: parse, validate, canonicalize and plan a pack import WITHOUT
+// mutating the case library, pack library, or StateStore. Returns a complete
+// import plan ({ currentCases, currentPacks, newCases, pack, caseConflicts }) or
+// throws with zero side effects. The single state commit happens only in
+// importPackPayload after the entire plan succeeds.
+export function planPackImport(payload) {
   const now = Date.now();
   const incomingPack = payload && payload.pack;
   if (!incomingPack || !incomingPack.truck || !Array.isArray(incomingPack.cases)) {
@@ -931,6 +952,24 @@ export function importPackPayload(payload) {
   const bundled = Array.isArray(payload.bundledCases) ? payload.bundledCases : [];
   const currentCases = CaseLibrary.getCases();
   const currentPacks = getPacks();
+
+  // Reject blank/missing instance caseId up front — these can never resolve to a
+  // real case and previously slipped past the missing-reference gate.
+  const blankRefCount = (incomingPack.cases || []).filter(
+    inst => !inst || !String(inst.caseId || '').trim()
+  ).length;
+  if (blankRefCount) {
+    throw new Error(
+      `Pack import blocked: ${blankRefCount} instance(s) have a blank or missing case reference.`
+    );
+  }
+
+  // Validate every bundled case definition. A malformed bundled case (anywhere in
+  // the list — first, middle, or last) blocks the entire import atomically.
+  for (const c of bundled) {
+    const err = validateBundledCaseDefinition(c);
+    if (err) throw new Error(`Pack import blocked: ${err}.`);
+  }
 
   const caseById = new Map(currentCases.map(c => [c.id, c]));
   const caseByName = new Map(
@@ -944,8 +983,7 @@ export function importPackPayload(payload) {
 
   // Integrity gate: every instance must reference a case that resolves to either
   // an existing local case or a bundled case definition. Block the whole pack
-  // import otherwise — never save a partial pack as a successful import, and run
-  // this BEFORE adopting any bundled cases so a blocked import has no side effect.
+  // import otherwise — never save a partial pack as a successful import.
   const bundledIds = new Set(bundled.filter(b => b && b.id).map(b => b.id));
   const unresolvedRefs = [...new Set(
     (incomingPack.cases || [])
@@ -962,6 +1000,7 @@ export function importPackPayload(payload) {
 
   const caseIdMap = new Map();
   const caseConflicts = [];
+  const newCases = [];
   // Index of previously-imported cases by their source fingerprint, so repeated
   // conflicting imports reuse the first imported copy (idempotence).
   const caseByImportKey = new Map();
@@ -980,12 +1019,13 @@ export function importPackPayload(payload) {
     return candidate;
   };
 
-  // Adopt a bundled case as a new local case. On a cargo conflict, regenerate
-  // the id and give a unique "(Imported)" name so the imported pack keeps its
-  // intended behavior and the existing local case is never overwritten. With
-  // no conflict the imported id is preserved so re-importing the same pack is
-  // idempotent (it will match by id next time).
-  const adoptNewCase = (c, conflictKind, fingerprint) => {
+  // Plan adoption of a bundled case as a new local case (no mutation). On a cargo
+  // conflict, regenerate the id and give a unique "(Imported)" name so the imported
+  // pack keeps its intended behavior and the existing local case is never
+  // overwritten. With no conflict the imported id is preserved so re-importing the
+  // same pack is idempotent (it will match by id next time). The fully prepared,
+  // canonical case is accumulated in `newCases` and committed once by the caller.
+  const planNewCase = (c, conflictKind, fingerprint) => {
     const copy = Utils.deepClone(c);
     if (conflictKind) {
       copy.id = Utils.uuid();
@@ -993,27 +1033,25 @@ export function importPackPayload(payload) {
     } else {
       copy.id = c.id;
     }
-    copy.createdAt = copy.createdAt || now;
-    copy.updatedAt = now;
-    copy.volume = copy.volume || Utils.volumeInCubicInches(copy.dimensions || { length: 0, width: 0, height: 0 });
     // Stamp the source fingerprint so a future identical import reuses this copy.
     copy.importSourceKey = fingerprint;
-    CaseLibrary.upsert(copy);
-    caseIdMap.set(c.id, copy.id);
-    caseById.set(copy.id, copy);
-    caseByImportKey.set(fingerprint, copy);
-    const newNameKey = String(copy.name || '').trim().toLowerCase();
-    if (newNameKey) caseByName.set(newNameKey, copy);
+    const storable = CaseLibrary.buildStorableCase(copy);
+    newCases.push(storable);
+    caseIdMap.set(c.id, storable.id);
+    caseById.set(storable.id, storable);
+    caseByImportKey.set(fingerprint, storable);
+    const newNameKey = String(storable.name || '').trim().toLowerCase();
+    if (newNameKey) caseByName.set(newNameKey, storable);
     if (conflictKind) {
       caseConflicts.push({
         kind: conflictKind,
         importedId: c.id,
         importedName: String(c.name || ''),
-        newId: copy.id,
-        newName: copy.name,
+        newId: storable.id,
+        newName: storable.name,
       });
     }
-    return copy;
+    return storable;
   };
 
   bundled.forEach(c => {
@@ -1044,7 +1082,7 @@ export function importPackPayload(payload) {
     // True id/name conflict → renamed new case; otherwise a brand-new case that
     // keeps the imported id. Both are stamped with the source fingerprint.
     const conflictKind = localById ? 'id-conflict' : localByName ? 'name-conflict' : null;
-    adoptNewCase(c, conflictKind, fingerprint);
+    planNewCase(c, conflictKind, fingerprint);
   });
 
   const pack = Utils.deepClone(incomingPack);
@@ -1061,17 +1099,36 @@ export function importPackPayload(payload) {
     return next;
   });
 
+  // Final reference validation against the planned final case set.
+  const finalCases = [...currentCases, ...newCases];
+  const finalCaseIds = new Set(finalCases.map(c => c.id));
+  const stillUnresolved = pack.cases.filter(inst => !finalCaseIds.has(inst.caseId));
+  if (stillUnresolved.length) {
+    throw new Error(
+      `Pack import blocked: ${stillUnresolved.length} instance reference(s) could not be resolved after planning.`
+    );
+  }
+
   const rawTruck = pack.truck && typeof pack.truck === 'object' ? pack.truck : {};
   pack.truck = CoreNormalizer.normalizeTruck(rawTruck);
-  const repairedPack = repairPackInstancePlacements(pack, CaseLibrary.getCases());
+  // Repair placements and compute stats against the PLANNED final case set, not
+  // the live store (which is not mutated until the commit below).
+  const repairedPack = repairPackInstancePlacements(pack, finalCases);
   pack.cases = repairedPack.cases;
+  pack.stats = computeStats(pack, finalCases);
 
-  pack.stats = computeStats(pack, CaseLibrary.getCases());
+  return { currentCases, currentPacks, newCases, finalCases, pack, caseConflicts };
+}
 
+export function importPackPayload(payload) {
+  const plan = planPackImport(payload);
+
+  // Single atomic state commit: all planned new cases + the new pack persist
+  // together, or (on any preflight throw above) nothing at all.
   StateStore.set(
     {
-      caseLibrary: CaseLibrary.getCases(),
-      packLibrary: [...currentPacks, pack],
+      caseLibrary: plan.finalCases,
+      packLibrary: [...plan.currentPacks, plan.pack],
       selectedInstanceIds: [],
     },
     { skipHistory: false }
@@ -1079,11 +1136,11 @@ export function importPackPayload(payload) {
 
   // Surface case conflicts to the import UI without persisting them on the pack
   // (non-enumerable so JSON serialization to storage ignores it).
-  Object.defineProperty(pack, 'caseConflicts', {
-    value: caseConflicts,
+  Object.defineProperty(plan.pack, 'caseConflicts', {
+    value: plan.caseConflicts,
     enumerable: false,
     configurable: true,
   });
 
-  return pack;
+  return plan.pack;
 }

@@ -2,6 +2,10 @@
  * Shared Case modal used by the Cases screen and Editor case browser shortcut.
  */
 
+import { canonicalOrientationLock } from '../../core/orientation.js';
+
+export { canonicalOrientationLock };
+
 function createField(doc, label, type = 'text', placeholder = '', required = false) {
   const wrap = doc.createElement('div');
   wrap.className = 'field';
@@ -66,12 +70,6 @@ function createCheckRow(doc, text, checked, help = '') {
   return { row, input };
 }
 
-export function canonicalOrientationLock(value) {
-  const s = String(value == null ? 'any' : value).trim().toLowerCase();
-  if (s === 'upright') return 'upright';
-  if (s === 'onside' || s === 'on-side' || s === 'on side') return 'onSide';
-  return 'any';
-}
 
 export function formatCaseModalNumber(value, unit) {
   const n = Number(value);

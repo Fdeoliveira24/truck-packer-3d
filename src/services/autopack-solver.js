@@ -1,4 +1,5 @@
 import { CONTAINMENT_EPS_INCHES } from './pack-library.js';
+import { canonicalOrientationLock } from '../core/orientation.js';
 
 const RIGHT_ANGLE_RAD = Math.PI / 2;
 const LONG_RATIO = 4;
@@ -121,8 +122,7 @@ export function buildOrientationCandidates(dims = {}, item = {}) {
     return [makeCandidate(oriented.l, oriented.w, oriented.h, lockedRotation, true)];
   }
 
-  const rawLock = String(item.orientationLock || 'any').trim().toLowerCase();
-  const lock = rawLock === 'onside' || rawLock === 'on-side' ? 'onside' : rawLock;
+  const lock = canonicalOrientationLock(item.orientationLock); // 'any' | 'upright' | 'onSide'
   const canFlip = item.canFlip === true;
   const seen = new Set();
   const candidates = [];
@@ -139,7 +139,7 @@ export function buildOrientationCandidates(dims = {}, item = {}) {
     add(d.w, d.l, d.h, 0, RIGHT_ANGLE_RAD, 0);
   }
 
-  if (lock === 'onside') {
+  if (lock === 'onSide') {
     add(d.h, d.w, d.l, 0, 0, RIGHT_ANGLE_RAD);
     add(d.w, d.h, d.l, RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
   }

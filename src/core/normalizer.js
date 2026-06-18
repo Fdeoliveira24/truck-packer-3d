@@ -14,6 +14,7 @@
 import * as CoreUtils from './utils/index.js';
 import * as CoreDefaults from './defaults.js';
 import { uuid } from './browser.js';
+import { canonicalOrientationLock } from './orientation.js';
 
 const DEFAULT_TRUCK = { length: 636, width: 102, height: 98 };
 const RIGHT_ANGLE_RAD = Math.PI / 2;
@@ -216,8 +217,7 @@ export function normalizeCase(c, now) {
   const height = positiveNumber(dims.height, 24);
   const shapeRaw = safeString(c && c.shape, 'box').toLowerCase();
   const shape = shapeRaw === 'cylinder' || shapeRaw === 'drum' || shapeRaw === 'box' ? shapeRaw : 'box';
-  const orientationRaw = safeString(c && c.orientationLock, 'any').toLowerCase();
-  const orientationLock = orientationRaw === 'upright' ? 'upright' : orientationRaw === 'onside' ? 'onSide' : 'any';
+  const orientationLock = canonicalOrientationLock(c && c.orientationLock);
   const maxStackCount = Math.max(0, finiteNumber(c && c.maxStackCount, 0));
   const maxPalletWeight = Math.max(0, finiteNumber(c && c.maxPalletWeight, 0));
   const hazmatRaw = safeString(c && c.hazmatClass, '');

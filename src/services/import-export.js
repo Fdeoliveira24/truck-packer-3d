@@ -16,6 +16,7 @@ import * as Defaults from '../core/defaults.js';
 import * as CoreStorage from '../core/storage.js';
 import * as CaseLibrary from './case-library.js';
 import { APP_VERSION } from '../core/version.js';
+import { canonicalOrientationLock } from '../core/orientation.js';
 
 const MAX_IMPORT_ROWS = 5000;
 const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024;
@@ -86,12 +87,15 @@ function parseBool(v) {
 // Handling-rule cell parsers. Each returns the canonical value; the *Warned
 // variants also return a human-readable warning string when the cell was
 // present but invalid (the value falls back to the canonical default).
+const KNOWN_ORIENTATION_SPELLINGS = new Set(['any', 'upright', 'onside', 'on-side', 'on side', 'on_side']);
 export function parseOrientationLockCell(raw) {
-  const s = String(raw || '').trim().toLowerCase();
-  if (!s || s === 'any') return { value: 'any', warning: null };
-  if (s === 'upright') return { value: 'upright', warning: null };
-  if (s === 'onside' || s === 'on-side' || s === 'on side') return { value: 'onSide', warning: null };
-  return { value: 'any', warning: `invalid orientation "${raw}" (used Any)` };
+  const s = String(raw || '').trim();
+  if (!s) return { value: 'any', warning: null };
+  const value = canonicalOrientationLock(s);
+  if (value === 'any' && !KNOWN_ORIENTATION_SPELLINGS.has(s.toLowerCase())) {
+    return { value: 'any', warning: `invalid orientation "${raw}" (used Any)` };
+  }
+  return { value, warning: null };
 }
 
 export function parseNonNegIntCell(raw, fieldLabel) {

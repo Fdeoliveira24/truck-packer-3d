@@ -3381,6 +3381,44 @@ test('CARGO-RULE-V1 all case surfaces use the shared rule-summary source', async
   assert.ok(!/`Max: \$\{caseData\.maxPalletWeight\} lb`/.test(editorSrc), 'must not show the old enforced-looking "Max: X lb" label');
 });
 
+test('CARGO-RULE-V1 orientation aliases canonicalize consistently across every path', async () => {
+  const orientationPath = new URL('../../src/core/orientation.js', import.meta.url);
+  const { canonicalOrientationLock } = await import(`${orientationPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const dims = { l: 30, w: 20, h: 10 };
+
+  const sideAliases = ['onSide', 'onside', 'on-side', 'on side', 'ON SIDE', 'On-Side', 'on_side'];
+  for (const a of sideAliases) {
+    assert.equal(canonicalOrientationLock(a), 'onSide', `core canon: ${a}`);
+    // Solver: every alias must produce the 2 side candidates (never 0).
+    assert.equal(Solver.buildOrientationCandidates(dims, { orientationLock: a, canFlip: false }).length, 2, `solver candidates for ${a}`);
+    // Normalizer / model store canonical onSide.
+    assert.equal(Normalizer.normalizeCase({ id: 'o', name: 'O', dimensions: { length: 30, width: 20, height: 10 }, orientationLock: a }, Date.now()).orientationLock, 'onSide', `normalizer canon: ${a}`);
+    // Spreadsheet cell parser canonicalizes with no spurious warning.
+    assert.deepEqual(IE.parseOrientationLockCell(a), { value: 'onSide', warning: null }, `import cell: ${a}`);
+    // Manual rotation policy agrees with AutoPack: onSide permits a tipped rotation.
+    assert.equal(PackLib.isOrientationAllowedByCasePolicy({ orientationLock: a }, { x: Math.PI / 2, y: 0, z: 0 }), true, `manual policy onSide: ${a}`);
+  }
+  for (const a of ['upright', 'UPRIGHT']) assert.equal(canonicalOrientationLock(a), 'upright');
+  for (const a of ['any', 'ANY', '', null, undefined, 'sideways', 'garbage']) assert.equal(canonicalOrientationLock(a), 'any', `invalid->any: ${a}`);
+  // Invalid spreadsheet orientation warns and falls back to any.
+  assert.equal(IE.parseOrientationLockCell('sideways').value, 'any');
+  assert.ok(IE.parseOrientationLockCell('sideways').warning, 'invalid orientation warns');
+
+  // Pack-import conflict comparator treats aliases as equivalent (no false conflict).
+  const StateStore = await import(stateStorePath.href);
+  StateStore.init({ caseLibrary: [makePackImportSafeCase({ id: 'oc', name: 'Orient Case', orientationLock: 'onSide' })], packLibrary: [], folderLibrary: [], preferences: {} });
+  const res = PackLib.importPackPayload({
+    pack: { id: 'op', title: 'OP', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('oc', { id: 'oi', transform: { position: { x: 10, y: 5, z: 0 } } })] },
+    bundledCases: [makePackImportSafeCase({ id: 'oc', name: 'Orient Case', orientationLock: 'on side' })],
+  });
+  assert.equal((StateStore.get('caseLibrary') || []).length, 1, 'alias-equivalent bundled case must be reused, not duplicated');
+  assert.equal(res.caseConflicts.length, 0, 'orientation alias difference is not a real conflict');
+});
+
 test('CARGO-RULE-V1 canonicalOrientationLock maps all accepted spellings', async () => {
   const Modal = await import(`${caseModalPath.href}?t=${Date.now()}-${Math.random()}`);
   assert.equal(Modal.canonicalOrientationLock('upright'), 'upright');

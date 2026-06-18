@@ -15,6 +15,7 @@ import * as StateStore from '../core/state-store.js';
 import * as Utils from '../core/utils/index.js';
 import * as CoreNormalizer from '../core/normalizer.js';
 import * as CaseLibrary from './case-library.js';
+import { canonicalOrientationLock } from '../core/orientation.js';
 import { computeCoG } from './cog-service.js';
 import { computePalletWarnings } from './oog-service.js';
 
@@ -335,10 +336,9 @@ export function isOrientationAllowedByCasePolicy(caseData = {}, rotation = {}) {
   const rx = normalizeRightAngle(locked.x);
   const rz = normalizeRightAngle(locked.z);
   const isUpright = rx === 0 && rz === 0;
-  const rawLock = String(caseData.orientationLock || 'any').trim().toLowerCase();
-  const lock = rawLock === 'on-side' ? 'onside' : rawLock;
+  const lock = canonicalOrientationLock(caseData.orientationLock);
   if (lock === 'upright') return isUpright;
-  if (lock === 'onside') return !isUpright;
+  if (lock === 'onSide') return !isUpright;
   return true;
 }
 
@@ -917,13 +917,6 @@ export function computeStats(pack, caseLibraryOverride) {
 // Cargo-defining fields used to decide whether a bundled imported case is
 // equivalent to a local case. Transient fields (ids, timestamps, runtime
 // state, instance transforms) are intentionally excluded.
-function normalizeOrientationLockValue(v) {
-  const s = String(v == null ? 'any' : v).trim().toLowerCase();
-  if (s === 'upright') return 'upright';
-  if (s === 'onside' || s === 'on-side' || s === 'on side') return 'onside';
-  return 'any';
-}
-
 function laneTriStateValue(v) {
   return v === true ? true : v === false ? false : null;
 }
@@ -943,7 +936,7 @@ function cargoRulesEquivalent(a, b) {
     n(ad.height) === n(bd.height) &&
     n(a.weight) === n(b.weight) &&
     Boolean(a.canFlip) === Boolean(b.canFlip) &&
-    normalizeOrientationLockValue(a.orientationLock) === normalizeOrientationLockValue(b.orientationLock) &&
+    canonicalOrientationLock(a.orientationLock) === canonicalOrientationLock(b.orientationLock) &&
     Boolean(a.noStackOnTop) === Boolean(b.noStackOnTop) &&
     (a.stackable !== false) === (b.stackable !== false) &&
     n(a.maxStackCount) === n(b.maxStackCount) &&

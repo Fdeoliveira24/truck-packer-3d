@@ -12,14 +12,7 @@
  * @module services/case-rule-summary
  */
 
-function orientationLockKey(value) {
-  const s = String(value == null ? 'any' : value)
-    .trim()
-    .toLowerCase();
-  if (s === 'upright') return 'upright';
-  if (s === 'onside' || s === 'on-side' || s === 'on side') return 'onSide';
-  return 'any';
-}
+import { canonicalOrientationLock } from '../core/orientation.js';
 
 /**
  * Case-level active non-default handling rules, as short chip labels.
@@ -30,7 +23,7 @@ export function getCaseHandlingSummary(caseData = {}) {
   const c = caseData && typeof caseData === 'object' ? caseData : {};
   const out = [];
 
-  const lock = orientationLockKey(c.orientationLock);
+  const lock = canonicalOrientationLock(c.orientationLock);
   if (lock === 'upright') out.push('Upright');
   else if (lock === 'onSide') out.push('On side');
 

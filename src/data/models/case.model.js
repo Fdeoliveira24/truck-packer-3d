@@ -13,6 +13,7 @@
 
 import { uuid } from '../../utils/uuid.js';
 import { volumeInCubicInches } from '../../core/utils.js';
+import { canonicalOrientationLock } from '../../core/orientation.js';
 
 export function normalizeCase(data) {
   const now = Date.now();
@@ -28,10 +29,7 @@ export function normalizeCase(data) {
     .trim()
     .toLowerCase();
   const shape = shapeRaw === 'cylinder' || shapeRaw === 'drum' || shapeRaw === 'box' ? shapeRaw : 'box';
-  const orientationRaw = String(d.orientationLock || 'any')
-    .trim()
-    .toLowerCase();
-  const orientationLock = orientationRaw === 'upright' ? 'upright' : orientationRaw === 'onside' ? 'onSide' : 'any';
+  const orientationLock = canonicalOrientationLock(d.orientationLock);
   const maxStackCount = Number(d.maxStackCount);
   const maxPalletWeight = Number(d.maxPalletWeight);
   const hazmatRaw = String(d.hazmatClass || '').trim();

@@ -6524,12 +6524,215 @@ test('AUTO-PACK-A0 AutoPack respects locked orientation and keeps unlocked orien
     'locked rotations must be normalized to right-angle editor rotations');
   assert.match(block, /orientationTools\.getOrientedDimsForRotation\(dims, lockedRotation\)/,
     'locked orientation dimensions must come from the shared geometry helper');
-  assert.match(block, /if \(lockedOrientation\) return \[lockedOrientation\];[\s\S]*tryOri\(L, W, H/,
-    'locked items must test only one orientation while unlocked items keep normal orientation candidates');
+  assert.match(block, /if \(lockedOrientation\) return \[lockedOrientation\];[\s\S]*tryOri\(0, 0, 0\)/,
+    'locked items must test only one orientation while unlocked items keep normal orientation candidates (rotation-derived dims)');
   assert.match(src, /const orientations = buildOrientations\(d, c, inst, orientationTools\)/,
     'legacy AutoPack item setup must pass the instance into orientation generation');
   assert.match(engineSrc, /buildLegacyAutoPackItems\(\{[\s\S]*orientationTools:/,
     'AutoPack runtime orchestration must supply orientation helpers to the legacy solver');
+});
+
+// ---------------------------------------------------------------------------
+// REPAIR 1: AutoPack orientation candidate geometry (rotation is the single
+// source of truth; candidate dims are derived from rotation via the shared
+// THREE-compatible helper, never a handwritten permutation).
+// ---------------------------------------------------------------------------
+
+const R1_HALF = Math.PI / 2;
+const r1Truth = (caseDims, rot, truth) => {
+  const t = truth(caseDims, rot);
+  return { l: t.length, w: t.width, h: t.height };
+};
+
+test('REPAIR-1 A: every production AutoPack candidate dimension matches a real THREE Box3', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const truth = await threeOrientedTruth();
+  const caseDims = { length: 30, width: 20, height: 10 };
+  const solverDims = { l: 30, w: 20, h: 10 };
+
+  // Active path candidates across policies — iterate the REAL candidates produced
+  // by production code (not the helper compared with itself).
+  const policies = [
+    { orientationLock: 'any', canFlip: false },
+    { orientationLock: 'any', canFlip: true },
+    { orientationLock: 'upright', canFlip: true },
+    { orientationLock: 'onSide', canFlip: false },
+    { orientationLock: 'onSide', canFlip: true },
+  ];
+  for (const item of policies) {
+    const cands = Solver.buildOrientationCandidates(solverDims, item);
+    assert.ok(cands.length > 0, `candidates exist for ${JSON.stringify(item)}`);
+    for (const c of cands) {
+      assert.deepEqual({ l: c.l, w: c.w, h: c.h }, r1Truth(caseDims, c.rotation, truth),
+        `candidate dims must equal THREE for rotation ${JSON.stringify(c.rotation)} (${JSON.stringify(item)})`);
+    }
+  }
+
+  // Locked rotations: identity, single, compound, negative, 270deg, >360deg.
+  const lockRots = [
+    { x: 0, y: 0, z: 0 },
+    { x: R1_HALF, y: 0, z: 0 },
+    { x: 0, y: 0, z: R1_HALF },
+    { x: R1_HALF, y: 0, z: R1_HALF },
+    { x: R1_HALF, y: R1_HALF, z: R1_HALF },
+    { x: -R1_HALF, y: 0, z: 0 },
+    { x: 3 * R1_HALF, y: 0, z: 0 },
+    { x: 2 * Math.PI + R1_HALF, y: 0, z: R1_HALF },
+  ];
+  for (const rot of lockRots) {
+    const cands = Solver.buildOrientationCandidates(solverDims, { orientationLocked: true, lockedRotation: rot });
+    assert.equal(cands.length, 1, `locked rotation yields exactly one candidate (${JSON.stringify(rot)})`);
+    assert.deepEqual({ l: cands[0].l, w: cands[0].w, h: cands[0].h }, r1Truth(caseDims, cands[0].rotation, truth),
+      `locked candidate dims must equal THREE for ${JSON.stringify(rot)}`);
+  }
+});
+
+test('REPAIR-1 B: 30x20x10 compound regression — no mis-sized geometry is accepted', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const truth = await threeOrientedTruth();
+  const caseDims = { length: 30, width: 20, height: 10 };
+
+  // The exact defect: the X90+Z90 candidate must report the THREE size 10x30x20,
+  // NOT the historical hardcoded 20x10x30 (which rendered 30in wide).
+  const cands = Solver.buildOrientationCandidates({ l: 30, w: 20, h: 10 }, { orientationLock: 'any', canFlip: true });
+  const xz = cands.find(c => Math.abs(c.rotation.x - R1_HALF) < 1e-9 && Math.abs(c.rotation.z - R1_HALF) < 1e-9 && Math.abs(c.rotation.y) < 1e-9);
+  assert.ok(xz, 'the X+Z compound candidate exists');
+  assert.deepEqual({ l: xz.l, w: xz.w, h: xz.h }, { l: 10, w: 30, h: 20 }, 'X+Z candidate is THREE-correct 10x30x20');
+  assert.notDeepEqual({ l: xz.l, w: xz.w, h: xz.h }, { l: 20, w: 10, h: 30 }, 'X+Z must NOT claim the old 20x10x30');
+
+  const assertInBoundsAndConsistent = (res, truck) => {
+    for (const [id, od] of res.orientedDims) {
+      const rot = res.rotations.get(id);
+      assert.deepEqual({ l: od.length, w: od.width, h: od.height }, r1Truth(caseDims, rot, truth),
+        'every placed orientedDims equals THREE for its chosen rotation');
+      const pos = res.placements.get(id);
+      const EPS = 0.05;
+      assert.ok(pos.x - od.length / 2 >= -EPS && pos.x + od.length / 2 <= truck.length + EPS, 'length (x) within truck');
+      assert.ok(pos.z - od.width / 2 >= -truck.width / 2 - EPS && pos.z + od.width / 2 <= truck.width / 2 + EPS, 'width (z) within truck');
+      assert.ok(pos.y - od.height / 2 >= -EPS && pos.y + od.height / 2 <= truck.height + EPS, 'height (y) within truck');
+    }
+  };
+
+  // (1) Tight truck exactly matching the rendered X+Z size (10x30x20) must accept
+  // the item by an honest, in-bounds orientation — never by the old wrong dims.
+  const tight = { length: 20, width: 10, height: 30 };
+  const r1 = Solver.solveAutoPack({ truck: tight, zones: PackLib.getTrailerUsableZones(tight), loadFrontFirst: true,
+    items: [{ instanceId: 'i1', caseId: 'c', dims: { l: 30, w: 20, h: 10 }, canFlip: true, orientationLock: 'any' }] });
+  assertInBoundsAndConsistent(r1, tight);
+
+  // (2) A truck that ONLY the correct X+Y orientation (20x10x30) fits — the item
+  // must pack, and its rendered geometry must be in-bounds.
+  const roomy = { length: 22, width: 12, height: 32 };
+  const r2 = Solver.solveAutoPack({ truck: roomy, zones: PackLib.getTrailerUsableZones(roomy), loadFrontFirst: true,
+    items: [{ instanceId: 'i1', caseId: 'c', dims: { l: 30, w: 20, h: 10 }, canFlip: true, orientationLock: 'any' }] });
+  assert.equal(r2.placements.size, 1, 'the item packs via the correct orientation');
+  assertInBoundsAndConsistent(r2, roomy);
+  const od = r2.orientedDims.get('i1');
+  assert.deepEqual({ l: od.length, w: od.width, h: od.height }, { l: 20, w: 10, h: 30 }, 'packed as the honest 20x10x30 (X+Y)');
+});
+
+test('REPAIR-1 C: Standard / Wheel Wells / Front Overhang placements are THREE-consistent and contained', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const truth = await threeOrientedTruth();
+  const caseDims = { length: 30, width: 20, height: 10 };
+  const modes = [
+    { shapeMode: 'rect' },
+    { shapeMode: 'wheelWells' },
+    { shapeMode: 'frontBonus' },
+  ];
+  for (const extra of modes) {
+    const truck = { length: 240, width: 96, height: 96, ...extra };
+    const zones = PackLib.getTrailerUsableZones(truck);
+    const items = [0, 1, 2, 3].map(i => ({ instanceId: `i${i}`, caseId: 'c', dims: { l: 30, w: 20, h: 10 }, canFlip: true, orientationLock: 'any' }));
+    const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    assert.ok(res.placements.size > 0, `at least one placement in ${extra.shapeMode}`);
+    const aabbs = [];
+    for (const [id, od] of res.orientedDims) {
+      const rot = res.rotations.get(id);
+      assert.deepEqual({ l: od.length, w: od.width, h: od.height }, r1Truth(caseDims, rot, truth),
+        `${extra.shapeMode}: placed orientedDims equals THREE for its rotation`);
+      const pos = res.placements.get(id);
+      const aabb = Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
+      assert.equal(PackLib.isAabbContainedInAnyZone(aabb, zones), true, `${extra.shapeMode}: placed AABB sits inside a usable zone (no blocked region)`);
+      aabbs.push(aabb);
+    }
+    for (let a = 0; a < aabbs.length; a++) {
+      for (let b = a + 1; b < aabbs.length; b++) {
+        assert.equal(Solver.aabbsOverlap(aabbs[a], aabbs[b]), false, `${extra.shapeMode}: placed items do not overlap`);
+      }
+    }
+  }
+});
+
+test('REPAIR-1 D: active solver and live legacy item-prep agree; legacy upright+canFlip never tips', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const Legacy = await import(`${autoPackLegacySolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const orientationTools = {
+    normalizeRightAngleRotation: PackLib.normalizeRightAngleRotation,
+    getOrientedDimsForRotation: PackLib.getOrientedDimsForRotation,
+  };
+  const caseDimsObj = { length: 30, width: 20, height: 10 };
+  const legacyDimSet = (lock, canFlip) => {
+    const cases = { c: { id: 'c', dimensions: caseDimsObj, orientationLock: lock, canFlip, shape: 'box', volume: 6000 } };
+    const items = Legacy.buildLegacyAutoPackItems({
+      instances: [{ id: 'i', caseId: 'c', hidden: false }],
+      getCaseById: id => cases[id] || null,
+      volumeInCubicInches: d => d.length * d.width * d.height,
+      orientationTools,
+    });
+    return new Set(items[0].orientations.map(o => `${o.l}|${o.w}|${o.h}`));
+  };
+  const activeDimSet = (lock, canFlip) =>
+    new Set(Solver.buildOrientationCandidates({ l: 30, w: 20, h: 10 }, { orientationLock: lock, canFlip }).map(c => `${c.l}|${c.w}|${c.h}`));
+
+  for (const lock of ['any', 'upright', 'onSide']) {
+    for (const canFlip of [false, true]) {
+      assert.deepEqual(legacyDimSet(lock, canFlip), activeDimSet(lock, canFlip),
+        `active and live legacy candidate dimension sets agree for ${lock}+${canFlip}`);
+    }
+  }
+
+  // Live legacy upright + canFlip:true must NOT generate any tipped face (height
+  // must stay the case height = 10). This was the legacy lock !== 'onSide' bug.
+  const cases = { c: { id: 'c', dimensions: caseDimsObj, orientationLock: 'upright', canFlip: true, shape: 'box', volume: 6000 } };
+  const items = Legacy.buildLegacyAutoPackItems({
+    instances: [{ id: 'i', caseId: 'c', hidden: false }],
+    getCaseById: id => cases[id] || null,
+    volumeInCubicInches: d => d.length * d.width * d.height,
+    orientationTools,
+  });
+  assert.ok(items[0].orientations.every(o => o.h === 10 && o.rotX === 0 && o.rotZ === 0),
+    'legacy upright + canFlip:true produces upright/yaw candidates only (no tips)');
+
+  // Exact locked rotation agreement (compound).
+  const lockedRot = { x: R1_HALF, y: 0, z: R1_HALF };
+  const activeLocked = Solver.buildOrientationCandidates({ l: 30, w: 20, h: 10 }, { orientationLocked: true, lockedRotation: lockedRot });
+  assert.equal(activeLocked.length, 1);
+  assert.deepEqual({ l: activeLocked[0].l, w: activeLocked[0].w, h: activeLocked[0].h }, { l: 10, w: 30, h: 20 },
+    'active locked compound candidate matches THREE (10x30x20)');
+});
+
+test('REPAIR-1 E: candidate deduplication is by derived dimensions (cube => 1, asymmetric => distinct)', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  // Documented rule: two rotations that yield the SAME effective box are ONE
+  // physical packing candidate. A cube collapses to a single candidate.
+  const cube = Solver.buildOrientationCandidates({ l: 10, w: 10, h: 10 }, { orientationLock: 'any', canFlip: true });
+  assert.equal(cube.length, 1, 'a cube yields exactly one physical candidate');
+  // Square cross-section (l=w): upright yaw rotations are identical footprints.
+  const square = Solver.buildOrientationCandidates({ l: 10, w: 10, h: 30 }, { orientationLock: 'any', canFlip: false });
+  assert.equal(square.length, 1, 'a square upright footprint dedups its two yaw candidates to one');
+  // Fully asymmetric: each generated face is a distinct physical candidate.
+  const asym = Solver.buildOrientationCandidates({ l: 30, w: 20, h: 10 }, { orientationLock: 'any', canFlip: true });
+  const keys = asym.map(c => `${c.l}|${c.w}|${c.h}`);
+  assert.equal(new Set(keys).size, keys.length, 'no duplicate physical candidates among asymmetric faces');
 });
 
 test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when tweens stop ticking', async () => {

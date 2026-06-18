@@ -77,21 +77,30 @@ export function buildOrientationCandidates(dims = {}, item = {}) {
   const seen = new Set();
   const candidates = [];
 
-  function add(l, w, h, x, y, z) {
-    const key = `${l}|${w}|${h}`;
+  // Rotation is the single source of truth. A candidate stores its right-angle
+  // rotation and DERIVES its effective dimensions from that rotation through the
+  // shared THREE-compatible helper — never a separately handwritten permutation
+  // that can disagree with the rotation for compound right angles.
+  function add(x, y, z) {
+    const rotation = normalizeRightAngleRotation({ x, y, z });
+    const o = getOrientedDimsForRotation(d, rotation);
+    if (!(o.l > 0 && o.w > 0 && o.h > 0)) return;
+    // Deduplicate by the derived effective dimensions: two rotations that produce
+    // the same physical box are one packing candidate (e.g. a cube collapses to 1).
+    const key = `${o.l}|${o.w}|${o.h}`;
     if (seen.has(key)) return;
     seen.add(key);
-    candidates.push(makeCandidate(l, w, h, { x, y, z }));
+    candidates.push(makeCandidate(o.l, o.w, o.h, rotation));
   }
 
   if (lock === 'upright' || lock === 'any') {
-    add(d.l, d.w, d.h, 0, 0, 0);
-    add(d.w, d.l, d.h, 0, RIGHT_ANGLE_RAD, 0);
+    add(0, 0, 0);
+    add(0, RIGHT_ANGLE_RAD, 0);
   }
 
   if (lock === 'onSide') {
-    add(d.h, d.w, d.l, 0, 0, RIGHT_ANGLE_RAD);
-    add(d.w, d.h, d.l, RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
+    add(0, 0, RIGHT_ANGLE_RAD);
+    add(RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
   }
 
   // canFlip may only introduce tipped (non-upright) faces when the case policy
@@ -99,10 +108,10 @@ export function buildOrientationCandidates(dims = {}, item = {}) {
   // and 'onside' already produced its side faces above. This matches the manual
   // rotate policy in pack-library.isOrientationAllowedByCasePolicy.
   if (canFlip && lock === 'any') {
-    add(d.h, d.w, d.l, 0, 0, RIGHT_ANGLE_RAD);
-    add(d.w, d.h, d.l, RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
-    add(d.l, d.h, d.w, RIGHT_ANGLE_RAD, 0, 0);
-    add(d.h, d.l, d.w, RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD, 0);
+    add(0, 0, RIGHT_ANGLE_RAD);
+    add(RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
+    add(RIGHT_ANGLE_RAD, 0, 0);
+    add(RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD, 0);
   }
 
   return candidates;

@@ -37,34 +37,43 @@ function buildOrientations(dims, caseData, inst, orientationTools) {
   // produces the same candidate set as the rest of the app (single source).
   const lock = canonicalOrientationLock(caseData.orientationLock);
   const canFlip = Boolean(caseData.canFlip);
-  const L = dims.length, W = dims.width, H = dims.height;
   const PI2 = Math.PI / 2;
   const seen = new Set();
   const oris = [];
 
-  function tryOri(l, w, h, rx, ry, rz) {
+  // Rotation is the single source of truth here too: derive each candidate's
+  // dimensions from its right-angle rotation via the shared THREE-compatible
+  // helper, instead of hardcoding a permutation that can drift on compound angles.
+  function tryOri(rx, ry, rz) {
+    const rotation = orientationTools.normalizeRightAngleRotation({ x: rx || 0, y: ry || 0, z: rz || 0 });
+    const od = orientationTools.getOrientedDimsForRotation(dims, rotation);
+    const l = od.length, w = od.width, h = od.height;
+    if (!(l > 0 && w > 0 && h > 0)) return;
     const key = `${l}|${w}|${h}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      oris.push({ l, w, h, rotX: rx || 0, rotY: ry || 0, rotZ: rz || 0 });
-    }
+    if (seen.has(key)) return;
+    seen.add(key);
+    oris.push({ l, w, h, rotX: rotation.x, rotY: rotation.y, rotZ: rotation.z });
   }
 
   if (lock === 'upright' || lock === 'any') {
-    tryOri(L, W, H, 0, 0, 0);
-    tryOri(W, L, H, 0, PI2, 0);
+    tryOri(0, 0, 0);
+    tryOri(0, PI2, 0);
   }
 
   if (lock === 'onSide') {
-    tryOri(H, W, L, 0, 0, PI2);
-    tryOri(W, H, L, PI2, 0, PI2);
+    tryOri(0, 0, PI2);
+    tryOri(PI2, 0, PI2);
   }
 
-  if (canFlip && lock !== 'onSide') {
-    tryOri(H, W, L, 0, 0, PI2);
-    tryOri(W, H, L, PI2, 0, PI2);
-    tryOri(L, H, W, PI2, 0, 0);
-    tryOri(H, L, W, PI2, PI2, 0);
+  // canFlip may only introduce tipped faces when the policy is 'any' — 'upright'
+  // must stay upright even with canFlip:true (matches the active solver and
+  // isOrientationAllowedByCasePolicy). Previously this used lock !== 'onSide',
+  // which wrongly tipped upright items.
+  if (canFlip && lock === 'any') {
+    tryOri(0, 0, PI2);
+    tryOri(PI2, 0, PI2);
+    tryOri(PI2, 0, 0);
+    tryOri(PI2, PI2, 0);
   }
 
   return oris;

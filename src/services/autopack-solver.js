@@ -1076,16 +1076,21 @@ function buildStackCandidates(orientation, packed, yLevel, loadFrontFirst) {
   return placements;
 }
 
-function scoreStackCandidate(candidate, loadFrontFirst) {
+export function scoreStackCandidate(candidate, loadFrontFirst) {
   const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
   const wasteArea = candidate.freeRect
     ? Math.max(0, freeRectArea(candidate.freeRect) - candidate.dims.l * candidate.dims.w)
     : 0;
+  // Among equally valid candidates on the same stack level (hard rules already
+  // filtered upstream: containment, collision, support fraction, support capacity,
+  // no-top-load, max direct children, orientation), FRONT position must win before
+  // support waste. xPrimary therefore comes ahead of wasteArea so front supports
+  // are filled before center/rear ones in front-first modes (incl. Wheel Wells).
   return [
     candidate.aabb.min.y,
     -candidate.supportFraction,
-    wasteArea,
     xPrimary,
+    wasteArea,
     candidate.aabb.min.z,
   ];
 }

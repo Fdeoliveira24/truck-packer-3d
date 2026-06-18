@@ -7269,6 +7269,189 @@ test('REPAIR-1D 8+9: no float frames in Standard / Wheel Wells / Front Overhang;
   }
 });
 
+// ---------------------------------------------------------------------------
+// REPAIR 1E: Wheel Wells front-first stack scoring. The live stack-candidate
+// score tuple had wasteArea BEFORE xPrimary, so center/rear supports could be
+// chosen while valid front supports remained unused. xPrimary now comes before
+// wasteArea, so among equally valid same-level candidates front wins before waste.
+// ---------------------------------------------------------------------------
+
+// Lexicographic "a < b" over numeric score tuples (lower wins, like compareScore).
+function r1eLexLess(a, b) {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const av = a[i] ?? 0; const bv = b[i] ?? 0;
+    if (av < bv) return true;
+    if (av > bv) return false;
+  }
+  return false;
+}
+// Build a stack candidate with a known x, bottomY, waste and supportFraction.
+// freeRectArea = (maxX-minX)*(maxZ-minZ); waste = freeRectArea - l*w (l*w = 432).
+function r1eStackCandidate({ x, bottomY = 16, waste = 0, sf = 1 }) {
+  return {
+    aabb: { min: { x, y: bottomY, z: 0 }, max: { x: x + 24, y: bottomY + 16, z: 18 } },
+    dims: { l: 24, w: 18, h: 16 },
+    freeRect: { minX: 0, maxX: 24, minZ: 0, maxZ: (432 + waste) / 24 },
+    supportFraction: sf,
+  };
+}
+
+test('REPAIR-1E scoring: front beats waste at equal support; support and level still dominate; deterministic', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const score = c => Solver.scoreStackCandidate(c, true); // loadFrontFirst (high +X = front)
+
+  // The exact tuple order: [bottomY, -supportFraction, xPrimary, wasteArea, minZ].
+  assert.deepEqual(score(r1eStackCandidate({ x: 200, bottomY: 16, waste: 400, sf: 1 })),
+    [16, -1, -224, 400, 0], 'tuple is [bottomY, -supportFraction, xPrimary, wasteArea, minZ]');
+
+  // 1) Front (high x) wins over rear EVEN with much higher waste (equal support, level).
+  const front = score(r1eStackCandidate({ x: 200, waste: 400, sf: 1 })); // lots of waste, but front
+  const rear = score(r1eStackCandidate({ x: 10, waste: 0, sf: 1 }));    // zero waste, but rear
+  assert.ok(r1eLexLess(front, rear), 'front position wins before support waste');
+
+  // 2) Higher support fraction still wins over a more-front lower-support candidate (hard-rule quality preserved).
+  const frontLowSup = score(r1eStackCandidate({ x: 200, sf: 0.6 }));
+  const rearHighSup = score(r1eStackCandidate({ x: 10, sf: 0.95 }));
+  assert.ok(r1eLexLess(rearHighSup, frontLowSup), 'support fraction still outranks front position');
+
+  // 3) A lower stack level still wins over a higher one regardless of x/waste.
+  const low = score(r1eStackCandidate({ x: 10, bottomY: 16, waste: 0 }));
+  const high = score(r1eStackCandidate({ x: 200, bottomY: 32, waste: 999 }));
+  assert.ok(r1eLexLess(low, high), 'lower stack level outranks a higher level');
+
+  // 4) Deterministic.
+  assert.deepEqual(score(r1eStackCandidate({ x: 123, waste: 7, sf: 0.8 })), score(r1eStackCandidate({ x: 123, waste: 7, sf: 0.8 })), 'deterministic');
+});
+
+// Production Standard Carton 24 (matches docs fixture: 24x18x16, Any, canFlip No).
+function r1eCartonItems(n, extra = {}) {
+  return Array.from({ length: n }, (_, i) => ({ instanceId: `i${i}`, caseId: 'c', dims: { l: 24, w: 18, h: 16 }, shape: 'box', weight: 35, orientationLock: 'any', canFlip: false, ...extra }));
+}
+function r1ePlaced(Solver, res, caseDims) {
+  const out = [];
+  for (const [id, pos] of res.placements) {
+    const od = res.orientedDims.get(id);
+    out.push({ id, pos, od, aabb: Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height }), minY: pos.y - od.height / 2, maxY: pos.y + od.height / 2 });
+  }
+  return out;
+}
+function r1eOverlapXZ(a, b) {
+  return Math.abs(a.pos.x - b.pos.x) < (a.od.length / 2 + b.od.length / 2) - 0.01 &&
+         Math.abs(a.pos.z - b.pos.z) < (a.od.width / 2 + b.od.width / 2) - 0.01;
+}
+
+test('REPAIR-1E Wheel Wells: 188 cartons fill front supports before center/rear; safe, supported, deterministic', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const truth = await threeOrientedTruth();
+  const caseDims = { length: 24, width: 18, height: 16 };
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+
+  const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: r1eCartonItems(188) });
+  const P = r1ePlaced(Solver, res, caseDims);
+  assert.ok(P.length > 0, 'cartons pack');
+  assert.ok(P.some(p => p.minY > 0.5), 'stacking occurs');
+
+  // Hard safety: no overlap, all contained (no OOB / blocked-zone), THREE-consistent dims.
+  for (const p of P) {
+    assert.equal(PackLib.isAabbContainedInAnyZone(p.aabb, zones), true, `contained ${p.id}`);
+    const t = truth(caseDims, res.rotations.get(p.id));
+    assert.deepEqual({ l: p.od.length, w: p.od.width, h: p.od.height }, { l: t.length, w: t.width, h: t.height }, `THREE dims ${p.id}`);
+  }
+  for (let a = 0; a < P.length; a++) for (let b = a + 1; b < P.length; b++) {
+    assert.equal(Solver.aabbsOverlap(P[a].aabb, P[b].aabb), false, `no overlap ${a},${b}`);
+  }
+  // Supported stacks: every stacked carton has support fraction >= MIN against the layer below.
+  for (const p of P.filter(x => x.minY > 0.5)) {
+    const supports = P.filter(s => Math.abs(s.maxY - p.minY) < 0.5 && r1eOverlapXZ(p, s)).map(s => s.aabb);
+    assert.ok(Solver.computeSupportFraction(p.aabb, supports) >= PackLib.MIN_SUPPORT_FRACTION - 1e-9, `stacked ${p.id} is supported`);
+  }
+
+  // FRONT-FIRST CONTRACT: on the partial top stack level, every USED support is at
+  // least as front (high +X) as every UNUSED support — no valid front support cell
+  // is left empty while rear supports receive equivalent stacked cartons.
+  const topY = Math.max(...P.map(p => Math.round(p.minY)));
+  const topItems = P.filter(p => Math.round(p.minY) === topY);
+  const supports = P.filter(p => Math.abs(p.maxY - topY) < 0.5);
+  const usedX = [], unusedX = [];
+  for (const s of supports) (topItems.some(t => r1eOverlapXZ(t, s)) ? usedX : unusedX).push(s.pos.x);
+  assert.ok(usedX.length > 0 && unusedX.length > 0, 'the top level is partial (front-first is observable)');
+  assert.ok(Math.min(...usedX) >= Math.max(...unusedX), `front-first fill: every used support (minX=${Math.min(...usedX)}) is more front than every unused support (maxX=${Math.max(...unusedX)})`);
+
+  // Deterministic repeat.
+  const res2 = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: r1eCartonItems(188) });
+  assert.equal(JSON.stringify([...res2.placements.entries()]), JSON.stringify([...res.placements.entries()]), 'repeat run is deterministic');
+});
+
+test('REPAIR-1E Wheel Wells: 420 cartons pack to capacity, safe, supported, deterministic', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const caseDims = { length: 24, width: 18, height: 16 };
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+
+  const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: r1eCartonItems(420) });
+  const P = r1ePlaced(Solver, res, caseDims);
+  assert.ok(P.length >= 188, 'a large number of cartons pack');
+  assert.ok(P.some(p => p.minY > 0.5), 'stacking occurs');
+  for (const p of P) {
+    assert.equal(PackLib.isAabbContainedInAnyZone(p.aabb, zones), true, `contained ${p.id}`);
+  }
+  for (let a = 0; a < P.length; a++) for (let b = a + 1; b < P.length; b++) {
+    assert.equal(Solver.aabbsOverlap(P[a].aabb, P[b].aabb), false, `no overlap ${a},${b}`);
+  }
+  for (const p of P.filter(x => x.minY > 0.5)) {
+    const supports = P.filter(s => Math.abs(s.maxY - p.minY) < 0.5 && r1eOverlapXZ(p, s)).map(s => s.aabb);
+    assert.ok(Solver.computeSupportFraction(p.aabb, supports) >= PackLib.MIN_SUPPORT_FRACTION - 1e-9, `stacked ${p.id} is supported`);
+  }
+  const res2 = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: r1eCartonItems(420) });
+  assert.equal(JSON.stringify([...res2.placements.entries()]), JSON.stringify([...res.placements.entries()]), 'repeat run is deterministic');
+});
+
+test('REPAIR-1E Standard mode remains front-first when stacking', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const caseDims = { length: 24, width: 18, height: 16 };
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: r1eCartonItems(220) });
+  const P = r1ePlaced(Solver, res, caseDims);
+  assert.ok(P.some(p => p.minY > 0.5), 'stacking occurs in Standard mode');
+  const topY = Math.max(...P.map(p => Math.round(p.minY)));
+  const topItems = P.filter(p => Math.round(p.minY) === topY);
+  const supports = P.filter(p => Math.abs(p.maxY - topY) < 0.5);
+  const usedX = [], unusedX = [];
+  for (const s of supports) (topItems.some(t => r1eOverlapXZ(t, s)) ? usedX : unusedX).push(s.pos.x);
+  if (unusedX.length > 0) {
+    assert.ok(Math.min(...usedX) >= Math.max(...unusedX), 'Standard mode stacks front-first too');
+  } else {
+    assert.ok(usedX.length > 0, 'Standard mode top level fully used (still front-first fill order)');
+  }
+});
+
+test('REPAIR-1E maxStackCount 1 and 2 still cap direct children on a support', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const caseDims = { length: 24, width: 18, height: 16 };
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  for (const cap of [1, 2]) {
+    const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: r1eCartonItems(188, { maxStackCount: cap }) });
+    const P = r1ePlaced(Solver, res, caseDims);
+    // Count DIRECT children resting on each support (child.minY == support.maxY).
+    for (const support of P) {
+      const directChildren = P.filter(c => c !== support && Math.abs(c.minY - support.maxY) < 0.5 && r1eOverlapXZ(c, support));
+      assert.ok(directChildren.length <= cap, `maxStackCount ${cap}: support ${support.id} has ${directChildren.length} direct children (<= ${cap})`);
+    }
+  }
+});
+
 test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when tweens stop ticking', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
   const tweenStart = src.indexOf('function tweenInstanceToPosition(instanceId, positionInches, duration');

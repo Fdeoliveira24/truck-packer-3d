@@ -14,6 +14,25 @@
 import * as StateStore from '../core/state-store.js';
 import * as Utils from '../core/utils/index.js';
 import * as CoreDefaults from '../core/defaults.js';
+import { canonicalOrientationLock } from '../core/orientation.js';
+
+// Canonicalize the known cargo-rule fields in place before storage, leaving any
+// other (including unknown extension) fields untouched. Keeps stored values
+// consistent for AutoPack, comparison, idempotence, and display without applying
+// a fixed-object normalizer that would drop unknown fields.
+function canonicalizeCaseCargoFields(c) {
+  const next = { ...(c || {}) };
+  next.orientationLock = canonicalOrientationLock(next.orientationLock);
+  next.canFlip = Boolean(next.canFlip);
+  next.noStackOnTop = Boolean(next.noStackOnTop);
+  next.isPallet = Boolean(next.isPallet);
+  next.stackable = next.stackable !== false; // only explicit false is false
+  next.maxStackCount = Math.max(0, Math.floor(Number(next.maxStackCount) || 0));
+  next.maxPalletWeight = Math.max(0, Number(next.maxPalletWeight) || 0);
+  next.laneItem = next.laneItem === true ? true : next.laneItem === false ? false : null;
+  next.loadPriority = Number.isFinite(Number(next.loadPriority)) ? Number(next.loadPriority) : 0;
+  return next;
+}
 
 function applyCaseDefaultColor(caseObj) {
   const next = { ...(caseObj || {}) };
@@ -47,7 +66,7 @@ export function upsert(caseData) {
   const now = Date.now();
   const cases = getCases();
   const idx = cases.findIndex(c => c.id === caseData.id);
-  const next = applyCaseDefaultColor({ ...caseData });
+  const next = canonicalizeCaseCargoFields(applyCaseDefaultColor({ ...caseData }));
   next.updatedAt = now;
   if (!next.createdAt) next.createdAt = now;
   next.dimensions = {

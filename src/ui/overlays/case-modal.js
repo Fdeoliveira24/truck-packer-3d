@@ -322,7 +322,7 @@ export function openCaseModal({
     ['auto', 'Automatic'],
     ['always', 'Always'],
     ['never', 'Never'],
-  ], initial.laneItem === true ? 'always' : initial.laneItem === false ? 'never' : 'auto', 'Place long items in a lengthwise lane.');
+  ], initial.laneItem === true ? 'always' : initial.laneItem === false ? 'never' : 'auto', 'Prefer a lengthwise lane for long items. AutoPack may still place them normally if no lane fits.');
 
   const priority = createSelectField(doc, 'Packing priority (tie-breaker)', [
     ['-1', 'Low'],
@@ -411,6 +411,7 @@ export function openCaseModal({
           const orientationLock = canonicalOrientationLock(orient.select.value);
           const laneValue = lane.select.value === 'always' ? true : lane.select.value === 'never' ? false : null;
           const priorityValue = priority.select.value === '1' ? 1 : priority.select.value === '-1' ? -1 : 0;
+          const noTopChecked = Boolean(noTop.checked);
           const caseData = {
             ...initial,
             name,
@@ -421,8 +422,14 @@ export function openCaseModal({
             // Handling rules (Cargo-Rule V1). canFlip only meaningful when policy is 'any'.
             canFlip: orientationLock === 'any' && Boolean(flip.checked),
             orientationLock,
-            noStackOnTop: Boolean(noTop.checked),
-            maxStackCount: Math.max(0, parseInt(fMaxStack.input.value, 10) || 0),
+            noStackOnTop: noTopChecked,
+            // Legacy stackable:false is a synonym of no-top-load. Keep it when the
+            // box stays checked, but clear it when unchecked so the effective rule
+            // is truly removed (it cannot otherwise be cleared from the modal).
+            stackable: noTopChecked ? initial.stackable !== false : true,
+            // No-top-load means nothing rests on top, so a direct-child cap is
+            // contradictory — store 0 (no limit / not applicable) in that case.
+            maxStackCount: noTopChecked ? 0 : Math.max(0, parseInt(fMaxStack.input.value, 10) || 0),
             isPallet: Boolean(pallet.checked),
             maxPalletWeight: pallet.checked ? Math.max(0, Number(fPalletWarn.input.value) || 0) : (Math.max(0, Number(initial.maxPalletWeight) || 0)),
             laneItem: laneValue,

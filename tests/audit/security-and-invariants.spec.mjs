@@ -3591,6 +3591,57 @@ test('CARGO-RULE-V1 orientation aliases canonicalize consistently across every p
   assert.equal(res.caseConflicts.length, 0, 'orientation alias difference is not a real conflict');
 });
 
+test('CARGO-RULE-V1 CaseLibrary.upsert canonicalizes cargo fields and preserves unknown fields', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const CaseLibrary = await import(`${caseLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  CaseLibrary.upsert({
+    id: 'u1', name: 'Upsert Case', category: 'default', dimensions: { length: 10, width: 10, height: 10 }, weight: 5,
+    orientationLock: 'on side', maxStackCount: 2.7, maxPalletWeight: -3, loadPriority: '1', laneItem: 'false',
+    stackable: false, canFlip: 'yes', isPallet: 1,
+    importSourceKey: 'keep-me', someExtensionField: 'preserve',
+  });
+  const c = (StateStore.get('caseLibrary') || []).find(x => x.id === 'u1');
+  assert.equal(c.orientationLock, 'onSide', 'orientation alias canonicalized on upsert');
+  assert.equal(c.maxStackCount, 2, 'decimal maxStackCount floored to integer');
+  assert.equal(c.maxPalletWeight, 0, 'negative maxPalletWeight clamped');
+  assert.equal(c.stackable, false, 'explicit stackable:false preserved');
+  assert.equal(c.canFlip, true, 'canFlip coerced to boolean');
+  assert.equal(c.isPallet, true, 'isPallet coerced to boolean');
+  assert.equal(c.importSourceKey, 'keep-me', 'unknown idempotence field preserved');
+  assert.equal(c.someExtensionField, 'preserve', 'unknown extension field preserved');
+});
+
+test('CARGO-RULE-V1 normalizers floor decimal maxStackCount', async () => {
+  const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const CaseModel = await import(`${caseModelPath.href}?t=${Date.now()}-${Math.random()}`);
+  const base = { id: 'm', name: 'M', dimensions: { length: 10, width: 10, height: 10 } };
+  assert.equal(Normalizer.normalizeCase({ ...base, maxStackCount: 3.9 }, Date.now()).maxStackCount, 3, 'core normalizer floors maxStackCount');
+  assert.equal(CaseModel.normalizeCase({ ...base, maxStackCount: 3.9 }).maxStackCount, 3, 'case model floors maxStackCount');
+});
+
+test('CARGO-RULE-V1 spreadsheet invalid boolean and lane cells produce warnings (CSV/XLSX identical path)', async () => {
+  const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  assert.deepEqual(IE.parseBoolCell('yes', 'allow flipping'), { value: true, warning: null });
+  assert.deepEqual(IE.parseBoolCell('no', 'allow flipping'), { value: false, warning: null });
+  assert.deepEqual(IE.parseBoolCell('', 'allow flipping'), { value: false, warning: null });
+  assert.equal(IE.parseBoolCell('maybe', 'allow flipping').value, false);
+  assert.ok(IE.parseBoolCell('maybe', 'allow flipping').warning, 'invalid boolean warns');
+  assert.deepEqual(IE.parseLaneCellWarned('always'), { value: true, warning: null });
+  assert.deepEqual(IE.parseLaneCellWarned(''), { value: null, warning: null });
+  assert.equal(IE.parseLaneCellWarned('sometimes').value, null);
+  assert.ok(IE.parseLaneCellWarned('sometimes').warning, 'invalid lane warns');
+});
+
+test('CARGO-RULE-V1 unchecking no-top-load clears legacy stackable:false (modal save)', async () => {
+  // Verified at the source level since the modal builds DOM imperatively.
+  const src = await fs.readFile(caseModalPath, 'utf8');
+  assert.match(src, /noStackOnTop: noTopChecked/);
+  assert.match(src, /stackable: noTopChecked \? initial\.stackable !== false : true/);
+  assert.match(src, /maxStackCount: noTopChecked \? 0 :/);
+  assert.match(src, /AutoPack may still place them normally/i, 'lane copy reflects that Always is a preference, not a guarantee');
+});
+
 test('CARGO-RULE-V1 canonicalOrientationLock maps all accepted spellings', async () => {
   const Modal = await import(`${caseModalPath.href}?t=${Date.now()}-${Math.random()}`);
   assert.equal(Modal.canonicalOrientationLock('upright'), 'upright');
@@ -3635,8 +3686,9 @@ test('CARGO-RULE-V1 case modal exposes only honest handling controls with canoni
   assert.match(src, /Packing priority \(tie-breaker\)/, 'priority labeled as tie-breaker');
   // Canonical save mapping
   assert.match(src, /canFlip:\s*orientationLock === 'any' && Boolean\(flip\.checked\)/, 'canFlip only when policy is any');
-  assert.match(src, /orientationLock,\n\s*noStackOnTop: Boolean\(noTop\.checked\)/, 'save sets orientationLock + noStackOnTop');
-  assert.match(src, /maxStackCount: Math\.max\(0, parseInt\(fMaxStack\.input\.value, 10\) \|\| 0\)/, 'maxStackCount cleaned to >= 0 integer');
+  assert.match(src, /orientationLock,\n[\s\S]*noStackOnTop: noTopChecked/, 'save sets orientationLock + noStackOnTop');
+  assert.match(src, /maxStackCount: noTopChecked \? 0 : Math\.max\(0, parseInt\(fMaxStack\.input\.value, 10\) \|\| 0\)/, 'maxStackCount cleaned to >= 0 integer and zeroed under no-top-load');
+  assert.match(src, /stackable: noTopChecked \? initial\.stackable !== false : true/, 'unchecking no-top-load clears the legacy stackable:false rule');
   assert.match(src, /laneItem: laneValue/, 'save sets laneItem tri-state');
   assert.match(src, /loadPriority: priorityValue/, 'save sets loadPriority');
   assert.match(src, /\.\.\.initial,/, 'save must spread ...initial to preserve hidden/deferred fields');

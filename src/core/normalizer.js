@@ -218,7 +218,7 @@ export function normalizeCase(c, now) {
   const shapeRaw = safeString(c && c.shape, 'box').toLowerCase();
   const shape = shapeRaw === 'cylinder' || shapeRaw === 'drum' || shapeRaw === 'box' ? shapeRaw : 'box';
   const orientationLock = canonicalOrientationLock(c && c.orientationLock);
-  const maxStackCount = Math.max(0, finiteNumber(c && c.maxStackCount, 0));
+  const maxStackCount = Math.max(0, Math.floor(finiteNumber(c && c.maxStackCount, 0)));
   const maxPalletWeight = Math.max(0, finiteNumber(c && c.maxPalletWeight, 0));
   const hazmatRaw = safeString(c && c.hazmatClass, '');
   const hazmatClass = hazmatRaw ? hazmatRaw : null;

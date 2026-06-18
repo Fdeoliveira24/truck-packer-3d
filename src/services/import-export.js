@@ -76,12 +76,25 @@ function getField(row, idx) {
   return row[idx];
 }
 
-function parseBool(v) {
-  const s = String(v || '')
-    .trim()
-    .toLowerCase();
-  if (!s) return false;
-  return ['true', '1', 'yes', 'y', 'on'].includes(s);
+const BOOL_TRUE_TOKENS = new Set(['true', '1', 'yes', 'y', 'on']);
+const BOOL_FALSE_TOKENS = new Set(['false', '0', 'no', 'n', 'off']);
+
+// Boolean cell that warns when a non-blank value is not a recognized boolean
+// (it still falls back to false so the row imports).
+export function parseBoolCell(raw, label) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (!s) return { value: false, warning: null };
+  if (BOOL_TRUE_TOKENS.has(s)) return { value: true, warning: null };
+  if (BOOL_FALSE_TOKENS.has(s)) return { value: false, warning: null };
+  return { value: false, warning: `invalid ${label} "${raw}" (used No)` };
+}
+
+export function parseLaneCellWarned(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (!s || s === 'auto' || s === 'automatic') return { value: null, warning: null };
+  if (['always', 'true', 'yes', '1', 'y'].includes(s)) return { value: true, warning: null };
+  if (['never', 'false', 'no', '0', 'n'].includes(s)) return { value: false, warning: null };
+  return { value: null, warning: `invalid lane "${raw}" (used Automatic)` };
 }
 
 // Handling-rule cell parsers. Each returns the canonical value; the *Warned
@@ -215,6 +228,10 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
     const maxStackParsed = parseNonNegIntCell(getField(row, idx.maxStackCount), 'max items on top');
     const palletWeightParsed = parseNonNegNumCell(getField(row, idx.maxPalletWeight), 'max load');
     const priorityParsed = parseLoadPriorityCell(getField(row, idx.loadPriority));
+    const canFlipParsed = parseBoolCell(getField(row, idx.canFlip), 'allow flipping');
+    const noTopParsed = parseBoolCell(getField(row, idx.noStackOnTop), 'no top load');
+    const palletParsed = parseBoolCell(getField(row, idx.isPallet), 'pallet');
+    const laneParsed = parseLaneCellWarned(getField(row, idx.laneItem));
     const record = {
       name: String(getField(row, idx.name)).trim(),
       manufacturer: String(getField(row, idx.manufacturer)).trim(),
@@ -224,19 +241,20 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
       height: Number(getField(row, idx.height)),
       weight: Number(getField(row, idx.weight)),
       // Handling rules (Cargo-Rule V1). canFlip only meaningful when policy is 'any'.
-      canFlip: orientationParsed.value === 'any' && parseBool(getField(row, idx.canFlip)),
+      canFlip: orientationParsed.value === 'any' && canFlipParsed.value,
       orientationLock: orientationParsed.value,
-      noStackOnTop: parseBool(getField(row, idx.noStackOnTop)),
+      noStackOnTop: noTopParsed.value,
       maxStackCount: maxStackParsed.value,
-      isPallet: parseBool(getField(row, idx.isPallet)),
+      isPallet: palletParsed.value,
       maxPalletWeight: palletWeightParsed.value,
-      laneItem: parseLaneCell(getField(row, idx.laneItem)),
+      laneItem: laneParsed.value,
       loadPriority: priorityParsed.value,
       notes: String(getField(row, idx.notes)).trim(),
       color: String(getField(row, idx.color)).trim(),
     };
 
-    [orientationParsed.warning, maxStackParsed.warning, palletWeightParsed.warning, priorityParsed.warning]
+    [orientationParsed.warning, maxStackParsed.warning, palletWeightParsed.warning, priorityParsed.warning,
+      canFlipParsed.warning, noTopParsed.warning, palletParsed.warning, laneParsed.warning]
       .filter(Boolean)
       .forEach(w => warnings.push(`Row ${rowNum}: ${w}`));
 

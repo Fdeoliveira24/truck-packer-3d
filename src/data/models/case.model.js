@@ -30,7 +30,7 @@ export function normalizeCase(data) {
     .toLowerCase();
   const shape = shapeRaw === 'cylinder' || shapeRaw === 'drum' || shapeRaw === 'box' ? shapeRaw : 'box';
   const orientationLock = canonicalOrientationLock(d.orientationLock);
-  const maxStackCount = Number(d.maxStackCount);
+  const maxStackCount = Math.floor(Number(d.maxStackCount));
   const maxPalletWeight = Number(d.maxPalletWeight);
   const hazmatRaw = String(d.hazmatClass || '').trim();
   const hazmatClass = hazmatRaw ? hazmatRaw : null;

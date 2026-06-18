@@ -17,6 +17,14 @@ import * as CoreStorage from '../core/storage.js';
 import * as CaseLibrary from './case-library.js';
 import { APP_VERSION } from '../core/version.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
+import {
+  parseCargoBoolean,
+  parseCargoLane,
+  parseCargoCount,
+  parseCargoNonNegNumber,
+  applyCanonicalCargoFields,
+  PALLET_WEIGHT_MAX_LBS,
+} from '../core/cargo-canonical.js';
 
 const MAX_IMPORT_ROWS = 5000;
 const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024;
@@ -76,25 +84,18 @@ function getField(row, idx) {
   return row[idx];
 }
 
-const BOOL_TRUE_TOKENS = new Set(['true', '1', 'yes', 'y', 'on']);
-const BOOL_FALSE_TOKENS = new Set(['false', '0', 'no', 'n', 'off']);
-
 // Boolean cell that warns when a non-blank value is not a recognized boolean
-// (it still falls back to false so the row imports).
+// (it still falls back to false so the row imports). Value parsing is delegated
+// to the single typed canonical representation so the SAME raw value produces the
+// SAME result here, at storage, and in comparison ("false" is never truthy).
 export function parseBoolCell(raw, label) {
-  const s = String(raw || '').trim().toLowerCase();
-  if (!s) return { value: false, warning: null };
-  if (BOOL_TRUE_TOKENS.has(s)) return { value: true, warning: null };
-  if (BOOL_FALSE_TOKENS.has(s)) return { value: false, warning: null };
-  return { value: false, warning: `invalid ${label} "${raw}" (used No)` };
+  const { value, valid } = parseCargoBoolean(raw, false);
+  return { value, warning: valid ? null : `invalid ${label} "${raw}" (used No)` };
 }
 
 export function parseLaneCellWarned(raw) {
-  const s = String(raw || '').trim().toLowerCase();
-  if (!s || s === 'auto' || s === 'automatic') return { value: null, warning: null };
-  if (['always', 'true', 'yes', '1', 'y'].includes(s)) return { value: true, warning: null };
-  if (['never', 'false', 'no', '0', 'n'].includes(s)) return { value: false, warning: null };
-  return { value: null, warning: `invalid lane "${raw}" (used Automatic)` };
+  const { value, valid } = parseCargoLane(raw);
+  return { value, warning: valid ? null : `invalid lane "${raw}" (used Automatic)` };
 }
 
 // Handling-rule cell parsers. Each returns the canonical value; the *Warned
@@ -115,28 +116,25 @@ export function parseNonNegIntCell(raw, fieldLabel) {
   const s = String(raw || '').trim();
   if (!s) return { value: 0, warning: null };
   const n = Number(s);
-  if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
-    return { value: 0, warning: `invalid ${fieldLabel} "${raw}" (used 0)` };
+  // Floor consistently with storage (the same decimal value yields the same stored
+  // count before and after import). Still warn so the user sees the adjustment.
+  const { value } = parseCargoCount(n);
+  if (!Number.isFinite(n) || n < 0) {
+    return { value, warning: `invalid ${fieldLabel} "${raw}" (used ${value})` };
   }
-  return { value: n, warning: null };
+  if (!Number.isInteger(n)) {
+    return { value, warning: `${fieldLabel} "${raw}" rounded down to ${value}` };
+  }
+  return { value, warning: null };
 }
 
 export function parseNonNegNumCell(raw, fieldLabel) {
-  const s = String(raw || '').trim();
-  if (!s) return { value: 0, warning: null };
-  const n = Number(s);
-  if (!Number.isFinite(n) || n < 0) {
-    return { value: 0, warning: `invalid ${fieldLabel} "${raw}" (used 0)` };
-  }
-  return { value: n, warning: null };
+  const { value, valid } = parseCargoNonNegNumber(raw, { max: PALLET_WEIGHT_MAX_LBS });
+  return { value, warning: valid ? null : `invalid ${fieldLabel} "${raw}" (used ${value})` };
 }
 
 export function parseLaneCell(raw) {
-  const s = String(raw || '').trim().toLowerCase();
-  if (!s || s === 'auto' || s === 'automatic') return null;
-  if (['always', 'true', 'yes', '1', 'y'].includes(s)) return true;
-  if (['never', 'false', 'no', '0', 'n'].includes(s)) return false;
-  return null;
+  return parseCargoLane(raw).value;
 }
 
 export function parseLoadPriorityCell(raw) {
@@ -314,35 +312,38 @@ export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
     const weightRaw = Number(r.weight);
     const safeWeight = Number.isFinite(weightRaw) && weightRaw > 0 ? weightRaw : 0;
     existingNames.add(nameKey);
-    const record = applyCaseDefaultColor({
-      id: Utils.uuid(),
-      name: String(r.name || '').trim(),
-      manufacturer: String(r.manufacturer || '').trim(),
-      category:
-        String(r.category || 'default')
-          .trim()
-          .toLowerCase() || 'default',
-      dimensions: { length, width, height },
-      weight: safeWeight,
-      volume: Utils.volumeInCubicInches({
-        length,
-        width,
-        height,
-      }),
-      canFlip: Boolean(r.canFlip),
-      // Handling rules (carried from the parsed/validated record; defaults when absent).
-      orientationLock: r.orientationLock || 'any',
-      noStackOnTop: Boolean(r.noStackOnTop),
-      maxStackCount: Math.max(0, parseInt(r.maxStackCount, 10) || 0),
-      isPallet: Boolean(r.isPallet),
-      maxPalletWeight: Math.max(0, Number(r.maxPalletWeight) || 0),
-      laneItem: r.laneItem === true ? true : r.laneItem === false ? false : null,
-      loadPriority: Number(r.loadPriority) || 0,
-      notes: String(r.notes || '').trim(),
-      color: String(r.color || '').trim() || null,
-      createdAt: now,
-      updatedAt: now,
-    });
+    // Route the handling-rule fields through the single typed canonical
+    // representation rather than re-coercing inline (no duplicated parsing rules).
+    const record = applyCanonicalCargoFields(
+      applyCaseDefaultColor({
+        id: Utils.uuid(),
+        name: String(r.name || '').trim(),
+        manufacturer: String(r.manufacturer || '').trim(),
+        category:
+          String(r.category || 'default')
+            .trim()
+            .toLowerCase() || 'default',
+        dimensions: { length, width, height },
+        weight: safeWeight,
+        volume: Utils.volumeInCubicInches({
+          length,
+          width,
+          height,
+        }),
+        canFlip: r.canFlip,
+        orientationLock: r.orientationLock || 'any',
+        noStackOnTop: r.noStackOnTop,
+        maxStackCount: r.maxStackCount,
+        isPallet: r.isPallet,
+        maxPalletWeight: r.maxPalletWeight,
+        laneItem: r.laneItem,
+        loadPriority: r.loadPriority,
+        notes: String(r.notes || '').trim(),
+        color: String(r.color || '').trim() || null,
+        createdAt: now,
+        updatedAt: now,
+      })
+    );
     next.push(record);
     added++;
   });

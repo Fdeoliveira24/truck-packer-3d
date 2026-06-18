@@ -28,6 +28,7 @@ const stylesMainPath = new URL('../../styles/main.css', import.meta.url);
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
 const normalizerPath = new URL('../../src/core/normalizer.js', import.meta.url);
 const orientedDimsPath = new URL('../../src/core/oriented-dims.js', import.meta.url);
+const cargoCanonicalPath = new URL('../../src/core/cargo-canonical.js', import.meta.url);
 const vendorThreePath = new URL('../../vendor/three.module.js', import.meta.url);
 const caseModelPath = new URL('../../src/data/models/case.model.js', import.meta.url);
 const coreUtilsPath = new URL('../../src/core/utils.js', import.meta.url);
@@ -1524,6 +1525,165 @@ test('CARGO-RULE-V2 planPackImport is pure: planning alone never mutates state',
   assert.deepEqual(packImportStateSnapshot(StateStore), before, 'planPackImport must not write to StateStore');
   assert.equal(plan.newCases.length, 2, 'plan carries the two prepared new cases');
   assert.ok(plan.pack && plan.pack.stats, 'plan carries a fully built pack with stats');
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 3: Typed canonical cargo representation
+// ---------------------------------------------------------------------------
+
+test('CARGO-RULE-V3 typed boolean parser: accepts true/false/yes/no/1/0, rejects unknown', async () => {
+  const C = await import(`${cargoCanonicalPath.href}?t=${Date.now()}-${Math.random()}`);
+  const cases = [
+    [true, true, true], [false, false, true], [1, true, true], [0, false, true],
+    ['true', true, true], ['false', false, true], ['YES', true, true], ['No', false, true],
+    ['1', true, true], ['0', false, true], ['on', true, true], ['off', false, true],
+    ['', false, true], [null, false, true], [undefined, false, true],
+    ['maybe', false, false], ['2', false, false], [2, false, false], ['garbage', false, false],
+  ];
+  for (const [raw, value, valid] of cases) {
+    assert.deepEqual(C.parseCargoBoolean(raw, false), { value, valid }, `bool ${JSON.stringify(raw)}`);
+  }
+  // Never general JS truthiness: the string "false" must be FALSE, not true.
+  assert.equal(C.parseCargoBoolean('false', false).value, false, '"false" string is false, not truthy');
+  // stackable default true: blank/garbage fall back to true, explicit false wins.
+  assert.equal(C.parseCargoBoolean('', true).value, true, 'stackable blank -> true');
+  assert.equal(C.parseCargoBoolean('false', true).value, false, 'stackable explicit false -> false');
+  assert.equal(C.parseCargoBoolean('garbage', true).value, true, 'stackable garbage -> default true (invalid)');
+});
+
+test('CARGO-RULE-V3 typed numeric parsers: reject malformed/NaN/Infinity, floor counts, clamp bounds', async () => {
+  const C = await import(`${cargoCanonicalPath.href}?t=${Date.now()}-${Math.random()}`);
+  // Non-negative number.
+  assert.deepEqual(C.parseCargoNonNegNumber('2000'), { value: 2000, valid: true });
+  assert.deepEqual(C.parseCargoNonNegNumber(''), { value: 0, valid: true });
+  assert.equal(C.parseCargoNonNegNumber('abc').valid, false, 'malformed string invalid');
+  assert.equal(C.parseCargoNonNegNumber('abc').value, 0, 'malformed -> safe 0 for storage');
+  assert.equal(C.parseCargoNonNegNumber(-5).valid, false, 'negative invalid');
+  assert.equal(C.parseCargoNonNegNumber(Infinity).valid, false, 'Infinity invalid');
+  assert.equal(C.parseCargoNonNegNumber(NaN).valid, false, 'NaN invalid');
+  // Out-of-bounds clamps (so 1e300 can never produce infinite volume).
+  const big = C.parseCargoNonNegNumber(1e300, { max: C.WEIGHT_MAX_LBS });
+  assert.equal(big.valid, false, '1e300 is out of bounds');
+  assert.equal(big.value, C.WEIGHT_MAX_LBS, 'out-of-bounds clamps to the max, never Infinity');
+  // Count: floor decimals consistently; negatives/malformed invalid -> 0.
+  assert.deepEqual(C.parseCargoCount('2.7'), { value: 2, valid: true }, 'decimal floored');
+  assert.deepEqual(C.parseCargoCount(3), { value: 3, valid: true });
+  assert.equal(C.parseCargoCount(-1).valid, false);
+  assert.equal(C.parseCargoCount('x').valid, false);
+  // Dimension sanity cap.
+  assert.equal(C.parseCargoDimension(1e300).value, C.DIMENSION_MAX_INCHES, 'dimension clamps to sane max');
+  assert.equal(C.parseCargoDimension(0).valid, false, 'zero dimension invalid');
+});
+
+test('CARGO-RULE-V3 lane parser keeps Automatic/Always/Never distinct; unknown is invalid', async () => {
+  const C = await import(`${cargoCanonicalPath.href}?t=${Date.now()}-${Math.random()}`);
+  assert.deepEqual(C.parseCargoLane(null), { value: null, valid: true }, 'Automatic -> null');
+  assert.deepEqual(C.parseCargoLane('auto'), { value: null, valid: true });
+  assert.deepEqual(C.parseCargoLane('always'), { value: true, valid: true }, 'Always -> true');
+  assert.deepEqual(C.parseCargoLane(true), { value: true, valid: true });
+  assert.deepEqual(C.parseCargoLane('never'), { value: false, valid: true }, 'Never -> false');
+  assert.deepEqual(C.parseCargoLane(false), { value: false, valid: true });
+  // Unknown text must be INVALID and must not silently become Automatic-as-valid.
+  assert.deepEqual(C.parseCargoLane('sometimes'), { value: null, valid: false }, 'unknown lane invalid');
+});
+
+test('CARGO-RULE-V3 same raw value canonicalizes identically across storage and comparison', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const C = await import(`${cargoCanonicalPath.href}${stamp}`);
+  const StateStore = await import(stateStorePath.href);
+  const CaseLibrary = await import(`${caseLibraryPath.href}${stamp}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  // Raw case with string "false" handling values and a decimal stack count.
+  const raw = { id: 'x', name: 'X', dimensions: { length: 10, width: 10, height: 10 }, weight: 5,
+    canFlip: 'false', stackable: 'false', noStackOnTop: 'no', isPallet: '0', maxStackCount: '2.7', laneItem: 'never' };
+  CaseLibrary.upsert(raw);
+  const stored = StateStore.get('caseLibrary')[0];
+  assert.equal(stored.canFlip, false, 'stored canFlip from "false" is false');
+  assert.equal(stored.stackable, false, 'stored stackable from "false" is false');
+  assert.equal(stored.maxStackCount, 2, 'decimal stack count floored at storage');
+  assert.equal(stored.laneItem, false, '"never" lane stored as false');
+  // The raw and the stored case must compare equal (same canonical result).
+  assert.ok(C.cargoFieldsEqual(raw, stored), 'raw and stored canonicalize to the same comparison key');
+});
+
+test('CARGO-RULE-V3 comparison: invalid value never equals a valid default', async () => {
+  const C = await import(`${cargoCanonicalPath.href}?t=${Date.now()}-${Math.random()}`);
+  const base = { name: 'A', dimensions: { length: 10, width: 10, height: 10 }, weight: 5 };
+  const validZeroStack = { ...base, maxStackCount: 0 };
+  const invalidStack = { ...base, maxStackCount: 'abc' };
+  assert.ok(!C.cargoFieldsEqual(validZeroStack, invalidStack), 'invalid maxStackCount != valid 0');
+  const validWeight = { ...base, weight: 0 };
+  const invalidWeight = { ...base, weight: 'oops' };
+  assert.ok(!C.cargoFieldsEqual(validWeight, invalidWeight), 'invalid weight != valid 0 weight');
+  // Two identical invalids DO match (deterministic sentinel).
+  assert.ok(C.cargoFieldsEqual(invalidStack, { ...base, maxStackCount: 'abc' }), 'identical invalids match');
+});
+
+test('CARGO-RULE-V3 comparison identity excludes manufacturer/category, includes physical fields', async () => {
+  const C = await import(`${cargoCanonicalPath.href}?t=${Date.now()}-${Math.random()}`);
+  const a = { name: 'Box', manufacturer: 'ACME', category: 'Tools', dimensions: { length: 10, width: 10, height: 10 }, weight: 5, canFlip: true };
+  // Different manufacturer casing + different category → still the same physical case.
+  const b = { ...a, manufacturer: 'acme inc', category: 'HARDWARE' };
+  assert.ok(C.cargoFieldsEqual(a, b), 'manufacturer/category differences do not fork a physical case');
+  // A physical change (weight) → different physical case.
+  const c = { ...a, weight: 50 };
+  assert.ok(!C.cargoFieldsEqual(a, c), 'a physical (weight) difference is a different case');
+  const d = { ...a, canFlip: false };
+  assert.ok(!C.cargoFieldsEqual(a, d), 'a handling (canFlip) difference is a different case');
+});
+
+test('CARGO-RULE-V3 data-sanity: an absurd dimension never yields infinite volume after normalization', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Normalizer = await import(`${normalizerPath.href}${stamp}`);
+  const CaseModel = await import(`${caseModelPath.href}${stamp}`);
+  for (const norm of [c => Normalizer.normalizeCase(c, Date.now()), c => CaseModel.normalizeCase(c)]) {
+    const out = norm({ id: 'z', name: 'Z', dimensions: { length: 1e300, width: 1e300, height: 1e300 }, weight: 1e300 });
+    assert.ok(Number.isFinite(out.volume), 'volume is finite, not Infinity');
+    assert.ok(Number.isFinite(out.weight), 'weight is finite');
+    assert.ok(out.dimensions.length <= 100000 && out.dimensions.length > 0, 'dimension clamped to sane bound');
+  }
+});
+
+test('CARGO-RULE-V3 extensions: safe unknown metadata survives normalize; unsafe values dropped', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Normalizer = await import(`${normalizerPath.href}${stamp}`);
+  const CaseModel = await import(`${caseModelPath.href}${stamp}`);
+  const raw = {
+    id: 'e', name: 'E', dimensions: { length: 10, width: 10, height: 10 },
+    customTag: 'keep-me', nested: { ok: 1, fn: () => 1 }, badNum: Infinity,
+    evil: () => 'x',
+  };
+  for (const norm of [c => Normalizer.normalizeCase(c, Date.now()), c => CaseModel.normalizeCase(c)]) {
+    const out = norm(raw);
+    assert.equal(out.customTag, 'keep-me', 'safe scalar extension preserved');
+    assert.deepEqual(out.nested, { ok: 1 }, 'nested object kept; function child dropped');
+    assert.equal('badNum' in out, false, 'non-finite extension dropped');
+    assert.equal('evil' in out, false, 'function extension dropped');
+    assert.equal(typeof out.name, 'string', 'known fields still normalized');
+  }
+});
+
+test('CARGO-RULE-V3 extensions survive App Backup and Workspace normalization round-trips', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Normalizer = await import(`${normalizerPath.href}${stamp}`);
+  const appData = {
+    caseLibrary: [{ id: 'cc', name: 'C', dimensions: { length: 10, width: 10, height: 10 }, importSourceKey: 'fp-123', customField: 'survives' }],
+    packLibrary: [], folderLibrary: [],
+  };
+  const restored = Normalizer.normalizeAppData(JSON.parse(JSON.stringify(appData)));
+  const c = restored.caseLibrary[0];
+  assert.equal(c.importSourceKey, 'fp-123', 'idempotence fingerprint survives App Backup restore');
+  assert.equal(c.customField, 'survives', 'approved safe extension survives App Backup restore');
+});
+
+test('CARGO-RULE-V3 prototype-pollution keys are never preserved as extensions', async () => {
+  const C = await import(`${cargoCanonicalPath.href}?t=${Date.now()}-${Math.random()}`);
+  const raw = JSON.parse('{"id":"p","name":"P","__proto__":{"polluted":true},"constructor":{"bad":1},"safe":"ok"}');
+  const ext = C.pickSafeExtensions(raw, C.CANONICAL_CASE_KEYS);
+  assert.equal(ext.safe, 'ok', 'a normal extension is picked');
+  assert.equal(Object.prototype.hasOwnProperty.call(ext, '__proto__'), false, '__proto__ never copied');
+  assert.equal(Object.prototype.hasOwnProperty.call(ext, 'constructor'), false, 'constructor never copied');
+  assert.equal(({}).polluted, undefined, 'global prototype not polluted');
 });
 
 test('CARGO-RULE-V1 existing dangling instance: stats expose it, export preserves it, no crash', async () => {

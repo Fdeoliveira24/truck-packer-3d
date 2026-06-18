@@ -21,6 +21,7 @@ import {
   normalizeRightAngleRotation,
   getOrientedDimsForRotation,
 } from '../core/oriented-dims.js';
+import { cargoComparisonKey, cargoFieldsEqual } from '../core/cargo-canonical.js';
 import { computeCoG } from './cog-service.js';
 import { computePalletWarnings } from './oog-service.js';
 
@@ -860,66 +861,16 @@ export function computeStats(pack, caseLibraryOverride) {
   };
 }
 
-// Cargo-defining fields used to decide whether a bundled imported case is
-// equivalent to a local case. Transient fields (ids, timestamps, runtime
-// state, instance transforms) are intentionally excluded.
-function laneTriStateValue(v) {
-  return v === true ? true : v === false ? false : null;
-}
-
-function cargoRulesEquivalent(a, b) {
-  if (!a || !b) return false;
-  const n = x => Number(x) || 0;
-  const s = x => String(x == null ? '' : x).trim().toLowerCase();
-  const ad = a.dimensions || {};
-  const bd = b.dimensions || {};
-  return (
-    s(a.name) === s(b.name) &&
-    s(a.manufacturer) === s(b.manufacturer) &&
-    s(a.category) === s(b.category) &&
-    n(ad.length) === n(bd.length) &&
-    n(ad.width) === n(bd.width) &&
-    n(ad.height) === n(bd.height) &&
-    n(a.weight) === n(b.weight) &&
-    Boolean(a.canFlip) === Boolean(b.canFlip) &&
-    canonicalOrientationLock(a.orientationLock) === canonicalOrientationLock(b.orientationLock) &&
-    Boolean(a.noStackOnTop) === Boolean(b.noStackOnTop) &&
-    (a.stackable !== false) === (b.stackable !== false) &&
-    n(a.maxStackCount) === n(b.maxStackCount) &&
-    Boolean(a.isPallet) === Boolean(b.isPallet) &&
-    n(a.maxPalletWeight) === n(b.maxPalletWeight) &&
-    laneTriStateValue(a.laneItem) === laneTriStateValue(b.laneItem) &&
-    n(a.loadPriority) === n(b.loadPriority) &&
-    s(a.shape || 'box') === s(b.shape || 'box')
-  );
-}
-
-// Deterministic, canonical fingerprint of a case's cargo definition (the same
-// fields cargoRulesEquivalent compares, including the source name). Stamped onto
-// a conflict-imported case as `importSourceKey` so that re-importing the same
-// conflicting pack reuses the already-created imported case instead of creating
-// (Imported 2), (Imported 3), ... Number/alias/format differences are normalized
-// so they cannot break the match or create a false one.
-function cargoFingerprint(c) {
-  const c2 = c || {};
-  const n = x => Number(x) || 0;
-  const s = x => String(x == null ? '' : x).trim().toLowerCase();
-  const d = c2.dimensions || {};
-  return JSON.stringify([
-    s(c2.name), s(c2.manufacturer), s(c2.category),
-    n(d.length), n(d.width), n(d.height), n(c2.weight),
-    s(c2.shape || 'box'),
-    Boolean(c2.canFlip),
-    canonicalOrientationLock(c2.orientationLock),
-    Boolean(c2.noStackOnTop),
-    c2.stackable !== false,
-    n(c2.maxStackCount),
-    Boolean(c2.isPallet),
-    n(c2.maxPalletWeight),
-    laneTriStateValue(c2.laneItem),
-    n(c2.loadPriority),
-  ]);
-}
+// Cargo equivalence and the import fingerprint share one typed canonical
+// representation (core/cargo-canonical.js): the SAME raw value yields the SAME
+// canonical result in every path, "false" is never truthy, malformed numbers are
+// never silently 0, and an invalid value never equals a valid default. The
+// comparison is PHYSICAL only — manufacturer/category (display taxonomy) are
+// excluded so casing/taxonomy differences never fork a separate physical case.
+// The fingerprint is stamped onto a conflict-imported case as `importSourceKey`
+// so re-importing the same conflicting pack reuses the existing copy (idempotence).
+const cargoRulesEquivalent = cargoFieldsEqual;
+const cargoFingerprint = cargoComparisonKey;
 
 // A bundled case definition is "complete" (storable) only if it is an object
 // with a non-blank id and finite positive dimensions. Anything else is malformed

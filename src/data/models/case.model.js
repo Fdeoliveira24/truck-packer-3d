@@ -13,7 +13,13 @@
 
 import { uuid } from '../../utils/uuid.js';
 import { volumeInCubicInches } from '../../core/utils.js';
-import { canonicalOrientationLock } from '../../core/orientation.js';
+import {
+  canonicalCargoForStorage,
+  pickSafeExtensions,
+  CANONICAL_CASE_KEYS,
+  DIMENSION_MAX_INCHES,
+  WEIGHT_MAX_LBS,
+} from '../../core/cargo-canonical.js';
 
 export function normalizeCase(data) {
   const now = Date.now();
@@ -22,20 +28,17 @@ export function normalizeCase(data) {
   const length = Number(dims.length);
   const width = Number(dims.width);
   const height = Number(dims.height);
-  const safeLength = Number.isFinite(length) && length > 0 ? length : 48;
-  const safeWidth = Number.isFinite(width) && width > 0 ? width : 24;
-  const safeHeight = Number.isFinite(height) && height > 0 ? height : 24;
-  const shapeRaw = String(d.shape || 'box')
-    .trim()
-    .toLowerCase();
-  const shape = shapeRaw === 'cylinder' || shapeRaw === 'drum' || shapeRaw === 'box' ? shapeRaw : 'box';
-  const orientationLock = canonicalOrientationLock(d.orientationLock);
-  const maxStackCount = Math.floor(Number(d.maxStackCount));
-  const maxPalletWeight = Number(d.maxPalletWeight);
+  // Default missing/invalid dimensions, then apply the data-sanity cap so absurd
+  // values can never produce an infinite volume.
+  const safeLength = Math.min(DIMENSION_MAX_INCHES, Number.isFinite(length) && length > 0 ? length : 48);
+  const safeWidth = Math.min(DIMENSION_MAX_INCHES, Number.isFinite(width) && width > 0 ? width : 24);
+  const safeHeight = Math.min(DIMENSION_MAX_INCHES, Number.isFinite(height) && height > 0 ? height : 24);
   const hazmatRaw = String(d.hazmatClass || '').trim();
   const hazmatClass = hazmatRaw ? hazmatRaw : null;
-  const laneItem = d.laneItem === true ? true : d.laneItem === false ? false : null;
-  return {
+  const weightRaw = Number.isFinite(Number(d.weight)) && Number(d.weight) >= 0 ? Number(d.weight) : 0;
+  // Typed canonical handling-rule fields from the single shared representation.
+  const cargo = canonicalCargoForStorage(d);
+  const normalized = {
     id: String(d.id || '').trim() || uuid(),
     name: String(d.name || '').trim() || 'New Case',
     manufacturer: String(d.manufacturer || '').trim(),
@@ -47,30 +50,32 @@ export function normalizeCase(data) {
       width: safeWidth,
       height: safeHeight,
     },
-    weight: Number.isFinite(Number(d.weight)) ? Number(d.weight) : 0,
+    weight: Math.min(WEIGHT_MAX_LBS, weightRaw),
     volume: volumeInCubicInches({
       length: safeLength,
       width: safeWidth,
       height: safeHeight,
     }),
-    shape,
-    stackable: d.stackable !== false,
-    maxStackCount: Number.isFinite(maxStackCount) && maxStackCount >= 0 ? maxStackCount : 0,
-    orientationLock,
-    noStackOnTop: Boolean(d.noStackOnTop),
-    isPallet: Boolean(d.isPallet),
-    maxPalletWeight: Number.isFinite(maxPalletWeight) && maxPalletWeight >= 0 ? maxPalletWeight : 0,
+    shape: cargo.shape,
+    stackable: cargo.stackable,
+    maxStackCount: cargo.maxStackCount,
+    orientationLock: cargo.orientationLock,
+    noStackOnTop: cargo.noStackOnTop,
+    isPallet: cargo.isPallet,
+    maxPalletWeight: cargo.maxPalletWeight,
     hazmatClass,
-    laneItem,
-    loadPriority: Number.isFinite(Number(d.loadPriority)) ? Number(d.loadPriority) : 0,
+    laneItem: cargo.laneItem,
+    loadPriority: cargo.loadPriority,
     mustLoadLast: Boolean(d.mustLoadLast),
     mustUnloadFirst: Boolean(d.mustUnloadFirst),
     stopGroup: String(d.stopGroup || '').trim(),
     keepTogetherGroup: String(d.keepTogetherGroup || '').trim(),
-    canFlip: Boolean(d.canFlip),
+    canFlip: cargo.canFlip,
     notes: String(d.notes || ''),
     color: String(d.color || '#ff9f1c'),
     createdAt: Number.isFinite(Number(d.createdAt)) ? Number(d.createdAt) : now,
     updatedAt: now,
   };
+  // Preserve approved safe unknown metadata across normalization.
+  return { ...pickSafeExtensions(d, CANONICAL_CASE_KEYS), ...normalized };
 }

@@ -14,11 +14,17 @@
 import * as CoreUtils from './utils/index.js';
 import * as CoreDefaults from './defaults.js';
 import { uuid } from './browser.js';
-import { canonicalOrientationLock } from './orientation.js';
 import {
   normalizeRightAngleRotation,
   getOrientedDimsForRotation,
 } from './oriented-dims.js';
+import {
+  canonicalCargoForStorage,
+  pickSafeExtensions,
+  CANONICAL_CASE_KEYS,
+  DIMENSION_MAX_INCHES,
+  WEIGHT_MAX_LBS,
+} from './cargo-canonical.js';
 
 const DEFAULT_TRUCK = { length: 636, width: 102, height: 98 };
 
@@ -146,51 +152,49 @@ export function normalizeCase(c, now) {
   const createdAt = finiteNumber(c && c.createdAt, now);
   const updatedAt = finiteNumber(c && c.updatedAt, now);
   const dims = c && c.dimensions && typeof c.dimensions === 'object' ? c.dimensions : {};
-  const length = positiveNumber(dims.length, 48);
-  const width = positiveNumber(dims.width, 24);
-  const height = positiveNumber(dims.height, 24);
-  const shapeRaw = safeString(c && c.shape, 'box').toLowerCase();
-  const shape = shapeRaw === 'cylinder' || shapeRaw === 'drum' || shapeRaw === 'box' ? shapeRaw : 'box';
-  const orientationLock = canonicalOrientationLock(c && c.orientationLock);
-  const maxStackCount = Math.max(0, Math.floor(finiteNumber(c && c.maxStackCount, 0)));
-  const maxPalletWeight = Math.max(0, finiteNumber(c && c.maxPalletWeight, 0));
+  // Apply the data-sanity dimension cap so absurd values can never yield an
+  // infinite volume.
+  const length = Math.min(DIMENSION_MAX_INCHES, positiveNumber(dims.length, 48));
+  const width = Math.min(DIMENSION_MAX_INCHES, positiveNumber(dims.width, 24));
+  const height = Math.min(DIMENSION_MAX_INCHES, positiveNumber(dims.height, 24));
   const hazmatRaw = safeString(c && c.hazmatClass, '');
   const hazmatClass = hazmatRaw ? hazmatRaw : null;
   const category = safeString(c && c.category, 'default').toLowerCase();
   const color = safeString(c && c.color, '');
-  const laneItem = c && c.laneItem === true ? true : c && c.laneItem === false ? false : null;
+  // Typed canonical handling-rule fields from the single shared representation.
+  const cargo = canonicalCargoForStorage(c);
   const normalizedCase = {
     id: safeId(c && c.id),
     name: safeString(c && c.name, 'Unnamed Case'),
     manufacturer: safeString(c && c.manufacturer, ''),
     category,
     dimensions: { length, width, height },
-    weight: Math.max(0, finiteNumber(c && c.weight, 0)),
+    weight: Math.min(WEIGHT_MAX_LBS, Math.max(0, finiteNumber(c && c.weight, 0))),
     volume: CoreUtils.volumeInCubicInches({ length, width, height }),
-    shape,
-    stackable: !(c && c.stackable === false),
-    maxStackCount,
-    orientationLock,
-    noStackOnTop: Boolean(c && c.noStackOnTop),
-    isPallet: Boolean(c && c.isPallet),
-    maxPalletWeight,
+    shape: cargo.shape,
+    stackable: cargo.stackable,
+    maxStackCount: cargo.maxStackCount,
+    orientationLock: cargo.orientationLock,
+    noStackOnTop: cargo.noStackOnTop,
+    isPallet: cargo.isPallet,
+    maxPalletWeight: cargo.maxPalletWeight,
     hazmatClass,
-    laneItem,
-    loadPriority: finiteNumber(c && c.loadPriority, 0),
+    laneItem: cargo.laneItem,
+    loadPriority: cargo.loadPriority,
     mustLoadLast: Boolean(c && c.mustLoadLast),
     mustUnloadFirst: Boolean(c && c.mustUnloadFirst),
     stopGroup: safeString(c && c.stopGroup, ''),
     keepTogetherGroup: safeString(c && c.keepTogetherGroup, ''),
-    canFlip: Boolean(c && c.canFlip),
+    canFlip: cargo.canFlip,
     notes: safeString(c && c.notes, ''),
     color,
     createdAt,
     updatedAt,
   };
-  // Preserve the pack-import idempotence fingerprint when present so repeated
-  // conflicting imports stay idempotent across reloads.
-  if (c && c.importSourceKey) normalizedCase.importSourceKey = String(c.importSourceKey);
-  return normalizedCase;
+  // Preserve approved safe unknown metadata (incl. the pack-import idempotence
+  // fingerprint importSourceKey) so extensions survive App Backup and Workspace
+  // normalization. Prototype keys, functions and non-finite values are dropped.
+  return { ...pickSafeExtensions(c, CANONICAL_CASE_KEYS), ...normalizedCase };
 }
 
 export function normalizeTruck(truck) {

@@ -14,24 +14,16 @@
 import * as StateStore from '../core/state-store.js';
 import * as Utils from '../core/utils/index.js';
 import * as CoreDefaults from '../core/defaults.js';
-import { canonicalOrientationLock } from '../core/orientation.js';
+import { applyCanonicalCargoFields } from '../core/cargo-canonical.js';
 
 // Canonicalize the known cargo-rule fields in place before storage, leaving any
-// other (including unknown extension) fields untouched. Keeps stored values
-// consistent for AutoPack, comparison, idempotence, and display without applying
-// a fixed-object normalizer that would drop unknown fields.
+// other (including unknown extension) fields untouched. Routes through the single
+// typed canonical representation so storage matches comparison/import exactly
+// ("false" never becomes true, malformed numbers never become a silent 0, decimal
+// stack counts are floored consistently), without applying a fixed-object
+// normalizer that would drop unknown fields.
 function canonicalizeCaseCargoFields(c) {
-  const next = { ...(c || {}) };
-  next.orientationLock = canonicalOrientationLock(next.orientationLock);
-  next.canFlip = Boolean(next.canFlip);
-  next.noStackOnTop = Boolean(next.noStackOnTop);
-  next.isPallet = Boolean(next.isPallet);
-  next.stackable = next.stackable !== false; // only explicit false is false
-  next.maxStackCount = Math.max(0, Math.floor(Number(next.maxStackCount) || 0));
-  next.maxPalletWeight = Math.max(0, Number(next.maxPalletWeight) || 0);
-  next.laneItem = next.laneItem === true ? true : next.laneItem === false ? false : null;
-  next.loadPriority = Number.isFinite(Number(next.loadPriority)) ? Number(next.loadPriority) : 0;
-  return next;
+  return applyCanonicalCargoFields(c);
 }
 
 function applyCaseDefaultColor(caseObj) {

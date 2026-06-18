@@ -4308,7 +4308,10 @@ test('CARGO-RULE-V1 unchecking no-top-load clears legacy stackable:false (modal 
   const src = await fs.readFile(caseModalPath, 'utf8');
   assert.match(src, /noStackOnTop: noTopChecked/);
   assert.match(src, /stackable: noTopChecked \? initial\.stackable !== false : true/);
-  assert.match(src, /maxStackCount: noTopChecked \? 0 :/);
+  // Phase 7: the stack cap is PRESERVED (not zeroed) under no-top-load; the field is
+  // disabled and the solver ignores it while noStackOnTop is active.
+  assert.match(src, /maxStackCount: Math\.max\(0, parseInt\(fMaxStack\.input\.value, 10\) \|\| 0\)/);
+  assert.doesNotMatch(src, /maxStackCount: noTopChecked \? 0 :/, 'no-top-load must not silently zero the saved stack count');
   assert.match(src, /AutoPack may still place them normally/i, 'lane copy reflects that Always is a preference, not a guarantee');
 });
 
@@ -4357,7 +4360,7 @@ test('CARGO-RULE-V1 case modal exposes only honest handling controls with canoni
   // Canonical save mapping
   assert.match(src, /canFlip:\s*orientationLock === 'any' && Boolean\(flip\.checked\)/, 'canFlip only when policy is any');
   assert.match(src, /orientationLock,\n[\s\S]*noStackOnTop: noTopChecked/, 'save sets orientationLock + noStackOnTop');
-  assert.match(src, /maxStackCount: noTopChecked \? 0 : Math\.max\(0, parseInt\(fMaxStack\.input\.value, 10\) \|\| 0\)/, 'maxStackCount cleaned to >= 0 integer and zeroed under no-top-load');
+  assert.match(src, /maxStackCount: Math\.max\(0, parseInt\(fMaxStack\.input\.value, 10\) \|\| 0\)/, 'maxStackCount preserved (not zeroed) under no-top-load; field disabled and solver ignores it');
   assert.match(src, /stackable: noTopChecked \? initial\.stackable !== false : true/, 'unchecking no-top-load clears the legacy stackable:false rule');
   assert.match(src, /laneItem: laneValue/, 'save sets laneItem tri-state');
   assert.match(src, /loadPriority: priorityValue/, 'save sets loadPriority');
@@ -4369,6 +4372,77 @@ test('CARGO-RULE-V1 case modal exposes only honest handling controls with canoni
   // No deferred/inert controls exposed
   assert.ok(!/createCheckRow\(doc, '[^']*[Ff]ragile/.test(src), 'must not expose a Fragile control');
   assert.ok(!/[Hh]azmat|stopGroup|mustLoadLast|deliverySequence/.test(src), 'must not expose deferred/inert fields');
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 7: Handling dependency contract
+// ---------------------------------------------------------------------------
+
+test('CARGO-RULE-V7 no-top-load disables but never erases the saved stack count', async () => {
+  const src = await fs.readFile(caseModalPath, 'utf8');
+  // Field disabled while no-top-load is on, but the saved value is kept.
+  assert.match(src, /fMaxStack\.input\.disabled = noTop\.checked/, 'stack-count field disabled under no-top-load');
+  assert.match(src, /maxStackCount: Math\.max\(0, parseInt\(fMaxStack\.input\.value, 10\) \|\| 0\)/,
+    'save preserves the stack count regardless of no-top-load');
+  assert.doesNotMatch(src, /maxStackCount: noTopChecked \? 0/, 'must not zero the saved stack count');
+});
+
+test('CARGO-RULE-V7 storage keeps the cap and the solver gate blocks children under noStackOnTop', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const StateStore = await import(stateStorePath.href);
+  const CaseLibrary = await import(`${caseLibraryPath.href}${stamp}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  // The saved cap survives storage alongside no-top-load (never silently erased).
+  CaseLibrary.upsert({ id: 'base', name: 'Base', dimensions: { length: 40, width: 40, height: 6 }, noStackOnTop: true, maxStackCount: 5 });
+  const saved = StateStore.get('caseLibrary').find(c => c.id === 'base');
+  assert.equal(saved.noStackOnTop, true, 'no-top-load persisted');
+  assert.equal(saved.maxStackCount, 5, 'stack cap preserved alongside no-top-load (not erased)');
+  // The solver's "can have items on top" gate is governed by noStackOnTop/stackable,
+  // independent of maxStackCount, so the preserved cap is ignored while no-top-load is on.
+  const solverSrc = await fs.readFile(autoPackSolverPath, 'utf8');
+  assert.match(solverSrc, /!\(rules\.noStackOnTop \|\| rules\.stackable === false\)/,
+    'the top-load gate depends on noStackOnTop/stackable, not on maxStackCount');
+});
+
+test('CARGO-RULE-V7 pallet + no-top-load shows an explanatory note; pallet warning is dormant when not a pallet', async () => {
+  const src = await fs.readFile(caseModalPath, 'utf8');
+  assert.match(src, /This pallet is marked .No top load,. so AutoPack will not place cargo on it\./,
+    'pallet + no-top-load copy explains AutoPack will not load it');
+  // Pallet warning value preserved (dormant) when pallet is unchecked — toggling
+  // Pallet off/on must not destroy the saved warning value.
+  assert.match(src, /maxPalletWeight: pallet\.checked \? Math\.max\(0, Number\(fPalletWarn\.input\.value\) \|\| 0\) : \(Math\.max\(0, Number\(initial\.maxPalletWeight\) \|\| 0\)\)/,
+    'non-pallet keeps the dormant maxPalletWeight value');
+});
+
+test('CARGO-RULE-V7 manual-rotation policy block uses accurate wording (not "orientation locked")', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  assert.match(src, /Cannot rotate: the case's orientation policy does not allow this rotation\./,
+    'policy-blocked rotation message names the case orientation policy');
+  assert.doesNotMatch(src, /this item is orientation-locked/, 'must not mislabel a policy block as an instance lock');
+});
+
+test('CARGO-RULE-V7 orientation distinction: canFlip governs AutoPack tipping; manual exact lock allowed under "any"', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const dims = { l: 30, w: 20, h: 10 };
+  const tippedRot = { x: Math.PI / 2, y: 0, z: 0 };
+  // canFlip controls AUTOPACK-generated tipping: any + canFlip:false → no tipped candidate.
+  const noFlipCands = Solver.buildOrientationCandidates(dims, { orientationLock: 'any', canFlip: false });
+  assert.ok(noFlipCands.every(c => c.h === dims.h), 'any + canFlip:false generates no AutoPack tip');
+  // BUT a manual exact rotation is still permitted under the "any" policy (it does not
+  // depend on canFlip) — this is the chosen product contract for manual exact locks.
+  assert.equal(PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'any', canFlip: false }, tippedRot), true,
+    'manual exact lock permitted under any policy regardless of canFlip');
+  // upright blocks BOTH manual and automatic tipping.
+  assert.equal(PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'upright' }, tippedRot), false,
+    'upright blocks a manual tip');
+  assert.ok(Solver.buildOrientationCandidates(dims, { orientationLock: 'upright', canFlip: true }).every(c => c.h === dims.h),
+    'upright blocks AutoPack tipping even with canFlip');
+  // An exact instance lock overrides case candidate generation (one candidate).
+  const locked = Solver.buildOrientationCandidates(dims, { orientationLock: 'any', canFlip: true, orientationLocked: true, lockedRotation: tippedRot });
+  assert.equal(locked.length, 1, 'instance exact lock overrides candidate generation');
+  assert.equal(locked[0].locked, true, 'the single candidate is the locked one');
 });
 
 test('CARGO-RULE-V1 orientation truth table: upright/onSide beat canFlip; instance lock overrides all', async () => {

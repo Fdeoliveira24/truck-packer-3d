@@ -318,6 +318,19 @@ export function openCaseModal({
   palletWarnHelp.textContent = 'Warns if stacked weight exceeds this. It does not block AutoPack.';
   fPalletWarn.wrap.appendChild(palletWarnHelp);
 
+  // Note shown when no-top-load disables the stack cap: the saved value is kept.
+  const maxStackNote = doc.createElement('div');
+  maxStackNote.className = 'tp3d-cases-handling-help';
+  maxStackNote.textContent =
+    'Disabled while “Do not place cargo on top” is on. The saved value is kept and applies again when that option is off.';
+  fMaxStack.wrap.appendChild(maxStackNote);
+
+  // Note shown when a pallet also forbids top load: explain the resulting behavior.
+  const palletNoTopNote = doc.createElement('div');
+  palletNoTopNote.className = 'tp3d-cases-handling-help';
+  palletNoTopNote.textContent =
+    'This pallet is marked “No top load,” so AutoPack will not place cargo on it.';
+
   const lane = createSelectField(doc, 'Long-item lane', [
     ['auto', 'Automatic'],
     ['always', 'Always'],
@@ -338,9 +351,15 @@ export function openCaseModal({
   };
   const applyNoTopDep = () => {
     fMaxStack.input.disabled = noTop.checked;
+    maxStackNote.style.display = noTop.checked ? '' : 'none';
+    // Pallet + no-top-load is allowed but means AutoPack will not load the pallet.
+    palletNoTopNote.style.display = noTop.checked && pallet.checked ? '' : 'none';
   };
   const applyPalletDep = () => {
+    // Keep the warning value as DORMANT when not a pallet: hide the field but never
+    // clear the saved value, so toggling Pallet off and on does not destroy input.
     fPalletWarn.wrap.style.display = pallet.checked ? '' : 'none';
+    palletNoTopNote.style.display = noTop.checked && pallet.checked ? '' : 'none';
   };
   orient.select.addEventListener('change', applyOrientationDep);
   noTop.addEventListener('change', applyNoTopDep);
@@ -355,6 +374,7 @@ export function openCaseModal({
   handling.appendChild(fMaxStack.wrap);
   handling.appendChild(palletRow.row);
   handling.appendChild(fPalletWarn.wrap);
+  handling.appendChild(palletNoTopNote);
   handling.appendChild(lane.wrap);
   handling.appendChild(priority.wrap);
 
@@ -427,9 +447,11 @@ export function openCaseModal({
             // box stays checked, but clear it when unchecked so the effective rule
             // is truly removed (it cannot otherwise be cleared from the modal).
             stackable: noTopChecked ? initial.stackable !== false : true,
-            // No-top-load means nothing rests on top, so a direct-child cap is
-            // contradictory — store 0 (no limit / not applicable) in that case.
-            maxStackCount: noTopChecked ? 0 : Math.max(0, parseInt(fMaxStack.input.value, 10) || 0),
+            // Preserve the saved stack cap even while "no top load" is active: the
+            // field is disabled (not cleared) and the solver already ignores the cap
+            // because noStackOnTop blocks all children. The count returns intact when
+            // no-top-load is turned off, so the user's input is never silently erased.
+            maxStackCount: Math.max(0, parseInt(fMaxStack.input.value, 10) || 0),
             isPallet: Boolean(pallet.checked),
             maxPalletWeight: pallet.checked ? Math.max(0, Number(fPalletWarn.input.value) || 0) : (Math.max(0, Number(initial.maxPalletWeight) || 0)),
             laneItem: laneValue,

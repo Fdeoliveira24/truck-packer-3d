@@ -943,7 +943,9 @@ export function createInteractionManager({
       });
       if (rotatedCount) UIComponents.showToast(`Rotated ${rotatedCount} case(s)`, 'info');
       if (blockedCount) UIComponents.showToast('Cannot rotate here: collision or truck boundary detected', 'error');
-      if (policyBlockedCount) UIComponents.showToast('Cannot rotate: this item is orientation-locked.', 'error');
+      // The block here comes from the CASE orientation policy (upright / on-side),
+      // not an exact instance lock — keep the wording accurate.
+      if (policyBlockedCount) UIComponents.showToast("Cannot rotate: the case's orientation policy does not allow this rotation.", 'error');
     }
 
     /**

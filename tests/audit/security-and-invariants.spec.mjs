@@ -63,6 +63,7 @@ const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url)
 const normalizerPath = new URL('../../src/core/normalizer.js', import.meta.url);
 const orientedDimsPath = new URL('../../src/core/oriented-dims.js', import.meta.url);
 const cargoCanonicalPath = new URL('../../src/core/cargo-canonical.js', import.meta.url);
+const beamCsvFixturePath = new URL('../../docs/tp3d-pack-and-cases-upload-tests/cargo_cases_valid.csv', import.meta.url);
 const vendorThreePath = new URL('../../vendor/three.module.js', import.meta.url);
 const caseModelPath = new URL('../../src/data/models/case.model.js', import.meta.url);
 const coreUtilsPath = new URL('../../src/core/utils.js', import.meta.url);
@@ -2123,7 +2124,9 @@ test('PLACEMENT-STATE-S2 explicit outside-truck addInstance writes "staged" plac
 
 test('PLACEMENT-STATE-S2 AutoPack records placement from solver results', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
-  assert.match(src, /placement: placements\.has\(inst\.id\) \? 'packed' : 'staged',/,
+  assert.match(src, /const isPacked = placements\.has\(inst\.id\);/,
+    'AutoPack must classify packed vs staged by solver placement membership');
+  assert.match(src, /placement: isPacked \? 'packed' : 'staged',/,
     'AutoPack must mark solver-placed cases as packed and overflow/staged cases as staged');
 });
 
@@ -3620,7 +3623,7 @@ test('AUTO-PACK-A1-3 AutoPack validates support, containment, and staging separa
     'final validation must reject unsupported/floating placements');
   assert.match(src, /const finalValidation = validatePackedPlacements\(packed, zones, geometry\);[\s\S]*placements\.delete\(id\);[\s\S]*rotations\.delete\(id\);/,
     'placements rejected by final validation must be staged instead of persisted as packed');
-  assert.match(stagingBlock, /PackLibrary\.findSafeStagingPosition\(\{ truck \}, dims, acceptedAabbs\)/,
+  assert.match(stagingBlock, /PackLibrary\.findSafeStagingPosition\(\{ truck \}, pose\.dims, acceptedAabbs\)/,
     'staged/unpacked items must use the canonical staging helper, clearly separated from the trailer side');
 });
 
@@ -6735,6 +6738,214 @@ test('REPAIR-1 E: candidate deduplication is by derived dimensions (cube => 1, a
   assert.equal(new Set(keys).size, keys.length, 'no duplicate physical candidates among asymmetric faces');
 });
 
+// ---------------------------------------------------------------------------
+// REPAIR 1B: Atomic staged-pose contract.
+// staged pose = position + rotation + orientedDims, all the SAME orientation;
+// rendered bottom rests on the staging floor (y=0). Uses production functions:
+// buildLegacyAutoPackItems -> buildStagedPose -> findSafeStagingPosition, and
+// compares against the shared helper AND a real THREE Box3.
+// ---------------------------------------------------------------------------
+
+async function r1bModules() {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  return {
+    Engine: await import(`${autoPackEnginePath.href}${stamp}`),
+    Legacy: await import(`${autoPackLegacySolverPath.href}${stamp}`),
+    PackLib: await import(`${packLibraryPath.href}${stamp}`),
+    Solver: await import(`${autoPackSolverPath.href}${stamp}`),
+  };
+}
+function r1bLegacyItem(mods, caseObj, inst = {}) {
+  const { Legacy, PackLib } = mods;
+  const items = Legacy.buildLegacyAutoPackItems({
+    instances: [{ id: 'inst', caseId: caseObj.id, hidden: false, ...inst }],
+    getCaseById: id => (id === caseObj.id ? caseObj : null),
+    volumeInCubicInches: d => d.length * d.width * d.height,
+    orientationTools: {
+      normalizeRightAngleRotation: PackLib.normalizeRightAngleRotation,
+      getOrientedDimsForRotation: PackLib.getOrientedDimsForRotation,
+    },
+  });
+  return items[0];
+}
+// Reproduce EXACTLY what the engine composes for a staged item.
+function r1bComposeStaged(mods, caseObj, truck, inst = {}) {
+  const item = r1bLegacyItem(mods, caseObj, inst);
+  const pose = mods.Engine.buildStagedPose(item);
+  const staged = mods.PackLib.findSafeStagingPosition({ truck }, pose.dims, []);
+  return {
+    position: staged.position,
+    rotation: pose.rotation,
+    orientedDims: { length: pose.dims.length, width: pose.dims.width, height: pose.dims.height },
+  };
+}
+function r1bAssertAtomicFloor(mods, caseObj, staged, truth, label) {
+  const helper = mods.PackLib.getOrientedDimsForRotation(caseObj.dimensions, staged.rotation);
+  const got = { l: staged.orientedDims.length, w: staged.orientedDims.width, h: staged.orientedDims.height };
+  assert.deepEqual(got, { l: helper.length, w: helper.width, h: helper.height }, `${label}: orientedDims == shared helper(rotation)`);
+  const t = truth(caseObj.dimensions, staged.rotation);
+  assert.deepEqual(got, { l: t.length, w: t.width, h: t.height }, `${label}: orientedDims == THREE Box3(rotation)`);
+  const bottom = staged.position.y - staged.orientedDims.height / 2;
+  assert.ok(Math.abs(bottom) <= 0.05, `${label}: staged bottom rests on the floor (gap=${bottom})`);
+}
+async function r1bImportBeam(name) {
+  installWindowXLSX();
+  const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  const csv = fsSync.readFileSync(beamCsvFixturePath, 'utf8');
+  const parsed = await IE.parseAndValidateSpreadsheet(makeCsvFile(csv), []);
+  const { nextCaseLibrary } = IE.importCaseRows(parsed.valid, []);
+  const c = nextCaseLibrary.find(x => x.name === name);
+  assert.ok(c, `imported beam fixture "${name}" exists`);
+  return c;
+}
+
+test('REPAIR-1B A: a staged unpacked item has an atomic pose resting on the staging floor', async () => {
+  const mods = await r1bModules();
+  const truth = await threeOrientedTruth();
+  const truck = { length: 240, width: 96, height: 96 };
+  const caseObj = { id: 'c', name: 'OnSide', dimensions: { length: 30, width: 20, height: 10 }, orientationLock: 'onSide', canFlip: false, shape: 'box', volume: 6000 };
+  const staged = r1bComposeStaged(mods, caseObj, truck);
+  assert.ok(staged.position && Number.isFinite(staged.position.y), 'staged position exists');
+  assert.ok(staged.rotation && [staged.rotation.x, staged.rotation.y, staged.rotation.z].every(Number.isFinite), 'staged rotation is canonical');
+  assert.ok(staged.orientedDims && staged.orientedDims.height > 0, 'staged orientedDims exists');
+  r1bAssertAtomicFloor(mods, caseObj, staged, truth, 'onSide generic');
+  // onSide must not be staged upright.
+  assert.ok(staged.rotation.x !== 0 || staged.rotation.z !== 0, 'onSide item is not staged upright');
+});
+
+test('REPAIR-1B B: Long Beam fixtures do not float (atomic pose; onSide honored)', async () => {
+  const mods = await r1bModules();
+  const truth = await threeOrientedTruth();
+  const truck = { length: 240, width: 96, height: 96 };
+
+  const beam144 = await r1bImportBeam('Long Beam 144');
+  assert.equal(beam144.orientationLock, 'onSide', 'Long Beam 144 imports as onSide');
+  const s144 = r1bComposeStaged(mods, beam144, truck);
+  r1bAssertAtomicFloor(mods, beam144, s144, truth, 'Long Beam 144');
+  // The staged orientation stands the 144in length up (onSide candidate), and the
+  // SAME height is used for both the staging Y and the rendered orientedDims —
+  // previously y was 72 while render height was 8 (floated ~68in).
+  assert.equal(s144.orientedDims.height, 144, 'Long Beam 144 staged height is its true 144in oriented height');
+  assert.ok(Math.abs(s144.position.y - 72) <= 0.05, 'Long Beam 144 staged center y == 72 (height/2)');
+  assert.ok(Math.abs(s144.position.y - s144.orientedDims.height / 2) <= 0.05, 'no float: bottom on floor');
+  assert.ok(s144.rotation.x !== 0 || s144.rotation.z !== 0, 'Long Beam 144 not staged upright (onSide honored)');
+
+  const beamNL = await r1bImportBeam('Long Beam No Lane');
+  assert.equal(beamNL.orientationLock, 'onSide', 'Long Beam No Lane imports as onSide (On-Side alias)');
+  const sNL = r1bComposeStaged(mods, beamNL, truck);
+  r1bAssertAtomicFloor(mods, beamNL, sNL, truth, 'Long Beam No Lane');
+  assert.equal(sNL.orientedDims.height, 120, 'Long Beam No Lane staged height is its true 120in oriented height');
+  assert.ok(Math.abs(sNL.position.y - sNL.orientedDims.height / 2) <= 0.05, 'no float: bottom on floor');
+});
+
+test('REPAIR-1B C: Long Beam staging rests on the floor in Standard / Wheel Wells / Front Overhang', async () => {
+  const mods = await r1bModules();
+  const truth = await threeOrientedTruth();
+  const beam = await r1bImportBeam('Long Beam 144');
+  for (const shapeMode of ['rect', 'wheelWells', 'frontBonus']) {
+    const truck = { length: 240, width: 96, height: 96, shapeMode };
+    const staged = r1bComposeStaged(mods, beam, truck);
+    r1bAssertAtomicFloor(mods, beam, staged, truth, `Long Beam 144 / ${shapeMode}`);
+    const bottom = staged.position.y - staged.orientedDims.height / 2;
+    assert.ok(Math.abs(bottom) <= 0.05, `${shapeMode}: staged beam bottom on floor`);
+  }
+});
+
+test('REPAIR-1B D: orientation-policy staging matrix — pose, rotation, dims and THREE all agree', async () => {
+  const mods = await r1bModules();
+  const truth = await threeOrientedTruth();
+  const truck = { length: 240, width: 96, height: 96 };
+  const H = Math.PI / 2;
+  const base = { id: 'c', name: 'C', dimensions: { length: 30, width: 20, height: 10 }, shape: 'box', volume: 6000 };
+  const policies = [
+    { orientationLock: 'any', canFlip: false, upright: true },
+    { orientationLock: 'any', canFlip: true, upright: true },   // first candidate is identity (upright)
+    { orientationLock: 'upright', canFlip: false, upright: true },
+    { orientationLock: 'upright', canFlip: true, upright: true },
+    { orientationLock: 'onSide', canFlip: false, upright: false },
+    { orientationLock: 'onSide', canFlip: true, upright: false },
+  ];
+  for (const p of policies) {
+    const caseObj = { ...base, orientationLock: p.orientationLock, canFlip: p.canFlip };
+    const staged = r1bComposeStaged(mods, caseObj, truck);
+    r1bAssertAtomicFloor(mods, caseObj, staged, truth, `${p.orientationLock}+${p.canFlip}`);
+    const isUpright = staged.rotation.x === 0 && staged.rotation.z === 0;
+    assert.equal(isUpright, p.upright, `${p.orientationLock}+${p.canFlip}: staged orientation upright=${p.upright}`);
+  }
+  // Valid exact instance lock (compound) — staged exactly as locked.
+  const locked = r1bComposeStaged(mods, { ...base, orientationLock: 'any', canFlip: true }, truck,
+    { orientationLocked: true, lockedRotation: { x: H, y: 0, z: H } });
+  r1bAssertAtomicFloor(mods, base, locked, truth, 'exact compound lock');
+  assert.deepEqual(
+    { l: locked.orientedDims.length, w: locked.orientedDims.width, h: locked.orientedDims.height },
+    { l: 10, w: 30, h: 20 }, 'compound exact lock stages as THREE-correct 10x30x20');
+});
+
+test('REPAIR-1B E: staged pose is deterministic from policy/lock, ignoring stale instance pose', async () => {
+  const mods = await r1bModules();
+  const truth = await threeOrientedTruth();
+  const truck = { length: 240, width: 96, height: 96 };
+  const caseObj = { id: 'c', name: 'C', dimensions: { length: 30, width: 20, height: 10 }, orientationLock: 'onSide', canFlip: false, shape: 'box', volume: 6000 };
+
+  // (a) An unlocked instance carrying a stale orientedDims + an unlocked manual
+  // rotation must NOT leak into the staged pose — it comes from the case policy.
+  const clean = r1bComposeStaged(mods, caseObj, truck);
+  const withStale = r1bComposeStaged(mods, caseObj, truck, {
+    orientedDims: { length: 99, width: 99, height: 99 },
+    transform: { rotation: { x: 0, y: 0, z: 0 } },
+  });
+  assert.deepEqual(withStale.orientedDims, clean.orientedDims, 'stale stored orientedDims is ignored');
+  assert.deepEqual(withStale.rotation, clean.rotation, 'unlocked manual rotation does not override policy staging');
+  r1bAssertAtomicFloor(mods, caseObj, withStale, truth, 'stale-ignored');
+
+  // (b) A valid exact lock IS honored deterministically.
+  const H = Math.PI / 2;
+  const lockedCase = { ...caseObj, orientationLock: 'any' };
+  const locked = r1bComposeStaged(mods, lockedCase, truck, { orientationLocked: true, lockedRotation: { x: H, y: 0, z: 0 } });
+  const helper = mods.PackLib.getOrientedDimsForRotation(lockedCase.dimensions, { x: H, y: 0, z: 0 });
+  assert.deepEqual(
+    { l: locked.orientedDims.length, w: locked.orientedDims.width, h: locked.orientedDims.height },
+    { l: helper.length, w: helper.width, h: helper.height }, 'exact lock stages at the locked orientation');
+  r1bAssertAtomicFloor(mods, lockedCase, locked, truth, 'exact lock honored');
+});
+
+test('REPAIR-1B F: packed placements still rest on the floor and Stats use the same dims (no regression)', async () => {
+  const mods = await r1bModules();
+  const truth = await threeOrientedTruth();
+  const { Solver, PackLib } = mods;
+  // Packed floor placement must touch the floor (bottom ~ 0) and stay self-consistent.
+  const truck = { length: 240, width: 96, height: 96 };
+  const items = [0, 1, 2].map(i => ({ instanceId: `i${i}`, caseId: 'c', dims: { l: 30, w: 20, h: 10 }, canFlip: true, orientationLock: 'any' }));
+  const res = Solver.solveAutoPack({ truck, zones: PackLib.getTrailerUsableZones(truck), loadFrontFirst: true, items });
+  assert.ok(res.placements.size > 0, 'items pack');
+  for (const [id, od] of res.orientedDims) {
+    const rot = res.rotations.get(id);
+    const t = truth({ length: 30, width: 20, height: 10 }, rot);
+    assert.deepEqual({ l: od.length, w: od.width, h: od.height }, { l: t.length, w: t.width, h: t.height }, 'packed orientedDims == THREE');
+    const pos = res.placements.get(id);
+    const bottom = pos.y - od.height / 2;
+    // Floor placements rest on the floor; stacked ones rest on a support (>0).
+    assert.ok(bottom >= -0.05, 'packed item is not below the floor');
+  }
+  // Stats/OOG consume the same effective dimensions as the rendered pose: a stored
+  // rotated instance's orientedDims equals the THREE result for its rotation.
+  const H = Math.PI / 2;
+  const normPath = new URL('../../src/core/normalizer.js', import.meta.url);
+  const Normalizer = await import(`${normPath.href}?t=${Date.now()}-${Math.random()}`);
+  const appData = {
+    caseLibrary: [{ id: 'cc', name: 'C', dimensions: { length: 30, width: 20, height: 10 } }],
+    packLibrary: [{ id: 'pp', title: 'P', truck, cases: [
+      { id: 'inst', caseId: 'cc', placement: 'staged', transform: { position: { x: 5, y: 5, z: 0 }, rotation: { x: H, y: 0, z: H } }, orientedDims: { length: 1, width: 1, height: 1 } },
+    ] }],
+    folderLibrary: [],
+  };
+  const out = Normalizer.normalizeAppData(JSON.parse(JSON.stringify(appData)));
+  const inst = out.packLibrary[0].cases[0];
+  const want = truth({ length: 30, width: 20, height: 10 }, { x: H, y: 0, z: H });
+  assert.deepEqual(inst.orientedDims, { length: want.length, width: want.width, height: want.height },
+    'Stats/OOG read the same THREE-correct oriented dims as the rendered pose');
+});
+
 test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when tweens stop ticking', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
   const tweenStart = src.indexOf('function tweenInstanceToPosition(instanceId, positionInches, duration');
@@ -6810,23 +7021,27 @@ test('AUTO-PACK-A1-ANIM-1 AutoPack diagnostics report solver and animation timin
     'AutoPack diagnostics must include animation batch and fallback metrics');
 });
 
-test('AUTO-PACK-A0C staged unpacked items keep oriented spacing and current rotation', async () => {
+test('AUTO-PACK-A0C staged unpacked items use an atomic pose (position+rotation+orientedDims agree)', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
-  const stagingStart = src.indexOf('function getStagingDims(item)');
-  const stagingEnd = src.indexOf('\n  async function animatePlacements', stagingStart);
+  const stagingStart = src.indexOf('export function buildStagedPose(item)');
+  const stagingEnd = src.indexOf('\nexport function createAutoPackEngine', stagingStart);
   const stagingBlock = stagingStart >= 0 && stagingEnd > stagingStart ? src.slice(stagingStart, stagingEnd) : '';
   const persistStart = src.indexOf('const nextCases = (packData.cases || []).map(inst => {');
   const persistEnd = src.indexOf('\n      PackLibrary.update(packId, { cases: nextCases });', persistStart);
   const persistBlock = persistStart >= 0 && persistEnd > persistStart ? src.slice(persistStart, persistEnd) : '';
 
   assert.doesNotMatch(stagingBlock, /item\.inst && item\.inst\.orientedDims/,
-    'getStagingDims must not read stale inst.orientedDims from a previous AutoPack run as primary height source (RC-4 fix)');
+    'buildStagedPose must not read stale inst.orientedDims from a previous AutoPack run (RC-4 fix)');
   assert.match(stagingBlock, /item\.orientations\[0\][\s\S]*length: Number\(ori\.l\)[\s\S]*width: Number\(ori\.w\)[\s\S]*height: Number\(ori\.h\)/,
-    'staging must fall back to the generated AutoPack orientation dimensions, not raw case dimensions');
-  assert.match(persistBlock, /const currentRotation =[\s\S]*inst\.transform && inst\.transform\.rotation/,
-    'unpacked staged items must keep their current transform rotation');
-  assert.match(persistBlock, /const rot = rotations\.get\(inst\.id\) \|\| currentRotation/,
-    'AutoPack must not reset unpacked item rotations to default when no placement rotation exists');
+    'staging dims come from the generated AutoPack orientation, not raw case dimensions');
+  assert.match(stagingBlock, /rotation: \{ x: Number\(ori\.rotX\)[\s\S]*Number\(ori\.rotY\)[\s\S]*Number\(ori\.rotZ\)/,
+    'the staged pose persists the orientation rotation alongside its dims (atomic)');
+  // The staged item is persisted with the SAME orientation that produced its
+  // staging position — not reset to its prior/current rotation.
+  assert.match(persistBlock, /rot = staged\.rotation/,
+    'unpacked staged items take the staging-orientation rotation, keeping the pose atomic');
+  assert.match(persistBlock, /od = staged\.orientedDims/,
+    'unpacked staged items take the staging-orientation orientedDims, so render height matches staging Y');
 });
 
 test('AUTO-PACK-A0C computeStats OOG warnings use oriented dimensions and shape-aware zones', async () => {
@@ -11904,32 +12119,43 @@ test('placement-safety-P0B applyTransform resets halfWorld to base dims when ori
 
 // ─── P0-C: staged/unpacked items do not inherit stale orientedDims ───────────
 
-test('placement-safety-P0C getStagingDims uses solver orientations and case dims, not stale inst.orientedDims', async () => {
+test('placement-safety-P0C buildStagedPose derives an atomic pose from solver orientations, not stale inst.orientedDims', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
-  const stagingStart = src.indexOf('function getStagingDims(item)');
-  const stagingEnd = src.indexOf('\n  function buildStagingMap', stagingStart);
+  const stagingStart = src.indexOf('export function buildStagedPose(item)');
+  const stagingEnd = src.indexOf('\nexport function createAutoPackEngine', stagingStart);
   const stagingBlock = stagingStart >= 0 && stagingEnd > stagingStart ? src.slice(stagingStart, stagingEnd) : '';
 
+  assert.ok(stagingBlock.length > 0, 'buildStagedPose must be a module-scope exported helper');
   assert.doesNotMatch(stagingBlock, /item\.inst\.orientedDims/,
-    'getStagingDims must not read stale inst.orientedDims from a previous AutoPack run');
+    'buildStagedPose must not read stale inst.orientedDims from a previous AutoPack run (RC-4)');
   assert.match(stagingBlock, /item\.orientations\[0\]/,
-    'getStagingDims must use fresh solver orientation candidates as first source');
+    'buildStagedPose must use the fresh first solver orientation candidate');
+  assert.match(stagingBlock, /rotation: \{ x: Number\(ori\.rotX\)/,
+    'the staged pose must carry the candidate ROTATION (atomic with its dims)');
+  assert.match(stagingBlock, /dims: \{ length: Number\(ori\.l\)/,
+    'the staged pose must carry the candidate DIMENSIONS derived from that rotation');
   assert.match(stagingBlock, /item\.caseData\.dimensions/,
-    'getStagingDims must fall back to base case dimensions');
+    'buildStagedPose must fall back to base case dimensions with identity rotation');
 });
 
-test('placement-safety-P0C nextCases loop deletes stale orientedDims from staged items', async () => {
+test('placement-safety-P0C nextCases applies an atomic staged pose (rotation + orientedDims agree with position)', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
   const persistStart = src.indexOf('const nextCases = (packData.cases || []).map(inst => {');
   const persistEnd = src.indexOf('\n      PackLibrary.update(packId, { cases: nextCases });', persistStart);
   const persistBlock = persistStart >= 0 && persistEnd > persistStart ? src.slice(persistStart, persistEnd) : '';
 
+  // Staged items take the full pose (position + rotation + orientedDims) from the
+  // staging map, so the three values describe the same orientation.
+  assert.match(persistBlock, /const staged = stagingMap\.get\(inst\.id\);/,
+    'unpacked items read the full staged pose from the staging map');
+  assert.match(persistBlock, /pos = staged\.position;[\s\S]*rot = staged\.rotation[\s\S]*od = staged\.orientedDims/,
+    'unpacked items apply staging position, rotation and orientedDims together (atomic)');
+  // Packed items still take fresh solver dims; identity staged rotation drops the
+  // redundant orientedDims (base dims already match).
+  assert.match(persistBlock, /od && !isIdentityRotation/,
+    'a non-identity staged orientation keeps orientedDims so render height matches staging Y');
   assert.match(persistBlock, /delete next\.orientedDims/,
-    'nextCases must delete stale orientedDims on staged items when no fresh solver dims exist');
-  assert.match(persistBlock, /if \(od\)[\s\S]*next\.orientedDims = od/,
-    'nextCases must still write fresh orientedDims for packed items from orientedDimsMap');
-  assert.match(persistBlock, /else[\s\S]*delete next\.orientedDims/,
-    'nextCases else branch must delete orientedDims so applyTransform resets to base dims');
+    'identity staged orientation drops orientedDims and falls back to base case dims');
 });
 
 // ─── P1-A: orientation policy parity — manual rotate must respect caseData.orientationLock ──

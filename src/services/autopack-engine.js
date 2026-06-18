@@ -1,6 +1,27 @@
 import { buildLegacyAutoPackItems } from './autopack-legacy-solver.js';
 import { solveAutoPack } from './autopack-solver.js';
 
+// The staged pose MUST be atomic: position, rotation and orientedDims all describe
+// the SAME deterministic valid orientation. The chosen orientation is the first
+// AutoPack orientation candidate (which already honors the instance lock, case
+// orientationLock and canFlip, and whose dims are derived from its rotation via the
+// shared THREE helper). Do NOT read stale orientedDims from a previous AutoPack run
+// (RC-4). Module-scope + exported so the contract is directly testable.
+export function buildStagedPose(item) {
+  const ori = item && Array.isArray(item.orientations) ? item.orientations[0] : null;
+  if (ori && Number(ori.l) > 0 && Number(ori.w) > 0 && Number(ori.h) > 0) {
+    return {
+      dims: { length: Number(ori.l), width: Number(ori.w), height: Number(ori.h) },
+      rotation: { x: Number(ori.rotX) || 0, y: Number(ori.rotY) || 0, z: Number(ori.rotZ) || 0 },
+    };
+  }
+  const base = (item && item.caseData && item.caseData.dimensions) || { length: 24, width: 24, height: 24 };
+  return {
+    dims: { length: base.length, width: base.width, height: base.height },
+    rotation: { x: 0, y: 0, z: 0 },
+  };
+}
+
 export function createAutoPackEngine({
   CaseLibrary,
   CaseScene,
@@ -39,10 +60,10 @@ export function createAutoPackEngine({
   }
 
   function stageInstant(stagingMap) {
-    for (const [id, pos] of stagingMap.entries()) {
+    for (const [id, staged] of stagingMap.entries()) {
       const obj = CaseScene.getObject(id);
-      if (!obj) { continue; }
-      const t = SceneManager.vecInchesToWorld(pos);
+      if (!obj || !staged || !staged.position) { continue; }
+      const t = SceneManager.vecInchesToWorld(staged.position);
       obj.position.set(t.x, t.y, t.z);
     }
   }
@@ -251,14 +272,32 @@ export function createAutoPackEngine({
 
       const nextCases = (packData.cases || []).map(inst => {
         if (inst.hidden) { return inst; }
-        const pos = placements.get(inst.id) || stagingMap.get(inst.id);
-        if (!pos) { return inst; }
+        const isPacked = placements.has(inst.id);
         const currentRotation =
           inst.transform && inst.transform.rotation
             ? inst.transform.rotation
             : { x: 0, y: 0, z: 0 };
-        const rot = rotations.get(inst.id) || currentRotation;
-        const od = orientedDimsMap.get(inst.id) || null;
+
+        let pos;
+        let rot;
+        let od;
+        if (isPacked) {
+          pos = placements.get(inst.id);
+          rot = rotations.get(inst.id) || currentRotation;
+          od = orientedDimsMap.get(inst.id) || null;
+        } else {
+          // Unpacked → staged. Apply the ATOMIC staged pose: the rotation and
+          // orientedDims describe the exact orientation whose dimensions produced
+          // the staging position, so the rendered item rests on the staging floor
+          // instead of floating (Repair 1B).
+          const staged = stagingMap.get(inst.id);
+          if (!staged || !staged.position) { return inst; }
+          pos = staged.position;
+          rot = staged.rotation || currentRotation;
+          od = staged.orientedDims || null;
+        }
+        if (!pos) { return inst; }
+
         const next = {
           ...inst,
           transform: {
@@ -267,14 +306,24 @@ export function createAutoPackEngine({
             rotation: rot,
           },
           hidden: false,
-          placement: placements.has(inst.id) ? 'packed' : 'staged',
+          placement: isPacked ? 'packed' : 'staged',
         };
-        if (od) {
+
+        const isIdentityRotation =
+          Number(rot && rot.x) === 0 && Number(rot && rot.y) === 0 && Number(rot && rot.z) === 0;
+        if (isPacked) {
+          if (od) {
+            next.orientedDims = od;
+          } else {
+            delete next.orientedDims;
+          }
+        } else if (od && !isIdentityRotation) {
+          // Non-identity staged orientation: keep orientedDims so the rendered
+          // height matches the staging Y.
           next.orientedDims = od;
         } else {
-          // Staged/unpacked items have no fresh solver orientedDims. Explicitly
-          // remove the stale value spread from ...inst so applyTransform resets
-          // halfWorld to base case dimensions instead of a previous run's dims.
+          // Identity staged orientation: base case dims already match, so drop
+          // orientedDims and let applyTransform/normalizer use the base dimensions.
           delete next.orientedDims;
         }
         return next;
@@ -369,24 +418,19 @@ export function createAutoPackEngine({
     });
   }
 
-  function getStagingDims(item) {
-    // Use freshly computed solver orientation candidates first, then base case dims.
-    // Do NOT read stale orientedDims from a previous AutoPack run — that produces
-    // wrong staging heights when the item was in a different orientation (RC-4 fix).
-    const ori = item && Array.isArray(item.orientations) ? item.orientations[0] : null;
-    if (ori && Number(ori.l) > 0 && Number(ori.w) > 0 && Number(ori.h) > 0) {
-      return { length: Number(ori.l), width: Number(ori.w), height: Number(ori.h) };
-    }
-    return (item && item.caseData && item.caseData.dimensions) || { length: 24, width: 24, height: 24 };
-  }
-
   function buildStagingMap(packItems, truck) {
     const acceptedAabbs = [];
     const map = new Map();
     packItems.forEach((item) => {
-      const dims = getStagingDims(item);
-      const staged = PackLibrary.findSafeStagingPosition({ truck }, dims, acceptedAabbs);
-      map.set(item.inst.id, staged.position);
+      const pose = buildStagedPose(item);
+      const staged = PackLibrary.findSafeStagingPosition({ truck }, pose.dims, acceptedAabbs);
+      // Persist the full pose so the staging position (computed from pose.dims) is
+      // applied together with the rotation/orientedDims that produced it.
+      map.set(item.inst.id, {
+        position: staged.position,
+        rotation: pose.rotation,
+        orientedDims: { length: pose.dims.length, width: pose.dims.width, height: pose.dims.height },
+      });
       acceptedAabbs.push(staged.aabb);
     });
     return map;

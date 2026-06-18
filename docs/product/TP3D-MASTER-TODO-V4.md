@@ -6,9 +6,9 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `97450ea` |
-| Active branch | `docs/cargo-rule-integrity-final-reconciliation` (Repair 1B docs) |
-| Active phase | **Repair 1B — atomic staged-pose contract merged** (`97450ea`). Unpacked/staged items now persist position + rotation + orientedDims for the SAME orientation, so they rest on the staging floor instead of floating. Long Beam 144 (was 68in float) and Long Beam No Lane (was 55in float) now rest on the floor. Implemented and locally verified incl. a headless-Chromium production-pose-vs-THREE floor check in all three truck modes; **signed-in editor sign-off still pending.** Follows Repair 1 (`5fabab1`) — see **Repair 1B** + **Repair 1** below |
+| Stable main commit | `038028a` |
+| Active branch | `docs/cargo-rule-integrity-final-reconciliation` (Repair 1C docs) |
+| Active phase | **Repair 1C — Long Beam orientation rule-contract merged** (`038028a`). Root cause was a fixture rule conflict, not an engine bug: the Long Beams declared `orientationLock:onSide`, which (correctly) excludes the natural horizontal lengthwise pose and forces a 144/120in standing pose that cannot fit a trailer; manual rotation created an exact instance lock that overrode the case policy. Fix = correct the fixture rules to `upright` (data only; onSide not weakened) + a small modal help-text clarification. Implemented and locally verified incl. a headless-Chromium production-import + AutoPack check (beams stay horizontal, on floor, no console errors); **signed-in editor sign-off still pending.** Follows Repair 1B (`97450ea`) — see **Repair 1C** + **Repair 1B** below |
 | Next planned phase | Repair 2+ (not started); 5B AutoPack realism/compaction — **blocked until independent validation passes** |
 | Waiting for | Independent Codex re-validation; signed-in interactive browser sign-off showing both staged Long Beams resting correctly, plus AutoPack orientation in all three truck modes (visible 3D, collision/containment/Stats/OOG agreement, drag/rotate/flip) **and** the still-open 3B + 5A editor checklist — all 🔄 |
 | Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, AutoPack realism (5B), Repair 2+, or any deferred cargo rule (Fragile/stackingPolicy/floorOnly/multi-stop/strategies) |
@@ -16,6 +16,23 @@
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
 > **Safety constants unchanged:** `CONTAINMENT_EPS_INCHES = 0.05`, `MIN_SUPPORT_FRACTION = 0.5`. No billing/auth/workspace/membership/security/Supabase code was touched.
+
+---
+
+## Repair 1C — Long Beam orientation rule-contract (2026-06-18, `038028a`)
+*Branch `fix/long-beam-orientation-rule-contract`, FF-merged. Suite: **634 tests pass / 0 fail**, lint **0 errors** (pre-existing warnings only), typecheck clean, `git diff --check` clean.*
+
+**Classification: D + E — engine correct, fixture wrong.** The Long Beam fixtures declared `orientationLock:onSide`. Per the approved contract (`onSide` = supported side orientations only, height axis non-vertical), for a `144×8×8` beam `buildOrientationCandidates` returns `8×8×144` (Z90, **144in tall**, `orientations[0]`) and `8×144×8` — the natural horizontal lengthwise pose (`144×8×8`, identity = upright) is **excluded**. Neither onSide candidate fits a trailer (too tall / 144in too wide), so AutoPack correctly left the beam unpacked and (Repair 1B) staged it standing 144in tall. Manual horizontal rotation created an **exact instance lock** at identity which, per the documented precedence (exact lock > case policy > flip), overrode onSide → the second run fit. **Both behaviors are correct.**
+
+**Source/runtime proof:** `buildOrientationCandidates(144×8×8)` — onSide excludes the `144×8×8` identity pose and includes `8×8×144`; upright/any include `144×8×8` and never exceed the 8in case height. `solveAutoPack` packs the beam horizontally lengthwise under upright/any/exact-lock, but leaves it unpacked under onSide.
+
+**Fix (data + copy only; no engine change):** set both Long Beams to `orientationLock:upright` (canFlip:false; lane Always/Never preserved) in `cargo_cases_valid.csv` **and** `.xlsx` (kept row-equivalent; parity verified; CSV normalized to LF so `diff --check` is clean). `onSide` is **not** weakened — the dedicated `Alias OnSide/onside/on-side/on_side` rows and the `On-Side Roll` (a cylinder, legitimately onSide) still cover onSide/alias. Small case-modal orientation help-text clarification (upright keeps the height axis vertical / on side tips it) to prevent the same confusion. `cargo_rule_test_matrix.xlsx` and `README.txt` recorded no beam-onSide assumption, so were left unchanged.
+
+**Before/after rule:** Long Beam 144 — `On Side` → `Upright` (lane Always); Long Beam No Lane — `On-Side` → `Upright` (lane Never). Candidate set for `144×8×8` changes from {`8×8×144`, `8×144×8`} (onSide) to {`144×8×8`, `8×144×8`} (upright). Manual rotation previously fit because the exact lock outranks the case policy.
+
+**Evidence (runtime, production import + AutoPack):** upright keeps the lengthwise pose / never stands tall; onSide excludes identity; lane Always **and** Never both pack horizontal; manual exact-lock before/after; an unfittable upright beam stages atomic on the floor (horizontal); Standard/Wheel-Wells/Front-Overhang (WheelWells legitimately can't fit a 144in beam — its usable zones are segmented to ≤96in, engine correct); placed items THREE-correct, contained, no overlap, no out-of-bounds; CSV and XLSX import identically. Best-effort **headless-Chromium**: corrected fixture imported via the production parser, AutoPack run for both beams in all three modes — both import `upright`, pack horizontal (render height 8/10, THREE floor gap 0) where a lane exists, 0 console errors.
+
+**Still open (signed-in only):** signed-in editor must show both beams importing/adding as upright and packing horizontally (Standard + Front Overhang), with no initial floating frame. **Follow-up (separate, not blocking):** verify whether the Inspector offers a reachable way to clear an exact instance lock created by manual rotation — an unlock affordance may be worth adding in a later UI phase (not added here).
 
 ---
 

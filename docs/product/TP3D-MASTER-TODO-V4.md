@@ -6,9 +6,9 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `dc32d9a` |
-| Active branch | `docs/cargo-rule-v1-completion` (Cargo-Rule V1, Phase 9 of 9 — completion doc) |
-| Active phase | Cargo-Rule V1 — **code phases 1–8 merged**; Phase 9 records evidence. See **Cargo-Rule V1 — Completion Evidence** below |
+| Stable main commit | `f397f3c` |
+| Active branch | `docs/cargo-rule-v1-p1-fixes` (Cargo-Rule V1 P1-fix wave, docs) |
+| Active phase | Cargo-Rule V1 — **P1 defect fixes merged** (orientation canonicalization, import idempotence, dangling-ref handling, App-Backup oriented dims, contract enforcement). See **Cargo-Rule V1 — Completion Evidence** below |
 | Next planned phase | 5B AutoPack realism/compaction; then deferred cargo rules (stackingPolicy/Fragile) by their own product decisions |
 | Waiting for | Signed-in interactive browser sign-off for the new handling-rules UI/display **and** the still-open 3B + 5A editor checklist (drag/rotate/flip/collision/Stats, live AutoPack) — all 🔄 |
 | Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, AutoPack realism (5B), or any deferred cargo rule (Fragile/stackingPolicy/floorOnly/multi-stop/strategies) |
@@ -61,22 +61,33 @@ Fragile · floorOnly · floorOrPallet · baseOnly · stackingPolicy · hard pall
 
 ---
 
-## Cargo-Rule V1 — Completion Evidence (2026-06-17)
-*All code phases merged to `main` via fast-forward, each on its own branch. Final suite: **559 tests pass / 0 fail**, lint **0 errors** (existing warnings only), typecheck clean, `git diff --check` clean.*
+## Cargo-Rule V1 — Completion Evidence (2026-06-17 base build + P1 fixes)
+*All code phases merged to `main` via fast-forward, each on its own branch. Final suite after the P1 wave: **572 tests pass / 0 fail**, lint **0 errors** (existing warnings only), typecheck clean, `git diff --check` clean. `main` = `f397f3c`.*
+
+### P1 defect fixes (independent audit @ `b54eccb` → fixed)
+- **P1 orientation aliases (`b735fed`)** — one canonical helper `src/core/orientation.js` used by normalizer, case model, solver, pack-library (comparator + manual-rotate policy), case-rule-summary, modal, and the spreadsheet parser. `on-side` / `"on side"` no longer reload as `any` or produce zero solver candidates. Tests: cross-path alias matrix.
+- **P1 pack-import idempotence (`573d074`)** — conflict-imported cases are stamped with a deterministic canonical `importSourceKey`; repeated conflicting imports reuse the first `(Imported)` case (no `(Imported 2)/(Imported 3)`). Survives reload (preserved by `normalizeCase`). `laneItem:false` stays distinct from Automatic. Decision: manufacturer/category are identity; color/notes are presentation-only.
+- **P1 unresolved/dangling refs (`31a6ea5`)** — pack/batch import is blocked (throws, no side effect, names the missing ids) when an instance has no resolvable case; existing dangling local instances now surface via `computeStats.unresolvedInstances`, an editor Inspector "Unresolved case" card, and an AutoPack "items excluded" toast; export preserves the dangling caseId; never silently deleted.
+- **P1 App-Backup oriented dims (`c54d8f8`)** — `normalizeInstance` no longer ties `orientedDims` to `orientationLocked`; for any non-identity rotation it recomputes effective dims authoritatively from case dims + rotation (preserving stored only when the case is missing), so AutoPacked tipped unlocked items keep their physical size through backup restore.
+- **P2 contract enforcement (`f397f3c`)** — `CaseLibrary.upsert` canonicalizes known cargo fields (and floors `maxStackCount`) while preserving unknown/extension fields; both normalizers floor decimal `maxStackCount`; spreadsheet import warns on invalid boolean/lane cells; the modal clears legacy `stackable:false` when no-top-load is unchecked, zeroes `maxStackCount` under no-top-load, and the lane copy now says Always is a preference.
+
+### Base build (2026-06-17)
 
 - **Phase 2 (`b434adf`)** — `canFlip` defaults to `false` everywhere: new-case modal (`case-modal.js`), `normalizeCase` (core + model), CSV import. Preset exception: **Truss Section keeps `canFlip:true`** (square cross-section, intentional). JBL Subwoofer Crate preset corrected to `false`. Tests: `CARGO-RULE-V1 canFlip defaults…`.
 - **Phase 3 (`c0fe57d`)** — `autopack-solver.js` orientation: tipped faces only when policy is `any`, so `orientationLock:'upright'` is honored even with `canFlip:true`; matches the manual-rotate policy. Tests: 7-row orientation truth table + policy agreement.
-- **Phase 4 (`6a17e67`)** — `importPackPayload` compares cargo-defining fields before reusing a local case by id/name; on conflict it creates a new `(Imported)` case, remaps instances, never overwrites local, reports `caseConflicts` (toast, single + batch). Equivalent re-import is idempotent. Dangling-instance refs already safe (engine/stats skip null `caseData`). Tests: equivalence reuse, conflict matrix, remap, idempotent re-import, batch.
+- **Phase 4 (`6a17e67`)** — `importPackPayload` compares cargo-defining fields before reusing a local case by id/name; on conflict it creates a new `(Imported)` case, remaps instances, never overwrites local, reports `caseConflicts` (toast, single + batch). *(Note: the original "equivalent re-import is idempotent" and "dangling refs already safe" claims were only partly true — repeated conflicts grew names and dangling refs were silent. Both corrected in the P1 wave above: `573d074`, `31a6ea5`.)*
 - **Phase 5 (`957b5eb`)** — Case modal "Handling Rules" section exposes only solver-honored rules with canonical save mapping + dependencies (upright/on-side disable flipping; no-top-load disables max-on-top; pallet warning visible only for pallets). `maxPalletWeight` labeled **warning only**. Hidden/deferred fields preserved via `...initial`.
 - **Phase 6 (`c5e5c56`)** — `src/services/case-rule-summary.js` is the **single source** for active non-default rule chips, shown in Cases cards, Cases list (Flip→Handling column), Editor Case Browser, and the Inspector (case rules vs this-item lock separately). 3D pallet label fixed: `Max: X lb` → `Warning limit: X lb`.
-- **Phase 7 (`e9ebb8a`)** — CSV/XLSX import reads all eight handling fields (aliases); canonical `onSide`; invalid cells warn and fall back to default (row still imports); template matches the parser exactly; import preview shows a **Handling** column via the shared summary; 10MB/5000-row limits unchanged.
+- **Phase 7 (`e9ebb8a`)** — CSV/XLSX import reads all eight handling fields (aliases); canonical `onSide`; invalid cells warn and fall back to default (row still imports); template matches the parser exactly; the **spreadsheet (CSV/XLSX) import preview** shows a **Handling** column via the shared summary; 10MB/5000-row limits unchanged. *(Scope note: this is the spreadsheet preview only — the **Pack JSON / batch import preview** still has no handling-rule or predicted-conflict column; that remains future UI work.)*
 - **Phase 8 (`dc32d9a`)** — round-trip proofs: pack JSON export→import and `normalizeAppData` preserve every handling rule; export/download action chains verified; **workspace import remains intentionally unwired** (parser exists, no UI) and the misleading pack-batch guard message was corrected.
 
 ### Still open (not done in this workstream)
-- 🔄 **Browser sign-off** for the new handling UI/display (desktop/narrow/tablet/mobile, light/dark): new case, edit, duplicate, import preview, AutoPack in Standard/Wheel-Wells/Front-Overhang, pallet warning wording, no console errors.
+- 🔄 **Browser visual/UX sign-off** (signed-in): the new handling UI/display across desktop/narrow/tablet/mobile + light/dark (new/edit/duplicate, spreadsheet + pack import preview, AutoPack in Standard/Wheel-Wells/Front-Overhang, pallet warning wording, no console errors). **This is the open UI visual review — do NOT mark it complete.**
 - 🔄 **3B + 5A** signed-in interactive editor checklist (unchanged).
-- ⬜ **Workspace import UI** — `parseWorkspaceImportJSON` exists but is deliberately not wired; build the import UI before advertising workspace import.
-- 🚫 **Deferred cargo rules** (unchanged, future solver work): Fragile, `stackingPolicy`/floorOnly/floorOrPallet/baseOnly, hard pallet capacity, max supported weight, max stack height, cumulative tower-weight enforcement, multi-stop fields, hazmat, multiple AutoPack strategies / Fits-All.
+- ⬜ **Pack JSON / batch import preview parity** — show handling-rule chips + predicted conflict/missing-case result in the pack-import preview (P2; spreadsheet preview already has it).
+- ⬜ **Workspace import UI** — `parseWorkspaceImportJSON` exists but is deliberately not wired; build the import UI before advertising workspace import. (The pack-batch guard no longer points to a missing "Import Workspace Backup" action.)
+- ⬜ **Visual/accessibility P2/P3 polish** (deferred to the dedicated UI phase, not started here): modal labels not `<label>`-associated, no mobile one-column modal breakpoint, no disabled-input styling, default `Flip: No` still on grid cards, list handling cell uses `display:flex`, warning/priority chips share hard-rule styling, Case Browser rule density.
+- 🚫 **Deferred cargo rules** (unchanged, future solver work): Fragile, `stackingPolicy`/floorOnly/floorOrPallet/baseOnly, hard pallet capacity, max supported weight, max stack height, cumulative tower-weight enforcement, multi-stop fields, hazmat, multiple AutoPack strategies / Fits-All. Also future: Pack **batch export** producer/UI (none exists).
 
 ---
 
@@ -341,7 +352,7 @@ Release-gate items block **public launch**, not isolated product development. Pr
 - **3B — each of Standard / Wheel Wells / Front Overhang:** open an existing pack; confirm cases render in place, drag is smooth, rotate/flip work, collision rejection works, no new console errors. Drag a case to a valid boundary and confirm the live "inside" feedback matches the saved placement after drop (no inside-during-drag → staged-after-drop flip for the same final position). Nudge ~0.04" past a wall → still accepted; ~0.06" past → rejected/staged. Confirm Stats, placement state, drag feedback, and out-of-gauge warnings agree.
 - **3B — Wheel Wells:** a case cannot be dropped into a blocked wheel-well volume; a case beside/above the well places when valid; no case overlaps the blocked zones.
 - **3B — Front Overhang:** a case sits on the raised deck only when its full footprint+height fit; the cab void below the deck rejects placement; a case straddling the main-box/overhang seam classifies correctly (staged unless it fits one zone).
-- **5A — each mode:** run AutoPack on a pack containing a `noStackOnTop` case, a `stackable:false` case, and a `maxStackCount`-limited case (set via preset/import — there is no case-edit UI yet). Confirm: nothing rests on the `noStackOnTop`/`stackable:false` cases; the `maxStackCount` base shows at most that many direct children; lower layers fill before higher ones; no overlaps, no out-of-bounds, no floating items; staged count is reasonable; front-first ordering holds; console has no new errors.
+- **5A — each mode:** run AutoPack on a pack containing a `noStackOnTop` case, a `stackable:false` case, and a `maxStackCount`-limited case (now settable in the Case modal Handling Rules section, or via preset/import). Confirm: nothing rests on the `noStackOnTop`/`stackable:false` cases; the `maxStackCount` base shows at most that many direct children; lower layers fill before higher ones; no overlaps, no out-of-bounds, no floating items; staged count is reasonable; front-first ordering holds; console has no new errors.
 
 ### 3C — Test Quality
 | Status | Item |

@@ -1,10 +1,44 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
+import vm from 'node:vm';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
+
+// Load the vendored XLSX UMD bundle into a sandbox so real CSV/XLSX File objects
+// can be parsed by the production parser (which reads window.XLSX), exactly as the
+// browser does — not just the helper functions in isolation.
+let __XLSX = null;
+function loadVendorXLSX() {
+  if (__XLSX) return __XLSX;
+  const code = fsSync.readFileSync(new URL('../../vendor/xlsx.full.min.js', import.meta.url), 'utf8');
+  // Run in the SHARED realm so XLSX recognizes host ArrayBuffer/Uint8Array (a vm
+  // sandbox has its own typed-array constructors and would reject File buffers).
+  if (!globalThis.self) globalThis.self = globalThis;
+  if (!globalThis.window) globalThis.window = globalThis;
+  vm.runInThisContext(code);
+  __XLSX = globalThis.XLSX;
+  return __XLSX;
+}
+function installWindowXLSX() {
+  if (!globalThis.window) globalThis.window = {};
+  globalThis.window.XLSX = loadVendorXLSX();
+  return globalThis.window.XLSX;
+}
+function makeCsvFile(text, name = 'cases.csv') {
+  return new File([text], name, { type: 'text/csv' });
+}
+function makeXlsxFile(aoa, name = 'cases.xlsx') {
+  const XLSX = loadVendorXLSX();
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  XLSX.utils.book_append_sheet(wb, ws, 'Cases');
+  const arr = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+  return new File([new Uint8Array(arr)], name, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
 
 const billingServiceUrl = new URL('../../src/data/services/billing.service.js', import.meta.url);
 const accountOverlayPath = new URL('../../src/ui/overlays/account-overlay.js', import.meta.url);
@@ -4188,6 +4222,85 @@ test('CARGO-RULE-V1 spreadsheet invalid boolean and lane cells produce warnings 
   assert.deepEqual(IE.parseLaneCellWarned(''), { value: null, warning: null });
   assert.equal(IE.parseLaneCellWarned('sometimes').value, null);
   assert.ok(IE.parseLaneCellWarned('sometimes').warning, 'invalid lane warns');
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 6: Spreadsheet preview warning details (real CSV + real XLSX files)
+// ---------------------------------------------------------------------------
+
+const CARGO_HEADER = 'name,length,width,height,weight,canFlip,orientationLock,laneItem,maxStackCount';
+const CARGO_BAD_ROW = 'Widget,10,10,10,5,maybe,sideways,sometimes,2.7';
+
+function findRowWarning(record, field) {
+  return (record.warnings || []).find(w => w.field === field) || null;
+}
+
+test('CARGO-RULE-V6 real CSV import produces structured per-row warnings (field/value/fallback/reason)', async () => {
+  installWindowXLSX();
+  const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  const csv = `${CARGO_HEADER}\n${CARGO_BAD_ROW}`;
+  const result = await IE.parseAndValidateSpreadsheet(makeCsvFile(csv), []);
+  assert.equal(result.valid.length, 1, 'the row still imports with fallbacks');
+  const rec = result.valid[0];
+  // canFlip "maybe" -> No
+  const cf = findRowWarning(rec, 'canFlip');
+  assert.ok(cf, 'canFlip warning present');
+  assert.equal(cf.value, 'maybe');
+  assert.equal(cf.fallback, 'No');
+  assert.match(cf.message, /canFlip: "maybe" is invalid; using No/);
+  // orientationLock "sideways" -> Any
+  const ol = findRowWarning(rec, 'orientationLock');
+  assert.match(ol.message, /orientationLock: "sideways" is invalid; using Any/);
+  // laneItem "sometimes" -> Automatic
+  const lane = findRowWarning(rec, 'laneItem');
+  assert.match(lane.message, /laneItem: "sometimes" is invalid; using Automatic/);
+  // maxStackCount "2.7" floored to 2 (consistent with storage)
+  const msc = findRowWarning(rec, 'maxStackCount');
+  assert.ok(msc, 'maxStackCount warning present');
+  assert.equal(msc.fallback, '2');
+  // The aggregate/report warnings match the per-row messages exactly.
+  assert.ok(result.warnings.some(w => w.includes('canFlip: "maybe" is invalid; using No')),
+    'downloadable report warnings match the preview row messages');
+});
+
+test('CARGO-RULE-V6 real XLSX import yields identical structured warnings to CSV', async () => {
+  installWindowXLSX();
+  const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  const aoa = [
+    CARGO_HEADER.split(','),
+    CARGO_BAD_ROW.split(',').map((v, i) => (i >= 1 && i <= 4) ? Number(v) : v),
+  ];
+  const xlsxResult = await IE.parseAndValidateSpreadsheet(makeXlsxFile(aoa), []);
+  const csvResult = await IE.parseAndValidateSpreadsheet(makeCsvFile(`${CARGO_HEADER}\n${CARGO_BAD_ROW}`), []);
+  // CSV and XLSX must produce identical structured warnings (same fields/messages).
+  const norm = res => (res.valid[0].warnings || []).map(w => `${w.field}|${w.value}|${w.fallback}`).sort();
+  assert.deepEqual(norm(xlsxResult), norm(csvResult), 'XLSX and CSV warning sets are identical');
+  assert.deepEqual(xlsxResult.warnings.slice().sort(), csvResult.warnings.slice().sort(),
+    'XLSX and CSV downloadable-report warnings are identical');
+});
+
+test('CARGO-RULE-V6 warnings (non-blocking) are distinct from blocking row errors', async () => {
+  installWindowXLSX();
+  const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  // Row 1: valid dims but invalid handling cells -> warnings, still imports.
+  // Row 2: invalid dimension (length 0) -> blocking error, excluded.
+  const csv = `${CARGO_HEADER}\nGoodDims,10,10,10,5,maybe,any,auto,1\nBadDims,0,10,10,5,yes,any,auto,1`;
+  const result = await IE.parseAndValidateSpreadsheet(makeCsvFile(csv), []);
+  assert.equal(result.valid.length, 1, 'only the dimensionally-valid row imports');
+  assert.ok(result.valid[0].warnings.length > 0, 'the imported row carries non-blocking warnings');
+  assert.equal(result.invalidRows.length, 1, 'the bad-dimension row is a blocking error, not a warning');
+  assert.ok((result.invalidRows[0].reasons || []).some(r => /length/i.test(r)), 'blocking reason names the bad field');
+});
+
+test('CARGO-RULE-V6 extreme numeric values raise a data-sanity warning', async () => {
+  installWindowXLSX();
+  const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  const csv = `${CARGO_HEADER}\nHuge,1e9,10,10,5,yes,any,auto,1`;
+  const result = await IE.parseAndValidateSpreadsheet(makeCsvFile(csv), []);
+  const rec = result.valid[0];
+  const lenWarn = findRowWarning(rec, 'length');
+  assert.ok(lenWarn, 'an extreme length raises a data-sanity warning');
+  assert.match(lenWarn.message, /exceeds the maximum/);
 });
 
 test('CARGO-RULE-V1 unchecking no-top-load clears legacy stackable:false (modal save)', async () => {

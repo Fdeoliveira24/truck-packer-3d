@@ -24,7 +24,25 @@ import {
   parseCargoNonNegNumber,
   applyCanonicalCargoFields,
   PALLET_WEIGHT_MAX_LBS,
+  DIMENSION_MAX_INCHES,
+  WEIGHT_MAX_LBS,
 } from '../core/cargo-canonical.js';
+
+// Human-readable fallback labels for structured preview warnings.
+const ORIENTATION_LABELS = { any: 'Any', upright: 'Upright', onSide: 'On side' };
+function orientationLabel(v) { return ORIENTATION_LABELS[v] || 'Any'; }
+function laneLabel(v) { return v === true ? 'Always' : v === false ? 'Never' : 'Automatic'; }
+function priorityLabel(v) { return v > 0 ? 'High' : v < 0 ? 'Low' : 'Normal'; }
+function boolLabel(v) { return v ? 'Yes' : 'No'; }
+
+// Build a structured per-row warning: { rowNum, field, value, fallback, reason,
+// message }. The message format matches the examples shown in the preview and the
+// downloadable report so the two are always identical.
+function buildRowWarning(rowNum, field, rawValue, fallbackLabel) {
+  const value = String(rawValue == null ? '' : rawValue);
+  const reason = `is invalid; using ${fallbackLabel}`;
+  return { rowNum, field, value, fallback: fallbackLabel, reason, message: `${field}: "${value}" ${reason}` };
+}
 
 const MAX_IMPORT_ROWS = 5000;
 const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024;
@@ -247,10 +265,43 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
       color: String(getField(row, idx.color)).trim(),
     };
 
-    [orientationParsed.warning, maxStackParsed.warning, palletWeightParsed.warning, priorityParsed.warning,
-      canFlipParsed.warning, noTopParsed.warning, palletParsed.warning, laneParsed.warning]
-      .filter(Boolean)
-      .forEach(w => warnings.push(`Row ${rowNum}: ${w}`));
+    // Structured per-row warnings (field / supplied value / fallback / reason) so
+    // the preview can show exactly what was adjusted and why. Only fields whose
+    // parser flagged the supplied value contribute a warning.
+    const rowWarningSpecs = [
+      { field: 'orientationLock', parsed: orientationParsed, raw: getField(row, idx.orientationLock), fallback: orientationLabel(orientationParsed.value) },
+      { field: 'maxStackCount', parsed: maxStackParsed, raw: getField(row, idx.maxStackCount), fallback: String(maxStackParsed.value) },
+      { field: 'maxPalletWeight', parsed: palletWeightParsed, raw: getField(row, idx.maxPalletWeight), fallback: String(palletWeightParsed.value) },
+      { field: 'loadPriority', parsed: priorityParsed, raw: getField(row, idx.loadPriority), fallback: priorityLabel(priorityParsed.value) },
+      { field: 'canFlip', parsed: canFlipParsed, raw: getField(row, idx.canFlip), fallback: boolLabel(canFlipParsed.value) },
+      { field: 'noStackOnTop', parsed: noTopParsed, raw: getField(row, idx.noStackOnTop), fallback: boolLabel(noTopParsed.value) },
+      { field: 'isPallet', parsed: palletParsed, raw: getField(row, idx.isPallet), fallback: boolLabel(palletParsed.value) },
+      { field: 'laneItem', parsed: laneParsed, raw: getField(row, idx.laneItem), fallback: laneLabel(laneParsed.value) },
+    ];
+    const rowWarnings = [];
+    for (const spec of rowWarningSpecs) {
+      if (!spec.parsed.warning) continue;
+      rowWarnings.push(buildRowWarning(rowNum, spec.field, spec.raw, spec.fallback));
+    }
+    // Data-sanity limits (Phase 3): warn on extreme dimensions/weight that would be
+    // clamped at storage so the user sees the value will be capped.
+    const sanityChecks = [
+      { field: 'length', value: record.length, max: DIMENSION_MAX_INCHES },
+      { field: 'width', value: record.width, max: DIMENSION_MAX_INCHES },
+      { field: 'height', value: record.height, max: DIMENSION_MAX_INCHES },
+      { field: 'weight', value: record.weight, max: WEIGHT_MAX_LBS },
+    ];
+    for (const sc of sanityChecks) {
+      if (Number.isFinite(sc.value) && sc.value > sc.max) {
+        rowWarnings.push({
+          rowNum, field: sc.field, value: String(sc.value), fallback: String(sc.max),
+          reason: `exceeds the maximum; using ${sc.max}`,
+          message: `${sc.field}: "${sc.value}" exceeds the maximum; using ${sc.max}`,
+        });
+      }
+    }
+    record.warnings = rowWarnings;
+    rowWarnings.forEach(w => warnings.push(`Row ${rowNum}: ${w.message}`));
 
     const rowErrors = [];
     if (!record.name) rowErrors.push(`Row ${rowNum}: Missing required field 'name'`);

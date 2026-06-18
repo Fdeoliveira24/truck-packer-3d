@@ -522,6 +522,20 @@ export function createImportCasesDialog({
           nameTd.appendChild(reasonRow);
         }
 
+        // Non-blocking handling-rule warnings (field/value/fallback/reason) — shown
+        // on the affected row regardless of type, visually distinct from the red
+        // blocking error reason above.
+        const rowWarnings = (record && Array.isArray(record.warnings)) ? record.warnings : [];
+        rowWarnings.forEach(w => {
+          const warnRow = doc.createElement('div');
+          warnRow.className = 'tp3d-ic-row-warn';
+          const wi = doc.createElement('i');
+          wi.className = 'fa-solid fa-circle-exclamation';
+          warnRow.appendChild(wi);
+          warnRow.appendChild(doc.createTextNode(' ' + (w && w.message ? w.message : '')));
+          nameTd.appendChild(warnRow);
+        });
+
         // Dimensions cell
         const dimTd = doc.createElement('td');
         dimTd.className = 'tp3d-ic-td-dim';

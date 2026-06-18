@@ -3056,6 +3056,17 @@ tr:hover td {
   gap: 4px;
 }
 
+/* Non-blocking handling-rule warning on a preview row — amber, distinct from the
+   red blocking error reason above. */
+.tp3d-ic-row-warn {
+  margin-top: 3px;
+  font-size: var(--text-xs);
+  color: var(--warning, #f59e0b);
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
 .tp3d-ic-empty-row {
   text-align: center;
   padding: 20px !important;

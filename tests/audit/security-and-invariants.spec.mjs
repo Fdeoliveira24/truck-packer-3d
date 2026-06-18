@@ -64,6 +64,7 @@ const normalizerPath = new URL('../../src/core/normalizer.js', import.meta.url);
 const orientedDimsPath = new URL('../../src/core/oriented-dims.js', import.meta.url);
 const cargoCanonicalPath = new URL('../../src/core/cargo-canonical.js', import.meta.url);
 const beamCsvFixturePath = new URL('../../docs/tp3d-pack-and-cases-upload-tests/cargo_cases_valid.csv', import.meta.url);
+const beamXlsxFixturePath = new URL('../../docs/tp3d-pack-and-cases-upload-tests/cargo_cases_valid.xlsx', import.meta.url);
 const vendorThreePath = new URL('../../vendor/three.module.js', import.meta.url);
 const caseModelPath = new URL('../../src/data/models/case.model.js', import.meta.url);
 const coreUtilsPath = new URL('../../src/core/utils.js', import.meta.url);
@@ -6813,28 +6814,29 @@ test('REPAIR-1B A: a staged unpacked item has an atomic pose resting on the stag
   assert.ok(staged.rotation.x !== 0 || staged.rotation.z !== 0, 'onSide item is not staged upright');
 });
 
-test('REPAIR-1B B: Long Beam fixtures do not float (atomic pose; onSide honored)', async () => {
+test('REPAIR-1B B: Long Beam fixtures stage atomic and on the floor (corrected upright fixture, Repair 1C)', async () => {
   const mods = await r1bModules();
   const truth = await threeOrientedTruth();
   const truck = { length: 240, width: 96, height: 96 };
 
+  // Repair 1C corrected the fixtures: long beams are UPRIGHT so they lie horizontal
+  // lengthwise and never stand 144/120in tall. The atomic-pose-on-floor contract
+  // (Repair 1B) still holds — staging Y, rotation and orientedDims all agree.
   const beam144 = await r1bImportBeam('Long Beam 144');
-  assert.equal(beam144.orientationLock, 'onSide', 'Long Beam 144 imports as onSide');
+  assert.equal(beam144.orientationLock, 'upright', 'Long Beam 144 imports as upright (lies horizontal)');
   const s144 = r1bComposeStaged(mods, beam144, truck);
   r1bAssertAtomicFloor(mods, beam144, s144, truth, 'Long Beam 144');
-  // The staged orientation stands the 144in length up (onSide candidate), and the
-  // SAME height is used for both the staging Y and the rendered orientedDims —
-  // previously y was 72 while render height was 8 (floated ~68in).
-  assert.equal(s144.orientedDims.height, 144, 'Long Beam 144 staged height is its true 144in oriented height');
-  assert.ok(Math.abs(s144.position.y - 72) <= 0.05, 'Long Beam 144 staged center y == 72 (height/2)');
+  assert.equal(s144.orientedDims.height, 8, 'Long Beam 144 staged height is its true 8in (horizontal lengthwise)');
+  assert.notEqual(s144.orientedDims.height, 144, 'Long Beam 144 never stands 144in tall');
+  assert.ok(s144.rotation.x === 0 && s144.rotation.z === 0, 'Long Beam 144 stays upright (height axis vertical)');
   assert.ok(Math.abs(s144.position.y - s144.orientedDims.height / 2) <= 0.05, 'no float: bottom on floor');
-  assert.ok(s144.rotation.x !== 0 || s144.rotation.z !== 0, 'Long Beam 144 not staged upright (onSide honored)');
 
   const beamNL = await r1bImportBeam('Long Beam No Lane');
-  assert.equal(beamNL.orientationLock, 'onSide', 'Long Beam No Lane imports as onSide (On-Side alias)');
+  assert.equal(beamNL.orientationLock, 'upright', 'Long Beam No Lane imports as upright');
   const sNL = r1bComposeStaged(mods, beamNL, truck);
   r1bAssertAtomicFloor(mods, beamNL, sNL, truth, 'Long Beam No Lane');
-  assert.equal(sNL.orientedDims.height, 120, 'Long Beam No Lane staged height is its true 120in oriented height');
+  assert.equal(sNL.orientedDims.height, 10, 'Long Beam No Lane staged height is its true 10in (horizontal)');
+  assert.notEqual(sNL.orientedDims.height, 120, 'Long Beam No Lane never stands 120in tall');
   assert.ok(Math.abs(sNL.position.y - sNL.orientedDims.height / 2) <= 0.05, 'no float: bottom on floor');
 });
 
@@ -6944,6 +6946,146 @@ test('REPAIR-1B F: packed placements still rest on the floor and Stats use the s
   const want = truth({ length: 30, width: 20, height: 10 }, { x: H, y: 0, z: H });
   assert.deepEqual(inst.orientedDims, { length: want.length, width: want.width, height: want.height },
     'Stats/OOG read the same THREE-correct oriented dims as the rendered pose');
+});
+
+// ---------------------------------------------------------------------------
+// REPAIR 1C: Long Beam orientation rule-contract. Root cause: the fixtures
+// declared orientationLock:onSide, which (correctly, per the approved contract)
+// excludes the natural horizontal lengthwise pose and leaves only standing/tipped
+// poses that cannot fit a trailer. The engine is correct; the fixtures were wrong.
+// Fix = correct the fixture rules to upright. These tests prove the contract.
+// ---------------------------------------------------------------------------
+
+function r1cSolverItem(extra) {
+  return { instanceId: 'i', caseId: 'c', dims: { l: 144, w: 8, h: 8 }, ...extra };
+}
+
+test('REPAIR-1C 1: upright+canFlip:false keeps the horizontal lengthwise pose and never stands tall', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const cands = Solver.buildOrientationCandidates({ l: 144, w: 8, h: 8 }, { orientationLock: 'upright', canFlip: false });
+  // Identity (horizontal lengthwise) is present.
+  assert.ok(cands.some(c => c.l === 144 && c.w === 8 && c.h === 8 && c.rotation.x === 0 && c.rotation.z === 0),
+    'the natural horizontal 144x8x8 lengthwise pose is a candidate');
+  // No candidate stands the beam 144in (or 8x144) tall.
+  assert.ok(cands.every(c => c.h === 8), 'no upright candidate exceeds the 8in case height (never stands tall)');
+});
+
+test('REPAIR-1C 2: onSide (the old fixture) excludes identity and may stand the beam tall', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const cands = Solver.buildOrientationCandidates({ l: 144, w: 8, h: 8 }, { orientationLock: 'onSide', canFlip: false });
+  assert.ok(!cands.some(c => c.l === 144 && c.h === 8 && c.rotation.x === 0 && c.rotation.z === 0),
+    'onSide excludes the horizontal lengthwise (upright) pose — this is why the old fixture failed');
+  assert.ok(cands.some(c => c.h === 144), 'onSide includes a 144in-tall standing candidate');
+});
+
+test('REPAIR-1C 3+4: lane Always and lane Never both pack the corrected beam horizontally', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const truck = { length: 240, width: 96, height: 96 };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  for (const [label, laneItem] of [['lane Always', true], ['lane Never', false]]) {
+    const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true,
+      items: [r1cSolverItem({ orientationLock: 'upright', canFlip: false, laneItem })] });
+    assert.ok(res.placements.has('i'), `${label}: the corrected beam packs`);
+    const od = res.orientedDims.get('i');
+    assert.deepEqual({ l: od.length, w: od.width, h: od.height }, { l: 144, w: 8, h: 8 }, `${label}: packs horizontal lengthwise 144x8x8`);
+    const pos = res.placements.get('i');
+    assert.ok(Math.abs(pos.y - 4) <= 0.05, `${label}: rests on the floor (y=4)`);
+  }
+  // Lane Never is classified as a normal (non-lane) item; Always is a lane item.
+  assert.equal(Solver.classifyAutoPackItem({ dims: { l: 144, w: 8, h: 8 }, laneItem: true, orientationLock: 'upright' }), 'LANE_ITEM', 'lane Always → lane phase');
+  assert.notEqual(Solver.classifyAutoPackItem({ dims: { l: 144, w: 8, h: 8 }, laneItem: false, orientationLock: 'upright' }), 'LANE_ITEM', 'lane Never → skips the forced lane phase');
+});
+
+test('REPAIR-1C 5: manual exact lock explains the old before/after without changing the case rule', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const truck = { length: 240, width: 96, height: 96 };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  // Old fixture rule (onSide) → unpacked (only tall/too-wide candidates).
+  const before = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true,
+    items: [r1cSolverItem({ orientationLock: 'onSide', canFlip: false })] });
+  assert.ok(!before.placements.has('i'), 'onSide beam does not pack (engine correctly honors the case policy)');
+  // Manual horizontal rotation = an exact instance lock at identity, which has
+  // higher precedence than the case policy → packs. Case rule is unchanged.
+  const after = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true,
+    items: [r1cSolverItem({ orientationLock: 'onSide', canFlip: false, orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 } })] });
+  assert.ok(after.placements.has('i'), 'an exact instance lock at the horizontal pose overrides onSide and packs');
+  const od = after.orientedDims.get('i');
+  assert.deepEqual({ l: od.length, w: od.width, h: od.height }, { l: 144, w: 8, h: 8 }, 'manual exact lock packs horizontal 144x8x8');
+});
+
+test('REPAIR-1C 6: a correctly-configured beam that still cannot fit stages atomic on the floor', async () => {
+  const mods = await r1bModules();
+  const truth = await threeOrientedTruth();
+  // A 144in beam in a too-short truck still cannot pack, but its staged pose is
+  // atomic and rests on the floor (upright → horizontal, height 8).
+  const truck = { length: 100, width: 96, height: 96 };
+  const caseObj = { id: 'c', name: 'Beam', dimensions: { length: 144, width: 8, height: 8 }, orientationLock: 'upright', canFlip: false, shape: 'box', volume: 144 * 8 * 8 };
+  const staged = r1bComposeStaged(mods, caseObj, truck);
+  r1bAssertAtomicFloor(mods, caseObj, staged, truth, 'unfittable upright beam');
+  assert.equal(staged.orientedDims.height, 8, 'stays horizontal (8in high), not standing');
+});
+
+test('REPAIR-1C 7+8+9: corrected beam — every placed item is THREE-correct, contained, horizontal, no overlap (3 modes)', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const truth = await threeOrientedTruth();
+  // Standard and Front Overhang have a single 240in-long usable zone, so a 144in
+  // lengthwise beam fits. Wheel Wells segments the usable zones (longest single
+  // zone ~96in), so a 144in beam legitimately cannot fit any one zone — the engine
+  // correctly leaves it unpacked (and it stages horizontal — see REPAIR-1C 6).
+  const mustPack = { rect: true, wheelWells: false, frontBonus: true };
+  for (const shapeMode of ['rect', 'wheelWells', 'frontBonus']) {
+    const truck = { length: 240, width: 96, height: 96, shapeMode };
+    const zones = PackLib.getTrailerUsableZones(truck);
+    const items = [0, 1, 2].map(i => ({ instanceId: `i${i}`, caseId: 'c', dims: { l: 144, w: 8, h: 8 }, orientationLock: 'upright', canFlip: false, laneItem: true }));
+    const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    if (mustPack[shapeMode]) assert.ok(res.placements.size > 0, `${shapeMode}: corrected beams pack (a 240in lengthwise lane exists)`);
+    const aabbs = [];
+    for (const [id, od] of res.orientedDims) {
+      const rot = res.rotations.get(id);
+      const t = truth({ length: 144, width: 8, height: 8 }, rot);
+      assert.deepEqual({ l: od.length, w: od.width, h: od.height }, { l: t.length, w: t.width, h: t.height }, `${shapeMode}: packed dims == THREE`);
+      assert.equal(od.height, 8, `${shapeMode}: stays horizontal (never stands tall)`);
+      const pos = res.placements.get(id);
+      const aabb = Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
+      assert.equal(PackLib.isAabbContainedInAnyZone(aabb, zones), true, `${shapeMode}: contained in a usable zone (no blocked region / out-of-bounds)`);
+      aabbs.push(aabb);
+    }
+    for (let a = 0; a < aabbs.length; a++) for (let b = a + 1; b < aabbs.length; b++) {
+      assert.equal(Solver.aabbsOverlap(aabbs[a], aabbs[b]), false, `${shapeMode}: no overlap`);
+    }
+  }
+});
+
+test('REPAIR-1C 10: corrected fixture imports identically from real CSV and real XLSX', async () => {
+  installWindowXLSX();
+  const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  const csvText = fsSync.readFileSync(beamCsvFixturePath, 'utf8');
+  const xlsxBytes = fsSync.readFileSync(beamXlsxFixturePath);
+  const csvFile = new File([csvText], 'cargo_cases_valid.csv', { type: 'text/csv' });
+  const xlsxFile = new File([new Uint8Array(xlsxBytes)], 'cargo_cases_valid.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const csvParsed = await IE.parseAndValidateSpreadsheet(csvFile, []);
+  const xlsxParsed = await IE.parseAndValidateSpreadsheet(xlsxFile, []);
+  // Same valid row count and identical handling for the two beams.
+  assert.equal(csvParsed.valid.length, xlsxParsed.valid.length, 'CSV and XLSX produce the same valid row count');
+  for (const name of ['Long Beam 144', 'Long Beam No Lane']) {
+    const c = csvParsed.valid.find(r => r.name === name);
+    const x = xlsxParsed.valid.find(r => r.name === name);
+    assert.ok(c && x, `${name} present in both`);
+    assert.equal(c.orientationLock, 'upright', `${name}: CSV imports as upright`);
+    assert.equal(x.orientationLock, 'upright', `${name}: XLSX imports as upright`);
+    assert.deepEqual(
+      { l: c.length, w: c.width, h: c.height, flip: c.canFlip, lane: c.laneItem, ol: c.orientationLock },
+      { l: x.length, w: x.width, h: x.height, flip: x.canFlip, lane: x.laneItem, ol: x.orientationLock },
+      `${name}: CSV and XLSX import identically`);
+  }
 });
 
 test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when tweens stop ticking', async () => {

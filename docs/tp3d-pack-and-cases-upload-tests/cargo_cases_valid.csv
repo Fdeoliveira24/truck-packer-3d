@@ -9,8 +9,8 @@ Direct Stack Limit 2,SampleCo,Stacking Tests,48,40,12,150,No,Any,No,2,No,0,Autom
 Unlimited Stack Base,SampleCo,Stacking Tests,48,40,14,180,No,Any,No,0,No,0,Automatic,Low,0 means unlimited direct children.,#166534
 Pallet Base 48x40,Warehouse Supply,Pallets,48,40,6,45,No,Upright,No,0,Yes,2200,Never,High,Pallet/load base. 2200 is a warning-only limit.,#92400E
 Pallet No-Top Conflict,Warehouse Supply,Pallets,48,40,6,45,No,Upright,Yes,2,Yes,1800,Never,Normal,Intentional rule combination for explanatory-copy testing.,#78350F
-Long Beam 144,Steel Works,Long Items,144,8,8,210,No,On Side,Yes,0,No,0,Always,High,Forces long-item lane handling.,#6B7280
-Long Beam No Lane,Steel Works,Long Items,120,10,10,175,No,On-Side,Yes,0,No,0,Never,Normal,Tests Never lane value and orientation alias.,#4B5563
+Long Beam 144,Steel Works,Long Items,144,8,8,210,No,Upright,Yes,0,No,0,Always,High,Forces long-item lane handling; lies horizontal lengthwise.,#6B7280
+Long Beam No Lane,Steel Works,Long Items,120,10,10,175,No,Upright,Yes,0,No,0,Never,Normal,Tests Never lane value; long beam packs horizontally.,#4B5563
 Priority High Box,Priority Lab,Priority Tests,30,20,20,60,No,Any,No,0,No,0,Automatic,High,Same geometry as low-priority case; high should win tie-break.,#7C3AED
 Priority Low Box,Priority Lab,Priority Tests,30,20,20,60,No,Any,No,0,No,0,Automatic,Low,Same geometry as high-priority case.,#A78BFA
 Alias OnSide,Alias Lab,Orientation Aliases,30,20,10,25,No,onSide,No,0,No,0,Automatic,Normal,Canonical spelling.,#0F766E

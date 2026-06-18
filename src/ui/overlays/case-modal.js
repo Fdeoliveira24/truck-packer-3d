@@ -287,7 +287,10 @@ export function openCaseModal({
     ['any', 'Any direction'],
     ['upright', 'Keep upright'],
     ['onSide', 'Place on side'],
-  ], canonicalOrientationLock(initial.orientationLock), 'Limits which orientations AutoPack and manual rotation may use.');
+  ], canonicalOrientationLock(initial.orientationLock),
+    'Limits which orientations AutoPack and manual rotation may use. ' +
+    'Upright keeps the saved height axis vertical (a long item stays lying down); ' +
+    'On side tips the case so its height axis is no longer vertical.');
 
   const flipRow = createCheckRow(doc, 'Allow flipping',
     canonicalOrientationLock(initial.orientationLock) === 'any' && Boolean(initial.canFlip),

@@ -3513,6 +3513,46 @@ test('CARGO-RULE-V1 all case surfaces use the shared rule-summary source', async
   assert.ok(!/`Max: \$\{caseData\.maxPalletWeight\} lb`/.test(editorSrc), 'must not show the old enforced-looking "Max: X lb" label');
 });
 
+test('CARGO-RULE-V1 normalizeInstance keeps oriented dims for unlocked rotated items (App Backup integrity)', async () => {
+  const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const HALF = Math.PI / 2;
+  const caseMap = new Map([['c', { id: 'c', dimensions: { length: 30, width: 20, height: 10 } }]]);
+  const mk = (rot, locked, stored) => ({ id: 'i', caseId: 'c', orientationLocked: locked, transform: { position: { x: 1, y: 1, z: 1 }, rotation: rot }, orientedDims: stored });
+  const od = (rot, locked, stored) => Normalizer.normalizeInstance(mk(rot, locked, stored), caseMap).orientedDims;
+
+  assert.equal(od({ x: 0, y: 0, z: 0 }, false), null, 'identity rotation needs no oriented dims');
+  // Unlocked AutoPacked rotations must recompute (previously dropped to null).
+  assert.deepEqual(od({ x: 0, y: HALF, z: 0 }, false), { length: 20, width: 30, height: 10 }, 'Y-only unlocked');
+  assert.deepEqual(od({ x: HALF, y: 0, z: 0 }, false), { length: 30, width: 10, height: 20 }, 'X-tip unlocked');
+  assert.deepEqual(od({ x: 0, y: 0, z: HALF }, false), { length: 10, width: 20, height: 30 }, 'Z-tip unlocked');
+  assert.deepEqual(od({ x: HALF, y: 0, z: HALF }, false), { length: 20, width: 10, height: 30 }, 'compound unlocked');
+  // Locked behaves as before.
+  assert.deepEqual(od({ x: HALF, y: 0, z: 0 }, true), { length: 30, width: 10, height: 20 }, 'locked X-tip');
+  // Recomputation is authoritative — stale/invalid stored dims are overridden when the case is known.
+  assert.deepEqual(od({ x: HALF, y: 0, z: 0 }, false, { length: 99, width: 99, height: 99 }), { length: 30, width: 10, height: 20 }, 'stale stored dims recomputed');
+  // Missing case → preserve the stored oriented dims (recomputation lacks context).
+  assert.deepEqual(Normalizer.normalizeInstance(mk({ x: HALF, y: 0, z: 0 }, false, { length: 7, width: 8, height: 9 }), new Map()).orientedDims, { length: 7, width: 8, height: 9 }, 'missing case preserves stored');
+});
+
+test('CARGO-RULE-V1 App Backup round-trip preserves an unlocked rotated instance physical size', async () => {
+  const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const HALF = Math.PI / 2;
+  const appData = {
+    caseLibrary: [{ id: 'cc', name: 'Rotated Case', dimensions: { length: 30, width: 20, height: 10 } }],
+    packLibrary: [{
+      id: 'pp', title: 'P', truck: { length: 240, width: 96, height: 96 },
+      cases: [{ id: 'inst', caseId: 'cc', orientationLocked: false, placement: 'packed', transform: { position: { x: 20, y: 5, z: 0 }, rotation: { x: HALF, y: 0, z: 0 } }, orientedDims: { length: 30, width: 10, height: 20 } }],
+    }],
+    folderLibrary: [],
+  };
+  const out = Normalizer.normalizeAppData(appData);
+  const inst = out.packLibrary[0].cases[0];
+  assert.deepEqual(inst.orientedDims, { length: 30, width: 10, height: 20 }, 'unlocked rotated instance keeps its effective dims through backup restore');
+  assert.deepEqual(inst.transform.rotation, { x: HALF, y: 0, z: 0 }, 'rotation preserved');
+  // Effective height (20) differs from the case height (10), proving the rotated size survived.
+  assert.notEqual(inst.orientedDims.height, 10, 'restored physical height reflects the rotation, not the unrotated case');
+});
+
 test('CARGO-RULE-V1 orientation aliases canonicalize consistently across every path', async () => {
   const orientationPath = new URL('../../src/core/orientation.js', import.meta.url);
   const { canonicalOrientationLock } = await import(`${orientationPath.href}?t=${Date.now()}-${Math.random()}`);

@@ -286,13 +286,25 @@ export function normalizeInstance(inst, caseMap) {
   const sourceLockedRotation =
     inst && inst.lockedRotation && typeof inst.lockedRotation === 'object' ? inst.lockedRotation : rot;
   const lockedRotation = orientationLocked ? normalizeRightAngleRotation(sourceLockedRotation) : null;
-  const computedOrientedDims =
-    orientationLocked && caseData && caseData.dimensions
-      ? getOrientedDimsForRotation(caseData.dimensions, lockedRotation)
-      : null;
-  const orientedDims = orientationLocked
-    ? normalizeOrientedDims(computedOrientedDims) || normalizeOrientedDims(inst && inst.orientedDims)
-    : null;
+  // Effective right-angle rotation for dimension purposes: the locked rotation
+  // when locked, otherwise the instance's own rotation (e.g. an AutoPack-applied
+  // tip on an unlocked item).
+  const effectiveRotation = lockedRotation || normalizeRightAngleRotation(rot);
+  const isIdentityRotation =
+    effectiveRotation.x === 0 && effectiveRotation.y === 0 && effectiveRotation.z === 0;
+  // orientedDims is the case's effective size under its ACTUAL rotation and must
+  // not be tied to orientationLocked — an AutoPacked rotated item is unlocked but
+  // still physically rotated. Recompute authoritatively from the case dimensions
+  // + rotation (never stale); fall back to the stored value only when the case
+  // definition is unavailable (recomputation lacks context).
+  let orientedDims = null;
+  if (!isIdentityRotation) {
+    orientedDims =
+      caseData && caseData.dimensions
+        ? normalizeOrientedDims(getOrientedDimsForRotation(caseData.dimensions, effectiveRotation))
+        : null;
+    if (!orientedDims) orientedDims = normalizeOrientedDims(inst && inst.orientedDims);
+  }
   const deliverySequenceRaw = Number(inst && inst.deliverySequence);
   const deliverySequence = Number.isFinite(deliverySequenceRaw) ? deliverySequenceRaw : null;
   const placement =

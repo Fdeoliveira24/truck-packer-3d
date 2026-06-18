@@ -6,9 +6,9 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `038028a` |
-| Active branch | `docs/cargo-rule-integrity-final-reconciliation` (Repair 1C docs) |
-| Active phase | **Repair 1C — Long Beam orientation rule-contract merged** (`038028a`). Root cause was a fixture rule conflict, not an engine bug: the Long Beams declared `orientationLock:onSide`, which (correctly) excludes the natural horizontal lengthwise pose and forces a 144/120in standing pose that cannot fit a trailer; manual rotation created an exact instance lock that overrode the case policy. Fix = correct the fixture rules to `upright` (data only; onSide not weakened) + a small modal help-text clarification. Implemented and locally verified incl. a headless-Chromium production-import + AutoPack check (beams stay horizontal, on floor, no console errors); **signed-in editor sign-off still pending.** Follows Repair 1B (`97450ea`) — see **Repair 1C** + **Repair 1B** below |
+| Stable main commit | `c47d9ef` |
+| Active branch | `docs/cargo-rule-integrity-final-reconciliation` (Repair 1D docs) |
+| Active phase | **Repair 1D — atomic pre-solver scene staging merged** (`c47d9ef`). `stageInstant()` applied only the staged position then waited two animation frames, during which the THREE object still had its old rotation/bounds → the visible transient float. It now applies position + rotation + oriented halfWorld atomically, so the rendered bounds match the staged pose on every frame. Verified with the real `createAutoPackEngine.pack()` + real THREE objects + frame capture, and a real-browser (Chromium, real `requestAnimationFrame`) check: the old onSide beam's ~68in gap is **0 on every frame**, 0 console errors; **signed-in editor sign-off still pending.** Follows Repair 1C (`038028a`) — see **Repair 1D** + **Repair 1C** below |
 | Next planned phase | Repair 2+ (not started); 5B AutoPack realism/compaction — **blocked until independent validation passes** |
 | Waiting for | Independent Codex re-validation; signed-in interactive browser sign-off showing both staged Long Beams resting correctly, plus AutoPack orientation in all three truck modes (visible 3D, collision/containment/Stats/OOG agreement, drag/rotate/flip) **and** the still-open 3B + 5A editor checklist — all 🔄 |
 | Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, AutoPack realism (5B), Repair 2+, or any deferred cargo rule (Fragile/stackingPolicy/floorOnly/multi-stop/strategies) |
@@ -16,6 +16,21 @@
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
 > **Safety constants unchanged:** `CONTAINMENT_EPS_INCHES = 0.05`, `MIN_SUPPORT_FRACTION = 0.5`. No billing/auth/workspace/membership/security/Supabase code was touched.
+
+---
+
+## Repair 1D — Atomic pre-solver scene staging (2026-06-18, `c47d9ef`)
+*Branch `fix/autopack-atomic-prescene-staging`, FF-merged. Suite: **640 tests pass / 0 fail**, lint **0 errors** (pre-existing warnings only), typecheck clean, `git diff --check` clean (mine). Files: `src/services/autopack-engine.js`, tests.*
+
+**Defect:** `stageInstant()` applied only the staged **position**, then `pack()` awaited two animation frames (`waitForAnimationFrames(2)`) before the final stored pose. During those frames the THREE object still had its **old rotation and `userData.halfWorld`**, so it rendered at the new staging Y with the wrong bounds — the visible transient float (old onSide `144×8×8` beam: staged Y=72 but rendered 8in tall → bottom ≈68in above the floor).
+
+**Fix:** `stageInstant()` now applies **position + rotation + oriented halfWorld** in one synchronous pass from the same `buildStagedPose` result (mirroring the values `prepareObjectForPlacement` already applies for packed items). No frame wait between the values, so the rendered THREE bounds match the staged pose on every frame — not only after the StateStore update. Packed-placement handling unchanged. No engine-flow, solver, staging-grid, fixture, zone, billing/auth or safety-constant changes.
+
+**Before/after (frame values, old onSide `144×8×8` beam):** staging frames — before `posY=72, sizeY=8, minY=68` (floating); after `posY=72, sizeY=144, minY=0` (rotated, on floor).
+
+**Evidence (runtime, real `createAutoPackEngine.pack()` with real THREE objects + a controllable `requestAnimationFrame` that captures every scheduled frame):** old onSide beam — former ~68in gap is 0 on every frame and the object is actually rotated (rendered 144in tall); corrected upright Long Beams stay on the floor every frame; an exact compound lock stages atomically (rendered 20in); a packed pose that differs from the staging pose never floats and scene == StateStore at the end; running AutoPack twice stays clean; Standard/Wheel-Wells/Front-Overhang have no float frames and packed placements remain contained, non-overlapping and THREE-consistent. Best-effort **real-browser** (Chromium, real `requestAnimationFrame`): the old onSide beam renders `minY=0, sizeY=144` on every frame (`maxFloat=0`), 0 console errors.
+
+**Still open (signed-in only):** signed-in editor must show no transient floating frame when AutoPack stages an item. **Separate (pre-existing, not addressed here):** the exact-instance-lock unlock affordance noted in Repair 1C; two unrelated uncommitted local edits in the working tree (`index.html` label case, one `styles/main.css` line) were left untouched.
 
 ---
 

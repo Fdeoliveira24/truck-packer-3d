@@ -6,16 +6,33 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `5fabab1` |
-| Active branch | `docs/cargo-rule-integrity-final-reconciliation` (Repair 1 docs) |
-| Active phase | **Repair 1 — AutoPack orientation candidate geometry merged** (`5fabab1`). Candidate dimensions now derive from rotation via the shared THREE helper; the X90+Z90 mis-sizing is fixed. Implemented and locally verified incl. a headless-Chromium candidate-vs-THREE check; **signed-in editor sign-off still pending.** Builds on the Cargo-Rule V1 integrity wave (`d00cbb5` fixtures) — see **Repair 1** + **Integrity Correction Wave** below |
+| Stable main commit | `97450ea` |
+| Active branch | `docs/cargo-rule-integrity-final-reconciliation` (Repair 1B docs) |
+| Active phase | **Repair 1B — atomic staged-pose contract merged** (`97450ea`). Unpacked/staged items now persist position + rotation + orientedDims for the SAME orientation, so they rest on the staging floor instead of floating. Long Beam 144 (was 68in float) and Long Beam No Lane (was 55in float) now rest on the floor. Implemented and locally verified incl. a headless-Chromium production-pose-vs-THREE floor check in all three truck modes; **signed-in editor sign-off still pending.** Follows Repair 1 (`5fabab1`) — see **Repair 1B** + **Repair 1** below |
 | Next planned phase | Repair 2+ (not started); 5B AutoPack realism/compaction — **blocked until independent validation passes** |
-| Waiting for | Independent Codex re-validation; signed-in interactive browser sign-off for AutoPack orientation in all three truck modes (visible 3D, collision/containment/Stats/OOG agreement, drag/rotate/flip) **and** the still-open 3B + 5A editor checklist — all 🔄 |
+| Waiting for | Independent Codex re-validation; signed-in interactive browser sign-off showing both staged Long Beams resting correctly, plus AutoPack orientation in all three truck modes (visible 3D, collision/containment/Stats/OOG agreement, drag/rotate/flip) **and** the still-open 3B + 5A editor checklist — all 🔄 |
 | Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, AutoPack realism (5B), Repair 2+, or any deferred cargo rule (Fragile/stackingPolicy/floorOnly/multi-stop/strategies) |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
 > **Safety constants unchanged:** `CONTAINMENT_EPS_INCHES = 0.05`, `MIN_SUPPORT_FRACTION = 0.5`. No billing/auth/workspace/membership/security/Supabase code was touched.
+
+---
+
+## Repair 1B — Atomic staged-pose contract (2026-06-18, `97450ea`)
+*Branch `fix/autopack-atomic-staged-pose`, FF-merged. Suite: **627 tests pass / 0 fail**, lint **0 errors** (pre-existing warnings only), typecheck clean, `git diff --check` clean.*
+
+**Defect (pre-existing engine contract, exposed by the new fixtures):** when AutoPack could not pack an item, the staging Y was computed from one orientation's dimensions (the first orientation candidate — e.g. an onSide beam standing 144in tall), but the saved rotation fell back to identity and `orientedDims` was deleted, so the render reverted to base case dims. Position and (rotation, orientedDims) described different orientations → staged items floated. Codex repro: **Long Beam 144** staged y=72, rendered height 8, bottom ≈68in above floor; **Long Beam No Lane** staged y=60, rendered height 10, bottom ≈55in. Packed solver placements were correct; only the staged/unpacked pose was wrong.
+
+**Contract (chosen):** the staged pose is atomic — `position + rotation + orientedDims` all describe the SAME deterministic valid orientation, namely the first AutoPack orientation candidate (already honors instance lock, case `orientationLock`, `canFlip`; its dims are THREE-derived per Repair 1). Therefore `saved orientedDims == getOrientedDimsForRotation(case, rotation) == THREE Box3`, and the rendered bottom == staging floor. *Reason:* this is the engine's existing RC-4 intent (stage in the candidate orientation, not stale dims); the only bug was that rotation/orientedDims weren't persisted with the position. Retaining the pre-AutoPack rotation was rejected — it would re-introduce a mixed contract and violate onSide/upright policy.
+
+**Fix:** `buildStagedPose(item)` is now a module-scope **exported** helper returning the candidate `{ dims, rotation }`; `buildStagingMap` stores `{ position, rotation, orientedDims }` together; the `nextCases` persist step applies all three for staged items (non-identity keeps `orientedDims`; identity drops it since base dims match). Packed handling unchanged. Files: `src/services/autopack-engine.js` (+ tests). No new imports; `oriented-dims`/solver/pack-library untouched.
+
+**Before/after (both beams, via production code):** Long Beam 144 → stagingY 72, rotation Z90, orientedDims `8×8×144`, bottom **68→0**; Long Beam No Lane → stagingY 60, rotation Z90, orientedDims `10×10×120`, bottom **55→0**. onSide honored (not staged upright).
+
+**Evidence (runtime + THREE-backed):** atomic-pose-on-floor; Long Beam fixtures imported through the production CSV parser don't float; Standard/Wheel-Wells/Front-Overhang all rest on floor; orientation-policy staging matrix (any/upright/onSide × canFlip, exact + compound lock) with pose/rotation/dims/THREE agreement; deterministic pose ignoring stale instance orientedDims/rotation; packed placements stay on the floor and Stats/OOG use the same dims. Best-effort **headless-Chromium**: production import + staging composed in a real browser, a THREE object built from the saved pose rests on the floor (`floorGap=0`) for both beams in all three modes, 0 console errors.
+
+**Still open (signed-in only):** the signed-in editor must show both staged Long Beams resting correctly with no new visual/console defect. **Do not mark Repair 1B complete until then.**
 
 ---
 

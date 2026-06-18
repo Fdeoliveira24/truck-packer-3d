@@ -16,8 +16,18 @@ import * as Utils from '../core/utils/index.js';
 import * as CoreNormalizer from '../core/normalizer.js';
 import * as CaseLibrary from './case-library.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
+import {
+  normalizeRightAngle,
+  normalizeRightAngleRotation,
+  getOrientedDimsForRotation,
+} from '../core/oriented-dims.js';
 import { computeCoG } from './cog-service.js';
 import { computePalletWarnings } from './oog-service.js';
+
+// Re-export the shared oriented-dimension helpers so existing consumers that
+// import them from pack-library (autopack-engine, editor-screen) keep working
+// while the single source of truth lives in core/oriented-dims.js.
+export { normalizeRightAngleRotation, getOrientedDimsForRotation };
 
 function getDims(truck) {
   const t = truck && typeof truck === 'object' ? truck : {};
@@ -232,77 +242,6 @@ function isAabbContainedInAnyZone(aabb, zones) {
     }
   }
   return false;
-}
-
-const RIGHT_ANGLE_RAD = Math.PI / 2;
-
-function normalizeRightAngle(value) {
-  const raw = Number(value) || 0;
-  let turns = Math.round(raw / RIGHT_ANGLE_RAD) % 4;
-  if (turns < 0) turns += 4;
-  return turns * RIGHT_ANGLE_RAD;
-}
-
-export function normalizeRightAngleRotation(rotation = {}) {
-  return {
-    x: normalizeRightAngle(rotation.x),
-    y: normalizeRightAngle(rotation.y),
-    z: normalizeRightAngle(rotation.z),
-  };
-}
-
-function rotateVectorXYZ(vec, rotation) {
-  let x = vec.x;
-  let y = vec.y;
-  let z = vec.z;
-  const rx = normalizeRightAngle(rotation.x);
-  const ry = normalizeRightAngle(rotation.y);
-  const rz = normalizeRightAngle(rotation.z);
-  // Apply Z first (THREE.js Euler 'XYZ' is matrix Rx*Ry*Rz, so Rz acts on the vector first)
-  const cosZ = Math.cos(rz);
-  const sinZ = Math.sin(rz);
-  const xz = x * cosZ - y * sinZ;
-  const yz = x * sinZ + y * cosZ;
-  x = xz;
-  y = yz;
-  // Apply Y second
-  const cosY = Math.cos(ry);
-  const sinY = Math.sin(ry);
-  const xy = x * cosY + z * sinY;
-  const zy = -x * sinY + z * cosY;
-  x = xy;
-  z = zy;
-  // Apply X last
-  const cosX = Math.cos(rx);
-  const sinX = Math.sin(rx);
-  const yx = y * cosX - z * sinX;
-  const zx = y * sinX + z * cosX;
-  return { x, y: yx, z: zx };
-}
-
-export function getOrientedDimsForRotation(dimensions = {}, rotation = {}) {
-  const length = Math.max(0, Number(dimensions.length) || 0);
-  const width = Math.max(0, Number(dimensions.width) || 0);
-  const height = Math.max(0, Number(dimensions.height) || 0);
-  const locked = normalizeRightAngleRotation(rotation);
-  const axes = [
-    rotateVectorXYZ({ x: length, y: 0, z: 0 }, locked),
-    rotateVectorXYZ({ x: 0, y: height, z: 0 }, locked),
-    rotateVectorXYZ({ x: 0, y: 0, z: width }, locked),
-  ];
-  const out = axes.reduce(
-    (acc, axis) => ({
-      length: acc.length + Math.abs(axis.x),
-      height: acc.height + Math.abs(axis.y),
-      width: acc.width + Math.abs(axis.z),
-    }),
-    { length: 0, width: 0, height: 0 }
-  );
-  return {
-    length: Math.round(out.length * 1e6) / 1e6,
-    width: Math.round(out.width * 1e6) / 1e6,
-    height: Math.round(out.height * 1e6) / 1e6,
-  };
 }
 
 export function createOrientationLockPatch(rotation = {}, dimensions = {}) {

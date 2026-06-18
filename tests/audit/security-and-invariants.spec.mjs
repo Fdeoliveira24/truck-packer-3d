@@ -27,6 +27,8 @@ const categoryServicePath = new URL('../../src/services/category-service.js', im
 const stylesMainPath = new URL('../../styles/main.css', import.meta.url);
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
 const normalizerPath = new URL('../../src/core/normalizer.js', import.meta.url);
+const orientedDimsPath = new URL('../../src/core/oriented-dims.js', import.meta.url);
+const vendorThreePath = new URL('../../vendor/three.module.js', import.meta.url);
 const caseModelPath = new URL('../../src/data/models/case.model.js', import.meta.url);
 const coreUtilsPath = new URL('../../src/core/utils.js', import.meta.url);
 const coreUtilsIndexPath = new URL('../../src/core/utils/index.js', import.meta.url);
@@ -3525,7 +3527,9 @@ test('CARGO-RULE-V1 normalizeInstance keeps oriented dims for unlocked rotated i
   assert.deepEqual(od({ x: 0, y: HALF, z: 0 }, false), { length: 20, width: 30, height: 10 }, 'Y-only unlocked');
   assert.deepEqual(od({ x: HALF, y: 0, z: 0 }, false), { length: 30, width: 10, height: 20 }, 'X-tip unlocked');
   assert.deepEqual(od({ x: 0, y: 0, z: HALF }, false), { length: 10, width: 20, height: 30 }, 'Z-tip unlocked');
-  assert.deepEqual(od({ x: HALF, y: 0, z: HALF }, false), { length: 20, width: 10, height: 30 }, 'compound unlocked');
+  // Compound rotation must match THREE.js Euler 'XYZ' (Rx*Ry*Rz). Verified against
+  // a real THREE Box3 in the dedicated proof test below.
+  assert.deepEqual(od({ x: HALF, y: 0, z: HALF }, false), { length: 10, width: 30, height: 20 }, 'compound unlocked');
   // Locked behaves as before.
   assert.deepEqual(od({ x: HALF, y: 0, z: 0 }, true), { length: 30, width: 10, height: 20 }, 'locked X-tip');
   // Recomputation is authoritative — stale/invalid stored dims are overridden when the case is known.
@@ -3551,6 +3555,154 @@ test('CARGO-RULE-V1 App Backup round-trip preserves an unlocked rotated instance
   assert.deepEqual(inst.transform.rotation, { x: HALF, y: 0, z: 0 }, 'rotation preserved');
   // Effective height (20) differs from the case height (10), proving the rotated size survived.
   assert.notEqual(inst.orientedDims.height, 10, 'restored physical height reflects the rotation, not the unrotated case');
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 1: Canonical THREE-compatible oriented dimensions
+// ---------------------------------------------------------------------------
+
+// Ground-truth oriented dims from a REAL THREE mesh + Box3. Expected values are
+// read from THREE here, never copied from the implementation under test.
+async function threeOrientedTruth() {
+  const THREE = await import(`${vendorThreePath.href}`);
+  // Case length->world X, height->world Y, width->world Z.
+  return function truth(dims, rot) {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(dims.length, dims.height, dims.width));
+    mesh.rotation.set(rot.x || 0, rot.y || 0, rot.z || 0, 'XYZ');
+    mesh.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(mesh);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const r = (n) => Math.round(n * 1e6) / 1e6;
+    return { length: r(size.x), width: r(size.z), height: r(size.y) };
+  };
+}
+
+test('CARGO-RULE-V1 P1 shared oriented-dims helper matches THREE Euler XYZ for every right-angle combo', async () => {
+  const { getOrientedDimsForRotation } = await import(`${orientedDimsPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truth = await threeOrientedTruth();
+  const H = Math.PI / 2;
+  // Asymmetric case so every axis permutation is distinguishable.
+  const dims = { length: 30, width: 20, height: 10 };
+  // identity, single, compound, full, plus negative and >360 right angles.
+  const rotations = [
+    { x: 0, y: 0, z: 0 },
+    { x: H, y: 0, z: 0 },
+    { x: 0, y: H, z: 0 },
+    { x: 0, y: 0, z: H },
+    { x: H, y: H, z: 0 },
+    { x: H, y: 0, z: H },
+    { x: 0, y: H, z: H },
+    { x: H, y: H, z: H },
+    { x: -H, y: 0, z: 0 },
+    { x: 0, y: -H, z: -H },
+    { x: Math.PI, y: 0, z: 0 },
+    { x: 3 * H, y: H, z: 2 * Math.PI + H },
+    { x: 5 * Math.PI, y: -3 * H, z: 4 * Math.PI },
+  ];
+  for (const rot of rotations) {
+    const got = getOrientedDimsForRotation(dims, rot);
+    const want = truth(dims, rot);
+    assert.deepEqual(got, want, `oriented dims mismatch vs THREE for rot ${JSON.stringify(rot)}`);
+  }
+});
+
+test('CARGO-RULE-V1 P1 all consumer paths derive identical oriented dims from the shared helper', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const { getOrientedDimsForRotation } = await import(`${orientedDimsPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const truth = await threeOrientedTruth();
+  const H = Math.PI / 2;
+  const dims = { length: 30, width: 20, height: 10 };
+  const rot = { x: H, y: 0, z: H }; // compound — the case that exposed the bug.
+  const want = truth(dims, rot);
+
+  // Core shared helper.
+  assert.deepEqual(getOrientedDimsForRotation(dims, rot), want, 'core helper');
+  // pack-library re-export produces identical results to the shared helper.
+  assert.deepEqual(PackLib.getOrientedDimsForRotation(dims, rot), want, 'pack-library path matches the shared helper');
+  // Solver candidate for a locked compound rotation uses the same math.
+  const cands = Solver.buildOrientationCandidates(
+    { l: dims.length, w: dims.width, h: dims.height },
+    { orientationLocked: true, lockedRotation: rot }
+  );
+  assert.equal(cands.length, 1, 'locked rotation yields exactly one candidate');
+  assert.deepEqual(
+    { length: cands[0].l, width: cands[0].w, height: cands[0].h },
+    want,
+    'solver locked-candidate dims match THREE'
+  );
+});
+
+test('CARGO-RULE-V1 P1 restore matrix: App/Workspace/Pack/batch/autosave keep THREE-correct compound dims', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Normalizer = await import(`${normalizerPath.href}${stamp}`);
+  const truth = await threeOrientedTruth();
+  const H = Math.PI / 2;
+  const caseDims = { length: 30, width: 20, height: 10 };
+  const rot = { x: H, y: 0, z: H };
+  const want = truth(caseDims, rot); // { length:10, width:30, height:20 }
+
+  const mkPack = () => ({
+    id: 'pp', title: 'P', truck: { length: 240, width: 96, height: 96 },
+    cases: [{ id: 'inst', caseId: 'cc', orientationLocked: false, placement: 'packed', transform: { position: { x: 20, y: 5, z: 0 }, rotation: rot }, orientedDims: { length: 99, width: 99, height: 99 } }],
+  });
+  const mkApp = () => ({ caseLibrary: [{ id: 'cc', name: 'C', dimensions: caseDims }], packLibrary: [mkPack()], folderLibrary: [] });
+
+  // App Backup restore.
+  const app = Normalizer.normalizeAppData(mkApp());
+  assert.deepEqual(app.packLibrary[0].cases[0].orientedDims, want, 'App Backup restore matches THREE (stale 99s overridden)');
+
+  // Workspace normalization (same normalizeAppData entrypoint used by workspace import).
+  const ws = Normalizer.normalizeAppData(mkApp());
+  assert.deepEqual(ws.packLibrary[0].cases[0].orientedDims, want, 'Workspace restore matches THREE');
+
+  // Pack JSON normalization (single pack with its bundled case map).
+  const caseMap = new Map([['cc', { id: 'cc', dimensions: caseDims }]]);
+  const packInst = Normalizer.normalizeInstance(mkPack().cases[0], caseMap);
+  assert.deepEqual(packInst.orientedDims, want, 'Pack JSON restore matches THREE');
+
+  // Local autosave reload (round-trip through JSON then normalize again).
+  const reloaded = Normalizer.normalizeAppData(JSON.parse(JSON.stringify(app)));
+  assert.deepEqual(reloaded.packLibrary[0].cases[0].orientedDims, want, 'autosave reload is stable and THREE-correct');
+});
+
+test('CARGO-RULE-V1 P1 a valid physical placement stays valid after export and restore', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Normalizer = await import(`${normalizerPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const H = Math.PI / 2;
+  // Case 60L x 40W x 30H, tipped on X then turned on Z, placed inside a 240x96x96 truck.
+  const caseDims = { length: 60, width: 40, height: 30 };
+  const rot = { x: H, y: 0, z: H };
+  const od = PackLib.getOrientedDimsForRotation(caseDims, rot);
+  // Place so the oriented box sits fully inside the truck (floor at y=0, centered in z).
+  const truck = { length: 240, width: 96, height: 96 };
+  const appData = {
+    caseLibrary: [{ id: 'cc', name: 'C', dimensions: caseDims }],
+    packLibrary: [{
+      id: 'pp', title: 'P', truck,
+      cases: [{ id: 'inst', caseId: 'cc', orientationLocked: true, lockedRotation: rot, placement: 'packed',
+        transform: { position: { x: od.length / 2 + 1, y: od.height / 2, z: 0 }, rotation: rot }, orientedDims: od }],
+    }],
+    folderLibrary: [],
+  };
+  const inBounds = (inst, t) => {
+    const d = inst.orientedDims;
+    const p = inst.transform.position;
+    return (
+      p.x - d.length / 2 >= -0.05 && p.x + d.length / 2 <= t.length + 0.05 &&
+      p.y - d.height / 2 >= -0.05 && p.y + d.height / 2 <= t.height + 0.05 &&
+      p.z - d.width / 2 >= -t.width / 2 - 0.05 && p.z + d.width / 2 <= t.width / 2 + 0.05
+    );
+  };
+  const before = appData.packLibrary[0].cases[0];
+  assert.ok(inBounds(Normalizer.normalizeInstance(before, new Map([['cc', { id: 'cc', dimensions: caseDims }]])), truck), 'placement valid before round-trip');
+  const restored = Normalizer.normalizeAppData(JSON.parse(JSON.stringify(appData)));
+  const after = restored.packLibrary[0].cases[0];
+  assert.deepEqual(after.orientedDims, od, 'oriented dims identical after export+restore');
+  assert.ok(inBounds(after, truck), 'placement remains physically valid after export+restore');
 });
 
 test('CARGO-RULE-V1 orientation aliases canonicalize consistently across every path', async () => {

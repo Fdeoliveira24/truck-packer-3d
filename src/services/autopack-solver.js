@@ -1,7 +1,11 @@
 import { CONTAINMENT_EPS_INCHES } from './pack-library.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
+import {
+  RIGHT_ANGLE_RAD,
+  normalizeRightAngleRotation,
+  getOrientedDimsForRotation as getOrientedDimsForRotationCanonical,
+} from '../core/oriented-dims.js';
 
-const RIGHT_ANGLE_RAD = Math.PI / 2;
 const LONG_RATIO = 4;
 const LONG_MIN_IN = 96;
 const HEAVY_LBS = 150;
@@ -23,20 +27,6 @@ function positiveNumber(value, fallback = 0) {
   return n > 0 ? n : fallback;
 }
 
-function normalizeRightAngle(value) {
-  let turns = Math.round((Number(value) || 0) / RIGHT_ANGLE_RAD) % 4;
-  if (turns < 0) turns += 4;
-  return turns * RIGHT_ANGLE_RAD;
-}
-
-function normalizeRightAngleRotation(rotation = {}) {
-  return {
-    x: normalizeRightAngle(rotation.x),
-    y: normalizeRightAngle(rotation.y),
-    z: normalizeRightAngle(rotation.z),
-  };
-}
-
 function readDims(dims = {}) {
   return {
     l: positiveNumber(dims.l ?? dims.length, 0),
@@ -45,56 +35,16 @@ function readDims(dims = {}) {
   };
 }
 
-function rotateVectorXYZ(vec, rotation) {
-  let x = vec.x;
-  let y = vec.y;
-  let z = vec.z;
-  const rx = normalizeRightAngle(rotation.x);
-  const ry = normalizeRightAngle(rotation.y);
-  const rz = normalizeRightAngle(rotation.z);
-
-  const cosX = Math.cos(rx);
-  const sinX = Math.sin(rx);
-  const y1 = y * cosX - z * sinX;
-  const z1 = y * sinX + z * cosX;
-  y = y1;
-  z = z1;
-
-  const cosY = Math.cos(ry);
-  const sinY = Math.sin(ry);
-  const x2 = x * cosY + z * sinY;
-  const z2 = -x * sinY + z * cosY;
-  x = x2;
-  z = z2;
-
-  const cosZ = Math.cos(rz);
-  const sinZ = Math.sin(rz);
-  const x3 = x * cosZ - y * sinZ;
-  const y3 = x * sinZ + y * cosZ;
-  return { x: x3, y: y3, z };
-}
-
+// Thin adapter over the shared canonical helper: the solver works in {l,w,h}
+// space, the shared module in {length,width,height}. The rotation math is the
+// single source of truth in core/oriented-dims.js.
 function getOrientedDimsForRotation(dims, rotation) {
   const d = readDims(dims);
-  const locked = normalizeRightAngleRotation(rotation);
-  const axes = [
-    rotateVectorXYZ({ x: d.l, y: 0, z: 0 }, locked),
-    rotateVectorXYZ({ x: 0, y: d.h, z: 0 }, locked),
-    rotateVectorXYZ({ x: 0, y: 0, z: d.w }, locked),
-  ];
-  const out = axes.reduce(
-    (acc, axis) => ({
-      l: acc.l + Math.abs(axis.x),
-      h: acc.h + Math.abs(axis.y),
-      w: acc.w + Math.abs(axis.z),
-    }),
-    { l: 0, w: 0, h: 0 }
+  const o = getOrientedDimsForRotationCanonical(
+    { length: d.l, width: d.w, height: d.h },
+    rotation
   );
-  return {
-    l: Math.round(out.l * 1e6) / 1e6,
-    w: Math.round(out.w * 1e6) / 1e6,
-    h: Math.round(out.h * 1e6) / 1e6,
-  };
+  return { l: o.length, w: o.width, h: o.height };
 }
 
 function makeCandidate(l, w, h, rotation, locked = false) {

@@ -63,8 +63,27 @@ export function createAutoPackEngine({
     for (const [id, staged] of stagingMap.entries()) {
       const obj = CaseScene.getObject(id);
       if (!obj || !staged || !staged.position) { continue; }
+      // Apply the FULL staged pose ATOMICALLY (position + rotation + oriented
+      // bounds) in a single synchronous pass — no frame may render with the new
+      // staged position but the old rotation/halfWorld. Mirrors the values
+      // prepareObjectForPlacement applies for packed items, so the rendered THREE
+      // bounds match the staged pose during every frame (Repair 1D).
       const t = SceneManager.vecInchesToWorld(staged.position);
       obj.position.set(t.x, t.y, t.z);
+      if (staged.rotation && obj.rotation && typeof obj.rotation.set === 'function') {
+        obj.rotation.set(
+          Number(staged.rotation.x) || 0,
+          Number(staged.rotation.y) || 0,
+          Number(staged.rotation.z) || 0
+        );
+      }
+      if (staged.orientedDims && obj.userData) {
+        obj.userData.halfWorld = {
+          x: SceneManager.toWorld(staged.orientedDims.length) / 2,
+          y: SceneManager.toWorld(staged.orientedDims.height) / 2,
+          z: SceneManager.toWorld(staged.orientedDims.width) / 2,
+        };
+      }
     }
   }
 

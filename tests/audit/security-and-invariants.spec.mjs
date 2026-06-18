@@ -7088,6 +7088,187 @@ test('REPAIR-1C 10: corrected fixture imports identically from real CSV and real
   }
 });
 
+// ---------------------------------------------------------------------------
+// REPAIR 1D: Atomic pre-solver scene staging. Runs the REAL
+// createAutoPackEngine.pack() against real THREE objects with a controllable
+// requestAnimationFrame, capturing the rendered Box3 on EVERY scheduled frame.
+// Proves the transient float (old onSide beam ~68in) is zero on every frame
+// because stageInstant now applies position+rotation+halfWorld atomically.
+// ---------------------------------------------------------------------------
+
+const r1dRound = n => Math.round(n * 1e6) / 1e6;
+
+async function runEnginePack({ caseObj, instances, truck }) {
+  const THREE = await import(`${vendorThreePath.href}`);
+  // Shared (non-cache-busted) singletons so PackLibrary/CaseLibrary/StateStore agree.
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(packLibraryPath.href);
+  const CaseLibrary = await import(caseLibraryPath.href);
+  const Utils = await import(coreUtilsIndexPath.href);
+  const Engine = await import(autoPackEnginePath.href);
+
+  StateStore.init({
+    caseLibrary: [caseObj],
+    packLibrary: [{ id: 'p', title: 'P', truck, cases: instances }],
+    folderLibrary: [], preferences: {}, currentPackId: 'p',
+  });
+
+  // Real THREE objects: base case geometry (length->x, height->y, width->z), each
+  // starting lying flat on the floor (identity rotation) — the pre-AutoPack pose.
+  const objects = new Map();
+  for (const inst of instances) {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(caseObj.dimensions.length, caseObj.dimensions.height, caseObj.dimensions.width));
+    mesh.userData = {};
+    mesh.position.set(0, caseObj.dimensions.height / 2, 0);
+    objects.set(inst.id, mesh);
+  }
+
+  const frames = [];
+  const snapshot = (label) => {
+    const objs = {};
+    for (const [id, obj] of objects) {
+      obj.updateMatrixWorld(true);
+      const b = new THREE.Box3().setFromObject(obj);
+      const size = new THREE.Vector3(); b.getSize(size);
+      objs[id] = { minY: r1dRound(b.min.y), sizeY: r1dRound(size.y), posY: r1dRound(obj.position.y) };
+    }
+    frames.push({ label, objs });
+  };
+
+  const realSetTimeout = setTimeout;
+  const win = {
+    performance: { now: () => Date.now() },
+    // Capture object state on every scheduled animation frame.
+    requestAnimationFrame: (cb) => { snapshot('raf'); return realSetTimeout(() => cb(Date.now()), 0); },
+    setTimeout: (fn) => realSetTimeout(fn, 0),
+    clearTimeout: (id) => clearTimeout(id),
+    TWEEN: null,
+    OrgContext: null,
+    __TP3D_BILLING: { getBillingState: () => ({ ok: true, orgId: '' }) },
+  };
+  const SceneManager = {
+    vecInchesToWorld: v => ({ x: v.x, y: v.y, z: v.z }),
+    toWorld: n => n,
+  };
+  const CaseScene = { getObject: id => objects.get(id) || null };
+
+  const engine = Engine.createAutoPackEngine({
+    CaseLibrary, CaseScene, capturePackPreview: () => {},
+    getActiveOrgIdForBilling: () => '', getOrgRoleHydrationState: () => 'ready',
+    getProRuleSet: () => ({ canUseProFeature: true }), getWorkspaceSwitchState: () => null,
+    maybeScheduleBillingRefresh: () => {}, normalizeOrgIdForBilling: x => x, openSettingsOverlay: () => {},
+    PackLibrary, runtimeWindow: win, SceneManager, StateStore, toast: () => {},
+    TrailerGeometry: PackLibrary, UIComponents: { showToast: () => {} }, Utils,
+  });
+
+  await engine.pack();
+  snapshot('final');
+  const storedPack = PackLibrary.getById('p');
+  return { THREE, objects, frames, storedPack, engine, StateStore, PackLibrary, snapshot };
+}
+
+// Every scheduled frame: the rendered bottom rests on the floor (no float).
+function assertNoFloatFrames(frames, ids, label) {
+  assert.ok(frames.some(f => f.label === 'raf'), `${label}: scheduled animation frames were captured`);
+  for (const f of frames) {
+    for (const id of ids) {
+      const o = f.objs[id];
+      if (!o) continue;
+      assert.ok(Math.abs(o.minY) <= 0.05, `${label}: frame "${f.label}" object ${id} rests on floor (minY=${o.minY}, not floating)`);
+    }
+  }
+}
+
+test('REPAIR-1D 1+2+3: old onSide 144x8x8 beam — the former ~68in transient gap is zero on every frame', async () => {
+  const caseObj = { id: 'c', name: 'OldBeam', dimensions: { length: 144, width: 8, height: 8 }, orientationLock: 'onSide', canFlip: false, shape: 'box', volume: 144 * 8 * 8, weight: 50 };
+  const truck = { length: 240, width: 96, height: 96 };
+  const { frames } = await runEnginePack({ caseObj, instances: [{ id: 'i', caseId: 'c', hidden: false, transform: { position: { x: 0, y: 4, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }], truck });
+  // onSide stages the beam standing 144in tall — the rendered object must already
+  // be rotated (sizeY=144) AND on the floor on every captured frame (was 68in float).
+  assertNoFloatFrames(frames, ['i'], 'onSide 144 beam');
+  const rafFrames = frames.filter(f => f.label === 'raf');
+  assert.ok(rafFrames.length >= 1, 'at least one staging frame was scheduled');
+  assert.ok(rafFrames.every(f => f.objs.i.sizeY === 144), 'the staged object is rotated (rendered 144in tall) on every staging frame — not lying flat at 8in');
+});
+
+test('REPAIR-1D 4: corrected upright Long Beams stay on the floor on every frame', async () => {
+  const truck = { length: 240, width: 96, height: 96 };
+  for (const [name, dims] of [['Long Beam 144', { length: 144, width: 8, height: 8 }], ['Long Beam No Lane', { length: 120, width: 10, height: 10 }]]) {
+    const caseObj = { id: 'c', name, dimensions: dims, orientationLock: 'upright', canFlip: false, shape: 'box', volume: dims.length * dims.width * dims.height, weight: 50 };
+    const { frames } = await runEnginePack({ caseObj, instances: [{ id: 'i', caseId: 'c', hidden: false, transform: { position: { x: 0, y: dims.height / 2, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }], truck });
+    assertNoFloatFrames(frames, ['i'], name);
+    assert.ok(frames.filter(f => f.label === 'raf').every(f => f.objs.i.sizeY === dims.height), `${name}: stays horizontal (rendered height ${dims.height}) every frame`);
+  }
+});
+
+test('REPAIR-1D 5: an exact compound orientation lock stages atomically on the floor', async () => {
+  const H = Math.PI / 2;
+  const caseObj = { id: 'c', name: 'Locked', dimensions: { length: 30, width: 20, height: 10 }, orientationLock: 'any', canFlip: true, shape: 'box', volume: 6000, weight: 40 };
+  const truck = { length: 240, width: 96, height: 96 };
+  const inst = { id: 'i', caseId: 'c', hidden: false, orientationLocked: true, lockedRotation: { x: H, y: 0, z: H }, transform: { position: { x: 0, y: 5, z: 0 }, rotation: { x: H, y: 0, z: H } } };
+  const { frames } = await runEnginePack({ caseObj, instances: [inst], truck });
+  assertNoFloatFrames(frames, ['i'], 'exact compound lock');
+  // Compound X+Z lock renders 10x30x20 → height 20 on every staging frame.
+  assert.ok(frames.filter(f => f.label === 'raf').every(f => f.objs.i.sizeY === 20), 'locked compound pose rendered 20in tall every frame');
+});
+
+test('REPAIR-1D 6+10: packed pose differs from staging pose — every frame on the floor; scene == StateStore', async () => {
+  // any+canFlip:true: staging uses orientations[0] (identity, 30x20x10), the solver
+  // may pack a different face. Either way every frame rests on the floor.
+  const caseObj = { id: 'c', name: 'Multi', dimensions: { length: 30, width: 20, height: 10 }, orientationLock: 'any', canFlip: true, shape: 'box', volume: 6000, weight: 40 };
+  const truck = { length: 240, width: 96, height: 96 };
+  const { frames, objects, storedPack, THREE } = await runEnginePack({ caseObj, instances: [{ id: 'i', caseId: 'c', hidden: false, transform: { position: { x: 0, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }], truck });
+  assertNoFloatFrames(frames, ['i'], 'packed-differs');
+  // Scene and StateStore agree at the end: the rendered object's height matches the
+  // stored effective dims (orientedDims if present, else base height).
+  const inst = storedPack.cases[0];
+  const obj = objects.get('i'); obj.updateMatrixWorld(true);
+  const size = new THREE.Vector3(); new THREE.Box3().setFromObject(obj).getSize(size);
+  const storedH = inst.orientedDims ? inst.orientedDims.height : caseObj.dimensions.height;
+  assert.equal(r1dRound(size.y), storedH, 'final rendered height equals the stored effective height (scene == StateStore)');
+});
+
+test('REPAIR-1D 7: running AutoPack twice keeps every frame on the floor', async () => {
+  const caseObj = { id: 'c', name: 'OnSideTwice', dimensions: { length: 144, width: 8, height: 8 }, orientationLock: 'onSide', canFlip: false, shape: 'box', volume: 144 * 8 * 8, weight: 50 };
+  const truck = { length: 240, width: 96, height: 96 };
+  const ctx = await runEnginePack({ caseObj, instances: [{ id: 'i', caseId: 'c', hidden: false, transform: { position: { x: 0, y: 4, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }], truck });
+  assertNoFloatFrames(ctx.frames, ['i'], 'first run');
+  // Second run on the same engine/scene/state.
+  ctx.frames.length = 0;
+  await ctx.engine.pack();
+  ctx.snapshot('final2');
+  assertNoFloatFrames(ctx.frames, ['i'], 'second run');
+});
+
+test('REPAIR-1D 8+9: no float frames in Standard / Wheel Wells / Front Overhang; packed stays contained, non-overlapping, THREE-consistent', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const truth = await threeOrientedTruth();
+  const caseObj = { id: 'c', name: 'Beam', dimensions: { length: 144, width: 8, height: 8 }, orientationLock: 'upright', canFlip: false, shape: 'box', volume: 144 * 8 * 8, weight: 50 };
+  for (const shapeMode of ['rect', 'wheelWells', 'frontBonus']) {
+    const truck = { length: 240, width: 96, height: 96, shapeMode };
+    const instances = [0, 1, 2].map(i => ({ id: `i${i}`, caseId: 'c', hidden: false, transform: { position: { x: 0, y: 4, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }));
+    const { frames, storedPack } = await runEnginePack({ caseObj, instances, truck });
+    assertNoFloatFrames(frames, instances.map(i => i.id), `engine ${shapeMode}`);
+    // Packed regression: the solver result (the source of truth the engine persists)
+    // is contained, non-overlapping, THREE-consistent — unchanged by the staging fix.
+    const zones = PackLib.getTrailerUsableZones(truck);
+    const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: instances.map(i => ({ instanceId: i.id, caseId: 'c', dims: { l: 144, w: 8, h: 8 }, orientationLock: 'upright', canFlip: false })) });
+    const aabbs = [];
+    for (const [id, od] of res.orientedDims) {
+      const t = truth({ length: 144, width: 8, height: 8 }, res.rotations.get(id));
+      assert.deepEqual({ l: od.length, w: od.width, h: od.height }, { l: t.length, w: t.width, h: t.height }, `${shapeMode}: packed dims == THREE`);
+      const aabb = Solver.getAabb(res.placements.get(id), { l: od.length, w: od.width, h: od.height });
+      assert.equal(PackLib.isAabbContainedInAnyZone(aabb, zones), true, `${shapeMode}: contained`);
+      aabbs.push(aabb);
+    }
+    for (let a = 0; a < aabbs.length; a++) for (let b = a + 1; b < aabbs.length; b++) {
+      assert.equal(Solver.aabbsOverlap(aabbs[a], aabbs[b]), false, `${shapeMode}: no overlap`);
+    }
+  }
+});
+
 test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when tweens stop ticking', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
   const tweenStart = src.indexOf('function tweenInstanceToPosition(instanceId, positionInches, duration');

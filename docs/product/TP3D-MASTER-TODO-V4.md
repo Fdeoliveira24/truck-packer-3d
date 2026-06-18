@@ -6,16 +6,31 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `7000f96` |
-| Active branch | `docs/cargo-rule-integrity-final-reconciliation` (Cargo-Rule V1 integrity wave, docs) |
-| Active phase | Cargo-Rule V1 — **data-integrity correction wave merged** (8 source/test phases after two independent Codex audits). Implemented and locally verified; **awaiting independent Codex validation and signed-in browser review.** See **Cargo-Rule V1 — Integrity Correction Wave** below |
-| Next planned phase | 5B AutoPack realism/compaction — **blocked until independent Codex validation of this wave passes**; then deferred cargo rules (stackingPolicy/Fragile) by their own product decisions |
-| Waiting for | Independent Codex re-validation of the integrity wave; signed-in interactive browser sign-off for the new handling-rules UI/display **and** the still-open 3B + 5A editor checklist (drag/rotate/flip/collision/Stats, live AutoPack) — all 🔄 |
-| Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, AutoPack realism (5B), or any deferred cargo rule (Fragile/stackingPolicy/floorOnly/multi-stop/strategies) |
+| Stable main commit | `5fabab1` |
+| Active branch | `docs/cargo-rule-integrity-final-reconciliation` (Repair 1 docs) |
+| Active phase | **Repair 1 — AutoPack orientation candidate geometry merged** (`5fabab1`). Candidate dimensions now derive from rotation via the shared THREE helper; the X90+Z90 mis-sizing is fixed. Implemented and locally verified incl. a headless-Chromium candidate-vs-THREE check; **signed-in editor sign-off still pending.** Builds on the Cargo-Rule V1 integrity wave (`d00cbb5` fixtures) — see **Repair 1** + **Integrity Correction Wave** below |
+| Next planned phase | Repair 2+ (not started); 5B AutoPack realism/compaction — **blocked until independent validation passes** |
+| Waiting for | Independent Codex re-validation; signed-in interactive browser sign-off for AutoPack orientation in all three truck modes (visible 3D, collision/containment/Stats/OOG agreement, drag/rotate/flip) **and** the still-open 3B + 5A editor checklist — all 🔄 |
+| Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, AutoPack realism (5B), Repair 2+, or any deferred cargo rule (Fragile/stackingPolicy/floorOnly/multi-stop/strategies) |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
-> **Safety constants unchanged this wave:** `CONTAINMENT_EPS_INCHES = 0.05`, `MIN_SUPPORT_FRACTION = 0.5`. No billing/auth/workspace/membership/security/Supabase code was touched.
+> **Safety constants unchanged:** `CONTAINMENT_EPS_INCHES = 0.05`, `MIN_SUPPORT_FRACTION = 0.5`. No billing/auth/workspace/membership/security/Supabase code was touched.
+
+---
+
+## Repair 1 — AutoPack orientation candidate geometry (2026-06-18, `5fabab1`)
+*Branch `fix/autopack-orientation-candidate-geometry`, FF-merged. Suite: **621 tests pass / 0 fail**, lint **0 errors** (pre-existing warnings only), typecheck clean, `git diff --check` clean.*
+
+**Defect:** AutoPack stored a candidate rotation alongside a separately handwritten dimension permutation. For compound right angles they disagreed — case `30×20×10` at `X90+Z90` renders `10×30×20` in THREE, but the candidate reported `20×10×30`, so the solver could accept the item in a `20×10×30` truck while the rendered mesh was 30in wide. Containment/collision/Stats/OOG/saved `orientedDims` all agreed with each other while wrong vs the editor mesh.
+
+**Fix:** Rotation is now the single source of truth. Both the active `buildOrientationCandidates` (autopack-solver) and the live legacy `buildOrientations` (reached via `buildLegacyAutoPackItems`) store the right-angle rotation and **derive** dimensions from it through the shared `getOrientedDimsForRotation` helper. All hardcoded permutation tables removed; dedup keys use the derived dims. Also corrected a legacy contract bug: `upright + canFlip:true` used `lock !== 'onSide'` and tipped the item; now `lock === 'any'` (upright stays upright), matching the active solver. `solveLegacyAutoPack` (dead) untouched. `oriented-dims.js` reused unchanged.
+
+**Live vs dead:** live — `buildOrientationCandidates`, `solveAutoPack`, `buildLegacyAutoPackItems`, `buildOrientations` (its `orientations[0]` feeds staging). Dead — `solveLegacyAutoPack`.
+
+**Evidence (runtime tests):** THREE-`Box3` candidate matrix over real production candidates (identity/single/compound/negative/270°/>360° + locked); the `30×20×10` `X90+Z90` regression (candidate is `10×30×20`, never `20×10×30`; solver placements stay in-bounds and THREE-consistent; the item packs via the honest `20×10×30` `X90+Y90` face); Standard/Wheel-Wells/Front-Overhang containment + no-overlap; active-vs-live-legacy agreement incl. upright+canFlip never tipping; dedup (cube ⇒ 1). Best-effort **headless-Chromium** check loaded the production module in a real browser and compared 12 candidates against the browser's own THREE `Box3` — 0 mismatches, 0 console errors.
+
+**Still open (signed-in only):** visible 3D orientation, collision/containment/Stats/OOG agreement, AutoPack across all three truck modes, drag/rotate/flip — none verified signed-in. **Do not mark Repair 1 complete until signed-in browser checks pass.**
 
 ---
 

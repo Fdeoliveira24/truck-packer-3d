@@ -4445,6 +4445,171 @@ test('CARGO-RULE-V7 orientation distinction: canFlip governs AutoPack tipping; m
   assert.equal(locked[0].locked, true, 'the single candidate is the locked one');
 });
 
+// ---------------------------------------------------------------------------
+// PHASE 8: Full restore and round-trip matrix (hostile/malformed inputs)
+// ---------------------------------------------------------------------------
+
+// One hostile raw case with string booleans, malformed numbers, alias values, a
+// function (must be dropped) and a safe extension (must survive).
+function hostileRawCase(overrides = {}) {
+  // JSON-safe by default (the restore/import paths only ever receive JSON). The
+  // upsert/duplicate tests add a function override to prove it is dropped.
+  return {
+    id: 'hostile', name: 'Hostile Box', manufacturer: 'ACME', category: 'Tools',
+    dimensions: { length: 30, width: 20, height: 10 },
+    weight: '50',
+    canFlip: 'false', stackable: 'no', noStackOnTop: 'maybe', isPallet: '1',
+    maxStackCount: '3.9', maxPalletWeight: 'abc', laneItem: 'always', loadPriority: '1',
+    shape: 'CYLINDER',
+    customMeta: 'keep-me',
+    ...overrides,
+  };
+}
+
+// Assert the canonical result of a hostile case after any storage/normalize path.
+function assertHostileCanonical(c, { extensions = true } = {}) {
+  assert.equal(c.canFlip, false, '"false" -> canFlip false');
+  assert.equal(c.stackable, false, '"no" -> stackable false');
+  assert.equal(c.noStackOnTop, false, '"maybe" invalid -> noStackOnTop default false');
+  assert.equal(c.isPallet, true, '"1" -> isPallet true');
+  assert.equal(c.maxStackCount, 3, '"3.9" floored to 3');
+  assert.equal(c.maxPalletWeight, 0, '"abc" invalid -> 0');
+  assert.equal(c.laneItem, true, '"always" -> true');
+  assert.equal(c.loadPriority, 1, '"1" -> 1');
+  assert.equal(c.shape, 'cylinder', '"CYLINDER" -> cylinder');
+  assert.ok(Number.isFinite(c.volume), 'volume finite');
+  assert.equal(typeof c.evil, 'undefined', 'function extension dropped (not stored)');
+  if (extensions) assert.equal(c.customMeta, 'keep-me', 'safe extension preserved');
+}
+
+test('CARGO-RULE-V8 matrix: modal-save sink (CaseLibrary.upsert) canonicalizes + drops a function extension', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const StateStore = await import(stateStorePath.href);
+  const CaseLibrary = await import(`${caseLibraryPath.href}${stamp}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  // Include a function extension: it must be dropped so storage stays clone-safe.
+  CaseLibrary.upsert(hostileRawCase({ evil() { return 1; } }));
+  const stored = StateStore.get('caseLibrary')[0];
+  assertHostileCanonical(stored);
+  // Autosave clones state with structuredClone — a stored function would throw.
+  assert.doesNotThrow(() => structuredClone(stored), 'stored case is structuredClone-safe (no function)');
+});
+
+test('CARGO-RULE-V8 matrix: duplicate keeps the canonical cargo rules', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const StateStore = await import(stateStorePath.href);
+  const CaseLibrary = await import(`${caseLibraryPath.href}${stamp}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  CaseLibrary.upsert(hostileRawCase({ evil() { return 1; } }));
+  const dup = CaseLibrary.duplicate('hostile');
+  assert.ok(dup && dup.id !== 'hostile', 'duplicate has a new id');
+  assertHostileCanonical(CaseLibrary.getById(dup.id));
+});
+
+test('CARGO-RULE-V8 matrix: App Backup / Workspace / autosave normalize hostile input identically', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Normalizer = await import(`${normalizerPath.href}${stamp}`);
+  const appData = { caseLibrary: [hostileRawCase()], packLibrary: [], folderLibrary: [] };
+  // App Backup restore.
+  const app = Normalizer.normalizeAppData(JSON.parse(JSON.stringify(appData)));
+  assertHostileCanonical(app.caseLibrary[0]);
+  // Autosave reload (re-normalize the already-normalized data — must be stable).
+  const reloaded = Normalizer.normalizeAppData(JSON.parse(JSON.stringify(app)));
+  assertHostileCanonical(reloaded.caseLibrary[0]);
+  assert.deepEqual(reloaded.caseLibrary[0].dimensions, app.caseLibrary[0].dimensions, 'no stale dimension drift across reload');
+});
+
+test('CARGO-RULE-V8 matrix: CSV import sink (importCaseRows) canonicalizes hostile record', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const IE = await import(`${importExportPath.href}${stamp}`);
+  // importCaseRows consumes a parsed record; feed hostile-but-parsed values.
+  const rec = { name: 'Hostile', manufacturer: 'ACME', category: 'tools', length: 30, width: 20, height: 10, weight: 50,
+    canFlip: 'false', stackable: 'no', noStackOnTop: 'maybe', isPallet: '1', maxStackCount: 3, maxPalletWeight: 'abc', laneItem: true, loadPriority: 1, shape: 'CYLINDER', customMeta: 'keep-me' };
+  const { nextCaseLibrary } = IE.importCaseRows([rec], []);
+  const c = nextCaseLibrary[0];
+  // CSV has no stackable column (it is derived from no-top-load), so only assert the
+  // fields the CSV path actually maps.
+  assert.equal(c.canFlip, false); assert.equal(c.isPallet, true);
+  assert.equal(c.maxPalletWeight, 0, 'malformed pallet weight -> 0'); assert.equal(c.laneItem, true);
+  assert.ok(Number.isFinite(c.volume), 'volume finite');
+});
+
+test('CARGO-RULE-V8 matrix: Pack JSON import canonicalizes the bundled case and remaps the instance', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}${stamp}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const pack = PackLibrary.importPackPayload({
+    pack: { id: 'p', title: 'P', truck: { length: 240, width: 96, height: 96 },
+      cases: [makePackImportInstance('hostile', { id: 'i', transform: { position: { x: 20, y: 5, z: 0 } } })] },
+    bundledCases: [hostileRawCase()],
+  });
+  const stored = StateStore.get('caseLibrary').find(c => c.id === 'hostile') || StateStore.get('caseLibrary')[0];
+  assertHostileCanonical(stored, { extensions: true });
+  assert.ok(pack.cases.every(inst => StateStore.get('caseLibrary').some(c => c.id === inst.caseId)),
+    'every imported instance remaps to a real stored case');
+});
+
+test('CARGO-RULE-V8 matrix: Pack batch JSON imports valid packs and skips malformed without partial mutation', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}${stamp}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const entries = [
+    { pack: { id: 'g1', title: 'G1', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('c1', { id: 'a', transform: { position: { x: 5, y: 5, z: 0 } } })] }, bundledCases: [makePackImportSafeCase({ id: 'c1', name: 'C1' })] },
+    { pack: { id: 'bad', title: 'B', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('m', { id: 'b', transform: { position: { x: 5, y: 5, z: 0 } } })] }, bundledCases: [{ id: 'm', name: 'M', dimensions: null }] },
+    { pack: { id: 'g2', title: 'G2', truck: { length: 120, width: 60, height: 60 }, cases: [makePackImportInstance('c2', { id: 'd', transform: { position: { x: 5, y: 5, z: 0 } } })] }, bundledCases: [makePackImportSafeCase({ id: 'c2', name: 'C2' })] },
+  ];
+  let imported = 0, skipped = 0;
+  const before = JSON.stringify(StateStore.get('caseLibrary'));
+  for (const e of entries) { try { PackLibrary.importPackPayload(e); imported++; } catch { skipped++; } }
+  assert.equal(imported, 2, 'two valid packs import');
+  assert.equal(skipped, 1, 'the malformed pack is skipped');
+  // The malformed entry left no orphan case (its bundled "m" never persisted).
+  assert.equal(StateStore.get('caseLibrary').some(c => c.id === 'm'), false, 'malformed pack created no orphan case');
+  assert.notEqual(JSON.stringify(StateStore.get('caseLibrary')), before, 'valid packs did add their cases');
+});
+
+test('CARGO-RULE-V8 matrix: undo/redo restores canonical state after an edit', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const StateStore = await import(stateStorePath.href);
+  const CaseLibrary = await import(`${caseLibraryPath.href}${stamp}`);
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  CaseLibrary.upsert(hostileRawCase());
+  const afterFirst = StateStore.get('caseLibrary')[0].weight;
+  CaseLibrary.upsert({ ...hostileRawCase(), weight: 999 });
+  assert.equal(StateStore.get('caseLibrary')[0].weight, 999, 'edit applied');
+  StateStore.undo();
+  assert.equal(StateStore.get('caseLibrary')[0].weight, afterFirst, 'undo restores the prior canonical state');
+  StateStore.redo();
+  assert.equal(StateStore.get('caseLibrary')[0].weight, 999, 'redo re-applies the edit');
+});
+
+test('CARGO-RULE-V8 matrix: compound-rotation instance + unresolved instance survive App Backup round-trip', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Normalizer = await import(`${normalizerPath.href}${stamp}`);
+  const truth = await threeOrientedTruth();
+  const H = Math.PI / 2;
+  const caseDims = { length: 30, width: 20, height: 10 };
+  const rot = { x: H, y: 0, z: H };
+  const want = truth(caseDims, rot);
+  const appData = {
+    caseLibrary: [{ id: 'cc', name: 'C', dimensions: caseDims }],
+    packLibrary: [{ id: 'pp', title: 'P', truck: { length: 240, width: 96, height: 96 }, cases: [
+      { id: 'rot', caseId: 'cc', placement: 'packed', transform: { position: { x: 20, y: 5, z: 0 }, rotation: rot }, orientedDims: { length: 1, width: 1, height: 1 } },
+      { id: 'ghost', caseId: 'missing', transform: { position: { x: 5, y: 5, z: 0 } } },
+    ] }],
+    folderLibrary: [],
+  };
+  const out = Normalizer.normalizeAppData(JSON.parse(JSON.stringify(appData)));
+  const insts = out.packLibrary[0].cases;
+  const rotInst = insts.find(i => i.id === 'rot');
+  assert.deepEqual(rotInst.orientedDims, want, 'compound oriented dims recomputed THREE-correctly (stale 1s overridden)');
+  const ghost = insts.find(i => i.id === 'ghost');
+  assert.ok(ghost, 'unresolved instance is preserved through restore, not deleted');
+  assert.equal(ghost.caseId, 'missing', 'unresolved caseId preserved for repair');
+});
+
 test('CARGO-RULE-V1 orientation truth table: upright/onSide beat canFlip; instance lock overrides all', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);

@@ -14,7 +14,7 @@
 import * as StateStore from '../core/state-store.js';
 import * as Utils from '../core/utils/index.js';
 import * as CoreDefaults from '../core/defaults.js';
-import { applyCanonicalCargoFields } from '../core/cargo-canonical.js';
+import { applyCanonicalCargoFields, pickSafeExtensions, CANONICAL_CASE_KEYS } from '../core/cargo-canonical.js';
 
 // Canonicalize the known cargo-rule fields in place before storage, leaving any
 // other (including unknown extension) fields untouched. Routes through the single
@@ -71,6 +71,16 @@ export function buildStorableCase(caseData) {
   };
   next.weight = Number(next.weight) || 0;
   next.volume = Utils.volumeInCubicInches(next.dimensions);
+  // Sanitize unknown extension fields at the storage boundary: keep approved safe
+  // metadata, but drop functions, prototype keys, symbols and non-finite values so
+  // stored cases stay JSON/structuredClone-safe (autosave) and never carry
+  // executable values. Done in place so known canonical fields keep their types.
+  const safeExtensions = pickSafeExtensions(next, CANONICAL_CASE_KEYS);
+  const rec = /** @type {Record<string, unknown>} */ (next);
+  for (const k of Object.keys(rec)) {
+    if (!CANONICAL_CASE_KEYS.has(k)) delete rec[k];
+  }
+  Object.assign(next, safeExtensions);
   return next;
 }
 

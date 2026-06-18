@@ -133,10 +133,6 @@ export function parseNonNegNumCell(raw, fieldLabel) {
   return { value, warning: valid ? null : `invalid ${fieldLabel} "${raw}" (used ${value})` };
 }
 
-export function parseLaneCell(raw) {
-  return parseCargoLane(raw).value;
-}
-
 export function parseLoadPriorityCell(raw) {
   const s = String(raw || '').trim().toLowerCase();
   if (!s || s === 'normal' || s === '0') return { value: 0, warning: null };

@@ -749,7 +749,7 @@ function findLanePlacement(item, floorState, packed, loadFrontFirst) {
   return best;
 }
 
-function repeatedBatchKey(item) {
+export function repeatedBatchKey(item) {
   if (!item || item.className === 'LANE_ITEM' || !item.candidates.length) return '';
   const source = item.item || {};
   const lockKey = source.orientationLocked === true
@@ -761,7 +761,9 @@ function repeatedBatchKey(item) {
     item.dims.w,
     item.dims.h,
     source.canFlip === true ? 'flip' : 'no-flip',
-    String(source.orientationLock || 'any'),
+    // Canonical orientation so aliases (onside/on-side/onSide) batch together and
+    // an accepted spelling never changes the batch key.
+    canonicalOrientationLock(source.orientationLock),
     lockKey,
     source.noStackOnTop === true ? 'no-top' : 'top-ok',
     source.stackable === false ? 'no-stack' : 'stack-ok',

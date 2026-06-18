@@ -3707,13 +3707,14 @@ test('CARGO-RULE-V1 spreadsheet handling-cell parsers normalize and warn correct
   // Non-neg num (maxPalletWeight)
   assert.deepEqual(IE.parseNonNegNumCell('2000', 'load'), { value: 2000, warning: null });
   assert.ok(IE.parseNonNegNumCell('-5', 'load').warning);
-  // Lane tri-state
-  assert.equal(IE.parseLaneCell(''), null);
-  assert.equal(IE.parseLaneCell('auto'), null);
-  assert.equal(IE.parseLaneCell('always'), true);
-  assert.equal(IE.parseLaneCell('yes'), true);
-  assert.equal(IE.parseLaneCell('never'), false);
-  assert.equal(IE.parseLaneCell('0'), false);
+  // Lane tri-state — assert the PRODUCTION parser (parseLaneCellWarned) directly so
+  // there is no test-only lane parser that can drift from production behavior.
+  assert.equal(IE.parseLaneCellWarned('').value, null);
+  assert.equal(IE.parseLaneCellWarned('auto').value, null);
+  assert.equal(IE.parseLaneCellWarned('always').value, true);
+  assert.equal(IE.parseLaneCellWarned('yes').value, true);
+  assert.equal(IE.parseLaneCellWarned('never').value, false);
+  assert.equal(IE.parseLaneCellWarned('0').value, false);
   // Priority
   assert.equal(IE.parseLoadPriorityCell('low').value, -1);
   assert.equal(IE.parseLoadPriorityCell('high').value, 1);
@@ -4031,6 +4032,55 @@ test('CARGO-RULE-V1 orientation aliases canonicalize consistently across every p
   });
   assert.equal((StateStore.get('caseLibrary') || []).length, 1, 'alias-equivalent bundled case must be reused, not duplicated');
   assert.equal(res.caseConflicts.length, 0, 'orientation alias difference is not a real conflict');
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 4: Orientation parsing single source (no remaining drift)
+// ---------------------------------------------------------------------------
+
+test('CARGO-RULE-V4 repeatedBatchKey uses canonical orientation (aliases batch together)', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const mkItem = (lock) => ({
+    className: 'BOX',
+    candidates: [{ l: 10, w: 10, h: 10 }],
+    dims: { l: 10, w: 10, h: 10 },
+    item: { caseId: 'c', orientationLock: lock, canFlip: false, noStackOnTop: false, stackable: true, maxStackCount: 0 },
+  });
+  const keyA = Solver.repeatedBatchKey(mkItem('onSide'));
+  for (const alias of ['onside', 'on-side', 'on side', 'ON SIDE', 'On_Side']) {
+    assert.equal(Solver.repeatedBatchKey(mkItem(alias)), keyA, `alias "${alias}" must produce the same batch key as onSide`);
+  }
+  // A genuinely different policy yields a different key.
+  assert.notEqual(Solver.repeatedBatchKey(mkItem('upright')), keyA, 'upright is a distinct batch key');
+});
+
+test('CARGO-RULE-V4 live item preparation (buildLegacyAutoPackItems) is alias-invariant', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Legacy = await import(`${autoPackLegacySolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const orientationTools = {
+    normalizeRightAngleRotation: PackLib.normalizeRightAngleRotation,
+    getOrientedDimsForRotation: PackLib.getOrientedDimsForRotation,
+  };
+  const volumeInCubicInches = (d) => d.length * d.width * d.height;
+  const build = (lock) => {
+    const cases = { c: { id: 'c', dimensions: { length: 30, width: 20, height: 10 }, orientationLock: lock, canFlip: false, shape: 'box', volume: 6000 } };
+    const items = Legacy.buildLegacyAutoPackItems({
+      instances: [{ id: 'i', caseId: 'c', hidden: false }],
+      getCaseById: (id) => cases[id] || null,
+      volumeInCubicInches,
+      orientationTools,
+    });
+    return items[0].orientations;
+  };
+  const base = build('onSide');
+  // on-side must yield the SAME orientation set as onSide (previously 'on-side'
+  // failed the lowercase compare and fell through to the wrong branch).
+  for (const alias of ['on-side', 'on side', 'ON SIDE']) {
+    assert.deepEqual(build(alias), base, `legacy item prep must be invariant for alias "${alias}"`);
+  }
+  // onSide must NOT equal upright's orientation set (sanity: the fix didn't collapse policies).
+  assert.notDeepEqual(build('upright'), base, 'onSide and upright remain distinct orientation sets');
 });
 
 test('CARGO-RULE-V1 CaseLibrary.upsert canonicalizes cargo fields and preserves unknown fields', async () => {

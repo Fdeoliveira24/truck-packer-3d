@@ -1,3 +1,5 @@
+import { canonicalOrientationLock } from '../core/orientation.js';
+
 const MIN_STACK_SUPPORT_RATIO = 0.5;
 
 function getXzOverlapArea(aMinX, aMaxX, aMinZ, aMaxZ, bMinX, bMaxX, bMinZ, bMaxZ) {
@@ -31,7 +33,9 @@ function buildOrientations(dims, caseData, inst, orientationTools) {
   const lockedOrientation = buildLockedOrientation(dims, inst, orientationTools);
   if (lockedOrientation) return [lockedOrientation];
 
-  const lock = (caseData.orientationLock || 'any').toLowerCase();
+  // Canonical orientation ('any' | 'upright' | 'onSide') so every accepted alias
+  // produces the same candidate set as the rest of the app (single source).
+  const lock = canonicalOrientationLock(caseData.orientationLock);
   const canFlip = Boolean(caseData.canFlip);
   const L = dims.length, W = dims.width, H = dims.height;
   const PI2 = Math.PI / 2;
@@ -51,12 +55,12 @@ function buildOrientations(dims, caseData, inst, orientationTools) {
     tryOri(W, L, H, 0, PI2, 0);
   }
 
-  if (lock === 'onside') {
+  if (lock === 'onSide') {
     tryOri(H, W, L, 0, 0, PI2);
     tryOri(W, H, L, PI2, 0, PI2);
   }
 
-  if (canFlip && lock !== 'onside') {
+  if (canFlip && lock !== 'onSide') {
     tryOri(H, W, L, 0, 0, PI2);
     tryOri(W, H, L, PI2, 0, PI2);
     tryOri(L, H, W, PI2, 0, 0);

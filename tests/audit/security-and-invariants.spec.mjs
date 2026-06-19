@@ -8210,6 +8210,102 @@ test('PHASE-B tighter rear vs open front: front wins; no rear/middle cell taken 
   assert.ok(Math.max(...P.map(p => p.pos.x + p.od.length / 2)) >= 240 - 0.5, 'the front row is at the nose');
 });
 
+// ---------------------------------------------------------------------------
+// PHASE B1: front-first ANIMATION order. The final solver coordinates are
+// unchanged (Phase B); only the animation-only queue in autopack-engine.js is
+// reordered so the truck visibly loads nose-to-tail. This mirror of the engine
+// comparator (y asc, x DESC, z asc) is bound to the real engine by the
+// source-pattern test below, so the two cannot drift.
+// ---------------------------------------------------------------------------
+function phb1AnimationOrder(placements) {
+  return Array.from(placements.entries()).sort((a, b) => {
+    const aPos = a[1] || {}; const bPos = b[1] || {};
+    return (Number(aPos.y) || 0) - (Number(bPos.y) || 0) ||
+      (Number(bPos.x) || 0) - (Number(aPos.x) || 0) ||
+      (Number(aPos.z) || 0) - (Number(bPos.z) || 0);
+  });
+}
+
+test('PHASE-B1 animation order loads nose-to-tail: front-first per layer, floor before stacking, support before child (Std/WW/FrontOverhang × 6/20/40/120)', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truth = await threeOrientedTruth();
+  const report = [];
+  for (const shapeMode of ['rect', 'wheelWells', 'frontBonus']) {
+    for (const n of [6, 20, 40, 120]) {
+      const truck = { length: 240, width: 96, height: 96, shapeMode };
+      const zones = PackLib.getTrailerUsableZones(truck);
+      const usableMaxX = Math.max(...zones.map(z => z.max.x));
+      const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: Array.from({ length: n }, (_, i) => ({ instanceId: `i${i}`, caseId: 'c', dims: { l: 24, w: 18, h: 16 }, shape: 'box', orientationLock: 'any', canFlip: false, weight: 30 })) });
+      const order = phb1AnimationOrder(res.placements);
+      const od = id => res.orientedDims.get(id);
+      const seq = order.map(([id, pos]) => ({ id, x: pos.x, y: pos.y, z: pos.z, dims: od(id), minY: pos.y - od(id).height / 2, maxY: pos.y + od(id).height / 2, aabb: Solver.getAabb(pos, { l: od(id).length, w: od(id).width, h: od(id).height }) }));
+
+      // (a) First animated floor item is at the most-forward valid X.
+      const floorY = Math.min(...seq.map(s => s.minY));
+      const firstFloor = seq.find(s => Math.abs(s.minY - floorY) < 0.5);
+      const maxFrontEdge = Math.max(...seq.filter(s => Math.abs(s.minY - floorY) < 0.5).map(s => s.x + s.dims.length / 2));
+      assert.ok(usableMaxX - maxFrontEdge <= 0.5, `${shapeMode}/${n}: front row reaches the nose`);
+      assert.ok(Math.abs((firstFloor.x + firstFloor.dims.length / 2) - maxFrontEdge) <= 0.5, `${shapeMode}/${n}: first animated floor item is at the most-forward X`);
+
+      // (b) Within each layer, X is non-increasing over the sequence (no rear row
+      //     animates while a front row in the same layer is still unanimated).
+      const byLayer = new Map();
+      seq.forEach((s, idx) => { const k = Math.round(s.minY); if (!byLayer.has(k)) byLayer.set(k, []); byLayer.get(k).push({ ...s, idx }); });
+      for (const [layer, items] of byLayer) {
+        for (let i = 1; i < items.length; i++) {
+          assert.ok(items[i].x <= items[i - 1].x + 0.01, `${shapeMode}/${n}: layer ${layer} animates front-to-rear (x non-increasing)`);
+        }
+      }
+
+      // (c) Floor layer completes before any stacking begins.
+      const lastFloorIdx = seq.reduce((m, s, idx) => Math.abs(s.minY - floorY) < 0.5 ? idx : m, -1);
+      const firstUpperIdx = seq.findIndex(s => s.minY - floorY > 0.5);
+      if (firstUpperIdx >= 0) assert.ok(lastFloorIdx < firstUpperIdx, `${shapeMode}/${n}: the floor layer completes before stacking`);
+
+      // (d) Every support precedes its children in the animation order.
+      const indexOf = new Map(seq.map((s, idx) => [s.id, idx]));
+      for (const child of seq) {
+        if (child.minY <= floorY + 0.5) continue;
+        const supports = seq.filter(s => s !== child && Math.abs(s.maxY - child.minY) < 0.5 && phbOverlapXZ({ pos: { x: child.x, z: child.z }, od: child.dims }, { pos: { x: s.x, z: s.z }, od: s.dims }));
+        for (const s of supports) assert.ok(indexOf.get(s.id) < indexOf.get(child.id), `${shapeMode}/${n}: support ${s.id} animates before child ${child.id}`);
+      }
+
+      // (f) Safety: no overlap, contained (no OOB/blocked), THREE dims, supported.
+      for (let i = 0; i < seq.length; i++) for (let j = i + 1; j < seq.length; j++) assert.equal(Solver.aabbsOverlap(seq[i].aabb, seq[j].aabb), false, `${shapeMode}/${n}: no overlap`);
+      for (const s of seq) {
+        assert.equal(PackLib.isAabbContainedInAnyZone(s.aabb, zones), true, `${shapeMode}/${n}: contained`);
+        const t = truth(PHB_DIMS, res.rotations.get(s.id));
+        assert.deepEqual({ l: s.dims.length, w: s.dims.width, h: s.dims.height }, { l: t.length, w: t.width, h: t.height }, `${shapeMode}/${n}: THREE dims`);
+        if (s.minY > floorY + 0.5) {
+          const sup = seq.filter(o => o !== s && Math.abs(o.maxY - s.minY) < 0.5 && phbOverlapXZ({ pos: { x: s.x, z: s.z }, od: s.dims }, { pos: { x: o.x, z: o.z }, od: o.dims })).map(o => o.aabb);
+          assert.ok(PackLib.computeSupportFraction(s.aabb, sup, 0.05) >= PackLib.MIN_SUPPORT_FRACTION, `${shapeMode}/${n}: supported`);
+        }
+      }
+      const first20 = seq.slice(0, 20).map(s => `${s.id}(${Math.round(s.x)},${Math.round(s.y)},${Math.round(s.z)})`);
+      report.push(`${shapeMode}/${n}: first20=${first20.join(' ')}`);
+
+      // (e) + (10) Determinism: same final layout AND same animation order on repeat.
+      const res2 = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: Array.from({ length: n }, (_, i) => ({ instanceId: `i${i}`, caseId: 'c', dims: { l: 24, w: 18, h: 16 }, shape: 'box', orientationLock: 'any', canFlip: false, weight: 30 })) });
+      assert.equal(JSON.stringify([...res.placements]), JSON.stringify([...res2.placements]), `${shapeMode}/${n}: final layout deterministic`);
+      assert.equal(JSON.stringify(phb1AnimationOrder(res2.placements).map(e => e[0])), JSON.stringify(order.map(e => e[0])), `${shapeMode}/${n}: animation order deterministic`);
+    }
+  }
+  assert.ok(report.length === 12, `first-20 animated IDs (id(x,y,z)):\n  ${report.join('\n  ')}`);
+});
+
+test('PHASE-B1 engine animatePlacements sorts the animation-only queue front-first (y asc, x desc, z asc) and never reorders saved state', async () => {
+  const src = await fs.readFile(autoPackEnginePath, 'utf8');
+  const start = src.indexOf('async function animatePlacements(');
+  const end = src.indexOf('\n  function prepareObjectForPlacement(', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+  assert.ok(block, 'animatePlacements block found');
+  // Sort key order: y ascending, then x DESCENDING (front/high +X first), then z ascending.
+  assert.match(block, /\(Number\(aPos\.y\) \|\| 0\) - \(Number\(bPos\.y\) \|\| 0\) \|\|\s*\(Number\(bPos\.x\) \|\| 0\) - \(Number\(aPos\.x\) \|\| 0\) \|\|\s*\(Number\(aPos\.z\) \|\| 0\) - \(Number\(bPos\.z\) \|\| 0\)/,
+    'animation queue must sort y asc, x DESC (front-first), z asc');
+  // The queue is built from a copy (Array.from(...).sort) — it must not mutate the placements Map.
+  assert.match(block, /Array\.from\(placements\.entries\(\)\)\s*\.sort\(/, 'animation order is a sorted copy, not an in-place reorder of solver state');
+});
+
 test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when tweens stop ticking', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
   const tweenStart = src.indexOf('function tweenInstanceToPosition(instanceId, positionInches, duration');

@@ -457,12 +457,18 @@ export function createAutoPackEngine({
 
   async function animatePlacements(placements, rotations, orientedDimsMap, shouldAbort = null, metrics = null) {
     cancelAllTweens();
+    // Animation-only ordering (does NOT change final positions/state): the truck
+    // must visibly load nose-to-tail. Front is high +X.
+    //   1. y ascending  → lower layers first, so every support animates before its
+    //      children (a child must rest strictly higher than its support).
+    //   2. x DESCENDING → front (high +X) to rear, completing each load wall first.
+    //   3. z ascending  → side-to-side across the current X row before moving rear.
     const entries = Array.from(placements.entries())
       .sort((a, b) => {
         const aPos = a[1] || {};
         const bPos = b[1] || {};
         return (Number(aPos.y) || 0) - (Number(bPos.y) || 0) ||
-          (Number(aPos.x) || 0) - (Number(bPos.x) || 0) ||
+          (Number(bPos.x) || 0) - (Number(aPos.x) || 0) ||
           (Number(aPos.z) || 0) - (Number(bPos.z) || 0);
       });
 

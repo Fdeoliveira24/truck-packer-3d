@@ -700,12 +700,14 @@ function buildFreeRectCandidates(orientation, floorState, loadFrontFirst, packed
   return placements;
 }
 
-function findFloorPlacement(item, floorState, packed, loadFrontFirst) {
+function findFloorPlacement(item, floorState, packed, loadFrontFirst, options = {}) {
   let best = null;
   let bestScore = null;
+  const requiredFloorY = Number.isFinite(options.floorY) ? options.floorY : null;
 
   for (const orientation of item.candidates) {
     for (const candidate of buildFreeRectCandidates(orientation, floorState, loadFrontFirst, packed)) {
+      if (requiredFloorY !== null && Math.abs(candidate.aabb.min.y - requiredFloorY) > CONTACT_EPS) continue;
       if (!isAabbContainedInZone(candidate.aabb, candidate.zone)) continue;
       if (collidesPacked(candidate.aabb, packed)) continue;
       const score = scoreFreeRectCandidate(candidate, loadFrontFirst, packed);
@@ -891,6 +893,37 @@ function preferRepeatedOrientation(item, preferred) {
   ];
 }
 
+function findRepeatedForwardWallCompletion(
+  item,
+  preferredOrientation,
+  proposedPlacement,
+  floorState,
+  packed,
+  loadFrontFirst
+) {
+  const completionItem = {
+    ...item,
+    candidates: preferRepeatedOrientation(item, preferredOrientation),
+  };
+  const candidate = findFloorPlacement(
+    completionItem,
+    floorState,
+    packed,
+    loadFrontFirst,
+    { floorY: proposedPlacement.aabb.min.y }
+  );
+  if (!candidate) return null;
+
+  const candidateFront = loadFrontFirst ? candidate.aabb.max.x : candidate.aabb.min.x;
+  const proposedFront = loadFrontFirst
+    ? proposedPlacement.aabb.max.x
+    : proposedPlacement.aabb.min.x;
+  const isMoreForward = loadFrontFirst
+    ? candidateFront > proposedFront + FREE_RECT_EPS
+    : candidateFront < proposedFront - FREE_RECT_EPS;
+  return isMoreForward ? candidate : null;
+}
+
 function placeRepeatedBatchFloor(group, orientation, floorState, packed, output, loadFrontFirst) {
   if (!group.length || !orientation) return [];
   const queue = [...group];
@@ -924,6 +957,28 @@ function placeRepeatedBatchFloor(group, orientation, floorState, packed, output,
         const dims = { l: orientation.l, w: orientation.w, h: orientation.h };
         const aabb = getAabb(position, dims);
         if (!isAabbContainedInZone(aabb, rect.zone)) continue;
+        if (collidesPacked(aabb, packed)) continue;
+
+        // Phase B2C: before advancing this repeated grid farther rearward, let
+        // the production floor search use every legal orientation to finish a
+        // more-forward wall on this exact floor/deck layer. Repeat because a
+        // mixed-orientation wall can require more than one completion item.
+        while (queue.length) {
+          const completion = findRepeatedForwardWallCompletion(
+            queue[0],
+            orientation,
+            { position, dims, aabb, zone: rect.zone, freeRect: rect },
+            floorState,
+            packed,
+            loadFrontFirst
+          );
+          if (!completion) break;
+          const completionItem = queue.shift();
+          const lockedCompletion = { ...completion, lockedGrid: true };
+          recordPlacement(output, packed, completionItem, lockedCompletion, 'floor');
+          occupyFloorSpace(floorState, lockedCompletion);
+        }
+        if (!queue.length) break;
         if (collidesPacked(aabb, packed)) continue;
         const item = queue.shift();
         const placement = { position, dims, aabb, zone: rect.zone, freeRect: rect, orientation, lockedGrid: true };

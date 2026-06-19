@@ -8269,6 +8269,85 @@ function phb2FloorCount(result, zones, Solver) {
   return count;
 }
 
+function phb2SequentialForwardViolation(Solver, result, zones, itemSpecsById) {
+  const prior = [];
+  const round = value => Math.round(value * 1e6) / 1e6;
+
+  for (const [id, position] of result.placements) {
+    const dims = result.orientedDims.get(id);
+    const aabb = Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
+    const floorZone = zones.find(zone =>
+      Solver.isAabbContainedInAnyZone(aabb, [zone]) &&
+      Math.abs(aabb.min.y - zone.min.y) <= 0.05
+    );
+    if (!floorZone) continue;
+
+    const itemSpec = itemSpecsById.get(id);
+    const caseId = itemSpec?.caseId || '';
+    const advancesRearward = prior.some(placement =>
+      placement.caseId === caseId &&
+      Math.abs(placement.aabb.min.y - aabb.min.y) <= 0.05 &&
+      placement.aabb.max.x > aabb.max.x + 0.05
+    );
+
+    if (advancesRearward && itemSpec) {
+      for (const orientation of Solver.buildOrientationCandidates(itemSpec.dims, itemSpec)) {
+        for (const zone of zones) {
+          if (Math.abs(zone.min.y - aabb.min.y) > 0.05) continue;
+          const xAnchors = new Set([zone.min.x, zone.max.x - orientation.l].map(round));
+          const zAnchors = new Set([zone.min.z, zone.max.z - orientation.w].map(round));
+          for (const placement of prior) {
+            xAnchors.add(round(placement.aabb.min.x));
+            xAnchors.add(round(placement.aabb.max.x));
+            xAnchors.add(round(placement.aabb.min.x - orientation.l));
+            xAnchors.add(round(placement.aabb.max.x - orientation.l));
+            zAnchors.add(round(placement.aabb.min.z));
+            zAnchors.add(round(placement.aabb.max.z));
+            zAnchors.add(round(placement.aabb.min.z - orientation.w));
+            zAnchors.add(round(placement.aabb.max.z - orientation.w));
+          }
+          for (const xMin of xAnchors) {
+            for (const zMin of zAnchors) {
+              const candidatePosition = {
+                x: xMin + orientation.l / 2,
+                y: zone.min.y + orientation.h / 2,
+                z: zMin + orientation.w / 2,
+              };
+              const candidateAabb = Solver.getAabb(candidatePosition, orientation);
+              if (candidateAabb.max.x <= aabb.max.x + 0.05) continue;
+              if (!Solver.isAabbContainedInAnyZone(candidateAabb, [zone])) continue;
+              if (prior.some(placement => Solver.aabbsOverlap(candidateAabb, placement.aabb))) continue;
+              return {
+                selected: { id, caseId, position, dims, aabb },
+                alternative: { position: candidatePosition, orientation, aabb: candidateAabb },
+              };
+            }
+          }
+        }
+      }
+    }
+
+    prior.push({ id, caseId, aabb });
+  }
+  return null;
+}
+
+function phb2AssertDirectStackLimit(Solver, result, limit, label) {
+  const placed = [...result.placements].map(([id, position]) => {
+    const dims = result.orientedDims.get(id);
+    return { id, aabb: Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height }) };
+  });
+  for (const support of placed) {
+    const directChildren = placed.filter(child =>
+      child !== support &&
+      Math.abs(child.aabb.min.y - support.aabb.max.y) <= 0.05 &&
+      Solver.computeXzOverlapArea(child.aabb, support.aabb) > 0.05
+    );
+    assert.ok(directChildren.length <= limit,
+      `${label}: ${support.id} has ${directChildren.length} direct children (limit ${limit})`);
+  }
+}
+
 function phb2AssertSafe(Solver, PackLib, result, zones, label) {
   const placed = phbPlaced(Solver, result, PHB_DIMS);
   for (let i = 0; i < placed.length; i++) {
@@ -8333,9 +8412,17 @@ test('PHASE-B2A mixed repeated groups complete legal A strips before B consumes 
   ];
   const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
   assert.equal(phb2FloorCount(result, zones, Solver), 54, 'mixed fixture uses 53 A floor slots before the one remaining B floor slot');
-  assert.deepEqual(result.placements.get('A48'), { x: 219, y: 8, z: 41 }, 'A uses the proven forward residual strip');
-  assert.deepEqual(result.orientedDims.get('A48'), { length: 42, width: 10, height: 16 }, 'A residual strip uses the legal alternate yaw');
+  assert.deepEqual(result.placements.get('A2'), { x: 219, y: 8, z: 41 }, 'A completes the proven forward strip before its rear grid cell');
+  assert.deepEqual(result.orientedDims.get('A2'), { length: 42, width: 10, height: 16 }, 'A forward strip uses the legal alternate yaw');
   assert.deepEqual(result.placements.get('B0'), { x: 20, y: 8, z: 41 }, 'B begins only in the rear residual strip after A completion');
+  assert.ok([...result.placements.keys()].indexOf('A2') < [...result.placements.keys()].indexOf('B0'),
+    'the active A group completes its forward wall before B receives floor space');
+  assert.equal(phb2SequentialForwardViolation(
+    Solver,
+    result,
+    zones,
+    new Map(items.map(item => [item.instanceId, item]))
+  ), null, 'mixed groups never advance rearward past a legal same-case wall completion');
   assert.equal(phb2FloorHole(Solver, result, zones, aSpec), null, 'no legal A floor opening is left behind');
   phb2AssertSafe(Solver, PackLib, result, zones, 'mixed A/B');
 });
@@ -8364,6 +8451,125 @@ test('PHASE-B2A identical-case matrix stays safe and deterministic in Standard, 
       }
       const repeat = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
       assert.equal(JSON.stringify([...result.placements]), JSON.stringify([...repeat.placements]), `${shapeMode}/${count}: deterministic`);
+    }
+  }
+});
+
+test('PHASE-B2C exact forward-wall regressions place alternate orientations before rear grid cells', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const fixtures = [
+    {
+      label: 'Wheel Wells 24x18',
+      truck: { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' },
+      dims: { l: 24, w: 18, h: 16 },
+      completionId: 'i22',
+      completionPosition: { x: 132, y: 8, z: 23.4 },
+      completionDims: { length: 24, width: 18, height: 16 },
+      rearFrontEdge: 126,
+    },
+    {
+      label: 'Standard 42x10',
+      truck: { length: 240, width: 96, height: 96, shapeMode: 'rect' },
+      dims: { l: 42, w: 10, h: 16 },
+      completionId: 'i2',
+      completionPosition: { x: 219, y: 8, z: 41 },
+      completionDims: { length: 42, width: 10, height: 16 },
+      rearFrontEdge: 230,
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    const zones = PackLib.getTrailerUsableZones(fixture.truck);
+    const itemSpec = {
+      caseId: 'A', dims: fixture.dims, orientationLock: 'any', canFlip: false, weight: 30,
+    };
+    const items = Array.from({ length: 100 }, (_, index) => ({ ...itemSpec, instanceId: `i${index}` }));
+    const result = Solver.solveAutoPack({ truck: fixture.truck, zones, loadFrontFirst: true, items });
+    const order = [...result.placements.keys()];
+    const firstRearId = [...result.placements].find(([id, position]) => {
+      const dims = result.orientedDims.get(id);
+      const aabb = Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
+      return Math.abs(aabb.min.y) <= 0.05 && Math.abs(aabb.max.x - fixture.rearFrontEdge) <= 0.05;
+    })?.[0];
+    assert.deepEqual(result.placements.get(fixture.completionId), fixture.completionPosition,
+      `${fixture.label}: exact alternate-orientation completion position`);
+    assert.deepEqual(result.orientedDims.get(fixture.completionId), fixture.completionDims,
+      `${fixture.label}: exact completion orientation dimensions`);
+    assert.ok(firstRearId && order.indexOf(fixture.completionId) < order.indexOf(firstRearId),
+      `${fixture.label}: forward wall completion precedes the first ${fixture.rearFrontEdge}-front grid cell`);
+    assert.equal(phb2SequentialForwardViolation(
+      Solver,
+      result,
+      zones,
+      new Map(items.map(item => [item.instanceId, item]))
+    ), null, `${fixture.label}: sequential forward-wall oracle passes`);
+  }
+});
+
+test('PHASE-B2C sequential oracle, hard rules, and B2B animation hold for 100 identical cases in every geometry', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const Engine = await import(`${autoPackEnginePath.href}?t=${Date.now()}-${Math.random()}`);
+  const truth = await threeOrientedTruth();
+  const dimensionFixtures = [
+    { label: '24x18', dims: { l: 24, w: 18, h: 16 } },
+    { label: '42x10', dims: { l: 42, w: 10, h: 16 } },
+  ];
+
+  for (const shapeMode of ['rect', 'wheelWells', 'frontBonus']) {
+    for (const dimensionFixture of dimensionFixtures) {
+      const truck = {
+        length: 240, width: 96, height: 96, shapeMode,
+        ...(shapeMode === 'frontBonus'
+          ? { shapeConfig: { bonusLength: 28.8, bonusWidth: 96, bonusHeight: 43.2 } }
+          : {}),
+      };
+      const zones = PackLib.getTrailerUsableZones(truck);
+      const itemSpec = {
+        caseId: 'A',
+        dims: dimensionFixture.dims,
+        orientationLock: 'any',
+        canFlip: false,
+        weight: 30,
+        maxStackCount: 2,
+      };
+      const items = Array.from({ length: 100 }, (_, index) => ({ ...itemSpec, instanceId: `i${index}` }));
+      const itemSpecsById = new Map(items.map(item => [item.instanceId, item]));
+      const label = `${shapeMode}/${dimensionFixture.label}`;
+      const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+      const placementSnapshot = JSON.stringify([...result.placements]);
+      const rotationSnapshot = JSON.stringify([...result.rotations]);
+
+      assert.deepEqual(result.unpacked, [], `${label}: every case resolves`);
+      assert.equal(phb2SequentialForwardViolation(Solver, result, zones, itemSpecsById), null,
+        `${label}: no rearward transition skips a legal same-layer forward candidate`);
+      phb2AssertSafe(Solver, PackLib, result, zones, label);
+      phb2AssertDirectStackLimit(Solver, result, 2, label);
+
+      const legalOrientations = Solver.buildOrientationCandidates(itemSpec.dims, itemSpec);
+      for (const [id, dims] of result.orientedDims) {
+        const rotation = result.rotations.get(id);
+        assert.deepEqual(dims, truth({
+          length: dimensionFixture.dims.l,
+          width: dimensionFixture.dims.w,
+          height: dimensionFixture.dims.h,
+        }, rotation), `${label}: ${id} uses THREE dimensions`);
+        assert.ok(legalOrientations.some(candidate =>
+          candidate.l === dims.length && candidate.w === dims.width && candidate.h === dims.height &&
+          candidate.rotation.x === rotation.x && candidate.rotation.y === rotation.y && candidate.rotation.z === rotation.z
+        ), `${label}: ${id} uses a policy-approved orientation`);
+      }
+
+      const caseIds = new Map(items.map(item => [item.instanceId, item.caseId]));
+      const batches = Engine.buildPlacementAnimationBatches(result.placements, result.orientedDims, caseIds, 4);
+      phb2AssertAnimationBatches(Solver, result, caseIds, batches, `${label}/animation`);
+      assert.equal(JSON.stringify([...result.placements]), placementSnapshot,
+        `${label}: B2B animation planning does not mutate solver positions`);
+      assert.equal(JSON.stringify([...result.rotations]), rotationSnapshot,
+        `${label}: B2B animation planning does not mutate solver rotations`);
+
+      const repeat = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+      assert.equal(JSON.stringify([...repeat.placements]), placementSnapshot, `${label}: deterministic positions`);
+      assert.equal(JSON.stringify([...repeat.rotations]), rotationSnapshot, `${label}: deterministic rotations`);
     }
   }
 });
@@ -8479,7 +8685,7 @@ test('PHASE-B2B mixed case groups and support dependencies never share a semanti
   const caseIds = new Map(items.map(item => [item.instanceId, item.caseId]));
   const batches = Engine.buildPlacementAnimationBatches(result.placements, result.orientedDims, caseIds, 4);
   const order = phb2AssertAnimationBatches(Solver, result, caseIds, batches, 'mixed A/B');
-  assert.ok(order.findIndex(record => record.id === 'A48') < order.findIndex(record => record.id === 'B0'),
+  assert.ok(order.findIndex(record => record.id === 'A2') < order.findIndex(record => record.id === 'B0'),
     'the A alternate-yaw forward completion animates before B begins in the rear strip');
 });
 

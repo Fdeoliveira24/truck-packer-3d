@@ -61,9 +61,12 @@ export function buildPlacementAnimationBatches(
   placements,
   orientedDimsMap,
   caseIdMap,
-  maxBatchSize = 4
+  maxBatchSize = 4,
+  options = {}
 ) {
   const limit = Math.max(1, Math.floor(animationNumber(maxBatchSize, 4)));
+  const frontSurfaceFirst = options.frontSurfaceFirst === true;
+  const floorZones = Array.isArray(options.zones) ? options.zones : [];
   const entries = Array.from(placements instanceof Map ? placements.entries() : [])
     .map(([id, position], sourceIndex) => {
       const dims = orientedDimsMap instanceof Map ? orientedDimsMap.get(id) : null;
@@ -77,6 +80,15 @@ export function buildPlacementAnimationBatches(
         aabb,
         layerKey: animationBoundaryKey(aabb.min.y),
         rowKey: animationBoundaryKey(aabb.max.x),
+        isZoneFloor: floorZones.some(zone =>
+          aabb.min.x >= animationNumber(zone?.min?.x) - ANIMATION_BOUNDARY_EPS &&
+          aabb.max.x <= animationNumber(zone?.max?.x) + ANIMATION_BOUNDARY_EPS &&
+          aabb.min.y >= animationNumber(zone?.min?.y) - ANIMATION_BOUNDARY_EPS &&
+          aabb.max.y <= animationNumber(zone?.max?.y) + ANIMATION_BOUNDARY_EPS &&
+          aabb.min.z >= animationNumber(zone?.min?.z) - ANIMATION_BOUNDARY_EPS &&
+          aabb.max.z <= animationNumber(zone?.max?.z) + ANIMATION_BOUNDARY_EPS &&
+          Math.abs(aabb.min.y - animationNumber(zone?.min?.y)) <= ANIMATION_BOUNDARY_EPS
+        ),
       };
     });
 
@@ -101,6 +113,13 @@ export function buildPlacementAnimationBatches(
   }
 
   const compareReady = (a, b) => {
+    if (frontSurfaceFirst && a.isZoneFloor !== b.isZoneFloor) {
+      return a.isZoneFloor ? -1 : 1;
+    }
+    if (frontSurfaceFirst && a.isZoneFloor && b.isZoneFloor) {
+      if (a.rowKey !== b.rowKey) return b.rowKey - a.rowKey;
+      if (a.layerKey !== b.layerKey) return a.layerKey - b.layerKey;
+    }
     if (a.layerKey !== b.layerKey) return a.layerKey - b.layerKey;
     if (a.rowKey !== b.rowKey) return b.rowKey - a.rowKey;
     const aGroup = semanticGroupOrder.get(`${a.layerKey}|${a.rowKey}|${a.caseId}`);
@@ -395,6 +414,9 @@ export function createAutoPackEngine({
       const rotations = solverResult.rotations;
       const orientedDimsMap = solverResult.orientedDims;
       const animationCaseIds = new Map(packItems.map(item => [item.inst.id, item.inst.caseId || item.caseData.id || '']));
+      const frontSurfaceFirst = mode === 'frontBonus' && zones.some(zone =>
+        Number(zone?.min?.y) > 0.05 && Number(zone?.max?.x) > truckL + 0.05
+      );
       const unpacked = solverResult.unpacked || [];
       const packedCount = placements instanceof Map ? placements.size : 0;
 
@@ -406,7 +428,8 @@ export function createAutoPackEngine({
         orientedDimsMap,
         animationCaseIds,
         isWorkspaceRunStale,
-        animationMetrics
+        animationMetrics,
+        { frontSurfaceFirst, zones }
       );
       animationMs = nowMs() - animationStartedAt;
       if (!animationCompleted || isWorkspaceRunStale()) return;
@@ -583,14 +606,16 @@ export function createAutoPackEngine({
     orientedDimsMap,
     caseIdMap,
     shouldAbort = null,
-    metrics = null
+    metrics = null,
+    animationOptions = {}
   ) {
     cancelAllTweens();
     const batches = buildPlacementAnimationBatches(
       placements,
       orientedDimsMap,
       caseIdMap,
-      ANIMATION_BATCH_SIZE
+      ANIMATION_BATCH_SIZE,
+      animationOptions
     );
 
     for (const entries of batches) {

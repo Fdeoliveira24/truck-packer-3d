@@ -536,9 +536,10 @@ function normalizeFreeRects(rects) {
   );
 }
 
-function createFloorState(zones) {
+function createFloorState(zones, frontSurfaceFirst = false) {
   return {
     freeRects: normalizeFreeRects(zones.map((zone, index) => makeFreeRect(zone, index))),
+    frontSurfaceFirst: frontSurfaceFirst === true,
   };
 }
 
@@ -582,23 +583,27 @@ function occupyFloorSpace(floorState, placement) {
   floorState.freeRects = normalizeFreeRects(next);
 }
 
-function scoreFreeRectCandidate(candidate, loadFrontFirst, packed = []) {
+function scoreFloorSurface(aabb, loadFrontFirst, frontSurfaceFirst) {
+  const xPrimary = loadFrontFirst ? -aabb.max.x : aabb.min.x;
+  return frontSurfaceFirst
+    ? [xPrimary, aabb.min.y]
+    : [aabb.min.y, xPrimary];
+}
+
+function scoreFreeRectCandidate(candidate, loadFrontFirst, packed = [], frontSurfaceFirst = false) {
   const rect = candidate.freeRect;
   const leftoverX = Math.max(0, freeRectLength(rect) - candidate.dims.l);
   const leftoverZ = Math.max(0, freeRectWidth(rect) - candidate.dims.w);
   const wasteArea = Math.max(0, freeRectArea(rect) - candidate.dims.l * candidate.dims.w);
   const wallContacts = wallContactCount(candidate.aabb, candidate.zone, loadFrontFirst);
   const faceContacts = countFaceContacts(candidate.aabb, packed);
-  const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
   const contactScore = wallContacts + Math.min(8, faceContacts);
-  // Front-first floor fill (Phase B): after the lowest valid layer, the highest-X
-  // (front/nose) candidate wins before any wall-contact, tight-fit, leftover, or
-  // waste preference, so no rear/middle cell is taken while a valid front cell on
-  // the same layer is still open. Hard validity (containment, collision) is already
-  // filtered in findFloorPlacement before scoring.
+  // Front-first floor fill: Standard/Wheel Wells retain Phase B's lower-layer then
+  // high-X ordering. A true raised surface extending beyond truck.length switches
+  // only those Front Overhang candidates to high-X then layer (Phase C). Hard
+  // validity is filtered in findFloorPlacement before this score is considered.
   return [
-    candidate.aabb.min.y,
-    xPrimary,
+    ...scoreFloorSurface(candidate.aabb, loadFrontFirst, frontSurfaceFirst),
     -contactScore,
     Math.min(leftoverX, leftoverZ),
     wasteArea,
@@ -710,7 +715,12 @@ function findFloorPlacement(item, floorState, packed, loadFrontFirst, options = 
       if (requiredFloorY !== null && Math.abs(candidate.aabb.min.y - requiredFloorY) > CONTACT_EPS) continue;
       if (!isAabbContainedInZone(candidate.aabb, candidate.zone)) continue;
       if (collidesPacked(candidate.aabb, packed)) continue;
-      const score = scoreFreeRectCandidate(candidate, loadFrontFirst, packed);
+      const score = scoreFreeRectCandidate(
+        candidate,
+        loadFrontFirst,
+        packed,
+        floorState.frontSurfaceFirst
+      );
       if (!best || compareScore(score, bestScore) < 0) {
         best = { ...candidate, orientation };
         bestScore = score;
@@ -731,22 +741,17 @@ function getLaneOrientations(item) {
   });
 }
 
-function scoreLaneCandidate(candidate, orientation, loadFrontFirst) {
-  const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
+function scoreLaneCandidate(candidate, orientation, loadFrontFirst, frontSurfaceFirst = false) {
   const rectWaste = candidate.freeRect
     ? Math.max(0, freeRectArea(candidate.freeRect) - orientation.l * orientation.w)
     : 0;
-  // Front-first lane fill (Phase B): keep the lane's longest-orientation and
-  // lowest-layer preferences first, then the highest-X (front/nose) candidate wins
-  // before waste, side (minZ), or width — so long items load front-to-rear.
-  return [
-    -orientation.l,
-    candidate.aabb.min.y,
-    xPrimary,
-    rectWaste,
-    candidate.aabb.min.z,
-    orientation.w,
-  ];
+  // Phase B keeps lane length and the lowest layer ahead of high-X. Phase C moves
+  // the shared Front Overhang surface score ahead of lane length so a legal raised
+  // forward deck candidate cannot lose merely because its independent floor is high.
+  const surfaceScore = scoreFloorSurface(candidate.aabb, loadFrontFirst, frontSurfaceFirst);
+  return frontSurfaceFirst
+    ? [...surfaceScore, -orientation.l, rectWaste, candidate.aabb.min.z, orientation.w]
+    : [-orientation.l, ...surfaceScore, rectWaste, candidate.aabb.min.z, orientation.w];
 }
 
 function findLanePlacement(item, floorState, packed, loadFrontFirst) {
@@ -757,7 +762,12 @@ function findLanePlacement(item, floorState, packed, loadFrontFirst) {
     for (const candidate of buildFreeRectCandidates(orientation, floorState, loadFrontFirst, packed)) {
       if (!isAabbContainedInZone(candidate.aabb, candidate.zone)) continue;
       if (collidesPacked(candidate.aabb, packed)) continue;
-      const score = scoreLaneCandidate(candidate, orientation, loadFrontFirst);
+      const score = scoreLaneCandidate(
+        candidate,
+        orientation,
+        loadFrontFirst,
+        floorState.frontSurfaceFirst
+      );
       if (!best || compareScore(score, bestScore) < 0) {
         best = { ...candidate, orientation };
         bestScore = score;
@@ -905,12 +915,15 @@ function findRepeatedForwardWallCompletion(
     ...item,
     candidates: preferRepeatedOrientation(item, preferredOrientation),
   };
+  const placementOptions = floorState.frontSurfaceFirst
+    ? {}
+    : { floorY: proposedPlacement.aabb.min.y };
   const candidate = findFloorPlacement(
     completionItem,
     floorState,
     packed,
     loadFrontFirst,
-    { floorY: proposedPlacement.aabb.min.y }
+    placementOptions
   );
   if (!candidate) return null;
 
@@ -959,10 +972,10 @@ function placeRepeatedBatchFloor(group, orientation, floorState, packed, output,
         if (!isAabbContainedInZone(aabb, rect.zone)) continue;
         if (collidesPacked(aabb, packed)) continue;
 
-        // Phase B2C: before advancing this repeated grid farther rearward, let
-        // the production floor search use every legal orientation to finish a
-        // more-forward wall on this exact floor/deck layer. Repeat because a
-        // mixed-orientation wall can require more than one completion item.
+        // Before advancing this repeated grid farther rearward, let the production
+        // floor search use every legal orientation. B2C restricts this completion
+        // to the same layer; Phase C additionally permits a truly farther-forward
+        // raised overhang surface. Repeat because mixed walls can need several items.
         while (queue.length) {
           const completion = findRepeatedForwardWallCompletion(
             queue[0],
@@ -1322,13 +1335,13 @@ function scoreCompactionCandidate(aabb, zone, loadFrontFirst, others) {
   ];
 }
 
-function compactFloorPlacements(output, packed, zones, loadFrontFirst) {
+function compactFloorPlacements(output, packed, zones, loadFrontFirst, frontSurfaceFirst = false) {
   const compactable = packed.filter(placement =>
     !placement.lockedGrid &&
     placement.phase !== 'stack' &&
     isPlacementOnZoneFloor(placement.aabb, zones)
   );
-  if (!compactable.length) return rebuildFloorStateFromPacked(zones, packed);
+  if (!compactable.length) return rebuildFloorStateFromPacked(zones, packed, frontSurfaceFirst);
 
   let changed = false;
   const ordered = [...compactable].sort((a, b) => {
@@ -1377,7 +1390,7 @@ function compactFloorPlacements(output, packed, zones, loadFrontFirst) {
   if (changed) {
     writeOutputPlacements(output, packed);
   }
-  return rebuildFloorStateFromPacked(zones, packed);
+  return rebuildFloorStateFromPacked(zones, packed, frontSurfaceFirst);
 }
 
 function writeOutputPlacements(output, placements) {
@@ -1440,8 +1453,8 @@ function validatePackedPlacements(output, packed, zones) {
   return { accepted, rejected };
 }
 
-function rebuildFloorStateFromPacked(zones, packed) {
-  const floorState = createFloorState(zones);
+function rebuildFloorStateFromPacked(zones, packed, frontSurfaceFirst = false) {
+  const floorState = createFloorState(zones, frontSurfaceFirst);
   for (const placement of packed) {
     if (!isPlacementOnZoneFloor(placement.aabb, zones)) continue;
     occupyFloorSpace(floorState, placement);
@@ -1449,10 +1462,17 @@ function rebuildFloorStateFromPacked(zones, packed) {
   return floorState;
 }
 
-function repackRejectedPlacements(output, accepted, rejected, zones, loadFrontFirst) {
+function repackRejectedPlacements(
+  output,
+  accepted,
+  rejected,
+  zones,
+  loadFrontFirst,
+  frontSurfaceFirst = false
+) {
   if (!rejected.length) return { packed: accepted, rejected: [] };
   const repacked = [...accepted];
-  const floorState = rebuildFloorStateFromPacked(zones, repacked);
+  const floorState = rebuildFloorStateFromPacked(zones, repacked, frontSurfaceFirst);
   const stillRejected = [];
 
   writeOutputPlacements(output, repacked);
@@ -1502,7 +1522,13 @@ export function solveAutoPack(input = {}) {
   const items = rawItems.map(normalizeItem);
   const loadFrontFirst = input.loadFrontFirst === true || input.loadDirection === 'front_to_rear';
   const floorZones = sortZonesForFloor(zones, loadFrontFirst);
-  const floorState = createFloorState(floorZones);
+  // Phase C: only a raised usable surface extending beyond the truck's main
+  // high-X boundary changes floor/deck priority. Wheel-well raised zones remain
+  // inside truck.length, so Standard and Wheel Wells retain byte-identical scores.
+  const frontSurfaceFirst = loadFrontFirst && floorZones.some(zone =>
+    zone.min.y > CONTACT_EPS && zone.max.x > truck.length + FREE_RECT_EPS
+  );
+  const floorState = createFloorState(floorZones, frontSurfaceFirst);
   const packed = [];
 
   if (!truck.length || !truck.width || !truck.height || !floorZones.length) {
@@ -1556,7 +1582,13 @@ export function solveAutoPack(input = {}) {
     floorCount++;
   }
 
-  floorState.freeRects = compactFloorPlacements(output, packed, floorZones, loadFrontFirst).freeRects;
+  floorState.freeRects = compactFloorPlacements(
+    output,
+    packed,
+    floorZones,
+    loadFrontFirst,
+    frontSurfaceFirst
+  ).freeRects;
 
   const fillerQueue = [
     ...sortItemsForFloor(deferred),
@@ -1575,7 +1607,13 @@ export function solveAutoPack(input = {}) {
     fillerCount++;
   }
 
-  floorState.freeRects = compactFloorPlacements(output, packed, floorZones, loadFrontFirst).freeRects;
+  floorState.freeRects = compactFloorPlacements(
+    output,
+    packed,
+    floorZones,
+    loadFrontFirst,
+    frontSurfaceFirst
+  ).freeRects;
 
   let stackCount = 0;
   for (const item of sortItemsForStack(stackDeferred)) {
@@ -1600,7 +1638,8 @@ export function solveAutoPack(input = {}) {
     initialValidation.accepted,
     initialValidation.rejected,
     floorZones,
-    loadFrontFirst
+    loadFrontFirst,
+    frontSurfaceFirst
   );
   const finalValidation = validatePackedPlacements(output, repackedValidation.packed, floorZones, { stageRejected: false });
   if (finalValidation.rejected.length || repackedValidation.rejected.length) {

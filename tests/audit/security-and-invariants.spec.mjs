@@ -5,6 +5,7 @@ import fsSync from 'node:fs';
 import vm from 'node:vm';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
 
 const execFileAsync = promisify(execFile);
 
@@ -5545,12 +5546,14 @@ test('AUTO-PACK-A1-R6.1 solver keeps final validation gate for unsafe packed pla
 
 test('AUTO-PACK-A1-R6.3 validation rejects get a strict repack attempt before staging', async () => {
   const src = await fs.readFile(autoPackSolverPath, 'utf8');
-  assert.match(src, /function repackRejectedPlacements\(output, accepted, rejected, zones, loadFrontFirst\)/,
+  assert.match(src, /function repackRejectedPlacements\(\s*output,\s*accepted,\s*rejected,\s*zones,\s*loadFrontFirst,\s*frontSurfaceFirst = false\s*\)/,
     'solver must include a bounded repack pass for validation rejects');
   assert.match(src, /validatePackedPlacements\(output, packed, floorZones, \{ stageRejected: false \}\)/,
     'initial validation must identify rejected placements before staging them');
   assert.match(src, /repackRejectedPlacements\(\s*output,\s*initialValidation\.accepted,\s*initialValidation\.rejected,/,
     'validation rejects must flow through the repack helper');
+  assert.match(src, /repackRejectedPlacements\([\s\S]*?loadFrontFirst,\s*frontSurfaceFirst\s*\);/,
+    'validation repack must retain the active floor-surface priority');
   assert.match(src, /const floorPlacement = findFloorPlacement\(item, floorState, repacked, loadFrontFirst\);/,
     'repack must retry floor placement before staging rejected items');
   assert.match(src, /const stackPlacement = findStackPlacement\(item, zones, repacked, loadFrontFirst\);/,
@@ -5561,11 +5564,11 @@ test('AUTO-PACK-A1-R6.3 validation rejects get a strict repack attempt before st
 
 test('AUTO-PACK-A1-R6.3 floor compaction rebuilds free space before filler and stack phases', async () => {
   const src = await fs.readFile(autoPackSolverPath, 'utf8');
-  assert.match(src, /function compactFloorPlacements\(output, packed, zones, loadFrontFirst\)/,
+  assert.match(src, /function compactFloorPlacements\(output, packed, zones, loadFrontFirst, frontSurfaceFirst = false\)/,
     'solver must keep a dedicated floor compaction pass');
   assert.doesNotMatch(src, /function compactFloorPlacements[\s\S]*?\{\s*void output;\s*void packed;\s*void zones;\s*void loadFrontFirst;/,
     'floor compaction must not regress to the old no-op implementation');
-  assert.match(src, /floorState\.freeRects = compactFloorPlacements\(output, packed, floorZones, loadFrontFirst\)\.freeRects;/,
+  assert.match(src, /floorState\.freeRects = compactFloorPlacements\(\s*output,\s*packed,\s*floorZones,\s*loadFrontFirst,\s*frontSurfaceFirst\s*\)\.freeRects;/,
     'compaction must rebuild the free-space map before later placement phases use it');
   assert.match(src, /writeOutputPlacements\(output, packed\);/,
     'accepted compaction moves must be reflected in the solver output maps');
@@ -8269,9 +8272,10 @@ function phb2FloorCount(result, zones, Solver) {
   return count;
 }
 
-function phb2SequentialForwardViolation(Solver, result, zones, itemSpecsById) {
+function phb2SequentialForwardViolation(Solver, result, zones, itemSpecsById, options = {}) {
   const prior = [];
   const round = value => Math.round(value * 1e6) / 1e6;
+  const sameLayerOnly = options.sameLayerOnly !== false;
 
   for (const [id, position] of result.placements) {
     const dims = result.orientedDims.get(id);
@@ -8286,14 +8290,14 @@ function phb2SequentialForwardViolation(Solver, result, zones, itemSpecsById) {
     const caseId = itemSpec?.caseId || '';
     const advancesRearward = prior.some(placement =>
       placement.caseId === caseId &&
-      Math.abs(placement.aabb.min.y - aabb.min.y) <= 0.05 &&
+      (!sameLayerOnly || Math.abs(placement.aabb.min.y - aabb.min.y) <= 0.05) &&
       placement.aabb.max.x > aabb.max.x + 0.05
     );
 
     if (advancesRearward && itemSpec) {
       for (const orientation of Solver.buildOrientationCandidates(itemSpec.dims, itemSpec)) {
         for (const zone of zones) {
-          if (Math.abs(zone.min.y - aabb.min.y) > 0.05) continue;
+          if (sameLayerOnly && Math.abs(zone.min.y - aabb.min.y) > 0.05) continue;
           const xAnchors = new Set([zone.min.x, zone.max.x - orientation.l].map(round));
           const zAnchors = new Set([zone.min.z, zone.max.z - orientation.w].map(round));
           for (const placement of prior) {
@@ -8570,6 +8574,289 @@ test('PHASE-B2C sequential oracle, hard rules, and B2B animation hold for 100 id
       const repeat = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
       assert.equal(JSON.stringify([...repeat.placements]), placementSnapshot, `${label}: deterministic positions`);
       assert.equal(JSON.stringify([...repeat.rotations]), rotationSnapshot, `${label}: deterministic rotations`);
+    }
+  }
+});
+
+function phcResultBytes(result) {
+  return JSON.stringify({
+    placements: [...result.placements],
+    rotations: [...result.rotations],
+    orientedDims: [...result.orientedDims],
+    unpacked: result.unpacked,
+    phaseStats: result.phaseStats,
+    warnings: result.warnings,
+  });
+}
+
+function phcFloorTable(Solver, result, zones) {
+  const table = new Map();
+  for (const [id, position] of result.placements) {
+    const dims = result.orientedDims.get(id);
+    const aabb = Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
+    if (!zones.some(zone =>
+      Solver.isAabbContainedInAnyZone(aabb, [zone]) &&
+      Math.abs(aabb.min.y - zone.min.y) <= 0.05
+    )) continue;
+    const key = `${Math.round(aabb.min.y * 10) / 10}|${Math.round(aabb.max.x * 10) / 10}`;
+    table.set(key, (table.get(key) || 0) + 1);
+  }
+  return [...table].map(([surface, count]) => ({ surface, count }));
+}
+
+function phcFrontOverhangTruck() {
+  return {
+    length: 240,
+    width: 96,
+    height: 96,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 28.8, bonusWidth: 96, bonusHeight: 43.2 },
+  };
+}
+
+test('PHASE-C Front Overhang fills the raised forward deck before the main floor (24x18 × 6/20/40/100 and 42x10)', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const Engine = await import(`${autoPackEnginePath.href}?t=${Date.now()}-${Math.random()}`);
+  const truth = await threeOrientedTruth();
+  const truck = phcFrontOverhangTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const blockedZones = PackLib.getFrontBonusBlockedZones(truck);
+  const mainZone = zones.find(zone => zone.min.x === 0 && zone.min.y === 0);
+  const deckZone = zones.find(zone => zone.min.x === 240 && zone.min.y === 43.2);
+  assert.deepEqual(mainZone, {
+    min: { x: 0, y: 0, z: -48 }, max: { x: 240, y: 96, z: 48 },
+  }, 'real main-floor zone coordinates');
+  assert.deepEqual(deckZone, {
+    min: { x: 240, y: 43.2, z: -48 }, max: { x: 268.8, y: 96, z: 48 },
+  }, 'real raised-deck zone coordinates');
+
+  const fixtures = [
+    {
+      label: '24x18/6', count: 6, dims: { l: 24, w: 18, h: 16 },
+      expectedTable: [{ surface: '43.2|268.8', count: 5 }, { surface: '0|240', count: 1 }],
+    },
+    {
+      label: '24x18/20', count: 20, dims: { l: 24, w: 18, h: 16 },
+      expectedTable: [
+        { surface: '43.2|268.8', count: 4 }, { surface: '0|240', count: 4 },
+        { surface: '0|222', count: 4 }, { surface: '0|204', count: 4 },
+        { surface: '0|186', count: 4 },
+      ],
+    },
+    {
+      label: '24x18/40', count: 40, dims: { l: 24, w: 18, h: 16 },
+      expectedTable: [
+        { surface: '43.2|268.8', count: 4 }, { surface: '0|240', count: 4 },
+        { surface: '0|222', count: 4 }, { surface: '0|204', count: 4 },
+        { surface: '0|186', count: 4 }, { surface: '0|168', count: 4 },
+        { surface: '0|150', count: 4 }, { surface: '0|132', count: 4 },
+        { surface: '0|114', count: 4 }, { surface: '0|96', count: 4 },
+      ],
+    },
+    {
+      label: '24x18/100', count: 100, dims: { l: 24, w: 18, h: 16 },
+      expectedTable: [
+        { surface: '43.2|268.8', count: 4 }, { surface: '0|240', count: 4 },
+        { surface: '0|222', count: 4 }, { surface: '0|204', count: 4 },
+        { surface: '0|186', count: 4 }, { surface: '0|168', count: 4 },
+        { surface: '0|150', count: 4 }, { surface: '0|132', count: 4 },
+        { surface: '0|114', count: 4 }, { surface: '0|96', count: 4 },
+        { surface: '0|78', count: 4 }, { surface: '0|60', count: 4 },
+        { surface: '0|42', count: 4 }, { surface: '0|24', count: 4 },
+      ],
+    },
+    {
+      label: '42x10/100', count: 100, dims: { l: 42, w: 10, h: 16 },
+      expectedTable: [
+        { surface: '43.2|268.8', count: 2 }, { surface: '43.2|258.8', count: 2 },
+        { surface: '0|240', count: 3 }, { surface: '0|230', count: 2 },
+        { surface: '0|220', count: 2 }, { surface: '0|210', count: 2 },
+        { surface: '0|200', count: 2 }, { surface: '0|198', count: 1 },
+        { surface: '0|190', count: 2 }, { surface: '0|180', count: 2 },
+        { surface: '0|170', count: 2 }, { surface: '0|160', count: 2 },
+        { surface: '0|156', count: 1 }, { surface: '0|150', count: 2 },
+        { surface: '0|140', count: 2 }, { surface: '0|130', count: 2 },
+        { surface: '0|120', count: 2 }, { surface: '0|114', count: 1 },
+        { surface: '0|110', count: 2 }, { surface: '0|100', count: 2 },
+        { surface: '0|90', count: 2 }, { surface: '0|80', count: 2 },
+        { surface: '0|72', count: 1 }, { surface: '0|70', count: 2 },
+        { surface: '0|60', count: 2 }, { surface: '0|50', count: 2 },
+        { surface: '0|40', count: 2 }, { surface: '0|30', count: 2 },
+        { surface: '0|20', count: 2 }, { surface: '0|10', count: 2 },
+      ],
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    const itemSpec = {
+      caseId: 'A', dims: fixture.dims, orientationLock: 'any', canFlip: false,
+      weight: 30, maxStackCount: 2,
+    };
+    const items = Array.from({ length: fixture.count }, (_, index) => ({ ...itemSpec, instanceId: `i${index}` }));
+    const specsById = new Map(items.map(item => [item.instanceId, item]));
+    const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    const placementSnapshot = JSON.stringify([...result.placements]);
+    const rotationSnapshot = JSON.stringify([...result.rotations]);
+
+    assert.deepEqual(phcFloorTable(Solver, result, zones), fixture.expectedTable,
+      `${fixture.label}: exact deck/main-floor load-wall table`);
+    assert.equal(phb2SequentialForwardViolation(Solver, result, zones, specsById), null,
+      `${fixture.label}: each same-layer wall completes before moving rearward`);
+    assert.equal(phb2SequentialForwardViolation(
+      Solver, result, zones, specsById, { sameLayerOnly: false }
+    ), null, `${fixture.label}: no main-floor placement skips a legal forward-deck candidate`);
+    assert.deepEqual(result.unpacked, [], `${fixture.label}: every case resolves`);
+    phb2AssertSafe(Solver, PackLib, result, zones, fixture.label);
+    phb2AssertDirectStackLimit(Solver, result, 2, fixture.label);
+
+    const legal = Solver.buildOrientationCandidates(itemSpec.dims, itemSpec);
+    for (const [id, dims] of result.orientedDims) {
+      const rotation = result.rotations.get(id);
+      const position = result.placements.get(id);
+      const aabb = Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
+      assert.equal(zones.filter(zone => Solver.isAabbContainedInAnyZone(aabb, [zone])).length, 1,
+        `${fixture.label}: ${id} is wholly contained in one compatible zone (no seam crossing)`);
+      assert.equal(blockedZones.some(zone => Solver.aabbsOverlap(aabb, zone)), false,
+        `${fixture.label}: ${id} never intersects the cab void`);
+      assert.deepEqual(dims, truth({
+        length: fixture.dims.l, width: fixture.dims.w, height: fixture.dims.h,
+      }, rotation), `${fixture.label}: ${id} THREE dimensions`);
+      assert.ok(legal.some(candidate =>
+        candidate.l === dims.length && candidate.w === dims.width && candidate.h === dims.height &&
+        candidate.rotation.x === rotation.x && candidate.rotation.y === rotation.y && candidate.rotation.z === rotation.z
+      ), `${fixture.label}: ${id} orientation policy`);
+    }
+
+    const caseIds = new Map(items.map(item => [item.instanceId, item.caseId]));
+    const animationOptions = { frontSurfaceFirst: true, zones };
+    const batches = Engine.buildPlacementAnimationBatches(
+      result.placements, result.orientedDims, caseIds, 4, animationOptions
+    );
+    const animationRecords = phb2AssertAnimationBatches(
+      Solver, result, caseIds, batches, `${fixture.label}/animation`
+    );
+    const zoneFloorRecords = animationRecords.filter(record => zones.some(zone =>
+      Solver.isAabbContainedInAnyZone(record.aabb, [zone]) &&
+      Math.abs(record.aabb.min.y - zone.min.y) <= 0.05
+    ));
+    for (let index = 1; index < zoneFloorRecords.length; index++) {
+      assert.ok(zoneFloorRecords[index].aabb.max.x <= zoneFloorRecords[index - 1].aabb.max.x + 0.05,
+        `${fixture.label}: animation loads deck/main zone floors high-X first`);
+    }
+    assert.equal(JSON.stringify([...result.placements]), placementSnapshot,
+      `${fixture.label}: animation does not mutate solver placements`);
+    assert.equal(JSON.stringify([...result.rotations]), rotationSnapshot,
+      `${fixture.label}: animation does not mutate solver rotations`);
+
+    const secondResult = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    const secondBatches = Engine.buildPlacementAnimationBatches(
+      secondResult.placements, secondResult.orientedDims, caseIds, 4, animationOptions
+    );
+    assert.equal(JSON.stringify([...secondResult.placements]), placementSnapshot,
+      `${fixture.label}: second AutoPack has identical final placements`);
+    assert.equal(JSON.stringify(secondBatches), JSON.stringify(batches),
+      `${fixture.label}: second AutoPack has identical animation order`);
+  }
+});
+
+test('PHASE-C ordinary, filler, forced-lane, and mixed-fit cargo use only valid Front Overhang surfaces', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = phcFrontOverhangTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const fixtures = [
+    { label: 'ordinary', item: { instanceId: 'ordinary', caseId: 'ordinary', dims: { l: 24, w: 18, h: 16 }, weight: 30 } },
+    { label: 'filler', item: { instanceId: 'filler', caseId: 'filler', dims: { l: 20, w: 10, h: 10 }, weight: 20 } },
+    { label: 'forced-lane', item: { instanceId: 'lane', caseId: 'lane', dims: { l: 24, w: 18, h: 16 }, weight: 30, laneItem: true } },
+  ];
+  for (const fixture of fixtures) {
+    const item = { orientationLock: 'any', canFlip: false, ...fixture.item };
+    const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: [item] });
+    const position = result.placements.get(item.instanceId);
+    const dims = result.orientedDims.get(item.instanceId);
+    const aabb = Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
+    assert.ok(aabb.min.x >= 240 - 0.05 && Math.abs(aabb.min.y - 43.2) <= 0.05,
+      `${fixture.label}: eligible cargo uses the raised forward deck`);
+    assert.equal(PackLib.isAabbContainedInAnyZone(aabb, zones), true, `${fixture.label}: contained in one usable zone`);
+  }
+
+  const repeatedItems = Array.from({ length: 8 }, (_, index) => ({
+    instanceId: `repeated${index}`, caseId: 'repeated', dims: { l: 42, w: 10, h: 16 },
+    orientationLock: 'any', canFlip: false, weight: 30,
+  }));
+  const repeated = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: repeatedItems });
+  assert.deepEqual(phcFloorTable(Solver, repeated, zones), [
+    { surface: '43.2|268.8', count: 2 },
+    { surface: '43.2|258.8', count: 2 },
+    { surface: '0|240', count: 4 },
+  ], 'repeated-grid cross-surface gate exhausts the deck before its main-floor grid');
+  assert.equal(phb2SequentialForwardViolation(
+    Solver,
+    repeated,
+    zones,
+    new Map(repeatedItems.map(item => [item.instanceId, item])),
+    { sameLayerOnly: false }
+  ), null, 'repeated-grid route never skips a legal raised-deck candidate');
+
+  const deckFit = {
+    caseId: 'fit', dims: { l: 24, w: 18, h: 16 }, orientationLock: 'any', canFlip: false,
+    weight: 100, maxStackCount: 2,
+  };
+  const deckTooTall = {
+    caseId: 'tall', dims: { l: 24, w: 18, h: 60 }, orientationLock: 'upright', canFlip: false,
+    weight: 30, maxStackCount: 2,
+  };
+  const items = [
+    ...Array.from({ length: 3 }, (_, index) => ({ ...deckFit, instanceId: `fit${index}` })),
+    ...Array.from({ length: 3 }, (_, index) => ({ ...deckTooTall, instanceId: `tall${index}` })),
+  ];
+  const mixed = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  for (const id of ['fit0', 'fit1', 'fit2']) {
+    const pos = mixed.placements.get(id); const dims = mixed.orientedDims.get(id);
+    const aabb = Solver.getAabb(pos, { l: dims.length, w: dims.width, h: dims.height });
+    assert.ok(aabb.min.x >= 240 - 0.05 && Math.abs(aabb.min.y - 43.2) <= 0.05,
+      `${id}: deck-compatible case uses deck`);
+  }
+  for (const id of ['tall0', 'tall1', 'tall2']) {
+    const pos = mixed.placements.get(id); const dims = mixed.orientedDims.get(id);
+    const aabb = Solver.getAabb(pos, { l: dims.length, w: dims.width, h: dims.height });
+    assert.ok(aabb.max.x <= 240 + 0.05 && Math.abs(aabb.min.y) <= 0.05,
+      `${id}: case too tall for deck continues on main floor`);
+  }
+  phb2AssertSafe(Solver, PackLib, mixed, zones, 'mixed deck fit/too tall');
+});
+
+test('PHASE-C Standard and Wheel Wells solver bytes remain identical to the 1782d6b baseline', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const baselines = new Map([
+    ['rect/24x18/6', '044feae3a855bdde870013be934591e0cda21562eb9fc634791ba9b839ecff03'],
+    ['rect/24x18/20', '0561b56233172e29db53116236e717433123a1a7ec83f921bf85647e278abcc7'],
+    ['rect/24x18/40', '58568e03af8882cba8bb32e89142f6c84954a2be9cc921703ac1880d656efa56'],
+    ['rect/24x18/100', '9dfc1aae9adbeb10f8ebd8eef24670b5a29a2074cbcdf50c2592bf52028c2b80'],
+    ['rect/42x10/100', '72718b5ace24ee5067890fec17ba8a6604a2b9800d185d7beccb5ce142ad73ca'],
+    ['wheelWells/24x18/6', '72ac801a94878f2935ef09d600c66bea768b819e80593831c4c60b7c1d0809ce'],
+    ['wheelWells/24x18/20', '0561b56233172e29db53116236e717433123a1a7ec83f921bf85647e278abcc7'],
+    ['wheelWells/24x18/40', 'f50bbb6728343bc36bcbb04e92ff238831236c7b5720dc32d9145508930275ed'],
+    ['wheelWells/24x18/100', 'e3921f538d86db7625ba6331422c0422a3c42913b9daed1a1c0694d34ffba400'],
+    ['wheelWells/42x10/100', '01f31ede8f69d93424cace281466a1c4770acb4e2e8a3ec49067fe395fd51ffa'],
+  ]);
+  const dimensionFixtures = [
+    { label: '24x18', dims: { l: 24, w: 18, h: 16 }, counts: [6, 20, 40, 100] },
+    { label: '42x10', dims: { l: 42, w: 10, h: 16 }, counts: [100] },
+  ];
+  for (const shapeMode of ['rect', 'wheelWells']) {
+    for (const fixture of dimensionFixtures) {
+      for (const count of fixture.counts) {
+        const truck = { length: 240, width: 96, height: 96, shapeMode };
+        const zones = PackLib.getTrailerUsableZones(truck);
+        const items = Array.from({ length: count }, (_, index) => ({
+          instanceId: `i${index}`, caseId: 'A', dims: fixture.dims,
+          orientationLock: 'any', canFlip: false, weight: 30, maxStackCount: 2,
+        }));
+        const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+        const hash = createHash('sha256').update(phcResultBytes(result)).digest('hex');
+        assert.equal(hash, baselines.get(`${shapeMode}/${fixture.label}/${count}`),
+          `${shapeMode}/${fixture.label}/${count}: byte-equivalent to 1782d6b`);
+      }
     }
   }
 });

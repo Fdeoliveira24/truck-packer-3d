@@ -591,12 +591,17 @@ function scoreFreeRectCandidate(candidate, loadFrontFirst, packed = []) {
   const faceContacts = countFaceContacts(candidate.aabb, packed);
   const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
   const contactScore = wallContacts + Math.min(8, faceContacts);
+  // Front-first floor fill (Phase B): after the lowest valid layer, the highest-X
+  // (front/nose) candidate wins before any wall-contact, tight-fit, leftover, or
+  // waste preference, so no rear/middle cell is taken while a valid front cell on
+  // the same layer is still open. Hard validity (containment, collision) is already
+  // filtered in findFloorPlacement before scoring.
   return [
     candidate.aabb.min.y,
+    xPrimary,
     -contactScore,
     Math.min(leftoverX, leftoverZ),
     wasteArea,
-    xPrimary,
     leftoverZ,
     candidate.aabb.min.z,
     leftoverX,
@@ -729,12 +734,15 @@ function scoreLaneCandidate(candidate, orientation, loadFrontFirst) {
   const rectWaste = candidate.freeRect
     ? Math.max(0, freeRectArea(candidate.freeRect) - orientation.l * orientation.w)
     : 0;
+  // Front-first lane fill (Phase B): keep the lane's longest-orientation and
+  // lowest-layer preferences first, then the highest-X (front/nose) candidate wins
+  // before waste, side (minZ), or width — so long items load front-to-rear.
   return [
     -orientation.l,
     candidate.aabb.min.y,
+    xPrimary,
     rectWaste,
     candidate.aabb.min.z,
-    xPrimary,
     orientation.w,
   ];
 }

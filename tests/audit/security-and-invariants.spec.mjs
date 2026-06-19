@@ -8072,6 +8072,144 @@ test('RECON runtime matrix covers 24 geometry/visibility fixtures with safe fina
   assert.equal(fixtureCount, 24, 'minimum runtime matrix contains 24 distinct fixtures');
 });
 
+// ---------------------------------------------------------------------------
+// PHASE B: front-first ordinary floor and long-item lane placement.
+// scoreFreeRectCandidate and scoreLaneCandidate now rank the highest-X (front/
+// nose) candidate ahead of wall-contact / tight-fit / leftover / waste / side
+// preferences (after the hard layer key). High +X is the truck nose.
+// ---------------------------------------------------------------------------
+
+const PHB_DIMS = { length: 24, width: 18, height: 16 };
+async function phbSolverModules() {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  return {
+    Solver: await import(`${autoPackSolverPath.href}${stamp}`),
+    PackLib: await import(`${packLibraryPath.href}${stamp}`),
+  };
+}
+function phbPlaced(Solver, res, dims) {
+  return [...res.placements].map(([id, pos]) => {
+    const od = res.orientedDims.get(id);
+    return { id, pos, od, minY: pos.y - od.height / 2, maxY: pos.y + od.height / 2, aabb: Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height }) };
+  });
+}
+function phbOverlapXZ(a, b) {
+  return Math.abs(a.pos.x - b.pos.x) < (a.od.length / 2 + b.od.length / 2) - 0.01 &&
+         Math.abs(a.pos.z - b.pos.z) < (a.od.width / 2 + b.od.width / 2) - 0.01;
+}
+
+test('PHASE-B front-first floor: identical boxes fill complete front rows before a partial rear row (Std/WW/FrontOverhang × counts)', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truth = await threeOrientedTruth();
+  const report = [];
+  for (const shapeMode of ['rect', 'wheelWells', 'frontBonus']) {
+    for (const n of [6, 40, 120]) {
+      const truck = { length: 240, width: 96, height: 96, shapeMode };
+      const zones = PackLib.getTrailerUsableZones(truck);
+      const usableMaxX = Math.max(...zones.map(z => z.max.x));
+      const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: Array.from({ length: n }, (_, i) => ({ instanceId: `i${i}`, caseId: 'c', dims: { l: 24, w: 18, h: 16 }, shape: 'box', orientationLock: 'any', canFlip: false, weight: 30 })) });
+      const P = phbPlaced(Solver, res, PHB_DIMS);
+      assert.ok(P.length > 0, `${shapeMode}/${n}: packs`);
+      // Safety + THREE consistency.
+      for (let i = 0; i < P.length; i++) for (let j = i + 1; j < P.length; j++) assert.equal(Solver.aabbsOverlap(P[i].aabb, P[j].aabb), false, `${shapeMode}/${n}: no overlap`);
+      for (const p of P) {
+        assert.equal(PackLib.isAabbContainedInAnyZone(p.aabb, zones), true, `${shapeMode}/${n}: contained`);
+        const t = truth(PHB_DIMS, res.rotations.get(p.id));
+        assert.deepEqual({ l: p.od.length, w: p.od.width, h: p.od.height }, { l: t.length, w: t.width, h: t.height }, `${shapeMode}/${n}: THREE dims`);
+        if (p.minY > 0.5) {
+          const supports = P.filter(s => s !== p && Math.abs(s.maxY - p.minY) < 0.5 && phbOverlapXZ(p, s)).map(s => s.aabb);
+          assert.ok(PackLib.computeSupportFraction(p.aabb, supports, 0.05) >= PackLib.MIN_SUPPORT_FRACTION, `${shapeMode}/${n}: supported`);
+        }
+      }
+      // Floor layer front-first.
+      const floor = P.filter(p => p.minY < 0.5);
+      const byX = {}; for (const p of floor) { const k = Math.round(p.pos.x); byX[k] = (byX[k] || 0) + 1; }
+      const levels = Object.keys(byX).map(Number).sort((a, b) => b - a); // front (high x) first
+      const counts = levels.map(x => byX[x]);
+      // Nose occupied: the front-most floor item reaches the usable front edge.
+      assert.ok(usableMaxX - Math.max(...floor.map(p => p.pos.x + p.od.length / 2)) <= 0.5, `${shapeMode}/${n}: the nose (front edge) is occupied`);
+      // first-10 placement X (front->rear) for the report.
+      const first10 = [...P].map(p => p.pos.x).sort((a, b) => b - a).slice(0, 10).map(x => Math.round(x));
+      report.push(`${shapeMode}/${n}: packed=${P.length} first10X=[${first10.join(',')}] floorRows(x:count)=${levels.map((x, i) => `${x}:${counts[i]}`).join(' ')}`);
+      if (shapeMode === 'rect' || shapeMode === 'frontBonus') {
+        // Uniform full-width zone: every front row is FULL; only the rear-most may be partial.
+        const maxCount = Math.max(...counts);
+        assert.ok(counts.slice(0, -1).every(c => c === maxCount), `${shapeMode}/${n}: all front floor rows are full before a partial rear row (front-first)`);
+      } else {
+        // Wheel Wells: the full-width front zone (x beyond the wells) fills before the narrow middle.
+        const frontZoneItems = floor.filter(p => p.pos.x - p.od.length / 2 >= 144 - 0.5).length;
+        const narrowItems = floor.filter(p => p.pos.x < 144).length;
+        if (narrowItems > 0) assert.ok(frontZoneItems >= 4, `${shapeMode}/${n}: the full-width front zone is used before the narrow middle`);
+      }
+    }
+  }
+  // Determinism (high count, wheelWells).
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const mk = () => Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: Array.from({ length: 80 }, (_, i) => ({ instanceId: `i${i}`, caseId: 'c', dims: { l: 24, w: 18, h: 16 }, shape: 'box', orientationLock: 'any', canFlip: false, weight: 30 })) });
+  assert.equal(JSON.stringify([...mk().placements]), JSON.stringify([...mk().placements]), 'floor placement is deterministic on repeat');
+  // Surface the X report in the assertion message of a always-true check (visible on -v).
+  assert.ok(report.length === 9, `front-first floor X report:\n  ${report.join('\n  ')}`);
+});
+
+test('PHASE-B front-first lane: long items load front-to-rear; a 4th lane fills an open front z-lane instead of the rear', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truth = await threeOrientedTruth();
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  // 4 long lane items (120x10x10) all fit width-wise at the front (4 z-lanes in 96in).
+  const items = Array.from({ length: 4 }, (_, i) => ({ instanceId: `L${i}`, caseId: 'c', dims: { l: 120, w: 10, h: 10 }, shape: 'box', orientationLock: 'upright', canFlip: false, laneItem: true, weight: 30 }));
+  const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  assert.equal(res.placements.size, 4, 'all four lane items pack');
+  const P = phbPlaced(Solver, res, { length: 120, width: 10, height: 10 });
+  // Front-first: every lane item shares the same front x (none pushed to the rear
+  // while a front z-lane is open) — the Phase B fix (was: 4th lane at the rear).
+  const xs = P.map(p => Math.round(p.pos.x));
+  assert.equal(new Set(xs).size, 1, `all lane items share the front x-row (front-first), got ${xs.join(',')}`);
+  assert.ok(Math.max(...P.map(p => p.pos.x + p.od.length / 2)) >= 240 - 0.5, 'lane row reaches the nose');
+  for (let i = 0; i < P.length; i++) for (let j = i + 1; j < P.length; j++) assert.equal(Solver.aabbsOverlap(P[i].aabb, P[j].aabb), false, 'no lane overlap');
+  for (const p of P) {
+    assert.equal(PackLib.isAabbContainedInAnyZone(p.aabb, zones), true, 'lane contained');
+    const t = truth({ length: 120, width: 10, height: 10 }, res.rotations.get(p.id));
+    assert.deepEqual({ l: p.od.length, w: p.od.width, h: p.od.height }, { l: t.length, w: t.width, h: t.height }, 'lane THREE dims');
+  }
+  // Deterministic.
+  const res2 = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  assert.equal(JSON.stringify([...res.placements]), JSON.stringify([...res2.placements]), 'lane placement deterministic');
+});
+
+test('PHASE-B lane Automatic / Always / Never classify and place without regressions', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  for (const lane of [null, true, false]) {
+    const items = Array.from({ length: 3 }, (_, i) => ({ instanceId: `x${i}`, caseId: 'c', dims: { l: 120, w: 10, h: 10 }, shape: 'box', orientationLock: 'upright', canFlip: false, laneItem: lane, weight: 30 }));
+    const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    assert.equal(res.placements.size, 3, `lane=${lane}: all pack`);
+    const P = phbPlaced(Solver, res, { length: 120, width: 10, height: 10 });
+    assert.ok(Math.max(...P.map(p => p.pos.x + p.od.length / 2)) >= 240 - 0.5, `lane=${lane}: front-loaded (nose used)`);
+    for (let i = 0; i < P.length; i++) for (let j = i + 1; j < P.length; j++) assert.equal(Solver.aabbsOverlap(P[i].aabb, P[j].aabb), false, `lane=${lane}: no overlap`);
+    for (const p of P) assert.equal(PackLib.isAabbContainedInAnyZone(p.aabb, zones), true, `lane=${lane}: contained`);
+  }
+  // lane=true is a LANE_ITEM; false/null go through ordinary floor — both front-loaded.
+  assert.equal(Solver.classifyAutoPackItem({ dims: { l: 120, w: 10, h: 10 }, laneItem: true, orientationLock: 'upright' }), 'LANE_ITEM', 'Always → lane phase');
+  assert.notEqual(Solver.classifyAutoPackItem({ dims: { l: 120, w: 10, h: 10 }, laneItem: false, orientationLock: 'upright' }), 'LANE_ITEM', 'Never → ordinary floor');
+});
+
+test('PHASE-B tighter rear vs open front: front wins; no rear/middle cell taken while a front cell is open', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  // A handful of identical boxes that do NOT fill the front row: every placed
+  // floor item must sit in the single front-most row (no rear/middle cell taken).
+  const items = Array.from({ length: 3 }, (_, i) => ({ instanceId: `b${i}`, caseId: 'c', dims: { l: 24, w: 18, h: 16 }, shape: 'box', orientationLock: 'any', canFlip: false, weight: 30 }));
+  const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const P = phbPlaced(Solver, res, PHB_DIMS).filter(p => p.minY < 0.5);
+  const xs = P.map(p => Math.round(p.pos.x));
+  assert.equal(new Set(xs).size, 1, `a partial floor fills one front row only (no rear/middle cell while front open), got x=${xs.join(',')}`);
+  assert.ok(Math.max(...P.map(p => p.pos.x + p.od.length / 2)) >= 240 - 0.5, 'the front row is at the nose');
+});
+
 test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when tweens stop ticking', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
   const tweenStart = src.indexOf('function tweenInstanceToPosition(instanceId, positionInches, duration');

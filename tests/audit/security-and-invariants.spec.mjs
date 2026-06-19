@@ -5556,7 +5556,7 @@ test('AUTO-PACK-A1-R6.3 validation rejects get a strict repack attempt before st
     'validation repack must retain the active floor-surface priority');
   assert.match(src, /const floorPlacement = findFloorPlacement\(item, floorState, repacked, loadFrontFirst\);/,
     'repack must retry floor placement before staging rejected items');
-  assert.match(src, /const stackPlacement = findStackPlacement\(item, zones, repacked, loadFrontFirst\);/,
+  assert.match(src, /const stackPlacement = findStackPlacement\(\s*item,\s*zones,\s*repacked,\s*loadFrontFirst,\s*frontSurfaceFirst\s*\);/,
     'repack must retry safe stack placement before staging rejected items');
   assert.match(src, /stageRejectedPlacements\(output, \[\.\.\.staged\.values\(\)\]\);/,
     'only items that still fail validation or repack should be staged');
@@ -8859,6 +8859,239 @@ test('PHASE-C Standard and Wheel Wells solver bytes remain identical to the 1782
       }
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// PHASE D: global group continuity for real Front Overhang layouts. Matching
+// cargo below the repeated-batch threshold must not inherit alternating input
+// order across floor rows, lanes, surfaces, or stack layers. Hard validity and
+// Phase C's high-X surface priority remain ahead of these quality tie-breakers.
+// ---------------------------------------------------------------------------
+function phdAlternatingItems(countA, countB, overrides = {}) {
+  const items = [];
+  const count = Math.max(countA, countB);
+  for (let index = 0; index < count; index++) {
+    if (index < countA) {
+      items.push({
+        instanceId: `A${index}`, caseId: 'A', dims: { l: 24, w: 18, h: 16 },
+        orientationLock: 'any', canFlip: false, weight: 30, maxStackCount: 2,
+        ...overrides,
+      });
+    }
+    if (index < countB) {
+      items.push({
+        instanceId: `B${index}`, caseId: 'B', dims: { l: 24, w: 18, h: 16 },
+        orientationLock: 'any', canFlip: false, weight: 30, maxStackCount: 2,
+        ...overrides,
+      });
+    }
+  }
+  return items;
+}
+
+function phdSpatialRows(Solver, result, items) {
+  const itemById = new Map(items.map(item => [item.instanceId, item]));
+  const rows = new Map();
+  const records = [...result.placements].map(([id, position]) => {
+    const dims = result.orientedDims.get(id);
+    const aabb = Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
+    return {
+      id,
+      caseId: itemById.get(id)?.caseId || '',
+      aabb,
+      orientation: `${dims.length}x${dims.width}x${dims.height}`,
+    };
+  }).sort((a, b) =>
+    b.aabb.max.x - a.aabb.max.x ||
+    a.aabb.min.y - b.aabb.min.y ||
+    a.aabb.min.z - b.aabb.min.z ||
+    a.id.localeCompare(b.id)
+  );
+
+  for (const record of records) {
+    const key = `${Math.round(record.aabb.min.y * 10) / 10}|${Math.round(record.aabb.max.x * 10) / 10}`;
+    if (!rows.has(key)) rows.set(key, []);
+    rows.get(key).push(record);
+  }
+  return [...rows].map(([row, entries]) => ({
+    row,
+    cases: entries.map(entry => entry.caseId).join(''),
+    orientations: entries.map(entry => entry.orientation),
+  }));
+}
+
+function phdSplitRunCount(rows) {
+  const sequence = rows.flatMap(row => [...row.cases]);
+  const runs = sequence.filter((caseId, index) => index === 0 || caseId !== sequence[index - 1]);
+  return Math.max(0, runs.length - new Set(sequence).size);
+}
+
+function phdRowFragmentCount(rows) {
+  return rows.reduce((total, row) => {
+    const sequence = [...row.cases];
+    const runs = sequence.filter((caseId, index) => index === 0 || caseId !== sequence[index - 1]);
+    return total + Math.max(0, runs.length - new Set(sequence).size);
+  }, 0);
+}
+
+test('PHASE-D stable global grouping removes avoidable A/B row fragments and preserves Phase C progression', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const Engine = await import(`${autoPackEnginePath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = phcFrontOverhangTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = phdAlternatingItems(7, 7);
+  const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const rows = phdSpatialRows(Solver, result, items);
+  const beforeRows = [
+    { row: '43.2|268.8', cases: 'ABABA' },
+    { row: '0|240', cases: 'BABA' },
+    { row: '0|222', cases: 'BABA' },
+    { row: '0|204', cases: 'B' },
+  ];
+
+  assert.equal(result.placements.size, 14, 'grouping does not reduce placed quantity');
+  assert.deepEqual(rows.map(row => ({ row: row.row, cases: row.cases })), [
+    { row: '43.2|268.8', cases: 'AAAAA' },
+    { row: '0|240', cases: 'AABB' },
+    { row: '0|222', cases: 'BBBB' },
+    { row: '0|204', cases: 'B' },
+  ], 'matching cases form stable contiguous deck/main-floor blocks');
+  assert.ok(phdSplitRunCount(rows) < phdSplitRunCount(beforeRows),
+    'complete-layout split runs improve from the recorded pre-Phase-D baseline');
+  assert.ok(phdRowFragmentCount(rows) < phdRowFragmentCount(beforeRows),
+    'within-row fragments improve from the recorded pre-Phase-D baseline');
+  assert.deepEqual(rows.filter(row => row.row.startsWith('0|')).map(row => row.cases.length), [4, 4, 1],
+    'full main-floor rows precede the partial final row');
+
+  const specsById = new Map(items.map(item => [item.instanceId, item]));
+  assert.equal(phb2SequentialForwardViolation(
+    Solver, result, zones, specsById, { sameLayerOnly: false }
+  ), null, 'group continuity never skips a legal more-forward surface candidate');
+  phb2AssertSafe(Solver, PackLib, result, zones, 'Phase D grouped floor');
+  phb2AssertDirectStackLimit(Solver, result, 2, 'Phase D grouped floor');
+
+  const snapshot = phcResultBytes(result);
+  const reversed = Solver.solveAutoPack({
+    truck, zones, loadFrontFirst: true, items: [...items].reverse(),
+  });
+  const repeated = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  assert.equal(phcResultBytes(reversed), snapshot,
+    'equal-priority group layout is independent of alternating input order');
+  assert.equal(phcResultBytes(repeated), snapshot, 'repeated AutoPack is byte-deterministic');
+
+  const caseIds = new Map(items.map(item => [item.instanceId, item.caseId]));
+  const placementSnapshot = JSON.stringify([...result.placements]);
+  const batches = Engine.buildPlacementAnimationBatches(
+    result.placements,
+    result.orientedDims,
+    caseIds,
+    4,
+    { frontSurfaceFirst: true, zones }
+  );
+  phb2AssertAnimationBatches(Solver, result, caseIds, batches, 'Phase D grouped floor animation');
+  assert.equal(JSON.stringify([...result.placements]), placementSnapshot,
+    'group-aware animation does not mutate the solver map');
+});
+
+test('PHASE-D groups equal-priority lanes and keeps equal-capacity row orientations consistent', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const laneTruck = phcFrontOverhangTruck();
+  const laneZones = PackLib.getTrailerUsableZones(laneTruck);
+  const laneItems = phdAlternatingItems(3, 3, {
+    dims: { l: 120, w: 10, h: 10 }, orientationLock: 'upright', laneItem: true,
+  });
+  const laneResult = Solver.solveAutoPack({
+    truck: laneTruck, zones: laneZones, loadFrontFirst: true, items: laneItems,
+  });
+  const laneRows = phdSpatialRows(Solver, laneResult, laneItems);
+  assert.deepEqual(laneRows.map(row => row.cases), ['AAABBB'],
+    'matching long cargo forms one contiguous front lane wall');
+  phb2AssertSafe(Solver, PackLib, laneResult, laneZones, 'Phase D grouped lanes');
+
+  const rotationTruck = {
+    length: 120, width: 50, height: 72, shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 28.8, bonusWidth: 50, bonusHeight: 30 },
+  };
+  const rotationZones = PackLib.getTrailerUsableZones(rotationTruck);
+  const rotationItems = Array.from({ length: 6 }, (_, index) => ({
+    instanceId: `R${index}`, caseId: 'R', dims: { l: 24, w: 18, h: 16 },
+    orientationLock: 'any', canFlip: false, weight: 30,
+  }));
+  const rotationResult = Solver.solveAutoPack({
+    truck: rotationTruck, zones: rotationZones, loadFrontFirst: true, items: rotationItems,
+  });
+  const rotationRows = phdSpatialRows(Solver, rotationResult, rotationItems);
+  for (const row of rotationRows) {
+    assert.equal(new Set(row.orientations).size, 1,
+      `${row.row}: equal-capacity row retains one orientation`);
+  }
+  phb2AssertSafe(Solver, PackLib, rotationResult, rotationZones, 'Phase D orientation continuity');
+
+  const mixedItems = [];
+  for (let index = 0; index < 3; index++) {
+    mixedItems.push({
+      instanceId: `fit${index}`, caseId: 'fit', dims: { l: 24, w: 18, h: 16 },
+      orientationLock: 'any', canFlip: false, weight: 100, maxStackCount: 2,
+    });
+    mixedItems.push({
+      instanceId: `tall${index}`, caseId: 'tall', dims: { l: 24, w: 18, h: 60 },
+      orientationLock: 'upright', canFlip: false, weight: 30, maxStackCount: 2,
+    });
+  }
+  const mixed = Solver.solveAutoPack({
+    truck: laneTruck, zones: laneZones, loadFrontFirst: true, items: mixedItems,
+  });
+  for (const [id, position] of mixed.placements) {
+    const dims = mixed.orientedDims.get(id);
+    const aabb = Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
+    if (id.startsWith('fit')) {
+      assert.ok(aabb.min.x >= 240 - 0.05 && Math.abs(aabb.min.y - 43.2) <= 0.05,
+        `${id}: grouping preserves the raised-deck priority`);
+    } else {
+      assert.ok(aabb.max.x <= 240 + 0.05 && Math.abs(aabb.min.y) <= 0.05,
+        `${id}: grouping never overrides the deck height limit`);
+    }
+  }
+  phb2AssertSafe(Solver, PackLib, mixed, laneZones, 'Phase D mixed height');
+});
+
+test('PHASE-D stack groups remain contiguous, supported, deterministic, and animation-safe', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const Engine = await import(`${autoPackEnginePath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 48, width: 36, height: 48, shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 24, bonusWidth: 36, bonusHeight: 24 },
+  };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = phdAlternatingItems(7, 7, {
+    dims: { l: 24, w: 18, h: 12 }, orientationLock: 'upright', canFlip: false,
+  });
+  const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const rows = phdSpatialRows(Solver, result, items);
+
+  assert.equal(result.placements.size, 14, 'stack grouping preserves placed quantity');
+  assert.equal(result.phaseStats.stackCount, 9, 'fixture exercises production stack placement');
+  assert.equal(phdRowFragmentCount(rows), 0,
+    'no stack/floor row returns to a case group after another group starts');
+  phb2AssertSafe(Solver, PackLib, result, zones, 'Phase D grouped stacks');
+  phb2AssertDirectStackLimit(Solver, result, 2, 'Phase D grouped stacks');
+
+  const repeated = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  assert.equal(phcResultBytes(repeated), phcResultBytes(result),
+    'stacked grouping is byte-deterministic on repeated AutoPack');
+
+  const caseIds = new Map(items.map(item => [item.instanceId, item.caseId]));
+  const snapshot = JSON.stringify([...result.placements]);
+  const batches = Engine.buildPlacementAnimationBatches(
+    result.placements,
+    result.orientedDims,
+    caseIds,
+    4,
+    { frontSurfaceFirst: true, zones }
+  );
+  phb2AssertAnimationBatches(Solver, result, caseIds, batches, 'Phase D grouped stack animation');
+  assert.equal(JSON.stringify([...result.placements]), snapshot,
+    'stack animation planning leaves solver maps unchanged');
 });
 
 // ---------------------------------------------------------------------------

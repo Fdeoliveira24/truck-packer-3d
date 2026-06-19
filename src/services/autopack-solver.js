@@ -391,7 +391,60 @@ function normalizeItem(item = {}, index = 0) {
   };
 }
 
-function sortItemsForFloor(items) {
+function normalizedItemFrom(value = {}) {
+  if (Array.isArray(value.candidates)) return value;
+  if (value.item && Array.isArray(value.item.candidates)) return value.item;
+  return null;
+}
+
+function layoutGroupKey(value = {}) {
+  const normalized = normalizedItemFrom(value);
+  const source = normalized ? normalized.item : (value.item || value);
+  const caseId = String(source?.caseId || '').trim();
+  if (caseId) return `case:${caseId}`;
+
+  const dims = normalized ? normalized.dims : readDims(source?.dims || source?.dimensions);
+  return [
+    'cargo',
+    dims.l,
+    dims.w,
+    dims.h,
+    canonicalOrientationLock(source?.orientationLock),
+    source?.orientationLocked === true ? 'locked' : 'unlocked',
+    source?.canFlip === true ? 'flip' : 'no-flip',
+    source?.noStackOnTop === true ? 'no-top' : 'top-ok',
+    source?.stackable === false ? 'no-stack' : 'stack-ok',
+    finiteNumber(source?.maxStackCount, 0),
+  ].join('|');
+}
+
+function stableTextCompare(a, b) {
+  const aText = String(a);
+  const bText = String(b);
+  if (aText === bText) return 0;
+  return aText < bText ? -1 : 1;
+}
+
+function createLayoutGroupTieBreaker(items, layoutQualityEnabled, groupUniverse = items) {
+  if (!layoutQualityEnabled) return (a, b) => a.index - b.index;
+  const groupCounts = new Map();
+  for (const item of groupUniverse || []) {
+    const key = layoutGroupKey(item);
+    groupCounts.set(key, (groupCounts.get(key) || 0) + 1);
+  }
+  return (a, b) => {
+    const aKey = layoutGroupKey(a);
+    const bKey = layoutGroupKey(b);
+    const countDelta = (groupCounts.get(bKey) || 0) - (groupCounts.get(aKey) || 0);
+    if (countDelta) return countDelta;
+    const groupDelta = stableTextCompare(aKey, bKey);
+    if (groupDelta) return groupDelta;
+    return stableTextCompare(a.id, b.id);
+  };
+}
+
+function sortItemsForFloor(items, layoutQualityEnabled = false, groupUniverse = items) {
+  const tieBreak = createLayoutGroupTieBreaker(items, layoutQualityEnabled, groupUniverse);
   return [...items].sort((a, b) => {
     const footprintDelta = b.footprint - a.footprint;
     if (footprintDelta) return footprintDelta;
@@ -401,11 +454,12 @@ function sortItemsForFloor(items) {
     if (volumeDelta) return volumeDelta;
     const priorityDelta = finiteNumber(b.item.loadPriority, 0) - finiteNumber(a.item.loadPriority, 0);
     if (priorityDelta) return priorityDelta;
-    return a.index - b.index;
+    return tieBreak(a, b);
   });
 }
 
-function sortItemsForFiller(items) {
+function sortItemsForFiller(items, layoutQualityEnabled = false, groupUniverse = items) {
+  const tieBreak = createLayoutGroupTieBreaker(items, layoutQualityEnabled, groupUniverse);
   return [...items].sort((a, b) => {
     const footprintDelta = a.footprint - b.footprint;
     if (footprintDelta) return footprintDelta;
@@ -415,11 +469,12 @@ function sortItemsForFiller(items) {
     if (priorityDelta) return priorityDelta;
     const weightDelta = b.weight - a.weight;
     if (weightDelta) return weightDelta;
-    return a.index - b.index;
+    return tieBreak(a, b);
   });
 }
 
-function sortItemsForStack(items) {
+function sortItemsForStack(items, layoutQualityEnabled = false, groupUniverse = items) {
+  const tieBreak = createLayoutGroupTieBreaker(items, layoutQualityEnabled, groupUniverse);
   return [...items].sort((a, b) => {
     const weightDelta = b.weight - a.weight;
     if (weightDelta) return weightDelta;
@@ -427,11 +482,12 @@ function sortItemsForStack(items) {
     if (footprintDelta) return footprintDelta;
     const volumeDelta = b.volume - a.volume;
     if (volumeDelta) return volumeDelta;
-    return a.index - b.index;
+    return tieBreak(a, b);
   });
 }
 
-function sortItemsForLane(items) {
+function sortItemsForLane(items, layoutQualityEnabled = false, groupUniverse = items) {
+  const tieBreak = createLayoutGroupTieBreaker(items, layoutQualityEnabled, groupUniverse);
   return [...items].sort((a, b) => {
     const maxLength = item => Math.max(0, ...item.candidates.map(candidate => candidate.l));
     const minWidth = item => Math.min(Infinity, ...item.candidates.map(candidate => candidate.w));
@@ -443,7 +499,7 @@ function sortItemsForLane(items) {
     if (volumeDelta) return volumeDelta;
     const priorityDelta = finiteNumber(b.item.loadPriority, 0) - finiteNumber(a.item.loadPriority, 0);
     if (priorityDelta) return priorityDelta;
-    return a.index - b.index;
+    return tieBreak(a, b);
   });
 }
 
@@ -590,7 +646,78 @@ function scoreFloorSurface(aabb, loadFrontFirst, frontSurfaceFirst) {
     : [aabb.min.y, xPrimary];
 }
 
-function scoreFreeRectCandidate(candidate, loadFrontFirst, packed = [], frontSurfaceFirst = false) {
+function aabbAxisGap(aMin, aMax, bMin, bMax) {
+  if (aMax < bMin) return bMin - aMax;
+  if (bMax < aMin) return aMin - bMax;
+  return 0;
+}
+
+function aabbLayoutDistance(a, b) {
+  return aabbAxisGap(a.min.x, a.max.x, b.min.x, b.max.x) +
+    aabbAxisGap(a.min.y, a.max.y, b.min.y, b.max.y) +
+    aabbAxisGap(a.min.z, a.max.z, b.min.z, b.max.z);
+}
+
+function orientationsMatch(a = {}, b = {}) {
+  const ar = normalizeRightAngleRotation(a.rotation || {});
+  const br = normalizeRightAngleRotation(b.rotation || {});
+  return Math.abs(finiteNumber(a.l) - finiteNumber(b.l)) <= FREE_RECT_EPS &&
+    Math.abs(finiteNumber(a.w) - finiteNumber(b.w)) <= FREE_RECT_EPS &&
+    Math.abs(finiteNumber(a.h) - finiteNumber(b.h)) <= FREE_RECT_EPS &&
+    ar.x === br.x && ar.y === br.y && ar.z === br.z;
+}
+
+function scoreLayoutGroupContinuity(
+  aabb,
+  orientation,
+  item,
+  packed,
+  loadFrontFirst,
+  layoutQualityEnabled
+) {
+  if (!layoutQualityEnabled) return { continuity: [], orientationPenalty: 0 };
+  const groupKey = layoutGroupKey(item);
+  const matches = (packed || []).filter(placement => layoutGroupKey(placement) === groupKey);
+  if (!matches.length) {
+    return { continuity: [0, 0, 0, 0, 0], orientationPenalty: 0 };
+  }
+
+  const candidateFront = loadFrontFirst ? aabb.max.x : aabb.min.x;
+  const sameSurface = matches.filter(placement =>
+    Math.abs(placement.aabb.min.y - aabb.min.y) <= CONTACT_EPS
+  );
+  const sameRow = sameSurface.filter(placement => {
+    const placementFront = loadFrontFirst ? placement.aabb.max.x : placement.aabb.min.x;
+    return Math.abs(placementFront - candidateFront) <= CONTACT_EPS;
+  });
+  const sameRowContacts = sameRow.filter(placement => touches(aabb, placement.aabb));
+  const nearestDistance = Math.min(...matches.map(placement =>
+    aabbLayoutDistance(aabb, placement.aabb)
+  ));
+  const orientationPenalty = sameRow.length && !sameRow.some(placement =>
+    orientationsMatch(orientation, placement.orientation)
+  ) ? 1 : 0;
+
+  return {
+    continuity: [
+      sameSurface.length ? 0 : 1,
+      sameRow.length ? 0 : 1,
+      sameRowContacts.length ? 0 : 1,
+      nearestDistance,
+      -sameRowContacts.length,
+    ],
+    orientationPenalty,
+  };
+}
+
+function scoreFreeRectCandidate(
+  candidate,
+  loadFrontFirst,
+  packed = [],
+  frontSurfaceFirst = false,
+  item = null,
+  orientation = null
+) {
   const rect = candidate.freeRect;
   const leftoverX = Math.max(0, freeRectLength(rect) - candidate.dims.l);
   const leftoverZ = Math.max(0, freeRectWidth(rect) - candidate.dims.w);
@@ -598,16 +725,37 @@ function scoreFreeRectCandidate(candidate, loadFrontFirst, packed = [], frontSur
   const wallContacts = wallContactCount(candidate.aabb, candidate.zone, loadFrontFirst);
   const faceContacts = countFaceContacts(candidate.aabb, packed);
   const contactScore = wallContacts + Math.min(8, faceContacts);
+  const groupScore = scoreLayoutGroupContinuity(
+    candidate.aabb,
+    orientation,
+    item,
+    packed,
+    loadFrontFirst,
+    frontSurfaceFirst
+  );
   // Front-first floor fill: Standard/Wheel Wells retain Phase B's lower-layer then
   // high-X ordering. A true raised surface extending beyond truck.length switches
   // only those Front Overhang candidates to high-X then layer (Phase C). Hard
   // validity is filtered in findFloorPlacement before this score is considered.
+  if (!frontSurfaceFirst) {
+    return [
+      ...scoreFloorSurface(candidate.aabb, loadFrontFirst, false),
+      -contactScore,
+      Math.min(leftoverX, leftoverZ),
+      wasteArea,
+      leftoverZ,
+      candidate.aabb.min.z,
+      leftoverX,
+    ];
+  }
   return [
-    ...scoreFloorSurface(candidate.aabb, loadFrontFirst, frontSurfaceFirst),
+    ...scoreFloorSurface(candidate.aabb, loadFrontFirst, true),
+    ...groupScore.continuity,
     -contactScore,
     Math.min(leftoverX, leftoverZ),
     wasteArea,
     leftoverZ,
+    groupScore.orientationPenalty,
     candidate.aabb.min.z,
     leftoverX,
   ];
@@ -719,7 +867,9 @@ function findFloorPlacement(item, floorState, packed, loadFrontFirst, options = 
         candidate,
         loadFrontFirst,
         packed,
-        floorState.frontSurfaceFirst
+        floorState.frontSurfaceFirst,
+        item,
+        orientation
       );
       if (!best || compareScore(score, bestScore) < 0) {
         best = { ...candidate, orientation };
@@ -741,7 +891,14 @@ function getLaneOrientations(item) {
   });
 }
 
-function scoreLaneCandidate(candidate, orientation, loadFrontFirst, frontSurfaceFirst = false) {
+function scoreLaneCandidate(
+  candidate,
+  orientation,
+  loadFrontFirst,
+  frontSurfaceFirst = false,
+  item = null,
+  packed = []
+) {
   const rectWaste = candidate.freeRect
     ? Math.max(0, freeRectArea(candidate.freeRect) - orientation.l * orientation.w)
     : 0;
@@ -749,9 +906,26 @@ function scoreLaneCandidate(candidate, orientation, loadFrontFirst, frontSurface
   // the shared Front Overhang surface score ahead of lane length so a legal raised
   // forward deck candidate cannot lose merely because its independent floor is high.
   const surfaceScore = scoreFloorSurface(candidate.aabb, loadFrontFirst, frontSurfaceFirst);
-  return frontSurfaceFirst
-    ? [...surfaceScore, -orientation.l, rectWaste, candidate.aabb.min.z, orientation.w]
-    : [-orientation.l, ...surfaceScore, rectWaste, candidate.aabb.min.z, orientation.w];
+  if (!frontSurfaceFirst) {
+    return [-orientation.l, ...surfaceScore, rectWaste, candidate.aabb.min.z, orientation.w];
+  }
+  const groupScore = scoreLayoutGroupContinuity(
+    candidate.aabb,
+    orientation,
+    item,
+    packed,
+    loadFrontFirst,
+    true
+  );
+  return [
+    ...surfaceScore,
+    ...groupScore.continuity,
+    -orientation.l,
+    rectWaste,
+    groupScore.orientationPenalty,
+    candidate.aabb.min.z,
+    orientation.w,
+  ];
 }
 
 function findLanePlacement(item, floorState, packed, loadFrontFirst) {
@@ -766,7 +940,9 @@ function findLanePlacement(item, floorState, packed, loadFrontFirst) {
         candidate,
         orientation,
         loadFrontFirst,
-        floorState.frontSurfaceFirst
+        floorState.frontSurfaceFirst,
+        item,
+        packed
       );
       if (!best || compareScore(score, bestScore) < 0) {
         best = { ...candidate, orientation };
@@ -800,7 +976,7 @@ export function repeatedBatchKey(item) {
   ].join('|');
 }
 
-function buildRepeatedBatches(items) {
+function buildRepeatedBatches(items, layoutQualityEnabled = false) {
   const groups = new Map();
   for (const item of items || []) {
     const key = repeatedBatchKey(item);
@@ -809,6 +985,10 @@ function buildRepeatedBatches(items) {
     groups.get(key).push(item);
   }
   return [...groups.values()]
+    .map(group => layoutQualityEnabled
+      ? [...group].sort((a, b) => stableTextCompare(a.id, b.id))
+      : group
+    )
     .filter(group => group.length >= REPEATED_BATCH_MIN)
     .sort((a, b) => {
       const footprintDelta = b[0].footprint - a[0].footprint;
@@ -817,7 +997,9 @@ function buildRepeatedBatches(items) {
       if (weightDelta) return weightDelta;
       const countDelta = b.length - a.length;
       if (countDelta) return countDelta;
-      return a[0].index - b[0].index;
+      return layoutQualityEnabled
+        ? stableTextCompare(layoutGroupKey(a[0]), layoutGroupKey(b[0]))
+        : a[0].index - b[0].index;
     });
 }
 
@@ -1021,9 +1203,16 @@ function completeRepeatedGroupFloor(group, preferredOrientation, floorState, pac
   return unresolved;
 }
 
-function placeRepeatedFloorBatches(items, floorState, packed, output, loadFrontFirst) {
+function placeRepeatedFloorBatches(
+  items,
+  floorState,
+  packed,
+  output,
+  loadFrontFirst,
+  layoutQualityEnabled = false
+) {
   const remaining = new Set(items || []);
-  for (const group of buildRepeatedBatches(items)) {
+  for (const group of buildRepeatedBatches(items, layoutQualityEnabled)) {
     const activeGroup = group.filter(item => remaining.has(item));
     if (activeGroup.length < REPEATED_BATCH_MIN) continue;
     const orientation = chooseRepeatedBatchOrientation(activeGroup, floorState);
@@ -1197,7 +1386,7 @@ function buildStackCandidates(orientation, packed, yLevel, loadFrontFirst) {
   return placements;
 }
 
-export function scoreStackCandidate(candidate, loadFrontFirst) {
+export function scoreStackCandidate(candidate, loadFrontFirst, groupScore = null) {
   const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
   const wasteArea = candidate.freeRect
     ? Math.max(0, freeRectArea(candidate.freeRect) - candidate.dims.l * candidate.dims.w)
@@ -1207,16 +1396,28 @@ export function scoreStackCandidate(candidate, loadFrontFirst) {
   // no-top-load, max direct children, orientation), FRONT position must win before
   // support waste. xPrimary therefore comes ahead of wasteArea so front supports
   // are filled before center/rear ones in front-first modes (incl. Wheel Wells).
-  return [
+  const primary = [
     candidate.aabb.min.y,
     -candidate.supportFraction,
     xPrimary,
+  ];
+  if (!groupScore) {
+    return [
+      ...primary,
+      wasteArea,
+      candidate.aabb.min.z,
+    ];
+  }
+  return [
+    ...primary,
+    ...groupScore.continuity,
     wasteArea,
+    groupScore.orientationPenalty,
     candidate.aabb.min.z,
   ];
 }
 
-function findStackPlacement(item, zones, packed, loadFrontFirst) {
+function findStackPlacement(item, zones, packed, loadFrontFirst, layoutQualityEnabled = false) {
   let best = null;
   let bestScore = null;
   const yLevels = uniqueSorted(
@@ -1237,10 +1438,20 @@ function findStackPlacement(item, zones, packed, loadFrontFirst) {
           .filter(candidateSupport =>
             canSupportStack(candidateSupport) &&
             canSupportCandidateWeight(item, candidateSupport)
-          );
+        );
         const supportFraction = computeSupportFraction(candidate.aabb, supports);
         const scoredCandidate = { ...candidate, supportFraction, orientation };
-        const score = scoreStackCandidate(scoredCandidate, loadFrontFirst);
+        const groupScore = layoutQualityEnabled
+          ? scoreLayoutGroupContinuity(
+            candidate.aabb,
+            orientation,
+            item,
+            packed,
+            loadFrontFirst,
+            true
+          )
+          : null;
+        const score = scoreStackCandidate(scoredCandidate, loadFrontFirst, groupScore);
         if (!best || compareScore(score, bestScore) < 0) {
           best = scoredCandidate;
           bestScore = score;
@@ -1320,15 +1531,34 @@ function candidateCompactionAnchors(placement, others, zone, loadFrontFirst, axi
   return uniqueSorted(anchors, comparator);
 }
 
-function scoreCompactionCandidate(aabb, zone, loadFrontFirst, others) {
+function scoreCompactionCandidate(
+  aabb,
+  zone,
+  loadFrontFirst,
+  others,
+  placement = null,
+  layoutQualityEnabled = false
+) {
   const xPrimary = loadFrontFirst ? -aabb.max.x : aabb.min.x;
   const contactScore = wallContactCount(aabb, zone, loadFrontFirst) + Math.min(8, countFaceContacts(aabb, others));
   const sideDistance = Math.min(
     Math.abs(aabb.min.z - zone.min.z),
     Math.abs(aabb.max.z - zone.max.z)
   );
+  if (!layoutQualityEnabled || !placement) {
+    return [xPrimary, -contactScore, sideDistance, aabb.min.z];
+  }
+  const groupScore = scoreLayoutGroupContinuity(
+    aabb,
+    placement.orientation,
+    placement.item,
+    others,
+    loadFrontFirst,
+    true
+  );
   return [
     xPrimary,
+    ...groupScore.continuity,
     -contactScore,
     sideDistance,
     aabb.min.z,
@@ -1359,7 +1589,14 @@ function compactFloorPlacements(output, packed, zones, loadFrontFirst, frontSurf
       const xAnchors = candidateCompactionAnchors(placement, others, zone, loadFrontFirst, 'x');
       const zAnchors = candidateCompactionAnchors(placement, others, zone, loadFrontFirst, 'z');
       let best = null;
-      let bestScore = scoreCompactionCandidate(placement.aabb, zone, loadFrontFirst, others);
+      let bestScore = scoreCompactionCandidate(
+        placement.aabb,
+        zone,
+        loadFrontFirst,
+        others,
+        placement,
+        frontSurfaceFirst
+      );
 
       for (const xMin of xAnchors) {
         for (const zMin of zAnchors) {
@@ -1371,7 +1608,14 @@ function compactFloorPlacements(output, packed, zones, loadFrontFirst, frontSurf
           const aabb = getAabb(position, placement.dims);
           if (!isAabbContainedInZone(aabb, zone)) continue;
           if (collidesPacked(aabb, others)) continue;
-          const score = scoreCompactionCandidate(aabb, zone, loadFrontFirst, others);
+          const score = scoreCompactionCandidate(
+            aabb,
+            zone,
+            loadFrontFirst,
+            others,
+            placement,
+            frontSurfaceFirst
+          );
           if (compareScore(score, bestScore) < 0) {
             best = { position, aabb, zone, score };
             bestScore = score;
@@ -1477,10 +1721,14 @@ function repackRejectedPlacements(
 
   writeOutputPlacements(output, repacked);
 
+  const retryTieBreak = createLayoutGroupTieBreaker(
+    rejected.map(entry => entry.placement.item),
+    frontSurfaceFirst
+  );
   const retryQueue = [...rejected].sort((a, b) => {
     const yDelta = a.placement.aabb.min.y - b.placement.aabb.min.y;
     if (yDelta) return yDelta;
-    return a.placement.item.index - b.placement.item.index;
+    return retryTieBreak(a.placement.item, b.placement.item);
   });
 
   for (const rejectedPlacement of retryQueue) {
@@ -1492,7 +1740,13 @@ function repackRejectedPlacements(
       continue;
     }
 
-    const stackPlacement = findStackPlacement(item, zones, repacked, loadFrontFirst);
+    const stackPlacement = findStackPlacement(
+      item,
+      zones,
+      repacked,
+      loadFrontFirst,
+      frontSurfaceFirst
+    );
     if (stackPlacement) {
       recordPlacement(output, repacked, item, stackPlacement, 'stack');
       continue;
@@ -1539,7 +1793,11 @@ export function solveAutoPack(input = {}) {
   }
 
   const deferred = [];
-  const laneItems = sortItemsForLane(items.filter(item => item.className === 'LANE_ITEM'));
+  const laneItems = sortItemsForLane(
+    items.filter(item => item.className === 'LANE_ITEM'),
+    frontSurfaceFirst,
+    items
+  );
   const nonLaneItems = items.filter(item => item.className !== 'LANE_ITEM');
   let laneCount = 0;
   let floorCount = 0;
@@ -1563,11 +1821,14 @@ export function solveAutoPack(input = {}) {
     floorState,
     packed,
     output,
-    loadFrontFirst
+    loadFrontFirst,
+    frontSurfaceFirst
   );
-  const mainFloorItems = sortItemsForFloor(remainingNonLaneItems.filter(item =>
-    item.className !== 'FILLER'
-  ));
+  const mainFloorItems = sortItemsForFloor(
+    remainingNonLaneItems.filter(item => item.className !== 'FILLER'),
+    frontSurfaceFirst,
+    items
+  );
   const fillerItems = remainingNonLaneItems.filter(item => item.className === 'FILLER');
 
   for (const item of mainFloorItems) {
@@ -1591,8 +1852,8 @@ export function solveAutoPack(input = {}) {
   ).freeRects;
 
   const fillerQueue = [
-    ...sortItemsForFloor(deferred),
-    ...sortItemsForFiller(fillerItems),
+    ...sortItemsForFloor(deferred, frontSurfaceFirst, items),
+    ...sortItemsForFiller(fillerItems, frontSurfaceFirst, items),
   ];
   const stackDeferred = [];
   for (const item of fillerQueue) {
@@ -1616,8 +1877,14 @@ export function solveAutoPack(input = {}) {
   ).freeRects;
 
   let stackCount = 0;
-  for (const item of sortItemsForStack(stackDeferred)) {
-    const placement = findStackPlacement(item, floorZones, packed, loadFrontFirst);
+  for (const item of sortItemsForStack(stackDeferred, frontSurfaceFirst, items)) {
+    const placement = findStackPlacement(
+      item,
+      floorZones,
+      packed,
+      loadFrontFirst,
+      frontSurfaceFirst
+    );
     if (!placement) {
       output.unpacked.push(item.id);
       if (item.lanePlacementFailed) {

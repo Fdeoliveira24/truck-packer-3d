@@ -5797,7 +5797,7 @@ test('AUTO-PACK-A1-R6.3 stack surface builder merges adjacent supports into one 
   'stack phase must see adjacent same-height support cases as one usable supported surface');
 });
 
-test('AUTO-PACK-A1-R6.4 repeated non-flippable cases use one shelf-grid orientation', async () => {
+test('AUTO-PACK-A1-R6.4 repeated non-flippable cases keep one shelf-grid orientation plus legal residual completion', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = { length: 636, width: 102, height: 98 };
   const zones = [{ min: { x: 0, y: 0, z: -51 }, max: { x: 636, y: 98, z: 51 } }];
@@ -5814,11 +5814,15 @@ test('AUTO-PACK-A1-R6.4 repeated non-flippable cases use one shelf-grid orientat
   assert.equal(output.placements.size, 78);
   assert.deepEqual(output.unpacked, []);
 
-  const distinctDims = new Set([...output.orientedDims.values()].map(dims => JSON.stringify(dims)));
-  assert.equal(distinctDims.size, 1,
-    'large repeated non-flippable batches should not mix yaw orientations in a patchwork load');
-  assert.deepEqual(JSON.parse([...distinctDims][0]), { length: 60, width: 20, height: 20 },
-    'batch shelf-grid should choose the orientation that maximizes clean floor capacity');
+  const dimsCounts = new Map();
+  for (const dims of output.orientedDims.values()) {
+    const key = JSON.stringify(dims);
+    dimsCounts.set(key, (dimsCounts.get(key) || 0) + 1);
+  }
+  assert.equal(dimsCounts.get(JSON.stringify({ length: 60, width: 20, height: 20 })), 77,
+    'the repeated shelf grid keeps its selected majority orientation');
+  assert.equal(dimsCounts.get(JSON.stringify({ length: 20, width: 60, height: 20 })), 1,
+    'one alternate-yaw case completes the otherwise usable residual floor strip');
 
   const packed = items.map(item => {
     const pos = output.placements.get(item.instanceId);
@@ -5835,8 +5839,8 @@ test('AUTO-PACK-A1-R6.4 repeated non-flippable cases use one shelf-grid orientat
   }
 
   const floorLayer = packed.filter(aabb => aabb.min.y === 0);
-  assert.equal(floorLayer.length, 50,
-    'repeated 60x20x20 cases should fill a 10 by 5 floor grid before stacking');
+  assert.equal(floorLayer.length, 51,
+    'repeated 60x20x20 cases should fill the 10 by 5 shelf grid and its one legal residual floor opening before stacking');
   const firstColumnCenters = items.slice(0, 5).map(item => output.placements.get(item.instanceId));
   assert.deepEqual(firstColumnCenters.map(pos => pos.x), [30, 30, 30, 30, 30],
     'batch grid should fill width at the current load-side X slice before advancing length');
@@ -8208,6 +8212,160 @@ test('PHASE-B tighter rear vs open front: front wins; no rear/middle cell taken 
   const xs = P.map(p => Math.round(p.pos.x));
   assert.equal(new Set(xs).size, 1, `a partial floor fills one front row only (no rear/middle cell while front open), got x=${xs.join(',')}`);
   assert.ok(Math.max(...P.map(p => p.pos.x + p.od.length / 2)) >= 240 - 0.5, 'the front row is at the nose');
+});
+
+function phb2FloorHole(Solver, result, zones, itemSpec) {
+  const packed = [...result.placements].map(([id, position]) => {
+    const dims = result.orientedDims.get(id);
+    return {
+      id,
+      aabb: Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height }),
+    };
+  });
+  const orientations = Solver.buildOrientationCandidates(itemSpec.dims, itemSpec);
+  const round = value => Math.round(value * 1e6) / 1e6;
+  for (const zone of zones) {
+    for (const orientation of orientations) {
+      const xAnchors = new Set([zone.min.x, zone.max.x - orientation.l].map(round));
+      const zAnchors = new Set([zone.min.z, zone.max.z - orientation.w].map(round));
+      for (const placement of packed) {
+        xAnchors.add(round(placement.aabb.min.x));
+        xAnchors.add(round(placement.aabb.max.x));
+        xAnchors.add(round(placement.aabb.min.x - orientation.l));
+        xAnchors.add(round(placement.aabb.max.x - orientation.l));
+        zAnchors.add(round(placement.aabb.min.z));
+        zAnchors.add(round(placement.aabb.max.z));
+        zAnchors.add(round(placement.aabb.min.z - orientation.w));
+        zAnchors.add(round(placement.aabb.max.z - orientation.w));
+      }
+      for (const xMin of xAnchors) {
+        for (const zMin of zAnchors) {
+          const position = {
+            x: xMin + orientation.l / 2,
+            y: zone.min.y + orientation.h / 2,
+            z: zMin + orientation.w / 2,
+          };
+          const aabb = Solver.getAabb(position, orientation);
+          if (!Solver.isAabbContainedInAnyZone(aabb, [zone])) continue;
+          if (packed.some(placement => Solver.aabbsOverlap(aabb, placement.aabb))) continue;
+          return { position, orientation, aabb };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function phb2FloorCount(result, zones, Solver) {
+  let count = 0;
+  for (const [id, position] of result.placements) {
+    const dims = result.orientedDims.get(id);
+    const aabb = Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
+    if (zones.some(zone =>
+      Solver.isAabbContainedInAnyZone(aabb, [zone]) &&
+      Math.abs(aabb.min.y - zone.min.y) <= 0.05
+    )) count++;
+  }
+  return count;
+}
+
+function phb2AssertSafe(Solver, PackLib, result, zones, label) {
+  const placed = phbPlaced(Solver, result, PHB_DIMS);
+  for (let i = 0; i < placed.length; i++) {
+    assert.equal(PackLib.isAabbContainedInAnyZone(placed[i].aabb, zones), true, `${label}: contained ${placed[i].id}`);
+    for (let j = i + 1; j < placed.length; j++) {
+      assert.equal(Solver.aabbsOverlap(placed[i].aabb, placed[j].aabb), false, `${label}: no overlap ${placed[i].id}/${placed[j].id}`);
+    }
+    const onFloor = zones.some(zone =>
+      PackLib.isAabbContainedInAnyZone(placed[i].aabb, [zone]) &&
+      Math.abs(placed[i].aabb.min.y - zone.min.y) <= 0.05
+    );
+    if (!onFloor) {
+      const supports = placed.filter(other =>
+        other !== placed[i] &&
+        Math.abs(other.aabb.max.y - placed[i].aabb.min.y) <= 0.05 &&
+        phbOverlapXZ(placed[i], other)
+      ).map(other => other.aabb);
+      assert.ok(PackLib.computeSupportFraction(placed[i].aabb, supports, 0.05) >= PackLib.MIN_SUPPORT_FRACTION,
+        `${label}: supported ${placed[i].id}`);
+    }
+  }
+}
+
+test('PHASE-B2A repeated groups preserve legal yaw candidates and exhaust same-case floor openings first', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const fixtures = [
+    { label: 'wheelWells-100-24x18', mode: 'wheelWells', count: 100, dims: { l: 24, w: 18, h: 16 }, expectedFloor: 43 },
+    { label: 'standard-64-42x10', mode: 'rect', count: 64, dims: { l: 42, w: 10, h: 16 }, expectedFloor: 53 },
+    { label: 'standard-100-42x10', mode: 'rect', count: 100, dims: { l: 42, w: 10, h: 16 }, expectedFloor: 53 },
+  ];
+
+  for (const fixture of fixtures) {
+    const truck = { length: 240, width: 96, height: 96, shapeMode: fixture.mode };
+    const zones = PackLib.getTrailerUsableZones(truck);
+    const itemSpec = {
+      caseId: 'A', dims: fixture.dims, orientationLock: 'any', canFlip: false, weight: 30,
+    };
+    const items = Array.from({ length: fixture.count }, (_, index) => ({
+      ...itemSpec,
+      instanceId: `A${index}`,
+    }));
+    const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    assert.equal(phb2FloorCount(result, zones, Solver), fixture.expectedFloor, `${fixture.label}: legal residual floor slots are used`);
+    assert.equal(phb2FloorHole(Solver, result, zones, itemSpec), null, `${fixture.label}: no legal floor opening remains while identical cases stack`);
+    assert.deepEqual(result.unpacked, [], `${fixture.label}: all cases resolve`);
+    phb2AssertSafe(Solver, PackLib, result, zones, fixture.label);
+    const repeat = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    assert.equal(JSON.stringify([...result.placements]), JSON.stringify([...repeat.placements]), `${fixture.label}: deterministic layout`);
+    assert.equal(JSON.stringify([...result.orientedDims]), JSON.stringify([...repeat.orientedDims]), `${fixture.label}: deterministic orientations`);
+  }
+});
+
+test('PHASE-B2A mixed repeated groups complete legal A strips before B consumes floor space', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const aSpec = { caseId: 'A', dims: { l: 42, w: 10, h: 16 }, orientationLock: 'any', canFlip: false, weight: 30 };
+  const bSpec = { caseId: 'B', dims: { l: 20, w: 10, h: 16 }, orientationLock: 'any', canFlip: false, weight: 20 };
+  const items = [
+    ...Array.from({ length: 64 }, (_, index) => ({ ...aSpec, instanceId: `A${index}` })),
+    ...Array.from({ length: 20 }, (_, index) => ({ ...bSpec, instanceId: `B${index}` })),
+  ];
+  const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  assert.equal(phb2FloorCount(result, zones, Solver), 54, 'mixed fixture uses 53 A floor slots before the one remaining B floor slot');
+  assert.deepEqual(result.placements.get('A48'), { x: 219, y: 8, z: 41 }, 'A uses the proven forward residual strip');
+  assert.deepEqual(result.orientedDims.get('A48'), { length: 42, width: 10, height: 16 }, 'A residual strip uses the legal alternate yaw');
+  assert.deepEqual(result.placements.get('B0'), { x: 20, y: 8, z: 41 }, 'B begins only in the rear residual strip after A completion');
+  assert.equal(phb2FloorHole(Solver, result, zones, aSpec), null, 'no legal A floor opening is left behind');
+  phb2AssertSafe(Solver, PackLib, result, zones, 'mixed A/B');
+});
+
+test('PHASE-B2A identical-case matrix stays safe and deterministic in Standard, Wheel Wells, and real Front Overhang geometry', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truth = await threeOrientedTruth();
+  for (const shapeMode of ['rect', 'wheelWells', 'frontBonus']) {
+    for (const count of [6, 20, 40, 100]) {
+      const truck = {
+        length: 240, width: 96, height: 96, shapeMode,
+        ...(shapeMode === 'frontBonus' ? { shapeConfig: { bonusLength: 48, bonusHeight: 43.2 } } : {}),
+      };
+      const zones = PackLib.getTrailerUsableZones(truck);
+      const itemSpec = { caseId: 'A', dims: { l: 24, w: 18, h: 16 }, orientationLock: 'any', canFlip: false, weight: 30 };
+      const items = Array.from({ length: count }, (_, index) => ({ ...itemSpec, instanceId: `i${index}` }));
+      const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+      phb2AssertSafe(Solver, PackLib, result, zones, `${shapeMode}/${count}`);
+      for (const [id, dims] of result.orientedDims) {
+        const expected = truth(PHB_DIMS, result.rotations.get(id));
+        assert.deepEqual(dims, expected, `${shapeMode}/${count}: ${id} uses THREE-compatible dimensions`);
+      }
+      if (phb2FloorCount(result, zones, Solver) < count) {
+        assert.equal(phb2FloorHole(Solver, result, zones, itemSpec), null,
+          `${shapeMode}/${count}: no legal floor hole remains before stacking`);
+      }
+      const repeat = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+      assert.equal(JSON.stringify([...result.placements]), JSON.stringify([...repeat.placements]), `${shapeMode}/${count}: deterministic`);
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------

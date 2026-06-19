@@ -871,6 +871,26 @@ function chooseRepeatedBatchOrientation(group, floorState) {
   return best;
 }
 
+function repeatedOrientationMatches(candidate, preferred) {
+  if (!candidate || !preferred) return false;
+  const candidateRotation = normalizeRightAngleRotation(candidate.rotation || {});
+  const preferredRotation = normalizeRightAngleRotation(preferred.rotation || {});
+  return Math.abs(candidate.l - preferred.l) <= FREE_RECT_EPS &&
+    Math.abs(candidate.w - preferred.w) <= FREE_RECT_EPS &&
+    Math.abs(candidate.h - preferred.h) <= FREE_RECT_EPS &&
+    candidateRotation.x === preferredRotation.x &&
+    candidateRotation.y === preferredRotation.y &&
+    candidateRotation.z === preferredRotation.z;
+}
+
+function preferRepeatedOrientation(item, preferred) {
+  const candidates = Array.isArray(item && item.candidates) ? item.candidates : [];
+  return [
+    ...candidates.filter(candidate => repeatedOrientationMatches(candidate, preferred)),
+    ...candidates.filter(candidate => !repeatedOrientationMatches(candidate, preferred)),
+  ];
+}
+
 function placeRepeatedBatchFloor(group, orientation, floorState, packed, output, loadFrontFirst) {
   if (!group.length || !orientation) return [];
   const queue = [...group];
@@ -906,18 +926,31 @@ function placeRepeatedBatchFloor(group, orientation, floorState, packed, output,
         if (!isAabbContainedInZone(aabb, rect.zone)) continue;
         if (collidesPacked(aabb, packed)) continue;
         const item = queue.shift();
-        item.candidates = [orientation];
         const placement = { position, dims, aabb, zone: rect.zone, freeRect: rect, orientation, lockedGrid: true };
         recordPlacement(output, packed, item, placement, 'floor');
         occupyFloorSpace(floorState, placement);
       }
     }
   }
-
-  for (const item of queue) {
-    item.candidates = [orientation];
-  }
   return queue;
+}
+
+function completeRepeatedGroupFloor(group, preferredOrientation, floorState, packed, output, loadFrontFirst) {
+  const unresolved = [];
+  for (const item of group) {
+    const completionItem = {
+      ...item,
+      candidates: preferRepeatedOrientation(item, preferredOrientation),
+    };
+    const placement = findFloorPlacement(completionItem, floorState, packed, loadFrontFirst);
+    if (!placement) {
+      unresolved.push(item);
+      continue;
+    }
+    recordPlacement(output, packed, item, placement, 'floor');
+    occupyFloorSpace(floorState, placement);
+  }
+  return unresolved;
 }
 
 function placeRepeatedFloorBatches(items, floorState, packed, output, loadFrontFirst) {
@@ -927,7 +960,19 @@ function placeRepeatedFloorBatches(items, floorState, packed, output, loadFrontF
     if (activeGroup.length < REPEATED_BATCH_MIN) continue;
     const orientation = chooseRepeatedBatchOrientation(activeGroup, floorState);
     if (!orientation) continue;
-    const notPlaced = placeRepeatedBatchFloor(activeGroup, orientation, floorState, packed, output, loadFrontFirst);
+    const gridLeftovers = placeRepeatedBatchFloor(activeGroup, orientation, floorState, packed, output, loadFrontFirst);
+    // Phase B2A: finish every legal floor position for this same repeated group
+    // before another caseId group can consume the opening. The shelf orientation
+    // remains the first preference, while every original policy-approved
+    // orientation remains available to complete residual forward strips.
+    const notPlaced = completeRepeatedGroupFloor(
+      gridLeftovers,
+      orientation,
+      floorState,
+      packed,
+      output,
+      loadFrontFirst
+    );
     const notPlacedSet = new Set(notPlaced);
     for (const item of activeGroup) {
       if (!notPlacedSet.has(item)) remaining.delete(item);

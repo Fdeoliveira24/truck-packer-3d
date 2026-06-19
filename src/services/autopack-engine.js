@@ -22,6 +22,124 @@ export function buildStagedPose(item) {
   };
 }
 
+const ANIMATION_BOUNDARY_EPS = 0.05;
+
+function animationNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function animationBoundaryKey(value) {
+  return Math.round(animationNumber(value) / ANIMATION_BOUNDARY_EPS);
+}
+
+function animationXzOverlapArea(a, b) {
+  const overlapX = Math.max(0, Math.min(a.max.x, b.max.x) - Math.max(a.min.x, b.min.x));
+  const overlapZ = Math.max(0, Math.min(a.max.z, b.max.z) - Math.max(a.min.z, b.min.z));
+  return overlapX * overlapZ;
+}
+
+function animationAabb(position, dims) {
+  const length = Math.max(0, animationNumber(dims && dims.length));
+  const width = Math.max(0, animationNumber(dims && dims.width));
+  const height = Math.max(0, animationNumber(dims && dims.height));
+  const x = animationNumber(position && position.x);
+  const y = animationNumber(position && position.y);
+  const z = animationNumber(position && position.z);
+  return {
+    min: { x: x - length / 2, y: y - height / 2, z: z - width / 2 },
+    max: { x: x + length / 2, y: y + height / 2, z: z + width / 2 },
+  };
+}
+
+/**
+ * Build deterministic animation batches without mutating solver output.
+ * A batch never crosses a support layer, front-edge row/load wall, or caseId
+ * group. Direct supporters are completed before a child becomes eligible.
+ */
+export function buildPlacementAnimationBatches(
+  placements,
+  orientedDimsMap,
+  caseIdMap,
+  maxBatchSize = 4
+) {
+  const limit = Math.max(1, Math.floor(animationNumber(maxBatchSize, 4)));
+  const entries = Array.from(placements instanceof Map ? placements.entries() : [])
+    .map(([id, position], sourceIndex) => {
+      const dims = orientedDimsMap instanceof Map ? orientedDimsMap.get(id) : null;
+      const aabb = animationAabb(position, dims);
+      const caseId = caseIdMap instanceof Map ? String(caseIdMap.get(id) || '') : '';
+      return {
+        id,
+        position,
+        sourceIndex,
+        caseId,
+        aabb,
+        layerKey: animationBoundaryKey(aabb.min.y),
+        rowKey: animationBoundaryKey(aabb.max.x),
+      };
+    });
+
+  const byId = new Map(entries.map(entry => [entry.id, entry]));
+  const dependencies = new Map(entries.map(entry => [entry.id, new Set()]));
+  for (const child of entries) {
+    for (const support of entries) {
+      if (support === child) continue;
+      if (Math.abs(child.aabb.min.y - support.aabb.max.y) > ANIMATION_BOUNDARY_EPS) continue;
+      if (animationXzOverlapArea(child.aabb, support.aabb) <= ANIMATION_BOUNDARY_EPS) continue;
+      dependencies.get(child.id).add(support.id);
+    }
+  }
+
+  const semanticGroupOrder = new Map();
+  for (const entry of entries) {
+    const key = `${entry.layerKey}|${entry.rowKey}|${entry.caseId}`;
+    const current = semanticGroupOrder.get(key);
+    if (current === undefined || entry.sourceIndex < current) {
+      semanticGroupOrder.set(key, entry.sourceIndex);
+    }
+  }
+
+  const compareReady = (a, b) => {
+    if (a.layerKey !== b.layerKey) return a.layerKey - b.layerKey;
+    if (a.rowKey !== b.rowKey) return b.rowKey - a.rowKey;
+    const aGroup = semanticGroupOrder.get(`${a.layerKey}|${a.rowKey}|${a.caseId}`);
+    const bGroup = semanticGroupOrder.get(`${b.layerKey}|${b.rowKey}|${b.caseId}`);
+    if (aGroup !== bGroup) return aGroup - bGroup;
+    const zDelta = a.aabb.min.z - b.aabb.min.z;
+    if (zDelta) return zDelta;
+    return a.sourceIndex - b.sourceIndex;
+  };
+
+  const pending = new Set(entries.map(entry => entry.id));
+  const completed = new Set();
+  const batches = [];
+  while (pending.size) {
+    const ready = [...pending]
+      .map(id => byId.get(id))
+      .filter(entry => [...dependencies.get(entry.id)].every(id => completed.has(id)))
+      .sort(compareReady);
+    // Solver validation guarantees an acyclic physical support graph. Keep a
+    // deterministic fallback so malformed diagnostic input cannot hang animation.
+    const first = ready[0] || [...pending].map(id => byId.get(id)).sort(compareReady)[0];
+    const sameBoundary = (ready.length ? ready : [first])
+      .filter(entry =>
+        entry.layerKey === first.layerKey &&
+        entry.rowKey === first.rowKey &&
+        entry.caseId === first.caseId
+      )
+      .sort(compareReady);
+    const selected = sameBoundary.slice(0, limit);
+    const batch = selected.map(entry => [entry.id, entry.position]);
+    batches.push(batch);
+    for (const entry of selected) {
+      pending.delete(entry.id);
+      completed.add(entry.id);
+    }
+  }
+  return batches;
+}
+
 export function createAutoPackEngine({
   CaseLibrary,
   CaseScene,
@@ -42,7 +160,9 @@ export function createAutoPackEngine({
   UIComponents,
   Utils,
 }) {
-  const ANIMATION_BATCH_SIZE = 24;
+  // Animate a small group at a time so front-to-rear loading remains easy to follow.
+  // Keep this above 1; a single-item batch makes large loads take far too long.
+  const ANIMATION_BATCH_SIZE = 4;
   const ANIMATION_BATCH_GAP_MS = 16;
   const ANIMATION_DURATION_MS = 260;
   const TWEEN_FALLBACK_GRACE_MS = 90;
@@ -274,6 +394,7 @@ export function createAutoPackEngine({
       const placements = solverResult.placements;
       const rotations = solverResult.rotations;
       const orientedDimsMap = solverResult.orientedDims;
+      const animationCaseIds = new Map(packItems.map(item => [item.inst.id, item.inst.caseId || item.caseData.id || '']));
       const unpacked = solverResult.unpacked || [];
       const packedCount = placements instanceof Map ? placements.size : 0;
 
@@ -283,6 +404,7 @@ export function createAutoPackEngine({
         placements,
         rotations,
         orientedDimsMap,
+        animationCaseIds,
         isWorkspaceRunStale,
         animationMetrics
       );
@@ -455,26 +577,25 @@ export function createAutoPackEngine({
     return map;
   }
 
-  async function animatePlacements(placements, rotations, orientedDimsMap, shouldAbort = null, metrics = null) {
+  async function animatePlacements(
+    placements,
+    rotations,
+    orientedDimsMap,
+    caseIdMap,
+    shouldAbort = null,
+    metrics = null
+  ) {
     cancelAllTweens();
-    // Animation-only ordering (does NOT change final positions/state): the truck
-    // must visibly load nose-to-tail. Front is high +X.
-    //   1. y ascending  → lower layers first, so every support animates before its
-    //      children (a child must rest strictly higher than its support).
-    //   2. x DESCENDING → front (high +X) to rear, completing each load wall first.
-    //   3. z ascending  → side-to-side across the current X row before moving rear.
-    const entries = Array.from(placements.entries())
-      .sort((a, b) => {
-        const aPos = a[1] || {};
-        const bPos = b[1] || {};
-        return (Number(aPos.y) || 0) - (Number(bPos.y) || 0) ||
-          (Number(bPos.x) || 0) - (Number(aPos.x) || 0) ||
-          (Number(aPos.z) || 0) - (Number(bPos.z) || 0);
-      });
+    const batches = buildPlacementAnimationBatches(
+      placements,
+      orientedDimsMap,
+      caseIdMap,
+      ANIMATION_BATCH_SIZE
+    );
 
-    for (let i = 0; i < entries.length; i += ANIMATION_BATCH_SIZE) {
+    for (const entries of batches) {
       if (typeof shouldAbort === 'function' && shouldAbort()) return false;
-      const batch = entries.slice(i, i + ANIMATION_BATCH_SIZE)
+      const batch = entries
         .filter(([id]) => prepareObjectForPlacement(id, rotations, orientedDimsMap));
       if (!batch.length) { continue; }
       if (metrics) {

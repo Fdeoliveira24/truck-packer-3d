@@ -8369,99 +8369,130 @@ test('PHASE-B2A identical-case matrix stays safe and deterministic in Standard, 
 });
 
 // ---------------------------------------------------------------------------
-// PHASE B1: front-first ANIMATION order. The final solver coordinates are
-// unchanged (Phase B); only the animation-only queue in autopack-engine.js is
-// reordered so the truck visibly loads nose-to-tail. This mirror of the engine
-// comparator (y asc, x DESC, z asc) is bound to the real engine by the
-// source-pattern test below, so the two cannot drift.
+// PHASE B2B: row-aware animation batches. The planner is production code from
+// autopack-engine.js; tests exercise its exact batches rather than mirroring a
+// comparator. Final solver maps remain immutable.
 // ---------------------------------------------------------------------------
-function phb1AnimationOrder(placements) {
-  return Array.from(placements.entries()).sort((a, b) => {
-    const aPos = a[1] || {}; const bPos = b[1] || {};
-    return (Number(aPos.y) || 0) - (Number(bPos.y) || 0) ||
-      (Number(bPos.x) || 0) - (Number(aPos.x) || 0) ||
-      (Number(aPos.z) || 0) - (Number(bPos.z) || 0);
-  });
+function phb2AnimationRecord(Solver, result, caseIds, id, position) {
+  const dims = result.orientedDims.get(id);
+  const aabb = Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
+  return { id, position, dims, aabb, caseId: caseIds.get(id) || '' };
 }
 
-test('PHASE-B1 animation order loads nose-to-tail: front-first per layer, floor before stacking, support before child (Std/WW/FrontOverhang × 6/20/40/120)', async () => {
-  const { Solver, PackLib } = await phbSolverModules();
-  const truth = await threeOrientedTruth();
-  const report = [];
-  for (const shapeMode of ['rect', 'wheelWells', 'frontBonus']) {
-    for (const n of [6, 20, 40, 120]) {
-      const truck = { length: 240, width: 96, height: 96, shapeMode };
-      const zones = PackLib.getTrailerUsableZones(truck);
-      const usableMaxX = Math.max(...zones.map(z => z.max.x));
-      const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: Array.from({ length: n }, (_, i) => ({ instanceId: `i${i}`, caseId: 'c', dims: { l: 24, w: 18, h: 16 }, shape: 'box', orientationLock: 'any', canFlip: false, weight: 30 })) });
-      const order = phb1AnimationOrder(res.placements);
-      const od = id => res.orientedDims.get(id);
-      const seq = order.map(([id, pos]) => ({ id, x: pos.x, y: pos.y, z: pos.z, dims: od(id), minY: pos.y - od(id).height / 2, maxY: pos.y + od(id).height / 2, aabb: Solver.getAabb(pos, { l: od(id).length, w: od(id).width, h: od(id).height }) }));
+function phb2AssertAnimationBatches(Solver, result, caseIds, batches, label) {
+  const batchIndex = new Map();
+  const flattened = [];
+  batches.forEach((batch, index) => {
+    assert.ok(batch.length > 0 && batch.length <= 4, `${label}: batch ${index} is bounded to 1..4 items`);
+    const records = batch.map(([id, position]) => phb2AnimationRecord(Solver, result, caseIds, id, position));
+    const layerKeys = new Set(records.map(record => Math.round(record.aabb.min.y / 0.05)));
+    const rowKeys = new Set(records.map(record => Math.round(record.aabb.max.x / 0.05)));
+    const groups = new Set(records.map(record => record.caseId));
+    assert.equal(layerKeys.size, 1, `${label}: batch ${index} does not cross support layers`);
+    assert.equal(rowKeys.size, 1, `${label}: batch ${index} does not cross X-row/load-wall boundaries`);
+    assert.equal(groups.size, 1, `${label}: batch ${index} does not cross caseId groups`);
+    for (const record of records) {
+      batchIndex.set(record.id, index);
+      flattened.push(record);
+    }
+  });
 
-      // (a) First animated floor item is at the most-forward valid X.
-      const floorY = Math.min(...seq.map(s => s.minY));
-      const firstFloor = seq.find(s => Math.abs(s.minY - floorY) < 0.5);
-      const maxFrontEdge = Math.max(...seq.filter(s => Math.abs(s.minY - floorY) < 0.5).map(s => s.x + s.dims.length / 2));
-      assert.ok(usableMaxX - maxFrontEdge <= 0.5, `${shapeMode}/${n}: front row reaches the nose`);
-      assert.ok(Math.abs((firstFloor.x + firstFloor.dims.length / 2) - maxFrontEdge) <= 0.5, `${shapeMode}/${n}: first animated floor item is at the most-forward X`);
-
-      // (b) Within each layer, X is non-increasing over the sequence (no rear row
-      //     animates while a front row in the same layer is still unanimated).
-      const byLayer = new Map();
-      seq.forEach((s, idx) => { const k = Math.round(s.minY); if (!byLayer.has(k)) byLayer.set(k, []); byLayer.get(k).push({ ...s, idx }); });
-      for (const [layer, items] of byLayer) {
-        for (let i = 1; i < items.length; i++) {
-          assert.ok(items[i].x <= items[i - 1].x + 0.01, `${shapeMode}/${n}: layer ${layer} animates front-to-rear (x non-increasing)`);
-        }
-      }
-
-      // (c) Floor layer completes before any stacking begins.
-      const lastFloorIdx = seq.reduce((m, s, idx) => Math.abs(s.minY - floorY) < 0.5 ? idx : m, -1);
-      const firstUpperIdx = seq.findIndex(s => s.minY - floorY > 0.5);
-      if (firstUpperIdx >= 0) assert.ok(lastFloorIdx < firstUpperIdx, `${shapeMode}/${n}: the floor layer completes before stacking`);
-
-      // (d) Every support precedes its children in the animation order.
-      const indexOf = new Map(seq.map((s, idx) => [s.id, idx]));
-      for (const child of seq) {
-        if (child.minY <= floorY + 0.5) continue;
-        const supports = seq.filter(s => s !== child && Math.abs(s.maxY - child.minY) < 0.5 && phbOverlapXZ({ pos: { x: child.x, z: child.z }, od: child.dims }, { pos: { x: s.x, z: s.z }, od: s.dims }));
-        for (const s of supports) assert.ok(indexOf.get(s.id) < indexOf.get(child.id), `${shapeMode}/${n}: support ${s.id} animates before child ${child.id}`);
-      }
-
-      // (f) Safety: no overlap, contained (no OOB/blocked), THREE dims, supported.
-      for (let i = 0; i < seq.length; i++) for (let j = i + 1; j < seq.length; j++) assert.equal(Solver.aabbsOverlap(seq[i].aabb, seq[j].aabb), false, `${shapeMode}/${n}: no overlap`);
-      for (const s of seq) {
-        assert.equal(PackLib.isAabbContainedInAnyZone(s.aabb, zones), true, `${shapeMode}/${n}: contained`);
-        const t = truth(PHB_DIMS, res.rotations.get(s.id));
-        assert.deepEqual({ l: s.dims.length, w: s.dims.width, h: s.dims.height }, { l: t.length, w: t.width, h: t.height }, `${shapeMode}/${n}: THREE dims`);
-        if (s.minY > floorY + 0.5) {
-          const sup = seq.filter(o => o !== s && Math.abs(o.maxY - s.minY) < 0.5 && phbOverlapXZ({ pos: { x: s.x, z: s.z }, od: s.dims }, { pos: { x: o.x, z: o.z }, od: o.dims })).map(o => o.aabb);
-          assert.ok(PackLib.computeSupportFraction(s.aabb, sup, 0.05) >= PackLib.MIN_SUPPORT_FRACTION, `${shapeMode}/${n}: supported`);
-        }
-      }
-      const first20 = seq.slice(0, 20).map(s => `${s.id}(${Math.round(s.x)},${Math.round(s.y)},${Math.round(s.z)})`);
-      report.push(`${shapeMode}/${n}: first20=${first20.join(' ')}`);
-
-      // (e) + (10) Determinism: same final layout AND same animation order on repeat.
-      const res2 = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: Array.from({ length: n }, (_, i) => ({ instanceId: `i${i}`, caseId: 'c', dims: { l: 24, w: 18, h: 16 }, shape: 'box', orientationLock: 'any', canFlip: false, weight: 30 })) });
-      assert.equal(JSON.stringify([...res.placements]), JSON.stringify([...res2.placements]), `${shapeMode}/${n}: final layout deterministic`);
-      assert.equal(JSON.stringify(phb1AnimationOrder(res2.placements).map(e => e[0])), JSON.stringify(order.map(e => e[0])), `${shapeMode}/${n}: animation order deterministic`);
+  const byLayer = new Map();
+  for (const record of flattened) {
+    const key = Math.round(record.aabb.min.y / 0.05);
+    if (!byLayer.has(key)) byLayer.set(key, []);
+    byLayer.get(key).push(record);
+  }
+  for (const [layer, records] of byLayer) {
+    for (let index = 1; index < records.length; index++) {
+      assert.ok(records[index].aabb.max.x <= records[index - 1].aabb.max.x + 0.05,
+        `${label}: layer ${layer} completes high-X walls before lower-X walls`);
     }
   }
-  assert.ok(report.length === 12, `first-20 animated IDs (id(x,y,z)):\n  ${report.join('\n  ')}`);
+
+  const bySemanticRow = new Map();
+  for (const record of flattened) {
+    const key = `${Math.round(record.aabb.min.y / 0.05)}|${Math.round(record.aabb.max.x / 0.05)}`;
+    if (!bySemanticRow.has(key)) bySemanticRow.set(key, []);
+    bySemanticRow.get(key).push(record.caseId);
+  }
+  for (const [row, caseSequence] of bySemanticRow) {
+    const runs = caseSequence.filter((caseId, index) => index === 0 || caseId !== caseSequence[index - 1]);
+    assert.equal(new Set(runs).size, runs.length, `${label}: row ${row} does not return to a caseId after another group starts`);
+  }
+
+  for (const child of flattened) {
+    for (const support of flattened) {
+      if (support === child) continue;
+      if (Math.abs(support.aabb.max.y - child.aabb.min.y) > 0.05) continue;
+      if (Solver.computeXzOverlapArea(support.aabb, child.aabb) <= 0.05) continue;
+      assert.ok(batchIndex.get(support.id) < batchIndex.get(child.id),
+        `${label}: supporter ${support.id} completes before child ${child.id}`);
+    }
+  }
+  return flattened;
+}
+
+test('PHASE-B2B production animation planner preserves semantic boundaries (Std/WW/real FrontOverhang × 6/20/40/100)', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const Engine = await import(`${autoPackEnginePath.href}?t=${Date.now()}-${Math.random()}`);
+  const truth = await threeOrientedTruth();
+  for (const shapeMode of ['rect', 'wheelWells', 'frontBonus']) {
+    for (const n of [6, 20, 40, 100]) {
+      const truck = {
+        length: 240, width: 96, height: 96, shapeMode,
+        ...(shapeMode === 'frontBonus' ? { shapeConfig: { bonusLength: 48, bonusHeight: 43.2 } } : {}),
+      };
+      const zones = PackLib.getTrailerUsableZones(truck);
+      const items = Array.from({ length: n }, (_, index) => ({ instanceId: `i${index}`, caseId: 'c', dims: { l: 24, w: 18, h: 16 }, shape: 'box', orientationLock: 'any', canFlip: false, weight: 30 }));
+      const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+      const placementSnapshot = JSON.stringify([...result.placements]);
+      const caseIds = new Map(items.map(item => [item.instanceId, item.caseId]));
+      const batches4 = Engine.buildPlacementAnimationBatches(result.placements, result.orientedDims, caseIds, 4);
+      const batches1 = Engine.buildPlacementAnimationBatches(result.placements, result.orientedDims, caseIds, 1);
+      const order4 = phb2AssertAnimationBatches(Solver, result, caseIds, batches4, `${shapeMode}/${n}/batch4`);
+      const order1 = phb2AssertAnimationBatches(Solver, result, caseIds, batches1, `${shapeMode}/${n}/batch1`);
+      assert.deepEqual(order4.map(record => record.id), order1.map(record => record.id),
+        `${shapeMode}/${n}: batch-size shadows preserve one semantic animation order`);
+      assert.equal(JSON.stringify([...result.placements]), placementSnapshot,
+        `${shapeMode}/${n}: animation planning does not mutate final solver positions`);
+      phb2AssertSafe(Solver, PackLib, result, zones, `${shapeMode}/${n}/animation`);
+      for (const [id, dims] of result.orientedDims) {
+        assert.deepEqual(dims, truth(PHB_DIMS, result.rotations.get(id)), `${shapeMode}/${n}: ${id} THREE dimensions`);
+      }
+      const repeat = Engine.buildPlacementAnimationBatches(result.placements, result.orientedDims, caseIds, 4);
+      assert.equal(JSON.stringify(batches4), JSON.stringify(repeat), `${shapeMode}/${n}: deterministic animation batches`);
+    }
+  }
 });
 
-test('PHASE-B1 engine animatePlacements sorts the animation-only queue front-first (y asc, x desc, z asc) and never reorders saved state', async () => {
+test('PHASE-B2B mixed case groups and support dependencies never share a semantic batch', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const Engine = await import(`${autoPackEnginePath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = [
+    ...Array.from({ length: 64 }, (_, index) => ({ instanceId: `A${index}`, caseId: 'A', dims: { l: 42, w: 10, h: 16 }, orientationLock: 'any', canFlip: false, weight: 30 })),
+    ...Array.from({ length: 20 }, (_, index) => ({ instanceId: `B${index}`, caseId: 'B', dims: { l: 20, w: 10, h: 16 }, orientationLock: 'any', canFlip: false, weight: 20 })),
+  ];
+  const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const caseIds = new Map(items.map(item => [item.instanceId, item.caseId]));
+  const batches = Engine.buildPlacementAnimationBatches(result.placements, result.orientedDims, caseIds, 4);
+  const order = phb2AssertAnimationBatches(Solver, result, caseIds, batches, 'mixed A/B');
+  assert.ok(order.findIndex(record => record.id === 'A48') < order.findIndex(record => record.id === 'B0'),
+    'the A alternate-yaw forward completion animates before B begins in the rear strip');
+});
+
+test('PHASE-B2B engine uses the production row-aware planner and never blind-slices semantic batches', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
   const start = src.indexOf('async function animatePlacements(');
   const end = src.indexOf('\n  function prepareObjectForPlacement(', start);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
   assert.ok(block, 'animatePlacements block found');
-  // Sort key order: y ascending, then x DESCENDING (front/high +X first), then z ascending.
-  assert.match(block, /\(Number\(aPos\.y\) \|\| 0\) - \(Number\(bPos\.y\) \|\| 0\) \|\|\s*\(Number\(bPos\.x\) \|\| 0\) - \(Number\(aPos\.x\) \|\| 0\) \|\|\s*\(Number\(aPos\.z\) \|\| 0\) - \(Number\(bPos\.z\) \|\| 0\)/,
-    'animation queue must sort y asc, x DESC (front-first), z asc');
-  // The queue is built from a copy (Array.from(...).sort) — it must not mutate the placements Map.
-  assert.match(block, /Array\.from\(placements\.entries\(\)\)\s*\.sort\(/, 'animation order is a sorted copy, not an in-place reorder of solver state');
+  assert.match(block, /buildPlacementAnimationBatches\([\s\S]*placements,[\s\S]*orientedDimsMap,[\s\S]*caseIdMap,[\s\S]*ANIMATION_BATCH_SIZE/,
+    'animatePlacements delegates semantic ordering to the production batch planner');
+  assert.doesNotMatch(block, /entries\.slice\(i, i \+ ANIMATION_BATCH_SIZE\)/,
+    'animatePlacements must not blindly slice across semantic boundaries');
 });
 
 test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when tweens stop ticking', async () => {
@@ -8503,14 +8534,14 @@ test('AUTO-PACK-A1-ANIM-1 AutoPack animates placements in batches with fallback 
   const tweenEnd = src.indexOf('\n  function sleep(ms)', tweenStart);
   const tweenBlock = tweenStart >= 0 && tweenEnd > tweenStart ? src.slice(tweenStart, tweenEnd) : '';
 
-  assert.match(src, /const ANIMATION_BATCH_SIZE = 24;/,
-    'AutoPack animation must use bounded batches instead of one long serial chain');
+  assert.match(src, /const ANIMATION_BATCH_SIZE = 4;/,
+    'AutoPack animation formally uses bounded batches of at most four items');
   assert.match(src, /const TWEEN_FALLBACK_GRACE_MS = 90;/,
     'AutoPack animation fallback must be short enough that large packs cannot look frozen for many seconds');
-  assert.match(block, /Array\.from\(placements\.entries\(\)\)[\s\S]*\.sort\(/,
-    'AutoPack animation must order lower placements before upper layers');
-  assert.match(block, /entries\.slice\(i, i \+ ANIMATION_BATCH_SIZE\)/,
-    'AutoPack animation must process placements in batches');
+  assert.match(block, /buildPlacementAnimationBatches\(/,
+    'AutoPack animation must use row/group/dependency-aware batches');
+  assert.doesNotMatch(block, /entries\.slice\(i, i \+ ANIMATION_BATCH_SIZE\)/,
+    'AutoPack animation must not blind-slice across semantic boundaries');
   assert.match(block, /batch\.forEach\(\(\[id, pos\]\) => \{[\s\S]*tweenInstanceToPosition\(id, pos, ANIMATION_DURATION_MS, metrics\);[\s\S]*\}\);/,
     'AutoPack animation must start each batch without awaiting per-object tween callbacks');
   assert.match(block, /await sleep\(ANIMATION_DURATION_MS \+ ANIMATION_BATCH_GAP_MS\);[\s\S]*snapInstanceToPosition\(id, pos\);/,

@@ -29,6 +29,7 @@ export function createPacksScreen({
   AppShell,
   ExportService,
   CardDisplayOverlay,
+  TruckChangeController,
   featureFlags,
   persistNow,
   toast,
@@ -200,9 +201,13 @@ export function createPacksScreen({
           icon: 'fa-solid fa-truck',
           onClick: () => {
             const nextTruck = TrailerPresets.applyToTruck(pack.truck, p);
-            PackLibrary.update(pack.id, { truck: nextTruck });
-            UIComponents.showToast(`Applied preset: ${p.label}`, 'success');
-            render();
+            TruckChangeController.request({
+              pack,
+              nextTruck,
+              successMessage: `Applied preset: ${p.label}`,
+              restoreControls: () => render(),
+              onCommitted: () => render(),
+            });
           },
         });
       });
@@ -1688,6 +1693,22 @@ export function createPacksScreen({
       tW.input.addEventListener('input', syncPresetFromInputs);
       tH.input.addEventListener('input', syncPresetFromInputs);
 
+      function restoreEditControls() {
+        title.input.value = pack.title || '';
+        client.input.value = pack.client || '';
+        projectName.input.value = pack.projectName || '';
+        drawnBy.input.value = pack.drawnBy || '';
+        notes.textarea.value = pack.notes || '';
+        tL.input.value = String((pack.truck && pack.truck.length) || 636);
+        tW.input.value = String((pack.truck && pack.truck.width) || 102);
+        tH.input.value = String((pack.truck && pack.truck.height) || 98);
+        modeSelect.value =
+          pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
+            ? pack.truck.shapeMode
+            : 'rect';
+        presetSelect.value = findPresetIdByDims(tL.input.value, tW.input.value, tH.input.value);
+      }
+
       content.appendChild(title.wrap);
       content.appendChild(client.wrap);
       content.appendChild(projectName.wrap);
@@ -1697,7 +1718,8 @@ export function createPacksScreen({
       content.appendChild(truckGrid);
       content.appendChild(notes.wrap);
 
-      UIComponents.showModal({
+      let editModalRef = null;
+      editModalRef = UIComponents.showModal({
         title: 'Edit Pack',
         content,
         actions: [
@@ -1732,16 +1754,27 @@ export function createPacksScreen({
               if (nextTruck.shapeMode === 'frontBonus') {
                 nextTruck.shapeConfig = normalizeFrontBonusShapeConfig(nextTruck.shapeConfig, nextTruck);
               }
-              PackLibrary.update(packId, {
+              const metadata = {
                 title: t,
                 client: String(client.input.value || '').trim(),
                 projectName: String(projectName.input.value || '').trim(),
                 drawnBy: String(drawnBy.input.value || '').trim(),
                 notes: String(notes.textarea.value || '').trim(),
-                truck: nextTruck,
+              };
+              TruckChangeController.request({
+                pack,
+                nextTruck,
+                commitWhenUnchanged: true,
+                successMessage: 'Pack updated',
+                restoreControls: restoreEditControls,
+                commit: finalPack => PackLibrary.update(packId, {
+                  ...metadata,
+                  truck: finalPack.truck,
+                  cases: finalPack.cases,
+                }),
+                onCommitted: () => editModalRef && editModalRef.close(),
               });
-              UIComponents.showToast('Pack updated', 'success');
-              return true;
+              return false;
             },
           },
         ],

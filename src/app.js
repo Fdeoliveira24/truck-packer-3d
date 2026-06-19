@@ -53,6 +53,7 @@ import { createSystemOverlay } from './ui/system-overlay.js';
 import { createErrorOverlay } from './ui/error-overlay.js';
 import { Router } from './router.js';
 import { createUIComponents } from './ui/ui-components.js';
+import { createTruckChangeController } from './ui/truck-change-controller.js';
 import { createTableFooter } from './ui/table-footer.js';
 import { TrailerPresets } from './data/trailer-presets.js';
 import { createSceneRuntime } from './editor/scene-runtime.js';
@@ -3815,6 +3816,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       StateStore,
       Utils,
     });
+    const TruckChangeController = createTruckChangeController({
+      PackLibrary,
+      CaseLibrary,
+      UIComponents,
+      documentRef: document,
+    });
     PacksUI = createPacksScreen({
       Utils,
       UIComponents,
@@ -3829,6 +3836,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       AppShell,
       ExportService,
       CardDisplayOverlay,
+      TruckChangeController,
       featureFlags,
       persistNow: () => Storage.saveNow(),
       toast,
@@ -3872,6 +3880,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       SceneManager,
       CaseScene,
       InteractionManager,
+      TruckChangeController,
     });
 
     // ============================================================================

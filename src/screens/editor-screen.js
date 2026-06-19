@@ -1491,6 +1491,7 @@ export function createEditorScreen({
   SceneManager,
   CaseScene,
   InteractionManager,
+  TruckChangeController,
 }) {
   const EditorUI = (() => {
     const shellEl = /** @type {HTMLElement|null} */ (document.querySelector('.editor-shell'));
@@ -2589,6 +2590,18 @@ export function createEditorScreen({
       });
     }
 
+    // Every editor truck writer delegates to the shared, single-flight
+    // reconciliation controller. The current render is also the canonical
+    // control restoration path for Cancel, X, overlay click, and Escape.
+    function applyTruckGeometryChange(pack, nextTruck, successMsg) {
+      return TruckChangeController.request({
+        pack,
+        nextTruck,
+        successMessage: successMsg || 'Truck updated',
+        restoreControls: () => render(),
+      });
+    }
+
     function renderTruckInspector(pack, prefs) {
       const lengthUnit = getLengthUnit(prefs);
       const card = document.createElement('div');
@@ -2649,8 +2662,7 @@ export function createEditorScreen({
         const preset = TrailerPresets.getById(id);
         if (!preset) return;
         const nextTruck = TrailerPresets.applyToTruck(pack.truck, preset);
-        PackLibrary.update(pack.id, { truck: nextTruck });
-        UIComponents.showToast(`Applied preset: ${preset.label}`, 'success');
+        applyTruckGeometryChange(pack, nextTruck, `Applied preset: ${preset.label}`);
       });
 
       presetWrap.appendChild(presetLabel);
@@ -2735,8 +2747,7 @@ export function createEditorScreen({
           next.shapeConfig = cfg;
         }
 
-        PackLibrary.update(pack.id, { truck: next });
-        UIComponents.showToast('Truck updated', 'success');
+        applyTruckGeometryChange(pack, next, 'Truck updated');
       });
 
       shapeSelect.addEventListener('change', () => {
@@ -2775,34 +2786,9 @@ export function createEditorScreen({
           nextTruck.shapeConfig = cfg;
         }
 
-        const zonesInches = TrailerGeometry.getTrailerUsableZones(nextTruck);
-        const rectZone = [
-          {
-            min: { x: 0, y: 0, z: -nextTruck.width / 2 },
-            max: { x: nextTruck.length, y: nextTruck.height, z: nextTruck.width / 2 },
-          },
-        ];
-        let outOfBoundsCount = 0;
-        (pack.cases || []).forEach(inst => {
-          if (!inst || inst.hidden) return;
-          const c = CaseLibrary.getById(inst.caseId);
-          if (!c) return;
-          const dims = c.dimensions || { length: 0, width: 0, height: 0 };
-          const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
-          const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
-          const aabb = {
-            min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
-            max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
-          };
-          const wasInsideRect = TrailerGeometry.isAabbContainedInAnyZone(aabb, rectZone);
-          const insideNew = TrailerGeometry.isAabbContainedInAnyZone(aabb, zonesInches);
-          if (wasInsideRect && !insideNew) outOfBoundsCount++;
-        });
-
-        PackLibrary.update(pack.id, { truck: nextTruck });
-        if (outOfBoundsCount > 0) {
-          UIComponents.showToast('Some items may be out of bounds for this trailer shape.', 'warning');
-        }
+        // Reconcile every placed instance against the new shape (replaces the old
+        // best-effort out-of-bounds count): keep valid, snap safely, or prompt.
+        applyTruckGeometryChange(pack, nextTruck, `Trailer shape: ${mode === 'wheelWells' ? 'Wheel Wells' : mode === 'frontBonus' ? 'Front Overhang' : 'Standard'}`);
       });
 
       const statsEl = document.createElement('div');
@@ -2890,8 +2876,7 @@ export function createEditorScreen({
               bonusHeight: Utils.clamp(displayLengthToInches(fBH.input.value, bonusHeight, lengthUnit), 0, tH),
             };
             const nextTruck = { ...pack.truck, shapeConfig: nextCfg };
-            PackLibrary.update(pack.id, { truck: nextTruck });
-            UIComponents.showToast('Overhang updated', 'success');
+            applyTruckGeometryChange(pack, nextTruck, 'Overhang updated');
           });
 
           const cfgReset = document.createElement('button');
@@ -2903,8 +2888,7 @@ export function createEditorScreen({
             fBH.input.value = String(Utils.inchesToUnit(defBH, lengthUnit).toFixed(1));
             const nextCfg = { bonusLength: defBL, bonusWidth: defBW, bonusHeight: defBH };
             const nextTruck = { ...pack.truck, shapeConfig: nextCfg };
-            PackLibrary.update(pack.id, { truck: nextTruck });
-            UIComponents.showToast('Overhang reset to defaults', 'info');
+            applyTruckGeometryChange(pack, nextTruck, 'Overhang reset to defaults');
           });
 
           btnRow.appendChild(cfgSave);
@@ -2961,8 +2945,7 @@ export function createEditorScreen({
               nextCfg.wellLength = tL - nextCfg.wellOffsetFromRear;
             }
             const nextTruck = { ...pack.truck, shapeConfig: nextCfg };
-            PackLibrary.update(pack.id, { truck: nextTruck });
-            UIComponents.showToast('Wheel wells updated', 'success');
+            applyTruckGeometryChange(pack, nextTruck, 'Wheel wells updated');
           });
 
           const cfgReset = document.createElement('button');
@@ -2979,8 +2962,7 @@ export function createEditorScreen({
               wellLength: defWL, wellOffsetFromRear: defWO,
             };
             const nextTruck = { ...pack.truck, shapeConfig: nextCfg };
-            PackLibrary.update(pack.id, { truck: nextTruck });
-            UIComponents.showToast('Wheel wells reset to defaults', 'info');
+            applyTruckGeometryChange(pack, nextTruck, 'Wheel wells reset to defaults');
           });
 
           btnRow.appendChild(cfgSave);

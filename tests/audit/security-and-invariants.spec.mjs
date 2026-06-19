@@ -55,6 +55,7 @@ const autoPackLegacySolverPath = new URL('../../src/services/autopack-legacy-sol
 const autoPackSolverPath = new URL('../../src/services/autopack-solver.js', import.meta.url);
 const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
+const truckChangeControllerPath = new URL('../../src/ui/truck-change-controller.js', import.meta.url);
 const sceneRuntimePath = new URL('../../src/editor/scene-runtime.js', import.meta.url);
 const casesScreenPath = new URL('../../src/screens/cases-screen.js', import.meta.url);
 const categoryServicePath = new URL('../../src/services/category-service.js', import.meta.url);
@@ -7450,6 +7451,625 @@ test('REPAIR-1E maxStackCount 1 and 2 still cap direct children on a support', a
       assert.ok(directChildren.length <= cap, `maxStackCount ${cap}: support ${support.id} has ${directChildren.length} direct children (<= ${cap})`);
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// TRUCK GEOMETRY CHANGE RECONCILIATION
+// Changing preset/mode/dimensions/wheel-wells/overhang revalidates every placed
+// instance: valid ones kept exactly; invalid ones corrected by a safe vertical
+// snap (X/Z unchanged, no collision, valid support); the rest reported invalid
+// and resolved via stage/repack — never floating, overlapping, blocked, or OOB.
+// ---------------------------------------------------------------------------
+
+const RECON_CASE_LIB = [{ id: 'c', name: 'Carton', dimensions: { length: 24, width: 18, height: 16 } }];
+const RECON_DIMS = { length: 24, width: 18, height: 16 };
+function reconAabb(pos, dims) {
+  return {
+    min: { x: pos.x - dims.length / 2, y: pos.y - dims.height / 2, z: pos.z - dims.width / 2 },
+    max: { x: pos.x + dims.length / 2, y: pos.y + dims.height / 2, z: pos.z + dims.width / 2 },
+  };
+}
+function reconInst(id, x, y, z) {
+  return { id, caseId: 'c', transform: { position: { x, y, z }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } }, placement: 'packed', hidden: false };
+}
+// Assert the FINAL layout (after a resolution) is safe: no out-of-bounds, no
+// blocked-zone use, no overlap, and no floating packed item.
+function assertReconLayoutSafe(PackLib, finalCases, truck, label) {
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const blocked = [
+    ...(PackLib.getFrontBonusBlockedZones ? PackLib.getFrontBonusBlockedZones(truck) : []),
+  ];
+  const aabbs = finalCases.filter(c => !c.hidden).map(c => ({ c, aabb: reconAabb(c.transform.position, RECON_DIMS) }));
+  for (let i = 0; i < aabbs.length; i++) {
+    for (let j = i + 1; j < aabbs.length; j++) {
+      const a = aabbs[i].aabb, b = aabbs[j].aabb;
+      const overlap = a.min.x < b.max.x - 0.05 && a.max.x > b.min.x + 0.05 &&
+        a.min.y < b.max.y - 0.05 && a.max.y > b.min.y + 0.05 &&
+        a.min.z < b.max.z - 0.05 && a.max.z > b.min.z + 0.05;
+      assert.equal(overlap, false, `${label}: ${aabbs[i].c.id} and ${aabbs[j].c.id} must not overlap`);
+    }
+  }
+  for (const { c, aabb } of aabbs) {
+    // No blocked-zone use.
+    for (const bz of blocked) {
+      const inBlocked = aabb.min.x < bz.max.x - 0.05 && aabb.max.x > bz.min.x + 0.05 &&
+        aabb.min.y < bz.max.y - 0.05 && aabb.max.y > bz.min.y + 0.05 &&
+        aabb.min.z < bz.max.z - 0.05 && aabb.max.z > bz.min.z + 0.05;
+      assert.equal(inBlocked, false, `${label}: ${c.id} must not enter a blocked zone`);
+    }
+    if (c.placement === 'packed') {
+      assert.equal(PackLib.isAabbContainedInAnyZone(aabb, zones), true, `${label}: packed ${c.id} is contained (no OOB)`);
+      // No floating: rests on a zone floor OR on another item with support >= MIN.
+      const onFloor = zones.some(z => Math.abs(aabb.min.y - z.min.y) <= 0.05 &&
+        aabb.min.x >= z.min.x - 0.05 && aabb.max.x <= z.max.x + 0.05 && aabb.min.z >= z.min.z - 0.05 && aabb.max.z <= z.max.z + 0.05);
+      if (!onFloor) {
+        const supporters = aabbs.filter(o => o.c !== c && Math.abs(aabb.min.y - o.aabb.max.y) <= 0.05).map(o => o.aabb);
+        assert.ok(PackLib.computeSupportFraction(aabb, supporters, 0.05) >= PackLib.MIN_SUPPORT_FRACTION, `${label}: packed ${c.id} is supported (not floating)`);
+      }
+    } else {
+      // Staged items rest on the ground (bottom ~ 0) and sit outside the usable zones.
+      assert.ok(Math.abs(aabb.min.y) <= 1.01, `${label}: staged ${c.id} is floor-contacting`);
+      assert.equal(PackLib.isAabbContainedInAnyZone(aabb, zones), false, `${label}: staged ${c.id} is outside the usable zones`);
+    }
+  }
+}
+
+function assertCanonicalReconLayoutSafe(PackLib, finalCases, truck, caseLibrary, label) {
+  const caseMap = new Map(caseLibrary.map(c => [c.id, c]));
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const entries = finalCases.map(c => {
+    const canonical = PackLib.getCanonicalInstanceEffectiveDims(c, caseMap.get(c.caseId));
+    assert.equal(canonical.ok, true, `${label}: ${c.id} has canonical physical dimensions`);
+    return { c, aabb: reconAabb(c.transform.position, canonical.dims) };
+  });
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      const a = entries[i].aabb, b = entries[j].aabb;
+      const overlap = a.min.x < b.max.x - 0.001 && a.max.x > b.min.x + 0.001 &&
+        a.min.y < b.max.y - 0.001 && a.max.y > b.min.y + 0.001 &&
+        a.min.z < b.max.z - 0.001 && a.max.z > b.min.z + 0.001;
+      assert.equal(overlap, false, `${label}: ${entries[i].c.id}/${entries[j].c.id} do not overlap`);
+    }
+  }
+  const packed = entries.filter(entry => entry.c.placement === 'packed');
+  for (const entry of entries) {
+    if (entry.c.placement !== 'packed') {
+      assert.ok(Math.abs(entry.aabb.min.y) <= 0.05, `${label}: staged ${entry.c.id} rests exactly on staging floor`);
+      assert.equal(PackLib.isAabbInStagingZone({ truck }, entry.aabb), true, `${label}: staged ${entry.c.id} is reachable`);
+      continue;
+    }
+    assert.equal(PackLib.isAabbContainedInAnyZone(entry.aabb, zones), true, `${label}: packed ${entry.c.id} contained`);
+    const onFloor = zones.some(zone => Math.abs(entry.aabb.min.y - zone.min.y) <= 0.05 &&
+      entry.aabb.min.x >= zone.min.x - 0.05 && entry.aabb.max.x <= zone.max.x + 0.05 &&
+      entry.aabb.min.z >= zone.min.z - 0.05 && entry.aabb.max.z <= zone.max.z + 0.05);
+    if (!onFloor) {
+      const supports = packed.filter(other => other !== entry && Math.abs(entry.aabb.min.y - other.aabb.max.y) <= 0.05);
+      assert.ok(PackLib.computeSupportFraction(entry.aabb, supports.map(s => s.aabb), 0.05) >= PackLib.MIN_SUPPORT_FRACTION,
+        `${label}: packed ${entry.c.id} supported`);
+    }
+  }
+}
+
+const RECON_RECT = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
+const RECON_WW = { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' };
+const reconFB = (bonusHeight = 43.2, bonusLength = 48) => ({ length: 240, width: 96, height: 96, shapeMode: 'frontBonus', shapeConfig: { bonusLength, bonusHeight } });
+
+test('RECON mode switches (Std↔WheelWells, Std↔FrontOverhang) keep valid items and report invalid ones safely', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  // Cartons across the floor; one centered where the wheel well will appear.
+  const cases = [reconInst('i0', 30, 8, 0), reconInst('i1', 90, 8, 0), reconInst('i2', 150, 8, 0), reconInst('i3', 210, 8, 0)];
+  // Std → Wheel Wells
+  const r = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, RECON_WW, RECON_CASE_LIB);
+  assert.ok(r.summary.invalid >= 1, 'an item straddling the wheel well is reported invalid');
+  for (const id of r.kept) {
+    const before = cases.find(c => c.id === id);
+    const after = r.nextPack.cases.find(c => c.id === id);
+    assert.deepEqual(after.transform.position, before.transform.position, `kept item ${id} is byte-equivalent`);
+  }
+  // Resolve invalid by staging, then the whole layout is safe.
+  const staged = PackLib.stageInvalidPlacements(r, RECON_WW, RECON_CASE_LIB);
+  assertReconLayoutSafe(PackLib, staged.cases, RECON_WW, 'Std→WW staged');
+
+  // Wheel Wells → Standard: a previously-valid WW layout stays valid (more space).
+  const wwCases = staged.cases;
+  const r2 = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_WW, cases: wwCases }, RECON_RECT, RECON_CASE_LIB);
+  assertReconLayoutSafe(PackLib, PackLib.stageInvalidPlacements(r2, RECON_RECT, RECON_CASE_LIB).cases, RECON_RECT, 'WW→Std');
+
+  // Std → Front Overhang: floor items unaffected (overhang only adds space).
+  const r3 = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, reconFB(), RECON_CASE_LIB);
+  assert.equal(r3.summary.invalid, 0, 'Std→FrontOverhang keeps all floor items');
+  assert.equal(r3.summary.adjusted, 0, 'Std→FrontOverhang requires no adjustment');
+  // Front Overhang → Standard: a deck item (x>length) becomes invalid (can't snap into the box).
+  const deckCases = [reconInst('floor', 30, 8, 0), reconInst('deck', 262, 43.2 + 8, 0)];
+  const r4 = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: reconFB(), cases: deckCases }, RECON_RECT, RECON_CASE_LIB);
+  assert.deepEqual(r4.invalid, ['deck'], 'FrontOverhang→Std: the deck item is invalid');
+  assert.ok(r4.kept.includes('floor'), 'the main-floor item is kept');
+  assertReconLayoutSafe(PackLib, PackLib.stageInvalidPlacements(r4, RECON_RECT, RECON_CASE_LIB).cases, RECON_RECT, 'FB→Std staged');
+});
+
+test('RECON reduced length/width/height marks out-of-bounds items invalid; valid items byte-equivalent', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const cases = [reconInst('i0', 30, 8, 0), reconInst('i1', 90, 8, 0), reconInst('i2', 150, 8, 0), reconInst('i3', 210, 8, 30)];
+  const rL = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, { ...RECON_RECT, length: 120 }, RECON_CASE_LIB);
+  assert.deepEqual(rL.invalid.sort(), ['i2', 'i3'], 'items beyond the reduced length are invalid');
+  assert.deepEqual(rL.nextPack.cases.find(c => c.id === 'i0').transform.position, { x: 30, y: 8, z: 0 }, 'in-bounds item byte-equivalent');
+  const rW = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, { ...RECON_RECT, width: 50 }, RECON_CASE_LIB);
+  assert.ok(rW.invalid.includes('i3'), 'item beyond the reduced width (z=30, half-w=25) is invalid');
+  // Reduced height below a single floor carton (16) → that carton no longer fits.
+  const rH = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, { ...RECON_RECT, height: 10 }, RECON_CASE_LIB);
+  assert.equal(rH.summary.invalid, cases.length, 'a height below the case height invalidates every item');
+});
+
+test('RECON safe vertical correction: a floating item snaps to the floor (X/Z unchanged); deck height change snaps to the new deck', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  // Floating item (y=40, nothing below) snaps down to the floor (center y=8).
+  const r = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases: [reconInst('f', 30, 40, 0)] }, RECON_RECT, RECON_CASE_LIB);
+  assert.equal(r.summary.adjusted, 1, 'the floating item is safely adjusted');
+  const f = r.nextPack.cases[0];
+  assert.equal(f.transform.position.y, 8, 'snapped down to the floor (center = height/2)');
+  assert.equal(f.transform.position.x, 30, 'X unchanged'); assert.equal(f.transform.position.z, 0, 'Z unchanged');
+  // Deck lowered 43.2 → 20: the deck item snaps down to the new deck (20 + 8).
+  const deck = [reconInst('d', 262, 43.2 + 8, 0)];
+  const r2 = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: reconFB(43.2), cases: deck }, reconFB(20), RECON_CASE_LIB);
+  assert.equal(r2.summary.adjusted, 1, 'the deck item is safely adjusted to the new deck height');
+  assert.equal(r2.nextPack.cases[0].transform.position.y, 28, 'snapped to the lowered deck (20 + height/2)');
+});
+
+test('RECON wheel-well size/offset and overhang deck length changes revalidate placements', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  // A WW item valid for one offset can become invalid when the well moves under it.
+  const wwA = { ...RECON_WW, shapeConfig: { wellOffsetFromRear: 60, wellLength: 84, wellWidth: 14.4, wellHeight: 33.6 } };
+  const item = [reconInst('w', 200, 8, 40)]; // rear zone, near a side
+  const r = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases: item }, wwA, RECON_CASE_LIB);
+  assertReconLayoutSafe(PackLib, PackLib.stageInvalidPlacements(r, wwA, RECON_CASE_LIB).cases, wwA, 'WW offset');
+  // Overhang deck shortened so a deck item past the new extent becomes invalid.
+  const deck = [reconInst('d', 280, 43.2 + 8, 0)]; // within bonusLength 48 (x up to 288)
+  const rShort = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: reconFB(43.2, 48), cases: deck }, reconFB(43.2, 20), RECON_CASE_LIB);
+  assert.deepEqual(rShort.invalid, ['d'], 'a deck item past the shortened overhang is invalid');
+});
+
+test('RECON dependency groups: invalid base never leaves a child floating; collision/height after change', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  // Invalid base (out of reduced length) with a stacked child → both invalid (child not floated).
+  const stack = [reconInst('base', 230, 8, 0), reconInst('child', 230, 24, 0)];
+  const r = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases: stack }, { ...RECON_RECT, length: 120 }, RECON_CASE_LIB);
+  assert.deepEqual(r.invalid.sort(), ['base', 'child'], 'an invalid base takes its child with it (no floating child)');
+  // Reduced height clips the top child only; base stays, child invalid (no valid lower slot since base occupies the floor).
+  const stack2 = [reconInst('b2', 30, 8, 0), reconInst('c2', 30, 24, 0)];
+  const r2 = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases: stack2 }, { ...RECON_RECT, height: 28 }, RECON_CASE_LIB);
+  assert.deepEqual(r2.kept, ['b2'], 'the base remains valid');
+  assert.deepEqual(r2.invalid, ['c2'], 'the over-height child is invalid (not collided into the base)');
+  assertReconLayoutSafe(PackLib, PackLib.stageInvalidPlacements(r2, { ...RECON_RECT, height: 28 }, RECON_CASE_LIB).cases, { ...RECON_RECT, height: 28 }, 'height-clip stack');
+});
+
+test('RECON repack and organized staging produce safe, deterministic, type-grouped layouts', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const lib = [
+    { id: 'A', name: 'A', dimensions: { length: 24, width: 18, height: 16 } },
+    { id: 'B', name: 'B', dimensions: { length: 24, width: 18, height: 16 } },
+  ];
+  // Many items beyond a reduced length so most are invalid and must be resolved.
+  const cases = [];
+  for (let i = 0; i < 6; i++) cases.push({ id: `a${i}`, caseId: 'A', transform: { position: { x: 160 + i, y: 8, z: 0 }, rotation: { x: 0, y: 0, z: 0 } }, placement: 'packed', hidden: false });
+  for (let i = 0; i < 6; i++) cases.push({ id: `b${i}`, caseId: 'B', transform: { position: { x: 170 + i, y: 8, z: 20 }, rotation: { x: 0, y: 0, z: 0 } }, placement: 'packed', hidden: false });
+  const nextTruck = { ...RECON_RECT, length: 120 };
+  const r = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, nextTruck, lib);
+  assert.ok(r.summary.invalid > 0, 'several items are invalid after the length cut');
+
+  const staged = PackLib.stageInvalidPlacements(r, nextTruck, lib);
+  assertReconLayoutSafe(PackLib, staged.cases, nextTruck, 'staged');
+  // Grouped by case type: staged items of type A occupy a contiguous staging band vs B.
+  const stagedA = staged.cases.filter(c => c.caseId === 'A' && c.placement === 'staged').map(c => c.transform.position.z);
+  const stagedB = staged.cases.filter(c => c.caseId === 'B' && c.placement === 'staged').map(c => c.transform.position.z);
+  if (stagedA.length && stagedB.length) {
+    assert.ok(Math.max(...stagedA) <= Math.min(...stagedB) || Math.max(...stagedB) <= Math.min(...stagedA), 'staged items are grouped by type (A and B do not interleave by z-band)');
+  }
+  // Deterministic repeat.
+  const staged2 = PackLib.stageInvalidPlacements(PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, nextTruck, lib), nextTruck, lib);
+  assert.equal(JSON.stringify(staged.cases.map(c => c.transform.position)), JSON.stringify(staged2.cases.map(c => c.transform.position)), 'staging is deterministic');
+
+  const repacked = PackLib.repackInvalidPlacements(r, nextTruck, lib);
+  assertReconLayoutSafe(PackLib, repacked.pack.cases, nextTruck, 'repacked');
+  const repacked2 = PackLib.repackInvalidPlacements(PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, nextTruck, lib), nextTruck, lib);
+  assert.equal(JSON.stringify(repacked.pack.cases.map(c => c.transform.position)), JSON.stringify(repacked2.pack.cases.map(c => c.transform.position)), 'repack is deterministic');
+});
+
+test('RECON apply is one undoable transaction; cancel leaves state unchanged; Stats agree', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLib = await import(packLibraryPath.href);
+  const cases = [reconInst('i0', 30, 8, 0), reconInst('i1', 150, 8, 0), reconInst('i2', 210, 8, 0)];
+  StateStore.init({ caseLibrary: RECON_CASE_LIB, packLibrary: [{ id: 'p', title: 'P', truck: RECON_RECT, cases }], folderLibrary: [], preferences: {}, currentPackId: 'p' });
+  const before = JSON.stringify(StateStore.get('packLibrary'));
+
+  // CANCEL: compute reconciliation but do not apply → state unchanged.
+  const pack = PackLib.getById('p');
+  PackLib.reconcilePlacementsForTruck(pack, { ...RECON_RECT, length: 120 }, RECON_CASE_LIB);
+  assert.equal(JSON.stringify(StateStore.get('packLibrary')), before, 'reconcile alone (cancel) does not mutate state');
+
+  // APPLY: truck + reconciled cases in ONE update (one history entry).
+  const nextTruck = { ...RECON_RECT, length: 120 };
+  const r = PackLib.reconcilePlacementsForTruck(pack, nextTruck, RECON_CASE_LIB);
+  const finalPack = PackLib.stageInvalidPlacements(r, nextTruck, RECON_CASE_LIB);
+  PackLib.update('p', { truck: nextTruck, cases: finalPack.cases });
+  const applied = PackLib.getById('p');
+  assert.equal(applied.truck.length, 120, 'truck change applied');
+  // Stats agree immediately with the reconciled layout.
+  assert.equal(applied.stats.totalCases, 3, 'stats recomputed on apply');
+  assert.equal(applied.stats.packedCases + applied.stats.stagedCases, 3, 'stats packed+staged account for every item');
+  assertReconLayoutSafe(PackLib, applied.cases, applied.truck, 'applied');
+
+  // ONE-STEP UNDO restores the prior truck AND the full prior layout.
+  StateStore.undo();
+  assert.equal(JSON.stringify(StateStore.get('packLibrary')), before, 'a single undo restores the prior truck and full layout');
+  StateStore.redo();
+  assert.equal(PackLib.getById('p').truck.length, 120, 'a single redo restores the staged truck change');
+
+  // Repack is the same one-history-entry transaction and round-trips too.
+  StateStore.undo();
+  const restoredPack = PackLib.getById('p');
+  const repackRecon = PackLib.reconcilePlacementsForTruck(restoredPack, nextTruck, RECON_CASE_LIB);
+  const repackOutcome = PackLib.repackInvalidPlacements(repackRecon, nextTruck, RECON_CASE_LIB);
+  assert.equal(repackOutcome.failedIds.length, 0, 'fixture invalid items can be repacked');
+  PackLib.update('p', { truck: nextTruck, cases: repackOutcome.pack.cases });
+  const repackedSnapshot = JSON.stringify(StateStore.get('packLibrary'));
+  StateStore.undo();
+  assert.equal(JSON.stringify(StateStore.get('packLibrary')), before, 'one undo restores the complete pre-repack state');
+  StateStore.redo();
+  assert.equal(JSON.stringify(StateStore.get('packLibrary')), repackedSnapshot, 'one redo restores the complete repack result');
+});
+
+test('RECON every production truck writer routes through the shared controller', async () => {
+  const [editor, packs, controller, app] = await Promise.all([
+    fs.readFile(editorScreenPath, 'utf8'),
+    fs.readFile(packsScreenPath, 'utf8'),
+    fs.readFile(truckChangeControllerPath, 'utf8'),
+    fs.readFile(appPath, 'utf8'),
+  ]);
+  assert.match(editor, /function applyTruckGeometryChange\(pack, nextTruck/);
+  assert.match(editor, /TruckChangeController\.request\(\{/);
+  assert.doesNotMatch(editor, /PackLibrary\.update\(pack\.id, \{ truck/,
+    'Editor has no direct truck writer');
+  assert.equal((packs.match(/TruckChangeController\.request\(\{/g) || []).length, 2,
+    'Packs toolbar preset and Edit Pack Save both use the controller');
+  assert.doesNotMatch(packs, /PackLibrary\.update\(pack\.id, \{ truck/,
+    'Packs toolbar has no direct truck writer');
+  assert.match(controller, /PackLibrary\.reconcilePlacementsForTruck\(pack, nextTruck, caseLibrary\)/);
+  assert.match(controller, /PackLibrary\.update\(ctx\.pack\.id, \{ truck: ctx\.nextTruck, cases: finalPack\.cases \}\)/,
+    'only the controller owns the default atomic truck+cases commit');
+  assert.match(app, /const TruckChangeController = createTruckChangeController\(\{/,
+    'one controller instance is injected into both screens');
+});
+
+function makeTruckChangeHarness() {
+  const listeners = new Set();
+  const documentRef = {
+    createElement: tagName => ({
+      tagName,
+      children: [],
+      className: '',
+      textContent: '',
+      classList: { add() {} },
+      appendChild(child) { this.children.push(child); return child; },
+    }),
+    addEventListener(type, fn) { if (type === 'keydown') listeners.add(fn); },
+    removeEventListener(type, fn) { if (type === 'keydown') listeners.delete(fn); },
+    escape() { for (const fn of [...listeners]) fn({ key: 'Escape', preventDefault() {} }); },
+  };
+  const modals = [];
+  const toasts = [];
+  const UIComponents = {
+    showToast(message, type, options) { toasts.push({ message, type, options }); },
+    showModal(config) {
+      let closed = false;
+      const buttons = (config.actions || []).map(action => ({ disabled: false, action }));
+      const ref = {
+        modal: { querySelectorAll: () => buttons },
+        close() {
+          if (closed) return;
+          closed = true;
+          if (config.onClose) config.onClose();
+        },
+      };
+      modals.push({ config, ref, buttons, get closed() { return closed; } });
+      return ref;
+    },
+  };
+  function click(index, label) {
+    const record = modals[index];
+    const action = record.config.actions.find(candidate => candidate.label === label);
+    assert.ok(action, `modal ${index} has action ${label}`);
+    const result = action.onClick ? action.onClick() : undefined;
+    if (result !== false) record.ref.close();
+    return result;
+  }
+  return { documentRef, UIComponents, modals, toasts, click };
+}
+
+test('RECON controller always previews real changes and restores controls on every dismissal path', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const harness = makeTruckChangeHarness();
+  const pack = { id: 'p', truck: RECON_RECT, cases: [reconInst('i', 30, 8, 0)] };
+  const original = JSON.stringify(pack);
+  let restores = 0;
+  let commits = 0;
+  const controller = Controller.createTruckChangeController({
+    PackLibrary: { ...PackLib, update: () => { commits++; return {}; } },
+    CaseLibrary: { getCases: () => RECON_CASE_LIB },
+    UIComponents: harness.UIComponents,
+    documentRef: harness.documentRef,
+  });
+  const request = nextTruck => controller.request({ pack, nextTruck, restoreControls: () => { restores++; } });
+
+  assert.equal(request({ ...RECON_RECT, length: 239 }).status, 'preview', 'all-kept geometry change still previews');
+  harness.click(0, 'Cancel');
+  assert.equal(request({ ...RECON_RECT, width: 95 }).status, 'preview');
+  harness.modals[1].ref.close(); // close button and overlay both use the modal close path
+  assert.equal(request({ ...RECON_RECT, height: 95 }).status, 'preview');
+  harness.documentRef.escape();
+  assert.equal(request({ ...RECON_RECT, length: 238 }).status, 'preview');
+  harness.modals[3].ref.close();
+
+  assert.equal(restores, 4, 'Cancel, X/overlay close, and Escape restore controls');
+  assert.equal(commits, 0, 'no dismissal commits');
+  assert.equal(JSON.stringify(pack), original, 'preview and dismissal do not mutate the pack');
+  assert.equal(controller.isActive(), false, 'single-flight state releases after dismissal');
+});
+
+test('RECON controller is single-flight, double-submit safe, and commits truck+cases once', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const harness = makeTruckChangeHarness();
+  const pack = { id: 'p', truck: RECON_RECT, cases: [reconInst('far', 210, 8, 0)] };
+  const before = JSON.stringify(pack);
+  const commits = [];
+  const controller = Controller.createTruckChangeController({
+    PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
+    CaseLibrary: { getCases: () => RECON_CASE_LIB },
+    UIComponents: harness.UIComponents,
+    documentRef: harness.documentRef,
+  });
+  const nextTruck = { ...RECON_RECT, length: 120 };
+  assert.equal(controller.request({ pack, nextTruck }).status, 'preview');
+  assert.equal(controller.request({ pack, nextTruck }).status, 'busy', 'a second request is rejected while preview is open');
+  const action = harness.modals[0].config.actions.find(candidate => candidate.label === 'Move to staging');
+  assert.equal(JSON.stringify(pack), before, 'state remains unchanged before confirmation');
+  const first = action.onClick();
+  const second = action.onClick();
+  assert.equal(first, true);
+  assert.equal(second, false, 'repeat click is ignored');
+  harness.modals[0].ref.close();
+  assert.equal(commits.length, 1, 'one atomic commit');
+  assert.equal(commits[0].patch.truck.length, 120);
+  assert.equal(commits[0].patch.cases[0].placement, 'staged');
+  assert.equal(commits[0].patch.cases[0].transform.position.y, RECON_DIMS.height / 2,
+    'staged center is exactly half-height');
+  assert.equal(JSON.stringify(pack), before, 'controller preserves the caller snapshot');
+});
+
+test('RECON adjusted-only preview shows exact counts and applies the proposed pose only after confirmation', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const harness = makeTruckChangeHarness();
+  const pack = { id: 'p', truck: RECON_RECT, cases: [reconInst('floating', 30, 40, 0)] };
+  const before = JSON.stringify(pack);
+  const commits = [];
+  const controller = Controller.createTruckChangeController({
+    PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
+    CaseLibrary: { getCases: () => RECON_CASE_LIB },
+    UIComponents: harness.UIComponents,
+    documentRef: harness.documentRef,
+  });
+  const result = controller.request({ pack, nextTruck: { ...RECON_RECT, width: 95 }, successMessage: 'Truck updated' });
+  assert.equal(result.status, 'preview');
+  assert.deepEqual(result.reconciliation.summary, {
+    kept: 0, adjusted: 1, invalid: 0,
+    stagedUnchanged: 0, stagedAdjusted: 0, unresolved: 0, malformed: 0,
+  });
+  assert.equal(JSON.stringify(pack), before, 'adjusted pose is preview-only');
+  harness.click(0, 'Apply change');
+  assert.equal(commits.length, 1);
+  assert.equal(commits[0].patch.cases[0].transform.position.y, 8);
+  assert.match(harness.toasts.at(-1).message, /1 item\(s\) safely adjusted/);
+});
+
+test('RECON repack reports partial failure and requires a second explicit staging decision', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const cubeLib = [{ id: 'cube', name: 'Cube', dimensions: { length: 20, width: 20, height: 20 }, weight: 10 }];
+  const cube = (id, x) => ({ ...reconInst(id, x, 10, 0), caseId: 'cube' });
+  const pack = { id: 'p', truck: RECON_RECT, cases: [cube('a', 100), cube('b', 140)] };
+  const nextTruck = { length: 30, width: 20, height: 20, shapeMode: 'rect' };
+  const harness = makeTruckChangeHarness();
+  const commits = [];
+  let restores = 0;
+  const controller = Controller.createTruckChangeController({
+    PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
+    CaseLibrary: { getCases: () => cubeLib },
+    UIComponents: harness.UIComponents,
+    documentRef: harness.documentRef,
+  });
+
+  controller.request({ pack, nextTruck, restoreControls: () => { restores++; } });
+  harness.click(0, 'Repack invalid');
+  assert.equal(commits.length, 0, 'partial repack has not committed or silently staged');
+  assert.match(harness.modals[1].config.content.children[1].textContent, /Still unresolved: b/,
+    'second decision reports the failed item');
+  harness.click(1, 'Keep current truck and cancel');
+  assert.equal(commits.length, 0);
+  assert.equal(restores, 1, 'second-decision cancel restores controls');
+
+  controller.request({ pack, nextTruck, restoreControls: () => { restores++; } });
+  harness.click(2, 'Repack invalid');
+  harness.click(3, 'Move remaining items to staging');
+  assert.equal(commits.length, 1, 'second explicit choice commits once');
+  const committedCases = commits[0].patch.cases;
+  assert.equal(committedCases.find(c => c.id === 'a').placement, 'packed');
+  assert.equal(committedCases.find(c => c.id === 'b').placement, 'staged');
+  assertCanonicalReconLayoutSafe(PackLib, committedCases, nextTruck, cubeLib, 'partial repack');
+});
+
+test('RECON repack complete failure returns explicit metadata and never stages implicitly', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const oversizedLib = [{ id: 'oversized', name: 'Oversized', dimensions: { length: 40, width: 30, height: 30 }, weight: 20 }];
+  const cases = [
+    { ...reconInst('too-big-a', 100, 15, 0), caseId: 'oversized' },
+    { ...reconInst('too-big-b', 150, 15, 0), caseId: 'oversized' },
+  ];
+  const nextTruck = { length: 30, width: 20, height: 20, shapeMode: 'rect' };
+  const recon = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, nextTruck, oversizedLib);
+  const outcome = PackLib.repackInvalidPlacements(recon, nextTruck, oversizedLib);
+  assert.deepEqual(outcome.repackedIds, []);
+  assert.deepEqual(outcome.stagedIds, []);
+  assert.deepEqual(outcome.failedIds, ['too-big-a', 'too-big-b']);
+  assert.equal(outcome.warnings.length, 2);
+  assert.ok(outcome.pack.cases.every(c => c.placement === 'packed'),
+    'complete failure preserves the preview poses and does not silently stage');
+});
+
+test('RECON canonical dimensions use the shared rotation helper and THREE-backed bounds', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const THREE = await import(`${vendorThreePath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = { id: 'beam', name: 'Beam', dimensions: { length: 40, width: 10, height: 6 }, weight: 20 };
+  const rotation = { x: 0, y: Math.PI / 2, z: 0 };
+  const inst = {
+    id: 'beam-1', caseId: 'beam', placement: 'packed',
+    orientationLocked: true, lockedRotation: rotation,
+    orientedDims: { length: 999, width: 999, height: 999 },
+    transform: { position: { x: 30, y: 3, z: 0 }, rotation, scale: { x: 1, y: 1, z: 1 } },
+  };
+  const canonical = PackLib.getCanonicalInstanceEffectiveDims(inst, caseData);
+  assert.deepEqual(canonical.dims, { length: 10, width: 40, height: 6 }, 'stale stored dimensions are rejected');
+  assert.equal(canonical.storedConsistent, false);
+
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(caseData.dimensions.length, caseData.dimensions.height, caseData.dimensions.width),
+    new THREE.MeshBasicMaterial()
+  );
+  mesh.rotation.set(rotation.x, rotation.y, rotation.z);
+  mesh.updateMatrixWorld(true);
+  const size = new THREE.Box3().setFromObject(mesh).getSize(new THREE.Vector3());
+  assert.ok(Math.abs(size.x - canonical.dims.length) < 1e-6);
+  assert.ok(Math.abs(size.y - canonical.dims.height) < 1e-6);
+  assert.ok(Math.abs(size.z - canonical.dims.width) < 1e-6);
+
+  const recon = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases: [inst] }, { ...RECON_RECT, width: 95 }, [caseData]);
+  assert.deepEqual(recon.nextPack.cases[0].orientedDims, canonical.dims, 'confirmed result repairs stale orientedDims');
+  assert.equal(recon.summary.kept, 1);
+  const lockMismatch = { ...inst, lockedRotation: { x: 0, y: 0, z: 0 } };
+  assert.deepEqual(PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases: [lockMismatch] }, { ...RECON_RECT, width: 95 }, [caseData]).invalid, ['beam-1']);
+  const uprightOnly = { ...caseData, orientationLock: 'upright' };
+  const tippedRotation = { x: Math.PI / 2, y: 0, z: 0 };
+  const tipped = {
+    ...inst,
+    lockedRotation: tippedRotation,
+    transform: { ...inst.transform, rotation: tippedRotation },
+  };
+  assert.deepEqual(PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases: [tipped] }, { ...RECON_RECT, width: 95 }, [uprightOnly]).invalid, ['beam-1']);
+});
+
+test('RECON enforces physical hidden cargo, support rules, unresolved references, and exact staging floor', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const supportLib = [
+    { id: 'base', name: 'Base', dimensions: { length: 40, width: 40, height: 10 }, weight: 100, maxStackCount: 1 },
+    { id: 'child', name: 'Child', dimensions: { length: 10, width: 10, height: 10 }, weight: 10 },
+    { id: 'thin', name: 'Thin', dimensions: { length: 12, width: 12, height: 1 }, weight: 1 },
+  ];
+  const make = (id, caseId, x, y, z, extra = {}) => ({ ...reconInst(id, x, y, z), caseId, ...extra });
+  const cases = [
+    make('base-1', 'base', 40, 5, 0, { hidden: true }),
+    make('child-1', 'child', 35, 15, -5),
+    make('child-2', 'child', 45, 15, 5),
+    make('thin-1', 'thin', 400, 0.5, 0),
+    make('missing-1', 'missing', 80, 5, 0),
+  ];
+  const recon = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, { ...RECON_RECT, width: 95 }, supportLib);
+  assert.ok(recon.kept.includes('base-1'), 'hidden packed support remains physical');
+  assert.equal(recon.kept.filter(id => id.startsWith('child')).length, 1, 'one direct child is legal');
+  assert.equal(recon.invalid.filter(id => id.startsWith('child')).length, 1, 'maxStackCount blocks the second direct child');
+  assert.equal(recon.summary.unresolved, 1, 'unresolved reference is explicit and blocks confirmation');
+  assert.ok(recon.invalid.includes('thin-1'));
+  const staged = PackLib.stagePlacementIds(recon.nextPack, ['thin-1'], recon.nextPack.truck, supportLib);
+  assert.equal(staged.failedIds.length, 0);
+  assert.equal(staged.pack.cases.find(c => c.id === 'thin-1').transform.position.y, 0.5,
+    'thin staged cargo rests at exactly h/2');
+
+  const noTopLib = supportLib.map(c => c.id === 'base' ? { ...c, noStackOnTop: true, maxStackCount: 0 } : c);
+  const noTop = PackLib.reconcilePlacementsForTruck(
+    { id: 'p', truck: RECON_RECT, cases: cases.filter(c => ['base-1', 'child-1'].includes(c.id)) },
+    { ...RECON_RECT, width: 95 }, noTopLib
+  );
+  assert.deepEqual(noTop.invalid, ['child-1'], 'noStackOnTop is enforced during reconciliation');
+});
+
+test('RECON existing staged cargo stays fixed only when safe; malformed and long cargo are explicit', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const safe = { ...reconInst('safe-stage', 30, 8, 80), placement: 'staged' };
+  const floating = { ...reconInst('floating-stage', 70, 40, 80), placement: 'staged' };
+  const unreachable = { ...reconInst('far-stage', 10000, 8, 10000), placement: 'staged' };
+  const recon = PackLib.reconcilePlacementsForTruck(
+    { id: 'p', truck: RECON_RECT, cases: [safe, floating, unreachable] },
+    { ...RECON_RECT, width: 95 }, RECON_CASE_LIB
+  );
+  assert.deepEqual(recon.stagedUnchanged, ['safe-stage']);
+  assert.deepEqual(recon.stagedAdjusted, ['floating-stage', 'far-stage']);
+  assert.deepEqual(recon.nextPack.cases[0].transform.position, safe.transform.position,
+    'safe existing staging pose is untouched');
+  assertCanonicalReconLayoutSafe(PackLib, recon.nextPack.cases, recon.nextPack.truck, RECON_CASE_LIB, 'existing staging');
+
+  const badLib = [{ id: 'bad', name: 'Bad', dimensions: { length: 0, width: 10, height: 10 } }];
+  const malformed = PackLib.reconcilePlacementsForTruck(
+    { id: 'p', truck: RECON_RECT, cases: [{ ...reconInst('bad-1', 20, 5, 0), caseId: 'bad' }] },
+    { ...RECON_RECT, width: 95 }, badLib
+  );
+  assert.equal(malformed.summary.malformed, 1, 'bad dimensions are reported rather than replaced with fake geometry');
+
+  const beamLib = [{ id: 'long', name: 'Long beam', dimensions: { length: 300, width: 8, height: 8 }, weight: 40 }];
+  const beam = { ...reconInst('long-1', 150, 4, 0), caseId: 'long' };
+  const beamRecon = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: { ...RECON_RECT, length: 320 }, cases: [beam] }, RECON_RECT, beamLib);
+  assert.deepEqual(beamRecon.invalid, ['long-1']);
+  const staged = PackLib.stagePlacementIds(beamRecon.nextPack, beamRecon.invalid, RECON_RECT, beamLib);
+  assert.equal(staged.failedIds.length, 0);
+  assertCanonicalReconLayoutSafe(PackLib, staged.pack.cases, RECON_RECT, beamLib, 'long beam staging');
+});
+
+test('RECON runtime matrix covers 24 geometry/visibility fixtures with safe final AABBs', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const wwMoved = { ...RECON_WW, shapeConfig: { wellOffsetFromRear: 20, wellLength: 100, wellWidth: 20, wellHeight: 40 } };
+  const transitions = [
+    ['length shrink', RECON_RECT, { ...RECON_RECT, length: 120 }],
+    ['width shrink', RECON_RECT, { ...RECON_RECT, width: 50 }],
+    ['height shrink', RECON_RECT, { ...RECON_RECT, height: 10 }],
+    ['standard to wheel wells', RECON_RECT, RECON_WW],
+    ['wheel wells to standard', RECON_WW, RECON_RECT],
+    ['standard to front overhang', RECON_RECT, reconFB()],
+    ['front overhang to standard', reconFB(), RECON_RECT],
+    ['wheel-well config', RECON_WW, wwMoved],
+    ['front-overhang deck config', reconFB(43.2, 48), reconFB(20, 24)],
+    ['length expand', { ...RECON_RECT, length: 220 }, RECON_RECT],
+    ['width expand', { ...RECON_RECT, width: 80 }, RECON_RECT],
+    ['height expand', { ...RECON_RECT, height: 80 }, RECON_RECT],
+  ];
+  let fixtureCount = 0;
+  for (const [name, sourceTruck, nextTruck] of transitions) {
+    for (const hidden of [false, true]) {
+      const cases = [
+        reconInst(`${fixtureCount}-near`, 30, 8, 0),
+        { ...reconInst(`${fixtureCount}-far`, 200, 8, 0), hidden },
+      ];
+      const snapshot = JSON.stringify(cases);
+      const recon = PackLib.reconcilePlacementsForTruck({ id: `p-${fixtureCount}`, truck: sourceTruck, cases }, nextTruck, RECON_CASE_LIB);
+      assert.equal(JSON.stringify(cases), snapshot, `${name}/${hidden ? 'hidden' : 'visible'} preview is pure`);
+      assert.equal(recon.summary.kept + recon.summary.adjusted + recon.summary.invalid, 2,
+        `${name}/${hidden ? 'hidden' : 'visible'} accounts for all packed physical items`);
+      const staged = PackLib.stagePlacementIds(recon.nextPack, recon.invalid, nextTruck, RECON_CASE_LIB);
+      assert.equal(staged.failedIds.length, 0);
+      assertCanonicalReconLayoutSafe(PackLib, staged.pack.cases, nextTruck, RECON_CASE_LIB,
+        `${name}/${hidden ? 'hidden' : 'visible'}`);
+      fixtureCount++;
+    }
+  }
+  assert.equal(fixtureCount, 24, 'minimum runtime matrix contains 24 distinct fixtures');
 });
 
 test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when tweens stop ticking', async () => {

@@ -205,9 +205,9 @@ export function createCaseScene({
 
       const keep = new Set();
       (pack.cases || []).forEach(inst => {
-        keep.add(inst.id);
         const caseData = CaseLibrary.getById(inst.caseId);
         if (!caseData) return;
+        keep.add(inst.id);
 
         const signature = buildSignature(inst, caseData);
         const existing = instances.get(inst.id);
@@ -2598,6 +2598,15 @@ export function createEditorScreen({
         pack,
         nextTruck,
         successMessage: successMsg || 'Truck updated',
+        renderPreview: preview => {
+          if (!preview || !preview.pack || StateStore.get('currentScreen') !== 'editor') return;
+          ensureScene();
+          SceneManager.setTruck(preview.pack.truck);
+          CaseScene.sync(preview.pack);
+          CaseScene.setSelected(StateStore.get('selectedInstanceIds') || []);
+          SceneManager.resize();
+        },
+        onCommitted: () => render(),
         restoreControls: () => render(),
       });
     }

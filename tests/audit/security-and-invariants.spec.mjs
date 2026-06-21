@@ -7735,6 +7735,8 @@ test('RECON every production truck writer routes through the shared controller',
   ]);
   assert.match(editor, /function applyTruckGeometryChange\(pack, nextTruck/);
   assert.match(editor, /TruckChangeController\.request\(\{/);
+  assert.match(editor, /renderPreview: preview => \{[\s\S]*?SceneManager\.setTruck\(preview\.pack\.truck\);[\s\S]*?CaseScene\.sync\(preview\.pack\);/,
+    'Editor owns ephemeral truck and cargo scene rendering');
   assert.doesNotMatch(editor, /PackLibrary\.update\(pack\.id, \{ truck/,
     'Editor has no direct truck writer');
   assert.equal((packs.match(/TruckChangeController\.request\(\{/g) || []).length, 2,
@@ -7801,20 +7803,38 @@ test('RECON controller always previews real changes and restores controls on eve
   const original = JSON.stringify(pack);
   let restores = 0;
   let commits = 0;
+  let renderedScene = original;
+  const previews = [];
   const controller = Controller.createTruckChangeController({
     PackLibrary: { ...PackLib, update: () => { commits++; return {}; } },
     CaseLibrary: { getCases: () => RECON_CASE_LIB },
     UIComponents: harness.UIComponents,
     documentRef: harness.documentRef,
   });
-  const request = nextTruck => controller.request({ pack, nextTruck, restoreControls: () => { restores++; } });
+  const request = nextTruck => controller.request({
+    pack,
+    nextTruck,
+    renderPreview: preview => {
+      previews.push(preview);
+      renderedScene = JSON.stringify(preview.pack);
+    },
+    restoreControls: () => {
+      restores++;
+      renderedScene = original;
+    },
+  });
 
   assert.equal(request({ ...RECON_RECT, length: 239 }).status, 'preview', 'all-kept geometry change still previews');
+  assert.equal(previews.at(-1).pack.truck.length, 239, 'scene callback receives the proposed truck');
+  assert.equal(JSON.stringify(pack), original, 'preview does not mutate source pack or StateStore data');
   harness.click(0, 'Cancel');
+  assert.equal(renderedScene, original, 'Cancel restores the exact original scene snapshot');
   assert.equal(request({ ...RECON_RECT, width: 95 }).status, 'preview');
   harness.modals[1].ref.close(); // close button and overlay both use the modal close path
+  assert.equal(renderedScene, original, 'X/overlay close restores the exact original scene snapshot');
   assert.equal(request({ ...RECON_RECT, height: 95 }).status, 'preview');
   harness.documentRef.escape();
+  assert.equal(renderedScene, original, 'Escape restores the exact original scene snapshot');
   assert.equal(request({ ...RECON_RECT, length: 238 }).status, 'preview');
   harness.modals[3].ref.close();
 
@@ -7862,34 +7882,145 @@ test('RECON adjusted-only preview shows exact counts and applies the proposed po
   const pack = { id: 'p', truck: RECON_RECT, cases: [reconInst('floating', 30, 40, 0)] };
   const before = JSON.stringify(pack);
   const commits = [];
+  const previews = [];
   const controller = Controller.createTruckChangeController({
     PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
     CaseLibrary: { getCases: () => RECON_CASE_LIB },
     UIComponents: harness.UIComponents,
     documentRef: harness.documentRef,
   });
-  const result = controller.request({ pack, nextTruck: { ...RECON_RECT, width: 95 }, successMessage: 'Truck updated' });
+  const result = controller.request({
+    pack,
+    nextTruck: { ...RECON_RECT, width: 95 },
+    successMessage: 'Truck updated',
+    renderPreview: preview => previews.push(preview),
+  });
   assert.equal(result.status, 'preview');
   assert.deepEqual(result.reconciliation.summary, {
     kept: 0, adjusted: 1, invalid: 0,
     stagedUnchanged: 0, stagedAdjusted: 0, unresolved: 0, malformed: 0,
   });
   assert.equal(JSON.stringify(pack), before, 'adjusted pose is preview-only');
+  assert.equal(previews[0].pack.cases[0].transform.position.y, 8,
+    'ephemeral scene receives the safely adjusted pose');
   harness.click(0, 'Apply change');
   assert.equal(commits.length, 1);
   assert.equal(commits[0].patch.cases[0].transform.position.y, 8);
   assert.match(harness.toasts.at(-1).message, /1 item\(s\) safely adjusted/);
 });
 
+test('RECON Standard, Wheel Wells, Front Overhang, and C2 use one ephemeral preview callback', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const transitions = [
+    { label: 'Standard', source: { ...RECON_RECT, length: 239 }, next: RECON_RECT },
+    { label: 'Wheel Wells', source: RECON_RECT, next: RECON_WW },
+    { label: 'Front Overhang', source: RECON_RECT, next: reconFB() },
+  ];
+  for (const transition of transitions) {
+    const harness = makeTruckChangeHarness();
+    const previews = [];
+    const pack = { id: `p-${transition.label}`, truck: transition.source, cases: [reconInst('floor', 30, 8, 0)] };
+    const controller = Controller.createTruckChangeController({
+      PackLibrary: PackLib,
+      CaseLibrary: { getCases: () => RECON_CASE_LIB },
+      UIComponents: harness.UIComponents,
+      documentRef: harness.documentRef,
+    });
+    controller.request({ pack, nextTruck: transition.next, renderPreview: preview => previews.push(preview) });
+    assert.equal(previews.length, 1, `${transition.label} invokes the shared preview path once`);
+    assert.equal(previews[0].pack.truck.shapeMode, transition.next.shapeMode, `${transition.label} previews proposed geometry`);
+    harness.click(0, 'Cancel');
+  }
+
+  const harness = makeTruckChangeHarness();
+  const previews = [];
+  const sourceTruck = reconFB(43.2);
+  const nextTruck = reconFB(43.3);
+  const deck = reconInst('deck-without-wall', 262, 51.2, 0);
+  const pack = { id: 'p-c2', truck: sourceTruck, cases: [deck] };
+  const controller = Controller.createTruckChangeController({
+    PackLibrary: PackLib,
+    CaseLibrary: { getCases: () => RECON_CASE_LIB },
+    UIComponents: harness.UIComponents,
+    documentRef: harness.documentRef,
+  });
+  controller.request({ pack, nextTruck, renderPreview: preview => previews.push(preview) });
+  assert.equal(previews[0].pack.cases[0].placement, 'staged',
+    'C2-unretained deck cargo is shown in staging during preview');
+  assert.equal(pack.cases[0].placement, 'packed', 'C2 preview does not mutate the source pack');
+});
+
+test('RECON CaseScene sync removes an existing mesh when its case definition becomes unresolved', async () => {
+  const previousThree = globalThis.THREE;
+  const previousDocument = globalThis.document;
+  const THREE = await import(`${vendorThreePath.href}?t=${Date.now()}-${Math.random()}`);
+  globalThis.THREE = THREE;
+  globalThis.document = {
+    createElement() {
+      return {
+        width: 0,
+        height: 0,
+        getContext: () => ({
+          fillRect() {}, strokeRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fillText() {},
+        }),
+      };
+    },
+  };
+  try {
+    const Editor = await import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
+    const scene = new THREE.Scene();
+    let caseData = {
+      id: 'case-a', name: 'Case A', dimensions: { length: 20, width: 20, height: 20 },
+      weight: 10, color: '#8844aa',
+    };
+    const CaseScene = Editor.createCaseScene({
+      SceneManager: {
+        getScene: () => scene,
+        toWorld: value => Number(value) || 0,
+        vecInchesToWorld: position => new THREE.Vector3(position.x, position.y, position.z),
+      },
+      CaseLibrary: { getById: id => (caseData && caseData.id === id ? caseData : null) },
+      CategoryService: { meta: () => ({ color: '#8844aa' }) },
+      PackLibrary: {}, StateStore: {}, TrailerGeometry: {},
+      Utils: {
+        clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
+        getCssVar: () => '#ff9f1c',
+      },
+      PreferencesManager: { get: () => ({ hiddenCaseOpacity: 0.3 }) },
+    });
+    const pack = {
+      id: 'p',
+      truck: RECON_RECT,
+      cases: [reconInst('instance-a', 20, 10, 0)],
+    };
+    pack.cases[0].caseId = 'case-a';
+    CaseScene.sync(pack);
+    assert.ok(CaseScene.getObject('instance-a'), 'resolved instance creates a THREE group');
+    caseData = null;
+    CaseScene.sync(pack);
+    assert.equal(CaseScene.getObject('instance-a'), null, 'unresolved instance removes its stale THREE group');
+    assert.equal(scene.children.length, 0, 'stale mesh is removed from the scene');
+    CaseScene.clear();
+  } finally {
+    if (previousThree === undefined) delete globalThis.THREE;
+    else globalThis.THREE = previousThree;
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+});
+
 test('RECON repack reports partial failure and requires a second explicit staging decision', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
   const cubeLib = [{ id: 'cube', name: 'Cube', dimensions: { length: 20, width: 20, height: 20 }, weight: 10 }];
+  const failedId = '5585711a-785a-4605-ba77-782525d00819';
   const cube = (id, x) => ({ ...reconInst(id, x, 10, 0), caseId: 'cube' });
-  const pack = { id: 'p', truck: RECON_RECT, cases: [cube('a', 100), cube('b', 140)] };
+  const pack = { id: 'p', truck: RECON_RECT, cases: [cube('a', 100), cube(failedId, 140)] };
   const nextTruck = { length: 30, width: 20, height: 20, shapeMode: 'rect' };
   const harness = makeTruckChangeHarness();
   const commits = [];
+  const previews = [];
   let restores = 0;
   const controller = Controller.createTruckChangeController({
     PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
@@ -7898,22 +8029,40 @@ test('RECON repack reports partial failure and requires a second explicit stagin
     documentRef: harness.documentRef,
   });
 
-  controller.request({ pack, nextTruck, restoreControls: () => { restores++; } });
+  const request = () => controller.request({
+    pack,
+    nextTruck,
+    renderPreview: preview => previews.push(preview),
+    restoreControls: () => { restores++; },
+  });
+  request();
+  assert.equal(previews[0].pack.cases.every(inst => inst.placement === 'staged'), true,
+    'initial preview shows invalid items in canonical staging, not as packed cargo');
   harness.click(0, 'Repack invalid');
   assert.equal(commits.length, 0, 'partial repack has not committed or silently staged');
-  assert.match(harness.modals[1].config.content.children[1].textContent, /Still unresolved: b/,
-    'second decision reports the failed item');
+  assert.equal(previews[1].pack.cases.find(inst => inst.id === 'a').placement, 'packed',
+    'partial repack preview shows successfully repacked cargo as packed');
+  assert.equal(previews[1].pack.cases.find(inst => inst.id === failedId).placement, 'staged',
+    'partial repack preview never presents failed cargo as packed');
+  const secondContent = harness.modals[1].config.content;
+  assert.match(secondContent.children[0].textContent, /Could not be repacked: 1 item\./);
+  assert.equal(secondContent.children[1].children[0].textContent, '1 × Cube',
+    'failed items are grouped by human-readable case name');
+  assert.doesNotMatch(secondContent.children.map(child => child.textContent).join(' '), new RegExp(failedId),
+    'raw UUID is omitted from primary user-facing copy');
+  assert.doesNotMatch(secondContent.children.map(child => child.textContent).join(' '), /Still unresolved/,
+    'repack failures are not mislabeled as unresolved references');
   harness.click(1, 'Keep current truck and cancel');
   assert.equal(commits.length, 0);
   assert.equal(restores, 1, 'second-decision cancel restores controls');
 
-  controller.request({ pack, nextTruck, restoreControls: () => { restores++; } });
+  request();
   harness.click(2, 'Repack invalid');
   harness.click(3, 'Move remaining items to staging');
   assert.equal(commits.length, 1, 'second explicit choice commits once');
   const committedCases = commits[0].patch.cases;
   assert.equal(committedCases.find(c => c.id === 'a').placement, 'packed');
-  assert.equal(committedCases.find(c => c.id === 'b').placement, 'staged');
+  assert.equal(committedCases.find(c => c.id === failedId).placement, 'staged');
   assertCanonicalReconLayoutSafe(PackLib, committedCases, nextTruck, cubeLib, 'partial repack');
 });
 

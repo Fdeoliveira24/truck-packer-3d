@@ -45,6 +45,50 @@ export function createTruckChangeController({
 }) {
   let active = null;
 
+  function appendCaseCountList(content, ids, pack, caseLibrary) {
+    const caseById = new Map((caseLibrary || []).map(caseData => [caseData.id, caseData]));
+    const instanceById = new Map(((pack && pack.cases) || []).map(inst => [inst.id, inst]));
+    const counts = new Map();
+    for (const id of ids || []) {
+      const inst = instanceById.get(id);
+      const caseData = inst ? caseById.get(inst.caseId) : null;
+      const label = String(caseData?.name || inst?.name || 'Unknown case').trim() || 'Unknown case';
+      counts.set(label, (counts.get(label) || 0) + 1);
+    }
+    if (!counts.size) return;
+    const list = documentRef.createElement('ul');
+    list.className = 'tp3d-editor-card-grid-gap-12';
+    [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .forEach(([label, count]) => {
+        const item = documentRef.createElement('li');
+        item.textContent = `${count} × ${label}`;
+        list.appendChild(item);
+      });
+    content.appendChild(list);
+  }
+
+  function buildSafePreview(ctx, sourcePack, stagedIds, excludedIds = []) {
+    const ids = [...new Set(stagedIds || [])];
+    const staged = ids.length
+      ? PackLibrary.stagePlacementIds(sourcePack, ids, ctx.nextTruck, ctx.caseLibrary)
+      : { pack: sourcePack, stagedIds: [], failedIds: [] };
+    const excluded = new Set([...(excludedIds || []), ...(staged.failedIds || [])]);
+    return {
+      pack: {
+        ...staged.pack,
+        truck: ctx.nextTruck,
+        cases: (staged.pack.cases || []).filter(inst => !excluded.has(inst.id)),
+      },
+      stagedIds: staged.stagedIds || [],
+      excludedIds: [...excluded],
+    };
+  }
+
+  function renderPreview(ctx, preview) {
+    if (typeof ctx.renderPreview === 'function') ctx.renderPreview(preview);
+  }
+
   function makeSummaryContent(recon, heading) {
     const content = documentRef.createElement('div');
     const intro = documentRef.createElement('div');
@@ -57,7 +101,7 @@ export function createTruckChangeController({
     const rows = [
       `${recon.summary.kept} kept in place`,
       `${recon.summary.adjusted} safely adjusted`,
-      `${recon.summary.invalid} no longer fit`,
+      `${recon.summary.invalid} no longer fit (shown in staging preview)`,
       `${recon.summary.stagedUnchanged} existing staged items unchanged`,
     ];
     if (recon.summary.stagedAdjusted) rows.push(`${recon.summary.stagedAdjusted} unsafe staged items corrected`);
@@ -73,13 +117,20 @@ export function createTruckChangeController({
     if (recon.unresolved.length || recon.malformed.length) {
       const blocked = documentRef.createElement('div');
       blocked.className = 'muted tp3d-editor-sub-sm';
-      const ids = [
-        ...recon.unresolved.map(entry => `${entry.id} (${entry.name})`),
-        ...recon.malformed.map(entry => `${entry.id} (${entry.reason})`),
-      ];
-      blocked.textContent = `Resolve or remove these items before changing the truck: ${ids.join(', ')}`;
+      const messages = [];
+      if (recon.unresolved.length) {
+        messages.push(`${recon.unresolved.length} unresolved item(s) reference missing case definitions`);
+      }
+      if (recon.malformed.length) {
+        messages.push(`${recon.malformed.length} malformed item(s) have invalid physical data`);
+      }
+      blocked.textContent = `${messages.join('; ')}. Resolve or remove them before changing the truck.`;
       content.appendChild(blocked);
     }
+    const previewNote = documentRef.createElement('div');
+    previewNote.className = 'muted tp3d-editor-sub-sm';
+    previewNote.textContent = 'The scene shows the proposed truck. Items that no longer fit are shown in staging. No changes are saved until you confirm.';
+    content.appendChild(previewNote);
     return content;
   }
 
@@ -157,15 +208,28 @@ export function createTruckChangeController({
   }
 
   function showRemainingDecision(ctx, outcome) {
+    const preview = buildSafePreview(ctx, outcome.pack, outcome.failedIds);
+    renderPreview(ctx, {
+      kind: 'repack',
+      pack: preview.pack,
+      keptIds: ctx.reconciliation.kept,
+      adjustedIds: ctx.reconciliation.adjusted.map(entry => entry.id),
+      repackedIds: outcome.repackedIds,
+      stagedPreviewIds: preview.stagedIds,
+      excludedIds: preview.excludedIds,
+    });
     const content = documentRef.createElement('div');
     const summary = documentRef.createElement('div');
     summary.className = 'tp3d-editor-sub-sm';
-    summary.textContent = `${outcome.repackedIds.length} item(s) can be repacked; ${outcome.failedIds.length} still do not fit.`;
+    const repackedLabel = `${outcome.repackedIds.length} item${outcome.repackedIds.length === 1 ? '' : 's'} repacked.`;
+    const failedLabel = `Could not be repacked: ${outcome.failedIds.length} item${outcome.failedIds.length === 1 ? '' : 's'}.`;
+    summary.textContent = `${repackedLabel} ${failedLabel}`;
     content.appendChild(summary);
-    const failures = documentRef.createElement('div');
-    failures.className = 'muted tp3d-editor-sub-sm';
-    failures.textContent = `Still unresolved: ${outcome.failedIds.join(', ')}. No truck or cargo state has changed yet.`;
-    content.appendChild(failures);
+    appendCaseCountList(content, outcome.failedIds, outcome.pack, ctx.caseLibrary);
+    const note = documentRef.createElement('div');
+    note.className = 'muted tp3d-editor-sub-sm';
+    note.textContent = 'Items that could not be repacked are shown in the staging preview. No truck or cargo changes have been saved yet.';
+    content.appendChild(note);
 
     showManagedModal(ctx, {
       title: 'Some items still do not fit',
@@ -200,6 +264,20 @@ export function createTruckChangeController({
     const recon = ctx.reconciliation;
     const blocked = recon.unresolved.length > 0 || recon.malformed.length > 0;
     const actions = [{ label: 'Cancel' }];
+    const excludedIds = [
+      ...recon.unresolved.map(entry => entry.id),
+      ...recon.malformed.map(entry => entry.id),
+    ];
+    const preview = buildSafePreview(ctx, recon.nextPack, recon.invalid, excludedIds);
+    renderPreview(ctx, {
+      kind: 'reconciliation',
+      pack: preview.pack,
+      keptIds: recon.kept,
+      adjustedIds: recon.adjusted.map(entry => entry.id),
+      repackedIds: [],
+      stagedPreviewIds: preview.stagedIds,
+      excludedIds: preview.excludedIds,
+    });
 
     if (!blocked && recon.invalid.length === 0) {
       actions.push({
@@ -304,6 +382,7 @@ export function createTruckChangeController({
       commit: options.commit,
       onCommitted: options.onCommitted,
       restoreControls: options.restoreControls,
+      renderPreview: options.renderPreview,
       successMessage: options.successMessage || 'Truck updated',
       committed: false,
       inFlight: false,

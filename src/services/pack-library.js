@@ -319,7 +319,7 @@ export function evaluateFrontOverhangRearRetention(
   const merged = [];
   for (const interval of intervals) {
     const last = merged[merged.length - 1];
-    if (!last || interval.minZ > last.maxZ + CONTAINMENT_EPS_INCHES) {
+    if (!last || interval.minZ > last.maxZ) {
       merged.push({ minZ: interval.minZ, maxZ: interval.maxZ, ids: new Set([interval.id]) });
       continue;
     }

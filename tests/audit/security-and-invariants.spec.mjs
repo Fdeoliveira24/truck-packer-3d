@@ -8668,6 +8668,47 @@ test('PHASE-C2 rear-retention geometry enforces height, full width, adjacency, a
   ]);
   assert.equal(adjacent.retained, true, 'adjacent walls merge to full width');
   assert.deepEqual(adjacent.retainerIds, ['left', 'right'], 'dependency ids are deterministic');
+
+  const cumulativeGaps = evaluate([
+    wall('gap-a', 216, 240, 0, 48, -48, -42.04),
+    wall('gap-b', 216, 240, 0, 48, -42, -36.04),
+    wall('gap-c', 216, 240, 0, 48, -36, -30),
+  ]);
+  assert.ok(Math.abs(cumulativeGaps.coveredWidth - 17.92) < 1e-9,
+    'separated intervals sum only real coverage');
+  assert.equal(cumulativeGaps.retained, false,
+    'two 0.04 inch lateral gaps exceed the one final tolerance and reject');
+
+  const touchingAndOverlapping = evaluate([
+    wall('touch-a', 216, 240, 0, 48, -48, -42),
+    wall('touch-b', 216, 240, 0, 48, -42, -35.5),
+    wall('overlap-c', 216, 240, 0, 48, -36, -30),
+  ]);
+  assert.equal(touchingAndOverlapping.coveredWidth, 18,
+    'touching and overlapping intervals merge to the exact union width');
+  assert.equal(touchingAndOverlapping.retained, true);
+
+  const finalShortage = evaluate([
+    wall('shortage-004', 216, 240, 0, 48, -48, -30.04),
+  ]);
+  assert.ok(Math.abs(finalShortage.coveredWidth - 17.96) < 1e-9);
+  assert.equal(finalShortage.retained, true,
+    'one 0.04 inch final shortage passes through the single final tolerance');
+
+  const excessiveShortage = evaluate([
+    wall('shortage-010', 216, 240, 0, 48, -48, -30.1),
+  ]);
+  assert.ok(Math.abs(excessiveShortage.coveredWidth - 17.9) < 1e-9);
+  assert.equal(excessiveShortage.retained, false,
+    '0.10 inch real shortage exceeds the final tolerance');
+
+  const overlapping = evaluate([
+    wall('overlap-a', 216, 240, 0, 48, -48, -38),
+    wall('overlap-b', 216, 240, 0, 48, -40, -30),
+  ]);
+  assert.equal(overlapping.coveredWidth, 18, 'overlapping intervals do not double-count coverage');
+  assert.equal(overlapping.retained, true);
+
   assert.equal(evaluate([wall('gap-004', 215.96, 239.96, 0, 48, -48, -30)]).retained, true,
     '0.04 inch step gap is accepted');
   assert.equal(evaluate([wall('gap-006', 215.94, 239.94, 0, 48, -48, -30)]).retained, false,

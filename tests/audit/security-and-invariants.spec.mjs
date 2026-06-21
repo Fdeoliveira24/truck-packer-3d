@@ -2776,7 +2776,7 @@ test('3B-GEOMETRY-TOLERANCE uses one shared inch-space containment tolerance', a
     'pack-library.js must export the canonical 0.05 inch containment tolerance');
   assert.match(packSrc, /const EPS = CONTAINMENT_EPS_INCHES;/,
     'pack-library.js containment helper must use the shared tolerance constant');
-  assert.match(solverSrc, /import \{ CONTAINMENT_EPS_INCHES \} from '\.\/pack-library\.js';/,
+  assert.match(solverSrc, /import \{[\s\S]*?CONTAINMENT_EPS_INCHES,[\s\S]*?\} from '\.\/pack-library\.js';/,
     'autopack-solver.js must import the shared containment tolerance');
   assert.match(solverSrc, /epsilon = CONTAINMENT_EPS_INCHES/,
     'autopack-solver.js containment defaults must reference the shared tolerance');
@@ -5546,17 +5546,17 @@ test('AUTO-PACK-A1-R6.1 solver keeps final validation gate for unsafe packed pla
 
 test('AUTO-PACK-A1-R6.3 validation rejects get a strict repack attempt before staging', async () => {
   const src = await fs.readFile(autoPackSolverPath, 'utf8');
-  assert.match(src, /function repackRejectedPlacements\(\s*output,\s*accepted,\s*rejected,\s*zones,\s*loadFrontFirst,\s*frontSurfaceFirst = false\s*\)/,
+  assert.match(src, /function repackRejectedPlacements\(\s*output,\s*accepted,\s*rejected,\s*zones,\s*loadFrontFirst,\s*frontSurfaceFirst = false,\s*retentionContext = null\s*\)/,
     'solver must include a bounded repack pass for validation rejects');
-  assert.match(src, /validatePackedPlacements\(output, packed, floorZones, \{ stageRejected: false \}\)/,
+  assert.match(src, /validatePackedPlacements\(output, packed, floorZones, \{\s*stageRejected: false,\s*retentionContext,\s*\}\)/,
     'initial validation must identify rejected placements before staging them');
   assert.match(src, /repackRejectedPlacements\(\s*output,\s*initialValidation\.accepted,\s*initialValidation\.rejected,/,
     'validation rejects must flow through the repack helper');
-  assert.match(src, /repackRejectedPlacements\([\s\S]*?loadFrontFirst,\s*frontSurfaceFirst\s*\);/,
+  assert.match(src, /repackRejectedPlacements\([\s\S]*?loadFrontFirst,\s*frontSurfaceFirst,\s*retentionContext\s*\);/,
     'validation repack must retain the active floor-surface priority');
   assert.match(src, /const floorPlacement = findFloorPlacement\(item, floorState, repacked, loadFrontFirst\);/,
     'repack must retry floor placement before staging rejected items');
-  assert.match(src, /const stackPlacement = findStackPlacement\(\s*item,\s*zones,\s*repacked,\s*loadFrontFirst,\s*frontSurfaceFirst\s*\);/,
+  assert.match(src, /const stackPlacement = findStackPlacement\(\s*item,\s*zones,\s*repacked,\s*loadFrontFirst,\s*frontSurfaceFirst,\s*retentionContext\s*\);/,
     'repack must retry safe stack placement before staging rejected items');
   assert.match(src, /stageRejectedPlacements\(output, \[\.\.\.staged\.values\(\)\]\);/,
     'only items that still fail validation or repack should be staged');
@@ -5564,11 +5564,11 @@ test('AUTO-PACK-A1-R6.3 validation rejects get a strict repack attempt before st
 
 test('AUTO-PACK-A1-R6.3 floor compaction rebuilds free space before filler and stack phases', async () => {
   const src = await fs.readFile(autoPackSolverPath, 'utf8');
-  assert.match(src, /function compactFloorPlacements\(output, packed, zones, loadFrontFirst, frontSurfaceFirst = false\)/,
+  assert.match(src, /function compactFloorPlacements\(\s*output,\s*packed,\s*zones,\s*loadFrontFirst,\s*frontSurfaceFirst = false,\s*retentionContext = null\s*\)/,
     'solver must keep a dedicated floor compaction pass');
   assert.doesNotMatch(src, /function compactFloorPlacements[\s\S]*?\{\s*void output;\s*void packed;\s*void zones;\s*void loadFrontFirst;/,
     'floor compaction must not regress to the old no-op implementation');
-  assert.match(src, /floorState\.freeRects = compactFloorPlacements\(\s*output,\s*packed,\s*floorZones,\s*loadFrontFirst,\s*frontSurfaceFirst\s*\)\.freeRects;/,
+  assert.match(src, /floorState\.freeRects = compactFloorPlacements\(\s*output,\s*packed,\s*floorZones,\s*loadFrontFirst,\s*frontSurfaceFirst,\s*retentionContext\s*\)\.freeRects;/,
     'compaction must rebuild the free-space map before later placement phases use it');
   assert.match(src, /writeOutputPlacements\(output, packed\);/,
     'accepted compaction moves must be reflected in the solver output maps');
@@ -7607,7 +7607,7 @@ test('RECON reduced length/width/height marks out-of-bounds items invalid; valid
   assert.equal(rH.summary.invalid, cases.length, 'a height below the case height invalidates every item');
 });
 
-test('RECON safe vertical correction: a floating item snaps to the floor (X/Z unchanged); deck height change snaps to the new deck', async () => {
+test('RECON safe vertical correction snaps floor cargo but rejects an unretained deck after height change', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   // Floating item (y=40, nothing below) snaps down to the floor (center y=8).
   const r = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases: [reconInst('f', 30, 40, 0)] }, RECON_RECT, RECON_CASE_LIB);
@@ -7615,11 +7615,12 @@ test('RECON safe vertical correction: a floating item snaps to the floor (X/Z un
   const f = r.nextPack.cases[0];
   assert.equal(f.transform.position.y, 8, 'snapped down to the floor (center = height/2)');
   assert.equal(f.transform.position.x, 30, 'X unchanged'); assert.equal(f.transform.position.z, 0, 'Z unchanged');
-  // Deck lowered 43.2 → 20: the deck item snaps down to the new deck (20 + 8).
+  // Deck lowered 43.2 → 20: without an accepted wall at the step, the deck item
+  // cannot be treated as a safe vertical adjustment.
   const deck = [reconInst('d', 262, 43.2 + 8, 0)];
   const r2 = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: reconFB(43.2), cases: deck }, reconFB(20), RECON_CASE_LIB);
-  assert.equal(r2.summary.adjusted, 1, 'the deck item is safely adjusted to the new deck height');
-  assert.equal(r2.nextPack.cases[0].transform.position.y, 28, 'snapped to the lowered deck (20 + height/2)');
+  assert.deepEqual(r2.invalid, ['d'], 'the unretained deck item is invalid instead of being snapped onto an unsafe deck');
+  assert.equal(r2.summary.adjusted, 0);
 });
 
 test('RECON wheel-well size/offset and overhang deck length changes revalidate placements', async () => {
@@ -8449,9 +8450,19 @@ test('PHASE-B2A identical-case matrix stays safe and deterministic in Standard, 
         const expected = truth(PHB_DIMS, result.rotations.get(id));
         assert.deepEqual(dims, expected, `${shapeMode}/${count}: ${id} uses THREE-compatible dimensions`);
       }
-      if (phb2FloorCount(result, zones, Solver) < count) {
+      if (shapeMode !== 'frontBonus' && phb2FloorCount(result, zones, Solver) < count) {
         assert.equal(phb2FloorHole(Solver, result, zones, itemSpec), null,
           `${shapeMode}/${count}: no legal floor hole remains before stacking`);
+      }
+      if (shapeMode === 'frontBonus') {
+        const deck = zones.find(zone => zone.min.y > 0.05 && zone.max.x > truck.length + 0.05);
+        assert.equal([...result.placements].some(([id, position]) => {
+          const dims = result.orientedDims.get(id);
+          return Solver.isAabbContainedInAnyZone(
+            Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height }),
+            [deck]
+          );
+        }), false, `${shapeMode}/${count}: an empty raised deck is ineligible without a retaining wall`);
       }
       const repeat = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
       assert.equal(JSON.stringify([...result.placements]), JSON.stringify([...repeat.placements]), `${shapeMode}/${count}: deterministic`);
@@ -8614,7 +8625,231 @@ function phcFrontOverhangTruck() {
   };
 }
 
-test('PHASE-C Front Overhang fills the raised forward deck before the main floor (24x18 × 6/20/40/100 and 42x10)', async () => {
+function phc2Aabb(minX, maxX, minY, maxY, minZ, maxZ) {
+  return { min: { x: minX, y: minY, z: minZ }, max: { x: maxX, y: maxY, z: maxZ } };
+}
+
+function phc2Instance(id, caseId, position, dims, extra = {}) {
+  return {
+    id,
+    caseId,
+    placement: 'packed',
+    transform: {
+      position: { ...position },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+    orientedDims: { ...dims },
+    ...extra,
+  };
+}
+
+test('PHASE-C2 rear-retention geometry enforces height, full width, adjacency, and step-gap boundaries', async () => {
+  const { PackLib } = await phbSolverModules();
+  const truck = phcFrontOverhangTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const deck = phc2Aabb(244.8, 268.8, 43.2, 59.2, -48, -30);
+  const wall = (id, minX, maxX, minY, maxY, minZ, maxZ, extra = {}) => ({
+    instanceId: id,
+    aabb: phc2Aabb(minX, maxX, minY, maxY, minZ, maxZ),
+    ...extra,
+  });
+  const evaluate = accepted => PackLib.evaluateFrontOverhangRearRetention(deck, accepted, truck, zones);
+
+  assert.equal(evaluate([]).retained, false, 'no wall rejects the raised-deck candidate');
+  assert.equal(evaluate([wall('short', 216, 240, 0, 43.1, -48, -30)]).retained, false,
+    'a wall below deckY rejects the candidate');
+  assert.equal(evaluate([wall('narrow', 216, 240, 0, 48, -48, -39)]).retained, false,
+    'partial candidate-width coverage rejects the candidate');
+
+  const adjacent = evaluate([
+    wall('left', 216, 240, 0, 48, -48, -39),
+    wall('right', 216, 240, 0, 48, -39, -30),
+  ]);
+  assert.equal(adjacent.retained, true, 'adjacent walls merge to full width');
+  assert.deepEqual(adjacent.retainerIds, ['left', 'right'], 'dependency ids are deterministic');
+  assert.equal(evaluate([wall('gap-004', 215.96, 239.96, 0, 48, -48, -30)]).retained, true,
+    '0.04 inch step gap is accepted');
+  assert.equal(evaluate([wall('gap-006', 215.94, 239.94, 0, 48, -48, -30)]).retained, false,
+    '0.06 inch step gap is rejected');
+
+  const leftCandidate = phc2Aabb(244.8, 268.8, 43.2, 59.2, -48, -39);
+  const rightCandidate = phc2Aabb(244.8, 268.8, 43.2, 59.2, -39, -30);
+  const leftWall = [wall('left-only', 216, 240, 0, 48, -48, -39)];
+  assert.equal(PackLib.evaluateFrontOverhangRearRetention(leftCandidate, leftWall, truck, zones).retained, true);
+  assert.equal(PackLib.evaluateFrontOverhangRearRetention(rightCandidate, leftWall, truck, zones).retained, false,
+    'an exposed right side cannot borrow left-side coverage');
+  assert.equal(evaluate([
+    wall('tall-half', 216, 240, 0, 48, -48, -39),
+    wall('short-half', 216, 240, 0, 40, -39, -30),
+  ]).retained, false, 'mixed tall/short coverage must cross deckY across the complete width');
+
+  const stackedWall = [
+    wall('base', 216, 240, 0, 24, -48, -30),
+    wall('upper', 216, 240, 24, 48, -48, -30),
+  ];
+  assert.equal(evaluate(stackedWall).retained, true,
+    'an already accepted supported upper wall may cross the deck-height plane');
+  assert.equal(evaluate([wall('staged', 216, 240, 0, 48, -48, -30, { placement: 'staged' })]).retained, false);
+  assert.equal(evaluate([wall('invalid', 216, 240, 0, 48, -48, -30, { valid: false })]).retained, false,
+    'staged and invalid cargo never count');
+  assert.equal(PackLib.REAR_RETENTION_MAX_STEP_GAP_INCHES, 0.05);
+  assert.equal(PackLib.MIN_REAR_RETENTION_WIDTH_FRACTION, 1);
+});
+
+test('PHASE-C2 production solver gates floor, filler, lane, repeated, B2A/B2C, stack, compaction, and repack routes', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = phcFrontOverhangTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const deckZone = zones.find(zone => zone.min.y > 0.05);
+  const isOnDeck = (result, id) => {
+    const position = result.placements.get(id);
+    const dims = result.orientedDims.get(id);
+    if (!position || !dims) return false;
+    return Solver.isAabbContainedInAnyZone(
+      Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height }),
+      [deckZone]
+    );
+  };
+
+  const routeItems = [
+    { label: 'floor', item: { instanceId: 'floor', caseId: 'floor', dims: { l: 24, w: 18, h: 16 }, weight: 30 } },
+    { label: 'filler', item: { instanceId: 'filler', caseId: 'filler', dims: { l: 20, w: 10, h: 10 }, weight: 20 } },
+    { label: 'lane', item: { instanceId: 'lane', caseId: 'lane', dims: { l: 120, w: 10, h: 10 }, weight: 30, laneItem: true } },
+  ];
+  for (const { label, item } of routeItems) {
+    const spec = { orientationLock: 'any', canFlip: false, ...item };
+    const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: [spec] });
+    assert.equal(isOnDeck(result, spec.instanceId), false, `${label} cannot use an empty deck`);
+  }
+
+  const repeatedItems = Array.from({ length: 8 }, (_, index) => ({
+    instanceId: `r${index}`, caseId: 'repeated', dims: { l: 42, w: 10, h: 16 },
+    orientationLock: 'any', canFlip: false, weight: 30,
+  }));
+  const repeated = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: repeatedItems });
+  assert.equal([...repeated.placements.keys()].some(id => isOnDeck(repeated, id)), false,
+    'repeated-grid and its B2A/B2C retries cannot bypass retention');
+
+  const crowdedItems = Array.from({ length: 100 }, (_, index) => ({
+    instanceId: `c${index}`, caseId: 'crowded', dims: { l: 24, w: 18, h: 16 },
+    orientationLock: 'any', canFlip: false, weight: 30, maxStackCount: 2,
+  }));
+  const crowded = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: crowdedItems });
+  assert.ok(crowded.phaseStats.stackCount > 0, 'fixture exercises production stacking after both compaction passes');
+  assert.equal([...crowded.placements.keys()].some(id => isOnDeck(crowded, id)), false,
+    'stack and compaction cannot create an unretained deck placement');
+
+  const deckCase = {
+    id: 'deck-case', dimensions: { length: 24, width: 18, height: 16 },
+    weight: 30, orientationLock: 'any', canFlip: false,
+  };
+  const deckInst = phc2Instance('deck-invalid', deckCase.id, { x: 256.8, y: 51.2, z: -39 }, deckCase.dimensions);
+  const recon = PackLib.reconcilePlacementsForTruck({ id: 'p', truck, cases: [deckInst] }, truck, [deckCase]);
+  assert.deepEqual(recon.invalid, ['deck-invalid'], 'final/reconciliation gate rejects an unretained deck item');
+  const repacked = PackLib.repackInvalidPlacements(recon, truck, [deckCase]);
+  const repackedInst = repacked.pack.cases.find(inst => inst.id === 'deck-invalid');
+  assert.ok(repackedInst.transform.position.x <= 228, 'Repack Invalid places it on the main floor, not the empty deck');
+});
+
+test('PHASE-C2 accepted walls emit dependencies and animate before retained deck cargo', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const Engine = await import(`${autoPackEnginePath.href}?t=${Date.now()}-${Math.random()}`);
+  const truth = await threeOrientedTruth();
+  const truck = phcFrontOverhangTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = [
+    { instanceId: 'wall', caseId: 'wall', dims: { l: 24, w: 18, h: 48 }, orientationLock: 'upright', canFlip: false, weight: 100, noStackOnTop: true },
+    { instanceId: 'deck', caseId: 'deck', dims: { l: 24, w: 18, h: 16 }, orientationLock: 'upright', canFlip: false, weight: 30 },
+  ];
+  const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  assert.deepEqual(result.retentionDependencies.get('deck'), ['wall'], 'solver emits exact retainer dependency ids');
+  assert.equal(result.retentionDependencies.has('wall'), false, 'a tall noStackOnTop item may itself act as a wall');
+  const wallDims = result.orientedDims.get('wall');
+  const deckDims = result.orientedDims.get('deck');
+  const wallAabb = Solver.getAabb(result.placements.get('wall'), { l: wallDims.length, w: wallDims.width, h: wallDims.height });
+  const deckAabb = Solver.getAabb(result.placements.get('deck'), { l: deckDims.length, w: deckDims.width, h: deckDims.height });
+  assert.deepEqual(wallAabb, phc2Aabb(222, 240, 0, 48, -48, -24), 'retaining wall exact AABB');
+  assert.deepEqual(deckAabb, phc2Aabb(244.8, 268.8, 43.2, 59.2, -48, -30), 'retained deck exact AABB');
+  assert.deepEqual(wallDims, truth({ length: 24, width: 18, height: 48 }, result.rotations.get('wall')));
+  assert.deepEqual(deckDims, truth({ length: 24, width: 18, height: 16 }, result.rotations.get('deck')));
+  phb2AssertSafe(Solver, PackLib, result, zones, 'C2 wall/deck');
+
+  const caseIds = new Map(items.map(item => [item.instanceId, item.caseId]));
+  const batches = Engine.buildPlacementAnimationBatches(
+    result.placements,
+    result.orientedDims,
+    caseIds,
+    4,
+    { frontSurfaceFirst: true, zones, retentionDependencies: result.retentionDependencies }
+  );
+  const animationOrder = batches.flat().map(([id]) => id);
+  assert.ok(animationOrder.indexOf('wall') < animationOrder.indexOf('deck'), 'wall animates before dependent deck cargo');
+  const repeat = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  assert.equal(phcResultBytes(repeat), phcResultBytes(result), 'repeat AutoPack is byte-identical');
+  assert.equal(JSON.stringify([...repeat.retentionDependencies]), JSON.stringify([...result.retentionDependencies]));
+});
+
+test('PHASE-C2 hidden retainers, rejected walls, deck-height changes, restore, and import repair stay safe', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = phcFrontOverhangTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const hiddenWall = { instanceId: 'hidden-wall', aabb: phc2Aabb(216, 240, 0, 48, -48, -30) };
+  const deckItem = {
+    instanceId: 'deck', caseId: 'deck', dims: { l: 24, w: 18, h: 16 },
+    orientationLock: 'upright', canFlip: false, weight: 30,
+  };
+  const withHidden = Solver.solveAutoPack({
+    truck, zones, loadFrontFirst: true, items: [deckItem], retentionPlacements: [hiddenWall],
+  });
+  assert.deepEqual(withHidden.retentionDependencies.get('deck'), ['hidden-wall'],
+    'a physically valid hidden packed wall may retain deck cargo');
+  for (const invalidWall of [
+    { ...hiddenWall, placement: 'staged' },
+    { ...hiddenWall, valid: false },
+    { ...hiddenWall, aabb: phc2Aabb(216, 240, 0, 40, -48, -30) },
+  ]) {
+    const result = Solver.solveAutoPack({
+      truck, zones, loadFrontFirst: true, items: [deckItem], retentionPlacements: [invalidWall],
+    });
+    assert.equal(result.retentionDependencies.has('deck'), false,
+      'staged, invalid, malformed-height hidden walls cannot count');
+  }
+
+  const wallCase = { id: 'wall-case', dimensions: { length: 24, width: 18, height: 48 }, weight: 100, orientationLock: 'upright', canFlip: false };
+  const deckCase = { id: 'deck-case', dimensions: { length: 24, width: 18, height: 16 }, weight: 30, orientationLock: 'upright', canFlip: false };
+  const wallInst = phc2Instance('wall', wallCase.id, { x: 228, y: 24, z: -39 }, wallCase.dimensions);
+  const deckInst = phc2Instance('deck', deckCase.id, { x: 256.8, y: 51.2, z: -39 }, deckCase.dimensions);
+  const invalidated = PackLib.reconcilePlacementsForTruck(
+    { id: 'invalidated', truck, cases: [{ ...wallInst, transform: { ...wallInst.transform, position: { x: 250, y: 24, z: -39 } } }, deckInst] },
+    truck,
+    [wallCase, deckCase]
+  );
+  assert.deepEqual(invalidated.invalid, ['wall', 'deck'], 'rejecting the wall also rejects its dependent deck item');
+
+  const raisedTruck = { ...truck, shapeConfig: { ...truck.shapeConfig, bonusHeight: 60 } };
+  const raised = PackLib.reconcilePlacementsForTruck(
+    { id: 'raised', truck, cases: [wallInst, deckInst] }, raisedTruck, [wallCase, deckCase]
+  );
+  assert.ok(raised.invalid.includes('deck'), 'raising deckY above the wall invalidates the deck item');
+  const raisedStaged = PackLib.stageInvalidPlacements(raised, raisedTruck, [wallCase, deckCase]);
+  assert.equal(raisedStaged.cases.find(inst => inst.id === 'deck').placement, 'staged');
+
+  const unsafe = { id: 'unsafe', truck, cases: [deckInst] };
+  const restored = PackLib.repairRestoredPackPlacements(unsafe, [deckCase]);
+  assert.equal(restored.cases[0].placement, 'staged', 'unsafe saved deck placement repairs to staging');
+  const importPlan = PackLib.planPackImport({ pack: unsafe, bundledCases: [deckCase] });
+  assert.equal(importPlan.pack.cases[0].placement, 'staged', 'unsafe imported deck placement repairs to staging');
+
+  const shortNoTopItems = [
+    { instanceId: 'short-base', caseId: 'base', dims: { l: 24, w: 18, h: 24 }, orientationLock: 'upright', canFlip: false, weight: 100, noStackOnTop: true },
+    { instanceId: 'upper', caseId: 'upper', dims: { l: 24, w: 18, h: 24 }, orientationLock: 'upright', canFlip: false, weight: 30 },
+  ];
+  const noTop = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: shortNoTopItems });
+  assert.equal(noTop.retentionDependencies.size, 0, 'short noStackOnTop base cannot gain an upper retaining wall');
+});
+
+test('PHASE-C2 empty Front Overhang deck stays unused for 24x18 × 6/20/40/100 and 42x10', async () => {
   const { Solver, PackLib } = await phbSolverModules();
   const Engine = await import(`${autoPackEnginePath.href}?t=${Date.now()}-${Math.random()}`);
   const truth = await threeOrientedTruth();
@@ -8631,60 +8866,11 @@ test('PHASE-C Front Overhang fills the raised forward deck before the main floor
   }, 'real raised-deck zone coordinates');
 
   const fixtures = [
-    {
-      label: '24x18/6', count: 6, dims: { l: 24, w: 18, h: 16 },
-      expectedTable: [{ surface: '43.2|268.8', count: 5 }, { surface: '0|240', count: 1 }],
-    },
-    {
-      label: '24x18/20', count: 20, dims: { l: 24, w: 18, h: 16 },
-      expectedTable: [
-        { surface: '43.2|268.8', count: 4 }, { surface: '0|240', count: 4 },
-        { surface: '0|222', count: 4 }, { surface: '0|204', count: 4 },
-        { surface: '0|186', count: 4 },
-      ],
-    },
-    {
-      label: '24x18/40', count: 40, dims: { l: 24, w: 18, h: 16 },
-      expectedTable: [
-        { surface: '43.2|268.8', count: 4 }, { surface: '0|240', count: 4 },
-        { surface: '0|222', count: 4 }, { surface: '0|204', count: 4 },
-        { surface: '0|186', count: 4 }, { surface: '0|168', count: 4 },
-        { surface: '0|150', count: 4 }, { surface: '0|132', count: 4 },
-        { surface: '0|114', count: 4 }, { surface: '0|96', count: 4 },
-      ],
-    },
-    {
-      label: '24x18/100', count: 100, dims: { l: 24, w: 18, h: 16 },
-      expectedTable: [
-        { surface: '43.2|268.8', count: 4 }, { surface: '0|240', count: 4 },
-        { surface: '0|222', count: 4 }, { surface: '0|204', count: 4 },
-        { surface: '0|186', count: 4 }, { surface: '0|168', count: 4 },
-        { surface: '0|150', count: 4 }, { surface: '0|132', count: 4 },
-        { surface: '0|114', count: 4 }, { surface: '0|96', count: 4 },
-        { surface: '0|78', count: 4 }, { surface: '0|60', count: 4 },
-        { surface: '0|42', count: 4 }, { surface: '0|24', count: 4 },
-      ],
-    },
-    {
-      label: '42x10/100', count: 100, dims: { l: 42, w: 10, h: 16 },
-      expectedTable: [
-        { surface: '43.2|268.8', count: 2 }, { surface: '43.2|258.8', count: 2 },
-        { surface: '0|240', count: 3 }, { surface: '0|230', count: 2 },
-        { surface: '0|220', count: 2 }, { surface: '0|210', count: 2 },
-        { surface: '0|200', count: 2 }, { surface: '0|198', count: 1 },
-        { surface: '0|190', count: 2 }, { surface: '0|180', count: 2 },
-        { surface: '0|170', count: 2 }, { surface: '0|160', count: 2 },
-        { surface: '0|156', count: 1 }, { surface: '0|150', count: 2 },
-        { surface: '0|140', count: 2 }, { surface: '0|130', count: 2 },
-        { surface: '0|120', count: 2 }, { surface: '0|114', count: 1 },
-        { surface: '0|110', count: 2 }, { surface: '0|100', count: 2 },
-        { surface: '0|90', count: 2 }, { surface: '0|80', count: 2 },
-        { surface: '0|72', count: 1 }, { surface: '0|70', count: 2 },
-        { surface: '0|60', count: 2 }, { surface: '0|50', count: 2 },
-        { surface: '0|40', count: 2 }, { surface: '0|30', count: 2 },
-        { surface: '0|20', count: 2 }, { surface: '0|10', count: 2 },
-      ],
-    },
+    { label: '24x18/6', count: 6, dims: { l: 24, w: 18, h: 16 } },
+    { label: '24x18/20', count: 20, dims: { l: 24, w: 18, h: 16 } },
+    { label: '24x18/40', count: 40, dims: { l: 24, w: 18, h: 16 } },
+    { label: '24x18/100', count: 100, dims: { l: 24, w: 18, h: 16 } },
+    { label: '42x10/100', count: 100, dims: { l: 42, w: 10, h: 16 } },
   ];
 
   for (const fixture of fixtures) {
@@ -8698,13 +8884,12 @@ test('PHASE-C Front Overhang fills the raised forward deck before the main floor
     const placementSnapshot = JSON.stringify([...result.placements]);
     const rotationSnapshot = JSON.stringify([...result.rotations]);
 
-    assert.deepEqual(phcFloorTable(Solver, result, zones), fixture.expectedTable,
-      `${fixture.label}: exact deck/main-floor load-wall table`);
+    assert.ok(phcFloorTable(Solver, result, zones).every(row => row.surface.startsWith('0|')),
+      `${fixture.label}: every floor placement stays on the main floor without a retaining wall`);
     assert.equal(phb2SequentialForwardViolation(Solver, result, zones, specsById), null,
       `${fixture.label}: each same-layer wall completes before moving rearward`);
-    assert.equal(phb2SequentialForwardViolation(
-      Solver, result, zones, specsById, { sameLayerOnly: false }
-    ), null, `${fixture.label}: no main-floor placement skips a legal forward-deck candidate`);
+    assert.equal(result.retentionDependencies.size, 0,
+      `${fixture.label}: no invalid deck dependency is emitted`);
     assert.deepEqual(result.unpacked, [], `${fixture.label}: every case resolves`);
     phb2AssertSafe(Solver, PackLib, result, zones, fixture.label);
     phb2AssertDirectStackLimit(Solver, result, 2, fixture.label);
@@ -8728,7 +8913,11 @@ test('PHASE-C Front Overhang fills the raised forward deck before the main floor
     }
 
     const caseIds = new Map(items.map(item => [item.instanceId, item.caseId]));
-    const animationOptions = { frontSurfaceFirst: true, zones };
+    const animationOptions = {
+      frontSurfaceFirst: true,
+      zones,
+      retentionDependencies: result.retentionDependencies,
+    };
     const batches = Engine.buildPlacementAnimationBatches(
       result.placements, result.orientedDims, caseIds, 4, animationOptions
     );
@@ -8759,7 +8948,7 @@ test('PHASE-C Front Overhang fills the raised forward deck before the main floor
   }
 });
 
-test('PHASE-C ordinary, filler, forced-lane, and mixed-fit cargo use only valid Front Overhang surfaces', async () => {
+test('PHASE-C2 ordinary, filler, forced-lane, repeated, and mixed cargo use only eligible surfaces', async () => {
   const { Solver, PackLib } = await phbSolverModules();
   const truck = phcFrontOverhangTruck();
   const zones = PackLib.getTrailerUsableZones(truck);
@@ -8774,8 +8963,8 @@ test('PHASE-C ordinary, filler, forced-lane, and mixed-fit cargo use only valid 
     const position = result.placements.get(item.instanceId);
     const dims = result.orientedDims.get(item.instanceId);
     const aabb = Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
-    assert.ok(aabb.min.x >= 240 - 0.05 && Math.abs(aabb.min.y - 43.2) <= 0.05,
-      `${fixture.label}: eligible cargo uses the raised forward deck`);
+    assert.ok(aabb.max.x <= 240 + 0.05 && Math.abs(aabb.min.y) <= 0.05,
+      `${fixture.label}: an empty raised deck is ineligible`);
     assert.equal(PackLib.isAabbContainedInAnyZone(aabb, zones), true, `${fixture.label}: contained in one usable zone`);
   }
 
@@ -8784,18 +8973,8 @@ test('PHASE-C ordinary, filler, forced-lane, and mixed-fit cargo use only valid 
     orientationLock: 'any', canFlip: false, weight: 30,
   }));
   const repeated = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: repeatedItems });
-  assert.deepEqual(phcFloorTable(Solver, repeated, zones), [
-    { surface: '43.2|268.8', count: 2 },
-    { surface: '43.2|258.8', count: 2 },
-    { surface: '0|240', count: 4 },
-  ], 'repeated-grid cross-surface gate exhausts the deck before its main-floor grid');
-  assert.equal(phb2SequentialForwardViolation(
-    Solver,
-    repeated,
-    zones,
-    new Map(repeatedItems.map(item => [item.instanceId, item])),
-    { sameLayerOnly: false }
-  ), null, 'repeated-grid route never skips a legal raised-deck candidate');
+  assert.ok(phcFloorTable(Solver, repeated, zones).every(row => row.surface.startsWith('0|')),
+    'repeated-grid cross-surface gate skips the unretained deck');
 
   const deckFit = {
     caseId: 'fit', dims: { l: 24, w: 18, h: 16 }, orientationLock: 'any', canFlip: false,
@@ -8813,8 +8992,11 @@ test('PHASE-C ordinary, filler, forced-lane, and mixed-fit cargo use only valid 
   for (const id of ['fit0', 'fit1', 'fit2']) {
     const pos = mixed.placements.get(id); const dims = mixed.orientedDims.get(id);
     const aabb = Solver.getAabb(pos, { l: dims.length, w: dims.width, h: dims.height });
-    assert.ok(aabb.min.x >= 240 - 0.05 && Math.abs(aabb.min.y - 43.2) <= 0.05,
-      `${id}: deck-compatible case uses deck`);
+    const onDeck = aabb.min.x >= 240 - 0.05 && Math.abs(aabb.min.y - 43.2) <= 0.05;
+    if (onDeck) {
+      assert.ok((mixed.retentionDependencies.get(id) || []).some(retainerId => retainerId.startsWith('tall')),
+        `${id}: deck cargo is retained by an accepted tall wall`);
+    }
   }
   for (const id of ['tall0', 'tall1', 'tall2']) {
     const pos = mixed.placements.get(id); const dims = mixed.orientedDims.get(id);
@@ -8943,30 +9125,30 @@ test('PHASE-D stable global grouping removes avoidable A/B row fragments and pre
   const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
   const rows = phdSpatialRows(Solver, result, items);
   const beforeRows = [
-    { row: '43.2|268.8', cases: 'ABABA' },
-    { row: '0|240', cases: 'BABA' },
-    { row: '0|222', cases: 'BABA' },
-    { row: '0|204', cases: 'B' },
+    { row: '0|240', cases: 'ABAB' },
+    { row: '0|222', cases: 'ABAB' },
+    { row: '0|204', cases: 'ABAB' },
+    { row: '0|186', cases: 'AB' },
   ];
 
   assert.equal(result.placements.size, 14, 'grouping does not reduce placed quantity');
   assert.deepEqual(rows.map(row => ({ row: row.row, cases: row.cases })), [
-    { row: '43.2|268.8', cases: 'AAAAA' },
-    { row: '0|240', cases: 'AABB' },
-    { row: '0|222', cases: 'BBBB' },
-    { row: '0|204', cases: 'B' },
-  ], 'matching cases form stable contiguous deck/main-floor blocks');
+    { row: '0|240', cases: 'AAAA' },
+    { row: '0|222', cases: 'AAAB' },
+    { row: '0|204', cases: 'BBBB' },
+    { row: '0|186', cases: 'BB' },
+  ], 'matching cases remain globally contiguous while the unretained deck stays empty');
   assert.ok(phdSplitRunCount(rows) < phdSplitRunCount(beforeRows),
     'complete-layout split runs improve from the recorded pre-Phase-D baseline');
   assert.ok(phdRowFragmentCount(rows) < phdRowFragmentCount(beforeRows),
     'within-row fragments improve from the recorded pre-Phase-D baseline');
-  assert.deepEqual(rows.filter(row => row.row.startsWith('0|')).map(row => row.cases.length), [4, 4, 1],
+  assert.deepEqual(rows.filter(row => row.row.startsWith('0|')).map(row => row.cases.length), [4, 4, 4, 2],
     'full main-floor rows precede the partial final row');
 
   const specsById = new Map(items.map(item => [item.instanceId, item]));
   assert.equal(phb2SequentialForwardViolation(
-    Solver, result, zones, specsById, { sameLayerOnly: false }
-  ), null, 'group continuity never skips a legal more-forward surface candidate');
+    Solver, result, zones, specsById, { sameLayerOnly: true }
+  ), null, 'group continuity never skips a legal candidate on its eligible surface');
   phb2AssertSafe(Solver, PackLib, result, zones, 'Phase D grouped floor');
   phb2AssertDirectStackLimit(Solver, result, 2, 'Phase D grouped floor');
 
@@ -9045,8 +9227,13 @@ test('PHASE-D groups equal-priority lanes and keeps equal-capacity row orientati
     const dims = mixed.orientedDims.get(id);
     const aabb = Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
     if (id.startsWith('fit')) {
-      assert.ok(aabb.min.x >= 240 - 0.05 && Math.abs(aabb.min.y - 43.2) <= 0.05,
-        `${id}: grouping preserves the raised-deck priority`);
+      const onDeck = aabb.min.x >= 240 - 0.05 && Math.abs(aabb.min.y - 43.2) <= 0.05;
+      if (onDeck) {
+        assert.ok((mixed.retentionDependencies.get(id) || []).some(retainerId => retainerId.startsWith('tall')),
+          `${id}: grouping preserves retention dependencies for deck cargo`);
+      } else {
+        assert.ok(aabb.max.x <= 240 + 0.05, `${id}: unretained cargo stays on the main-floor side`);
+      }
     } else {
       assert.ok(aabb.max.x <= 240 + 0.05 && Math.abs(aabb.min.y) <= 0.05,
         `${id}: grouping never overrides the deck height limit`);
@@ -9069,8 +9256,9 @@ test('PHASE-D stack groups remain contiguous, supported, deterministic, and anim
   const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
   const rows = phdSpatialRows(Solver, result, items);
 
-  assert.equal(result.placements.size, 14, 'stack grouping preserves placed quantity');
+  assert.equal(result.placements.size, 12, 'unsafe unretained deck overflow is staged instead of counted as placed');
   assert.equal(result.phaseStats.stackCount, 9, 'fixture exercises production stack placement');
+  assert.equal(result.unpacked.length, 2, 'items that cannot fit safely are reported');
   assert.equal(phdRowFragmentCount(rows), 0,
     'no stack/floor row returns to a case group after another group starts');
   phb2AssertSafe(Solver, PackLib, result, zones, 'Phase D grouped stacks');

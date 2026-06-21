@@ -1,4 +1,8 @@
-import { CONTAINMENT_EPS_INCHES } from './pack-library.js';
+import {
+  CONTAINMENT_EPS_INCHES,
+  evaluateFrontOverhangRearRetention,
+  getFrontOverhangRetentionGeometry,
+} from './pack-library.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
 import {
   RIGHT_ANGLE_RAD,
@@ -229,6 +233,7 @@ function makeEmptyOutput() {
     placements: new Map(),
     rotations: new Map(),
     orientedDims: new Map(),
+    retentionDependencies: new Map(),
     unpacked: [],
     warnings: [],
     phaseStats: {
@@ -592,10 +597,47 @@ function normalizeFreeRects(rects) {
   );
 }
 
-function createFloorState(zones, frontSurfaceFirst = false) {
+function createRetentionContext(truck, zones, fixedPlacements = []) {
+  return {
+    truck,
+    zones,
+    geometry: getFrontOverhangRetentionGeometry(truck, zones),
+    fixedPlacements: Array.isArray(fixedPlacements) ? fixedPlacements : [],
+  };
+}
+
+function evaluateCandidateRetention(aabb, packed, retentionContext) {
+  if (!retentionContext?.geometry) return { required: false, retained: true, retainerIds: [] };
+  return evaluateFrontOverhangRearRetention(
+    aabb,
+    [...retentionContext.fixedPlacements, ...(packed || [])],
+    retentionContext.truck,
+    retentionContext.zones
+  );
+}
+
+function candidateHasRearRetention(aabb, packed, retentionContext) {
+  return evaluateCandidateRetention(aabb, packed, retentionContext).retained;
+}
+
+function placementsHaveRearRetention(placements, retentionContext) {
+  if (!retentionContext?.geometry) return true;
+  const all = [...retentionContext.fixedPlacements, ...(placements || [])];
+  return (placements || []).every(placement =>
+    evaluateFrontOverhangRearRetention(
+      placement.aabb,
+      all.filter(other => other !== placement),
+      retentionContext.truck,
+      retentionContext.zones
+    ).retained
+  );
+}
+
+function createFloorState(zones, frontSurfaceFirst = false, retentionContext = null) {
   return {
     freeRects: normalizeFreeRects(zones.map((zone, index) => makeFreeRect(zone, index))),
     frontSurfaceFirst: frontSurfaceFirst === true,
+    retentionContext,
   };
 }
 
@@ -863,6 +905,7 @@ function findFloorPlacement(item, floorState, packed, loadFrontFirst, options = 
       if (requiredFloorY !== null && Math.abs(candidate.aabb.min.y - requiredFloorY) > CONTACT_EPS) continue;
       if (!isAabbContainedInZone(candidate.aabb, candidate.zone)) continue;
       if (collidesPacked(candidate.aabb, packed)) continue;
+      if (!candidateHasRearRetention(candidate.aabb, packed, floorState.retentionContext)) continue;
       const score = scoreFreeRectCandidate(
         candidate,
         loadFrontFirst,
@@ -936,6 +979,7 @@ function findLanePlacement(item, floorState, packed, loadFrontFirst) {
     for (const candidate of buildFreeRectCandidates(orientation, floorState, loadFrontFirst, packed)) {
       if (!isAabbContainedInZone(candidate.aabb, candidate.zone)) continue;
       if (collidesPacked(candidate.aabb, packed)) continue;
+      if (!candidateHasRearRetention(candidate.aabb, packed, floorState.retentionContext)) continue;
       const score = scoreLaneCandidate(
         candidate,
         orientation,
@@ -1153,6 +1197,7 @@ function placeRepeatedBatchFloor(group, orientation, floorState, packed, output,
         const aabb = getAabb(position, dims);
         if (!isAabbContainedInZone(aabb, rect.zone)) continue;
         if (collidesPacked(aabb, packed)) continue;
+        if (!candidateHasRearRetention(aabb, packed, floorState.retentionContext)) continue;
 
         // Before advancing this repeated grid farther rearward, let the production
         // floor search use every legal orientation. B2C restricts this completion
@@ -1417,7 +1462,14 @@ export function scoreStackCandidate(candidate, loadFrontFirst, groupScore = null
   ];
 }
 
-function findStackPlacement(item, zones, packed, loadFrontFirst, layoutQualityEnabled = false) {
+function findStackPlacement(
+  item,
+  zones,
+  packed,
+  loadFrontFirst,
+  layoutQualityEnabled = false,
+  retentionContext = null
+) {
   let best = null;
   let bestScore = null;
   const yLevels = uniqueSorted(
@@ -1433,6 +1485,7 @@ function findStackPlacement(item, zones, packed, loadFrontFirst, layoutQualityEn
         if (!isAabbContainedInAnyZone(candidate.aabb, zones)) continue;
         if (collidesPacked(candidate.aabb, packed)) continue;
         if (!supportsCandidate(candidate.aabb, packed, item)) continue;
+        if (!candidateHasRearRetention(candidate.aabb, packed, retentionContext)) continue;
 
         const supports = getCandidateSupports(candidate.aabb, packed)
           .filter(candidateSupport =>
@@ -1565,13 +1618,22 @@ function scoreCompactionCandidate(
   ];
 }
 
-function compactFloorPlacements(output, packed, zones, loadFrontFirst, frontSurfaceFirst = false) {
+function compactFloorPlacements(
+  output,
+  packed,
+  zones,
+  loadFrontFirst,
+  frontSurfaceFirst = false,
+  retentionContext = null
+) {
   const compactable = packed.filter(placement =>
     !placement.lockedGrid &&
     placement.phase !== 'stack' &&
     isPlacementOnZoneFloor(placement.aabb, zones)
   );
-  if (!compactable.length) return rebuildFloorStateFromPacked(zones, packed, frontSurfaceFirst);
+  if (!compactable.length) {
+    return rebuildFloorStateFromPacked(zones, packed, frontSurfaceFirst, retentionContext);
+  }
 
   let changed = false;
   const ordered = [...compactable].sort((a, b) => {
@@ -1608,6 +1670,8 @@ function compactFloorPlacements(output, packed, zones, loadFrontFirst, frontSurf
           const aabb = getAabb(position, placement.dims);
           if (!isAabbContainedInZone(aabb, zone)) continue;
           if (collidesPacked(aabb, others)) continue;
+          const candidatePlacement = { ...placement, pos: position, aabb, zone };
+          if (!placementsHaveRearRetention([...others, candidatePlacement], retentionContext)) continue;
           const score = scoreCompactionCandidate(
             aabb,
             zone,
@@ -1634,7 +1698,7 @@ function compactFloorPlacements(output, packed, zones, loadFrontFirst, frontSurf
   if (changed) {
     writeOutputPlacements(output, packed);
   }
-  return rebuildFloorStateFromPacked(zones, packed, frontSurfaceFirst);
+  return rebuildFloorStateFromPacked(zones, packed, frontSurfaceFirst, retentionContext);
 }
 
 function writeOutputPlacements(output, placements) {
@@ -1664,10 +1728,17 @@ function stageRejectedPlacements(output, rejected) {
 function validatePackedPlacements(output, packed, zones) {
   const options = arguments[3] || {};
   const stageRejected = options.stageRejected !== false;
+  const retentionContext = options.retentionContext || null;
   const accepted = [];
   const rejected = [];
 
-  for (const placement of packed) {
+  const validationOrder = retentionContext?.geometry
+    ? [...packed].sort((a, b) =>
+      a.aabb.min.y - b.aabb.min.y ||
+      stableTextCompare(a.instanceId, b.instanceId)
+    )
+    : packed;
+  for (const placement of validationOrder) {
     let reason = '';
     if (!isAabbContainedInAnyZone(placement.aabb, zones)) {
       reason = 'outside usable zones';
@@ -1678,6 +1749,8 @@ function validatePackedPlacements(output, packed, zones) {
       !supportsCandidate(placement.aabb, accepted, placement.item)
     ) {
       reason = 'does not have safe stack support';
+    } else if (!candidateHasRearRetention(placement.aabb, accepted, retentionContext)) {
+      reason = 'does not have complete rear retention at the overhang step';
     }
 
     if (reason) {
@@ -1697,8 +1770,13 @@ function validatePackedPlacements(output, packed, zones) {
   return { accepted, rejected };
 }
 
-function rebuildFloorStateFromPacked(zones, packed, frontSurfaceFirst = false) {
-  const floorState = createFloorState(zones, frontSurfaceFirst);
+function rebuildFloorStateFromPacked(
+  zones,
+  packed,
+  frontSurfaceFirst = false,
+  retentionContext = null
+) {
+  const floorState = createFloorState(zones, frontSurfaceFirst, retentionContext);
   for (const placement of packed) {
     if (!isPlacementOnZoneFloor(placement.aabb, zones)) continue;
     occupyFloorSpace(floorState, placement);
@@ -1712,11 +1790,17 @@ function repackRejectedPlacements(
   rejected,
   zones,
   loadFrontFirst,
-  frontSurfaceFirst = false
+  frontSurfaceFirst = false,
+  retentionContext = null
 ) {
   if (!rejected.length) return { packed: accepted, rejected: [] };
   const repacked = [...accepted];
-  const floorState = rebuildFloorStateFromPacked(zones, repacked, frontSurfaceFirst);
+  const floorState = rebuildFloorStateFromPacked(
+    zones,
+    repacked,
+    frontSurfaceFirst,
+    retentionContext
+  );
   const stillRejected = [];
 
   writeOutputPlacements(output, repacked);
@@ -1745,7 +1829,8 @@ function repackRejectedPlacements(
       zones,
       repacked,
       loadFrontFirst,
-      frontSurfaceFirst
+      frontSurfaceFirst,
+      retentionContext
     );
     if (stackPlacement) {
       recordPlacement(output, repacked, item, stackPlacement, 'stack');
@@ -1766,6 +1851,23 @@ function refreshPhaseStats(output, packed) {
   output.phaseStats.unpackedCount = output.unpacked.length;
 }
 
+function recordRetentionDependencies(output, packed, retentionContext) {
+  output.retentionDependencies.clear();
+  if (!retentionContext?.geometry) return;
+  const all = [...retentionContext.fixedPlacements, ...(packed || [])];
+  for (const placement of packed || []) {
+    const evaluation = evaluateFrontOverhangRearRetention(
+      placement.aabb,
+      all.filter(other => other !== placement),
+      retentionContext.truck,
+      retentionContext.zones
+    );
+    if (evaluation.required && evaluation.retained) {
+      output.retentionDependencies.set(placement.instanceId, evaluation.retainerIds);
+    }
+  }
+}
+
 export function solveAutoPack(input = {}) {
   const truck = normalizeTruck(input.truck || {});
   const zones = normalizeZones(input.zones || []);
@@ -1782,7 +1884,12 @@ export function solveAutoPack(input = {}) {
   const frontSurfaceFirst = loadFrontFirst && floorZones.some(zone =>
     zone.min.y > CONTACT_EPS && zone.max.x > truck.length + FREE_RECT_EPS
   );
-  const floorState = createFloorState(floorZones, frontSurfaceFirst);
+  const retentionContext = createRetentionContext(
+    input.truck || {},
+    floorZones,
+    input.retentionPlacements
+  );
+  const floorState = createFloorState(floorZones, frontSurfaceFirst, retentionContext);
   const packed = [];
 
   if (!truck.length || !truck.width || !truck.height || !floorZones.length) {
@@ -1848,7 +1955,8 @@ export function solveAutoPack(input = {}) {
     packed,
     floorZones,
     loadFrontFirst,
-    frontSurfaceFirst
+    frontSurfaceFirst,
+    retentionContext
   ).freeRects;
 
   const fillerQueue = [
@@ -1873,7 +1981,8 @@ export function solveAutoPack(input = {}) {
     packed,
     floorZones,
     loadFrontFirst,
-    frontSurfaceFirst
+    frontSurfaceFirst,
+    retentionContext
   ).freeRects;
 
   let stackCount = 0;
@@ -1883,7 +1992,8 @@ export function solveAutoPack(input = {}) {
       floorZones,
       packed,
       loadFrontFirst,
-      frontSurfaceFirst
+      frontSurfaceFirst,
+      retentionContext
     );
     if (!placement) {
       output.unpacked.push(item.id);
@@ -1899,16 +2009,23 @@ export function solveAutoPack(input = {}) {
     stackCount++;
   }
 
-  const initialValidation = validatePackedPlacements(output, packed, floorZones, { stageRejected: false });
+  const initialValidation = validatePackedPlacements(output, packed, floorZones, {
+    stageRejected: false,
+    retentionContext,
+  });
   const repackedValidation = repackRejectedPlacements(
     output,
     initialValidation.accepted,
     initialValidation.rejected,
     floorZones,
     loadFrontFirst,
-    frontSurfaceFirst
+    frontSurfaceFirst,
+    retentionContext
   );
-  const finalValidation = validatePackedPlacements(output, repackedValidation.packed, floorZones, { stageRejected: false });
+  const finalValidation = validatePackedPlacements(output, repackedValidation.packed, floorZones, {
+    stageRejected: false,
+    retentionContext,
+  });
   if (finalValidation.rejected.length || repackedValidation.rejected.length) {
     const staged = new Map();
     for (const rejected of [...repackedValidation.rejected, ...finalValidation.rejected]) {
@@ -1929,5 +2046,6 @@ export function solveAutoPack(input = {}) {
   output.phaseStats.fillerCount = fillerCount;
   output.phaseStats.unpackedCount = output.unpacked.length;
   refreshPhaseStats(output, packed);
+  recordRetentionDependencies(output, packed, retentionContext);
   return output;
 }

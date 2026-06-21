@@ -220,6 +220,128 @@ function getTrailerCapacityInches3(truck) {
 
 export const CONTAINMENT_EPS_INCHES = 0.05;
 
+/** Maximum accepted gap between a retaining wall's front face and the overhang step. */
+export const REAR_RETENTION_MAX_STEP_GAP_INCHES = 0.05;
+
+/** Rear retention requires the candidate's complete width; vertical support uses a separate rule. */
+export const MIN_REAR_RETENTION_WIDTH_FRACTION = 1.0;
+
+function aabbContainedInZone(aabb, z, epsilon = CONTAINMENT_EPS_INCHES) {
+  if (!aabb || !z) return false;
+  return aabb.min.x >= z.min.x - epsilon && aabb.max.x <= z.max.x + epsilon &&
+    aabb.min.y >= z.min.y - epsilon && aabb.max.y <= z.max.y + epsilon &&
+    aabb.min.z >= z.min.z - epsilon && aabb.max.z <= z.max.z + epsilon;
+}
+
+/**
+ * Resolve the true raised Front Overhang deck and its main-floor step geometry.
+ * Wheel-well raised zones never extend beyond truck.length and therefore cannot
+ * activate this contract.
+ */
+export function getFrontOverhangRetentionGeometry(truck, zonesOverride = null) {
+  const t = truck && typeof truck === 'object' ? truck : {};
+  if (getMode(t) !== 'frontBonus') return null;
+  const length = Math.max(0, Number(t.length) || 0);
+  const zones = Array.isArray(zonesOverride) ? zonesOverride : getTrailerUsableZones(t);
+  const deckZone = zones
+    .filter(z =>
+      z && z.min && z.max &&
+      z.min.y > CONTAINMENT_EPS_INCHES &&
+      z.max.x > length + CONTAINMENT_EPS_INCHES &&
+      Math.abs(z.min.x - length) <= CONTAINMENT_EPS_INCHES
+    )
+    .sort((a, b) => b.max.x - a.max.x || a.min.y - b.min.y)[0] || null;
+  if (!deckZone) return null;
+  const stepX = deckZone.min.x;
+  const mainZone = zones.find(z =>
+    z && z.min && z.max &&
+    Math.abs(z.min.y) <= CONTAINMENT_EPS_INCHES &&
+    Math.abs(z.max.x - stepX) <= CONTAINMENT_EPS_INCHES &&
+    z.min.z <= deckZone.min.z + CONTAINMENT_EPS_INCHES &&
+    z.max.z >= deckZone.max.z - CONTAINMENT_EPS_INCHES
+  ) || null;
+  if (!mainZone) return null;
+  return { stepX, deckY: deckZone.min.y, deckZone, mainZone };
+}
+
+function retentionPlacementEntry(value, index) {
+  if (!value) return null;
+  const aabb = value.aabb || (value.min && value.max ? value : null);
+  if (!aabb) return null;
+  const id = value.instanceId || value.id || `retainer-${index}`;
+  return { id, aabb, placement: value.placement, valid: value.valid, rejected: value.rejected };
+}
+
+/**
+ * Pure per-candidate Front Overhang rear-retention evaluation. Callers pass only
+ * placements that have already survived their ordinary hard validity rules.
+ */
+export function evaluateFrontOverhangRearRetention(
+  candidateAabb,
+  acceptedPlacements,
+  truck,
+  zonesOverride = null
+) {
+  const geometry = getFrontOverhangRetentionGeometry(truck, zonesOverride);
+  if (!geometry || !aabbContainedInZone(candidateAabb, geometry.deckZone)) {
+    return {
+      required: false,
+      retained: true,
+      coveredWidth: 0,
+      candidateWidth: Math.max(0, Number(candidateAabb?.max?.z) - Number(candidateAabb?.min?.z)),
+      coverageFraction: 1,
+      retainerIds: [],
+      geometry,
+    };
+  }
+
+  const candidateMinZ = candidateAabb.min.z;
+  const candidateMaxZ = candidateAabb.max.z;
+  const candidateWidth = Math.max(0, candidateMaxZ - candidateMinZ);
+  const intervals = [];
+  (acceptedPlacements || []).forEach((value, index) => {
+    const entry = retentionPlacementEntry(value, index);
+    if (!entry || entry.placement === 'staged' || entry.valid === false || entry.rejected === true) return;
+    const aabb = entry.aabb;
+    if (!aabbContainedInZone(aabb, geometry.mainZone)) return;
+    const stepGap = geometry.stepX - aabb.max.x;
+    if (stepGap < -CONTAINMENT_EPS_INCHES ||
+        stepGap > REAR_RETENTION_MAX_STEP_GAP_INCHES + 1e-9) return;
+    if (aabb.min.y > geometry.deckY + CONTAINMENT_EPS_INCHES ||
+        aabb.max.y < geometry.deckY - CONTAINMENT_EPS_INCHES) return;
+    const minZ = Math.max(candidateMinZ, aabb.min.z);
+    const maxZ = Math.min(candidateMaxZ, aabb.max.z);
+    if (maxZ - minZ <= CONTAINMENT_EPS_INCHES) return;
+    intervals.push({ minZ, maxZ, id: entry.id });
+  });
+
+  intervals.sort((a, b) => a.minZ - b.minZ || a.maxZ - b.maxZ || String(a.id).localeCompare(String(b.id)));
+  const merged = [];
+  for (const interval of intervals) {
+    const last = merged[merged.length - 1];
+    if (!last || interval.minZ > last.maxZ + CONTAINMENT_EPS_INCHES) {
+      merged.push({ minZ: interval.minZ, maxZ: interval.maxZ, ids: new Set([interval.id]) });
+      continue;
+    }
+    last.maxZ = Math.max(last.maxZ, interval.maxZ);
+    last.ids.add(interval.id);
+  }
+  const coveredWidth = merged.reduce((sum, interval) => sum + Math.max(0, interval.maxZ - interval.minZ), 0);
+  const requiredWidth = candidateWidth * MIN_REAR_RETENTION_WIDTH_FRACTION;
+  const retained = candidateWidth > 0 && coveredWidth + CONTAINMENT_EPS_INCHES >= requiredWidth;
+  return {
+    required: true,
+    retained,
+    coveredWidth,
+    candidateWidth,
+    coverageFraction: candidateWidth > 0 ? Math.min(1, coveredWidth / candidateWidth) : 0,
+    retainerIds: retained
+      ? [...new Set(merged.flatMap(interval => [...interval.ids]))].sort((a, b) => String(a).localeCompare(String(b)))
+      : [],
+    geometry,
+  };
+}
+
 /**
  * Inch-space containment contract: all AABBs and usable zones passed here use
  * inches, and all active trailer-containment callers share the same physical

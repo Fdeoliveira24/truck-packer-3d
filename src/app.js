@@ -4543,9 +4543,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const stored = Storage.load();
       if (stored && Array.isArray(stored.caseLibrary) && Array.isArray(stored.packLibrary)) {
         const storedCases = (stored.caseLibrary || []).map(applyCaseDefaultColor);
+        const storedPacks = stored.packLibrary.map(pack =>
+          PackLibrary.repairRestoredPackPlacements(pack, storedCases)
+        );
         const storedPrefs = stored.preferences || Defaults.defaultPreferences;
         const storedCurrentPackId =
-          stored.currentPackId && (stored.packLibrary || []).some(p => p && p.id === stored.currentPackId)
+          stored.currentPackId && storedPacks.some(p => p && p.id === stored.currentPackId)
             ? stored.currentPackId
             : null;
         const initialState = {
@@ -4553,7 +4556,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           currentPackId: storedCurrentPackId,
           selectedInstanceIds: [],
           caseLibrary: storedCases,
-          packLibrary: stored.packLibrary,
+          packLibrary: storedPacks,
           folderLibrary: Array.isArray(stored.folderLibrary) ? stored.folderLibrary : [],
           preferences: storedPrefs,
         };
@@ -4608,9 +4611,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const stored = Storage.load();
       if (stored && Array.isArray(stored.caseLibrary) && Array.isArray(stored.packLibrary)) {
         const storedCases = (stored.caseLibrary || []).map(applyCaseDefaultColor);
+        const storedPacks = stored.packLibrary.map(pack =>
+          PackLibrary.repairRestoredPackPlacements(pack, storedCases)
+        );
         const storedPrefs = stored.preferences || Defaults.defaultPreferences;
         const storedCurrentPackId =
-          stored.currentPackId && (stored.packLibrary || []).some(p => p && p.id === stored.currentPackId)
+          stored.currentPackId && storedPacks.some(p => p && p.id === stored.currentPackId)
             ? stored.currentPackId
             : null;
         StateStore.replace({
@@ -4618,7 +4624,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           currentPackId: storedCurrentPackId,
           selectedInstanceIds: [],
           caseLibrary: storedCases,
-          packLibrary: stored.packLibrary,
+          packLibrary: storedPacks,
           folderLibrary: Array.isArray(stored.folderLibrary) ? stored.folderLibrary : [],
           preferences: storedPrefs,
         }, { skipHistory: true });

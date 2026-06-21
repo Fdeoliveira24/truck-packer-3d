@@ -102,6 +102,15 @@ export function buildPlacementAnimationBatches(
       dependencies.get(child.id).add(support.id);
     }
   }
+  const retentionDependencies = options.retentionDependencies instanceof Map
+    ? options.retentionDependencies
+    : new Map();
+  for (const [childId, retainerIds] of retentionDependencies) {
+    if (!byId.has(childId)) continue;
+    for (const retainerId of retainerIds || []) {
+      if (byId.has(retainerId)) dependencies.get(childId).add(retainerId);
+    }
+  }
 
   const semanticGroupOrder = new Map();
   for (const entry of entries) {
@@ -375,10 +384,21 @@ export function createAutoPackEngine({
       }
 
       const solverStartedAt = nowMs();
+      const hiddenPacked = (packData.cases || []).filter(inst =>
+        inst && inst.hidden === true && inst.placement !== 'staged'
+      );
+      const hiddenRetention = hiddenPacked.length
+        ? PackLibrary.reconcilePlacementsForTruck(
+          { ...packData, cases: hiddenPacked },
+          truck,
+          CaseLibrary.getCases()
+        ).acceptedPlacements
+        : [];
       const solverResult = solveAutoPack({
-        truck: { length: truckL, width: truckW, height: truckH },
+        truck,
         zones,
         loadFrontFirst,
+        retentionPlacements: hiddenRetention,
         items: packItems.map(({ inst, caseData }) => {
           const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
           return {
@@ -429,7 +449,11 @@ export function createAutoPackEngine({
         animationCaseIds,
         isWorkspaceRunStale,
         animationMetrics,
-        { frontSurfaceFirst, zones }
+        {
+          frontSurfaceFirst,
+          zones,
+          retentionDependencies: solverResult.retentionDependencies,
+        }
       );
       animationMs = nowMs() - animationStartedAt;
       if (!animationCompleted || isWorkspaceRunStale()) return;

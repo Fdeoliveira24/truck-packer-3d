@@ -743,7 +743,7 @@ function repairPackInstancePlacements(pack, caseLibrary) {
     return next;
   });
 
-  return { ...pack, cases: nextCases };
+  return repairRestoredPackPlacements({ ...pack, cases: nextCases }, caseLibrary);
 }
 
 // ============================================================================
@@ -849,10 +849,11 @@ function aabbIsSupported(candidate, aabb, accepted, zones, tol = RECON_TOL) {
   return computeSupportFraction(aabb, supporters.map(support => support.aabb), tol) >= MIN_SUPPORT_FRACTION;
 }
 
-function aabbIsFullyValid(candidate, aabb, accepted, zones, tol = RECON_TOL) {
+function aabbIsFullyValid(candidate, aabb, accepted, zones, truck, tol = RECON_TOL) {
   return isAabbContainedInAnyZone(aabb, zones) &&
     !overlapsAny(aabb, (accepted || []).map(entry => entry.aabb)) &&
-    aabbIsSupported(candidate, aabb, accepted, zones, tol);
+    aabbIsSupported(candidate, aabb, accepted, zones, tol) &&
+    evaluateFrontOverhangRearRetention(aabb, accepted, truck, zones).retained;
 }
 
 // Candidate floor/deck/support bottom-Y levels under a footprint at its current
@@ -945,7 +946,7 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary) {
     }
 
     const currentAabb = makeAabb(curPos, dims);
-    if (aabbIsFullyValid(node, currentAabb, accepted, zones)) {
+    if (aabbIsFullyValid(node, currentAabb, accepted, zones, nextTruck)) {
       const entry = { ...node, aabb: currentAabb, position: curPos };
       accepted.push(entry);
       kept.push(inst.id);
@@ -958,7 +959,7 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary) {
     for (const bottom of candidateSnapBottoms(node.curAabb, accepted, zones)) {
       const sPos = { x: curPos.x, y: bottom + dims.height / 2, z: curPos.z };
       const sAabb = makeAabb(sPos, dims);
-      if (aabbIsFullyValid(node, sAabb, accepted, zones)) {
+      if (aabbIsFullyValid(node, sAabb, accepted, zones, nextTruck)) {
         snapped = { pos: sPos, aabb: sAabb };
         break;
       }
@@ -1100,10 +1101,29 @@ export function stageInvalidPlacements(reconResult, nextTruck, caseLibrary) {
   ).pack;
 }
 
+/**
+ * PURE load/import repair. Existing valid poses are retained, while packed poses
+ * that fail current geometry (including Front Overhang rear retention) move to
+ * deterministic staging. Unresolved or malformed references remain untouched so
+ * callers can continue surfacing their existing integrity diagnostics.
+ */
+export function repairRestoredPackPlacements(pack, caseLibrary) {
+  const source = pack && typeof pack === 'object' ? pack : {};
+  const truck = source.truck && typeof source.truck === 'object' ? source.truck : {};
+  const reconciliation = reconcilePlacementsForTruck(source, truck, caseLibrary);
+  if (!reconciliation.invalid.length) return reconciliation.nextPack;
+  return stagePlacementIds(
+    reconciliation.nextPack,
+    reconciliation.invalid,
+    truck,
+    caseLibrary
+  ).pack;
+}
+
 // Repack the invalid items into the NEW truck's free floor/deck space front-first
 // (high +X first), without moving any kept/adjusted item or changing AutoPack
 // scoring. Items that still do not fit fall back to organized staging.
-function findRepackFloorPosition(node, zones, accepted) {
+function findRepackFloorPosition(node, zones, accepted, truck) {
   const dims = node.dims;
   const orderedZones = [...zones].sort((a, b) => b.max.x - a.max.x); // front-first
   const STEP_MIN = 2;
@@ -1115,7 +1135,7 @@ function findRepackFloorPosition(node, zones, accepted) {
       for (let cz = z.min.z + dims.width / 2; cz <= z.max.z - dims.width / 2 + RECON_TOL; cz += stepZ) {
         const pos = { x: cx, y: z.min.y + dims.height / 2, z: cz };
         const aabb = makeAabb(pos, dims);
-        if (aabbIsFullyValid(node, aabb, accepted, zones)) return { position: pos, aabb };
+        if (aabbIsFullyValid(node, aabb, accepted, zones, truck)) return { position: pos, aabb };
       }
     }
   }
@@ -1152,7 +1172,7 @@ export function repackInvalidPlacements(reconResult, nextTruck, caseLibrary) {
       continue;
     }
     const node = { inst, caseData, canonical, dims: canonical.dims };
-    const placed = findRepackFloorPosition(node, zones, accepted);
+    const placed = findRepackFloorPosition(node, zones, accepted, nextTruck);
     if (placed) {
       accepted.push({ ...node, position: placed.position, aabb: placed.aabb });
       positioned.set(inst.id, { position: placed.position, canonical });

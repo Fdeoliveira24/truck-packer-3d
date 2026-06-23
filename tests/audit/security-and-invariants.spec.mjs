@@ -2127,9 +2127,13 @@ test('PLACEMENT-STATE-S2 explicit outside-truck addInstance writes "staged" plac
 
 test('PLACEMENT-STATE-S2 AutoPack records placement from solver results', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
-  assert.match(src, /const isPacked = placements\.has\(inst\.id\);/,
+  const start = src.indexOf('export function buildAutoPackNextCases(');
+  const end = src.indexOf('\nexport function createAutoPackEngine', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.match(block, /const isPacked = placements instanceof Map && placements\.has\(inst\.id\);/,
     'AutoPack must classify packed vs staged by solver placement membership');
-  assert.match(src, /placement: isPacked \? 'packed' : 'staged',/,
+  assert.match(block, /placement: isPacked \? 'packed' : 'staged',/,
     'AutoPack must mark solver-placed cases as packed and overflow/staged cases as staged');
 });
 
@@ -10068,13 +10072,145 @@ test('AUTO-PACK-A1-ANIM-1 AutoPack diagnostics report solver and animation timin
     'AutoPack diagnostics must include animation batch and fallback metrics');
 });
 
+test('AUTO-PACK-A1-PERF-1 AutoPack snaps large placement counts and keeps small counts animated', async () => {
+  const Engine = await import(`${autoPackEnginePath.href}?t=${Date.now()}-${Math.random()}`);
+
+  assert.equal(Engine.LARGE_LOAD_ANIMATION_THRESHOLD, 300,
+    'large-load animation cutoff is explicit and testable');
+  assert.equal(Engine.shouldSnapLargeAutoPackLoad(0), false, 'empty loads do not use the large-load branch');
+  assert.equal(Engine.shouldSnapLargeAutoPackLoad(300), false, 'the threshold remains in the normal animation path');
+  assert.equal(Engine.shouldSnapLargeAutoPackLoad(301), true, 'the first count above the threshold snaps instantly');
+  assert.equal(Engine.shouldSnapLargeAutoPackLoad(800), true, '800-case large loads skip the long animation path');
+  assert.equal(Engine.shouldSnapLargeAutoPackLoad(1200), true, '1200-case large loads skip the long animation path');
+});
+
+test('AUTO-PACK-A1-PERF-1 AutoPack persists final state before animation and bypasses the planner for large loads', async () => {
+  const src = await fs.readFile(autoPackEnginePath, 'utf8');
+  const packStart = src.indexOf('async function pack()');
+  const updateIndex = src.indexOf('PackLibrary.update(packId, { cases: nextCases });', packStart);
+  const animationStartIndex = src.indexOf('const animationStartedAt = nowMs();', updateIndex);
+  const animateCallIndex = src.indexOf('animatePlacements(', updateIndex);
+  const largeBranchStart = src.indexOf('if (largeLoadSnap) {', updateIndex);
+  const largeBranchEnd = src.indexOf('      } else {', largeBranchStart);
+  const smallBranchEnd = src.indexOf('\n      animationMs = nowMs() - animationStartedAt;', largeBranchEnd);
+  const largeBranch = largeBranchStart >= 0 && largeBranchEnd > largeBranchStart
+    ? src.slice(largeBranchStart, largeBranchEnd)
+    : '';
+  const smallBranch = largeBranchEnd >= 0 && smallBranchEnd > largeBranchEnd
+    ? src.slice(largeBranchEnd, smallBranchEnd)
+    : '';
+
+  assert.ok(updateIndex > packStart, 'AutoPack commits nextCases inside pack()');
+  assert.ok(updateIndex < animationStartIndex, 'final case state is written before animation timing begins');
+  assert.ok(updateIndex < animateCallIndex, 'final case state is written before any small-load animation call');
+  assert.match(src, /const largeLoadSnap = shouldSnapLargeAutoPackLoad\(packedCount\);/,
+    'AutoPack chooses the large-load strategy from actual packed placement count');
+  assert.match(largeBranch, /animationMetrics\.skipped = true;[\s\S]*animationMetrics\.strategy = 'instant';[\s\S]*applyScenePoseFromCases\(nextCases\);/,
+    'large loads snap live meshes to the already-persisted final state');
+  assert.doesNotMatch(largeBranch, /animatePlacements|buildPlacementAnimationBatches|tweenInstanceToPosition/,
+    'large loads must not enter the O(N^2) animation planner or per-mesh tween path');
+  assert.match(smallBranch, /stageInstant\(stagingMap\);[\s\S]*animatePlacements\(/,
+    'small loads still reset to staged pose and use the existing batched animation');
+});
+
+test('AUTO-PACK-A1-PERF-1 1200 identical cartons are safe solver outputs and qualify for instant rendering', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const Engine = await import(`${autoPackEnginePath.href}?t=${Date.now()}-${Math.random()}`);
+  const fixtures = [
+    { shapeMode: 'rect', expectedMinimumPlaced: 840 },
+    { shapeMode: 'wheelWells', expectedMinimumPlaced: 706 },
+  ];
+
+  for (const fixture of fixtures) {
+    const truck = { length: 636, width: 102, height: 98, shapeMode: fixture.shapeMode };
+    const zones = PackLib.getTrailerUsableZones(truck);
+    const result = Solver.solveAutoPack({
+      truck,
+      zones,
+      loadFrontFirst: true,
+      items: e1Items(1200, { l: 24, w: 18, h: 16 }),
+    });
+    const legacyAnimationMs = Math.ceil(result.placements.size / 4) * (260 + 16);
+
+    assert.ok(result.placements.size >= fixture.expectedMinimumPlaced,
+      `${fixture.shapeMode}: 1200-case capacity does not regress below the audited large-load baseline`);
+    assert.equal(Engine.shouldSnapLargeAutoPackLoad(result.placements.size), true,
+      `${fixture.shapeMode}: packed placement count chooses instant rendering`);
+    assert.ok(legacyAnimationMs >= 45000,
+      `${fixture.shapeMode}: old batched animation would be long enough to look frozen (${legacyAnimationMs}ms)`);
+    phb2AssertSafe(Solver, PackLib, result, zones, `${fixture.shapeMode}/1200/perf`);
+  }
+});
+
+test('AUTO-PACK-A1-PERF-1 buildAutoPackNextCases is animation-independent and preserves packed/staged semantics', async () => {
+  const Engine = await import(`${autoPackEnginePath.href}?t=${Date.now()}-${Math.random()}`);
+  const sourceCases = [
+    {
+      id: 'packed',
+      transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
+      orientedDims: { length: 1, width: 1, height: 1 },
+    },
+    {
+      id: 'staged-rotated',
+      transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
+    },
+    {
+      id: 'staged-identity',
+      transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: Math.PI / 2, z: 0 } },
+      orientedDims: { length: 99, width: 99, height: 99 },
+    },
+    {
+      id: 'hidden',
+      hidden: true,
+      transform: { position: { x: 1, y: 1, z: 1 }, rotation: { x: 0, y: 0, z: 0 } },
+    },
+  ];
+  const packedPosition = { x: 10, y: 20, z: 30 };
+  const packedRotation = { x: 0, y: Math.PI / 2, z: 0 };
+  const packedDims = { length: 30, width: 10, height: 20 };
+  const rotatedStaged = {
+    position: { x: -10, y: 5, z: 4 },
+    rotation: { x: Math.PI / 2, y: 0, z: 0 },
+    orientedDims: { length: 6, width: 4, height: 8 },
+  };
+  const identityStaged = {
+    position: { x: -20, y: 6, z: 4 },
+    rotation: { x: 0, y: 0, z: 0 },
+    orientedDims: { length: 7, width: 5, height: 9 },
+  };
+
+  const nextCases = Engine.buildAutoPackNextCases(
+    sourceCases,
+    new Map([['packed', packedPosition]]),
+    new Map([['packed', packedRotation]]),
+    new Map([['packed', packedDims]]),
+    new Map([
+      ['staged-rotated', rotatedStaged],
+      ['staged-identity', identityStaged],
+    ])
+  );
+
+  assert.equal(nextCases[0].placement, 'packed', 'placed items are marked packed');
+  assert.deepEqual(nextCases[0].transform.position, packedPosition, 'packed position comes from solver placements');
+  assert.deepEqual(nextCases[0].transform.rotation, packedRotation, 'packed rotation comes from solver rotations');
+  assert.deepEqual(nextCases[0].orientedDims, packedDims, 'packed orientedDims come from solver dimensions');
+  assert.equal(nextCases[1].placement, 'staged', 'unpacked items with staging poses are marked staged');
+  assert.deepEqual(nextCases[1].transform.position, rotatedStaged.position, 'staged position comes from the staging map');
+  assert.deepEqual(nextCases[1].transform.rotation, rotatedStaged.rotation, 'staged rotation stays atomic with staging position');
+  assert.deepEqual(nextCases[1].orientedDims, rotatedStaged.orientedDims, 'non-identity staged poses keep orientedDims');
+  assert.equal(nextCases[2].placement, 'staged', 'identity staged items are also persisted as staged');
+  assert.equal(Object.prototype.hasOwnProperty.call(nextCases[2], 'orientedDims'), false,
+    'identity staged poses drop stale orientedDims');
+  assert.equal(nextCases[3], sourceCases[3], 'hidden instances remain unchanged');
+});
+
 test('AUTO-PACK-A0C staged unpacked items use an atomic pose (position+rotation+orientedDims agree)', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
   const stagingStart = src.indexOf('export function buildStagedPose(item)');
   const stagingEnd = src.indexOf('\nexport function createAutoPackEngine', stagingStart);
   const stagingBlock = stagingStart >= 0 && stagingEnd > stagingStart ? src.slice(stagingStart, stagingEnd) : '';
-  const persistStart = src.indexOf('const nextCases = (packData.cases || []).map(inst => {');
-  const persistEnd = src.indexOf('\n      PackLibrary.update(packId, { cases: nextCases });', persistStart);
+  const persistStart = src.indexOf('export function buildAutoPackNextCases(');
+  const persistEnd = src.indexOf('\nexport function createAutoPackEngine', persistStart);
   const persistBlock = persistStart >= 0 && persistEnd > persistStart ? src.slice(persistStart, persistEnd) : '';
 
   assert.doesNotMatch(stagingBlock, /item\.inst && item\.inst\.orientedDims/,
@@ -15187,13 +15323,13 @@ test('placement-safety-P0C buildStagedPose derives an atomic pose from solver or
 
 test('placement-safety-P0C nextCases applies an atomic staged pose (rotation + orientedDims agree with position)', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
-  const persistStart = src.indexOf('const nextCases = (packData.cases || []).map(inst => {');
-  const persistEnd = src.indexOf('\n      PackLibrary.update(packId, { cases: nextCases });', persistStart);
+  const persistStart = src.indexOf('export function buildAutoPackNextCases(');
+  const persistEnd = src.indexOf('\nexport function createAutoPackEngine', persistStart);
   const persistBlock = persistStart >= 0 && persistEnd > persistStart ? src.slice(persistStart, persistEnd) : '';
 
   // Staged items take the full pose (position + rotation + orientedDims) from the
   // staging map, so the three values describe the same orientation.
-  assert.match(persistBlock, /const staged = stagingMap\.get\(inst\.id\);/,
+  assert.match(persistBlock, /const staged = stagingMap instanceof Map \? stagingMap\.get\(inst\.id\) : null;/,
     'unpacked items read the full staged pose from the staging map');
   assert.match(persistBlock, /pos = staged\.position;[\s\S]*rot = staged\.rotation[\s\S]*od = staged\.orientedDims/,
     'unpacked items apply staging position, rotation and orientedDims together (atomic)');

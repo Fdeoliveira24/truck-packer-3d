@@ -23,10 +23,17 @@ export function buildStagedPose(item) {
 }
 
 const ANIMATION_BOUNDARY_EPS = 0.05;
+export const LARGE_LOAD_ANIMATION_THRESHOLD = 300;
 
 function animationNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+export function shouldSnapLargeAutoPackLoad(placementCount, threshold = LARGE_LOAD_ANIMATION_THRESHOLD) {
+  const count = Math.max(0, Math.floor(animationNumber(placementCount, 0)));
+  const limit = Math.max(0, Math.floor(animationNumber(threshold, LARGE_LOAD_ANIMATION_THRESHOLD)));
+  return count > limit;
 }
 
 function animationBoundaryKey(value) {
@@ -168,6 +175,73 @@ export function buildPlacementAnimationBatches(
   return batches;
 }
 
+export function buildAutoPackNextCases(
+  cases,
+  placements,
+  rotations,
+  orientedDimsMap,
+  stagingMap
+) {
+  return (cases || []).map(inst => {
+    if (inst.hidden) { return inst; }
+    const isPacked = placements instanceof Map && placements.has(inst.id);
+    const currentRotation =
+      inst.transform && inst.transform.rotation
+        ? inst.transform.rotation
+        : { x: 0, y: 0, z: 0 };
+
+    let pos;
+    let rot;
+    let od;
+    if (isPacked) {
+      pos = placements.get(inst.id);
+      rot = rotations instanceof Map ? (rotations.get(inst.id) || currentRotation) : currentRotation;
+      od = orientedDimsMap instanceof Map ? (orientedDimsMap.get(inst.id) || null) : null;
+    } else {
+      // Unpacked -> staged. Apply the ATOMIC staged pose: the rotation and
+      // orientedDims describe the exact orientation whose dimensions produced
+      // the staging position, so the rendered item rests on the staging floor
+      // instead of floating (Repair 1B).
+      const staged = stagingMap instanceof Map ? stagingMap.get(inst.id) : null;
+      if (!staged || !staged.position) { return inst; }
+      pos = staged.position;
+      rot = staged.rotation || currentRotation;
+      od = staged.orientedDims || null;
+    }
+    if (!pos) { return inst; }
+
+    const next = {
+      ...inst,
+      transform: {
+        ...inst.transform,
+        position: pos,
+        rotation: rot,
+      },
+      hidden: false,
+      placement: isPacked ? 'packed' : 'staged',
+    };
+
+    const isIdentityRotation =
+      Number(rot && rot.x) === 0 && Number(rot && rot.y) === 0 && Number(rot && rot.z) === 0;
+    if (isPacked) {
+      if (od) {
+        next.orientedDims = od;
+      } else {
+        delete next.orientedDims;
+      }
+    } else if (od && !isIdentityRotation) {
+      // Non-identity staged orientation: keep orientedDims so the rendered
+      // height matches the staging Y.
+      next.orientedDims = od;
+    } else {
+      // Identity staged orientation: base case dims already match, so drop
+      // orientedDims and let applyTransform/normalizer use the base dimensions.
+      delete next.orientedDims;
+    }
+    return next;
+  });
+}
+
 export function createAutoPackEngine({
   CaseLibrary,
   CaseScene,
@@ -231,6 +305,32 @@ export function createAutoPackEngine({
           y: SceneManager.toWorld(staged.orientedDims.height) / 2,
           z: SceneManager.toWorld(staged.orientedDims.width) / 2,
         };
+      }
+    }
+  }
+
+  function applyScenePoseFromCases(cases) {
+    for (const inst of cases || []) {
+      if (!inst || inst.hidden) continue;
+      const obj = CaseScene.getObject(inst.id);
+      const pos = inst.transform && inst.transform.position;
+      if (!obj || !pos) continue;
+      const rot = inst.transform.rotation || { x: 0, y: 0, z: 0 };
+      if (obj.userData) {
+        if (inst.orientedDims) {
+          obj.userData.halfWorld = {
+            x: SceneManager.toWorld(inst.orientedDims.length) / 2,
+            y: SceneManager.toWorld(inst.orientedDims.height) / 2,
+            z: SceneManager.toWorld(inst.orientedDims.width) / 2,
+          };
+        } else if (obj.userData.baseHalfWorld) {
+          obj.userData.halfWorld = { ...obj.userData.baseHalfWorld };
+        }
+      }
+      const target = SceneManager.vecInchesToWorld(pos);
+      obj.position.set(target.x, target.y, target.z);
+      if (obj.rotation && typeof obj.rotation.set === 'function') {
+        obj.rotation.set(Number(rot.x) || 0, Number(rot.y) || 0, Number(rot.z) || 0);
       }
     }
   }
@@ -307,6 +407,10 @@ export function createAutoPackEngine({
     let solverMs = 0;
     let animationMs = 0;
     const animationMetrics = { animated: 0, batches: 0, fallbackCount: 0 };
+    animationMetrics.skipped = false;
+    animationMetrics.strategy = 'batched';
+    animationMetrics.threshold = LARGE_LOAD_ANIMATION_THRESHOLD;
+    animationMetrics.placementCount = 0;
 
     const diag =
       (typeof runtimeWindow !== 'undefined' &&
@@ -439,84 +543,54 @@ export function createAutoPackEngine({
       );
       const unpacked = solverResult.unpacked || [];
       const packedCount = placements instanceof Map ? placements.size : 0;
+      animationMetrics.placementCount = packedCount;
+      const largeLoadSnap = shouldSnapLargeAutoPackLoad(packedCount);
 
-      cancelAllTweens();
-      const animationStartedAt = nowMs();
-      const animationCompleted = await animatePlacements(
+      const nextCases = buildAutoPackNextCases(
+        packData.cases || [],
         placements,
         rotations,
         orientedDimsMap,
-        animationCaseIds,
-        isWorkspaceRunStale,
-        animationMetrics,
-        {
-          frontSurfaceFirst,
-          zones,
-          retentionDependencies: solverResult.retentionDependencies,
-        }
+        stagingMap
       );
-      animationMs = nowMs() - animationStartedAt;
-      if (!animationCompleted || isWorkspaceRunStale()) return;
-
-      const nextCases = (packData.cases || []).map(inst => {
-        if (inst.hidden) { return inst; }
-        const isPacked = placements.has(inst.id);
-        const currentRotation =
-          inst.transform && inst.transform.rotation
-            ? inst.transform.rotation
-            : { x: 0, y: 0, z: 0 };
-
-        let pos;
-        let rot;
-        let od;
-        if (isPacked) {
-          pos = placements.get(inst.id);
-          rot = rotations.get(inst.id) || currentRotation;
-          od = orientedDimsMap.get(inst.id) || null;
-        } else {
-          // Unpacked → staged. Apply the ATOMIC staged pose: the rotation and
-          // orientedDims describe the exact orientation whose dimensions produced
-          // the staging position, so the rendered item rests on the staging floor
-          // instead of floating (Repair 1B).
-          const staged = stagingMap.get(inst.id);
-          if (!staged || !staged.position) { return inst; }
-          pos = staged.position;
-          rot = staged.rotation || currentRotation;
-          od = staged.orientedDims || null;
-        }
-        if (!pos) { return inst; }
-
-        const next = {
-          ...inst,
-          transform: {
-            ...inst.transform,
-            position: pos,
-            rotation: rot,
-          },
-          hidden: false,
-          placement: isPacked ? 'packed' : 'staged',
-        };
-
-        const isIdentityRotation =
-          Number(rot && rot.x) === 0 && Number(rot && rot.y) === 0 && Number(rot && rot.z) === 0;
-        if (isPacked) {
-          if (od) {
-            next.orientedDims = od;
-          } else {
-            delete next.orientedDims;
-          }
-        } else if (od && !isIdentityRotation) {
-          // Non-identity staged orientation: keep orientedDims so the rendered
-          // height matches the staging Y.
-          next.orientedDims = od;
-        } else {
-          // Identity staged orientation: base case dims already match, so drop
-          // orientedDims and let applyTransform/normalizer use the base dimensions.
-          delete next.orientedDims;
-        }
-        return next;
-      });
       PackLibrary.update(packId, { cases: nextCases });
+
+      cancelAllTweens();
+      const animationStartedAt = nowMs();
+      let animationCompleted = true;
+      if (largeLoadSnap) {
+        animationMetrics.skipped = true;
+        animationMetrics.strategy = 'instant';
+        applyScenePoseFromCases(nextCases);
+        if (packedCount > 0) {
+          toast('Large load packed instantly for performance.', 'info', {
+            title: 'AutoPack',
+            duration: 2200,
+          });
+        }
+      } else {
+        // The final pack state was already committed. Reset only the live meshes
+        // to their staging pose so the legacy small-load animation can still run.
+        stageInstant(stagingMap);
+        animationCompleted = await animatePlacements(
+          placements,
+          rotations,
+          orientedDimsMap,
+          animationCaseIds,
+          isWorkspaceRunStale,
+          animationMetrics,
+          {
+            frontSurfaceFirst,
+            zones,
+            retentionDependencies: solverResult.retentionDependencies,
+          }
+        );
+      }
+      animationMs = nowMs() - animationStartedAt;
+      if (!animationCompleted || isWorkspaceRunStale()) {
+        applyScenePoseFromCases(nextCases);
+        return;
+      }
 
       const stats = PackLibrary.computeStats(PackLibrary.getById(packId));
       const totalPackable = (packData.cases || []).filter(i => !i.hidden).length;

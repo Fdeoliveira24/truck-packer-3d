@@ -737,11 +737,11 @@ function scoreLayoutGroupContinuity(
   loadFrontFirst,
   layoutQualityEnabled
 ) {
-  if (!layoutQualityEnabled) return { continuity: [], orientationPenalty: 0 };
+  if (!layoutQualityEnabled) return { continuity: [], orientationPenalty: 0, surfaceOrientationPenalty: 0 };
   const groupKey = layoutGroupKey(item);
   const matches = (packed || []).filter(placement => layoutGroupKey(placement) === groupKey);
   if (!matches.length) {
-    return { continuity: [0, 0, 0, 0, 0], orientationPenalty: 0 };
+    return { continuity: [0, 0, 0, 0, 0], orientationPenalty: 0, surfaceOrientationPenalty: 0 };
   }
 
   const candidateFront = loadFrontFirst ? aabb.max.x : aabb.min.x;
@@ -759,6 +759,16 @@ function scoreLayoutGroupContinuity(
   const orientationPenalty = sameRow.length && !sameRow.some(placement =>
     orientationsMatch(orientation, placement.orientation)
   ) ? 1 : 0;
+  // E2A: orientation consistency across the WHOLE active surface, not only the row.
+  // Sub-grid / leftover same-case cases often land in a fresh row (no same-row
+  // neighbor yet), so the per-row orientationPenalty cannot fire and they would
+  // flip to shave local waste. Penalizing a yaw that no same-surface case already
+  // uses pulls those isolated cases back to the established floor yaw. Additive and
+  // consumed ONLY by the Standard/Wheel Wells floor/lane quality branches, so the
+  // Front Overhang and quality-off score arrays are byte-identical.
+  const surfaceOrientationPenalty = sameSurface.length && !sameSurface.some(placement =>
+    orientationsMatch(orientation, placement.orientation)
+  ) ? 1 : 0;
 
   return {
     continuity: [
@@ -769,6 +779,7 @@ function scoreLayoutGroupContinuity(
       -sameRowContacts.length,
     ],
     orientationPenalty,
+    surfaceOrientationPenalty,
   };
 }
 
@@ -778,7 +789,8 @@ function scoreFreeRectCandidate(
   packed = [],
   frontSurfaceFirst = false,
   item = null,
-  orientation = null
+  orientation = null,
+  layoutQualityEnabled = false
 ) {
   const rect = candidate.freeRect;
   const leftoverX = Math.max(0, freeRectLength(rect) - candidate.dims.l);
@@ -793,16 +805,44 @@ function scoreFreeRectCandidate(
     item,
     packed,
     loadFrontFirst,
-    frontSurfaceFirst
+    frontSurfaceFirst || layoutQualityEnabled
   );
-  // Front-first floor fill: Standard/Wheel Wells retain Phase B's lower-layer then
-  // high-X ordering. A true raised surface extending beyond truck.length switches
-  // only those Front Overhang candidates to high-X then layer (Phase C). Hard
-  // validity is filtered in findFloorPlacement before this score is considered.
-  if (!frontSurfaceFirst) {
+  // Front Overhang true high-+X raised surface ordering (Phase C) — unchanged, so the
+  // overhang deck/wall behavior and its byte baselines stay exactly as before.
+  if (frontSurfaceFirst) {
+    return [
+      ...scoreFloorSurface(candidate.aabb, loadFrontFirst, true),
+      ...groupScore.continuity,
+      -contactScore,
+      Math.min(leftoverX, leftoverZ),
+      wasteArea,
+      leftoverZ,
+      groupScore.orientationPenalty,
+      candidate.aabb.min.z,
+      leftoverX,
+    ];
+  }
+  // E2A: Standard / Wheel Wells front-first floor WITH layout quality (only on the
+  // ordinary/leftover/filler floor path — the repeated-batch grid and B2C forward-
+  // wall completion are intentionally left on the no-quality path so their proven
+  // shelf-grid + legal alternate-yaw completion behavior is unchanged). Keep Phase
+  // B's [lowest-layer, high-X] primary fill, then cluster onto the active same-case
+  // surface/row and rank ORIENTATION CONSISTENCY (orientationPenalty then the
+  // surface-wide penalty) ABOVE contact density and free-rect waste — the audited
+  // fix, since the old path put waste before any orientation signal. Quality only
+  // re-ranks already-legal candidates (hard filters ran in findFloorPlacement), so
+  // a case that fits only rotated still places: placement count cannot drop.
+  if (layoutQualityEnabled) {
     return [
       ...scoreFloorSurface(candidate.aabb, loadFrontFirst, false),
+      groupScore.continuity[0],
+      groupScore.continuity[1],
+      groupScore.continuity[2],
+      groupScore.orientationPenalty,
+      groupScore.surfaceOrientationPenalty,
       -contactScore,
+      groupScore.continuity[3],
+      groupScore.continuity[4],
       Math.min(leftoverX, leftoverZ),
       wasteArea,
       leftoverZ,
@@ -810,14 +850,14 @@ function scoreFreeRectCandidate(
       leftoverX,
     ];
   }
+  // Layout quality disabled (repeated-grid / B2C completion / compaction / repack /
+  // diagnostic opt-out): original ordering, byte-identical to the E1 baseline.
   return [
-    ...scoreFloorSurface(candidate.aabb, loadFrontFirst, true),
-    ...groupScore.continuity,
+    ...scoreFloorSurface(candidate.aabb, loadFrontFirst, false),
     -contactScore,
     Math.min(leftoverX, leftoverZ),
     wasteArea,
     leftoverZ,
-    groupScore.orientationPenalty,
     candidate.aabb.min.z,
     leftoverX,
   ];
@@ -932,7 +972,8 @@ function findFloorPlacement(item, floorState, packed, loadFrontFirst, options = 
         packed,
         floorState.frontSurfaceFirst,
         item,
-        orientation
+        orientation,
+        options.layoutQualityEnabled === true
       );
       if (!best || compareScore(score, bestScore) < 0) {
         best = { ...candidate, orientation };
@@ -960,7 +1001,8 @@ function scoreLaneCandidate(
   loadFrontFirst,
   frontSurfaceFirst = false,
   item = null,
-  packed = []
+  packed = [],
+  layoutQualityEnabled = false
 ) {
   const rectWaste = candidate.freeRect
     ? Math.max(0, freeRectArea(candidate.freeRect) - orientation.l * orientation.w)
@@ -969,29 +1011,45 @@ function scoreLaneCandidate(
   // the shared Front Overhang surface score ahead of lane length so a legal raised
   // forward deck candidate cannot lose merely because its independent floor is high.
   const surfaceScore = scoreFloorSurface(candidate.aabb, loadFrontFirst, frontSurfaceFirst);
-  if (!frontSurfaceFirst) {
-    return [-orientation.l, ...surfaceScore, rectWaste, candidate.aabb.min.z, orientation.w];
-  }
   const groupScore = scoreLayoutGroupContinuity(
     candidate.aabb,
     orientation,
     item,
     packed,
     loadFrontFirst,
-    true
+    frontSurfaceFirst || layoutQualityEnabled
   );
-  return [
-    ...surfaceScore,
-    ...groupScore.continuity,
-    -orientation.l,
-    rectWaste,
-    groupScore.orientationPenalty,
-    candidate.aabb.min.z,
-    orientation.w,
-  ];
+  // Front Overhang raised-surface ordering — unchanged.
+  if (frontSurfaceFirst) {
+    return [
+      ...surfaceScore,
+      ...groupScore.continuity,
+      -orientation.l,
+      rectWaste,
+      groupScore.orientationPenalty,
+      candidate.aabb.min.z,
+      orientation.w,
+    ];
+  }
+  // E2A: Standard / Wheel Wells lanes keep lane-length-first, then same-case row
+  // continuity and consistent yaw (orientationPenalty + surface penalty) ahead of
+  // free-rect waste.
+  if (layoutQualityEnabled) {
+    return [
+      -orientation.l,
+      ...surfaceScore,
+      ...groupScore.continuity,
+      groupScore.orientationPenalty,
+      groupScore.surfaceOrientationPenalty,
+      rectWaste,
+      candidate.aabb.min.z,
+      orientation.w,
+    ];
+  }
+  return [-orientation.l, ...surfaceScore, rectWaste, candidate.aabb.min.z, orientation.w];
 }
 
-function findLanePlacement(item, floorState, packed, loadFrontFirst) {
+function findLanePlacement(item, floorState, packed, loadFrontFirst, layoutQualityEnabled = false) {
   let best = null;
   let bestScore = null;
 
@@ -1006,7 +1064,8 @@ function findLanePlacement(item, floorState, packed, loadFrontFirst) {
         loadFrontFirst,
         floorState.frontSurfaceFirst,
         item,
-        packed
+        packed,
+        layoutQualityEnabled
       );
       if (!best || compareScore(score, bestScore) < 0) {
         best = { ...candidate, orientation };
@@ -1941,10 +2000,15 @@ export function solveAutoPack(input = {}) {
   }
 
   const deferred = [];
-  // E1 is intentionally scoped to the STACKING phase (the audited defect). The
-  // lane, repeated-batch, ordinary/filler floor and compaction phases keep their
-  // existing Phase B2/B2C/D ordering (frontSurfaceFirst gate) so their proven
-  // forward-wall and shelf-grid behavior is unchanged.
+  // E2A scope: layout quality now also drives the ORDINARY/leftover/filler floor and
+  // lane SCORERS (the audited defect — these gated continuity behind the Front
+  // Overhang-only frontSurfaceFirst flag) via the explicit `layoutQualityEnabled`
+  // option below. The repeated-batch shelf grid, the B2C forward-wall completion,
+  // floor compaction and the validation repack are DELIBERATELY left on the
+  // no-quality path: they already produce a clean single-majority-orientation grid
+  // with legal alternate-yaw residual completion, and forcing the anti-yaw-mix
+  // preference there would fight that proven behavior. The repeated-grid layer/block
+  // builder is E2B. E1's stacking-phase quality (layoutQualityEnabled) is unchanged.
   const laneItems = sortItemsForLane(
     items.filter(item => item.className === 'LANE_ITEM'),
     frontSurfaceFirst,
@@ -1956,7 +2020,7 @@ export function solveAutoPack(input = {}) {
   let fillerCount = 0;
 
   for (const item of laneItems) {
-    const placement = findLanePlacement(item, floorState, packed, loadFrontFirst);
+    const placement = findLanePlacement(item, floorState, packed, loadFrontFirst, layoutQualityEnabled);
     if (!placement) {
       item.lanePlacementFailed = true;
       deferred.push(item);
@@ -1984,7 +2048,7 @@ export function solveAutoPack(input = {}) {
   const fillerItems = remainingNonLaneItems.filter(item => item.className === 'FILLER');
 
   for (const item of mainFloorItems) {
-    const placement = findFloorPlacement(item, floorState, packed, loadFrontFirst);
+    const placement = findFloorPlacement(item, floorState, packed, loadFrontFirst, { layoutQualityEnabled });
     if (!placement) {
       deferred.push(item);
       continue;
@@ -2010,7 +2074,7 @@ export function solveAutoPack(input = {}) {
   ];
   const stackDeferred = [];
   for (const item of fillerQueue) {
-    const placement = findFloorPlacement(item, floorState, packed, loadFrontFirst);
+    const placement = findFloorPlacement(item, floorState, packed, loadFrontFirst, { layoutQualityEnabled });
     if (!placement) {
       stackDeferred.push(item);
       continue;

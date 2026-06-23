@@ -9197,16 +9197,15 @@ test('PHASE-C2 ordinary, filler, forced-lane, repeated, and mixed cargo use only
   phb2AssertSafe(Solver, PackLib, mixed, zones, 'mixed deck fit/too tall');
 });
 
-test('PHASE-E2A Standard and Wheel Wells solver bytes match the E2A floor+layer-quality baseline', async () => {
-  // E2A extends the layout-quality gate from the stacking phase (E1) to the ORDINARY
-  // / leftover / filler floor and lane SCORERS for Standard/Wheel Wells (previously
-  // gated behind the Front Overhang-only frontSurfaceFirst flag). The repeated-batch
-  // shelf grid, B2C forward-wall completion, compaction and repack are intentionally
-  // left on the no-quality path, so for these identical-case fixtures the only hash
-  // that shifts is wheelWells/24x18/6: it is a sub-grid load (< 8, no repeated batch),
-  // so its leftover floor placement now scores with layout quality and unifies a
-  // previously-flipped case (yaw-mix 1 -> 0, placement count unchanged, still safe).
-  // Every other fixture is byte-identical to the E1 baseline.
+test('PHASE-E2B Standard and Wheel Wells solver bytes match the E2B channel-layer baseline', async () => {
+  // E2B keeps every E2A/E1 result and additionally makes wheel-well CHANNEL stack
+  // layers follow the footprint below them (the support-match is ranked ahead of the
+  // front key, but only for candidates inside a narrow channel). The floor is
+  // untouched, so the forward-density / floor-hole / B2A / B2C oracles are unchanged.
+  // Only the two STACKED wheel-well fixtures shift (24x18/100 and 42x10/100): their
+  // channel layers stop drifting into a per-layer re-shuffle. Placement count and
+  // yaw-mix are unchanged and the layout stays collision/containment safe. Standard
+  // (no narrow channel) and the smaller wheel-well counts are byte-identical to E2A.
   const { Solver, PackLib } = await phbSolverModules();
   const baselines = new Map([
     ['rect/24x18/6', '044feae3a855bdde870013be934591e0cda21562eb9fc634791ba9b839ecff03'],
@@ -9214,13 +9213,12 @@ test('PHASE-E2A Standard and Wheel Wells solver bytes match the E2A floor+layer-
     ['rect/24x18/40', '58568e03af8882cba8bb32e89142f6c84954a2be9cc921703ac1880d656efa56'],
     ['rect/24x18/100', '18695a66089b5032c5ec8ab443f5ca127ba08237dbda20ce8e2cc9f9a793abd1'],
     ['rect/42x10/100', '02a6d40166528fb1a95c4ff762aa916a15e547dea1a876419b7e1cb028c941b2'],
-    // E2A: was 72ac801a...; sub-grid leftover now unifies yaw (1->0 flip), so the
-    // 6-pack matches the Standard 6-pack byte-for-byte.
     ['wheelWells/24x18/6', '044feae3a855bdde870013be934591e0cda21562eb9fc634791ba9b839ecff03'],
     ['wheelWells/24x18/20', '0561b56233172e29db53116236e717433123a1a7ec83f921bf85647e278abcc7'],
     ['wheelWells/24x18/40', 'f50bbb6728343bc36bcbb04e92ff238831236c7b5720dc32d9145508930275ed'],
-    ['wheelWells/24x18/100', '9cf764f35d4b87a9968dc9c1ee37d803392daa5fcfd869852024114ff6c8b7bd'],
-    ['wheelWells/42x10/100', 'f96212f85bdd7b5d148be9a59ec5689725a4e484f1d3ec543554789712e48bf5'],
+    // E2B: channel stack layers now follow the footprint below (no per-layer drift).
+    ['wheelWells/24x18/100', '6f40fc5cec6050c903b59422d17d9164487cdc6816ab872417c7b2a9c6385565'],
+    ['wheelWells/42x10/100', '614e8418178a1ae98cce41726b2e59e9e9d521f93396332df693afa33e9e0062'],
   ]);
   const dimensionFixtures = [
     { label: '24x18', dims: { l: 24, w: 18, h: 16 }, counts: [6, 20, 40, 100] },
@@ -9238,7 +9236,7 @@ test('PHASE-E2A Standard and Wheel Wells solver bytes match the E2A floor+layer-
         const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
         const hash = createHash('sha256').update(phcResultBytes(result)).digest('hex');
         assert.equal(hash, baselines.get(`${shapeMode}/${fixture.label}/${count}`),
-          `${shapeMode}/${fixture.label}/${count}: byte-equivalent to the E2A floor+layer-quality baseline`);
+          `${shapeMode}/${fixture.label}/${count}: byte-equivalent to the E2B channel-layer baseline`);
       }
     }
   }
@@ -9528,6 +9526,104 @@ test('PHASE-E2A leaves Front Overhang C2 rear-retention and deck gating unchange
     const onDeck = e1Placed(Solver, res).filter(p => p.minY > 0.5 + 43.2 - 0.5 && p.pos.x > 240.5);
     assert.equal(onDeck.length, 0, `FO/${n}: deck stays unused without retention (C2 unchanged under E2A)`);
     e1AssertSafe(Solver, PackLib, e1Placed(Solver, res), zones, `e2a/FO/${n}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PHASE E2B: wheel-well CHANNEL stack layers follow the floor block+filler footprint.
+// The channel floor is already a clean primary block + contiguous alternate-yaw
+// strip (E2A). Before E2B the stack phase re-packed the channel surface into a
+// different, drifting per-layer arrangement; E2B ranks the support-match (same yaw
+// + aligned column as the supporter) ahead of the front key for narrow-channel stack
+// candidates only, so each channel layer reproduces the footprint below it. The
+// floor is untouched (forward-density/floor-hole oracles unchanged), placement never
+// drops, and Standard/full-width zones are byte-identical.
+// ---------------------------------------------------------------------------
+// Channel stack layers (above the floor) grouped by layer with case count per layer.
+function e2bChannelStackLayers(Solver, res) {
+  const pl = [...res.placements].map(([id, pos]) => {
+    const od = res.orientedDims.get(id);
+    return { x: pos.x, z: pos.z, minY: pos.y - od.height / 2 };
+  });
+  const ch = pl.filter(p => p.x > 159 && p.x < 381.6 && p.z >= -35.7 && p.z <= 35.7);
+  if (!ch.length) return [];
+  const floorY = Math.min(...ch.map(p => p.minY));
+  const stack = ch.filter(p => p.minY > floorY + 0.5);
+  const byLayer = new Map();
+  for (const p of stack) {
+    const k = Math.round(p.minY);
+    byLayer.set(k, (byLayer.get(k) || 0) + 1);
+  }
+  return [...byLayer.entries()].sort((a, b) => a[0] - b[0]).map(([, n]) => n);
+}
+
+test('PHASE-E2B Wheel Wells channel stack layers follow the floor footprint (uniform, no drift), placement non-decreasing, deterministic', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  for (const n of [100, 300, 800]) {
+    const items = e1Items(n, { l: 24, w: 18, h: 16 });
+    const on = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, layoutQuality: false });
+    assert.ok(on.placements.size >= off.placements.size, `WW/${n}: no placement regression (${on.placements.size} >= ${off.placements.size})`);
+    e1AssertSafe(Solver, PackLib, e1Placed(Solver, on), zones, `e2b/ww/${n}`);
+    // Channel stack layers must be uniform (every full stacked layer holds the same
+    // count) — i.e. each layer follows the one below instead of drifting. The final
+    // (top) layer may be a partial remainder, so compare the full layers only.
+    const layers = e2bChannelStackLayers(Solver, on);
+    if (layers.length >= 2) {
+      const full = layers.slice(0, -1);
+      const uniform = full.every(c => c === full[0]);
+      assert.ok(uniform, `WW/${n}: channel stack layers are uniform (no drift), got [${layers.join(',')}]`);
+    }
+    const on2 = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    assert.equal(JSON.stringify([...on.placements]), JSON.stringify([...on2.placements]), `WW/${n}: deterministic`);
+  }
+});
+
+test('PHASE-E2B Wheel Wells x800 keeps at least the E2A placed count (701) and channel layers no longer drift', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = e1Items(800, { l: 24, w: 18, h: 16 });
+  const on = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  assert.ok(on.placements.size >= 701, `WW/800: placed count at least the E2A baseline of 701 (got ${on.placements.size})`);
+  const layers = e2bChannelStackLayers(Solver, on);
+  // E2A drifted (e.g. one full layer at 28 and a partial 7); E2B's full channel
+  // stack layers are all equal.
+  const full = layers.slice(0, -1);
+  assert.ok(full.length >= 1 && full.every(c => c === full[0]),
+    `WW/800: channel stack layers uniform, got [${layers.join(',')}]`);
+  e1AssertSafe(Solver, PackLib, e1Placed(Solver, on), zones, 'e2b/ww/800');
+});
+
+test('PHASE-E2B leaves Standard, 42x10, cube and canFlip:false behavior unchanged (no regression)', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = { length: 636, width: 102, height: 98, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  for (const dims of [{ l: 24, w: 18, h: 16 }, { l: 42, w: 10, h: 16 }, { l: 20, w: 20, h: 20 }]) {
+    const items = e1Items(300, dims);
+    const on = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, layoutQuality: false });
+    assert.ok(on.placements.size >= off.placements.size, `Std ${dims.l}x${dims.w}: no placement regression`);
+    // Standard has no narrow channel, so E2B leaves it single-yaw and upright.
+    assert.equal(e2aFlips(Solver, on), 0, `Std ${dims.l}x${dims.w}: single yaw on the full-width truck`);
+    for (const [, od] of on.orientedDims) assert.equal(od.height, dims.h, `Std ${dims.l}x${dims.w}: canFlip:false never tips`);
+    e1AssertSafe(Solver, PackLib, e1Placed(Solver, on), zones, `e2b/std/${dims.l}x${dims.w}`);
+  }
+});
+
+test('PHASE-E2B leaves Front Overhang C2 rear-retention and deck gating unchanged', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = phcFrontOverhangTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  for (const n of [6, 20, 40, 100]) {
+    const items = e1Items(n, { l: 24, w: 18, h: 16 }, { caseId: 'A', maxStackCount: 2 });
+    const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    assert.equal(res.retentionDependencies.size, 0, `FO/${n}: no invalid deck dependency (C2 unchanged under E2B)`);
+    const onDeck = e1Placed(Solver, res).filter(p => p.minY > 0.5 + 43.2 - 0.5 && p.pos.x > 240.5);
+    assert.equal(onDeck.length, 0, `FO/${n}: deck stays unused without retention (C2 unchanged under E2B)`);
+    e1AssertSafe(Solver, PackLib, e1Placed(Solver, res), zones, `e2b/FO/${n}`);
   }
 });
 

@@ -709,6 +709,27 @@ function orientationsMatch(a = {}, b = {}) {
     ar.x === br.x && ar.y === br.y && ar.z === br.z;
 }
 
+// E2B: wheel-well geometry has zones of unequal cross-trailer (z) width — the
+// full-width front/rear zones plus the narrow center channel between the wheel
+// wells. "A zone narrower than the widest zone" is geometry-driven, so it is false
+// for Standard (one zone, the widest) and never changes Standard behavior.
+function narrowChannelZones(zones) {
+  const widths = (zones || []).map(zone => zone.max.z - zone.min.z);
+  if (widths.length < 2) return [];
+  const widest = Math.max(...widths);
+  return (zones || []).filter(zone => (zone.max.z - zone.min.z) < widest - FREE_RECT_EPS);
+}
+
+// E2B: is this stack candidate inside a narrow wheel-well channel zone? Channel
+// stacks must follow the floor block+filler footprint below them instead of
+// re-packing the supporter surface in a denser-but-misaligned arrangement.
+function aabbInNarrowChannel(aabb, channelZones) {
+  return (channelZones || []).some(zone =>
+    aabb.min.x >= zone.min.x - FREE_RECT_EPS && aabb.max.x <= zone.max.x + FREE_RECT_EPS &&
+    aabb.min.z >= zone.min.z - FREE_RECT_EPS && aabb.max.z <= zone.max.z + FREE_RECT_EPS
+  );
+}
+
 // E1: how well a stack candidate "follows" the layer directly beneath it. Returns
 // [orientationMismatch, columnMismatch] (0 = follows, 1 = does not). A candidate
 // that keeps the same yaw as a supporter AND lands squarely on one supporter's
@@ -1510,7 +1531,7 @@ function buildStackCandidates(orientation, packed, yLevel, loadFrontFirst) {
   return placements;
 }
 
-export function scoreStackCandidate(candidate, loadFrontFirst, groupScore = null, supportMatch = null) {
+export function scoreStackCandidate(candidate, loadFrontFirst, groupScore = null, supportMatch = null, channelMirror = false) {
   const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
   const wasteArea = candidate.freeRect
     ? Math.max(0, freeRectArea(candidate.freeRect) - candidate.dims.l * candidate.dims.w)
@@ -1532,6 +1553,33 @@ export function scoreStackCandidate(candidate, loadFrontFirst, groupScore = null
       candidate.aabb.min.z,
     ];
   }
+  const orientationMismatch = supportMatch ? supportMatch[0] : 1;
+  const columnMismatch = supportMatch ? supportMatch[1] : 1;
+  // E2B: inside a narrow wheel-well channel, a layer must FOLLOW the block+filler
+  // footprint directly below it. The channel floor is already a clean primary block
+  // plus one contiguous alternate-yaw filler strip; greedy stacking otherwise
+  // re-packs the supporter surface into a denser-LOOKING but misaligned arrangement
+  // (different z-bands per layer) that actually fits FEWER cases per layer. Ranking
+  // the support match (same yaw + aligned column as the supporter) directly after
+  // [layer, support] — i.e. AHEAD of the front-position key — makes each candidate
+  // land squarely on the case below, so every channel layer reproduces the footprint
+  // beneath it. For identical cases that footprint was itself front-packed, so this
+  // does not sacrifice front density; it only stops the per-layer re-shuffle. Scoped
+  // to the channel only, so full-width zones, Standard and the E1 baselines keep the
+  // waste-first ordering exactly.
+  if (channelMirror) {
+    return [
+      candidate.aabb.min.y,
+      -candidate.supportFraction,
+      orientationMismatch,
+      columnMismatch,
+      xPrimary,
+      wasteArea,
+      ...groupScore.continuity,
+      groupScore.orientationPenalty,
+      candidate.aabb.min.z,
+    ];
+  }
   // E1: after layer/support/front, FREE-RECT WASTE stays the last density-driving
   // key — every layout-quality preference ranks BELOW it, so quality only breaks
   // ties that cost no packing space and the placed count never drops for appearance.
@@ -1540,8 +1588,6 @@ export function scoreStackCandidate(candidate, loadFrontFirst, groupScore = null
   // then an aligned footprint column (columnMismatch). For identical cases both yaw
   // options share one footprint area (equal waste), so the flip is eliminated; an
   // irregular gap that genuinely packs tighter rotated keeps it.
-  const orientationMismatch = supportMatch ? supportMatch[0] : 1;
-  const columnMismatch = supportMatch ? supportMatch[1] : 1;
   return [
     ...primary,
     wasteArea,
@@ -1563,6 +1609,8 @@ function findStackPlacement(
 ) {
   let best = null;
   let bestScore = null;
+  // E2B: wheel-well channel stacks must follow the floor block+filler footprint.
+  const channelZones = layoutQualityEnabled ? narrowChannelZones(zones) : [];
   const yLevels = uniqueSorted(
     packed
       .filter(placement => canSupportStack(placement) && hasStackCapacity(placement, packed))
@@ -1598,7 +1646,8 @@ function findStackPlacement(
         const supportMatch = layoutQualityEnabled
           ? scoreStackSupportMatch(candidate.aabb, orientation, supports)
           : null;
-        const score = scoreStackCandidate(scoredCandidate, loadFrontFirst, groupScore, supportMatch);
+        const channelMirror = channelZones.length > 0 && aabbInNarrowChannel(candidate.aabb, channelZones);
+        const score = scoreStackCandidate(scoredCandidate, loadFrontFirst, groupScore, supportMatch, channelMirror);
         if (!best || compareScore(score, bestScore) < 0) {
           best = scoredCandidate;
           bestScore = score;

@@ -709,6 +709,26 @@ function orientationsMatch(a = {}, b = {}) {
     ar.x === br.x && ar.y === br.y && ar.z === br.z;
 }
 
+// E1: how well a stack candidate "follows" the layer directly beneath it. Returns
+// [orientationMismatch, columnMismatch] (0 = follows, 1 = does not). A candidate
+// that keeps the same yaw as a supporter AND lands squarely on one supporter's
+// footprint (aligned X and Z extents) forms a broad stable block instead of a
+// straddling/rotated tower. Lower is better. Hard support rules already passed.
+function scoreStackSupportMatch(candidateAabb, orientation, supports) {
+  if (!supports || !supports.length) return [1, 1];
+  const orientationMismatch = supports.some(support =>
+    orientationsMatch(orientation, support.orientation || {})
+  ) ? 0 : 1;
+  const columnMismatch = supports.some(support =>
+    support.aabb &&
+    Math.abs(support.aabb.min.x - candidateAabb.min.x) <= FREE_RECT_EPS &&
+    Math.abs(support.aabb.max.x - candidateAabb.max.x) <= FREE_RECT_EPS &&
+    Math.abs(support.aabb.min.z - candidateAabb.min.z) <= FREE_RECT_EPS &&
+    Math.abs(support.aabb.max.z - candidateAabb.max.z) <= FREE_RECT_EPS
+  ) ? 0 : 1;
+  return [orientationMismatch, columnMismatch];
+}
+
 function scoreLayoutGroupContinuity(
   aabb,
   orientation,
@@ -1431,7 +1451,7 @@ function buildStackCandidates(orientation, packed, yLevel, loadFrontFirst) {
   return placements;
 }
 
-export function scoreStackCandidate(candidate, loadFrontFirst, groupScore = null) {
+export function scoreStackCandidate(candidate, loadFrontFirst, groupScore = null, supportMatch = null) {
   const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
   const wasteArea = candidate.freeRect
     ? Math.max(0, freeRectArea(candidate.freeRect) - candidate.dims.l * candidate.dims.w)
@@ -1453,10 +1473,22 @@ export function scoreStackCandidate(candidate, loadFrontFirst, groupScore = null
       candidate.aabb.min.z,
     ];
   }
+  // E1: after layer/support/front, FREE-RECT WASTE stays the last density-driving
+  // key — every layout-quality preference ranks BELOW it, so quality only breaks
+  // ties that cost no packing space and the placed count never drops for appearance.
+  // Within an equal-waste tie a candidate that follows the layer below wins: same
+  // yaw as its supporter (orientationMismatch), then same-case row/block continuity,
+  // then an aligned footprint column (columnMismatch). For identical cases both yaw
+  // options share one footprint area (equal waste), so the flip is eliminated; an
+  // irregular gap that genuinely packs tighter rotated keeps it.
+  const orientationMismatch = supportMatch ? supportMatch[0] : 1;
+  const columnMismatch = supportMatch ? supportMatch[1] : 1;
   return [
     ...primary,
-    ...groupScore.continuity,
     wasteArea,
+    orientationMismatch,
+    ...groupScore.continuity,
+    columnMismatch,
     groupScore.orientationPenalty,
     candidate.aabb.min.z,
   ];
@@ -1504,7 +1536,10 @@ function findStackPlacement(
             true
           )
           : null;
-        const score = scoreStackCandidate(scoredCandidate, loadFrontFirst, groupScore);
+        const supportMatch = layoutQualityEnabled
+          ? scoreStackSupportMatch(candidate.aabb, orientation, supports)
+          : null;
+        const score = scoreStackCandidate(scoredCandidate, loadFrontFirst, groupScore, supportMatch);
         if (!best || compareScore(score, bestScore) < 0) {
           best = scoredCandidate;
           bestScore = score;
@@ -1884,6 +1919,12 @@ export function solveAutoPack(input = {}) {
   const frontSurfaceFirst = loadFrontFirst && floorZones.some(zone =>
     zone.min.y > CONTACT_EPS && zone.max.x > truck.length + FREE_RECT_EPS
   );
+  // E1: same-case layout-quality scoring (consistent yaw, contiguous rows, broad
+  // stacked blocks that follow the layer below) is INDEPENDENT of frontSurfaceFirst
+  // (which stays only for true high-+X raised-surface ordering). Default ON for
+  // every truck mode — Standard, Wheel Wells and Front Overhang — so it no longer
+  // rides on the Front Overhang-only flag. Hard validity is still filtered first.
+  const layoutQualityEnabled = input.layoutQuality !== false;
   const retentionContext = createRetentionContext(
     input.truck || {},
     floorZones,
@@ -1900,6 +1941,10 @@ export function solveAutoPack(input = {}) {
   }
 
   const deferred = [];
+  // E1 is intentionally scoped to the STACKING phase (the audited defect). The
+  // lane, repeated-batch, ordinary/filler floor and compaction phases keep their
+  // existing Phase B2/B2C/D ordering (frontSurfaceFirst gate) so their proven
+  // forward-wall and shelf-grid behavior is unchanged.
   const laneItems = sortItemsForLane(
     items.filter(item => item.className === 'LANE_ITEM'),
     frontSurfaceFirst,
@@ -1986,13 +2031,13 @@ export function solveAutoPack(input = {}) {
   ).freeRects;
 
   let stackCount = 0;
-  for (const item of sortItemsForStack(stackDeferred, frontSurfaceFirst, items)) {
+  for (const item of sortItemsForStack(stackDeferred, layoutQualityEnabled, items)) {
     const placement = findStackPlacement(
       item,
       floorZones,
       packed,
       loadFrontFirst,
-      frontSurfaceFirst,
+      layoutQualityEnabled,
       retentionContext
     );
     if (!placement) {

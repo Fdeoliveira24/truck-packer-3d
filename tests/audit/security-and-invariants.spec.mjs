@@ -9197,19 +9197,25 @@ test('PHASE-C2 ordinary, filler, forced-lane, repeated, and mixed cargo use only
   phb2AssertSafe(Solver, PackLib, mixed, zones, 'mixed deck fit/too tall');
 });
 
-test('PHASE-C Standard and Wheel Wells solver bytes remain identical to the 1782d6b baseline', async () => {
+test('PHASE-E1 Standard and Wheel Wells solver bytes match the E1 layer-quality baseline (small loads unchanged from 1782d6b; multi-layer loads improved)', async () => {
+  // E1 intentionally changes ONLY the stacking phase for Standard/Wheel Wells, so
+  // single-/few-layer loads (6/20/40) are byte-identical to the 1782d6b baseline
+  // while the multi-layer 100-count loads adopt the new layer-following stack
+  // order (same yaw as the supporter, aligned columns, broad blocks). These hashes
+  // are the regenerated E1 baseline; the layer-quality improvement itself is proven
+  // by the dedicated PHASE-E1 runtime tests below.
   const { Solver, PackLib } = await phbSolverModules();
   const baselines = new Map([
     ['rect/24x18/6', '044feae3a855bdde870013be934591e0cda21562eb9fc634791ba9b839ecff03'],
     ['rect/24x18/20', '0561b56233172e29db53116236e717433123a1a7ec83f921bf85647e278abcc7'],
     ['rect/24x18/40', '58568e03af8882cba8bb32e89142f6c84954a2be9cc921703ac1880d656efa56'],
-    ['rect/24x18/100', '9dfc1aae9adbeb10f8ebd8eef24670b5a29a2074cbcdf50c2592bf52028c2b80'],
-    ['rect/42x10/100', '72718b5ace24ee5067890fec17ba8a6604a2b9800d185d7beccb5ce142ad73ca'],
+    ['rect/24x18/100', '18695a66089b5032c5ec8ab443f5ca127ba08237dbda20ce8e2cc9f9a793abd1'],
+    ['rect/42x10/100', '02a6d40166528fb1a95c4ff762aa916a15e547dea1a876419b7e1cb028c941b2'],
     ['wheelWells/24x18/6', '72ac801a94878f2935ef09d600c66bea768b819e80593831c4c60b7c1d0809ce'],
     ['wheelWells/24x18/20', '0561b56233172e29db53116236e717433123a1a7ec83f921bf85647e278abcc7'],
     ['wheelWells/24x18/40', 'f50bbb6728343bc36bcbb04e92ff238831236c7b5720dc32d9145508930275ed'],
-    ['wheelWells/24x18/100', 'e3921f538d86db7625ba6331422c0422a3c42913b9daed1a1c0694d34ffba400'],
-    ['wheelWells/42x10/100', '01f31ede8f69d93424cace281466a1c4770acb4e2e8a3ec49067fe395fd51ffa'],
+    ['wheelWells/24x18/100', '9cf764f35d4b87a9968dc9c1ee37d803392daa5fcfd869852024114ff6c8b7bd'],
+    ['wheelWells/42x10/100', 'f96212f85bdd7b5d148be9a59ec5689725a4e484f1d3ec543554789712e48bf5'],
   ]);
   const dimensionFixtures = [
     { label: '24x18', dims: { l: 24, w: 18, h: 16 }, counts: [6, 20, 40, 100] },
@@ -9227,9 +9233,170 @@ test('PHASE-C Standard and Wheel Wells solver bytes remain identical to the 1782
         const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
         const hash = createHash('sha256').update(phcResultBytes(result)).digest('hex');
         assert.equal(hash, baselines.get(`${shapeMode}/${fixture.label}/${count}`),
-          `${shapeMode}/${fixture.label}/${count}: byte-equivalent to 1782d6b`);
+          `${shapeMode}/${fixture.label}/${count}: byte-equivalent to the E1 layer-quality baseline`);
       }
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PHASE E1: Standard / Wheel Wells layer & stack quality. Same-case stacks must
+// follow the layer below (same yaw, aligned columns, broad blocks) instead of
+// flipping/scattering — without weakening any hard rule or dropping placements.
+// E1 is scoped to the stacking phase; the floor/lane/repeated/compaction phases
+// are unchanged (so Phase B2/B2C/C2/D behavior is preserved).
+// ---------------------------------------------------------------------------
+function e1Placed(Solver, res) {
+  return [...res.placements].map(([id, pos]) => {
+    const od = res.orientedDims.get(id);
+    return { id, pos, od, minY: pos.y - od.height / 2, maxY: pos.y + od.height / 2, aabb: Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height }) };
+  });
+}
+function e1Items(n, dims, extra = {}) {
+  return Array.from({ length: n }, (_, i) => ({ instanceId: `i${i}`, caseId: 'A', dims, shape: 'box', orientationLock: 'any', canFlip: false, weight: 30, ...extra }));
+}
+function e1AssertSafe(Solver, PackLib, P, zones, label) {
+  for (let i = 0; i < P.length; i++) for (let j = i + 1; j < P.length; j++) {
+    assert.equal(Solver.aabbsOverlap(P[i].aabb, P[j].aabb), false, `${label}: no overlap`);
+  }
+  for (const p of P) {
+    assert.equal(PackLib.isAabbContainedInAnyZone(p.aabb, zones), true, `${label}: contained (no OOB/blocked)`);
+    const floorY = Math.min(...P.map(q => q.minY));
+    if (p.minY > floorY + 0.5) {
+      const supports = P.filter(s => s !== p && Math.abs(s.maxY - p.minY) <= 0.05 &&
+        Math.min(p.aabb.max.x, s.aabb.max.x) - Math.max(p.aabb.min.x, s.aabb.min.x) > 0.05 &&
+        Math.min(p.aabb.max.z, s.aabb.max.z) - Math.max(p.aabb.min.z, s.aabb.min.z) > 0.05).map(s => s.aabb);
+      assert.ok(PackLib.computeSupportFraction(p.aabb, supports, 0.05) >= PackLib.MIN_SUPPORT_FRACTION, `${label}: supported (not floating)`);
+    }
+  }
+}
+// Fraction of stacked cases that rest squarely on a same-yaw supporter column.
+function e1LayerFollowFraction(P) {
+  const floorY = Math.min(...P.map(p => p.minY));
+  let stacked = 0, following = 0;
+  for (const c of P) {
+    if (Math.abs(c.minY - floorY) < 0.5) continue;
+    stacked++;
+    const support = P.find(s => s !== c && Math.abs(s.maxY - c.minY) < 0.5 &&
+      Math.abs(s.pos.x - c.pos.x) < 0.5 && Math.abs(s.pos.z - c.pos.z) < 0.5 &&
+      Math.round(s.od.length) === Math.round(c.od.length) && Math.round(s.od.width) === Math.round(c.od.width));
+    if (support) following++;
+  }
+  return { stacked, following, fraction: stacked ? following / stacked : 1 };
+}
+
+test('PHASE-E1 Standard 800 identical 24x18: one yaw, every stacked case follows an aligned supporter, no placement regression, deterministic', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truth = await threeOrientedTruth();
+  const truck = { length: 636, width: 102, height: 98, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = e1Items(800, { l: 24, w: 18, h: 16 });
+  const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, layoutQuality: false });
+  assert.ok(res.placements.size >= off.placements.size, `E1 never drops placements vs quality-off (${res.placements.size} >= ${off.placements.size})`);
+  const P = e1Placed(Solver, res);
+  // Single consistent yaw across floor and every stack layer (no flip).
+  const yaws = new Set(P.map(p => `${Math.round(p.od.length)}x${Math.round(p.od.width)}`));
+  assert.equal(yaws.size, 1, `identical cases keep one yaw, got ${[...yaws].join(',')}`);
+  // Layers follow the first layer footprint: every stacked case is squarely supported.
+  const follow = e1LayerFollowFraction(P);
+  assert.ok(follow.stacked > 0, 'the load stacks (multi-layer)');
+  assert.equal(follow.following, follow.stacked, `every stacked case follows an aligned same-yaw supporter (${follow.following}/${follow.stacked})`);
+  // Broad blocks, not scattered towers: quality-off vs on tower-column comparison.
+  const offFollow = e1LayerFollowFraction(e1Placed(Solver, off));
+  assert.ok(follow.fraction >= offFollow.fraction, `E1 layer-follow is no worse than quality-off (${follow.fraction.toFixed(2)} >= ${offFollow.fraction.toFixed(2)})`);
+  e1AssertSafe(Solver, PackLib, P, zones, 'std/24x18/800');
+  for (const p of P) {
+    const t = truth({ length: 24, width: 18, height: 16 }, res.rotations.get(p.id));
+    assert.deepEqual({ l: p.od.length, w: p.od.width, h: p.od.height }, { l: t.length, w: t.width, h: t.height }, 'std/24x18/800: THREE dims');
+  }
+  const res2 = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  assert.equal(JSON.stringify([...res.placements]), JSON.stringify([...res2.placements]), 'deterministic on repeat');
+});
+
+test('PHASE-E1 Standard 800 cube and 42x10 stay safe, broad, and lose no placements', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = { length: 636, width: 102, height: 98, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  for (const dims of [{ l: 20, w: 20, h: 20 }, { l: 42, w: 10, h: 16 }]) {
+    const items = e1Items(800, dims);
+    const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, layoutQuality: false });
+    assert.ok(res.placements.size >= off.placements.size, `${dims.l}x${dims.w}: no placement regression (${res.placements.size} >= ${off.placements.size})`);
+    const P = e1Placed(Solver, res);
+    e1AssertSafe(Solver, PackLib, P, zones, `std/${dims.l}x${dims.w}/800`);
+    const follow = e1LayerFollowFraction(P);
+    assert.equal(follow.following, follow.stacked, `${dims.l}x${dims.w}: every stacked case follows an aligned supporter`);
+    const res2 = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    assert.equal(JSON.stringify([...res.placements]), JSON.stringify([...res2.placements]), `${dims.l}x${dims.w}: deterministic`);
+  }
+});
+
+test('PHASE-E1 Wheel Wells 100 and 800 identical 24x18: improved stack layer continuity, no hard-rule or placement regression', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  for (const n of [100, 800]) {
+    const items = e1Items(n, { l: 24, w: 18, h: 16 });
+    const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, layoutQuality: false });
+    assert.ok(res.placements.size >= off.placements.size, `WW/${n}: no placement regression (${res.placements.size} >= ${off.placements.size})`);
+    const P = e1Placed(Solver, res);
+    e1AssertSafe(Solver, PackLib, P, zones, `ww/24x18/${n}`);
+    if (n === 800) {
+      // Stacks exist and follow the layer below at least as well as quality-off.
+      const follow = e1LayerFollowFraction(P);
+      const offFollow = e1LayerFollowFraction(e1Placed(Solver, off));
+      assert.ok(follow.stacked > 0 && follow.fraction >= offFollow.fraction,
+        `WW/800: stack layer continuity not worse than quality-off (${follow.fraction.toFixed(2)} >= ${offFollow.fraction.toFixed(2)})`);
+    }
+    const res2 = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    assert.equal(JSON.stringify([...res.placements]), JSON.stringify([...res2.placements]), `WW/${n}: deterministic`);
+  }
+});
+
+test('PHASE-E1 Wheel Wells 800 cube: no safety or capacity regression', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = e1Items(800, { l: 20, w: 20, h: 20 });
+  const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, layoutQuality: false });
+  assert.ok(res.placements.size >= off.placements.size, `WW cube: no capacity regression (${res.placements.size} >= ${off.placements.size})`);
+  e1AssertSafe(Solver, PackLib, e1Placed(Solver, res), zones, 'ww/cube/800');
+});
+
+test('PHASE-E1 honors canFlip:false (no tipping) and orientationLock upright/any across modes', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  for (const shapeMode of ['rect', 'wheelWells']) {
+    const truck = { length: 636, width: 102, height: 98, shapeMode };
+    const zones = PackLib.getTrailerUsableZones(truck);
+    // canFlip:false, lock 'any' → only upright yaw rotations (no tipped faces): height stays 16.
+    const resAny = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: e1Items(120, { l: 24, w: 18, h: 16 }, { canFlip: false, orientationLock: 'any' }) });
+    for (const [, od] of resAny.orientedDims) {
+      assert.equal(od.height, 16, `${shapeMode}: canFlip:false never tips (height stays 16)`);
+    }
+    // orientationLock:'upright' → footprint may yaw but height is fixed upright.
+    const resUp = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: e1Items(120, { l: 24, w: 18, h: 16 }, { canFlip: true, orientationLock: 'upright' }) });
+    for (const [, od] of resUp.orientedDims) {
+      assert.equal(od.height, 16, `${shapeMode}: orientationLock upright stays upright even with canFlip`);
+    }
+    e1AssertSafe(Solver, PackLib, e1Placed(Solver, resAny), zones, `${shapeMode}/canflip-false`);
+  }
+});
+
+test('PHASE-E1 leaves Front Overhang C2 rear-retention unchanged (deck still requires valid retention)', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = phcFrontOverhangTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  for (const n of [6, 20, 40, 100]) {
+    const items = e1Items(n, { l: 24, w: 18, h: 16 }, { caseId: 'A', maxStackCount: 2 });
+    const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    // C2 invariant preserved: with no retaining wall the deck stays unused.
+    assert.equal(res.retentionDependencies.size, 0, `FO/${n}: no invalid deck dependency (C2 unchanged)`);
+    const onDeck = e1Placed(Solver, res).filter(p => p.minY > 0.5 + 43.2 - 0.5 && p.pos.x > 240.5);
+    assert.equal(onDeck.length, 0, `FO/${n}: deck stays unused without retention (C2 unchanged)`);
+    e1AssertSafe(Solver, PackLib, e1Placed(Solver, res), zones, `FO/${n}`);
   }
 });
 

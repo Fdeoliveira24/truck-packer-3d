@@ -16399,3 +16399,79 @@ test('OPERATION-LIFECYCLE: truck dropdowns update pending state and only Update 
   assert.doesNotMatch(shapeHandler[0], /applyTruckGeometryChange\(/,
     'shape change must update pending truck only, not call applyTruckGeometryChange');
 });
+
+// ---------------------------------------------------------------------------
+// OPERATION LIFECYCLE — AMENDMENT: direct editor mutations (InteractionManager
+// drag/rotate/nudge/delete, global keyboard shortcuts, and panel add/duplicate/
+// delete) must also respect the lock, not just the toolbar. DOM wiring is verified
+// by source-shape assertions; the lock/token semantics are covered by the pure
+// controller tests above.
+// ---------------------------------------------------------------------------
+test('OPERATION-LIFECYCLE-AMEND InteractionManager receives the lifecycle and guards its mutating actions', async () => {
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  const appSrc = await fs.readFile(appPath, 'utf8');
+
+  // Factory accepts the lifecycle and app.js injects it at construction.
+  const factory = editorSrc.match(/export function createInteractionManager\(\{[\s\S]*?\}\) \{/);
+  assert.ok(factory && /OperationLifecycle/.test(factory[0]), 'createInteractionManager must accept OperationLifecycle');
+  assert.match(appSrc, /createInteractionManager\(\{[\s\S]*?OperationLifecycle,[\s\S]*?\}\);/,
+    'app.js must inject OperationLifecycle into InteractionManager at construction');
+  // The lifecycle must exist before InteractionManager is built (no late-binding race).
+  assert.ok(
+    appSrc.indexOf('const OperationLifecycle = createOperationLifecycle();') <
+      appSrc.indexOf('const InteractionManager = createInteractionManager('),
+    'OperationLifecycle must be created before InteractionManager',
+  );
+
+  // Each mutating InteractionManager action checks the lock.
+  const guarded = ['function rotateSelection(', 'function nudgeSelection(', 'function deleteSelection(', 'function startDrag('];
+  for (const fn of guarded) {
+    const start = editorSrc.indexOf(fn);
+    assert.ok(start >= 0, `${fn} must exist`);
+    const block = editorSrc.slice(start, start + 400);
+    assert.match(block, /operationsBusy\(\)/, `${fn.trim()} must early-out while an operation is busy`);
+  }
+});
+
+test('OPERATION-LIFECYCLE-AMEND global keyboard mutations are blocked while busy', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  assert.match(appSrc, /function mutationBlockedWhileBusy\(\)[\s\S]*?OperationLifecycle\.isBusy\(\)/,
+    'app keyboard manager must have a busy-guard helper backed by the lifecycle');
+  for (const fn of ['function duplicateSelected()', 'function pasteClipboard()', 'function undo()', 'function redo()']) {
+    const start = appSrc.indexOf(fn);
+    assert.ok(start >= 0, `${fn} must exist`);
+    const block = appSrc.slice(start, start + 260);
+    assert.match(block, /if \(mutationBlockedWhileBusy\(\)\) return;/, `${fn} must be blocked while busy`);
+  }
+  // Delete shortcut routes through InteractionManager.deleteSelection (guarded above).
+  assert.match(appSrc, /function deleteSelected\(\)[\s\S]*?InteractionManager\.deleteSelection\(\)/,
+    'delete shortcut must route through the guarded InteractionManager.deleteSelection');
+});
+
+test('OPERATION-LIFECYCLE-AMEND editor panel add/duplicate/delete mutations are blocked while busy', async () => {
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  assert.match(editorSrc, /function editorMutationBlocked\(\)[\s\S]*?OperationLifecycle\.isBusy\(\)/,
+    'editor must have a busy-guard helper backed by the lifecycle');
+  const addStart = editorSrc.indexOf('function addCaseToPack(');
+  assert.match(editorSrc.slice(addStart, addStart + 220), /if \(editorMutationBlocked\(\)\) return;/,
+    'addCaseToPack must be blocked while busy');
+  const dupStart = editorSrc.indexOf('function duplicateSelection(');
+  assert.match(editorSrc.slice(dupStart, dupStart + 220), /if \(editorMutationBlocked\(\)\) return;/,
+    'duplicateSelection must be blocked while busy');
+  // Inspector "Delete item/Delete" buttons guard the direct removeInstances calls.
+  const directDeletes = editorSrc.match(/onClick: \(\) => \{\s*if \(editorMutationBlocked\(\)\) return;\s*PackLibrary\.removeInstances\(/g) || [];
+  assert.ok(directDeletes.length >= 2, 'inspector delete buttons must guard removeInstances with the busy check');
+});
+
+test('OPERATION-LIFECYCLE-AMEND pending truck config card renders the pending (effective) truck mode', async () => {
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  // The config card mode + base values come from effectiveTruck (pending or committed),
+  // so selecting Wheel Wells shows its settings before commit; the scene stays committed.
+  assert.match(editorSrc, /=== Shape Config Card[\s\S]*?const currentMode = effectiveTruck && effectiveTruck\.shapeMode/,
+    'config card mode must follow the effective (pending) truck, not committed pack.truck');
+  assert.doesNotMatch(editorSrc, /const currentMode = pack\.truck && pack\.truck\.shapeMode \? pack\.truck\.shapeMode : 'rect';/,
+    'config card must not key its mode off committed pack.truck');
+  // Config commit payloads keep the pending dims/mode.
+  assert.doesNotMatch(editorSrc, /const nextTruck = \{ \.\.\.pack\.truck, shapeConfig: nextCfg \};/,
+    'config save/reset must commit from the effective truck so pending shape/dims are preserved');
+});

@@ -829,8 +829,16 @@ export function createInteractionManager({
   CaseLibrary,
   PreferencesManager,
   UIComponents,
+  OperationLifecycle = null,
 }) {
   const InteractionManager = (() => {
+    // True while a mutating editor operation (AutoPack / Unpack / Truck Change /
+    // preview capture) owns the editor. Direct scene mutations must not run then —
+    // but camera orbit/pan/zoom (OrbitControls, separate from these handlers) and
+    // hover/selection stay available.
+    function operationsBusy() {
+      return Boolean(OperationLifecycle && OperationLifecycle.isBusy());
+    }
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -869,6 +877,10 @@ export function createInteractionManager({
      * Rotate selected instances by delta on given axis, then apply gravity.
      */
     function rotateSelection(axis, delta) {
+      if (operationsBusy()) {
+        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
+        return;
+      }
       const ids = getSelection();
       if (!ids.length) { return; }
       const packId = StateStore.get('currentPackId');
@@ -952,6 +964,10 @@ export function createInteractionManager({
      * Nudge selected instances by delta inches on given world axis.
      */
     function nudgeSelection(axis, deltaInches) {
+      if (operationsBusy()) {
+        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
+        return;
+      }
       const ids = getSelection();
       if (!ids.length) { return; }
       const packId = StateStore.get('currentPackId');
@@ -1140,6 +1156,9 @@ export function createInteractionManager({
 
     function startDrag() {
       if (!pressed || !pressed.instanceId) return;
+      // Do not begin moving a case while a mutating operation owns the editor. Click
+      // selection (handled in onUp) still works; camera orbit is unaffected.
+      if (operationsBusy()) return;
       draggingId = pressed.instanceId;
       dragStartPosWorld = CaseScene.getObject(draggingId).position.clone();
 
@@ -1295,6 +1314,13 @@ export function createInteractionManager({
       const obj = CaseScene.getObject(instanceId);
       if (!obj) {
         resetDrag();
+        return;
+      }
+      // Defensive: if an operation claimed the editor mid-drag, do not commit the
+      // moved transform — restore the scene from committed state and drop the drag.
+      if (operationsBusy()) {
+        resetDrag();
+        CaseScene.sync(PackLibrary.getById(StateStore.get('currentPackId')));
         return;
       }
 
@@ -1460,6 +1486,10 @@ export function createInteractionManager({
     }
 
     function deleteSelection() {
+      if (operationsBusy()) {
+        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
+        return;
+      }
       const ids = getSelection();
       if (!ids.length) return;
       const packId = StateStore.get('currentPackId');
@@ -2122,7 +2152,18 @@ export function createEditorScreen({
       return el;
     }
 
+    // True (and toasts) when a mutating editor operation owns the editor, so direct
+    // case-list mutations (add / duplicate / delete) from the panels are blocked.
+    function editorMutationBlocked() {
+      if (OperationLifecycle && OperationLifecycle.isBusy()) {
+        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
+        return true;
+      }
+      return false;
+    }
+
     function addCaseToPack(caseId, positionInches) {
+      if (editorMutationBlocked()) return;
       const packId = StateStore.get('currentPackId');
       const pack = PackLibrary.getById(packId);
       if (!pack) {
@@ -2271,6 +2312,7 @@ export function createEditorScreen({
         iconClass: 'fa-solid fa-trash',
         danger: true,
         onClick: () => {
+          if (editorMutationBlocked()) return;
           PackLibrary.removeInstances(pack.id, [inst.id]);
           StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
           CaseScene.setSelected([]);
@@ -2508,6 +2550,7 @@ export function createEditorScreen({
     }
 
     function duplicateSelection(pack, selectedIds) {
+      if (editorMutationBlocked()) return;
       const ids = Array.isArray(selectedIds) ? selectedIds : [];
       if (!pack || !ids.length) return;
       const payload = buildDuplicatePayload(pack, ids);
@@ -2974,17 +3017,20 @@ export function createEditorScreen({
       inspectorEl.appendChild(card);
 
       // === Shape Config Card (Overhang / Wheel Wells) ===
-      const currentMode = pack.truck && pack.truck.shapeMode ? pack.truck.shapeMode : 'rect';
+      // Keyed off effectiveTruck (pending or committed), so selecting Wheel Wells /
+      // Front Overhang in the dropdown shows that mode's config controls immediately
+      // in the form — the 3D scene still shows the committed truck until Update truck.
+      const currentMode = effectiveTruck && effectiveTruck.shapeMode ? effectiveTruck.shapeMode : 'rect';
       if (currentMode === 'frontBonus' || currentMode === 'wheelWells') {
         const cfgCard = document.createElement('div');
         cfgCard.className = 'card';
         cfgCard.classList.add('tp3d-editor-card-grid-gap-12');
 
-        const cfg = (pack.truck && pack.truck.shapeConfig && typeof pack.truck.shapeConfig === 'object')
-          ? pack.truck.shapeConfig : {};
-        const tL = pack.truck.length || 636;
-        const tW = pack.truck.width || 102;
-        const tH = pack.truck.height || 110;
+        const cfg = (effectiveTruck && effectiveTruck.shapeConfig && typeof effectiveTruck.shapeConfig === 'object')
+          ? effectiveTruck.shapeConfig : {};
+        const tL = effectiveTruck.length || 636;
+        const tW = effectiveTruck.width || 102;
+        const tH = effectiveTruck.height || 110;
 
         if (currentMode === 'frontBonus') {
           cfgCard.appendChild(cardHeaderWithInfo(
@@ -3032,7 +3078,7 @@ export function createEditorScreen({
               bonusWidth: tW,
               bonusHeight: Utils.clamp(displayLengthToInches(fBH.input.value, bonusHeight, lengthUnit), 0, tH),
             };
-            const nextTruck = { ...pack.truck, shapeConfig: nextCfg };
+            const nextTruck = { ...effectiveTruck, shapeConfig: nextCfg };
             applyTruckGeometryChange(pack, nextTruck, 'Overhang updated');
           });
 
@@ -3044,7 +3090,7 @@ export function createEditorScreen({
             fBL.input.value = String(Utils.inchesToUnit(defBL, lengthUnit).toFixed(1));
             fBH.input.value = String(Utils.inchesToUnit(defBH, lengthUnit).toFixed(1));
             const nextCfg = { bonusLength: defBL, bonusWidth: defBW, bonusHeight: defBH };
-            const nextTruck = { ...pack.truck, shapeConfig: nextCfg };
+            const nextTruck = { ...effectiveTruck, shapeConfig: nextCfg };
             applyTruckGeometryChange(pack, nextTruck, 'Overhang reset to defaults');
           });
 
@@ -3101,7 +3147,7 @@ export function createEditorScreen({
             if (nextCfg.wellOffsetFromRear + nextCfg.wellLength > tL) {
               nextCfg.wellLength = tL - nextCfg.wellOffsetFromRear;
             }
-            const nextTruck = { ...pack.truck, shapeConfig: nextCfg };
+            const nextTruck = { ...effectiveTruck, shapeConfig: nextCfg };
             applyTruckGeometryChange(pack, nextTruck, 'Wheel wells updated');
           });
 
@@ -3118,7 +3164,7 @@ export function createEditorScreen({
               wellHeight: defWH, wellWidth: defWW,
               wellLength: defWL, wellOffsetFromRear: defWO,
             };
-            const nextTruck = { ...pack.truck, shapeConfig: nextCfg };
+            const nextTruck = { ...effectiveTruck, shapeConfig: nextCfg };
             applyTruckGeometryChange(pack, nextTruck, 'Wheel wells reset to defaults');
           });
 
@@ -3425,6 +3471,7 @@ export function createEditorScreen({
         iconClass: 'fa-solid fa-trash',
         danger: true,
         onClick: () => {
+          if (editorMutationBlocked()) return;
           PackLibrary.removeInstances(pack.id, [inst.id]);
           StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
           CaseScene.setSelected([]);

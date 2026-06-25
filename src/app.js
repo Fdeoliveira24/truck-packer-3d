@@ -3281,6 +3281,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     // SECTION: 3D INTERACTION (SELECT/DRAG)
     // ============================================================================
+    // Single authoritative "one mutating editor operation at a time" controller,
+    // shared by AutoPack, Unpack, Truck Change, preview capture AND the direct scene
+    // mutations (drag/rotate/nudge/delete) so they can no longer overlap or commit
+    // stale results over one another. Created before InteractionManager so it can be
+    // injected at construction (no late-binding race).
+    const OperationLifecycle = createOperationLifecycle();
+
     const InteractionManager = createInteractionManager({
       SceneManager,
       CaseScene,
@@ -3289,16 +3296,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       CaseLibrary,
       PreferencesManager,
       UIComponents,
+      OperationLifecycle,
     });
 
     // ============================================================================
     // SECTION: ENGINE (AUTOPACK)
     // ============================================================================
-    // Single authoritative "one mutating editor operation at a time" controller,
-    // shared by AutoPack, Unpack, Truck Change and preview capture so they can no
-    // longer overlap or commit stale results over one another.
-    const OperationLifecycle = createOperationLifecycle();
-
     const AutoPackEngine = createAutoPackEngine({
       CaseLibrary,
       CaseScene,
@@ -4118,17 +4121,31 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return StateStore.get('currentScreen') === 'editor';
       }
 
+      // Block pack-mutating keyboard shortcuts while a mutating editor operation
+      // (AutoPack / Unpack / Truck Change / preview capture) owns the editor. Returns
+      // true (and toasts) when blocked. Read-only shortcuts (copy, select, camera,
+      // grid/shadow toggles) are intentionally NOT gated.
+      function mutationBlockedWhileBusy() {
+        if (OperationLifecycle && OperationLifecycle.isBusy()) {
+          UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
+          return true;
+        }
+        return false;
+      }
+
       function save() {
         Storage.saveNow();
         UIComponents.showToast('Saved locally', 'success', { title: 'Storage' });
       }
 
       function undo() {
+        if (mutationBlockedWhileBusy()) return;
         const ok = StateStore.undo();
         UIComponents.showToast(ok ? 'Undone' : 'Nothing to undo', ok ? 'info' : 'warning', { title: 'Edit' });
       }
 
       function redo() {
+        if (mutationBlockedWhileBusy()) return;
         const ok = StateStore.redo();
         UIComponents.showToast(ok ? 'Redone' : 'Nothing to redo', ok ? 'info' : 'warning', { title: 'Edit' });
       }
@@ -4164,6 +4181,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       function duplicateSelected() {
         if (!inEditor()) return;
+        if (mutationBlockedWhileBusy()) return;
         const packId = StateStore.get('currentPackId');
         const pack = PackLibrary.getById(packId);
         const selected = StateStore.get('selectedInstanceIds') || [];
@@ -4211,6 +4229,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       function pasteClipboard() {
         if (!inEditor()) return;
+        if (mutationBlockedWhileBusy()) return;
         const packId = StateStore.get('currentPackId');
         const pack = PackLibrary.getById(packId);
         if (!pack || !clipboard || !clipboard.length) return;

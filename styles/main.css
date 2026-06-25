@@ -4244,6 +4244,12 @@ body.modal-open {
   width: 100%;
 }
 
+/* Pending (uncommitted) truck geometry edited via the preset/shape dropdowns:
+   draw attention to "Update truck" until the user commits the change. */
+.tp3d-editor-btn-attention {
+  box-shadow: 0 0 0 2px var(--accent-primary-25);
+}
+
 .tp3d-editor-stats-card {
   background: var(--bg-primary);
   box-shadow: none;

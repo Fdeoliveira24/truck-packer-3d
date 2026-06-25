@@ -54,6 +54,7 @@ import { createErrorOverlay } from './ui/error-overlay.js';
 import { Router } from './router.js';
 import { createUIComponents } from './ui/ui-components.js';
 import { createTruckChangeController } from './ui/truck-change-controller.js';
+import { createOperationLifecycle } from './core/operation-lifecycle.js';
 import { createTableFooter } from './ui/table-footer.js';
 import { TrailerPresets } from './data/trailer-presets.js';
 import { createSceneRuntime } from './editor/scene-runtime.js';
@@ -3293,9 +3294,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     // SECTION: ENGINE (AUTOPACK)
     // ============================================================================
+    // Single authoritative "one mutating editor operation at a time" controller,
+    // shared by AutoPack, Unpack, Truck Change and preview capture so they can no
+    // longer overlap or commit stale results over one another.
+    const OperationLifecycle = createOperationLifecycle();
+
     const AutoPackEngine = createAutoPackEngine({
       CaseLibrary,
       CaseScene,
+      OperationLifecycle,
       capturePackPreview: (packId, options) => ExportService.capturePackPreview(packId, options),
       getActiveOrgIdForBilling,
       getOrgRoleHydrationState: orgId => _getOrgRoleHydrationStateAccessor(orgId),
@@ -3328,6 +3335,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       async function capturePackPreview(packId, { source = 'auto', quiet = false } = {}) {
+        // Never capture a thumbnail while another mutating operation is running — the
+        // scene is mid-flight and the snapshot would be wrong. Auto captures simply
+        // skip; an explicit manual capture surfaces a short "busy" notice.
+        if (OperationLifecycle.isBusy()) {
+          if (!quiet && source === 'manual') {
+            UIComponents.showToast('Finish the current operation before capturing a preview.', 'info', { title: 'Preview' });
+          }
+          return false;
+        }
+        const captureToken = OperationLifecycle.beginOperation('capturingPreview', { packId, source });
+        if (!captureToken) return false;
         try {
           const getActiveWorkspaceKey = () => (
             `${CoreStorage.getStorageScope ? CoreStorage.getStorageScope() : 'anon'}|${CoreStorage.getWorkspaceScope ? CoreStorage.getWorkspaceScope() : 'no-org'}`
@@ -3357,6 +3375,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
           if (captureWorkspaceKey && getActiveWorkspaceKey() !== captureWorkspaceKey) return false;
           if (!PackLibrary.getById(packId)) return false;
+          // Stale-capture guard: if this capture slot was superseded, do not write
+          // a thumbnail over whatever newer state now owns the editor.
+          if (!OperationLifecycle.isCurrent(captureToken)) return false;
           PackLibrary.update(packId, {
             thumbnail: dataUrl,
             thumbnailUpdatedAt: Date.now(),
@@ -3370,6 +3391,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
             UIComponents.showToast(`Preview failed: ${err.message || err}`, 'warning', { title: 'Preview' });
           }
           return false;
+        } finally {
+          OperationLifecycle.finishOperation(captureToken);
         }
       }
 
@@ -3881,6 +3904,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       CaseScene,
       InteractionManager,
       TruckChangeController,
+      OperationLifecycle,
     });
 
     // ============================================================================

@@ -65,6 +65,7 @@ const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url)
 const normalizerPath = new URL('../../src/core/normalizer.js', import.meta.url);
 const orientedDimsPath = new URL('../../src/core/oriented-dims.js', import.meta.url);
 const cargoCanonicalPath = new URL('../../src/core/cargo-canonical.js', import.meta.url);
+const operationLifecyclePath = new URL('../../src/core/operation-lifecycle.js', import.meta.url);
 const beamCsvFixturePath = new URL('../../docs/tp3d-pack-and-cases-upload-tests/cargo_cases_valid.csv', import.meta.url);
 const beamXlsxFixturePath = new URL('../../docs/tp3d-pack-and-cases-upload-tests/cargo_cases_valid.xlsx', import.meta.url);
 const vendorThreePath = new URL('../../vendor/three.module.js', import.meta.url);
@@ -1271,7 +1272,7 @@ test('PACK-IMPORT-SCHEMA-1 pack import modal uses pack-only class and batch clos
 test('PACK-IMPORT-SAFE-1 editor addCaseToPack uses PackLibrary safe staging and preserves explicit drop positions', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const start = src.indexOf('function addCaseToPack(caseId, positionInches)');
-  const end = src.indexOf('\n\n    function unpackAll()', start);
+  const end = src.indexOf('\n\n    async function unpackAll()', start);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(block.length > 0,
@@ -3658,7 +3659,7 @@ test('STAGING-S1 unpackAll uses the canonical staging helper instead of a hardco
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(block.length > 0, 'editor-screen must define unpackAll()');
-  assert.match(block, /PackLibrary\.findSafeStagingPosition\(pack, dims, acceptedAabbs\)/,
+  assert.match(block, /PackLibrary\.findSafeStagingPosition\((?:pack|livePack), dims, acceptedAabbs\)/,
     'unpackAll must place staged cases through the canonical staging helper');
   assert.doesNotMatch(block, /stageZStart|truckW|truckL/,
     'unpackAll must not keep its own hardcoded staging offset');
@@ -5979,8 +5980,8 @@ test('AUTO-PACK-A1-R6 live adapter preserves runtime gates, zones, and orientati
 
   assert.match(engineSrc, /getProRuleSet\(_bs, activeRole\)/,
     'A1-R6 must preserve the billing/pro gate in the runtime engine');
-  assert.match(engineSrc, /const isWorkspaceRunStale = \(\) => runWorkspaceGeneration !== workspaceGeneration;/,
-    'A1-R6 must preserve the stale-run guard');
+  assert.match(engineSrc, /const isWorkspaceRunStale = \(\) =>[\s\S]*?runWorkspaceGeneration !== workspaceGeneration/,
+    'A1-R6 must preserve the stale-run guard (workspace generation, plus the E-UX operation-token check)');
   assert.match(engineSrc, /const zones = TrailerGeometry\.getTrailerUsableZones\(truck\);/,
     'A1-R6 must continue using TrailerGeometry as the single usable-zone source');
   assert.match(engineSrc, /stageInstant\(stagingMap\);/,
@@ -6198,9 +6199,9 @@ test('EDITOR inspector unit labels follow preferences and repaint on preference 
     'editor inspector must convert displayed values back to internal inches before save');
   assert.match(truckBlock, /const lengthUnit = getLengthUnit\(prefs\)/,
     'truck inspector must derive its display unit from preferences');
-  assert.match(truckBlock, /smallField\(`Length \(\$\{lengthUnit\}\)`,\s*Utils\.inchesToUnit\(pack\.truck\.length,\s*lengthUnit\)\)/,
+  assert.match(truckBlock, /smallField\(`Length \(\$\{lengthUnit\}\)`,\s*Utils\.inchesToUnit\((?:pack\.truck|effectiveTruck)\.length,\s*lengthUnit\)\)/,
     'truck length field must display the active length unit');
-  assert.match(truckBlock, /length:\s*Math\.max\(24,\s*displayLengthToInches\(fL\.input\.value,\s*pack\.truck\.length,\s*lengthUnit\)\)/,
+  assert.match(truckBlock, /length:\s*Math\.max\(24,\s*displayLengthToInches\(fL\.input\.value,\s*(?:pack\.truck|effectiveTruck)\.length,\s*lengthUnit\)\)/,
     'truck length save must convert the displayed unit back to inches');
   assert.match(truckBlock, /smallField\(`Length \(\$\{lengthUnit\}\)`,\s*Utils\.inchesToUnit\(bonusLength,\s*lengthUnit\)\)/,
     'front overhang config fields must display the active length unit');
@@ -10021,7 +10022,7 @@ test('AUTO-PACK-A1-ANIM-1 AutoPack yields after staging before synchronous solvi
   const solverStart = src.indexOf('const solverStartedAt = nowMs();', packStart);
   const block = packStart >= 0 && solverStart > packStart ? src.slice(packStart, solverStart) : '';
 
-  assert.match(block, /stageInstant\(stagingMap\);\s*\/\/ Let the staged layout paint[\s\S]*await waitForAnimationFrames\(2\);\s*if \(isWorkspaceRunStale\(\)\) return;/,
+  assert.match(block, /stageInstant\(stagingMap\);[\s\S]*?await waitForAnimationFrames\(2\);\s*if \(isWorkspaceRunStale\(\)\) return;/,
     'AutoPack must allow staged items to paint before the synchronous solver can block the UI thread');
   assert.match(src, /function waitForAnimationFrames\(count = 1\)/,
     'AutoPack runtime must include an animation-frame yield helper');
@@ -16298,3 +16299,103 @@ test('G1.2D-INSPECTOR-FINAL-POLISH visual CSS is scoped, tokenized, and keeps to
 });
 
 // ── End G1.2D-INSPECTOR-FINAL-POLISH ─────────────────────────────────────────
+
+// ---------------------------------------------------------------------------
+// OPERATION LIFECYCLE: the editor's single authoritative "one mutating operation
+// at a time" controller (src/core/operation-lifecycle.js). Pure module, so it is
+// unit-tested directly. Wiring into AutoPack/Unpack/Truck-Change is verified by
+// the source-shape assertions further below + the unchanged solver regression.
+// ---------------------------------------------------------------------------
+test('OPERATION-LIFECYCLE allows only one mutating operation at a time', async () => {
+  const { createOperationLifecycle } = await import(`${operationLifecyclePath.href}?t=${Date.now()}-${Math.random()}`);
+  const op = createOperationLifecycle();
+  assert.equal(op.isBusy(), false, 'starts idle');
+  assert.equal(op.currentOperation().kind, 'idle');
+
+  const t1 = op.beginOperation('autopacking', { packId: 'p1' });
+  assert.ok(t1, 'first operation gets a token');
+  assert.equal(op.isBusy(), true);
+  assert.equal(op.currentOperation().kind, 'autopacking');
+
+  // A second operation cannot start while busy.
+  assert.equal(op.beginOperation('unpacking'), null, 'second op blocked while busy');
+  assert.equal(op.beginOperation('changingTruck'), null, 'truck change blocked while busy');
+  assert.equal(op.currentOperation().kind, 'autopacking', 'active op unchanged by blocked attempts');
+});
+
+test('OPERATION-LIFECYCLE finish returns to idle and only the owning token may finish', async () => {
+  const { createOperationLifecycle } = await import(`${operationLifecyclePath.href}?t=${Date.now()}-${Math.random()}`);
+  const op = createOperationLifecycle();
+  const t1 = op.beginOperation('autopacking');
+
+  // A stale/incorrect token cannot finish the active operation.
+  assert.equal(op.finishOperation('op-bogus'), false, 'wrong token cannot finish');
+  assert.equal(op.finishOperation(null), false, 'null token cannot finish');
+  assert.equal(op.isBusy(), true, 'still busy after bogus finish');
+  assert.equal(op.isCurrent(t1), true);
+
+  assert.equal(op.finishOperation(t1), true, 'owning token finishes');
+  assert.equal(op.isBusy(), false, 'idle after finish');
+  assert.equal(op.isCurrent(t1), false, 'old token is no longer current');
+
+  // A second begin yields a DIFFERENT token; the old token can never finish it.
+  const t2 = op.beginOperation('unpacking');
+  assert.notEqual(t2, t1, 'new operation has a fresh token');
+  assert.equal(op.finishOperation(t1), false, 'stale token cannot finish a newer operation');
+  assert.equal(op.isBusy(), true, 'newer operation still active');
+  assert.equal(op.finishOperation(t2), true);
+  assert.equal(op.isBusy(), false);
+});
+
+test('OPERATION-LIFECYCLE assertIdle, subscribe, and invalid kinds behave correctly', async () => {
+  const { createOperationLifecycle, OPERATION_KINDS } = await import(`${operationLifecyclePath.href}?t=${Date.now()}-${Math.random()}`);
+  const op = createOperationLifecycle();
+  assert.equal(OPERATION_KINDS.AUTOPACKING, 'autopacking');
+
+  // Invalid / idle kinds never claim the slot.
+  assert.equal(op.beginOperation('idle'), null, 'idle is not a claimable op');
+  assert.equal(op.beginOperation('nonsense'), null, 'unknown kind cannot claim the slot');
+  assert.equal(op.beginOperation(), null, 'missing kind cannot claim the slot');
+  assert.equal(op.isBusy(), false);
+
+  // assertIdle throws only while busy.
+  assert.doesNotThrow(() => op.assertIdle('should be idle'));
+  const events = [];
+  const unsub = op.subscribe(snap => events.push(snap.kind));
+  assert.equal(events[0], 'idle', 'subscribe fires immediately with current state');
+  const tok = op.beginOperation('capturingPreview');
+  assert.equal(events[events.length - 1], 'capturingPreview', 'subscriber notified on begin');
+  assert.throws(() => op.assertIdle('busy now'), /busy now/, 'assertIdle throws the caller message while busy');
+  assert.throws(() => op.assertIdle(), /progress/, 'assertIdle default message names the conflict');
+  op.finishOperation(tok);
+  assert.equal(events[events.length - 1], 'idle', 'subscriber notified on finish');
+  unsub();
+  op.beginOperation('autopacking');
+  assert.equal(events[events.length - 1], 'idle', 'unsubscribed callback receives no further events');
+});
+
+test('OPERATION-LIFECYCLE is wired into the AutoPack engine and editor unpack/truck paths', async () => {
+  const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  // Engine claims/releases the lifecycle slot around a pack run.
+  assert.match(engineSrc, /OperationLifecycle|operationLifecycle/, 'engine receives the operation lifecycle');
+  assert.match(engineSrc, /beginOperation\(\s*['"]autopacking['"]/, 'engine claims the autopacking slot');
+  assert.match(engineSrc, /finishOperation\(/, 'engine releases the slot when the run ends');
+  // Editor guards unpack and routes truck changes through the lifecycle.
+  assert.match(editorSrc, /beginOperation\(\s*['"]unpacking['"]/, 'unpack claims the unpacking slot');
+  assert.match(editorSrc, /OperationLifecycle|operationLifecycle/, 'editor receives the operation lifecycle');
+});
+
+test('OPERATION-LIFECYCLE: truck dropdowns update pending state and only Update Truck previews', async () => {
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  // The preset/shape dropdown change handlers must NOT call the reconciliation/
+  // preview path directly any more; only the explicit Update-truck commit does.
+  const presetHandler = editorSrc.match(/presetSelect\.addEventListener\('change'[\s\S]{0,400}?\}\);/);
+  assert.ok(presetHandler, 'preset change handler exists');
+  assert.doesNotMatch(presetHandler[0], /applyTruckGeometryChange\(/,
+    'preset change must update pending truck only, not call applyTruckGeometryChange');
+  const shapeHandler = editorSrc.match(/shapeSelect\.addEventListener\('change'[\s\S]{0,1200}?\}\);/);
+  assert.ok(shapeHandler, 'shape change handler exists');
+  assert.doesNotMatch(shapeHandler[0], /applyTruckGeometryChange\(/,
+    'shape change must update pending truck only, not call applyTruckGeometryChange');
+});

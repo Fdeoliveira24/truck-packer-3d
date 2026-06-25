@@ -245,6 +245,7 @@ export function buildAutoPackNextCases(
 export function createAutoPackEngine({
   CaseLibrary,
   CaseScene,
+  OperationLifecycle = null,
   capturePackPreview,
   getActiveOrgIdForBilling,
   getOrgRoleHydrationState,
@@ -337,8 +338,22 @@ export function createAutoPackEngine({
 
   async function pack() {
     if (isRunning) { return; }
+    // Cross-operation guard: do not start AutoPack while Unpack, a truck change,
+    // or a preview capture owns the editor. (The billing gate below is synchronous,
+    // so the slot is actually claimed at `isRunning = true` with no await in between.)
+    if (OperationLifecycle && OperationLifecycle.isBusy()) {
+      UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'AutoPack' });
+      return;
+    }
+    let opToken = null;
     const runWorkspaceGeneration = workspaceGeneration;
-    const isWorkspaceRunStale = () => runWorkspaceGeneration !== workspaceGeneration;
+    // Stale if the workspace/project changed mid-run, OR another operation has taken
+    // over the editor slot. The isBusy() clause is essential: after this run's own
+    // finishOperation() the slot is idle, which is normal completion (not stale) —
+    // so the post-run preview-capture scheduling below still fires.
+    const isWorkspaceRunStale = () =>
+      runWorkspaceGeneration !== workspaceGeneration ||
+      (opToken !== null && OperationLifecycle && OperationLifecycle.isBusy() && !OperationLifecycle.isCurrent(opToken));
 
     // Billing gate: AutoPack requires active Pro subscription.
     try {
@@ -402,6 +417,9 @@ export function createAutoPackEngine({
     }
 
     isRunning = true;
+    // Claim the single mutating-operation slot for the whole run. No await ran
+    // between the isBusy() check above and here, so this cannot lose a race.
+    opToken = OperationLifecycle ? OperationLifecycle.beginOperation('autopacking', { packId }) : null;
     cancelAllTweens();
     const runStartedAt = nowMs();
     let solverMs = 0;
@@ -421,7 +439,7 @@ export function createAutoPackEngine({
         : null;
 
     try {
-      toast('AutoPack starting...', 'info', { title: 'AutoPack', duration: 1800 });
+      toast('Building load plan…', 'info', { title: 'AutoPack', duration: 1800 });
 
       const truck = packData.truck;
       const mode = (truck && truck.shapeMode) ? truck.shapeMode : 'rect';
@@ -465,8 +483,10 @@ export function createAutoPackEngine({
 
       const stagingMap = buildStagingMap(packItems, truck);
       stageInstant(stagingMap);
-      // Let the staged layout paint before the synchronous solver starts. This
-      // prevents large packs from looking frozen at their old positions.
+      // Paint a concrete working state, then yield a frame, BEFORE the synchronous
+      // solver locks the main thread — otherwise large packs look frozen at their
+      // old positions with a stale "starting" toast.
+      toast('Checking fit, stacking, and safety rules…', 'info', { title: 'AutoPack', duration: 4000 });
       await waitForAnimationFrames(2);
       if (isWorkspaceRunStale()) return;
 
@@ -546,6 +566,8 @@ export function createAutoPackEngine({
       animationMetrics.placementCount = packedCount;
       const largeLoadSnap = shouldSnapLargeAutoPackLoad(packedCount);
 
+      toast('Preparing final layout…', 'info', { title: 'AutoPack', duration: 1600 });
+
       const nextCases = buildAutoPackNextCases(
         packData.cases || [],
         placements,
@@ -563,9 +585,9 @@ export function createAutoPackEngine({
         animationMetrics.strategy = 'instant';
         applyScenePoseFromCases(nextCases);
         if (packedCount > 0) {
-          toast('Large load packed instantly for performance.', 'info', {
+          toast('Large load detected. Showing the final layout instantly to keep the editor responsive.', 'info', {
             title: 'AutoPack',
-            duration: 2200,
+            duration: 2600,
           });
         }
       } else {
@@ -594,16 +616,13 @@ export function createAutoPackEngine({
 
       const stats = PackLibrary.computeStats(PackLibrary.getById(packId));
       const totalPackable = (packData.cases || []).filter(i => !i.hidden).length;
+      const stagedCount = Math.max(0, totalPackable - stats.packedCases);
+      const stagedSuffix = stagedCount > 0 ? ` ${stagedCount} moved to staging.` : '';
       UIComponents.showToast(
-        `Packed ${stats.packedCases} of ${totalPackable} (${stats.volumePercent.toFixed(1)}%)`,
+        `Packed ${stats.packedCases} of ${totalPackable} cases (${stats.volumePercent.toFixed(1)}% volume).${stagedSuffix}`,
         stats.packedCases === totalPackable ? 'success' : 'warning',
         { title: 'AutoPack' }
       );
-      if (unpacked.length) {
-        UIComponents.showToast(
-          `${unpacked.length} case(s) could not fit`, 'warning', { title: 'AutoPack' }
-        );
-      }
       if (stats.unresolvedInstances > 0) {
         UIComponents.showToast(
           `${stats.unresolvedInstances} item(s) were excluded — their case definition is missing`,
@@ -653,6 +672,7 @@ export function createAutoPackEngine({
       toast('AutoPack failed', 'error', { title: 'AutoPack' });
     } finally {
       isRunning = false;
+      if (opToken && OperationLifecycle) OperationLifecycle.finishOperation(opToken);
     }
   }
 

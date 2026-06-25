@@ -1492,6 +1492,7 @@ export function createEditorScreen({
   CaseScene,
   InteractionManager,
   TruckChangeController,
+  OperationLifecycle = null,
 }) {
   const EditorUI = (() => {
     const shellEl = /** @type {HTMLElement|null} */ (document.querySelector('.editor-shell'));
@@ -1514,6 +1515,42 @@ export function createEditorScreen({
     const btnPdf = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-pdf'));
     const viewportHintBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('viewport-hint-icon'));
 
+    // Swap a button into a visible "working" state (spinner + label) and back. The
+    // idle markup is captured once so it can be restored exactly. Pairs with the
+    // existing `.btn .fa-spinner` CSS.
+    function setButtonWorking(btn, working, workingLabel) {
+      if (!btn) return;
+      if (working) {
+        if (btn.dataset.idleHtml === undefined) btn.dataset.idleHtml = btn.innerHTML;
+        btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${workingLabel}`;
+        btn.disabled = true;
+        btn.setAttribute('aria-busy', 'true');
+      } else if (btn.dataset.idleHtml !== undefined) {
+        btn.innerHTML = btn.dataset.idleHtml;
+        delete btn.dataset.idleHtml;
+        btn.removeAttribute('aria-busy');
+      }
+    }
+
+    // Single source of truth for the action-bar button states: spinner on the active
+    // operation's button, and every mutating/export control blocked while ANY editor
+    // operation is in flight. Called by render() and by the operation-lifecycle
+    // subscription so the working state appears the instant an operation begins.
+    function refreshActionButtons() {
+      const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+      const op = OperationLifecycle
+        ? OperationLifecycle.currentOperation()
+        : { kind: AutoPackEngine.running ? 'autopacking' : 'idle', busy: AutoPackEngine.running };
+      const busy = Boolean(op.busy);
+      setButtonWorking(btnAutopack, op.kind === 'autopacking', 'Packing…');
+      setButtonWorking(btnUnpack, op.kind === 'unpacking', 'Moving to staging…');
+      if (btnAutopack && op.kind !== 'autopacking') btnAutopack.disabled = !pack || busy;
+      if (btnUnpack && op.kind !== 'unpacking') btnUnpack.disabled = !pack || busy || !(pack && (pack.cases || []).length);
+      if (btnShare) btnShare.disabled = !pack || busy;
+      if (btnPng) btnPng.disabled = !pack || busy;
+      if (btnPdf) btnPdf.disabled = !pack || busy;
+    }
+
     let initialized = false;
     const supportsWebGL = Utils.hasWebGL();
     const browserCats = new Set();
@@ -1523,6 +1560,20 @@ export function createEditorScreen({
     let showCaseFilters = false;
     let caseBrowserGroupBy = 'category';
     let viewportHintOpen = false;
+    // Pending (uncommitted) truck geometry edited via the preset/shape dropdowns.
+    // The committed truck stays pack.truck and the scene keeps rendering it until the
+    // user clicks "Update truck"; this only pre-fills the inspector form. Tagged with
+    // __packId so it is ignored after a pack switch.
+    let pendingTruck = null;
+    function getEffectiveTruck(pack) {
+      return (pendingTruck && pack && pendingTruck.__packId === pack.id) ? pendingTruck : (pack ? pack.truck : null);
+    }
+    function setPendingTruck(pack, nextTruck) {
+      pendingTruck = nextTruck ? { ...nextTruck, __packId: pack.id } : null;
+    }
+    function clearPendingTruck() {
+      pendingTruck = null;
+    }
 
     function setViewportHintOpen(open) {
       if (!viewportHintBtn) return;
@@ -1569,20 +1620,40 @@ export function createEditorScreen({
       btnLeftClose.addEventListener('click', () => setPanelVisible('left', false));
       btnRightClose.addEventListener('click', () => setPanelVisible('right', false));
 
+      // Keep the action-bar working/spinner/disabled states in lockstep with the
+      // authoritative operation lifecycle, so a working state appears the instant any
+      // operation (AutoPack/Unpack/Truck Change/preview capture) begins or ends.
+      if (OperationLifecycle && typeof OperationLifecycle.subscribe === 'function') {
+        OperationLifecycle.subscribe(() => {
+          if (StateStore.get('currentScreen') === 'editor') refreshActionButtons();
+        });
+      }
+
       btnAutopack.addEventListener('click', async () => {
-        btnAutopack.disabled = true;
+        // Cross-operation guard: the engine also rejects, but this avoids even
+        // queueing a run while another operation owns the editor.
+        if (OperationLifecycle && OperationLifecycle.isBusy()) {
+          UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'AutoPack' });
+          return;
+        }
         try {
           await AutoPackEngine.pack();
         } catch (err) {
           console.error('[EditorScreen] AutoPack error:', err);
           UIComponents.showToast('AutoPack failed. Please try again.', 'error');
         } finally {
-          btnAutopack.disabled = false;
           render();
         }
       });
       if (btnUnpack) {
-        btnUnpack.addEventListener('click', () => unpackAll());
+        btnUnpack.addEventListener('click', () => {
+          Promise.resolve()
+            .then(() => unpackAll())
+            .catch(err => {
+              console.error('[EditorScreen] Unpack error:', err);
+              UIComponents.showToast('Unpack failed. Please try again.', 'error', { title: 'Unpack' });
+            });
+        });
       }
       btnPng.addEventListener('click', () => {
         Promise.resolve()
@@ -1663,11 +1734,7 @@ export function createEditorScreen({
       const packId = StateStore.get('currentPackId');
       const pack = PackLibrary.getById(packId);
 
-      btnAutopack.disabled = !pack || AutoPackEngine.running;
-      if (btnUnpack) btnUnpack.disabled = !pack || !(pack && (pack.cases || []).length);
-      if (btnShare) btnShare.disabled = !pack;
-      btnPng.disabled = !pack;
-      btnPdf.disabled = !pack;
+      refreshActionButtons();
 
       if (!pack) {
         SceneManager.setTruck({ length: 636, width: 102, height: 98 });
@@ -2075,41 +2142,67 @@ export function createEditorScreen({
       }
     }
 
-    function unpackAll() {
+    async function unpackAll() {
       const packId = StateStore.get('currentPackId');
       const pack = PackLibrary.getById(packId);
       if (!pack || !(pack.cases || []).length) {
         UIComponents.showToast('Nothing to unpack', 'info');
         return;
       }
-      const acceptedAabbs = [];
-      const nextCases = (pack.cases || []).map(inst => {
-        const c = CaseLibrary.getById(inst.caseId);
-        // Respect any oriented dimensions produced by AutoPack (prevents overlap when
-        // cases were rotated/flipped while packed). Never fabricate dimensions for an
-        // unresolved (dangling) item — leave it untouched rather than invent a cube.
-        const od = inst && inst.orientedDims ? inst.orientedDims : null;
-        const baseDims = od || (c && c.dimensions) || null;
-        if (!baseDims) return inst;
-        const dims = {
-          length: baseDims.length,
-          width: baseDims.width,
-          height: baseDims.height,
-        };
-        const staged = PackLibrary.findSafeStagingPosition(pack, dims, acceptedAabbs);
-        acceptedAabbs.push(staged.aabb);
-        return {
-          ...inst,
-          transform: {
-            ...inst.transform,
-            position: staged.position,
-          },
-          placement: 'staged',
-        };
-      });
-      PackLibrary.update(packId, { cases: nextCases });
-      UIComponents.showToast('All cases moved to staging', 'info', { title: 'Unpack' });
-      render();
+      // Claim the single mutating-operation slot so AutoPack / Truck Change cannot
+      // run concurrently with the (synchronous, O(n^2)) staging computation below.
+      const opToken = OperationLifecycle ? OperationLifecycle.beginOperation('unpacking', { packId }) : null;
+      if (OperationLifecycle && !opToken) {
+        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Unpack' });
+        return;
+      }
+      try {
+        // Paint a working state and yield one frame BEFORE the synchronous staging
+        // pass so large packs do not look frozen.
+        UIComponents.showToast('Organizing staging area…', 'info', { title: 'Unpack' });
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+        // Staleness guard: if the user switched pack/screen during that frame, or a
+        // newer operation took the slot, abort before committing.
+        if (StateStore.get('currentPackId') !== packId || StateStore.get('currentScreen') !== 'editor') return;
+        if (OperationLifecycle && !OperationLifecycle.isCurrent(opToken)) return;
+        const livePack = PackLibrary.getById(packId);
+        if (!livePack) return;
+
+        const acceptedAabbs = [];
+        let movedCount = 0;
+        const nextCases = (livePack.cases || []).map(inst => {
+          const c = CaseLibrary.getById(inst.caseId);
+          // Respect any oriented dimensions produced by AutoPack (prevents overlap when
+          // cases were rotated/flipped while packed). Never fabricate dimensions for an
+          // unresolved (dangling) item — leave it untouched rather than invent a cube.
+          const od = inst && inst.orientedDims ? inst.orientedDims : null;
+          const baseDims = od || (c && c.dimensions) || null;
+          if (!baseDims) return inst;
+          const dims = {
+            length: baseDims.length,
+            width: baseDims.width,
+            height: baseDims.height,
+          };
+          const staged = PackLibrary.findSafeStagingPosition(livePack, dims, acceptedAabbs);
+          acceptedAabbs.push(staged.aabb);
+          movedCount += 1;
+          return {
+            ...inst,
+            transform: {
+              ...inst.transform,
+              position: staged.position,
+            },
+            placement: 'staged',
+          };
+        });
+        if (OperationLifecycle && !OperationLifecycle.isCurrent(opToken)) return;
+        PackLibrary.update(packId, { cases: nextCases });
+        UIComponents.showToast(`Moved ${movedCount} case${movedCount === 1 ? '' : 's'} to staging.`, 'info', { title: 'Unpack' });
+        render();
+      } finally {
+        if (opToken && OperationLifecycle) OperationLifecycle.finishOperation(opToken);
+      }
     }
 
     function renderInspectorNoPack() {
@@ -2594,25 +2687,55 @@ export function createEditorScreen({
     // reconciliation controller. The current render is also the canonical
     // control restoration path for Cancel, X, overlay click, and Escape.
     function applyTruckGeometryChange(pack, nextTruck, successMsg) {
-      return TruckChangeController.request({
-        pack,
-        nextTruck,
-        successMessage: successMsg || 'Truck updated',
-        renderPreview: preview => {
-          if (!preview || !preview.pack || StateStore.get('currentScreen') !== 'editor') return;
-          ensureScene();
-          SceneManager.setTruck(preview.pack.truck);
-          CaseScene.sync(preview.pack);
-          CaseScene.setSelected(StateStore.get('selectedInstanceIds') || []);
-          SceneManager.resize();
-        },
-        onCommitted: () => render(),
-        restoreControls: () => render(),
-      });
+      // Single choke point for every truck-geometry commit (Update truck + the
+      // config-card save buttons). Block while another operation owns the editor,
+      // and hold the lifecycle slot for the duration of the preview modal so AutoPack/
+      // Unpack cannot mutate the pack underneath an open Truck Change.
+      if (OperationLifecycle && OperationLifecycle.isBusy()) {
+        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Truck' });
+        return { status: 'busy' };
+      }
+      const token = OperationLifecycle ? OperationLifecycle.beginOperation('changingTruck', { packId: pack.id }) : null;
+      const release = () => { if (token && OperationLifecycle) OperationLifecycle.finishOperation(token); };
+      let result;
+      try {
+        result = TruckChangeController.request({
+          pack,
+          nextTruck,
+          successMessage: successMsg || 'Truck updated',
+          renderPreview: preview => {
+            if (!preview || !preview.pack || StateStore.get('currentScreen') !== 'editor') return;
+            ensureScene();
+            SceneManager.setTruck(preview.pack.truck);
+            CaseScene.sync(preview.pack);
+            CaseScene.setSelected(StateStore.get('selectedInstanceIds') || []);
+            SceneManager.resize();
+          },
+          onCommitted: () => { clearPendingTruck(); render(); release(); },
+          restoreControls: () => { render(); release(); },
+        });
+      } catch (err) {
+        release();
+        throw err;
+      }
+      // If no preview modal opened (committed/unchanged/failed/invalid), the slot is
+      // released now; for 'preview' it is held until the modal resolves via the
+      // onCommitted / restoreControls callbacks above.
+      if (!result || result.status !== 'preview') {
+        if (result && result.status === 'committed') clearPendingTruck();
+        release();
+      }
+      return result;
     }
 
     function renderTruckInspector(pack, prefs) {
       const lengthUnit = getLengthUnit(prefs);
+      // The dropdowns/dims edit a PENDING truck; the committed truck (and the scene)
+      // only change when the user clicks "Update truck". effectiveTruck pre-fills the
+      // form; truckDirty drives the Update-truck active state.
+      const effectiveTruck = getEffectiveTruck(pack) || pack.truck;
+      const truckDirty = Boolean(pendingTruck && pendingTruck.__packId === pack.id) &&
+        !TruckChangeController.truckGeometryEqual(pack.truck, effectiveTruck);
       const card = document.createElement('div');
       card.className = 'card';
       card.classList.add('tp3d-editor-card-grid-gap-12');
@@ -2663,15 +2786,22 @@ export function createEditorScreen({
         .map(p => `<option value="${String(p.id)}">${String(p.label)}</option>`)
         .join('');
       presetSelect.innerHTML = `<option value="custom">Custom</option>${presetOptions}`;
-      presetSelect.value = inferPresetIdFromTruck(pack.truck);
+      presetSelect.value = inferPresetIdFromTruck(effectiveTruck);
 
       presetSelect.addEventListener('change', () => {
+        // Pending only: pre-fill the form with the preset's geometry. Nothing is
+        // reconciled, previewed, or committed until the user clicks "Update truck".
+        if (OperationLifecycle && OperationLifecycle.isBusy()) {
+          UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Truck' });
+          presetSelect.value = inferPresetIdFromTruck(effectiveTruck);
+          return;
+        }
         const id = String(presetSelect.value || 'custom');
         if (id === 'custom') return;
         const preset = TrailerPresets.getById(id);
         if (!preset) return;
-        const nextTruck = TrailerPresets.applyToTruck(pack.truck, preset);
-        applyTruckGeometryChange(pack, nextTruck, `Applied preset: ${preset.label}`);
+        setPendingTruck(pack, TrailerPresets.applyToTruck(pack.truck, preset));
+        render();
       });
 
       presetWrap.appendChild(presetLabel);
@@ -2696,8 +2826,8 @@ export function createEditorScreen({
 	                <option value="frontBonus">Box + Front Overhang</option>
 	              `;
       shapeSelect.value =
-        pack && pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
-          ? pack.truck.shapeMode
+        effectiveTruck && (effectiveTruck.shapeMode === 'wheelWells' || effectiveTruck.shapeMode === 'frontBonus')
+          ? effectiveTruck.shapeMode
           : 'rect';
       shapeWrap.appendChild(shapeLabel);
       shapeWrap.appendChild(shapeSelect);
@@ -2707,9 +2837,9 @@ export function createEditorScreen({
       const dimsRow = document.createElement('div');
       dimsRow.className = 'row';
       dimsRow.classList.add('tp3d-editor-dims-row');
-      const fL = smallField(`Length (${lengthUnit})`, Utils.inchesToUnit(pack.truck.length, lengthUnit));
-      const fW = smallField(`Width (${lengthUnit})`, Utils.inchesToUnit(pack.truck.width, lengthUnit));
-      const fH = smallField(`Height (${lengthUnit})`, Utils.inchesToUnit(pack.truck.height, lengthUnit));
+      const fL = smallField(`Length (${lengthUnit})`, Utils.inchesToUnit(effectiveTruck.length, lengthUnit));
+      const fW = smallField(`Width (${lengthUnit})`, Utils.inchesToUnit(effectiveTruck.width, lengthUnit));
+      const fH = smallField(`Height (${lengthUnit})`, Utils.inchesToUnit(effectiveTruck.height, lengthUnit));
       [fL.wrap, fW.wrap, fH.wrap].forEach(wrap => wrap.classList.add('tp3d-editor-field-wrap-full'));
       dimsRow.appendChild(fL.wrap);
       dimsRow.appendChild(fW.wrap);
@@ -2718,21 +2848,30 @@ export function createEditorScreen({
       const btnSave = document.createElement('button');
       btnSave.className = 'btn btn-primary';
       btnSave.type = 'button';
-      btnSave.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Update truck';
+      btnSave.innerHTML = truckDirty
+        ? '<i class="fa-solid fa-floppy-disk"></i> Update truck •'
+        : '<i class="fa-solid fa-floppy-disk"></i> Update truck';
       btnSave.classList.add('tp3d-editor-btn-full');
+      if (truckDirty) btnSave.classList.add('tp3d-editor-btn-attention');
       btnSave.addEventListener('click', () => {
+        // Commit the pending/edited geometry. This is the ONLY path that calls the
+        // TruckChangeController (reconciliation + preview); dropdown changes do not.
+        if (OperationLifecycle && OperationLifecycle.isBusy()) {
+          UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Truck' });
+          return;
+        }
         const next = {
-          ...pack.truck,
-          length: Math.max(24, displayLengthToInches(fL.input.value, pack.truck.length, lengthUnit)),
-          width: Math.max(24, displayLengthToInches(fW.input.value, pack.truck.width, lengthUnit)),
-          height: Math.max(24, displayLengthToInches(fH.input.value, pack.truck.height, lengthUnit)),
+          ...effectiveTruck,
+          length: Math.max(24, displayLengthToInches(fL.input.value, effectiveTruck.length, lengthUnit)),
+          width: Math.max(24, displayLengthToInches(fW.input.value, effectiveTruck.width, lengthUnit)),
+          height: Math.max(24, displayLengthToInches(fH.input.value, effectiveTruck.height, lengthUnit)),
           shapeMode:
-            pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
-              ? pack.truck.shapeMode
+            effectiveTruck && (effectiveTruck.shapeMode === 'wheelWells' || effectiveTruck.shapeMode === 'frontBonus')
+              ? effectiveTruck.shapeMode
               : 'rect',
           shapeConfig:
-            pack.truck && pack.truck.shapeConfig && typeof pack.truck.shapeConfig === 'object'
-              ? Utils.deepClone(pack.truck.shapeConfig)
+            effectiveTruck && effectiveTruck.shapeConfig && typeof effectiveTruck.shapeConfig === 'object'
+              ? Utils.deepClone(effectiveTruck.shapeConfig)
               : {},
         };
         // Clamp config values to bounds (safe even if unused)
@@ -2756,17 +2895,25 @@ export function createEditorScreen({
           next.shapeConfig = cfg;
         }
 
+        clearPendingTruck();
         applyTruckGeometryChange(pack, next, 'Truck updated');
       });
 
       shapeSelect.addEventListener('change', () => {
+        // Pending only: pre-fill the form (and surface the matching config card on the
+        // next render). Reconciliation/preview happens when the user clicks Update truck.
+        if (OperationLifecycle && OperationLifecycle.isBusy()) {
+          UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Truck' });
+          shapeSelect.value = effectiveTruck && (effectiveTruck.shapeMode === 'wheelWells' || effectiveTruck.shapeMode === 'frontBonus') ? effectiveTruck.shapeMode : 'rect';
+          return;
+        }
         const mode = String(shapeSelect.value || 'rect');
         const nextTruck = {
-          ...pack.truck,
+          ...effectiveTruck,
           shapeMode: mode === 'wheelWells' || mode === 'frontBonus' ? mode : 'rect',
           shapeConfig:
-            pack.truck && pack.truck.shapeConfig && typeof pack.truck.shapeConfig === 'object'
-              ? Utils.deepClone(pack.truck.shapeConfig)
+            effectiveTruck && effectiveTruck.shapeConfig && typeof effectiveTruck.shapeConfig === 'object'
+              ? Utils.deepClone(effectiveTruck.shapeConfig)
               : {},
         };
 
@@ -2795,9 +2942,10 @@ export function createEditorScreen({
           nextTruck.shapeConfig = cfg;
         }
 
-        // Reconcile every placed instance against the new shape (replaces the old
-        // best-effort out-of-bounds count): keep valid, snap safely, or prompt.
-        applyTruckGeometryChange(pack, nextTruck, `Trailer shape: ${mode === 'wheelWells' ? 'Wheel Wells' : mode === 'frontBonus' ? 'Front Overhang' : 'Standard'}`);
+        // Pending only — store the new shape (with its default config) and re-render
+        // so the matching config card appears. Committing happens on Update truck.
+        setPendingTruck(pack, nextTruck);
+        render();
       });
 
       const statsEl = document.createElement('div');

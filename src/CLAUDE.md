@@ -1,7 +1,25 @@
 # CLAUDE.md — Truck Packer 3D (TP3D) Agent Operating Guide
 
+**Last updated:** 2026-06-25
+
 This file is the single source of truth for how an agent should work inside this repo. It is meant
 for Claude Code, but it also works for any coding agent.
+
+---
+
+## Current project source of truth
+
+- Product TODO source: `docs/product/TP3D-MASTER-TODO-V4.md`.
+- Current stable `main` / `origin/main`: `e9c86c0`.
+- Latest local AutoPack candidate stack, unless already merged separately:
+  - E1 stack/layer quality: `b1be932`
+  - E2A floor/lane/filler quality: `ee566add`
+  - E2B Wheel Wells channel block + contiguous filler stack-follow: `fa4f9c7`
+  - Large-load snap performance safety: `05f56f4`
+  - Operation lifecycle UX base: `1519140`
+  - Pending amendment target: direct editor mutation guards and pending-truck config rendering before merge
+- Current active work is AutoPack quality/performance/operation lifecycle. Billing/auth/workspace/Supabase remain high-risk P0 areas, but they are not the active phase unless the user explicitly changes scope.
+- Do not start Wheel Wells bridge support, Front Overhang wall-building, manual vertical placement, organized Unpack, Web Worker/chunking, or InstancedMesh/LOD until the current AutoPack quality/performance/operation lifecycle stack is validated and merged.
 
 ---
 
@@ -56,13 +74,17 @@ For small phase work:
 - If a file is dirty but unrelated, report it and leave it alone.
 - Do not spend context budget proving facts already shown by terminal output in the current task.
 
-For Phase 0.7C folder UI work, the default scope is:
+For current AutoPack operation lifecycle work, the default scope is:
 
-- `src/screens/packs-screen.js`
+- `src/core/operation-lifecycle.js`
+- `src/services/autopack-engine.js`
+- `src/screens/editor-screen.js`
+- `src/ui/truck-change-controller.js`
+- `src/app.js` only for lifecycle wiring / keyboard shortcuts / app-level operation guards
 - `tests/audit/security-and-invariants.spec.mjs`
-- `styles/main.css` only for the polish/CSS phase
+- `styles/main.css` only for small busy/spinner styling
 
-Do not inspect or edit auth, billing, Supabase, Stripe, workspace lifecycle, storage, router, package files, or docs for 0.7C unless the user explicitly changes the scope.
+Do not inspect or edit auth, billing, Supabase, Stripe, workspace lifecycle, storage, router, package files, docs, solver geometry, or saved/import/export schema for operation lifecycle work unless the user explicitly changes the scope.
 
 ### 1.2 Workflow: Locate the real source
 
@@ -89,6 +111,20 @@ Add guard rails when the bug is caused by timing, repeated events, or async race
 - Timeouts where requests can hang
 - “epoch” or “version” checks for stale async results
 - Debounce/throttle for noisy events
+
+### 1.4A Workflow: Operation lifecycle guard rails
+
+AutoPack, Unpack, Truck Change, preview capture, and animation are mutually disruptive editor operations. A visual spinner is not enough; the code must prevent stale or overlapping mutations.
+
+Rules:
+
+- Use one authoritative operation lifecycle/lock for mutating editor operations.
+- Guard all mutating paths, not only toolbar buttons.
+- Mutating paths include AutoPack, Unpack, Update Truck, truck preset/mode/shape/config changes, drag, rotate, nudge, delete, add, duplicate, paste, keyboard shortcuts, export/share if state can be unstable, and preview capture.
+- Do not block camera orbit/pan/zoom or read-only inspection unless a specific bug requires it.
+- A stale operation token must not be able to finish or overwrite a newer operation.
+- Large-load AutoPack may snap to final layout for performance, but final saved state must never depend on animation completion.
+- During synchronous solver work, true cancel is not available without later architecture work. Do not fake live progress or cancel behavior that the code cannot safely honor.
 
 ### 1.5 Workflow: Validate
 
@@ -260,6 +296,18 @@ If you need rehydration, do it:
 - with a short delay
 - and only if needed
 
+### 4.5 Pending truck vs committed truck
+
+Truck edit form state and committed scene state are separate.
+
+Rules:
+
+- Changing truck preset/mode/shape/config should update pending form state only.
+- Do not open the Truck Change preview modal until the user explicitly clicks **Update truck**.
+- Pending config controls should render for the pending truck type. Example: selecting Wheel Wells should show Wheel Wells settings in the form before commit.
+- The 3D scene should keep showing the committed truck until Update Truck is confirmed.
+- Cancel/X/Escape from the Truck Change preview must restore the committed truck, scene, and form state.
+
 ---
 
 ## **Look for existing tools first**
@@ -331,6 +379,9 @@ Common areas you will touch:
 - `src/core/*`  
   State store, session, storage, events, defaults.
 
+- `src/core/operation-lifecycle.js`  
+  Single-operation lifecycle guard for mutating editor workflows. Use it to prevent overlapping AutoPack, Unpack, Truck Change, preview capture, and direct editor mutations.
+
 - `src/services/*`  
   Data services for cases, packs, import/export, preferences.
 
@@ -339,18 +390,18 @@ When changing behavior, prefer editing the “owner” layer:
 - UI bug → overlay module or app wiring
 - Auth/session bug → `supabase-client.js`
 - State bug → state-store or normalizer
+- AutoPack/Unpack/Truck Change lifecycle bug → operation-lifecycle, editor-screen, autopack-engine, truck-change-controller, and app wiring only
+- Solver geometry/packing-quality bug → autopack-solver/autopack-engine only after operation lifecycle work is validated and merged
 
 ---
 
-## Core principles
+## Current AutoPack phase cautions
 
-1. Fix root causes
-2. Keep changes small
-3. Guard async code against races
-4. Respect offline and hidden tab conditions
-5. Avoid duplicate listeners and duplicate network calls
-6. Never leak secrets into logs
-7. Prefer simple code that the next person can follow
+- E1/E2A/E2B and the large-load snap fix are useful progress, but do not merge an operation lifecycle branch unless direct editor mutations are also guarded.
+- InteractionManager and global shortcuts must respect the operation lifecycle lock. Drag, rotate, nudge, delete, duplicate, paste, and add-case actions cannot mutate while AutoPack, Unpack, Truck Change, or preview capture is active.
+- The large-load snap fix (`> 300` packed placements) is a performance safety foundation, not a final solver performance solution. The solver can still block the main thread on 800–1200+ cases. Web Worker/chunking and InstancedMesh/LOD are later architecture phases.
+- Do not implement Wheel Wells bridge/spanning support until the lifecycle stack is merged. Current behavior: wheel-well shelves support cases that fit the shelf; wider cases need a future explicit bridge/support contract.
+- Do not implement Front Overhang wall-building until the lifecycle stack is merged. Current behavior: C2 safely requires rear retention before loading the raised deck; a future strategy must build the retaining wall first.
 
 ---
 

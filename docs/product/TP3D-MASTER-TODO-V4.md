@@ -6,14 +6,55 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `3dc9a3b` |
-| Active branch | `docs/cargo-rule-integrity-final-reconciliation` (Repair 1E docs) |
-| Active phase | **Repair 1E — Wheel Wells front-first stack scoring merged** (`3dc9a3b`). The live stack-candidate score put `wasteArea` before `xPrimary`, so center/rear supports could be filled while valid front supports stayed empty (most visible in Wheel Wells). The tuple is now `[bottomY, -supportFraction, xPrimary, wasteArea, minZ]` — front wins before waste; hard rules unchanged. Verified with production Standard Carton 24 at 188/420 in Wheel Wells (front supports filled before center/rear on the partial top layer; safe, supported, deterministic); **signed-in editor sign-off still pending.** Follows Repair 1D (`c47d9ef`) — see **Repair 1E** + **Repair 1D** below |
-| Next planned phase | Repair 2+ (not started); 5B AutoPack realism/compaction — **blocked until independent validation passes** |
-| Waiting for | Independent Codex re-validation; signed-in interactive browser sign-off showing both staged Long Beams resting correctly, plus AutoPack orientation in all three truck modes (visible 3D, collision/containment/Stats/OOG agreement, drag/rotate/flip) **and** the still-open 3B + 5A editor checklist — all 🔄 |
-| Do not start simultaneously | Stripe/billing patches, auth/membership/workspace/security work, AutoPack realism (5B), Repair 2+, or any deferred cargo rule (Fragile/stackingPolicy/floorOnly/multi-stop/strategies) |
+| Stable main commit | `e9c86c0` |
+| Active branch | `fix/autopack-large-load-animation-safety` (local, not merged/pushed) |
+| Active phase | **AutoPack Quality + Performance Stack**. E1/E2A/E2B are locally green and performance commit `05f56f4` snaps large loads safely when packed placement count is `> 300`. The performance fix prevents long 55–83s animation paths and writes final packed state before animation, but manual testing still shows a 10–20s silent/blocked solve/render period, confusing operation messages, no visible cancel/stop flow, Unpack delay, and Truck Change modal timing issues. |
+| Next planned phase | **Operation UX + concurrency-control audit** before any code/UI changes. Goal: define a safe lifecycle for AutoPack, Unpack, Truck Change, preview capture, animation cancellation, button working states, cancel/restore behavior, and large-load messaging. |
+| Waiting for | Read-only Claude audit of AutoPack/Unpack/Truck Change operation lifecycle. Do not implement new UI/code until the audit identifies exact root causes, affected files, minimal safe plan, and tests. |
+| Do not start simultaneously | Wheel-well bridge/spanning support, Front Overhang retaining-wall strategy, manual vertical case placement, organized Unpack layout, Web Worker refactor, InstancedMesh/LOD, Stripe/billing patches, auth/membership/workspace/security work, or broad AutoPack strategy/multi-result work. |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
+
+> **Current source-of-truth note (2026-06-24):** `main` / `origin/main` are at `e9c86c0`. E1/E2A/E2B plus the large-load snap performance fix are still local branch work unless merged separately. Treat `fix/autopack-large-load-animation-safety` at `05f56f4` as the latest AutoPack quality/performance candidate. The next work must be a read-only operation lifecycle audit, not solver geometry.
+## AutoPack Quality Wave — Front Overhang, Wheel Wells, Layer Quality, Performance, and Operation UX (2026-06-24)
+
+### Status summary
+- ✅ **Merged to main (`e9c86c0`)**: Phase C/C2/D + truck-change preview cleanup. The raised Front Overhang deck is no longer treated as immediately usable; it requires rear retention. Truck layout changes now render an ephemeral preview instead of showing the old load behind a new-truck modal.
+- 🔄 **Local branch, not merged**: E1/E2A/E2B AutoPack quality stack + large-load snap performance fix. Current candidate branch: `fix/autopack-large-load-animation-safety` at `05f56f4`.
+- 🟡 **Safe to keep, but not final UX**: E1 `b1be932`, E2A `ee566add`, E2B `fa4f9c7`, and performance `05f56f4` are automated-test green and improve correctness/performance. However, manual testing shows operation UX is still not acceptable for large loads: the UI can sit on “AutoPack starting…” for 10–20 seconds, Unpack can feel delayed, truck-change previews can appear too early, and active animations/operations need lifecycle control.
+- ⚠️ **Next required audit**: AutoPack/Unpack/Truck Change operation lifecycle and concurrency control. Do not make UI/code changes until this audit is complete.
+
+### What is fixed in the current candidate
+- **Standard mode**: identical 24×18×16, cube, and 42×10×16 cases are now mostly clean. Remaining rear empty space for partial loads is expected unused trailer length, not a solver gap.
+- **Wheel Wells**: the channel can be a clean primary block plus a valid alternate-yaw filler strip when the geometry requires it. E2B prevents channel stack drift by making upper channel layers follow the footprint below.
+- **Front Overhang safety**: deck cargo requires a rear retaining wall at the step. Unsafe deck-first loading was stopped.
+- **Truck-change preview**: modal and scene now describe the same proposed truck/cargo state; failed items are staged in preview and raw UUIDs are not shown as primary user-facing labels.
+- **Large-load snap safety**: loads with more than 300 packed placements now skip long per-object animation and write final packed state before animation. This is a safety/performance foundation, not the final operation UX.
+
+### Known remaining issues / decisions
+1. ⚠️ **Operation lifecycle / UX concurrency gap** — AutoPack, Unpack, Truck Change, preview capture, and animation can still feel unsynchronized. Large loads may show “AutoPack starting…” with no visible progress for 10–20 seconds, Unpack can delay, Truck Change can open preview before explicit Update, and users have no clear stop/cancel behavior. Audit before implementation.
+2. ⚠️ **Large-load performance still has a synchronous solve/render wait** — the long animation path is skipped after `05f56f4`, but solving/building/rendering many cases can still block the main thread. The next fix should improve perceived responsiveness and operation messaging before deeper architecture like Web Workers.
+3. ⬜ **Wheel-well bridge/spanning support** — wheel-well shelf placement already works when a case fits the shelf, but 24×18×16 does not fit the default ~15.3in shelf. Missing feature: allow a case to safely bridge across wheel-well top + adjacent supported cargo/zone area without floating or colliding with the wheel-well body.
+4. ⬜ **Front Overhang wall-building strategy** — C2 blocks unsafe deck usage, but the solver does not intentionally build the retaining wall first and then fill the deck. The deck can remain unused until this strategy exists.
+5. ⬜ **Manual vertical placement** — user needs to select a case, move it up/down, snap it onto another case, and leave it there if support/collision/stack/orientation rules pass.
+6. ⬜ **Organized Unpack** — unpack should create clean grouped staging rows, not random scattered placement.
+
+### Current AutoPack implementation order
+1. 🔄 **Merge E1/E2A/E2B + large-load snap only after operation validation** — keep the stack if validation/manual review passes, but do not merge while lifecycle UX is unclear.
+2. ⬜ **Operation UX + concurrency-control audit** — define the safe lifecycle for AutoPack, Unpack, Truck Change, preview capture, animation cancellation, button working states, cancel/restore behavior, and large-load copy.
+3. ⬜ **Operation UX + concurrency-control implementation** — visible working states, prevent repeat clicks, stop/cancel rules, explicit Truck Update behavior, safe animation cancellation, delayed preview capture, and Unpack busy state.
+4. ⬜ **Wheel-well bridge support** — add explicit static support surfaces and bridge/span validation under a dedicated wheel-well contract.
+5. ⬜ **Front Overhang wall-building** — create retaining wall first, validate it, then populate the deck.
+6. ⬜ **Manual vertical placement** — allow rule-validated vertical drag/snap/place.
+7. ⬜ **Organized Unpack** — clean grouped staging layout.
+
+### Important product rules from recent audits
+- A layout can pass containment/collision/support tests and still fail product quality. Hard-rule validity and load-planning quality must both be evaluated.
+- Do not remove alternate yaw in Wheel Wells when it fills real usable floor space. Instead, keep it as an organized contiguous filler strip.
+- Do not treat Wheel Wells as only blockers. Their tops are raised support surfaces for cases that fit, and future bridge support should allow wider cases only when enough base support exists.
+- Do not treat Front Overhang as free floor. Deck loading requires rear retention; future strategy must build that retention first.
+- Large-load animation must not be required for the data model to reach its final packed state.
+- AutoPack, Unpack, and Truck Change are mutually disruptive operations. The UI may show active progress/spinners, but the code must prevent repeated operations, stale animations, premature truck-change reconciliation, and final-state dependence on animation completion.
 
 > **Safety constants unchanged:** `CONTAINMENT_EPS_INCHES = 0.05`, `MIN_SUPPORT_FRACTION = 0.5`. No billing/auth/workspace/membership/security/Supabase code was touched.
 
@@ -679,6 +720,20 @@ Release-gate items block **public launch**, not isolated product development. Pr
 4. Stacking score correction — ✅ audited: the alleged flat `STACKING_BONUS` does not exist; active scoring is lexicographic and lower-first (see 5A)
 5. Full A1 realism and compaction audit — next, after 5A browser spot-check
 
+### 5Q — Current AutoPack Quality / Performance / Operation Queue (2026-06-24)
+| Status | Item | Evidence / Notes |
+|--------|------|------------------|
+| 🔄 | **E1 — Standard/Wheel Wells layer and stack quality** | Local branch `fix/autopack-layer-quality-e1`, SHA `b1be932`; improves same-case stack orientation/layer-follow and increases placement in Standard/Wheel Wells stress tests. Not merged unless included through E2B stack. |
+| 🔄 | **E2A — Floor/lane/filler layout quality outside Front Overhang** | Local branch `fix/autopack-floor-quality-e2a`, SHA `ee566add`; fixes scorer gate for ordinary floor/lane/filler paths; safe and surgical, but large Wheel Wells loads still dominated by repeated-grid/channel behavior. |
+| 🔄 | **E2B — Wheel Wells channel block + contiguous filler stack-follow** | Local branch `fix/autopack-wheelwells-channel-e2b`, SHA `fa4f9c7`; keeps valid channel filler, organizes stack layers to follow the channel footprint, placement non-decreasing, Wheel Wells 800 improves 701→706, Standard/Front Overhang unchanged. Awaiting final validation/merge decision. |
+| 🔄 | **Large-load snap performance / animation safety** | Local branch `fix/autopack-large-load-animation-safety`, SHA `05f56f4`; loads with more than 300 packed placements snap to final placement, bypass long row-aware animation, and write final state before animation. Automated validation is green, but manual UX still shows a silent synchronous wait. |
+| ⚠️ | **Operation UX + concurrency control audit** | Next read-only phase. Audit AutoPack/Unpack/Truck Change lifecycle, button working states, cancel/restore behavior, animation cancellation, preview-capture timing, stale-run protection, and copy. Do not implement before audit. |
+| ⬜ | **Operation UX + concurrency control implementation** | After audit only. Add polished working states/spinners, prevent repeated clicks, stop/cancel where safe, require explicit Update Truck before preview, cancel active animation on new operations, and improve Unpack large-load responsiveness. |
+| ⬜ | **Wheel-well bridge/spanning support** | Wheel-well shelf support exists only for cases that fit fully inside the shelf. Missing: validated bridge over wheel well + adjacent supported cargo. Keep separate from performance and Front Overhang. |
+| ⬜ | **Front Overhang wall-building strategy** | C2 safety gate exists; solver still needs to intentionally build retaining wall then load the deck. |
+| ⬜ | **Manual vertical placement / snap-on-top** | User can choose a box, move it up/down, snap onto a valid support, and leave it if all hard rules pass. Requires editor interaction, support validation, collision feedback, and undo/redo. |
+| ⬜ | **Organized Unpack** | Unpack should generate grouped staging rows/blocks instead of scattered layout. |
+
 ### 5A — Near-Term Correctness Fixes
 | Status | Item |
 |--------|------|
@@ -694,23 +749,28 @@ Release-gate items block **public launch**, not isolated product development. Pr
 ### 5B — Deep AutoPack Realism Review (Phase A1)
 *Do not start until 5A correctness fixes and 3B epsilon unification are complete.*
 
+**2026-06-23 update:** the current realism work is no longer a single broad 5B phase. It has been split into focused E-phases above. Do not run a broad AutoPack rewrite. Keep fixes scoped: E2B quality stack, then performance, then wheel-well bridge support, then Front Overhang wall-building.
+
 | Status | Item |
 |--------|------|
-| 🚫 | Improve compaction and reduce unused gaps — blocked on 3B |
-| ⬜ | Review scoring order and candidate selection |
-| ⬜ | Review repeated floor batches |
-| ⬜ | Review heavy-on-bottom behavior |
-| ⬜ | Review fragile-item protection (fragile flag → top layer only) |
-| ⬜ | Review support-area requirements |
-| ⬜ | Review max stack height enforcement |
-| ⬜ | Review orientation constraints |
-| ⬜ | Review weight distribution |
-| ⬜ | Review axle-zone balancing |
-| ⬜ | CoG as a penalty in AutoPack scoring (cross-ref: 6C) |
-| ⬜ | Produce multiple valid packing results (like TruckPacker's 5 parallel algorithms) |
-| ⬜ | Keep deterministic output where required |
-| ⬜ | Verify Standard, Wheel Wells, Front Overhang, containers, and future space types |
-| ⬜ | Replace weak source-pattern tests with runtime behavior tests |
+| 🔄 | E1/E2A/E2B AutoPack quality stack — implemented locally through `fa4f9c7`; awaiting final validation/merge decision | |
+| ⚠️ | Large-load AutoPack animation/performance: skip/cap animation and commit final state safely before or independent of long animation | |
+| ⬜ | Wheel-well bridge/spanning support: model wheel-well tops as static support surfaces and allow safe bridge placements only under explicit support/span constraints | |
+| ⬜ | Front Overhang wall-building strategy: build retaining wall first, then fill retained raised deck | |
+| ⬜ | Review scoring order and candidate selection | |
+| ⬜ | Review repeated floor batches | |
+| ⬜ | Review heavy-on-bottom behavior | |
+| ⬜ | Review fragile-item protection (fragile flag → top layer only) | |
+| ⬜ | Review support-area requirements | |
+| ⬜ | Review max stack height enforcement | |
+| ⬜ | Review orientation constraints | |
+| ⬜ | Review weight distribution | |
+| ⬜ | Review axle-zone balancing | |
+| ⬜ | CoG as a penalty in AutoPack scoring (cross-ref: 6C) | |
+| ⬜ | Produce multiple valid packing results (like TruckPacker's 5 parallel algorithms) | |
+| ⬜ | Keep deterministic output where required | |
+| ⬜ | Verify Standard, Wheel Wells, Front Overhang, containers, and future space types | |
+| ⬜ | Replace weak source-pattern tests with runtime behavior tests | |
 
 ### 5C — AutoPack Strategy Controls (Future)
 *Keep strategy IDs out of schema until 5A and 5B are stable.*

@@ -2584,6 +2584,144 @@ test('G2-SHAPE-CONTRACT a box visually inside the outer trailer box but inside a
     'the same box must be classified outside the shape-aware usable zones');
 });
 
+// ============================================================================
+// WHEEL WELLS: physical obstacle / support / contact / stability contract.
+// Fixed real-truck geometry (240x96x96 with an 18-high, 12-wide, 60-long well
+// pair offset 60 from the rear) so the well dimensions are NEVER resized to fit
+// cargo — the solver must respect the actual truck geometry. Derived geometry:
+//   wx0=60 wx1=120  betweenHalfW=36  wellHeight=18
+//   blocked bodies: x[60,120] y[0,18] z[-48,-36] and z[36,48]
+//   well tops (y=18):           x[60,120] z[-48,-36] and z[36,48]
+//   inner side faces (lateral): x[60,120] y[0,18]   z=-36 and z=36
+// ============================================================================
+function wwAabb(minX, minY, minZ, maxX, maxY, maxZ) {
+  return { min: { x: minX, y: minY, z: minZ }, max: { x: maxX, y: maxY, z: maxZ } };
+}
+const WW_SUPPORT_TRUCK = {
+  length: 240, width: 96, height: 96, shapeMode: 'wheelWells',
+  shapeConfig: { wellHeight: 18, wellWidth: 12, wellLength: 60, wellOffsetFromRear: 60 },
+};
+
+test('WHEELWELL-SUPPORT geometry models blocked body, tops, and inner sides from active shapeConfig (not hardcoded)', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const geo = Solver.getWheelWellGeometry(WW_SUPPORT_TRUCK);
+  assert.ok(geo, 'a wheelWells truck yields physical wheel-well geometry');
+  assert.equal(geo.wx0, 60, 'well start computed from wellOffsetFromRear');
+  assert.equal(geo.wx1, 120, 'well end computed from offset + wellLength');
+  assert.equal(geo.wellHeight, 18, 'well height comes from active shapeConfig');
+  assert.equal(geo.betweenHalfW, 36, 'channel half-width = width/2 - wellWidth');
+  assert.equal(geo.blocked.length, 2, 'two blocked well bodies');
+  assert.equal(geo.tops.length, 2, 'two well-top support rectangles');
+  assert.equal(geo.tops[0].min.y, 18, 'top slab sits at the well height');
+  // Different geometry => different surfaces (proves dynamic, not hardcoded).
+  const taller = Solver.getWheelWellGeometry({
+    ...WW_SUPPORT_TRUCK, shapeConfig: { wellHeight: 24, wellWidth: 12, wellLength: 60, wellOffsetFromRear: 60 },
+  });
+  assert.equal(taller.wellHeight, 24, 'geometry tracks the active truck config');
+  // Non-wheelWells trucks never produce geometry — every other mode is untouched.
+  assert.equal(Solver.getWheelWellGeometry({ length: 240, width: 96, height: 96, shapeMode: 'rect' }), null);
+  assert.equal(Solver.getWheelWellGeometry({ length: 240, width: 96, height: 96, shapeMode: 'frontBonus' }), null);
+});
+
+test('WHEELWELL-SUPPORT rejects placements intersecting the blocked body using the full AABB, not a centre-only test', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const geo = Solver.getWheelWellGeometry(WW_SUPPORT_TRUCK);
+  // Box bottom sitting inside the blocked well volume.
+  const insideBody = wwAabb(80, 0, -46, 100, 10, -38);
+  assert.equal(Solver.aabbIntersectsWheelWellBody(insideBody, geo), true, 'box bottom inside the blocked volume is detected');
+  assert.equal(Solver.isAabbWithinTruckMinusBlocked(insideBody, geo), false, 'and is therefore not within truck-minus-blocked');
+  // Centre-only false positive: centre at z=-28 is OUTSIDE the blocked z-range,
+  // but the footprint still overlaps the body — must be rejected on the AABB.
+  const centreClears = wwAabb(80, 0, -40, 100, 10, -16);
+  assert.ok(-28 > -36, 'sanity: the box centre is outside the blocked z-range');
+  assert.equal(Solver.aabbIntersectsWheelWellBody(centreClears, geo), true,
+    'a box whose centre clears the well but whose footprint overlaps the body is rejected');
+  // A clean channel box that stops short of the inner face never intersects.
+  const clean = wwAabb(60, 0, -34, 120, 18, -12);
+  assert.equal(Solver.aabbIntersectsWheelWellBody(clean, geo), false, 'a box that stops at the channel does not intersect');
+  assert.equal(Solver.isAabbWithinTruckMinusBlocked(clean, geo), true, 'and is contained in the usable space');
+});
+
+test('WHEELWELL-SUPPORT direct top support: a small box fully fits the well top; a wider box is not treated as fully supported', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const geo = Solver.getWheelWellGeometry(WW_SUPPORT_TRUCK);
+  // Small box whose whole footprint lands on the left well top (z[-48,-36]).
+  const small = wwAabb(80, 18, -47, 100, 28, -37);
+  const sSupport = Solver.computeWheelWellSupport(small, [], geo, { weight: 10 });
+  assert.ok(Math.abs(sSupport.fraction - 1) < 1e-6, 'small box is fully supported by the well top');
+  assert.equal(Solver.isWheelWellSupportedAndStable(small, [], geo, { weight: 10 }), true, 'small box may rest directly on the top');
+  assert.equal(Solver.isAabbWithinTruckMinusBlocked(small, geo), true, 'resting flush on the top does not enter the body');
+  // Wider box: 24 wide over a 12-wide top, half hanging over the open channel.
+  const wide = wwAabb(80, 18, -48, 100, 28, -24);
+  const wSupport = Solver.computeWheelWellSupport(wide, [], geo, { weight: 10 });
+  assert.ok(wSupport.fraction < 1, 'wider box is NOT treated as fully supported by the top');
+  assert.ok(Math.abs(wSupport.fraction - 0.5) < 1e-6, 'only the well-top half of the footprint bears');
+  assert.equal(Solver.isWheelWellSupportedAndStable(wide, [], geo, { weight: 10 }), false,
+    'support fraction meets MIN_SUPPORT_FRACTION yet the half-channel cantilever fails the overhang/tip rule');
+});
+
+test('WHEELWELL-SUPPORT combined support: a wider box is accepted when well top + adjacent cargo is stable, rejected without it', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const geo = Solver.getWheelWellGeometry(WW_SUPPORT_TRUCK);
+  // Adjacent cargo in the channel whose top is flush with the well top (y=18).
+  const support = { aabb: wwAabb(60, 0, -36, 120, 18, -12), item: { weight: 200 } };
+  const candidate = wwAabb(80, 18, -48, 100, 28, -24); // spans top z[-48,-36] + cargo top z[-36,-12]
+  const combined = Solver.computeWheelWellSupport(candidate, [support], geo, { weight: 30 });
+  assert.ok(Math.abs(combined.fraction - 1) < 1e-6, 'well top + adjacent cargo fully supports the footprint');
+  assert.equal(Solver.isWheelWellSupportedAndStable(candidate, [support], geo, { weight: 30 }), true,
+    'a wider box may bridge the well top onto adjacent supported cargo');
+  assert.equal(Solver.isWheelWellSupportedAndStable(candidate, [], geo, { weight: 30 }), false,
+    'the same box is rejected when the adjacent support is missing (it would float over the channel)');
+});
+
+test('WHEELWELL-SUPPORT lateral side contact is detected without collision and never substitutes for vertical support', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const geo = Solver.getWheelWellGeometry(WW_SUPPORT_TRUCK);
+  // Box flush against the left inner side face (z=-36) without entering the body.
+  const flush = wwAabb(60, 0, -36, 120, 18, -12);
+  assert.ok(Solver.countWheelWellSideContacts(flush, geo) >= 1, 'flush lateral contact is detected');
+  assert.equal(Solver.aabbIntersectsWheelWellBody(flush, geo), false, 'lateral contact does not penetrate the body');
+  // A box that crosses the inner face into the body is a collision.
+  const penetrate = wwAabb(60, 0, -40, 120, 18, -16);
+  assert.equal(Solver.aabbIntersectsWheelWellBody(penetrate, geo), true, 'crossing the inner face into the body is rejected');
+  // Lateral contact ALONE (no support beneath) is never enough vertical support.
+  const floatingBeside = wwAabb(60, 6, -36, 120, 18, -12); // hovering in the channel, nothing under it
+  assert.ok(Solver.countWheelWellSideContacts(floatingBeside, geo) >= 1, 'still touches the side face laterally');
+  assert.equal(Solver.isWheelWellSupportedAndStable(floatingBeside, [], geo, { weight: 10 }), false,
+    'a box with side contact but no vertical support would fall and is rejected');
+});
+
+test('WHEELWELL-SUPPORT bridge pass is opt-in: default OFF stays deterministic, ON only adds body-safe, non-overlapping, in-bounds placements', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const zones = PackLib.getTrailerUsableZones(WW_SUPPORT_TRUCK);
+  const itemSpec = { caseId: 'A', dims: { l: 24, w: 18, h: 16 }, orientationLock: 'any', canFlip: false, weight: 30 };
+  const items = Array.from({ length: 300 }, (_, i) => ({ ...itemSpec, instanceId: `i${i}` }));
+
+  const off = Solver.solveAutoPack({ truck: WW_SUPPORT_TRUCK, zones, loadFrontFirst: true, items });
+  const offAgain = Solver.solveAutoPack({ truck: WW_SUPPORT_TRUCK, zones, loadFrontFirst: true, items });
+  assert.equal(JSON.stringify([...off.placements]), JSON.stringify([...offAgain.placements]),
+    'default output (bridge OFF) is deterministic');
+
+  const on = Solver.solveAutoPack({ truck: WW_SUPPORT_TRUCK, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+  assert.ok(on.placements.size >= off.placements.size, 'the bridge pass is additive — it never drops placements');
+
+  const geo = Solver.getWheelWellGeometry(WW_SUPPORT_TRUCK);
+  const aabbs = [];
+  for (const [id, pos] of on.placements) {
+    const od = on.orientedDims.get(id);
+    const aabb = Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
+    assert.equal(Solver.aabbIntersectsWheelWellBody(aabb, geo), false, `${id} never sinks into the wheel-well body`);
+    assert.equal(Solver.isAabbWithinTruckMinusBlocked(aabb, geo), true, `${id} stays inside truck-minus-blocked`);
+    aabbs.push(aabb);
+  }
+  for (let i = 0; i < aabbs.length; i++) {
+    for (let j = i + 1; j < aabbs.length; j++) {
+      assert.equal(Solver.aabbsOverlap(aabbs[i], aabbs[j]), false, 'bridge-enabled placements never overlap');
+    }
+  }
+});
+
 test('G2-SHAPE-CONTRACT frontBonus main zone spans the full main box from x=0 to x=truck.length', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = {
@@ -5553,7 +5691,7 @@ test('AUTO-PACK-A1-R6.3 validation rejects get a strict repack attempt before st
   const src = await fs.readFile(autoPackSolverPath, 'utf8');
   assert.match(src, /function repackRejectedPlacements\(\s*output,\s*accepted,\s*rejected,\s*zones,\s*loadFrontFirst,\s*frontSurfaceFirst = false,\s*retentionContext = null\s*\)/,
     'solver must include a bounded repack pass for validation rejects');
-  assert.match(src, /validatePackedPlacements\(output, packed, floorZones, \{\s*stageRejected: false,\s*retentionContext,\s*\}\)/,
+  assert.match(src, /validatePackedPlacements\(output, packed, floorZones, \{\s*stageRejected: false,\s*retentionContext,\s*wheelWell,\s*\}\)/,
     'initial validation must identify rejected placements before staging them');
   assert.match(src, /repackRejectedPlacements\(\s*output,\s*initialValidation\.accepted,\s*initialValidation\.rejected,/,
     'validation rejects must flow through the repack helper');

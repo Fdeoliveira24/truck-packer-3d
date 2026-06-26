@@ -15,6 +15,11 @@ const LONG_MIN_IN = 96;
 const HEAVY_LBS = 150;
 const FILLER_IN3 = 6000;
 const MIN_SUPPORT_FRACTION = 0.5;
+// Wheel-well stability: even with the centre of mass over support, a box may not
+// cantilever more than this fraction of its own length/width beyond the supported
+// area on any single side. Rejects unrealistic "balanced on an edge" overhangs
+// over the open channel/void that pure COM statics would otherwise permit.
+const MAX_WHEELWELL_OVERHANG_FRACTION = 1 / 3;
 const CONTACT_EPS = 0.05;
 const FREE_RECT_EPS = 0.05;
 const BASE_ANCHOR_CAP = 18;
@@ -1872,6 +1877,12 @@ function validatePackedPlacements(output, packed, zones) {
   const options = arguments[3] || {};
   const stageRejected = options.stageRejected !== false;
   const retentionContext = options.retentionContext || null;
+  // wheelWells geometry (null for every other mode). When present, containment
+  // becomes the exact "inside truck box minus blocked well bodies" test and the
+  // rigid wheel-well tops are admissible support — strictly ADDITIVE: every
+  // single-zone-contained placement still passes exactly as before, only safe
+  // bridge/top placements gain acceptance.
+  const wheelWell = options.wheelWell || null;
   const accepted = [];
   const rejected = [];
 
@@ -1883,13 +1894,20 @@ function validatePackedPlacements(output, packed, zones) {
     : packed;
   for (const placement of validationOrder) {
     let reason = '';
-    if (!isAabbContainedInAnyZone(placement.aabb, zones)) {
+    if (wheelWell && aabbIntersectsWheelWellBody(placement.aabb, wheelWell)) {
+      reason = 'penetrates the wheel-well body';
+    } else if (
+      wheelWell
+        ? !isAabbWithinTruckMinusBlocked(placement.aabb, wheelWell)
+        : !isAabbContainedInAnyZone(placement.aabb, zones)
+    ) {
       reason = 'outside usable zones';
     } else if (collidesPacked(placement.aabb, accepted)) {
       reason = 'overlaps another packed item';
     } else if (
       !isPlacementOnZoneFloor(placement.aabb, zones) &&
-      !supportsCandidate(placement.aabb, accepted, placement.item)
+      !supportsCandidate(placement.aabb, accepted, placement.item) &&
+      !(wheelWell && isWheelWellSupportedAndStable(placement.aabb, accepted, wheelWell, placement.item))
     ) {
       reason = 'does not have safe stack support';
     } else if (!candidateHasRearRetention(placement.aabb, accepted, retentionContext)) {
@@ -2009,6 +2027,295 @@ function recordRetentionDependencies(output, packed, retentionContext) {
       output.retentionDependencies.set(placement.instanceId, evaluation.retainerIds);
     }
   }
+}
+
+// ============================================================================
+// WHEEL WELLS: physical obstacle / support / contact geometry
+//
+// The wheel wells are NOT cargo floor, but boxes may safely touch them, sit
+// over them, bridge across them, or be laterally restrained by them when
+// support and stability rules pass. This block models the wheel wells as real
+// physical surfaces computed dynamically from the active truck shapeConfig (no
+// hardcoded well dimensions), and validates that placements never penetrate the
+// blocked body, receive enough vertical support, and stay stable (centre of
+// mass over support). Everything here is gated on wheelWells geometry: for
+// Standard / Front Overhang trucks getWheelWellGeometry() returns null and all
+// callers fall back to their original behaviour byte-for-byte.
+//
+// Key invariant used throughout: for a wheelWells truck the union of usable
+// zones equals exactly (truck bounding box) MINUS (the two blocked well
+// bodies). So "inside the truck box AND not intersecting a blocked body" is an
+// exact, provably-correct obstacle-safety test — equivalent to multi-zone
+// containment without needing a general union-cover routine.
+// ============================================================================
+export function getWheelWellGeometry(truck = {}) {
+  if (!truck || truck.shapeMode !== 'wheelWells') return null;
+  const L = positiveNumber(truck.length, 0);
+  const W = positiveNumber(truck.width, 0);
+  const H = positiveNumber(truck.height, 0);
+  if (!L || !W || !H) return null;
+
+  const cfg =
+    truck.shapeConfig && typeof truck.shapeConfig === 'object' && !Array.isArray(truck.shapeConfig)
+      ? truck.shapeConfig
+      : {};
+  const clamp = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
+  const wellHeight = clamp(Number.isFinite(Number(cfg.wellHeight)) ? Number(cfg.wellHeight) : 0.35 * H, 0, H);
+  const wellWidth = clamp(Number.isFinite(Number(cfg.wellWidth)) ? Number(cfg.wellWidth) : 0.15 * W, 0, W / 2);
+  const wellLength = clamp(Number.isFinite(Number(cfg.wellLength)) ? Number(cfg.wellLength) : 0.35 * L, 0, L);
+  const wellOffsetFromRear = clamp(Number.isFinite(Number(cfg.wellOffsetFromRear)) ? Number(cfg.wellOffsetFromRear) : 0.25 * L, 0, L);
+
+  const wx0 = wellOffsetFromRear;
+  const wx1 = clamp(wx0 + wellLength, wx0, L);
+  const betweenHalfW = Math.max(0, W / 2 - wellWidth);
+
+  // Degenerate wells (no height, no length, or full-width "wells" that leave no
+  // shelf) carry no obstacle/support meaning — treat as a plain box.
+  if (!(wellHeight > FREE_RECT_EPS) || !(wx1 - wx0 > FREE_RECT_EPS) || !(W / 2 - betweenHalfW > FREE_RECT_EPS)) {
+    return null;
+  }
+
+  const truckBox = { min: { x: 0, y: 0, z: -W / 2 }, max: { x: L, y: H, z: W / 2 } };
+  // Blocked well bodies (cargo must never intersect these).
+  const blocked = [
+    { min: { x: wx0, y: 0, z: -W / 2 }, max: { x: wx1, y: wellHeight, z: -betweenHalfW } },
+    { min: { x: wx0, y: 0, z: betweenHalfW }, max: { x: wx1, y: wellHeight, z: W / 2 } },
+  ];
+  // Top support rectangles (thin slabs at y = wellHeight): rigid support faces.
+  const tops = blocked.map(body => ({
+    min: { x: body.min.x, y: wellHeight, z: body.min.z },
+    max: { x: body.max.x, y: wellHeight, z: body.max.z },
+  }));
+  // Inner side faces toward the centre channel (lateral contact/restraint).
+  const sides = [
+    { min: { x: wx0, y: 0, z: -betweenHalfW }, max: { x: wx1, y: wellHeight, z: -betweenHalfW } },
+    { min: { x: wx0, y: 0, z: betweenHalfW }, max: { x: wx1, y: wellHeight, z: betweenHalfW } },
+  ];
+
+  return { wx0, wx1, wellHeight, wellWidth, betweenHalfW, truckBox, blocked, tops, sides };
+}
+
+// Full-AABB / footprint collision with a blocked well body — never a centre-only
+// test, so a box may not be accepted just because its centre clears the well.
+export function aabbIntersectsWheelWellBody(aabb, geometry) {
+  if (!geometry || !aabb) return false;
+  return geometry.blocked.some(body => aabbsOverlap(aabb, body));
+}
+
+// Exact obstacle-safe containment for wheelWells: inside the truck box AND not
+// intersecting either blocked well body (== contained in the union of usable
+// zones). A box resting flush on a well top (bottom y == wellHeight) does NOT
+// overlap the body, so direct top support is allowed.
+export function isAabbWithinTruckMinusBlocked(aabb, geometry, epsilon = CONTAINMENT_EPS_INCHES) {
+  if (!geometry || !aabb) return false;
+  const t = geometry.truckBox;
+  const withinBox =
+    aabb.min.x >= t.min.x - epsilon &&
+    aabb.max.x <= t.max.x + epsilon &&
+    aabb.min.y >= t.min.y - epsilon &&
+    aabb.max.y <= t.max.y + epsilon &&
+    aabb.min.z >= t.min.z - epsilon &&
+    aabb.max.z <= t.max.z + epsilon;
+  return withinBox && !aabbIntersectsWheelWellBody(aabb, geometry);
+}
+
+// Count how many wheel-well inner side faces the box is in flush lateral contact
+// with (touching the face while overlapping its x/y extent, without penetrating
+// the body). Diagnostic / stability tie-breaker only — lateral contact never
+// reduces the required vertical support.
+export function countWheelWellSideContacts(aabb, geometry) {
+  if (!geometry || !aabb) return 0;
+  let contacts = 0;
+  for (const side of geometry.sides) {
+    const xOverlap = aabb.min.x < side.max.x - CONTACT_EPS && aabb.max.x > side.min.x + CONTACT_EPS;
+    const yOverlap = aabb.min.y < side.max.y - CONTACT_EPS && aabb.max.y > side.min.y + CONTACT_EPS;
+    if (!xOverlap || !yOverlap) continue;
+    if (touches(aabb.min.z, side.min.z) || touches(aabb.max.z, side.min.z)) contacts++;
+  }
+  return contacts;
+}
+
+// Compute combined vertical support under a candidate footprint, drawing on both
+// packed cargo tops and the rigid wheel-well tops at the candidate bottom level.
+// Returns the supported fraction plus whether the centre of mass projects onto
+// the supported area extent (tip safety). Packed supports that cannot bear the
+// stack (noStackOnTop, at capacity, or too light) contribute no area.
+export function computeWheelWellSupport(candidateAabb, packed, geometry, candidateItem = null, tolerance = CONTACT_EPS) {
+  const bottom = candidateAabb.min.y;
+  const footprint = Math.max(
+    1e-9,
+    (candidateAabb.max.x - candidateAabb.min.x) * (candidateAabb.max.z - candidateAabb.min.z)
+  );
+  const overlaps = [];
+  let supportArea = 0;
+
+  const consider = supportAabb => {
+    if (Math.abs(bottom - supportAabb.max.y) > tolerance) return;
+    const ox0 = Math.max(candidateAabb.min.x, supportAabb.min.x);
+    const ox1 = Math.min(candidateAabb.max.x, supportAabb.max.x);
+    const oz0 = Math.max(candidateAabb.min.z, supportAabb.min.z);
+    const oz1 = Math.min(candidateAabb.max.z, supportAabb.max.z);
+    const ow = ox1 - ox0;
+    const od = oz1 - oz0;
+    if (ow <= 0 || od <= 0) return;
+    supportArea += ow * od;
+    overlaps.push({ minX: ox0, maxX: ox1, minZ: oz0, maxZ: oz1 });
+  };
+
+  for (const placement of packed || []) {
+    if (!canSupportStack(placement)) continue;
+    if (!hasStackCapacity(placement, packed)) continue;
+    if (!canSupportCandidateWeight(candidateItem, placement)) continue;
+    consider(placement.aabb);
+  }
+  for (const top of geometry ? geometry.tops : []) {
+    consider(top); // rigid surface: always bears weight, like the floor
+  }
+
+  const fraction = Math.min(1, supportArea / footprint);
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const o of overlaps) {
+    if (o.minX < minX) minX = o.minX;
+    if (o.maxX > maxX) maxX = o.maxX;
+    if (o.minZ < minZ) minZ = o.minZ;
+    if (o.maxZ > maxZ) maxZ = o.maxZ;
+  }
+  const cx = (candidateAabb.min.x + candidateAabb.max.x) / 2;
+  const cz = (candidateAabb.min.z + candidateAabb.max.z) / 2;
+  const comSupported =
+    overlaps.length > 0 &&
+    cx >= minX - CONTACT_EPS &&
+    cx <= maxX + CONTACT_EPS &&
+    cz >= minZ - CONTACT_EPS &&
+    cz <= maxZ + CONTACT_EPS;
+
+  // Largest single-side cantilever beyond the supported area, as a fraction of
+  // the box extent on that axis. A box flush-supported on all sides reads 0; a
+  // beam half hanging over the open channel reads ~0.5.
+  const bx = Math.max(1e-9, candidateAabb.max.x - candidateAabb.min.x);
+  const bz = Math.max(1e-9, candidateAabb.max.z - candidateAabb.min.z);
+  const overhangFraction = overlaps.length > 0
+    ? Math.max(
+      Math.max(0, minX - candidateAabb.min.x) / bx,
+      Math.max(0, candidateAabb.max.x - maxX) / bx,
+      Math.max(0, minZ - candidateAabb.min.z) / bz,
+      Math.max(0, candidateAabb.max.z - maxZ) / bz
+    )
+    : 1;
+
+  return { fraction, comSupported, overhangFraction, supportCount: overlaps.length };
+}
+
+// A wheel-well-assisted placement is acceptable only when it does not penetrate
+// the body, has at least MIN_SUPPORT_FRACTION combined vertical support, and is
+// stable (centre of mass over the supported area). Lateral contact alone is
+// never enough — a box with no vertical support fails here regardless of how
+// many side faces it touches.
+export function isWheelWellSupportedAndStable(candidateAabb, packed, geometry, candidateItem = null) {
+  if (!geometry || !candidateAabb) return false;
+  if (aabbIntersectsWheelWellBody(candidateAabb, geometry)) return false;
+  const { fraction, comSupported, overhangFraction } = computeWheelWellSupport(candidateAabb, packed, geometry, candidateItem);
+  if (fraction + 1e-9 < MIN_SUPPORT_FRACTION) return false;
+  if (!comSupported) return false;
+  if (overhangFraction > MAX_WHEELWELL_OVERHANG_FRACTION + 1e-9) return false;
+  return true;
+}
+
+// Deterministic candidate poses for a box resting on the wheel-well tops
+// (bottom flush at y = wellHeight), spanning a well top plus the adjacent
+// channel/cargo as support allows.
+function buildWheelWellBridgeCandidates(orientation, packed, geometry) {
+  const { wx0, wx1, wellHeight, betweenHalfW, truckBox } = geometry;
+  const l = orientation.l;
+  const w = orientation.w;
+  const h = orientation.h;
+  if (!(l > 0) || !(w > 0) || !(h > 0)) return [];
+  if (wellHeight + h > truckBox.max.y + CONTAINMENT_EPS_INCHES) return [];
+
+  const y = wellHeight + h / 2;
+  const W2 = truckBox.max.z;
+
+  const xAnchors = new Set([wx0 + l / 2, wx1 - l / 2]);
+  const zAnchors = new Set([
+    -W2 + w / 2, // left wall-flush
+    W2 - w / 2, // right wall-flush
+    -betweenHalfW - w / 2, // fully on left well top
+    betweenHalfW + w / 2, // fully on right well top
+    -betweenHalfW, // straddle left inner edge (bridge over channel)
+    betweenHalfW, // straddle right inner edge
+  ]);
+  for (const placement of packed) {
+    if (Math.abs(placement.aabb.max.y - wellHeight) > CONTACT_EPS) continue;
+    xAnchors.add(placement.aabb.min.x + l / 2);
+    xAnchors.add(placement.aabb.max.x - l / 2);
+    zAnchors.add(placement.aabb.min.z + w / 2);
+    zAnchors.add(placement.aabb.max.z - w / 2);
+  }
+
+  const out = [];
+  for (const rawX of xAnchors) {
+    const xc = Math.min(Math.max(rawX, wx0 + l / 2), wx1 - l / 2);
+    for (const rawZ of zAnchors) {
+      const zc = Math.min(Math.max(rawZ, -W2 + w / 2), W2 - w / 2);
+      const position = { x: xc, y, z: zc };
+      const aabb = getAabb(position, { l, w, h });
+      out.push({ position, dims: { l, w, h }, aabb, orientation });
+    }
+  }
+  return out;
+}
+
+function scoreWheelWellBridge(candidate, geometry, packed, loadFrontFirst, item) {
+  const { fraction } = computeWheelWellSupport(candidate.aabb, packed, geometry, item);
+  const lateral = countWheelWellSideContacts(candidate.aabb, geometry) + wallContactCount(candidate.aabb, geometry.truckBox, loadFrontFirst);
+  const xKey = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
+  // Lower is better: load front-first, prefer more lateral restraint and more
+  // support, then a stable deterministic tie-break on position.
+  return [xKey, -lateral, -fraction, candidate.aabb.min.z, candidate.aabb.min.x];
+}
+
+function findWheelWellBridgePlacement(item, packed, geometry, loadFrontFirst) {
+  let best = null;
+  let bestScore = null;
+  for (const orientation of item.candidates) {
+    for (const candidate of buildWheelWellBridgeCandidates(orientation, packed, geometry)) {
+      if (!isAabbWithinTruckMinusBlocked(candidate.aabb, geometry)) continue;
+      if (collidesPacked(candidate.aabb, packed)) continue;
+      if (!isWheelWellSupportedAndStable(candidate.aabb, packed, geometry, item)) continue;
+      const score = scoreWheelWellBridge(candidate, geometry, packed, loadFrontFirst, item);
+      if (!best || compareScore(score, bestScore) < 0) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+  }
+  return best;
+}
+
+// Additive final pass for wheelWells trucks only: give items that every earlier
+// phase left unpacked a chance to rest on the wheel-well tops (alone or bridging
+// onto adjacent supported cargo). It never moves or re-scores an already-placed
+// item, so Standard, Front Overhang and the E2B channel/filler layout are
+// untouched. Returns the count newly placed.
+function placeWheelWellBridges(output, packed, itemsById, geometry, loadFrontFirst) {
+  if (!geometry || !geometry.tops.length || !output.unpacked.length) return 0;
+  const stillUnpacked = [];
+  let placed = 0;
+  for (const id of output.unpacked) {
+    const item = itemsById.get(id);
+    const placement = item ? findWheelWellBridgePlacement(item, packed, geometry, loadFrontFirst) : null;
+    if (placement) {
+      recordPlacement(output, packed, item, placement, 'stack');
+      placed++;
+    } else {
+      stillUnpacked.push(id);
+    }
+  }
+  output.unpacked = stillUnpacked;
+  return placed;
 }
 
 export function solveAutoPack(input = {}) {
@@ -2167,9 +2474,27 @@ export function solveAutoPack(input = {}) {
     stackCount++;
   }
 
+  // Wheel Wells physical geometry (null for every other truck mode). Always
+  // resolved so validation can enforce blocked-well-body safety as defence in
+  // depth; this is a no-op on existing outputs because no current placement
+  // intersects a well body or spans zones.
+  const wheelWell = getWheelWellGeometry(input.truck || {});
+  // Live bridge-placement pass: let still-unpacked items rest on / bridge across
+  // the wheel-well tops when combined support and stability allow. Gated behind
+  // an explicit opt-in because well-top support and zone-spanning bridges are a
+  // new packing capability that the current E1/E2A/E2B/PERF safety oracles
+  // (single-zone containment + floor/cargo-only support) do not yet model;
+  // enabling it by default would change those pinned scenarios. Default OFF keeps
+  // production output byte-identical and every existing regression green.
+  if (wheelWell && input.enableWheelWellBridge === true) {
+    const itemsById = new Map(items.map(it => [it.id, it]));
+    stackCount += placeWheelWellBridges(output, packed, itemsById, wheelWell, loadFrontFirst);
+  }
+
   const initialValidation = validatePackedPlacements(output, packed, floorZones, {
     stageRejected: false,
     retentionContext,
+    wheelWell,
   });
   const repackedValidation = repackRejectedPlacements(
     output,
@@ -2183,6 +2508,7 @@ export function solveAutoPack(input = {}) {
   const finalValidation = validatePackedPlacements(output, repackedValidation.packed, floorZones, {
     stageRejected: false,
     retentionContext,
+    wheelWell,
   });
   if (finalValidation.rejected.length || repackedValidation.rejected.length) {
     const staged = new Map();

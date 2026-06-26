@@ -2318,6 +2318,117 @@ function placeWheelWellBridges(output, packed, itemsById, geometry, loadFrontFir
   return placed;
 }
 
+// --- Two-step "build-up then bridge" strategy (fixed wheel-well geometry) -----
+// The wheel-well top plane (y = wellHeight) is only useful as a bridge surface
+// when there is COPLANAR support next to a well top. Bridging a box wider than
+// the well top onto the open channel would float or tip, so we must first build
+// stable support in the channel up to the plane — but ONLY when the cargo
+// dimensions actually allow a whole number of layers to land exactly on the
+// plane. We never resize the wells and never fake support: if no orientation
+// tiles the well height, the build-up is skipped and bridging simply does not
+// happen for those boxes.
+
+const WELL_PLANE_EPS = CONTACT_EPS;
+
+// Pick a single deterministic "riser" orientation whose height divides the
+// fixed well height into k exact layers and whose footprint fits the channel.
+// Larger footprint first (fills the channel faster), then fewer layers, then a
+// stable dims tie-break. Returns null when nothing tiles the plane.
+export function planWheelWellRiser(unpackedIds, itemsById, geometry) {
+  const { wellHeight, wx0, wx1, betweenHalfW } = geometry;
+  const channelLen = wx1 - wx0;
+  const channelWid = 2 * betweenHalfW;
+  const options = [];
+  const seen = new Set();
+  for (const id of unpackedIds) {
+    const item = itemsById.get(id);
+    if (!item) continue;
+    for (const o of item.candidates) {
+      if (!(o.h > 0) || !(o.l > 0) || !(o.w > 0)) continue;
+      const k = Math.round(wellHeight / o.h);
+      if (k < 1 || Math.abs(k * o.h - wellHeight) > WELL_PLANE_EPS) continue;
+      if (o.l > channelLen + FREE_RECT_EPS || o.w > channelWid + FREE_RECT_EPS) continue;
+      const key = `${o.l.toFixed(4)}x${o.w.toFixed(4)}x${o.h.toFixed(4)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      options.push({ l: o.l, w: o.w, h: o.h, k });
+    }
+  }
+  if (!options.length) return null;
+  options.sort((a, b) => (b.l * b.w) - (a.l * a.w) || a.k - b.k || b.h - a.h || a.l - b.l || a.w - b.w);
+  return options[0];
+}
+
+function findItemOrientation(item, l, w, h) {
+  return (item.candidates || []).find(o =>
+    Math.abs(o.l - l) < 1e-6 && Math.abs(o.w - w) < 1e-6 && Math.abs(o.h - h) < 1e-6) || null;
+}
+
+// Fill EMPTY channel columns with full riser stacks that reach the plane exactly.
+// A column is committed only if every one of its k layers is body-safe, in
+// bounds, and collision-free against everything already packed (including
+// main-loop channel cargo) — otherwise the column is skipped, so we never
+// half-build a stack whose top falls short of the plane. Layer j rests on the
+// floor (j=0) or fully on the layer below, so support is exact by construction.
+export function buildChannelRisersToPlane(output, packed, itemsById, geometry, riser) {
+  const { wx0, wx1, betweenHalfW } = geometry;
+  const minZ = -betweenHalfW;
+  const maxZ = betweenHalfW;
+  const { l, w, h, k } = riser;
+  if (!(l > 0) || !(w > 0) || !(h > 0) || k < 1) return 0;
+
+  const pool = [];
+  for (const id of output.unpacked) {
+    const item = itemsById.get(id);
+    const orientation = item ? findItemOrientation(item, l, w, h) : null;
+    if (orientation) pool.push({ id, item, orientation });
+  }
+  if (pool.length < k) return 0; // not even one full column can reach the plane
+
+  let cursor = 0;
+  let placed = 0;
+  const placedIds = new Set();
+  for (let xc = wx0 + l / 2; xc <= wx1 - l / 2 + FREE_RECT_EPS; xc += l) {
+    for (let zc = minZ + w / 2; zc <= maxZ - w / 2 + FREE_RECT_EPS; zc += w) {
+      if (pool.length - cursor < k) break; // no items left to complete a column
+      const columnAabbs = [];
+      let ok = true;
+      for (let j = 0; j < k; j++) {
+        const y = h * j + h / 2;
+        const aabb = getAabb({ x: xc, y, z: zc }, { l, w, h });
+        if (!isAabbWithinTruckMinusBlocked(aabb, geometry) || collidesPacked(aabb, packed)) { ok = false; break; }
+        columnAabbs.push(aabb);
+      }
+      if (!ok) continue;
+      for (let j = 0; j < k; j++) {
+        const { id, item, orientation } = pool[cursor++];
+        recordPlacement(output, packed, item, {
+          position: { x: xc, y: h * j + h / 2, z: zc }, dims: { l, w, h }, aabb: columnAabbs[j], orientation,
+        }, 'floor');
+        placedIds.add(id);
+        placed++;
+      }
+    }
+  }
+  if (placed) output.unpacked = output.unpacked.filter(id => !placedIds.has(id));
+  return placed;
+}
+
+// Two-step wheel-well strategy: (1) build coplanar channel support up to the
+// fixed well-top plane when cargo dimensions allow, then (2) place safe
+// bridge/contact placements that draw combined support from the well tops plus
+// that freshly-built (or pre-existing) coplanar cargo. Every placement still
+// passes the same support/stability gate; step 2 is exactly the existing bridge
+// pass, now with real coplanar support to lean on.
+function placeWheelWellBuildUpBridges(output, packed, itemsById, geometry, loadFrontFirst) {
+  if (!geometry || !geometry.tops.length || !output.unpacked.length) return 0;
+  let placed = 0;
+  const riser = planWheelWellRiser(output.unpacked, itemsById, geometry);
+  if (riser) placed += buildChannelRisersToPlane(output, packed, itemsById, geometry, riser);
+  placed += placeWheelWellBridges(output, packed, itemsById, geometry, loadFrontFirst);
+  return placed;
+}
+
 export function solveAutoPack(input = {}) {
   const truck = normalizeTruck(input.truck || {});
   const zones = normalizeZones(input.zones || []);
@@ -2479,16 +2590,18 @@ export function solveAutoPack(input = {}) {
   // depth; this is a no-op on existing outputs because no current placement
   // intersects a well body or spans zones.
   const wheelWell = getWheelWellGeometry(input.truck || {});
-  // Live bridge-placement pass: let still-unpacked items rest on / bridge across
-  // the wheel-well tops when combined support and stability allow. Gated behind
-  // an explicit opt-in because well-top support and zone-spanning bridges are a
-  // new packing capability that the current E1/E2A/E2B/PERF safety oracles
-  // (single-zone containment + floor/cargo-only support) do not yet model;
-  // enabling it by default would change those pinned scenarios. Default OFF keeps
-  // production output byte-identical and every existing regression green.
+  // Live two-step wheel-well pass: build coplanar channel support up to the
+  // fixed well-top plane when cargo dimensions allow, then let still-unpacked
+  // items rest on / bridge across the wheel-well tops when combined support and
+  // stability allow. Gated behind an explicit opt-in because well-top support
+  // and zone-spanning bridges are a new packing capability that the current
+  // E1/E2A/E2B/PERF safety oracles (single-zone containment + floor/cargo-only
+  // support) do not yet model; enabling it by default would change those pinned
+  // scenarios. Default OFF keeps production output byte-identical and every
+  // existing regression green.
   if (wheelWell && input.enableWheelWellBridge === true) {
     const itemsById = new Map(items.map(it => [it.id, it]));
-    stackCount += placeWheelWellBridges(output, packed, itemsById, wheelWell, loadFrontFirst);
+    stackCount += placeWheelWellBuildUpBridges(output, packed, itemsById, wheelWell, loadFrontFirst);
   }
 
   const initialValidation = validatePackedPlacements(output, packed, floorZones, {

@@ -2722,6 +2722,87 @@ test('WHEELWELL-SUPPORT bridge pass is opt-in: default OFF stays deterministic, 
   }
 });
 
+test('WHEELWELL-SUPPORT planWheelWellRiser selects a plane-tiling orientation and returns null when none tiles (never fakes support)', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const geo = Solver.getWheelWellGeometry(WW_SUPPORT_TRUCK); // wellHeight 18
+  const mk = (l, w, h) => ({ l, w, h, rotation: { yaw: 0 } });
+  // One candidate orientation stands 18 tall -> exactly tiles the 18 well height (k=1).
+  const tiling = new Map([['a', { id: 'a', candidates: [mk(24, 16, 18), mk(24, 18, 16)] }]]);
+  const riser = Solver.planWheelWellRiser(['a'], tiling, geo);
+  assert.ok(riser, 'an orientation whose height tiles the fixed well height is selected');
+  assert.ok(Math.abs(riser.k * riser.h - geo.wellHeight) < 0.05, 'the chosen riser reaches the well plane exactly');
+  // Heights 16 and 20 cannot tile 18 -> build-up is impossible, so we must NOT pick one.
+  const noTile = new Map([['b', { id: 'b', candidates: [mk(24, 18, 16), mk(24, 16, 20)] }]]);
+  assert.equal(Solver.planWheelWellRiser(['b'], noTile, geo), null,
+    'returns null when no orientation can build to the plane — bridging is not forced and support is not faked');
+});
+
+test('WHEELWELL-SUPPORT buildChannelRisersToPlane builds coplanar multi-layer channel support up to the fixed well plane', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 240, width: 96, height: 96, shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 32, wellWidth: 18, wellLength: 60, wellOffsetFromRear: 60 },
+  };
+  const geo = Solver.getWheelWellGeometry(truck);
+  const mk = (l, w, h) => ({ l, w, h, rotation: { yaw: 0 } });
+  const ids = [];
+  const itemsById = new Map();
+  for (let i = 0; i < 40; i++) { const id = `r${i}`; ids.push(id); itemsById.set(id, { id, candidates: [mk(20, 20, 16)] }); }
+  const output = { placements: new Map(), rotations: new Map(), orientedDims: new Map(), unpacked: [...ids] };
+  const packed = [];
+  const riser = Solver.planWheelWellRiser(ids, itemsById, geo);
+  assert.deepEqual({ l: riser.l, w: riser.w, h: riser.h, k: riser.k }, { l: 20, w: 20, h: 16, k: 2 },
+    'two layers of the 16-tall riser reach the fixed 32 well plane');
+  const built = Solver.buildChannelRisersToPlane(output, packed, itemsById, geo, riser);
+  assert.ok(built > 0 && built % riser.k === 0, 'only whole columns (no partial stack short of the plane) are committed');
+  assert.equal(output.unpacked.length, ids.length - built, 'consumed items leave the unpacked pool');
+  let topsAtPlane = 0;
+  for (const p of packed) {
+    assert.equal(Solver.aabbIntersectsWheelWellBody(p.aabb, geo), false, 'a riser never enters a well body');
+    assert.equal(Solver.isAabbWithinTruckMinusBlocked(p.aabb, geo), true, 'a riser stays inside the usable space');
+    if (Math.abs(p.aabb.max.y - geo.wellHeight) < 0.01) topsAtPlane++;
+  }
+  assert.equal(topsAtPlane, built / riser.k, 'exactly one coplanar top surface per built column, flush with the well plane');
+  for (let i = 0; i < packed.length; i++) {
+    for (let j = i + 1; j < packed.length; j++) {
+      assert.equal(Solver.aabbsOverlap(packed[i].aabb, packed[j].aabb), false, 'risers never overlap');
+    }
+  }
+});
+
+test('WHEELWELL-SUPPORT two-step build-up+bridge adds safe, deterministic placements on geometry that allows it; default OFF unchanged', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 240, width: 96, height: 96, shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 16, wellWidth: 12, wellLength: 60, wellOffsetFromRear: 60 },
+  };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const spec = { caseId: 'A', dims: { l: 24, w: 18, h: 16 }, orientationLock: 'any', canFlip: true, weight: 30 };
+  const items = Array.from({ length: 300 }, (_, i) => ({ ...spec, instanceId: `i${i}` }));
+
+  const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const on = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+  const onAgain = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+  assert.ok(on.placements.size > off.placements.size, 'the two-step strategy packs strictly more when the geometry permits safe well-top use');
+  assert.equal(JSON.stringify([...on.placements]), JSON.stringify([...onAgain.placements]), 'ON output is deterministic');
+
+  const geo = Solver.getWheelWellGeometry(truck);
+  const aabbs = [];
+  for (const [id, pos] of on.placements) {
+    const od = on.orientedDims.get(id);
+    const aabb = Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
+    assert.equal(Solver.aabbIntersectsWheelWellBody(aabb, geo), false, `${id} never sinks into a well body`);
+    assert.equal(Solver.isAabbWithinTruckMinusBlocked(aabb, geo), true, `${id} stays inside the usable space`);
+    aabbs.push(aabb);
+  }
+  for (let i = 0; i < aabbs.length; i++) {
+    for (let j = i + 1; j < aabbs.length; j++) {
+      assert.equal(Solver.aabbsOverlap(aabbs[i], aabbs[j]), false, 'no two placements overlap');
+    }
+  }
+});
+
 test('G2-SHAPE-CONTRACT frontBonus main zone spans the full main box from x=0 to x=truck.length', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = {

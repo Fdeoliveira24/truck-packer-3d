@@ -208,6 +208,39 @@ function getFrontBonusBlockedZones(truck) {
   return sanitizeZones(zones);
 }
 
+/**
+ * Wheel-well blocked bodies occupy the lower side-wall strips inside the
+ * otherwise rectangular trailer shell. They are collision obstacles, not
+ * staging/work-floor space.
+ */
+function getWheelWellsBlockedZones(truck) {
+  const { length: L, width: W, height: H } = getDims(truck);
+  const mode = getMode(truck);
+  const cfg = getConfig(truck);
+  if (mode !== 'wheelWells') return [];
+  if (!L || !W || !H) return [];
+
+  const wellHeightRaw = Number(cfg.wellHeight);
+  const wellWidthRaw = Number(cfg.wellWidth);
+  const wellLengthRaw = Number(cfg.wellLength);
+  const wellOffsetRaw = Number(cfg.wellOffsetFromRear);
+
+  const wellHeight = Utils.clamp(Number.isFinite(wellHeightRaw) ? wellHeightRaw : 0.35 * H, 0, H);
+  const wellWidth = Utils.clamp(Number.isFinite(wellWidthRaw) ? wellWidthRaw : 0.15 * W, 0, W / 2);
+  const wellLength = Utils.clamp(Number.isFinite(wellLengthRaw) ? wellLengthRaw : 0.35 * L, 0, L);
+  const wellOffsetFromRear = Utils.clamp(Number.isFinite(wellOffsetRaw) ? wellOffsetRaw : 0.25 * L, 0, L);
+
+  const wx0 = wellOffsetFromRear;
+  const wx1 = Utils.clamp(wx0 + wellLength, wx0, L);
+  const betweenHalfW = Math.max(0, W / 2 - wellWidth);
+
+  const zones = [
+    zone({ x: wx0, y: 0, z: -W / 2 }, { x: wx1, y: wellHeight, z: -betweenHalfW }),
+    zone({ x: wx0, y: 0, z: betweenHalfW }, { x: wx1, y: wellHeight, z: W / 2 }),
+  ];
+  return sanitizeZones(zones);
+}
+
 function getTrailerCapacityInches3(truck) {
   const zones = getTrailerUsableZones(truck);
   return zones.reduce((sum, z) => {
@@ -565,6 +598,11 @@ function aabbsOverlap(a, b) {
   );
 }
 
+export function aabbIntersectsWheelWellBlockedBody(aabb, truck) {
+  if (!aabb) return false;
+  return getWheelWellsBlockedZones(truck).some(blocked => aabbsOverlap(aabb, blocked));
+}
+
 function overlapsAny(aabb, acceptedAabbs) {
   return (acceptedAabbs || []).some(other => aabbsOverlap(aabb, other));
 }
@@ -575,6 +613,7 @@ function getSafeImportedPlacement(pack, inst, caseData, acceptedAabbs) {
   const dims = getInstanceEffectiveDims(inst, caseData);
   const aabb = makeAabb(position, dims);
   const zones = getTrailerUsableZones(pack && pack.truck);
+  if (aabbIntersectsWheelWellBlockedBody(aabb, pack && pack.truck)) return null;
   if (!isAabbContainedInAnyZone(aabb, zones)) return null;
   if (overlapsAny(aabb, acceptedAabbs)) return null;
   return { position, dims, aabb };
@@ -700,6 +739,7 @@ export function isAabbInStagingZone(pack, aabb, options = {}) {
  * outside (including the staging zone) is "staged".
  */
 function getPlacementForAabb(pack, aabb) {
+  if (aabbIntersectsWheelWellBlockedBody(aabb, pack && pack.truck)) return 'staged';
   const zones = getTrailerUsableZones(pack && pack.truck);
   return isAabbContainedInAnyZone(aabb, zones) ? 'packed' : 'staged';
 }
@@ -1201,7 +1241,13 @@ export function repackInvalidPlacements(reconResult, nextTruck, caseLibrary) {
   };
 }
 
-export { getTrailerUsableZones, getTrailerCapacityInches3, isAabbContainedInAnyZone, getFrontBonusBlockedZones };
+export {
+  getTrailerUsableZones,
+  getTrailerCapacityInches3,
+  isAabbContainedInAnyZone,
+  getFrontBonusBlockedZones,
+  getWheelWellsBlockedZones,
+};
 
 export function getPacks() {
   return StateStore.get('packLibrary') || [];
@@ -1320,14 +1366,12 @@ export function addInstance(packId, caseId, position) {
   if (!caseData) return null;
   const explicitPosition = normalizeTransformPosition(position);
   const dims = normalizeDims(caseData.dimensions);
-  const staged = explicitPosition
-    ? null
-    : findSafeStagingPosition(
-        pack,
-        dims,
-        buildAcceptedAabbs(pack, pack.cases || [], CaseLibrary.getCases())
-      );
-  const finalPosition = explicitPosition || staged.position;
+  const acceptedAabbs = buildAcceptedAabbs(pack, pack.cases || [], CaseLibrary.getCases());
+  const explicitAabb = explicitPosition ? makeAabb(explicitPosition, dims) : null;
+  const needsSafeStaging = !explicitPosition || aabbIntersectsWheelWellBlockedBody(explicitAabb, pack.truck);
+  const staged = needsSafeStaging ? findSafeStagingPosition(pack, dims, acceptedAabbs) : null;
+  const finalPosition = needsSafeStaging ? staged.position : explicitPosition;
+  const finalAabb = needsSafeStaging ? staged.aabb : explicitAabb;
   const instance = {
     id: Utils.uuid(),
     caseId,
@@ -1338,7 +1382,7 @@ export function addInstance(packId, caseId, position) {
     },
     hidden: false,
     groupId: null,
-    placement: getPlacementForAabb(pack, makeAabb(finalPosition, dims)),
+    placement: getPlacementForAabb(pack, finalAabb),
   };
   const nextCases = [...(pack.cases || []), instance];
   update(packId, { cases: nextCases });

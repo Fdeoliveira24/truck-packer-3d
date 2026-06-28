@@ -568,10 +568,20 @@ export function createCaseScene({
       );
     }
 
+    function intersectsWheelWellBlockedBody(aabb) {
+      const packId = StateStore.get('currentPackId');
+      const pack = packId ? PackLibrary.getById(packId) : null;
+      if (!pack || !pack.truck) return false;
+      if (typeof PackLibrary.aabbIntersectsWheelWellBlockedBody !== 'function') return false;
+      return PackLibrary.aabbIntersectsWheelWellBlockedBody(aabbWorldToInches(aabb), pack.truck);
+    }
+
     function checkCollision(instanceId, candidateWorldPos, ignoreIds) {
       const aabb = getAabbWorld(instanceId, candidateWorldPos);
       if (!aabb) return { collides: false, insideTruck: false };
       const insideTruck = isInsideTruck(aabb);
+      const blockedBody = intersectsWheelWellBlockedBody(aabb);
+      if (blockedBody) return { collides: true, insideTruck, blockedBody: true };
 
       const ignoreSet =
         ignoreIds && typeof ignoreIds.has === 'function'
@@ -1381,6 +1391,24 @@ export function createInteractionManager({
         const settledY = CaseScene.settleY(id);
         if (settledY !== null) o.position.y = settledY;
       });
+
+      let settledCollides = false;
+      anyInsideTruck = false;
+      groupIds.forEach(id => {
+        const o = CaseScene.getObject(id);
+        if (!o) return;
+        const check = CaseScene.checkCollision(id, o.position, ignoreSet);
+        settledCollides = settledCollides || check.collides;
+        anyInsideTruck = anyInsideTruck || check.insideTruck;
+        CaseScene.setCollision(id, check.collides);
+      });
+
+      if (settledCollides) {
+        revertGroupToStart(groupIds, startMap);
+        UIComponents.showToast('Cannot place here: collision detected', 'error');
+        resetDrag();
+        return;
+      }
 
       // IMPORTANT: Update the pack in one shot.
       // Calling PackLibrary.updateInstance() in a loop triggers a render/sync each time,

@@ -2067,6 +2067,39 @@ test('PACK-IMPORT-SAFE-1 addInstance default placement uses dynamic non-overlapp
     'Default added instances should stage outside the truck until manually packed');
 });
 
+test('PACK-IMPORT-SAFE-1 explicit wheel-well blocked-body addInstance is staged outside the obstacle', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-add-wheelwell-blocked', dimensions: { length: 10, width: 10, height: 10 } });
+  const truck = {
+    length: 100,
+    width: 100,
+    height: 100,
+    shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 35, wellWidth: 15, wellLength: 35, wellOffsetFromRear: 25 },
+  };
+
+  StateStore.init({
+    caseLibrary: [caseData],
+    packLibrary: [{ id: 'pack-add-wheelwell-blocked', title: 'Wheel Well Add', truck, cases: [] }],
+    folderLibrary: [],
+    preferences: {},
+  });
+
+  const instance = PackLibrary.addInstance('pack-add-wheelwell-blocked', caseData.id, { x: 30, y: 5, z: -42 });
+  const pack = PackLibrary.getById('pack-add-wheelwell-blocked');
+  const aabb = getPackImportAabb(instance, caseData);
+
+  assert.equal(instance.placement, 'staged',
+    'an explicit drop intersecting a wheel-well body must be staged instead of packed');
+  assert.equal(PackLibrary.aabbIntersectsWheelWellBlockedBody(aabb, truck), false,
+    'the persisted staged position must not intersect the wheel-well blocked body');
+  assert.ok(instance.transform.position.z > truck.width / 2,
+    'blocked wheel-well drops should be moved to canonical staging outside the trailer footprint');
+  assert.equal(pack.cases[0].transform.position.z, instance.transform.position.z,
+    'the safe staged position must be persisted to the pack');
+});
+
 // ── End PACK-IMPORT-SCHEMA-1 ──────────────────────────────────────────────
 
 // ── PLACEMENT-STATE-S2 ─────────────────────────────────────────────────────
@@ -2582,6 +2615,46 @@ test('G2-SHAPE-CONTRACT a box visually inside the outer trailer box but inside a
     'sanity check: the wheel-well box must be inside the outer trailer box bounds');
   assert.equal(PackLibrary.isAabbContainedInAnyZone(wheelWellAabb, zones), false,
     'the same box must be classified outside the shape-aware usable zones');
+});
+
+test('G2-SHAPE-CONTRACT wheel-well blocked bodies reject overlap but allow flush top contact', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 100,
+    width: 100,
+    height: 100,
+    shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 35, wellWidth: 15, wellLength: 35, wellOffsetFromRear: 25 },
+  };
+
+  const blockedZones = PackLibrary.getWheelWellsBlockedZones(truck);
+  assert.equal(blockedZones.length, 2, 'wheelWells exposes the two fixed side blocked bodies');
+  assert.deepEqual(blockedZones[0], {
+    min: { x: 25, y: 0, z: -50 },
+    max: { x: 60, y: 35, z: -35 },
+  }, 'left blocked body must come from shapeConfig dimensions');
+  assert.equal(PackLibrary.getWheelWellsBlockedZones({ ...truck, shapeMode: 'rect' }).length, 0,
+    'Standard trucks must not gain wheel-well blocked bodies');
+
+  const penetratesBody = {
+    min: { x: 30, y: 0, z: -48 },
+    max: { x: 40, y: 10, z: -40 },
+  };
+  const flushOnTop = {
+    min: { x: 30, y: 35, z: -48 },
+    max: { x: 40, y: 45, z: -40 },
+  };
+  const slightSink = {
+    min: { x: 30, y: 34.5, z: -48 },
+    max: { x: 40, y: 44.5, z: -40 },
+  };
+
+  assert.equal(PackLibrary.aabbIntersectsWheelWellBlockedBody(penetratesBody, truck), true,
+    'any body penetration must be rejected');
+  assert.equal(PackLibrary.aabbIntersectsWheelWellBlockedBody(flushOnTop, truck), false,
+    'flush top contact is allowed because it does not overlap the body volume');
+  assert.equal(PackLibrary.aabbIntersectsWheelWellBlockedBody(slightSink, truck), true,
+    'sinking even slightly below the fixed top plane must be rejected');
 });
 
 // ============================================================================
@@ -6705,6 +6778,14 @@ test('EDITOR multi-select summary removes shortcut helper copy', async () => {
 
 test('EDITOR movement paths reject collisions before persisting moved positions', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
+  const wheelWellHelperStart = src.indexOf('function intersectsWheelWellBlockedBody(aabb)');
+  const wheelWellHelperEnd = src.indexOf('\n\n    function checkCollision', wheelWellHelperStart);
+  const wheelWellHelperBlock = wheelWellHelperStart >= 0 && wheelWellHelperEnd > wheelWellHelperStart
+    ? src.slice(wheelWellHelperStart, wheelWellHelperEnd)
+    : '';
+  const collisionStart = src.indexOf('function checkCollision(instanceId, candidateWorldPos, ignoreIds)');
+  const collisionEnd = src.indexOf('\n\n    /**', collisionStart);
+  const collisionBlock = collisionStart >= 0 && collisionEnd > collisionStart ? src.slice(collisionStart, collisionEnd) : '';
   const nudgeStart = src.indexOf('function nudgeSelection(axis, deltaInches)');
   const nudgeEnd = src.indexOf('/**\n     * Keyboard shortcuts', nudgeStart);
   const nudgeBlock = nudgeStart >= 0 && nudgeEnd > nudgeStart ? src.slice(nudgeStart, nudgeEnd) : '';
@@ -6714,6 +6795,10 @@ test('EDITOR movement paths reject collisions before persisting moved positions'
 
   assert.match(src, /function rejectMoveCollision\(instanceId, candidateWorld, ignoreSet\)/,
     'keyboard movement must share a collision rejection helper before persistence');
+  assert.match(wheelWellHelperBlock, /aabbIntersectsWheelWellBlockedBody\(aabbWorldToInches\(aabb\), pack\.truck\)/,
+    'shared movement collision must test wheel-well blocked-body penetration');
+  assert.match(collisionBlock, /if \(blockedBody\) return \{ collides: true, insideTruck, blockedBody: true \};/,
+    'wheel-well blocked-body penetration must be reported as a hard collision');
   assert.match(nudgeBlock, /rejectMoveCollision\(id, candidateWorld, ignoreSet\)[\s\S]*PackLibrary\.updateInstance/,
     'keyboard nudge must reject immediate collision candidates before PackLibrary persistence');
   assert.match(nudgeBlock, /rejectMoveCollision\(id, obj\.position, ignoreSet\)[\s\S]*PackLibrary\.updateInstance/,
@@ -6722,6 +6807,26 @@ test('EDITOR movement paths reject collisions before persisting moved positions'
     'inspector position apply must reject immediate collision candidates before PackLibrary persistence');
   assert.match(applyBlock, /CaseScene\.checkCollision\(inst\.id, obj\.position, ignoreSet\)[\s\S]*PackLibrary\.updateInstance/,
     'inspector position apply must re-check collision after gravity settling before PackLibrary persistence');
+});
+
+test('EDITOR drag/drop rechecks wheel-well collision after settle before writing positions', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const finishStart = src.indexOf('function finishDrag()');
+  const finishEnd = src.indexOf('\n\n    function resetDrag()', finishStart);
+  const finishBlock = finishStart >= 0 && finishEnd > finishStart ? src.slice(finishStart, finishEnd) : '';
+  const settleIndex = finishBlock.indexOf('CaseScene.settleY(id)');
+  const recheckIndex = finishBlock.indexOf('const check = CaseScene.checkCollision(id, o.position, ignoreSet);', settleIndex);
+  const writePrepIndex = finishBlock.indexOf('const nextPositions = new Map();', settleIndex);
+  const postSettleBlock = recheckIndex >= 0 && writePrepIndex > recheckIndex
+    ? finishBlock.slice(recheckIndex, writePrepIndex)
+    : '';
+
+  assert.ok(settleIndex >= 0 && recheckIndex > settleIndex && writePrepIndex > recheckIndex,
+    'drag/drop must re-run shared collision validation after gravity settling and before persistence');
+  assert.match(postSettleBlock, /settledCollides = settledCollides \|\| check\.collides/,
+    'post-settle drag/drop validation must fail on shared collision, including wheel-well blocked bodies');
+  assert.match(postSettleBlock, /if \(settledCollides\)[\s\S]*revertGroupToStart\(groupIds, startMap\)[\s\S]*resetDrag\(\);[\s\S]*return;/,
+    'post-settle collision must revert the visible drag group and skip persistence');
 });
 
 test('EDITOR rotate and flip paths reject unsafe candidates before persistence', async () => {

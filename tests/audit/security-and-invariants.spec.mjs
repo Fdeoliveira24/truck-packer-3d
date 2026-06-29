@@ -2159,6 +2159,84 @@ test('PLACEMENT-STATE-S2 explicit outside-truck addInstance writes "staged" plac
     'an explicit position outside the trailer usable zone must be recorded as staged');
 });
 
+test('PLACEMENT-STATE-S2 manual delete of a support recursively settles dependents', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-manual-stack-delete', dimensions: { length: 10, width: 10, height: 10 } });
+  const mk = (id, y) => makePackImportInstance(caseData.id, {
+    id,
+    transform: { position: { x: 20, y, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+    placement: 'packed',
+  });
+
+  StateStore.init({
+    caseLibrary: [caseData],
+    packLibrary: [{
+      id: 'pack-manual-stack-delete',
+      title: 'Manual Stack Delete',
+      truck: { length: 120, width: 60, height: 60, shapeMode: 'rect' },
+      cases: [mk('base', 5), mk('child', 15), mk('grandchild', 25)],
+    }],
+    folderLibrary: [],
+    preferences: {},
+  });
+
+  PackLibrary.removeInstances('pack-manual-stack-delete', ['base']);
+  const pack = PackLibrary.getById('pack-manual-stack-delete');
+  const byId = new Map(pack.cases.map(inst => [inst.id, inst]));
+  assert.equal(byId.has('base'), false, 'deleted support must be removed');
+  assert.equal(byId.get('child').transform.position.y, 5,
+    'first dependent must settle to the floor instead of floating at the old stack height');
+  assert.equal(byId.get('grandchild').transform.position.y, 15,
+    'second dependent must settle recursively onto the adjusted first dependent');
+  assert.equal(pack.cases.every(inst => inst.placement === 'packed'), true,
+    'settled dependents inside usable geometry remain packed');
+});
+
+test('PLACEMENT-STATE-S2 manual movement of a support revalidates the unsupported child', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-manual-stack-move', dimensions: { length: 10, width: 10, height: 10 } });
+  const base = makePackImportInstance(caseData.id, {
+    id: 'base',
+    transform: { position: { x: 20, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+    placement: 'packed',
+  });
+  const child = makePackImportInstance(caseData.id, {
+    id: 'child',
+    transform: { position: { x: 20, y: 15, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+    placement: 'packed',
+  });
+
+  StateStore.init({
+    caseLibrary: [caseData],
+    packLibrary: [{
+      id: 'pack-manual-stack-move',
+      title: 'Manual Stack Move',
+      truck: { length: 120, width: 60, height: 60, shapeMode: 'rect' },
+      cases: [base, child],
+    }],
+    folderLibrary: [],
+    preferences: {},
+  });
+
+  const nextCases = [base, child].map(inst =>
+    inst.id === 'base'
+      ? { ...inst, transform: { ...inst.transform, position: { x: 50, y: 5, z: 0 } } }
+      : inst
+  );
+  const result = PackLibrary.updateCasesWithManualRevalidation('pack-manual-stack-move', nextCases, [caseData]);
+  const pack = PackLibrary.getById('pack-manual-stack-move');
+  const byId = new Map(pack.cases.map(inst => [inst.id, inst]));
+
+  assert.deepEqual(byId.get('base').transform.position, { x: 50, y: 5, z: 0 },
+    'manual support movement should be preserved when it is safe');
+  assert.equal(byId.get('child').transform.position.y, 5,
+    'child left behind by support movement must settle to the floor instead of floating');
+  assert.deepEqual(result.adjustedIds, ['child'],
+    'manual revalidation must report the dependent it adjusted');
+});
+
 test('PLACEMENT-STATE-S2 AutoPack records placement from solver results', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
   const start = src.indexOf('export function buildAutoPackNextCases(');
@@ -6799,14 +6877,14 @@ test('EDITOR movement paths reject collisions before persisting moved positions'
     'shared movement collision must test wheel-well blocked-body penetration');
   assert.match(collisionBlock, /if \(blockedBody\) return \{ collides: true, insideTruck, blockedBody: true \};/,
     'wheel-well blocked-body penetration must be reported as a hard collision');
-  assert.match(nudgeBlock, /rejectMoveCollision\(id, candidateWorld, ignoreSet\)[\s\S]*PackLibrary\.updateInstance/,
-    'keyboard nudge must reject immediate collision candidates before PackLibrary persistence');
-  assert.match(nudgeBlock, /rejectMoveCollision\(id, obj\.position, ignoreSet\)[\s\S]*PackLibrary\.updateInstance/,
-    'keyboard nudge must re-check collision after gravity settling before PackLibrary persistence');
-  assert.match(applyBlock, /CaseScene\.checkCollision\(inst\.id, candidateWorld, ignoreSet\)[\s\S]*PackLibrary\.updateInstance/,
-    'inspector position apply must reject immediate collision candidates before PackLibrary persistence');
-  assert.match(applyBlock, /CaseScene\.checkCollision\(inst\.id, obj\.position, ignoreSet\)[\s\S]*PackLibrary\.updateInstance/,
-    'inspector position apply must re-check collision after gravity settling before PackLibrary persistence');
+  assert.match(nudgeBlock, /rejectMoveCollision\(id, candidateWorld, ignoreSet\)[\s\S]*commitCasesWithManualRevalidation/,
+    'keyboard nudge must reject immediate collision candidates before support-revalidating persistence');
+  assert.match(nudgeBlock, /rejectMoveCollision\(id, obj\.position, ignoreSet\)[\s\S]*commitCasesWithManualRevalidation/,
+    'keyboard nudge must re-check collision after gravity settling before support-revalidating persistence');
+  assert.match(applyBlock, /CaseScene\.checkCollision\(inst\.id, candidateWorld, ignoreSet\)[\s\S]*updateCasesWithManualRevalidation/,
+    'inspector position apply must reject immediate collision candidates before support-revalidating persistence');
+  assert.match(applyBlock, /CaseScene\.checkCollision\(inst\.id, obj\.position, ignoreSet\)[\s\S]*updateCasesWithManualRevalidation/,
+    'inspector position apply must re-check collision after gravity settling before support-revalidating persistence');
 });
 
 test('EDITOR drag/drop rechecks wheel-well collision after settle before writing positions', async () => {
@@ -6836,12 +6914,13 @@ test('EDITOR rotate and flip paths reject unsafe candidates before persistence',
   const rotateBlock = rotateStart >= 0 && rotateEnd > rotateStart ? src.slice(rotateStart, rotateEnd) : '';
   const checkIndex = rotateBlock.indexOf('const check = CaseScene.checkCollision(id, obj.position, ignoreSet);');
   const rejectIndex = rotateBlock.indexOf('if (check.collides || (originalInsideTruck && !check.insideTruck))');
-  const persistIndex = rotateBlock.indexOf('PackLibrary.updateInstance(packId, id, {', rejectIndex);
+  const patchIndex = rotateBlock.indexOf('patchById.set(id, {', rejectIndex);
+  const persistIndex = rotateBlock.indexOf('commitCasesWithManualRevalidation(packId, applyInstancePatches(pack, patchById))', patchIndex);
 
   assert.match(rotateBlock, /lockPatch\.orientedDims[\s\S]*obj\.userData\.halfWorld/,
     'manual rotate/flip validation must update the temporary oriented footprint before collision checks');
-  assert.ok(checkIndex >= 0 && rejectIndex > checkIndex && persistIndex > rejectIndex,
-    'manual rotate/flip must check collision and truck containment before PackLibrary persistence');
+  assert.ok(checkIndex >= 0 && rejectIndex > checkIndex && patchIndex > rejectIndex && persistIndex > patchIndex,
+    'manual rotate/flip must check collision and truck containment before support-revalidating PackLibrary persistence');
   assert.match(rotateBlock, /obj\.position\.copy\(originalWorld\);[\s\S]*obj\.rotation\.copy\(originalRotation\);/,
     'unsafe manual rotate/flip candidates must restore the visible object before returning');
   assert.match(rotateBlock, /Cannot rotate here: collision or truck boundary detected/,
@@ -15560,17 +15639,17 @@ test('placement-settle-1 editor-screen settleY uses MIN_SUPPORT_FRACTION from pa
 
 test('placement-settle-1 rotate/flip paths still call settleY before saving position', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
-  // rotateSelection block: settleY must be called before PackLibrary.updateInstance
+  // rotateSelection block: settleY must be called before support-revalidating persistence.
   const rotateStart = src.indexOf('function rotateSelection(');
   assert.ok(rotateStart >= 0, 'rotateSelection must exist');
   const rotateEnd = src.indexOf('\n    function ', rotateStart + 1);
   const rotateBlock = rotateEnd > rotateStart ? src.slice(rotateStart, rotateEnd) : src.slice(rotateStart);
   const settlePos = rotateBlock.indexOf('settleY(');
-  const savePos = rotateBlock.indexOf('PackLibrary.updateInstance(');
+  const savePos = rotateBlock.indexOf('commitCasesWithManualRevalidation(');
   assert.ok(settlePos >= 0, 'rotateSelection must call settleY');
-  assert.ok(savePos >= 0, 'rotateSelection must call PackLibrary.updateInstance');
+  assert.ok(savePos >= 0, 'rotateSelection must commit through manual support revalidation');
   assert.ok(settlePos < savePos,
-    'rotateSelection must call settleY before PackLibrary.updateInstance');
+    'rotateSelection must call settleY before support-revalidating persistence');
 });
 
 // ─── P0-A: Inspector rotate/flip routing ────────────────────────────────────

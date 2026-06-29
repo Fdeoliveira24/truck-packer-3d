@@ -883,6 +883,20 @@ export function createInteractionManager({
       return true;
     }
 
+    function commitCasesWithManualRevalidation(packId, nextCases) {
+      if (typeof PackLibrary.updateCasesWithManualRevalidation === 'function') {
+        return PackLibrary.updateCasesWithManualRevalidation(packId, nextCases, CaseLibrary.getCases());
+      }
+      return PackLibrary.update(packId, { cases: nextCases });
+    }
+
+    function applyInstancePatches(pack, patchById) {
+      return (pack.cases || []).map(inst => {
+        const patch = patchById.get(inst.id);
+        return patch ? { ...inst, ...patch } : inst;
+      });
+    }
+
     /**
      * Rotate selected instances by delta on given axis, then apply gravity.
      */
@@ -899,6 +913,7 @@ export function createInteractionManager({
       let rotatedCount = 0;
       let blockedCount = 0;
       let policyBlockedCount = 0;
+      const patchById = new Map();
       ids.forEach(id => {
         const inst = (pack.cases || []).find(i => i.id === id);
         if (!inst) { return; }
@@ -949,7 +964,7 @@ export function createInteractionManager({
             return;
           }
           CaseScene.setCollision(id, false);
-          PackLibrary.updateInstance(packId, id, {
+          patchById.set(id, {
             ...lockPatch,
             transform: { ...inst.transform, rotation: lockedRotation, position: posInches },
             placement: check.insideTruck ? 'packed' : 'staged',
@@ -957,12 +972,15 @@ export function createInteractionManager({
           rotatedCount += 1;
           return;
         }
-        PackLibrary.updateInstance(packId, id, {
+        patchById.set(id, {
           ...lockPatch,
           transform: { ...inst.transform, rotation: lockedRotation },
         });
         rotatedCount += 1;
       });
+      if (patchById.size) {
+        commitCasesWithManualRevalidation(packId, applyInstancePatches(pack, patchById));
+      }
       if (rotatedCount) UIComponents.showToast(`Rotated ${rotatedCount} case(s)`, 'info');
       if (blockedCount) UIComponents.showToast('Cannot rotate here: collision or truck boundary detected', 'error');
       // The block here comes from the CASE orientation policy (upright / on-side),
@@ -984,6 +1002,7 @@ export function createInteractionManager({
       const pack = PackLibrary.getById(packId);
       if (!pack) { return; }
       const ignoreSet = new Set(ids);
+      const patchById = new Map();
       ids.forEach(id => {
         const inst = (pack.cases || []).find(i => i.id === id);
         if (!inst) { return; }
@@ -1006,8 +1025,11 @@ export function createInteractionManager({
           finalPos = SceneManager.vecWorldToInches(obj.position);
         }
         CaseScene.setCollision(id, false);
-        PackLibrary.updateInstance(packId, id, { transform: { ...inst.transform, position: finalPos } });
+        patchById.set(id, { transform: { ...inst.transform, position: finalPos } });
       });
+      if (patchById.size) {
+        commitCasesWithManualRevalidation(packId, applyInstancePatches(pack, patchById));
+      }
     }
 
     /**
@@ -1451,7 +1473,7 @@ export function createInteractionManager({
         const placementValue = placementById.get(inst.id) || 'staged';
         return { ...inst, transform: { ...(inst.transform || {}), position: pos }, placement: placementValue };
       });
-      PackLibrary.update(packId, { cases: nextCases });
+      commitCasesWithManualRevalidation(packId, nextCases);
 
       UIComponents.showToast(
         anyInsideTruck ? `Placed ${groupIds.length} case(s)` : `Placed ${groupIds.length} case(s) in staging`,
@@ -3426,7 +3448,16 @@ export function createEditorScreen({
           finalPos = SceneManager.vecWorldToInches(obj.position);
         }
         CaseScene.setCollision(inst.id, false);
-        PackLibrary.updateInstance(pack.id, inst.id, { transform: { ...inst.transform, position: finalPos } });
+        const nextCases = (pack.cases || []).map(item =>
+          item.id === inst.id
+            ? { ...item, transform: { ...item.transform, position: finalPos } }
+            : item
+        );
+        if (typeof PackLibrary.updateCasesWithManualRevalidation === 'function') {
+          PackLibrary.updateCasesWithManualRevalidation(pack.id, nextCases, CaseLibrary.getCases());
+        } else {
+          PackLibrary.update(pack.id, { cases: nextCases });
+        }
         SceneManager.focusOnWorldPoint(SceneManager.vecInchesToWorld(finalPos), { duration: 420 });
         UIComponents.showToast('Position updated', 'success');
       });

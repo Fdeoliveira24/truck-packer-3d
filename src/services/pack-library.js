@@ -891,6 +891,7 @@ function aabbIsSupported(candidate, aabb, accepted, zones, tol = RECON_TOL) {
 
 function aabbIsFullyValid(candidate, aabb, accepted, zones, truck, tol = RECON_TOL) {
   return isAabbContainedInAnyZone(aabb, zones) &&
+    !aabbIntersectsWheelWellBlockedBody(aabb, truck) &&
     !overlapsAny(aabb, (accepted || []).map(entry => entry.aabb)) &&
     aabbIsSupported(candidate, aabb, accepted, zones, tol) &&
     evaluateFrontOverhangRearRetention(aabb, accepted, truck, zones).retained;
@@ -1027,10 +1028,11 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary) {
   for (const node of stagedOrder) {
     const current = node.curAabb;
     const insideTruck = isAabbContainedInAnyZone(current, zones);
+    const blockedBody = aabbIntersectsWheelWellBlockedBody(current, nextTruck);
     const collides = overlapsAny(current, [...packedAabbs, ...stagingAccepted]);
     const onFloor = Math.abs(current.min.y) <= RECON_TOL;
     const reachable = isAabbInStagingZone({ truck: nextTruck }, current);
-    if (!insideTruck && !collides && onFloor && reachable) {
+    if (!insideTruck && !blockedBody && !collides && onFloor && reachable) {
       stagingAccepted.push(current);
       stagedUnchanged.push(node.inst.id);
       resultByInst.set(node.inst, { status: 'staged-unchanged', position: node.curPos, node });
@@ -1158,6 +1160,47 @@ export function repairRestoredPackPlacements(pack, caseLibrary) {
     truck,
     caseLibrary
   ).pack;
+}
+
+export function revalidateManualPlacements(pack, caseLibrary) {
+  const source = pack && typeof pack === 'object' ? pack : {};
+  const truck = source.truck && typeof source.truck === 'object' ? source.truck : {};
+  const reconciliation = reconcilePlacementsForTruck(source, truck, caseLibrary);
+  let nextPack = reconciliation.nextPack;
+  let stagedIds = [];
+  let failedIds = [];
+  let warnings = [];
+
+  if (reconciliation.invalid.length) {
+    const staged = stagePlacementIds(nextPack, reconciliation.invalid, truck, caseLibrary);
+    nextPack = staged.pack;
+    stagedIds = staged.stagedIds;
+    failedIds = staged.failedIds;
+    warnings = staged.warnings || [];
+  }
+
+  return {
+    pack: nextPack,
+    adjustedIds: (reconciliation.adjusted || []).map(entry => entry.id),
+    stagedIds,
+    failedIds,
+    warnings,
+    invalidIds: reconciliation.invalid || [],
+    summary: {
+      adjusted: (reconciliation.adjusted || []).length,
+      staged: stagedIds.length,
+      failed: failedIds.length,
+    },
+  };
+}
+
+export function updateCasesWithManualRevalidation(packId, nextCases, caseLibrary = CaseLibrary.getCases()) {
+  const pack = getById(packId);
+  if (!pack) return null;
+  const proposed = { ...pack, cases: Array.isArray(nextCases) ? nextCases : [] };
+  const result = revalidateManualPlacements(proposed, caseLibrary);
+  const updated = update(packId, { cases: result.pack.cases });
+  return { ...result, pack: updated || result.pack };
 }
 
 // Repack the invalid items into the NEW truck's free floor/deck space front-first
@@ -1401,7 +1444,8 @@ export function removeInstances(packId, instanceIds) {
   if (!pack) return null;
   const idSet = new Set(instanceIds || []);
   const nextInstances = (pack.cases || []).filter(i => !idSet.has(i.id));
-  return update(packId, { cases: nextInstances });
+  const result = updateCasesWithManualRevalidation(packId, nextInstances, CaseLibrary.getCases());
+  return result ? result.pack : null;
 }
 
 function computeShapeAwareOOGWarnings(pack, caseLibrary) {

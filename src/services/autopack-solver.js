@@ -25,6 +25,7 @@ const FREE_RECT_EPS = 0.05;
 const BASE_ANCHOR_CAP = 18;
 const MAX_ANCHOR_CAP = 24;
 const REPEATED_BATCH_MIN = 8;
+const FORWARD_RETENTION_Y_PENALTY = 10000;
 
 function finiteNumber(value, fallback = 0) {
   const n = Number(value);
@@ -1536,8 +1537,55 @@ function buildStackCandidates(orientation, packed, yLevel, loadFrontFirst) {
   return placements;
 }
 
-export function scoreStackCandidate(candidate, loadFrontFirst, groupScore = null, supportMatch = null, channelMirror = false) {
+function buildWheelWellStackCandidates(orientation, packed, geometry, loadFrontFirst) {
+  return buildWheelWellBridgeCandidates(orientation, packed, geometry)
+    .map(candidate => {
+      const { fraction } = computeWheelWellSupport(candidate.aabb, packed, geometry, null);
+      return {
+        ...candidate,
+        freeRect: null,
+        supportFraction: fraction,
+        wheelWellCandidate: true,
+      };
+    })
+    .sort((a, b) => {
+      const ax = loadFrontFirst ? -a.aabb.max.x : a.aabb.min.x;
+      const bx = loadFrontFirst ? -b.aabb.max.x : b.aabb.min.x;
+      if (ax !== bx) return ax - bx;
+      return a.aabb.min.z - b.aabb.min.z;
+    });
+}
+
+function candidateHasForwardRetention(aabb, packed, zones, loadFrontFirst) {
+  const zoneLimit = loadFrontFirst
+    ? Math.max(...(zones || []).map(zone => zone.max.x))
+    : Math.min(...(zones || []).map(zone => zone.min.x));
+  if (Number.isFinite(zoneLimit)) {
+    if (loadFrontFirst && Math.abs(aabb.max.x - zoneLimit) <= CONTACT_EPS) return true;
+    if (!loadFrontFirst && Math.abs(aabb.min.x - zoneLimit) <= CONTACT_EPS) return true;
+  }
+
+  return (packed || []).some(placement => {
+    if (!placement?.aabb) return false;
+    const faceContact = loadFrontFirst
+      ? Math.abs(placement.aabb.min.x - aabb.max.x) <= CONTACT_EPS
+      : Math.abs(aabb.min.x - placement.aabb.max.x) <= CONTACT_EPS;
+    return faceContact &&
+      intervalsOverlap(aabb.min.y, aabb.max.y, placement.aabb.min.y, placement.aabb.max.y) &&
+      intervalsOverlap(aabb.min.z, aabb.max.z, placement.aabb.min.z, placement.aabb.max.z);
+  });
+}
+
+export function scoreStackCandidate(
+  candidate,
+  loadFrontFirst,
+  groupScore = null,
+  supportMatch = null,
+  channelMirror = false,
+  forwardRetentionPenalty = 0
+) {
   const xPrimary = loadFrontFirst ? -candidate.aabb.max.x : candidate.aabb.min.x;
+  const yPrimary = candidate.aabb.min.y + forwardRetentionPenalty * FORWARD_RETENTION_Y_PENALTY;
   const wasteArea = candidate.freeRect
     ? Math.max(0, freeRectArea(candidate.freeRect) - candidate.dims.l * candidate.dims.w)
     : 0;
@@ -1547,7 +1595,7 @@ export function scoreStackCandidate(candidate, loadFrontFirst, groupScore = null
   // support waste. xPrimary therefore comes ahead of wasteArea so front supports
   // are filled before center/rear ones in front-first modes (incl. Wheel Wells).
   const primary = [
-    candidate.aabb.min.y,
+    yPrimary,
     -candidate.supportFraction,
     xPrimary,
   ];
@@ -1574,7 +1622,7 @@ export function scoreStackCandidate(candidate, loadFrontFirst, groupScore = null
   // waste-first ordering exactly.
   if (channelMirror) {
     return [
-      candidate.aabb.min.y,
+      yPrimary,
       -candidate.supportFraction,
       orientationMismatch,
       columnMismatch,
@@ -1610,7 +1658,8 @@ function findStackPlacement(
   packed,
   loadFrontFirst,
   layoutQualityEnabled = false,
-  retentionContext = null
+  retentionContext = null,
+  wheelWell = null
 ) {
   let best = null;
   let bestScore = null;
@@ -1624,40 +1673,68 @@ function findStackPlacement(
   );
 
   for (const orientation of item.candidates) {
+    /** @type {Array<any>} */
+    const candidates = [];
     for (const yLevel of yLevels) {
-      for (const candidate of buildStackCandidates(orientation, packed, yLevel, loadFrontFirst)) {
-        if (!isAabbContainedInAnyZone(candidate.aabb, zones)) continue;
-        if (collidesPacked(candidate.aabb, packed)) continue;
-        if (!supportsCandidate(candidate.aabb, packed, item)) continue;
-        if (!candidateHasRearRetention(candidate.aabb, packed, retentionContext)) continue;
+      candidates.push(...buildStackCandidates(orientation, packed, yLevel, loadFrontFirst));
+    }
+    if (wheelWell) {
+      candidates.push(...buildWheelWellStackCandidates(orientation, packed, wheelWell, loadFrontFirst));
+    }
 
-        const supports = getCandidateSupports(candidate.aabb, packed)
-          .filter(candidateSupport =>
-            canSupportStack(candidateSupport) &&
-            canSupportCandidateWeight(item, candidateSupport)
-        );
-        const supportFraction = computeSupportFraction(candidate.aabb, supports);
-        const scoredCandidate = { ...candidate, supportFraction, orientation };
-        const groupScore = layoutQualityEnabled
-          ? scoreLayoutGroupContinuity(
-            candidate.aabb,
-            orientation,
-            item,
-            packed,
-            loadFrontFirst,
-            true
-          )
-          : null;
+    for (const candidate of candidates) {
+      const wheelWellCandidate = candidate.wheelWellCandidate === true;
+      if (wheelWellCandidate) {
+        if (!isAabbWithinTruckMinusBlocked(candidate.aabb, wheelWell)) continue;
+        if (!isWheelWellSupportedAndStable(candidate.aabb, packed, wheelWell, item)) continue;
+      } else if (!isAabbContainedInAnyZone(candidate.aabb, zones)) {
+        continue;
+      }
+      if (collidesPacked(candidate.aabb, packed)) continue;
+      if (!wheelWellCandidate && !supportsCandidate(candidate.aabb, packed, item)) continue;
+      if (!candidateHasRearRetention(candidate.aabb, packed, retentionContext)) continue;
+
+      const supports = getCandidateSupports(candidate.aabb, packed)
+        .filter(candidateSupport =>
+          canSupportStack(candidateSupport) &&
+          canSupportCandidateWeight(item, candidateSupport)
+      );
+      const supportFraction = wheelWellCandidate
+        ? candidate.supportFraction
+        : computeSupportFraction(candidate.aabb, supports);
+      const scoredCandidate = { ...candidate, supportFraction, orientation };
+      const groupScore = layoutQualityEnabled
+        ? scoreLayoutGroupContinuity(
+          candidate.aabb,
+          orientation,
+          item,
+          packed,
+          loadFrontFirst,
+          true
+        )
+        : null;
         const supportMatch = layoutQualityEnabled
           ? scoreStackSupportMatch(candidate.aabb, orientation, supports)
           : null;
         const channelMirror = channelZones.length > 0 && aabbInNarrowChannel(candidate.aabb, channelZones);
-        const score = scoreStackCandidate(scoredCandidate, loadFrontFirst, groupScore, supportMatch, channelMirror);
+        const forwardRetentionPenalty =
+          wheelWell &&
+          candidate.aabb.min.y >= wheelWell.wellHeight - CONTACT_EPS &&
+          !candidateHasForwardRetention(candidate.aabb, packed, zones, loadFrontFirst)
+            ? 1
+            : 0;
+        const score = scoreStackCandidate(
+          scoredCandidate,
+          loadFrontFirst,
+          groupScore,
+          supportMatch,
+          channelMirror,
+          forwardRetentionPenalty
+        );
         if (!best || compareScore(score, bestScore) < 0) {
           best = scoredCandidate;
           bestScore = score;
         }
-      }
     }
   }
 
@@ -2239,6 +2316,12 @@ function buildWheelWellBridgeCandidates(orientation, packed, geometry) {
   const W2 = truckBox.max.z;
 
   const xAnchors = new Set([wx0 + l / 2, wx1 - l / 2]);
+  for (let xMin = wx1 - l; xMin >= wx0 - FREE_RECT_EPS; xMin -= l) {
+    xAnchors.add(xMin + l / 2);
+  }
+  for (let xMin = wx0; xMin <= wx1 - l + FREE_RECT_EPS; xMin += l) {
+    xAnchors.add(xMin + l / 2);
+  }
   const zAnchors = new Set([
     -W2 + w / 2, // left wall-flush
     W2 - w / 2, // right wall-flush
@@ -2295,11 +2378,10 @@ function findWheelWellBridgePlacement(item, packed, geometry, loadFrontFirst) {
   return best;
 }
 
-// Additive final pass for wheelWells trucks only: give items that every earlier
-// phase left unpacked a chance to rest on the wheel-well tops (alone or bridging
-// onto adjacent supported cargo). It never moves or re-scores an already-placed
-// item, so Standard, Front Overhang and the E2B channel/filler layout are
-// untouched. Returns the count newly placed.
+// Additive wheelWells-only placement pass: give a queue of items a chance to
+// rest on the wheel-well tops (alone or bridging onto adjacent supported cargo).
+// It never moves or re-scores an already-placed item, so Standard and Front
+// Overhang are untouched. Returns the count newly placed.
 function placeWheelWellBridges(output, packed, itemsById, geometry, loadFrontFirst) {
   if (!geometry || !geometry.tops.length || !output.unpacked.length) return 0;
   const stillUnpacked = [];
@@ -2561,6 +2643,11 @@ export function solveAutoPack(input = {}) {
     retentionContext
   ).freeRects;
 
+  // Wheel Wells physical geometry (null for every other truck mode). The opt-in
+  // stack phase treats fixed well tops as another physical support surface, but
+  // the normal stack scorer still ranks lower layers first. That preserves the
+  // gravity/Tetris rule: floor and lower cargo fill before raised well tops.
+  const wheelWell = getWheelWellGeometry(input.truck || {});
   let stackCount = 0;
   for (const item of sortItemsForStack(stackDeferred, layoutQualityEnabled, items)) {
     const placement = findStackPlacement(
@@ -2569,7 +2656,8 @@ export function solveAutoPack(input = {}) {
       packed,
       loadFrontFirst,
       layoutQualityEnabled,
-      retentionContext
+      retentionContext,
+      input.enableWheelWellBridge === true ? wheelWell : null
     );
     if (!placement) {
       output.unpacked.push(item.id);
@@ -2585,20 +2673,10 @@ export function solveAutoPack(input = {}) {
     stackCount++;
   }
 
-  // Wheel Wells physical geometry (null for every other truck mode). Always
-  // resolved so validation can enforce blocked-well-body safety as defence in
-  // depth; this is a no-op on existing outputs because no current placement
-  // intersects a well body or spans zones.
-  const wheelWell = getWheelWellGeometry(input.truck || {});
-  // Live two-step wheel-well pass: build coplanar channel support up to the
-  // fixed well-top plane when cargo dimensions allow, then let still-unpacked
-  // items rest on / bridge across the wheel-well tops when combined support and
-  // stability allow. Gated behind an explicit opt-in because well-top support
-  // and zone-spanning bridges are a new packing capability that the current
-  // E1/E2A/E2B/PERF safety oracles (single-zone containment + floor/cargo-only
-  // support) do not yet model; enabling it by default would change those pinned
-  // scenarios. Default OFF keeps production output byte-identical and every
-  // existing regression green.
+  // Carry wheel-well geometry into validation as defence in depth. The remaining
+  // opt-in pass is a final leftover sweep; production Wheel Wells now also runs
+  // the same safe well-top logic before ordinary stacking so front/middle support
+  // opportunities are not starved by rear stack placements.
   if (wheelWell && input.enableWheelWellBridge === true) {
     const itemsById = new Map(items.map(it => [it.id, it]));
     stackCount += placeWheelWellBuildUpBridges(output, packed, itemsById, wheelWell, loadFrontFirst);

@@ -2954,6 +2954,114 @@ test('WHEELWELL-SUPPORT two-step build-up+bridge adds safe, deterministic placem
   }
 });
 
+test('WHEELWELL-BRIDGE active pass keeps Wheel Wells gravity/front-retained before well-top corner use', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const makeItems = count => Array.from({ length: count }, (_, i) => ({
+    instanceId: `i${i}`,
+    caseId: 'c',
+    dims: { l: 24, w: 18, h: 16 },
+    shape: 'box',
+    weight: 30,
+    orientationLock: 'any',
+    canFlip: false,
+  }));
+
+  const items = makeItems(432);
+  const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const on = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+  const repeat = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+  const larger = Solver.solveAutoPack({
+    truck,
+    zones,
+    loadFrontFirst: true,
+    items: makeItems(600),
+    enableWheelWellBridge: true,
+  });
+  const partial = Solver.solveAutoPack({
+    truck,
+    zones,
+    loadFrontFirst: true,
+    items: makeItems(140),
+    enableWheelWellBridge: true,
+  });
+  const geo = Solver.getWheelWellGeometry(truck);
+  const placed = result => [...result.placements].map(([id, pos]) => {
+    const od = result.orientedDims.get(id);
+    const aabb = Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
+    return { id, pos, od, aabb, minY: aabb.min.y };
+  });
+  const intervalsOverlapLocal = (a0, a1, b0, b1) =>
+    Math.min(a1, b1) - Math.max(a0, b0) > 0.05;
+  const hasForwardRetention = (item, all) => {
+    if (Math.abs(item.aabb.max.x - truck.length) <= 0.05) return true;
+    return all.some(other =>
+      other !== item &&
+      Math.abs(other.aabb.min.x - item.aabb.max.x) <= 0.06 &&
+      intervalsOverlapLocal(other.aabb.min.y, other.aabb.max.y, item.aabb.min.y, item.aabb.max.y) &&
+      intervalsOverlapLocal(other.aabb.min.z, other.aabb.max.z, item.aabb.min.z, item.aabb.max.z)
+    );
+  };
+  const metrics = result => {
+    const p = placed(result);
+    return {
+      placements: p,
+      wellTop: p.filter(item => Math.abs(item.minY - geo.wellHeight) < 0.2),
+      lowerStack: p.filter(item => item.minY > 0.2 && item.minY < geo.wellHeight - 0.2),
+      rearStack: p.filter(item => item.aabb.max.x <= geo.wx0 + 0.1 && item.minY > 0.5),
+      highRearStack: p.filter(item => item.aabb.max.x <= geo.wx0 + 0.1 && item.minY > geo.wellHeight + 0.1),
+      bodyHits: p.filter(item => Solver.aabbIntersectsWheelWellBody(item.aabb, geo)),
+      unretainedAtOrAboveWell: p.filter(item =>
+        item.minY >= geo.wellHeight - 0.2 &&
+        !hasForwardRetention(item, p)
+      ),
+    };
+  };
+
+  const offMetrics = metrics(off);
+  const onMetrics = metrics(on);
+  const largerMetrics = metrics(larger);
+  const partialMetrics = metrics(partial);
+  assert.equal(partialMetrics.wellTop.length, 0,
+    'well tops must not load while lower stack layers still have gravity-first capacity');
+  assert.ok(partialMetrics.lowerStack.length > 0,
+    'partial loads should continue building from floor cargo before using raised wheel-well tops');
+  assert.equal(on.placements.size, off.placements.size,
+    'well-top activation must not need more cargo to reduce the screenshot-style high rear gap');
+  assert.ok(onMetrics.lowerStack.length > onMetrics.wellTop.length,
+    'lower stack layers remain the dominant support path before raised well-top placements');
+  assert.equal(onMetrics.wellTop.length, 0,
+    'screenshot-sized loads must fill front-retained upper stack positions before unretained well-top corner placements');
+  assert.equal(onMetrics.unretainedAtOrAboveWell.length, 0,
+    'screenshot-sized loads must not leave at/above-well boxes that can slide forward under braking');
+  assert.equal(onMetrics.highRearStack.length, 0,
+    `high rear stacks are removed by front-retained scoring (was ${offMetrics.highRearStack.length} with bridge OFF)`);
+  assert.ok(largerMetrics.wellTop.length >= 9,
+    `larger loads still activate fixed wheel-well top support after front-retained capacity, got ${largerMetrics.wellTop.length}`);
+  assert.equal(onMetrics.bodyHits.length, 0, 'no active bridge/build-up placement enters a wheel-well body');
+
+  const topXs = [...new Set(largerMetrics.wellTop.map(item => Math.round(item.pos.x * 10) / 10))].sort((a, b) => b - a);
+  assert.ok(topXs.length >= 9, `well-top row spans the fixed well length, got x=${topXs.join(',')}`);
+  assert.ok(Math.max(...largerMetrics.wellTop.map(item => item.aabb.max.x)) >= geo.wx1 - 0.1,
+    'well-top placements start at the front/high-X end of the well span');
+  for (const item of largerMetrics.wellTop) {
+    assert.equal(Solver.isAabbWithinTruckMinusBlocked(item.aabb, geo), true,
+      `${item.id} stays inside the truck box minus blocked bodies`);
+    assert.equal(Solver.isWheelWellSupportedAndStable(item.aabb, largerMetrics.placements, geo, { weight: 30 }), true,
+      `${item.id} has real, stable wheel-well/cargo support`);
+  }
+  for (let i = 0; i < onMetrics.placements.length; i++) {
+    for (let j = i + 1; j < onMetrics.placements.length; j++) {
+      assert.equal(Solver.aabbsOverlap(onMetrics.placements[i].aabb, onMetrics.placements[j].aabb), false,
+        `no overlap ${onMetrics.placements[i].id}/${onMetrics.placements[j].id}`);
+    }
+  }
+  assert.equal(JSON.stringify([...on.placements]), JSON.stringify([...repeat.placements]),
+    'active Wheel Wells bridge/build-up output is deterministic');
+});
+
 test('G2-SHAPE-CONTRACT frontBonus main zone spans the full main box from x=0 to x=truck.length', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = {
@@ -5693,6 +5801,8 @@ test('5A engine adapter forwards stacking metadata from caseData to the solver',
   assert.match(block, /maxStackCount:\s*caseData\.maxStackCount/, 'engine must forward maxStackCount from caseData');
   assert.match(block, /isPallet:\s*caseData\.isPallet/, 'engine must forward isPallet from caseData');
   assert.match(block, /weight:\s*caseData\.weight/, 'engine must forward weight from caseData');
+  assert.match(block, /enableWheelWellBridge:\s*mode === 'wheelWells'/,
+    'production AutoPack must activate bridge/build-up only for Wheel Wells');
 });
 
 test('AUTO-PACK-A1-R5 lane phase places long items lengthwise before normal boxes', async () => {

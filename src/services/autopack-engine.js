@@ -522,6 +522,7 @@ export function createAutoPackEngine({
         truck,
         zones,
         loadFrontFirst,
+        enableWheelWellBridge: mode === 'wheelWells',
         retentionPlacements: hiddenRetention,
         items: packItems.map(({ inst, caseData }) => {
           const d = caseData.dimensions || { length: 0, width: 0, height: 0 };

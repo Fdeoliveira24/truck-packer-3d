@@ -3117,6 +3117,163 @@ test('WHEELWELL-BRIDGE active pass keeps Wheel Wells gravity/front-retained befo
     'active Wheel Wells bridge/build-up output is deterministic');
 });
 
+function wwResultPlacements(Solver, result, items = []) {
+  const itemById = new Map(items.map(item => [item.instanceId, item]));
+  return [...result.placements].map(([id, pos]) => {
+    const od = result.orientedDims.get(id);
+    const aabb = Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
+    return { id, pos, od, aabb, item: itemById.get(id) || { weight: 30 } };
+  });
+}
+
+function wwOnZoneFloor(Solver, placement, zones) {
+  return zones.some(zone =>
+    Solver.isAabbContainedInAnyZone(placement.aabb, [zone]) &&
+    Math.abs(placement.aabb.min.y - zone.min.y) <= 0.05
+  );
+}
+
+function wwAssertHardSafe(Solver, result, truck, zones, items, label) {
+  const geo = Solver.getWheelWellGeometry(truck);
+  const placed = wwResultPlacements(Solver, result, items);
+  for (let i = 0; i < placed.length; i++) {
+    const p = placed[i];
+    assert.equal(Solver.aabbIntersectsWheelWellBody(p.aabb, geo), false, `${label}: ${p.id} never penetrates the well body`);
+    assert.equal(Solver.isAabbWithinTruckMinusBlocked(p.aabb, geo), true, `${label}: ${p.id} stays inside truck-minus-blocked`);
+    for (let j = i + 1; j < placed.length; j++) {
+      assert.equal(Solver.aabbsOverlap(p.aabb, placed[j].aabb), false, `${label}: no overlap ${p.id}/${placed[j].id}`);
+    }
+    if (!wwOnZoneFloor(Solver, p, zones)) {
+      const packedWithout = placed.filter(other => other !== p).map(other => ({
+        instanceId: other.id,
+        aabb: other.aabb,
+        item: other.item,
+      }));
+      assert.equal(Solver.isWheelWellSupportedAndStable(p.aabb, packedWithout, geo, p.item), true,
+        `${label}: ${p.id} has real stable cargo/well-top support`);
+    }
+  }
+}
+
+function wwNonFloorFrontSlack(Solver, result, truck, zones, items) {
+  const geo = Solver.getWheelWellGeometry(truck);
+  return wwResultPlacements(Solver, result, items).reduce((sum, placement) => {
+    if (wwOnZoneFloor(Solver, placement, zones)) return sum;
+    const zone = zones.find(z => Solver.isAabbContainedInAnyZone(placement.aabb, [z]));
+    const maxX = zone ? zone.max.x : geo.truckBox.max.x;
+    return sum + Math.max(0, maxX - placement.aabb.max.x);
+  }, 0);
+}
+
+function wwMovedCount(before, after) {
+  let moved = 0;
+  for (const [id, pos] of after.placements) {
+    const old = before.placements.get(id);
+    if (!old || Math.abs(pos.x - old.x) > 0.01 || Math.abs(pos.y - old.y) > 0.01 || Math.abs(pos.z - old.z) > 0.01) moved++;
+  }
+  return moved;
+}
+
+test('WHEELWELL-FRONT-COMPRESSION slides raised placements forward without changing count, orientation, support, or body safety', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = Array.from({ length: 120 }, (_, i) => ({
+    instanceId: `i${i}`,
+    caseId: 'A',
+    dims: { l: 24, w: 18, h: 16 },
+    shape: 'box',
+    orientationLock: 'any',
+    canFlip: false,
+    weight: 30,
+    maxStackCount: 2,
+  }));
+
+  const uncompressed = Solver.solveAutoPack({
+    truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true, enableWheelWellFrontCompression: false,
+  });
+  const compressed = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+  const repeat = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+
+  assert.equal(compressed.placements.size, uncompressed.placements.size, 'front compression preserves packed count');
+  assert.deepEqual([...compressed.orientedDims], [...uncompressed.orientedDims], 'front compression preserves oriented dimensions');
+  assert.deepEqual([...compressed.rotations], [...uncompressed.rotations], 'front compression preserves rotations');
+  assert.ok(wwMovedCount(uncompressed, compressed) > 0, 'fixture exercises the post-placement compression pass');
+  assert.ok(wwNonFloorFrontSlack(Solver, compressed, truck, zones, items) < wwNonFloorFrontSlack(Solver, uncompressed, truck, zones, items),
+    'raised/non-floor placements move closer to the front when legal');
+  assert.equal(JSON.stringify([...compressed.placements]), JSON.stringify([...repeat.placements]), 'compressed output is deterministic');
+  wwAssertHardSafe(Solver, compressed, truck, zones, items, 'front-compressed wheel wells');
+});
+
+test('WHEELWELL-FRONT-COMPRESSION is Wheel-Wells-only: Standard and Front Overhang outputs are unchanged', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const fixtures = [
+    { label: 'Standard', truck: { length: 240, width: 96, height: 96, shapeMode: 'rect' } },
+    { label: 'Front Overhang', truck: phcFrontOverhangTruck() },
+  ];
+  for (const { label, truck } of fixtures) {
+    const zones = PackLib.getTrailerUsableZones(truck);
+    const items = Array.from({ length: 100 }, (_, i) => ({
+      instanceId: `i${i}`, caseId: 'A', dims: { l: 24, w: 18, h: 16 },
+      shape: 'box', orientationLock: 'any', canFlip: false, weight: 30, maxStackCount: 2,
+    }));
+    const enabled = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    const disabled = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellFrontCompression: false });
+    assert.equal(phcResultBytes(enabled), phcResultBytes(disabled), `${label}: front compression is a no-op outside Wheel Wells`);
+  }
+});
+
+test('WHEELWELL-FRONT-COMPRESSION identical 24x18 loads keep front-row order with no avoidable forward row gaps', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const itemSpec = {
+    caseId: 'A', dims: { l: 24, w: 18, h: 16 }, orientationLock: 'any', canFlip: false, weight: 30, maxStackCount: 2,
+  };
+  for (const count of [6, 20, 40, 100]) {
+    const items = Array.from({ length: count }, (_, i) => ({ ...itemSpec, instanceId: `i${i}` }));
+    const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+    assert.equal(result.placements.size, count, `WW/${count}: every case packs`);
+    assert.equal(phb2SequentialForwardViolation(Solver, result, zones, new Map(items.map(item => [item.instanceId, item]))), null,
+      `WW/${count}: no same-layer case is left behind while a more-forward legal cell is open`);
+    wwAssertHardSafe(Solver, result, truck, zones, items, `WW/${count}`);
+  }
+});
+
+test('WHEELWELL-FRONT-COMPRESSION mixed load keeps constrained channel access for smaller cartons despite low-priority large bases', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const geo = Solver.getWheelWellGeometry(truck);
+  const largeBases = Array.from({ length: 8 }, (_, i) => ({
+    instanceId: `L${i}`, caseId: 'large-base', dims: { l: 48, w: 80, h: 16 },
+    shape: 'box', orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 },
+    canFlip: false, weight: 180, loadPriority: -1, maxStackCount: 1,
+  }));
+  const smallCartons = Array.from({ length: 40 }, (_, i) => ({
+    instanceId: `S${i}`, caseId: 'small-carton', dims: { l: 24, w: 18, h: 16 },
+    shape: 'box', orientationLock: 'any', canFlip: false, weight: 30, loadPriority: 1, maxStackCount: 2,
+  }));
+  const items = [...largeBases, ...smallCartons];
+  const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+  const placed = wwResultPlacements(Solver, result, items);
+  const isChannel = p =>
+    p.aabb.min.x >= geo.wx0 - 0.05 && p.aabb.max.x <= geo.wx1 + 0.05 &&
+    p.aabb.min.z >= -geo.betweenHalfW - 0.05 && p.aabb.max.z <= geo.betweenHalfW + 0.05;
+  const smallInChannel = placed.filter(p => p.id.startsWith('S') && isChannel(p));
+  const largeInChannel = placed.filter(p => p.id.startsWith('L') && isChannel(p));
+
+  assert.equal(smallCartons.every(item => result.placements.has(item.instanceId)), true,
+    'every smaller carton remains packable in the mixed Wheel Wells load');
+  assert.ok(smallInChannel.length > 0, 'smaller cartons consume the constrained wheel-well channel openings');
+  assert.equal(largeInChannel.length, 0, 'oversized low-priority base cases do not occupy the constrained channel');
+  wwAssertHardSafe(Solver, result, truck, zones, items, 'mixed wheel-well load');
+});
+
 test('G2-SHAPE-CONTRACT frontBonus main zone spans the full main box from x=0 to x=truck.length', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = {

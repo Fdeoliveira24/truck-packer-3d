@@ -20,6 +20,7 @@ const MIN_SUPPORT_FRACTION = 0.5;
 // area on any single side. Rejects unrealistic "balanced on an edge" overhangs
 // over the open channel/void that pure COM statics would otherwise permit.
 const MAX_WHEELWELL_OVERHANG_FRACTION = 1 / 3;
+const MAX_DEFAULT_FRONT_COMPRESSION_PLACEMENTS = 500;
 const CONTACT_EPS = 0.05;
 const FREE_RECT_EPS = 0.05;
 const BASE_ANCHOR_CAP = 18;
@@ -1925,6 +1926,159 @@ function compactFloorPlacements(
   return rebuildFloorStateFromPacked(zones, packed, frontSurfaceFirst, retentionContext);
 }
 
+function getFrontCompressionBounds(placement, zones, wheelWell) {
+  const zone = getPlacementZone(placement, zones);
+  if (zone) return { minX: zone.min.x, maxX: zone.max.x };
+  if (wheelWell && isAabbWithinTruckMinusBlocked(placement.aabb, wheelWell)) {
+    return { minX: wheelWell.truckBox.min.x, maxX: wheelWell.truckBox.max.x };
+  }
+  return null;
+}
+
+function placementHasValidVerticalSupport(placement, packedWithoutPlacement, zones, wheelWell) {
+  return isPlacementOnZoneFloor(placement.aabb, zones) ||
+    supportsCandidate(placement.aabb, packedWithoutPlacement, placement.item) ||
+    (wheelWell && isWheelWellSupportedAndStable(
+      placement.aabb,
+      packedWithoutPlacement,
+      wheelWell,
+      placement.item
+    ));
+}
+
+function placementPassesCompressionRules(placement, packedWithoutPlacement, zones, retentionContext, wheelWell) {
+  if (wheelWell && aabbIntersectsWheelWellBody(placement.aabb, wheelWell)) return false;
+  if (wheelWell
+    ? !isAabbWithinTruckMinusBlocked(placement.aabb, wheelWell)
+    : !isAabbContainedInAnyZone(placement.aabb, zones)
+  ) return false;
+  if (collidesPacked(placement.aabb, packedWithoutPlacement)) return false;
+  if (!placementHasValidVerticalSupport(placement, packedWithoutPlacement, zones, wheelWell)) return false;
+  return candidateHasRearRetention(placement.aabb, packedWithoutPlacement, retentionContext);
+}
+
+function directSupportDependents(placement, packed) {
+  return (packed || []).filter(child =>
+    child !== placement &&
+    Math.abs(child.aabb.min.y - placement.aabb.max.y) <= CONTACT_EPS &&
+    computeXzOverlapArea(child.aabb, placement.aabb) > 0.05
+  );
+}
+
+function movedPlacementPreservesDependents(placement, candidate, packed, zones, retentionContext, wheelWell) {
+  const dependents = directSupportDependents(placement, packed);
+  if (!dependents.length) return true;
+  const candidatePacked = packed.map(entry => entry === placement ? candidate : entry);
+  for (const child of dependents) {
+    const packedWithoutChild = candidatePacked.filter(entry => entry !== child);
+    if (!placementHasValidVerticalSupport(child, packedWithoutChild, zones, wheelWell)) return false;
+    if (!candidateHasRearRetention(child.aabb, packedWithoutChild, retentionContext)) return false;
+  }
+  return true;
+}
+
+function shouldFrontCompressPlacement(placement, zones) {
+  if (!placement || placement.lockedGrid) return false;
+  return !isPlacementOnZoneFloor(placement.aabb, zones);
+}
+
+function collectForwardCompressionAnchors(placement, others, bounds, loadFrontFirst, wheelWell) {
+  const maxAnchors = 32;
+  const size = placement.dims.l;
+  const currentMin = placement.aabb.min.x;
+  const min = bounds.minX;
+  const max = bounds.maxX;
+  const raw = [
+    loadFrontFirst ? max - size : min,
+    currentMin,
+  ];
+  const pushSupportAnchors = supportAabb => {
+    raw.push(
+      supportAabb.min.x,
+      supportAabb.max.x - size,
+      supportAabb.max.x - size * MIN_SUPPORT_FRACTION,
+      supportAabb.max.x - size / 2
+    );
+  };
+
+  for (const other of others || []) {
+    if (!other?.aabb) continue;
+    const yOverlap = intervalsOverlap(placement.aabb.min.y, placement.aabb.max.y, other.aabb.min.y, other.aabb.max.y);
+    const zOverlap = intervalsOverlap(placement.aabb.min.z, placement.aabb.max.z, other.aabb.min.z, other.aabb.max.z);
+    if (yOverlap && zOverlap) {
+      raw.push(loadFrontFirst ? other.aabb.min.x - size : other.aabb.max.x);
+    }
+    if (Math.abs(placement.aabb.min.y - other.aabb.max.y) <= CONTACT_EPS &&
+        computeXzOverlapArea(placement.aabb, other.aabb) > 0.05) {
+      pushSupportAnchors(other.aabb);
+    }
+  }
+
+  if (wheelWell) {
+    for (const top of wheelWell.tops || []) {
+      if (Math.abs(placement.aabb.min.y - top.max.y) > CONTACT_EPS) continue;
+      if (computeXzOverlapArea(placement.aabb, top) <= 0.05) continue;
+      pushSupportAnchors(top);
+    }
+  }
+
+  return uniqueSorted(raw, loadFrontFirst ? (a, b) => b - a : (a, b) => a - b)
+    .map(value => clampAnchor(value, min, max, size))
+    .filter(value => value !== null)
+    .filter(value => loadFrontFirst
+      ? value > currentMin + CONTACT_EPS
+      : value < currentMin - CONTACT_EPS)
+    .slice(0, maxAnchors);
+}
+
+function compressWheelWellPlacementsForward(output, packed, zones, loadFrontFirst, retentionContext, wheelWell) {
+  if (!wheelWell || !packed.length) return { changed: false, moved: 0 };
+  const ordered = [...packed].sort((a, b) =>
+    a.aabb.min.y - b.aabb.min.y ||
+    (loadFrontFirst ? b.aabb.max.x - a.aabb.max.x : a.aabb.min.x - b.aabb.min.x) ||
+    a.aabb.min.z - b.aabb.min.z ||
+    stableTextCompare(a.instanceId, b.instanceId)
+  );
+  let moved = 0;
+
+  for (const placement of ordered) {
+    if (!shouldFrontCompressPlacement(placement, zones)) continue;
+    const bounds = getFrontCompressionBounds(placement, zones, wheelWell);
+    if (!bounds) continue;
+    const others = packed.filter(other => other !== placement);
+    const anchors = collectForwardCompressionAnchors(placement, others, bounds, loadFrontFirst, wheelWell);
+    let accepted = null;
+
+    for (const xMin of anchors) {
+      const position = {
+        x: xMin + placement.dims.l / 2,
+        y: placement.pos.y,
+        z: placement.pos.z,
+      };
+      const aabb = getAabb(position, placement.dims);
+      const candidate = {
+        ...placement,
+        pos: position,
+        aabb,
+        zone: placement.zone && isAabbContainedInZone(aabb, placement.zone) ? placement.zone : getPlacementZone({ ...placement, aabb }, zones),
+      };
+      if (!placementPassesCompressionRules(candidate, others, zones, retentionContext, wheelWell)) continue;
+      if (!movedPlacementPreservesDependents(placement, candidate, packed, zones, retentionContext, wheelWell)) continue;
+      accepted = candidate;
+      break;
+    }
+
+    if (!accepted) continue;
+    placement.pos = accepted.pos;
+    placement.aabb = accepted.aabb;
+    placement.zone = accepted.zone;
+    moved++;
+  }
+
+  if (moved) writeOutputPlacements(output, packed);
+  return { changed: moved > 0, moved };
+}
+
 function writeOutputPlacements(output, placements) {
   output.placements.clear();
   output.rotations.clear();
@@ -2737,6 +2891,21 @@ export function solveAutoPack(input = {}) {
   if (finalValidation.accepted.length !== packed.length) {
     packed.length = 0;
     packed.push(...finalValidation.accepted);
+  }
+
+  const runWheelWellFrontCompression =
+    wheelWell &&
+    input.enableWheelWellFrontCompression !== false &&
+    (input.enableWheelWellFrontCompression === true || packed.length <= MAX_DEFAULT_FRONT_COMPRESSION_PLACEMENTS);
+  if (runWheelWellFrontCompression) {
+    compressWheelWellPlacementsForward(
+      output,
+      packed,
+      floorZones,
+      loadFrontFirst,
+      retentionContext,
+      wheelWell
+    );
   }
 
   output.phaseStats.laneCount = laneCount;

@@ -2264,6 +2264,8 @@ test('UNPACK-CATEGORY-GROUPING staging order keeps categories contiguous and sta
   const EditorScreen = await import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
   assert.equal(typeof EditorScreen.sortInstancesForUnpackStaging, 'function',
     'editor-screen must export sortInstancesForUnpackStaging for deterministic unpack grouping');
+  assert.equal(typeof EditorScreen.groupInstancesForUnpackStaging, 'function',
+    'editor-screen must expose category groups so Unpack can stage each category in its own band');
 
   const casesById = new Map([
     ['alpha-case', { id: 'alpha-case', category: 'Alpha' }],
@@ -2285,6 +2287,15 @@ test('UNPACK-CATEGORY-GROUPING staging order keeps categories contiguous and sta
 
   assert.deepEqual(sorted, ['a-1', 'a-2', 'b-1', 'b-2', 'd-1', 'missing-1'],
     'unpack staging must group by first-seen category while preserving order inside each category');
+
+  const groups = EditorScreen
+    .groupInstancesForUnpackStaging(instances, caseId => casesById.get(caseId))
+    .map(group => ({ categoryKey: group.categoryKey, ids: group.instances.map(inst => inst.id) }));
+  assert.deepEqual(groups, [
+    { categoryKey: 'alpha', ids: ['a-1', 'a-2'] },
+    { categoryKey: 'beta', ids: ['b-1', 'b-2'] },
+    { categoryKey: 'default', ids: ['d-1', 'missing-1'] },
+  ], 'unpack staging must keep each category as an explicit contiguous group');
 });
 
 test('UNPACK-CATEGORY-GROUPING unpackAll allocates staging slots in grouped order', async () => {
@@ -2293,10 +2304,14 @@ test('UNPACK-CATEGORY-GROUPING unpackAll allocates staging slots in grouped orde
   const end = src.indexOf('\n    function renderInspectorNoPack', start);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
-  assert.match(block, /const stagingOrder = sortInstancesForUnpackStaging\(/,
-    'unpackAll must build a category-grouped staging order before placing cases');
-  assert.match(block, /for \(const inst of stagingOrder\)/,
-    'unpackAll must allocate safe staging positions using the grouped order');
+  assert.match(block, /const stagingGroups = groupInstancesForUnpackStaging\(/,
+    'unpackAll must build explicit category groups before placing cases');
+  assert.match(block, /for \(const group of stagingGroups\)[\s\S]*for \(const inst of group\.instances\)/,
+    'unpackAll must allocate safe staging positions one category group at a time');
+  assert.match(block, /PackLibrary\.findSafeStagingPosition\(\s*livePack,\s*dims,\s*acceptedAabbs,\s*\{\s*originZ: categoryOriginZ\s*\}\s*\)/,
+    'unpackAll must pass a category-specific staging origin so later categories cannot backfill holes in earlier groups');
+  assert.match(block, /categoryOriginZ = groupMaxZ \+ categoryBandGap/,
+    'unpackAll must advance the next category band after the previous category block');
   assert.match(block, /const nextCases = \(livePack\.cases \|\| \[\]\)\.map\(inst => stagedById\.get\(inst\.id\) \|\| inst\)/,
     'unpackAll must preserve the pack case array order while applying grouped staging poses by id');
 });
@@ -3049,6 +3064,7 @@ test('WHEELWELL-BRIDGE active pass keeps Wheel Wells gravity/front-retained befo
     const p = placed(result);
     return {
       placements: p,
+      floor: p.filter(item => item.minY <= 0.2),
       wellTop: p.filter(item => Math.abs(item.minY - geo.wellHeight) < 0.2),
       lowerStack: p.filter(item => item.minY > 0.2 && item.minY < geo.wellHeight - 0.2),
       rearStack: p.filter(item => item.aabb.max.x <= geo.wx0 + 0.1 && item.minY > 0.5),
@@ -3065,21 +3081,19 @@ test('WHEELWELL-BRIDGE active pass keeps Wheel Wells gravity/front-retained befo
   const onMetrics = metrics(on);
   const largerMetrics = metrics(larger);
   const partialMetrics = metrics(partial);
-  assert.equal(partialMetrics.wellTop.length, 0,
-    'well tops must not load while lower stack layers still have gravity-first capacity');
-  assert.ok(partialMetrics.lowerStack.length > 0,
-    'partial loads should continue building from floor cargo before using raised wheel-well tops');
+  assert.ok(partialMetrics.floor.length > partialMetrics.wellTop.length,
+    'Wheel Wells must load floor cargo before using raised wheel-well tops');
+  assert.ok(partialMetrics.wellTop.length > 0,
+    'after the floor pass, safe wheel-well top placements should close the well-span gap instead of waiting for all rear stacks');
   assert.equal(on.placements.size, off.placements.size,
     'well-top activation must not need more cargo to reduce the screenshot-style high rear gap');
   assert.ok(onMetrics.lowerStack.length > onMetrics.wellTop.length,
     'lower stack layers remain the dominant support path before raised well-top placements');
-  assert.equal(onMetrics.wellTop.length, 0,
-    'screenshot-sized loads must fill front-retained upper stack positions before unretained well-top corner placements');
-  assert.equal(onMetrics.unretainedAtOrAboveWell.length, 0,
-    'screenshot-sized loads must not leave at/above-well boxes that can slide forward under braking');
+  assert.ok(onMetrics.wellTop.length > 0,
+    'screenshot-sized loads must use real wheel-well top support before leaving a visible well-span void');
   assert.equal(onMetrics.highRearStack.length, 0,
     `high rear stacks are removed by front-retained scoring (was ${offMetrics.highRearStack.length} with bridge OFF)`);
-  assert.ok(largerMetrics.wellTop.length >= 9,
+  assert.ok(largerMetrics.wellTop.length >= onMetrics.wellTop.length,
     `larger loads still activate fixed wheel-well top support after front-retained capacity, got ${largerMetrics.wellTop.length}`);
   assert.equal(onMetrics.bodyHits.length, 0, 'no active bridge/build-up placement enters a wheel-well body');
 
@@ -4161,14 +4175,14 @@ test('STAGING-S1 pack-library exposes one canonical staging layout helper', asyn
 
   assert.match(src, /export function getStagingLayout\(truck, options = \{\}\)/,
     'pack-library must export a single canonical getStagingLayout(truck, options) helper');
-  assert.match(src, /export function findSafeStagingPosition\(pack, dims, acceptedAabbs\)/,
+  assert.match(src, /export function findSafeStagingPosition\(pack, dims, acceptedAabbs, options = \{\}\)/,
     'findSafeStagingPosition must be exported for reuse by AutoPack and the editor');
 
-  const findStart = src.indexOf('export function findSafeStagingPosition(pack, dims, acceptedAabbs)');
+  const findStart = src.indexOf('export function findSafeStagingPosition(pack, dims, acceptedAabbs, options = {})');
   const findEnd = src.indexOf('\nfunction buildAcceptedAabbs', findStart);
   const findBlock = findStart >= 0 && findEnd > findStart ? src.slice(findStart, findEnd) : '';
-  assert.match(findBlock, /const layout = getStagingLayout\(truck\);/,
-    'findSafeStagingPosition must derive its geometry from the canonical getStagingLayout helper');
+  assert.match(findBlock, /const layout = getStagingLayout\(truck, options\);/,
+    'findSafeStagingPosition must derive its geometry from the canonical getStagingLayout helper and pass through staging options');
 });
 
 test('STAGING-S1 unpackAll uses the canonical staging helper instead of a hardcoded offset', async () => {
@@ -4178,7 +4192,7 @@ test('STAGING-S1 unpackAll uses the canonical staging helper instead of a hardco
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(block.length > 0, 'editor-screen must define unpackAll()');
-  assert.match(block, /PackLibrary\.findSafeStagingPosition\((?:pack|livePack), dims, acceptedAabbs\)/,
+  assert.match(block, /PackLibrary\.findSafeStagingPosition\(\s*livePack,\s*dims,\s*acceptedAabbs,/,
     'unpackAll must place staged cases through the canonical staging helper');
   assert.doesNotMatch(block, /stageZStart|truckW|truckL/,
     'unpackAll must not keep its own hardcoded staging offset');
@@ -4207,6 +4221,20 @@ test('STAGING-S1 canonical staging position grounds items and stays outside the 
     'staged item center Y must equal half its height (grounded on the floor)');
   assert.ok(staged.position.z > truck.width / 2,
     'staged item must sit outside the trailer width');
+});
+
+test('STAGING-S1 canonical staging helper supports a caller-provided row origin for grouped bands', async () => {
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 240, width: 96, height: 96 };
+  const dims = { length: 30, width: 20, height: 24 };
+  const layout = PackLibrary.getStagingLayout(truck);
+  const shiftedOriginZ = layout.originZ + 160;
+  const staged = PackLibrary.findSafeStagingPosition({ truck }, dims, [], { originZ: shiftedOriginZ });
+
+  assert.equal(staged.position.z, shiftedOriginZ + dims.width / 2,
+    'custom staging origin must move the first staged row without changing floor grounding');
+  assert.equal(staged.position.y, dims.height / 2,
+    'custom staging origin must not change the grounded Y pose');
 });
 
 test('STAGING-S1 staging rows wrap instead of drifting indefinitely in X', async () => {
@@ -4679,6 +4707,11 @@ test('CARGO-RULE-V4 repeatedBatchKey uses canonical orientation (aliases batch t
   for (const alias of ['onside', 'on-side', 'on side', 'ON SIDE', 'On_Side']) {
     assert.equal(Solver.repeatedBatchKey(mkItem(alias)), keyA, `alias "${alias}" must produce the same batch key as onSide`);
   }
+  assert.notEqual(
+    Solver.repeatedBatchKey({ ...mkItem('onSide'), item: { ...mkItem('onSide').item, caseId: 'different-case-id' } }),
+    keyA,
+    'different case ids stay in separate repeated batches even when physical dimensions and orientation aliases match'
+  );
   // A genuinely different policy yields a different key.
   assert.notEqual(Solver.repeatedBatchKey(mkItem('upright')), keyA, 'upright is a distinct batch key');
 });

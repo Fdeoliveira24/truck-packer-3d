@@ -635,18 +635,20 @@ export function getStagingLayout(truck, options = {}) {
   const truckL = Math.max(Number(t.length) || 120, 1);
   const truckW = Math.max(Number(t.width) || 96, 1);
   const gap = Number(options.gap) > 0 ? Number(options.gap) : 12;
+  const defaultOriginZ = truckW / 2 + gap;
+  const originZ = Number.isFinite(Number(options.originZ)) ? Number(options.originZ) : defaultOriginZ;
   return {
     gap,
     truckL,
     truckW,
     originX: 0,
-    originZ: truckW / 2 + gap,
+    originZ,
   };
 }
 
-export function findSafeStagingPosition(pack, dims, acceptedAabbs) {
+export function findSafeStagingPosition(pack, dims, acceptedAabbs, options = {}) {
   const truck = pack && pack.truck ? pack.truck : {};
-  const layout = getStagingLayout(truck);
+  const layout = getStagingLayout(truck, options);
   const truckL = Math.max(layout.truckL, dims.length);
   const gap = layout.gap;
   const stepX = Math.max(1, dims.length + gap);

@@ -411,12 +411,10 @@ function normalizedItemFrom(value = {}) {
 function layoutGroupKey(value = {}) {
   const normalized = normalizedItemFrom(value);
   const source = normalized ? normalized.item : (value.item || value);
-  const caseId = String(source?.caseId || '').trim();
-  if (caseId) return `case:${caseId}`;
-
   const dims = normalized ? normalized.dims : readDims(source?.dims || source?.dimensions);
   return [
     'cargo',
+    source?.caseId || '',
     dims.l,
     dims.w,
     dims.h,
@@ -1123,6 +1121,7 @@ export function repeatedBatchKey(item) {
     source.noStackOnTop === true ? 'no-top' : 'top-ok',
     source.stackable === false ? 'no-stack' : 'stack-ok',
     finiteNumber(source.maxStackCount, 0),
+    finiteNumber(item.weight ?? source.weight, 0),
   ].join('|');
 }
 
@@ -2511,6 +2510,15 @@ function placeWheelWellBuildUpBridges(output, packed, itemsById, geometry, loadF
   return placed;
 }
 
+function shouldRunPreStackWheelWellBridge(geometry, items) {
+  if (!geometry || !geometry.tops.length || !items || !items.length) return false;
+  const wellSpan = geometry.wx1 - geometry.wx0;
+  const minLength = Math.min(
+    ...items.flatMap(item => (item.candidates || []).map(candidate => candidate.l).filter(l => l > 0))
+  );
+  return Number.isFinite(minLength) && wellSpan >= minLength * 4;
+}
+
 export function solveAutoPack(input = {}) {
   const truck = normalizeTruck(input.truck || {});
   const zones = normalizeZones(input.zones || []);
@@ -2644,12 +2652,29 @@ export function solveAutoPack(input = {}) {
   ).freeRects;
 
   // Wheel Wells physical geometry (null for every other truck mode). The opt-in
-  // stack phase treats fixed well tops as another physical support surface, but
-  // the normal stack scorer still ranks lower layers first. That preserves the
-  // gravity/Tetris rule: floor and lower cargo fill before raised well tops.
+  // pre-stack pass runs only after floor/filler has created real lower support.
+  // That keeps the gravity/Tetris rule (no top-first well loading) while letting
+  // safe well-top opportunities close the wheel-well span before ordinary stacks
+  // grow into avoidable rear/upper blocks.
   const wheelWell = getWheelWellGeometry(input.truck || {});
+  const itemsById = new Map(items.map(it => [it.id, it]));
+  let stackQueue = sortItemsForStack(stackDeferred, layoutQualityEnabled, items);
   let stackCount = 0;
-  for (const item of sortItemsForStack(stackDeferred, layoutQualityEnabled, items)) {
+  if (
+    wheelWell &&
+    input.enableWheelWellBridge === true &&
+    stackQueue.length &&
+    shouldRunPreStackWheelWellBridge(wheelWell, stackQueue)
+  ) {
+    const previousUnpacked = output.unpacked;
+    output.unpacked = stackQueue.map(item => item.id);
+    placeWheelWellBuildUpBridges(output, packed, itemsById, wheelWell, loadFrontFirst);
+    const stillUnpacked = new Set(output.unpacked);
+    stackQueue = stackQueue.filter(item => stillUnpacked.has(item.id));
+    output.unpacked = previousUnpacked;
+  }
+
+  for (const item of stackQueue) {
     const placement = findStackPlacement(
       item,
       floorZones,
@@ -2678,7 +2703,6 @@ export function solveAutoPack(input = {}) {
   // the same safe well-top logic before ordinary stacking so front/middle support
   // opportunities are not starved by rear stack placements.
   if (wheelWell && input.enableWheelWellBridge === true) {
-    const itemsById = new Map(items.map(it => [it.id, it]));
     stackCount += placeWheelWellBuildUpBridges(output, packed, itemsById, wheelWell, loadFrontFirst);
   }
 

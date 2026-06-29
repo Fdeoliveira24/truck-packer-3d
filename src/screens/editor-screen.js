@@ -99,6 +99,22 @@ export function sortInstancesForUnpackStaging(instances, getCaseById) {
     .map(record => record.inst);
 }
 
+export function groupInstancesForUnpackStaging(instances, getCaseById) {
+  const groups = [];
+  const groupByKey = new Map();
+  for (const inst of Array.isArray(instances) ? instances : []) {
+    const categoryKey = getUnpackCategoryKey(inst, getCaseById);
+    let group = groupByKey.get(categoryKey);
+    if (!group) {
+      group = { categoryKey, instances: [] };
+      groupByKey.set(categoryKey, group);
+      groups.push(group);
+    }
+    group.instances.push(inst);
+  }
+  return groups;
+}
+
 export function createCaseScene({
   SceneManager,
   CaseLibrary,
@@ -2283,35 +2299,48 @@ export function createEditorScreen({
 
         const acceptedAabbs = [];
         const stagedById = new Map();
+        const stagingLayout = PackLibrary.getStagingLayout(livePack.truck || {});
+        const categoryBandGap = stagingLayout.gap * 2;
+        let categoryOriginZ = stagingLayout.originZ;
         let movedCount = 0;
-        const stagingOrder = sortInstancesForUnpackStaging(
+        const stagingGroups = groupInstancesForUnpackStaging(
           livePack.cases || [],
           caseId => CaseLibrary.getById(caseId)
         );
-        for (const inst of stagingOrder) {
-          const c = CaseLibrary.getById(inst.caseId);
-          // Respect any oriented dimensions produced by AutoPack (prevents overlap when
-          // cases were rotated/flipped while packed). Never fabricate dimensions for an
-          // unresolved (dangling) item — leave it untouched rather than invent a cube.
-          const od = inst && inst.orientedDims ? inst.orientedDims : null;
-          const baseDims = od || (c && c.dimensions) || null;
-          if (!baseDims) continue;
-          const dims = {
-            length: baseDims.length,
-            width: baseDims.width,
-            height: baseDims.height,
-          };
-          const staged = PackLibrary.findSafeStagingPosition(livePack, dims, acceptedAabbs);
-          acceptedAabbs.push(staged.aabb);
-          movedCount += 1;
-          stagedById.set(inst.id, {
-            ...inst,
-            transform: {
-              ...inst.transform,
-              position: staged.position,
-            },
-            placement: 'staged',
-          });
+        for (const group of stagingGroups) {
+          let groupMaxZ = categoryOriginZ;
+          for (const inst of group.instances) {
+            const c = CaseLibrary.getById(inst.caseId);
+            // Respect any oriented dimensions produced by AutoPack (prevents overlap when
+            // cases were rotated/flipped while packed). Never fabricate dimensions for an
+            // unresolved (dangling) item — leave it untouched rather than invent a cube.
+            const od = inst && inst.orientedDims ? inst.orientedDims : null;
+            const baseDims = od || (c && c.dimensions) || null;
+            if (!baseDims) continue;
+            const dims = {
+              length: baseDims.length,
+              width: baseDims.width,
+              height: baseDims.height,
+            };
+            const staged = PackLibrary.findSafeStagingPosition(
+              livePack,
+              dims,
+              acceptedAabbs,
+              { originZ: categoryOriginZ }
+            );
+            acceptedAabbs.push(staged.aabb);
+            groupMaxZ = Math.max(groupMaxZ, staged.aabb.max.z);
+            movedCount += 1;
+            stagedById.set(inst.id, {
+              ...inst,
+              transform: {
+                ...inst.transform,
+                position: staged.position,
+              },
+              placement: 'staged',
+            });
+          }
+          if (groupMaxZ > categoryOriginZ) categoryOriginZ = groupMaxZ + categoryBandGap;
         }
         const nextCases = (livePack.cases || []).map(inst => stagedById.get(inst.id) || inst);
         if (OperationLifecycle && !OperationLifecycle.isCurrent(opToken)) return;

@@ -2260,6 +2260,47 @@ test('PLACEMENT-STATE-S2 unpackAll records "staged" placement for every case', a
     'unpackAll must mark every case as staged placement');
 });
 
+test('UNPACK-CATEGORY-GROUPING staging order keeps categories contiguous and stable', async () => {
+  const EditorScreen = await import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
+  assert.equal(typeof EditorScreen.sortInstancesForUnpackStaging, 'function',
+    'editor-screen must export sortInstancesForUnpackStaging for deterministic unpack grouping');
+
+  const casesById = new Map([
+    ['alpha-case', { id: 'alpha-case', category: 'Alpha' }],
+    ['beta-case', { id: 'beta-case', category: 'beta' }],
+    ['default-case', { id: 'default-case', category: 'default' }],
+  ]);
+  const instances = [
+    { id: 'a-1', caseId: 'alpha-case' },
+    { id: 'b-1', caseId: 'beta-case' },
+    { id: 'a-2', caseId: 'alpha-case' },
+    { id: 'd-1', caseId: 'default-case' },
+    { id: 'b-2', caseId: 'beta-case' },
+    { id: 'missing-1', caseId: 'missing-case' },
+  ];
+
+  const sorted = EditorScreen
+    .sortInstancesForUnpackStaging(instances, caseId => casesById.get(caseId))
+    .map(inst => inst.id);
+
+  assert.deepEqual(sorted, ['a-1', 'a-2', 'b-1', 'b-2', 'd-1', 'missing-1'],
+    'unpack staging must group by first-seen category while preserving order inside each category');
+});
+
+test('UNPACK-CATEGORY-GROUPING unpackAll allocates staging slots in grouped order', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function unpackAll()');
+  const end = src.indexOf('\n    function renderInspectorNoPack', start);
+  const block = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.match(block, /const stagingOrder = sortInstancesForUnpackStaging\(/,
+    'unpackAll must build a category-grouped staging order before placing cases');
+  assert.match(block, /for \(const inst of stagingOrder\)/,
+    'unpackAll must allocate safe staging positions using the grouped order');
+  assert.match(block, /const nextCases = \(livePack\.cases \|\| \[\]\)\.map\(inst => stagedById\.get\(inst\.id\) \|\| inst\)/,
+    'unpackAll must preserve the pack case array order while applying grouped staging poses by id');
+});
+
 test('PLACEMENT-STATE-S2 duplicateSelection records placement from staging fallback', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const start = src.indexOf('function duplicateSelection(pack, selectedIds)');

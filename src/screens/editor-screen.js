@@ -78,6 +78,27 @@ export function computeSettleY(halfWorld, cx, cz, otherAabbs, minSupportFraction
   return bestY;
 }
 
+function getUnpackCategoryKey(inst, getCaseById) {
+  const caseData = inst && typeof getCaseById === 'function' ? getCaseById(inst.caseId) : null;
+  const key = caseData && caseData.category != null ? caseData.category : 'default';
+  return String(key || 'default').trim().toLowerCase() || 'default';
+}
+
+export function sortInstancesForUnpackStaging(instances, getCaseById) {
+  const categoryOrder = new Map();
+  const records = (Array.isArray(instances) ? instances : []).map((inst, index) => {
+    const categoryKey = getUnpackCategoryKey(inst, getCaseById);
+    if (!categoryOrder.has(categoryKey)) categoryOrder.set(categoryKey, categoryOrder.size);
+    return { inst, index, categoryKey };
+  });
+
+  return records
+    .sort((a, b) =>
+      (categoryOrder.get(a.categoryKey) - categoryOrder.get(b.categoryKey)) ||
+      (a.index - b.index))
+    .map(record => record.inst);
+}
+
 export function createCaseScene({
   SceneManager,
   CaseLibrary,
@@ -2261,15 +2282,20 @@ export function createEditorScreen({
         if (!livePack) return;
 
         const acceptedAabbs = [];
+        const stagedById = new Map();
         let movedCount = 0;
-        const nextCases = (livePack.cases || []).map(inst => {
+        const stagingOrder = sortInstancesForUnpackStaging(
+          livePack.cases || [],
+          caseId => CaseLibrary.getById(caseId)
+        );
+        for (const inst of stagingOrder) {
           const c = CaseLibrary.getById(inst.caseId);
           // Respect any oriented dimensions produced by AutoPack (prevents overlap when
           // cases were rotated/flipped while packed). Never fabricate dimensions for an
           // unresolved (dangling) item — leave it untouched rather than invent a cube.
           const od = inst && inst.orientedDims ? inst.orientedDims : null;
           const baseDims = od || (c && c.dimensions) || null;
-          if (!baseDims) return inst;
+          if (!baseDims) continue;
           const dims = {
             length: baseDims.length,
             width: baseDims.width,
@@ -2278,15 +2304,16 @@ export function createEditorScreen({
           const staged = PackLibrary.findSafeStagingPosition(livePack, dims, acceptedAabbs);
           acceptedAabbs.push(staged.aabb);
           movedCount += 1;
-          return {
+          stagedById.set(inst.id, {
             ...inst,
             transform: {
               ...inst.transform,
               position: staged.position,
             },
             placement: 'staged',
-          };
-        });
+          });
+        }
+        const nextCases = (livePack.cases || []).map(inst => stagedById.get(inst.id) || inst);
         if (OperationLifecycle && !OperationLifecycle.isCurrent(opToken)) return;
         PackLibrary.update(packId, { cases: nextCases });
         UIComponents.showToast(`Moved ${movedCount} case${movedCount === 1 ? '' : 's'} to staging.`, 'info', { title: 'Unpack' });

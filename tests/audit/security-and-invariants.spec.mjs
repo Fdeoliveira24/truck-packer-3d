@@ -3165,9 +3165,13 @@ test('WHEELWELL-SUPPORT two-step build-up+bridge adds safe, deterministic placem
   const spec = { caseId: 'A', dims: { l: 24, w: 18, h: 16 }, orientationLock: 'any', canFlip: true, weight: 30 };
   const items = Array.from({ length: 300 }, (_, i) => ({ ...spec, instanceId: `i${i}` }));
 
-  const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
-  const on = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
-  const onAgain = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+  const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellFloorChannelCompaction: false });
+  const on = Solver.solveAutoPack({
+    truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true, enableWheelWellFloorChannelCompaction: false,
+  });
+  const onAgain = Solver.solveAutoPack({
+    truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true, enableWheelWellFloorChannelCompaction: false,
+  });
   assert.ok(on.placements.size > off.placements.size, 'the two-step strategy packs strictly more when the geometry permits safe well-top use');
   assert.equal(JSON.stringify([...on.placements]), JSON.stringify([...onAgain.placements]), 'ON output is deterministic');
 
@@ -3342,6 +3346,85 @@ function wwNonFloorFrontSlack(Solver, result, truck, zones, items) {
   }, 0);
 }
 
+function wwFloorSideSlack(Solver, result, zones, items) {
+  return wwResultPlacements(Solver, result, items).reduce((sum, placement) => {
+    const zone = zones.find(z =>
+      Solver.isAabbContainedInAnyZone(placement.aabb, [z]) &&
+      Math.abs(placement.aabb.min.y - z.min.y) <= 0.05
+    );
+    if (!zone) return sum;
+    return sum + Math.min(
+      Math.abs(placement.aabb.min.z - zone.min.z),
+      Math.abs(placement.aabb.max.z - zone.max.z)
+    );
+  }, 0);
+}
+
+function wwFloorForwardSlack(Solver, result, zones, items) {
+  return wwResultPlacements(Solver, result, items).reduce((sum, placement) => {
+    const zone = zones.find(z =>
+      Solver.isAabbContainedInAnyZone(placement.aabb, [z]) &&
+      Math.abs(placement.aabb.min.y - z.min.y) <= 0.05
+    );
+    if (!zone) return sum;
+    return sum + Math.max(0, zone.max.x - placement.aabb.max.x);
+  }, 0);
+}
+
+function wwAvoidableForwardFloorMove(Solver, result, zones, items) {
+  const byId = new Map(items.map(item => [item.instanceId, item]));
+  const placed = wwResultPlacements(Solver, result, items);
+  const round = value => Math.round(value * 1e6) / 1e6;
+
+  for (const placement of placed) {
+    const currentZone = zones.find(zone =>
+      Solver.isAabbContainedInAnyZone(placement.aabb, [zone]) &&
+      Math.abs(placement.aabb.min.y - zone.min.y) <= 0.05
+    );
+    if (!currentZone) continue;
+    const item = byId.get(placement.id);
+    if (!item) continue;
+    const matchingOrientations = Solver.buildOrientationCandidates(item.dims, item).filter(candidate =>
+      Math.abs(candidate.l - placement.od.length) <= 0.05 &&
+      Math.abs(candidate.w - placement.od.width) <= 0.05 &&
+      Math.abs(candidate.h - placement.od.height) <= 0.05
+    );
+
+    for (const orientation of matchingOrientations) {
+      for (const zone of zones) {
+        if (Math.abs(zone.min.y - placement.aabb.min.y) > 0.05) continue;
+        const xAnchors = new Set([zone.min.x, zone.max.x - orientation.l].map(round));
+        const zAnchors = new Set([zone.min.z, zone.max.z - orientation.w].map(round));
+        for (const other of placed) {
+          xAnchors.add(round(other.aabb.min.x));
+          xAnchors.add(round(other.aabb.max.x));
+          xAnchors.add(round(other.aabb.min.x - orientation.l));
+          xAnchors.add(round(other.aabb.max.x - orientation.l));
+          zAnchors.add(round(other.aabb.min.z));
+          zAnchors.add(round(other.aabb.max.z));
+          zAnchors.add(round(other.aabb.min.z - orientation.w));
+          zAnchors.add(round(other.aabb.max.z - orientation.w));
+        }
+        for (const xMin of xAnchors) {
+          for (const zMin of zAnchors) {
+            const position = {
+              x: xMin + orientation.l / 2,
+              y: zone.min.y + orientation.h / 2,
+              z: zMin + orientation.w / 2,
+            };
+            const aabb = Solver.getAabb(position, orientation);
+            if (aabb.max.x <= placement.aabb.max.x + 0.05) continue;
+            if (!Solver.isAabbContainedInAnyZone(aabb, [zone])) continue;
+            if (placed.some(other => other !== placement && Solver.aabbsOverlap(aabb, other.aabb))) continue;
+            return { id: placement.id, from: placement.aabb, to: aabb };
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function wwMovedCount(before, after) {
   let moved = 0;
   for (const [id, pos] of after.placements) {
@@ -3449,6 +3532,111 @@ test('WHEELWELL-FRONT-COMPRESSION mixed load keeps constrained channel access fo
   assert.ok(smallInChannel.length > 0, 'smaller cartons consume the constrained wheel-well channel openings');
   assert.equal(largeInChannel.length, 0, 'oversized low-priority base cases do not occupy the constrained channel');
   wwAssertHardSafe(Solver, result, truck, zones, items, 'mixed wheel-well load');
+});
+
+test('WHEELWELL-FLOOR-CHANNEL-COMPACTION tightens 48x24 floor rows without reducing count or weakening safety', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const itemSpec = {
+    caseId: 'A', dims: { l: 48, w: 24, h: 24 }, orientationLock: 'any', canFlip: false, weight: 10, maxStackCount: 3,
+  };
+  const items = Array.from({ length: 100 }, (_, i) => ({ ...itemSpec, instanceId: `i${i}` }));
+  const disabled = Solver.solveAutoPack({
+    truck,
+    zones,
+    loadFrontFirst: true,
+    items,
+    enableWheelWellBridge: true,
+    enableWheelWellFloorChannelCompaction: false,
+  });
+  const enabled = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+
+  assert.equal(enabled.placements.size, disabled.placements.size, 'floor/channel compaction preserves packed count');
+  assert.ok(wwFloorSideSlack(Solver, enabled, zones, items) < wwFloorSideSlack(Solver, disabled, zones, items),
+    'floor/channel compaction moves rows toward side/wall contact instead of leaving avoidable side gaps');
+  assert.ok(wwFloorForwardSlack(Solver, enabled, zones, items) <= wwFloorForwardSlack(Solver, disabled, zones, items),
+    'floor/channel compaction must not create additional forward floor slack');
+  assert.equal(wwAvoidableForwardFloorMove(Solver, enabled, zones, items), null,
+    'no same-size floor case behind can legally occupy a more-forward empty floor/channel position');
+  wwAssertHardSafe(Solver, enabled, truck, zones, items, 'floor/channel-compacted wheel wells');
+});
+
+test('WHEELWELL-FLOOR-CHANNEL-COMPACTION is Wheel-Wells-only: Standard and Front Overhang outputs are unchanged', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const fixtures = [
+    { label: 'Standard', truck: { length: 636, width: 102, height: 98, shapeMode: 'rect' } },
+    { label: 'Front Overhang', truck: phcFrontOverhangTruck() },
+  ];
+  for (const { label, truck } of fixtures) {
+    const zones = PackLib.getTrailerUsableZones(truck);
+    const items = Array.from({ length: 80 }, (_, i) => ({
+      instanceId: `i${i}`,
+      caseId: 'A',
+      dims: { l: 48, w: 24, h: 24 },
+      shape: 'box',
+      orientationLock: 'any',
+      canFlip: false,
+      weight: 10,
+      maxStackCount: 3,
+    }));
+    const enabled = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    const disabled = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellFloorChannelCompaction: false });
+    assert.equal(phcResultBytes(enabled), phcResultBytes(disabled), `${label}: wheel-well floor/channel compaction is a no-op`);
+  }
+});
+
+test('WHEELWELL-FLOOR-CHANNEL-COMPACTION repeated floor loads leave no avoidable forward floor/channel holes', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const specs = [
+    { caseId: 'A', dims: { l: 48, w: 24, h: 24 }, orientationLock: 'any', canFlip: false, weight: 10, maxStackCount: 3 },
+    { caseId: 'B', dims: { l: 24, w: 18, h: 16 }, orientationLock: 'any', canFlip: false, weight: 30, maxStackCount: 2 },
+  ];
+
+  for (const itemSpec of specs) {
+    for (const count of [6, 20, 40, 100]) {
+      const items = Array.from({ length: count }, (_, i) => ({ ...itemSpec, instanceId: `${itemSpec.caseId}${i}` }));
+      const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+      assert.equal(result.placements.size, count, `${itemSpec.caseId}/${count}: every case packs`);
+      assert.equal(wwAvoidableForwardFloorMove(Solver, result, zones, items), null,
+        `${itemSpec.caseId}/${count}: no same-size case behind can legally move into a more-forward floor/channel hole`);
+      wwAssertHardSafe(Solver, result, truck, zones, items, `${itemSpec.caseId}/${count}`);
+    }
+  }
+});
+
+test('WHEELWELL-FLOOR-CHANNEL-COMPACTION mixed loads keep smaller cartons in legal channel openings', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const geo = Solver.getWheelWellGeometry(truck);
+  const largeBases = Array.from({ length: 20 }, (_, i) => ({
+    instanceId: `L${i}`, caseId: 'large-base', dims: { l: 48, w: 24, h: 24 },
+    shape: 'box', orientationLock: 'any', canFlip: false, weight: 180, loadPriority: -1, maxStackCount: 1,
+  }));
+  const smallCartons = Array.from({ length: 80 }, (_, i) => ({
+    instanceId: `S${i}`, caseId: 'small-carton', dims: { l: 24, w: 18, h: 16 },
+    shape: 'box', orientationLock: 'any', canFlip: false, weight: 30, loadPriority: 1, maxStackCount: 2,
+  }));
+  const items = [...largeBases, ...smallCartons];
+  const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+  const placed = wwResultPlacements(Solver, result, items);
+  const isChannel = p =>
+    p.aabb.min.x >= geo.wx0 - 0.05 && p.aabb.max.x <= geo.wx1 + 0.05 &&
+    p.aabb.min.z >= -geo.betweenHalfW - 0.05 && p.aabb.max.z <= geo.betweenHalfW + 0.05;
+
+  assert.equal(result.placements.size, items.length, 'mixed Wheel Wells load keeps every test carton packable');
+  assert.ok(placed.some(p => p.id.startsWith('S') && isChannel(p)),
+    'smaller cartons still consume legal channel openings');
+  assert.equal(wwAvoidableForwardFloorMove(Solver, result, zones, items), null,
+    'mixed load leaves no legal same-orientation forward floor/channel move');
+  wwAssertHardSafe(Solver, result, truck, zones, items, 'mixed floor/channel-compacted wheel wells');
 });
 
 test('G2-SHAPE-CONTRACT frontBonus main zone spans the full main box from x=0 to x=truck.length', async () => {
@@ -6457,11 +6645,15 @@ test('AUTO-PACK-A1-R6.3 validation rejects get a strict repack attempt before st
 
 test('AUTO-PACK-A1-R6.3 floor compaction rebuilds free space before filler and stack phases', async () => {
   const src = await fs.readFile(autoPackSolverPath, 'utf8');
-  assert.match(src, /function compactFloorPlacements\(\s*output,\s*packed,\s*zones,\s*loadFrontFirst,\s*frontSurfaceFirst = false,\s*retentionContext = null\s*\)/,
+  assert.match(src, /function compactFloorPlacements\(\s*output,\s*packed,\s*zones,\s*loadFrontFirst,\s*frontSurfaceFirst = false,\s*retentionContext = null,\s*options = \{\}\s*\)/,
     'solver must keep a dedicated floor compaction pass');
+  assert.match(src, /const includeLockedGrid = options\.includeLockedGrid === true;/,
+    'floor compaction must keep locked-grid movement opt-in for shape-specific passes');
+  assert.match(src, /const allowCompatibleZoneMoves = options\.allowCompatibleZoneMoves === true;/,
+    'floor compaction must keep cross-zone movement opt-in for shape-specific passes');
   assert.doesNotMatch(src, /function compactFloorPlacements[\s\S]*?\{\s*void output;\s*void packed;\s*void zones;\s*void loadFrontFirst;/,
     'floor compaction must not regress to the old no-op implementation');
-  assert.match(src, /floorState\.freeRects = compactFloorPlacements\(\s*output,\s*packed,\s*floorZones,\s*loadFrontFirst,\s*frontSurfaceFirst,\s*retentionContext\s*\)\.freeRects;/,
+  assert.match(src, /floorState\.freeRects = compactFloorPlacements\(\s*output,\s*packed,\s*floorZones,\s*loadFrontFirst,\s*frontSurfaceFirst,\s*retentionContext,\s*floorCompactionOptions\s*\)\.freeRects;/,
     'compaction must rebuild the free-space map before later placement phases use it');
   assert.match(src, /writeOutputPlacements\(output, packed\);/,
     'accepted compaction moves must be reflected in the solver output maps');
@@ -10145,7 +10337,7 @@ test('PHASE-E2B Standard and Wheel Wells solver bytes match the E2B channel-laye
     ['wheelWells/24x18/40', 'f50bbb6728343bc36bcbb04e92ff238831236c7b5720dc32d9145508930275ed'],
     // E2B: channel stack layers now follow the footprint below (no per-layer drift).
     ['wheelWells/24x18/100', '6f40fc5cec6050c903b59422d17d9164487cdc6816ab872417c7b2a9c6385565'],
-    ['wheelWells/42x10/100', '614e8418178a1ae98cce41726b2e59e9e9d521f93396332df693afa33e9e0062'],
+    ['wheelWells/42x10/100', 'ad189129c6b38475aff08af418d31b9efbc59fefa52ff916b51ab59d27e52a6d'],
   ]);
   const dimensionFixtures = [
     { label: '24x18', dims: { l: 24, w: 18, h: 16 }, counts: [6, 20, 40, 100] },

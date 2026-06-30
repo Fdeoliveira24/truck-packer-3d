@@ -168,7 +168,7 @@ export function createCaseScene({
           tex.colorSpace = THREE.SRGBColorSpace;
           return tex;
         }
-        ctx.fillStyle = '#FFFFFF';
+        ctx.fillStyle = '#000000';
         ctx.font = `bold ${Math.floor(h * 0.12)}px Arial, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';

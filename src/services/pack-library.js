@@ -679,6 +679,194 @@ export function findSafeStagingPosition(pack, dims, acceptedAabbs, options = {})
   return { position: fallback, aabb: makeAabb(fallback, dims) };
 }
 
+function getDuplicateSourcePosition(inst, dims) {
+  return normalizeTransformPosition(inst && inst.transform && inst.transform.position) || {
+    x: 0,
+    y: Math.max(1, dims.height / 2),
+    z: 0,
+  };
+}
+
+function buildDuplicateSourcePayload(sourceInstances, caseLibrary) {
+  const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
+  return (Array.isArray(sourceInstances) ? sourceInstances : [])
+    .map(inst => {
+      if (!inst || !inst.caseId) return null;
+      const caseData = caseMap.get(inst.caseId);
+      if (!caseData) return null;
+      const dims = getInstanceEffectiveDims(inst, caseData);
+      if (!hasPositiveFiniteDims(dims)) return null;
+      return {
+        inst,
+        dims,
+        position: getDuplicateSourcePosition(inst, dims),
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildDuplicatePayloadBounds(payload) {
+  const initial = {
+    min: { x: Infinity, y: Infinity, z: Infinity },
+    max: { x: -Infinity, y: -Infinity, z: -Infinity },
+  };
+  return payload.reduce((bounds, item) => {
+    const aabb = makeAabb(item.position, item.dims);
+    bounds.min.x = Math.min(bounds.min.x, aabb.min.x);
+    bounds.min.y = Math.min(bounds.min.y, aabb.min.y);
+    bounds.min.z = Math.min(bounds.min.z, aabb.min.z);
+    bounds.max.x = Math.max(bounds.max.x, aabb.max.x);
+    bounds.max.y = Math.max(bounds.max.y, aabb.max.y);
+    bounds.max.z = Math.max(bounds.max.z, aabb.max.z);
+    return bounds;
+  }, initial);
+}
+
+function buildDuplicateExistingAabbs(pack, caseLibrary) {
+  const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
+  return (pack && Array.isArray(pack.cases) ? pack.cases : [])
+    .filter(inst => inst && inst.hidden !== true)
+    .map(inst => {
+      const caseData = caseMap.get(inst.caseId);
+      if (!caseData) return null;
+      const dims = getInstanceEffectiveDims(inst, caseData);
+      if (!hasPositiveFiniteDims(dims)) return null;
+      return makeAabb(getDuplicateSourcePosition(inst, dims), dims);
+    })
+    .filter(Boolean);
+}
+
+function duplicateAabbIsPackedSafe(pack, aabb) {
+  if (!aabb || aabbIntersectsWheelWellBlockedBody(aabb, pack && pack.truck)) return false;
+  const zones = getTrailerUsableZones(pack && pack.truck);
+  return isAabbContainedInAnyZone(aabb, zones);
+}
+
+function duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, requirePacked) {
+  const candidateAabbs = [];
+  for (const item of payload) {
+    const position = {
+      x: item.position.x + offset.x,
+      y: item.position.y + offset.y,
+      z: item.position.z + offset.z,
+    };
+    const aabb = makeAabb(position, item.dims);
+    if (requirePacked && !duplicateAabbIsPackedSafe(pack, aabb)) return false;
+    if (overlapsAny(aabb, existingAabbs)) return false;
+    if (overlapsAny(aabb, candidateAabbs)) return false;
+    candidateAabbs.push(aabb);
+  }
+  return true;
+}
+
+function findDuplicateOffset(pack, payload, existingAabbs) {
+  if (!payload.length) return null;
+  const bounds = buildDuplicatePayloadBounds(payload);
+  const spanX = Math.max(1, bounds.max.x - bounds.min.x);
+  const spanZ = Math.max(1, bounds.max.z - bounds.min.z);
+  const sourceInsideTruck = payload.every(item =>
+    duplicateAabbIsPackedSafe(pack, makeAabb(item.position, item.dims))
+  );
+  const insideOffsets = [
+    { x: spanX, y: 0, z: 0 },
+    { x: -spanX, y: 0, z: 0 },
+    { x: 0, y: 0, z: spanZ },
+    { x: 0, y: 0, z: -spanZ },
+    { x: spanX, y: 0, z: spanZ },
+    { x: spanX, y: 0, z: -spanZ },
+    { x: -spanX, y: 0, z: spanZ },
+    { x: -spanX, y: 0, z: -spanZ },
+  ];
+  if (sourceInsideTruck) {
+    const packedOffset = insideOffsets.find(offset =>
+      duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, true)
+    );
+    if (packedOffset) return { offset: packedOffset, staged: false };
+  }
+
+  const groupDims = {
+    length: spanX,
+    width: spanZ,
+    height: Math.max(1, bounds.max.y - bounds.min.y),
+  };
+  const staged = findSafeStagingPosition(pack, groupDims, existingAabbs);
+  const groupCenter = {
+    x: (bounds.min.x + bounds.max.x) / 2,
+    y: (bounds.min.y + bounds.max.y) / 2,
+    z: (bounds.min.z + bounds.max.z) / 2,
+  };
+  const stagedOffset = {
+    x: staged.position.x - groupCenter.x,
+    y: staged.position.y - groupCenter.y,
+    z: staged.position.z - groupCenter.z,
+  };
+  if (duplicateOffsetIsSafe(pack, payload, existingAabbs, stagedOffset, false)) {
+    return { offset: stagedOffset, staged: true };
+  }
+  return null;
+}
+
+export function buildSafeDuplicateInstances(pack, sourceInstances, caseLibrary = CaseLibrary.getCases()) {
+  if (!pack) return { cases: [], newInstances: [], newIds: [], placement: null, offset: null };
+  const payload = buildDuplicateSourcePayload(sourceInstances, caseLibrary);
+  if (!payload.length) {
+    return {
+      cases: Array.isArray(pack.cases) ? pack.cases : [],
+      newInstances: [],
+      newIds: [],
+      placement: null,
+      offset: null,
+    };
+  }
+
+  const placement = findDuplicateOffset(pack, payload, buildDuplicateExistingAabbs(pack, caseLibrary));
+  if (!placement) {
+    return {
+      cases: Array.isArray(pack.cases) ? pack.cases : [],
+      newInstances: [],
+      newIds: [],
+      placement: null,
+      offset: null,
+    };
+  }
+
+  const placementState = placement.staged ? 'staged' : 'packed';
+  const newInstances = payload.map(item => {
+    const next = Utils.deepClone(item.inst);
+    next.id = Utils.uuid();
+    next.transform = {
+      ...Utils.deepClone(item.inst.transform || {}),
+      position: {
+        x: item.position.x + placement.offset.x,
+        y: item.position.y + placement.offset.y,
+        z: item.position.z + placement.offset.z,
+      },
+      rotation: normalizeTransformRotation(item.inst.transform && item.inst.transform.rotation),
+      scale: normalizeTransformScale(item.inst.transform && item.inst.transform.scale),
+    };
+    next.hidden = false;
+    next.placement = placementState;
+    return next;
+  });
+
+  return {
+    cases: [...(Array.isArray(pack.cases) ? pack.cases : []), ...newInstances],
+    newInstances,
+    newIds: newInstances.map(inst => inst.id),
+    placement: placementState,
+    offset: placement.offset,
+  };
+}
+
+export function duplicateInstancesSafely(packId, sourceInstances, caseLibrary = CaseLibrary.getCases()) {
+  const pack = getById(packId);
+  if (!pack) return null;
+  const result = buildSafeDuplicateInstances(pack, sourceInstances, caseLibrary);
+  if (!result.newIds.length) return null;
+  const updated = update(packId, { cases: result.cases });
+  return { ...result, pack: updated || { ...pack, cases: result.cases } };
+}
+
 /**
  * Canonical staging-row bounds derived from the same S1 staging layout used
  * by findSafeStagingPosition: a tight envelope around the neat row/column

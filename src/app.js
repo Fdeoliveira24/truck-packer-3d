@@ -4165,20 +4165,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
         InteractionManager.deleteSelection();
       }
 
-      function cloneOrientationLockMetadata(inst) {
-        const orientationLocked = inst && inst.orientationLocked === true;
-        if (!orientationLocked) {
-          return { orientationLocked: false, lockedRotation: null, orientedDims: null };
-        }
-        const transformRotation =
-          inst && inst.transform && inst.transform.rotation ? inst.transform.rotation : { x: 0, y: 0, z: 0 };
-        return {
-          orientationLocked: true,
-          lockedRotation: Utils.deepClone(inst.lockedRotation || transformRotation),
-          orientedDims: inst.orientedDims ? Utils.deepClone(inst.orientedDims) : null,
-        };
-      }
-
       function duplicateSelected() {
         if (!inEditor()) return;
         if (mutationBlockedWhileBusy()) return;
@@ -4187,27 +4173,23 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const selected = StateStore.get('selectedInstanceIds') || [];
         if (!pack || !selected.length) return;
 
-        const nextCases = [...(pack.cases || [])];
-        const newIds = [];
-        selected.forEach(id => {
-          const inst = (pack.cases || []).find(i => i.id === id);
-          if (!inst) return;
-          const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: -80, y: 10, z: 0 };
-          nextCases.push({
-            ...Utils.deepClone(inst),
-            id: Utils.uuid(),
-            transform: {
-              ...Utils.deepClone(inst.transform || {}),
-              position: { x: pos.x + 12, y: pos.y, z: pos.z + 12 },
-            },
-            hidden: false,
-          });
-          newIds.push(nextCases[nextCases.length - 1].id);
-        });
-
-        PackLibrary.update(packId, { cases: nextCases });
-        StateStore.set({ selectedInstanceIds: newIds }, { skipHistory: true });
-        UIComponents.showToast(`Duplicated ${newIds.length} case(s)`, 'success', { title: 'Edit' });
+        const source = selected
+          .map(id => (pack.cases || []).find(inst => inst && inst.id === id))
+          .filter(Boolean);
+        const result = PackLibrary.duplicateInstancesSafely(packId, source, CaseLibrary.getCases());
+        if (!result || !result.newIds.length) {
+          UIComponents.showToast('No collision-free duplicate position found', 'warning', { title: 'Edit' });
+          return;
+        }
+        StateStore.set({ selectedInstanceIds: result.newIds }, { skipHistory: true });
+        CaseScene.setSelected(result.newIds);
+        UIComponents.showToast(
+          result.placement === 'staged'
+            ? `Duplicated ${result.newIds.length} case(s) to staging`
+            : `Duplicated ${result.newIds.length} case(s)`,
+          'success',
+          { title: 'Edit' }
+        );
       }
 
       function copySelected() {
@@ -4219,11 +4201,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         clipboard = selected
           .map(id => (pack.cases || []).find(i => i.id === id))
           .filter(Boolean)
-          .map(i => ({
-            caseId: i.caseId,
-            transform: Utils.deepClone(i.transform || {}),
-            ...cloneOrientationLockMetadata(i),
-          }));
+          .map(i => Utils.deepClone(i));
         UIComponents.showToast(`Copied ${clipboard.length} case(s)`, 'info', { title: 'Clipboard' });
       }
 
@@ -4234,28 +4212,20 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const pack = PackLibrary.getById(packId);
         if (!pack || !clipboard || !clipboard.length) return;
 
-        const nextCases = [...(pack.cases || [])];
-        const newIds = [];
-        clipboard.forEach(item => {
-          const pos = item.transform && item.transform.position ? item.transform.position : { x: -80, y: 10, z: 0 };
-          nextCases.push({
-            id: Utils.uuid(),
-            caseId: item.caseId,
-            transform: {
-              position: { x: pos.x + 12, y: pos.y, z: pos.z + 12 },
-              rotation: Utils.deepClone((item.transform && item.transform.rotation) || { x: 0, y: 0, z: 0 }),
-              scale: Utils.deepClone((item.transform && item.transform.scale) || { x: 1, y: 1, z: 1 }),
-            },
-            hidden: false,
-            groupId: null,
-            ...cloneOrientationLockMetadata(item),
-          });
-          newIds.push(nextCases[nextCases.length - 1].id);
-        });
-
-        PackLibrary.update(packId, { cases: nextCases });
-        StateStore.set({ selectedInstanceIds: newIds }, { skipHistory: true });
-        UIComponents.showToast(`Pasted ${newIds.length} case(s)`, 'success', { title: 'Clipboard' });
+        const result = PackLibrary.duplicateInstancesSafely(packId, clipboard, CaseLibrary.getCases());
+        if (!result || !result.newIds.length) {
+          UIComponents.showToast('No collision-free paste position found', 'warning', { title: 'Clipboard' });
+          return;
+        }
+        StateStore.set({ selectedInstanceIds: result.newIds }, { skipHistory: true });
+        CaseScene.setSelected(result.newIds);
+        UIComponents.showToast(
+          result.placement === 'staged'
+            ? `Pasted ${result.newIds.length} case(s) to staging`
+            : `Pasted ${result.newIds.length} case(s)`,
+          'success',
+          { title: 'Clipboard' }
+        );
       }
 
       function focusSelected() {

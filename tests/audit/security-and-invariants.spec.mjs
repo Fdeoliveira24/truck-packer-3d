@@ -2100,6 +2100,181 @@ test('PACK-IMPORT-SAFE-1 explicit wheel-well blocked-body addInstance is staged 
     'the safe staged position must be persisted to the pack');
 });
 
+test('KEYBOARD-DUPLICATE-SAFE Cmd/Ctrl+D duplicate near occupied packed cases does not overlap', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-keyboard-duplicate', dimensions: { length: 12, width: 12, height: 12 } });
+  const pack = {
+    id: 'pack-keyboard-duplicate',
+    title: 'Keyboard Duplicate',
+    truck: { length: 72, width: 48, height: 48 },
+    cases: [
+      makePackImportInstance(caseData.id, { id: 'source', transform: { position: { x: 6, y: 6, z: -12 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'occupied', transform: { position: { x: 18, y: 6, z: -12 } }, placement: 'packed' }),
+    ],
+  };
+
+  StateStore.init({ caseLibrary: [caseData], packLibrary: [pack], folderLibrary: [], preferences: {} });
+  const result = PackLibrary.duplicateInstancesSafely(pack.id, [pack.cases[0]], [caseData]);
+  const updated = PackLibrary.getById(pack.id);
+
+  assert.equal(result.placement, 'packed', 'duplicate should remain packed when a safe truck position exists');
+  assert.equal(updated.cases.length, 3);
+  assertPackImportNoOverlaps(updated.cases, caseData);
+});
+
+test('KEYBOARD-DUPLICATE-SAFE Cmd/Ctrl+C then Cmd/Ctrl+V paste near occupied packed cases does not overlap', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-keyboard-paste', dimensions: { length: 12, width: 12, height: 12 } });
+  const pack = {
+    id: 'pack-keyboard-paste',
+    title: 'Keyboard Paste',
+    truck: { length: 72, width: 48, height: 48 },
+    cases: [
+      makePackImportInstance(caseData.id, { id: 'source', transform: { position: { x: 6, y: 6, z: -12 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'occupied', transform: { position: { x: 18, y: 6, z: -12 } }, placement: 'packed' }),
+    ],
+  };
+  const clipboard = [JSON.parse(JSON.stringify(pack.cases[0]))];
+
+  StateStore.init({ caseLibrary: [caseData], packLibrary: [pack], folderLibrary: [], preferences: {} });
+  const result = PackLibrary.duplicateInstancesSafely(pack.id, clipboard, [caseData]);
+  const updated = PackLibrary.getById(pack.id);
+
+  assert.equal(result.placement, 'packed', 'paste should remain packed when a safe truck position exists');
+  assert.equal(updated.cases.length, 3);
+  assertPackImportNoOverlaps(updated.cases, caseData);
+});
+
+test('KEYBOARD-DUPLICATE-SAFE multi-select paste preserves group spacing without collisions', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-keyboard-multi-paste', dimensions: { length: 12, width: 12, height: 12 } });
+  const pack = {
+    id: 'pack-keyboard-multi-paste',
+    title: 'Keyboard Multi Paste',
+    truck: { length: 96, width: 60, height: 48 },
+    cases: [
+      makePackImportInstance(caseData.id, { id: 'source-a', transform: { position: { x: 6, y: 6, z: -18 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'source-b', transform: { position: { x: 18, y: 6, z: -18 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'occupied-a', transform: { position: { x: 30, y: 6, z: -18 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'occupied-b', transform: { position: { x: 42, y: 6, z: -18 } }, placement: 'packed' }),
+    ],
+  };
+  const clipboard = pack.cases.slice(0, 2).map(inst => JSON.parse(JSON.stringify(inst)));
+
+  StateStore.init({ caseLibrary: [caseData], packLibrary: [pack], folderLibrary: [], preferences: {} });
+  const result = PackLibrary.duplicateInstancesSafely(pack.id, clipboard, [caseData]);
+  const updated = PackLibrary.getById(pack.id);
+  const pasted = updated.cases.filter(inst => result.newIds.includes(inst.id));
+
+  assert.equal(result.placement, 'packed', 'multi paste should use an alternate packed offset when the first offset is occupied');
+  assert.equal(pasted.length, 2);
+  assert.equal(
+    Math.abs(pasted[0].transform.position.x - pasted[1].transform.position.x),
+    12,
+    'multi-select paste must preserve the copied group spacing'
+  );
+  assertPackImportNoOverlaps(updated.cases, caseData);
+});
+
+test('KEYBOARD-DUPLICATE-SAFE duplicate and paste respect Wheel Wells blocked bodies', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-keyboard-wheelwell', dimensions: { length: 10, width: 10, height: 10 } });
+  const truck = {
+    length: 100,
+    width: 100,
+    height: 80,
+    shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 35, wellWidth: 15, wellLength: 35, wellOffsetFromRear: 25 },
+  };
+  const pack = {
+    id: 'pack-keyboard-wheelwell',
+    title: 'Keyboard Wheel Well',
+    truck,
+    cases: [
+      makePackImportInstance(caseData.id, { id: 'source', transform: { position: { x: 30, y: 5, z: 30 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'block-x-plus', transform: { position: { x: 40, y: 5, z: 30 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'block-x-minus', transform: { position: { x: 20, y: 5, z: 30 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'block-z-minus', transform: { position: { x: 30, y: 5, z: 20 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'block-diag-plus', transform: { position: { x: 40, y: 5, z: 20 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'block-diag-minus', transform: { position: { x: 20, y: 5, z: 20 } }, placement: 'packed' }),
+    ],
+  };
+
+  StateStore.init({ caseLibrary: [caseData], packLibrary: [pack], folderLibrary: [], preferences: {} });
+  const result = PackLibrary.duplicateInstancesSafely(pack.id, [pack.cases[0]], [caseData]);
+  const updated = PackLibrary.getById(pack.id);
+  const created = updated.cases.find(inst => result.newIds.includes(inst.id));
+
+  assert.ok(['packed', 'staged'].includes(result.placement),
+    'wheel-well duplicate must resolve to a valid packed placement or safe staged fallback');
+  assert.equal(
+    PackLibrary.aabbIntersectsWheelWellBlockedBody(getPackImportAabb(created, caseData), truck),
+    false,
+    'keyboard duplicate/paste must never persist a copy intersecting the wheel-well body'
+  );
+  assertPackImportNoOverlaps(updated.cases, caseData);
+});
+
+test('KEYBOARD-DUPLICATE-SAFE duplicate and paste use staged fallback when no safe packed offset exists', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-keyboard-staged-fallback', dimensions: { length: 24, width: 24, height: 24 } });
+  const pack = {
+    id: 'pack-keyboard-staged-fallback',
+    title: 'Keyboard Staged Fallback',
+    truck: { length: 24, width: 24, height: 24 },
+    cases: [
+      makePackImportInstance(caseData.id, { id: 'source', transform: { position: { x: 12, y: 12, z: 0 } }, placement: 'packed' }),
+    ],
+  };
+
+  StateStore.init({ caseLibrary: [caseData], packLibrary: [pack], folderLibrary: [], preferences: {} });
+  const result = PackLibrary.duplicateInstancesSafely(pack.id, [pack.cases[0]], [caseData]);
+  const updated = PackLibrary.getById(pack.id);
+  const created = updated.cases.find(inst => result.newIds.includes(inst.id));
+
+  assert.equal(result.placement, 'staged', 'a full truck must stage the duplicate instead of overlapping in place');
+  assert.equal(created.placement, 'staged');
+  assert.ok(created.transform.position.z > pack.truck.width / 2, 'staged fallback must be outside the trailer width');
+  assertPackImportNoOverlaps(updated.cases, caseData);
+});
+
+test('KEYBOARD-DUPLICATE-SAFE duplicate helper preserves orientation metadata and button path reuses it', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-keyboard-lock', dimensions: { length: 24, width: 48, height: 30 } });
+  const locked = makePackImportInstance(caseData.id, {
+    id: 'locked-source',
+    transform: { position: { x: 12, y: 15, z: -12 }, rotation: { x: 0, y: Math.PI / 2, z: 0 } },
+    placement: 'packed',
+    orientationLocked: true,
+    lockedRotation: { x: 0, y: Math.PI / 2, z: 0 },
+    orientedDims: { length: 48, width: 24, height: 30 },
+  });
+  const pack = {
+    id: 'pack-keyboard-lock',
+    title: 'Keyboard Lock',
+    truck: { length: 120, width: 80, height: 80 },
+    cases: [locked],
+  };
+
+  StateStore.init({ caseLibrary: [caseData], packLibrary: [pack], folderLibrary: [], preferences: {} });
+  const result = PackLibrary.duplicateInstancesSafely(pack.id, [locked], [caseData]);
+  const updated = PackLibrary.getById(pack.id);
+  const created = updated.cases.find(inst => result.newIds.includes(inst.id));
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+
+  assert.equal(created.orientationLocked, true);
+  assert.deepEqual(created.lockedRotation, locked.lockedRotation);
+  assert.deepEqual(created.orientedDims, locked.orientedDims);
+  assert.match(editorSrc, /PackLibrary\.duplicateInstancesSafely\(pack\.id,\s*source,\s*CaseLibrary\.getCases\(\)\)/,
+    'Inspector Duplicate button path must route through the same safe duplicate helper');
+});
+
 // ── End PACK-IMPORT-SCHEMA-1 ──────────────────────────────────────────────
 
 // ── PLACEMENT-STATE-S2 ─────────────────────────────────────────────────────
@@ -2323,8 +2498,10 @@ test('PLACEMENT-STATE-S2 duplicateSelection records placement from staging fallb
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(block.length > 0, 'editor-screen must define duplicateSelection(pack, selectedIds)');
-  assert.match(block, /placement:\s*placement\.staged \? 'staged' : 'packed',/,
-    'duplicateSelection must mark in-truck duplicates as packed and staging fallback duplicates as staged');
+  assert.match(block, /PackLibrary\.duplicateInstancesSafely\(pack\.id,\s*source,\s*CaseLibrary\.getCases\(\)\)/,
+    'duplicateSelection must route through the shared safe duplicate helper');
+  assert.match(block, /result\.placement === 'staged'/,
+    'duplicateSelection must surface staged fallback results from the shared helper');
 });
 
 test('PLACEMENT-STATE-S2 finishDrag records placement from final zone containment', async () => {
@@ -4356,13 +4533,13 @@ test('STAGING-S1 unpackAll uses the canonical staging helper instead of a hardco
 });
 
 test('STAGING-S1 duplicate staging fallback uses the canonical staging helper instead of a hardcoded grid', async () => {
-  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const src = await fs.readFile(packLibraryPath, 'utf8');
   const start = src.indexOf('function findDuplicateOffset(pack, payload, existingAabbs)');
-  const end = src.indexOf('\n    function duplicateSelection(pack, selectedIds)', start);
+  const end = src.indexOf('\nexport function buildSafeDuplicateInstances', start);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
-  assert.ok(block.length > 0, 'editor-screen must define findDuplicateOffset(pack, payload, existingAabbs)');
-  assert.match(block, /PackLibrary\.findSafeStagingPosition\(pack, groupDims, existingAabbs\)/,
+  assert.ok(block.length > 0, 'pack-library must define findDuplicateOffset(pack, payload, existingAabbs)');
+  assert.match(block, /findSafeStagingPosition\(pack, groupDims, existingAabbs\)/,
     'duplicate staging fallback must reuse the canonical staging helper for the group bounding box');
   assert.doesNotMatch(block, /stagingGap|stageStartZ|stageStartX/,
     'duplicate staging fallback must not keep its own hardcoded staging grid constants');
@@ -6847,12 +7024,13 @@ test('EDITOR selection Actions cards stay minimal, ordered, and bound to existin
     'single-item Actions card must apply the tp3d-editor-action-grid layout class');
   assert.match(makeSelectBlock, /function makeVisibilityButton\(pack, selectedIds\)[\s\S]*instances\.every\(inst => inst\.hidden === true\)[\s\S]*label: showSelection \? 'Show' : 'Hide'[\s\S]*hidden: !showSelection/,
     'Actions cards must use one consistent Show/Hide toggle based on selected hidden state');
-  assert.match(makeSelectBlock, /function duplicateAabbIntersects\(a,\s*b\)[\s\S]*a\.min\.x < b\.max\.x - EPS[\s\S]*a\.max\.z > b\.min\.z \+ EPS/,
-    'Actions Duplicate must use an AABB collision guard before saving clones');
-  assert.match(makeSelectBlock, /function isDuplicateInsideTruck\(pack,\s*aabb\)[\s\S]*TrailerGeometry\.getTrailerUsableZones\(pack\.truck\)[\s\S]*TrailerGeometry\.isAabbContainedInAnyZone\(aabb,\s*zones\)/,
-    'Actions Duplicate must use existing TrailerGeometry usable zones for inside-truck checks');
-  assert.match(makeSelectBlock, /function findDuplicateOffset\(pack,\s*payload,\s*existingAabbs\)[\s\S]*duplicateOffsetIsSafe\(pack,\s*payload,\s*existingAabbs,\s*offset,\s*true\)[\s\S]*duplicateOffsetIsSafe\(pack,\s*payload,\s*existingAabbs,\s*offset,\s*false\)/,
-    'Actions Duplicate must try safe in-truck placement first, then collision-free staging');
+  assert.match(makeSelectBlock, /function duplicateSelection\(pack,\s*selectedIds\)[\s\S]*PackLibrary\.duplicateInstancesSafely\(pack\.id,\s*source,\s*CaseLibrary\.getCases\(\)\)/,
+    'Actions Duplicate must use the shared safe duplicate helper before saving clones');
+  const packLibSrc = await fs.readFile(packLibraryPath, 'utf8');
+  assert.match(packLibSrc, /function duplicateAabbIsPackedSafe\(pack,\s*aabb\)[\s\S]*aabbIntersectsWheelWellBlockedBody\(aabb,\s*pack && pack\.truck\)[\s\S]*isAabbContainedInAnyZone\(aabb,\s*zones\)/,
+    'shared Duplicate helper must use wheel-well body and usable-zone checks for packed placements');
+  assert.match(packLibSrc, /function findDuplicateOffset\(pack,\s*payload,\s*existingAabbs\)[\s\S]*duplicateOffsetIsSafe\(pack,\s*payload,\s*existingAabbs,\s*offset,\s*true\)[\s\S]*duplicateOffsetIsSafe\(pack,\s*payload,\s*existingAabbs,\s*stagedOffset,\s*false\)/,
+    'shared Duplicate helper must try safe in-truck placement first, then collision-free staging');
   assert.doesNotMatch(makeSelectBlock, /position:\s*\{\s*x:\s*pos\.x \+ 12,\s*y:\s*pos\.y,\s*z:\s*pos\.z \+ 12/,
     'Actions Duplicate must not use the old fixed +12 inch offset that can overlap selected boxes');
   assert.doesNotMatch(src, /function deleteAllCases|Delete All|renderPackActionsCard/,
@@ -11277,9 +11455,6 @@ test('AUTO-PACK-A0B app and pack import paths do not strip orientation locks', a
 
 test('AUTO-PACK-A0B clipboard and duplicate flows preserve orientation lock metadata', async () => {
   const src = await fs.readFile(appPath, 'utf8');
-  const helperStart = src.indexOf('function cloneOrientationLockMetadata(inst)');
-  const helperEnd = src.indexOf('\n      function duplicateSelected()', helperStart);
-  const helperBlock = helperStart >= 0 && helperEnd > helperStart ? src.slice(helperStart, helperEnd) : '';
   const duplicateStart = src.indexOf('function duplicateSelected()');
   const duplicateEnd = src.indexOf('\n      function copySelected()', duplicateStart);
   const duplicateBlock = duplicateStart >= 0 && duplicateEnd > duplicateStart ? src.slice(duplicateStart, duplicateEnd) : '';
@@ -11289,19 +11464,21 @@ test('AUTO-PACK-A0B clipboard and duplicate flows preserve orientation lock meta
   const pasteStart = src.indexOf('function pasteClipboard()');
   const pasteEnd = src.indexOf('\n      function focusSelected()', pasteStart);
   const pasteBlock = pasteStart >= 0 && pasteEnd > pasteStart ? src.slice(pasteStart, pasteEnd) : '';
+  const packLibSrc = await fs.readFile(packLibraryPath, 'utf8');
+  const safeStart = packLibSrc.indexOf('export function buildSafeDuplicateInstances(');
+  const safeEnd = packLibSrc.indexOf('\nexport function duplicateInstancesSafely', safeStart);
+  const safeBlock = safeStart >= 0 && safeEnd > safeStart ? packLibSrc.slice(safeStart, safeEnd) : '';
 
-  assert.match(helperBlock, /orientationLocked:\s*true/,
-    'clipboard helper must preserve orientationLocked=true');
-  assert.match(helperBlock, /lockedRotation:\s*Utils\.deepClone\(inst\.lockedRotation \|\| transformRotation\)/,
-    'clipboard helper must preserve lockedRotation with transform rotation fallback');
-  assert.match(helperBlock, /orientedDims:\s*inst\.orientedDims \? Utils\.deepClone\(inst\.orientedDims\) : null/,
-    'clipboard helper must preserve orientedDims when present');
-  assert.match(duplicateBlock, /\.\.\.Utils\.deepClone\(inst\)/,
-    'duplicateSelected must keep cloning the full instance metadata');
-  assert.match(copyBlock, /\.\.\.cloneOrientationLockMetadata\(i\)/,
-    'copySelected must copy orientation lock metadata');
-  assert.match(pasteBlock, /\.\.\.cloneOrientationLockMetadata\(item\)/,
-    'pasteClipboard must apply orientation lock metadata to pasted instances');
+  assert.match(copyBlock, /\.map\(i => Utils\.deepClone\(i\)\)/,
+    'copySelected must copy the full instance metadata, including orientation locks');
+  assert.match(duplicateBlock, /PackLibrary\.duplicateInstancesSafely\(packId,\s*source,\s*CaseLibrary\.getCases\(\)\)/,
+    'duplicateSelected must route through the shared safe duplicate helper');
+  assert.match(pasteBlock, /PackLibrary\.duplicateInstancesSafely\(packId,\s*clipboard,\s*CaseLibrary\.getCases\(\)\)/,
+    'pasteClipboard must route clipboard instances through the shared safe duplicate helper');
+  assert.match(safeBlock, /const next = Utils\.deepClone\(item\.inst\)/,
+    'shared safe duplicate helper must preserve full instance metadata');
+  assert.match(safeBlock, /next\.id = Utils\.uuid\(\)/,
+    'shared safe duplicate helper must assign new ids after cloning metadata');
 });
 
 test('AUTO-PACK-A0B editor snapping uses usable-zone walls, not missing TrailerGeometry dimensions', async () => {

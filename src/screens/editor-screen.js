@@ -2487,213 +2487,25 @@ export function createEditorScreen({
       });
     }
 
-    function getDuplicateDims(inst) {
-      if (inst && inst.orientedDims) {
-        return {
-          length: Math.max(0, Number(inst.orientedDims.length) || 0),
-          width: Math.max(0, Number(inst.orientedDims.width) || 0),
-          height: Math.max(0, Number(inst.orientedDims.height) || 0),
-        };
-      }
-      const c = inst ? CaseLibrary.getById(inst.caseId) : null;
-      const d = c && c.dimensions ? c.dimensions : {};
-      return {
-        length: Math.max(0, Number(d.length) || 0),
-        width: Math.max(0, Number(d.width) || 0),
-        height: Math.max(0, Number(d.height) || 0),
-      };
-    }
-
-    function getDuplicatePosition(inst, dims) {
-      const position = inst && inst.transform && inst.transform.position ? inst.transform.position : null;
-      return {
-        x: Number(position && position.x) || 0,
-        y: Number(position && position.y) || Math.max(1, dims.height / 2),
-        z: Number(position && position.z) || 0,
-      };
-    }
-
-    function getDuplicateAabb(position, dims) {
-      return {
-        min: {
-          x: position.x - dims.length / 2,
-          y: position.y - dims.height / 2,
-          z: position.z - dims.width / 2,
-        },
-        max: {
-          x: position.x + dims.length / 2,
-          y: position.y + dims.height / 2,
-          z: position.z + dims.width / 2,
-        },
-      };
-    }
-
-    function duplicateAabbIntersects(a, b) {
-      const EPS = 0.001;
-      return (
-        a.min.x < b.max.x - EPS &&
-        a.max.x > b.min.x + EPS &&
-        a.min.y < b.max.y - EPS &&
-        a.max.y > b.min.y + EPS &&
-        a.min.z < b.max.z - EPS &&
-        a.max.z > b.min.z + EPS
-      );
-    }
-
-    function isDuplicateInsideTruck(pack, aabb) {
-      if (!pack || !pack.truck) return false;
-      const zones = TrailerGeometry.getTrailerUsableZones(pack.truck);
-      return TrailerGeometry.isAabbContainedInAnyZone(aabb, zones);
-    }
-
-    function buildDuplicatePayload(pack, selectedIds) {
-      const source = Array.isArray(selectedIds)
-        ? selectedIds.map(id => (pack.cases || []).find(i => i.id === id)).filter(Boolean)
-        : [];
-      return source
-        .map(inst => {
-          const dims = getDuplicateDims(inst);
-          if (!dims.length || !dims.width || !dims.height) return null;
-          return {
-            inst,
-            dims,
-            position: getDuplicatePosition(inst, dims),
-          };
-        })
-        .filter(Boolean);
-    }
-
-    function buildDuplicateBounds(payload) {
-      const initial = {
-        min: { x: Infinity, y: Infinity, z: Infinity },
-        max: { x: -Infinity, y: -Infinity, z: -Infinity },
-      };
-      return payload.reduce((bounds, item) => {
-        const aabb = getDuplicateAabb(item.position, item.dims);
-        bounds.min.x = Math.min(bounds.min.x, aabb.min.x);
-        bounds.min.y = Math.min(bounds.min.y, aabb.min.y);
-        bounds.min.z = Math.min(bounds.min.z, aabb.min.z);
-        bounds.max.x = Math.max(bounds.max.x, aabb.max.x);
-        bounds.max.y = Math.max(bounds.max.y, aabb.max.y);
-        bounds.max.z = Math.max(bounds.max.z, aabb.max.z);
-        return bounds;
-      }, initial);
-    }
-
-    function getExistingDuplicateAabbs(pack) {
-      return (pack.cases || [])
-        .filter(inst => inst && inst.hidden !== true)
-        .map(inst => {
-          const dims = getDuplicateDims(inst);
-          if (!dims.length || !dims.width || !dims.height) return null;
-          return getDuplicateAabb(getDuplicatePosition(inst, dims), dims);
-        })
-        .filter(Boolean);
-    }
-
-    function duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, requireInsideTruck) {
-      const candidateAabbs = [];
-      for (const item of payload) {
-        const position = {
-          x: item.position.x + offset.x,
-          y: item.position.y + offset.y,
-          z: item.position.z + offset.z,
-        };
-        const aabb = getDuplicateAabb(position, item.dims);
-        if (requireInsideTruck && !isDuplicateInsideTruck(pack, aabb)) return false;
-        if (existingAabbs.some(existing => duplicateAabbIntersects(aabb, existing))) return false;
-        if (candidateAabbs.some(existing => duplicateAabbIntersects(aabb, existing))) return false;
-        candidateAabbs.push(aabb);
-      }
-      return true;
-    }
-
-    function findDuplicateOffset(pack, payload, existingAabbs) {
-      if (!payload.length) return null;
-      const bounds = buildDuplicateBounds(payload);
-      const spanX = Math.max(1, bounds.max.x - bounds.min.x);
-      const spanZ = Math.max(1, bounds.max.z - bounds.min.z);
-      const sourceInsideTruck = payload.every(item =>
-        isDuplicateInsideTruck(pack, getDuplicateAabb(item.position, item.dims))
-      );
-      const insideOffsets = [
-        { x: spanX, y: 0, z: 0 },
-        { x: -spanX, y: 0, z: 0 },
-        { x: 0, y: 0, z: spanZ },
-        { x: 0, y: 0, z: -spanZ },
-        { x: spanX, y: 0, z: spanZ },
-        { x: spanX, y: 0, z: -spanZ },
-        { x: -spanX, y: 0, z: spanZ },
-        { x: -spanX, y: 0, z: -spanZ },
-      ];
-      if (sourceInsideTruck) {
-        const insideOffset = insideOffsets.find(offset =>
-          duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, true)
-        );
-        if (insideOffset) return { offset: insideOffset, staged: false };
-      }
-
-      const groupDims = {
-        length: spanX,
-        width: spanZ,
-        height: Math.max(1, bounds.max.y - bounds.min.y),
-      };
-      const staged = PackLibrary.findSafeStagingPosition(pack, groupDims, existingAabbs);
-      const groupCenter = {
-        x: (bounds.min.x + bounds.max.x) / 2,
-        y: (bounds.min.y + bounds.max.y) / 2,
-        z: (bounds.min.z + bounds.max.z) / 2,
-      };
-      const offset = {
-        x: staged.position.x - groupCenter.x,
-        y: staged.position.y - groupCenter.y,
-        z: staged.position.z - groupCenter.z,
-      };
-      if (duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, false)) {
-        return { offset, staged: true };
-      }
-      return null;
-    }
-
     function duplicateSelection(pack, selectedIds) {
       if (editorMutationBlocked()) return;
       const ids = Array.isArray(selectedIds) ? selectedIds : [];
       if (!pack || !ids.length) return;
-      const payload = buildDuplicatePayload(pack, ids);
-      if (!payload.length) return;
-      const placement = findDuplicateOffset(pack, payload, getExistingDuplicateAabbs(pack));
-      if (!placement) {
+      const source = ids
+        .map(id => (pack.cases || []).find(inst => inst && inst.id === id))
+        .filter(Boolean);
+      if (!source.length) return;
+      const result = PackLibrary.duplicateInstancesSafely(pack.id, source, CaseLibrary.getCases());
+      if (!result || !result.newIds.length) {
         UIComponents.showToast('No collision-free duplicate position found', 'warning');
         return;
       }
-      const nextCases = [...(pack.cases || [])];
-      const newIds = [];
-      payload.forEach(item => {
-        const { inst, position } = item;
-        nextCases.push({
-          ...Utils.deepClone(inst),
-          id: Utils.uuid(),
-          transform: {
-            ...Utils.deepClone(inst.transform || {}),
-            position: {
-              x: position.x + placement.offset.x,
-              y: position.y + placement.offset.y,
-              z: position.z + placement.offset.z,
-            },
-          },
-          hidden: false,
-          placement: placement.staged ? 'staged' : 'packed',
-        });
-        newIds.push(nextCases[nextCases.length - 1].id);
-      });
-      if (!newIds.length) return;
-      PackLibrary.update(pack.id, { cases: nextCases });
-      StateStore.set({ selectedInstanceIds: newIds }, { skipHistory: true });
-      CaseScene.setSelected(newIds);
+      StateStore.set({ selectedInstanceIds: result.newIds }, { skipHistory: true });
+      CaseScene.setSelected(result.newIds);
       UIComponents.showToast(
-        placement.staged
-          ? `Duplicated ${newIds.length} case(s) to staging`
-          : `Duplicated ${newIds.length} case(s)`,
+        result.placement === 'staged'
+          ? `Duplicated ${result.newIds.length} case(s) to staging`
+          : `Duplicated ${result.newIds.length} case(s)`,
         'success'
       );
       render();

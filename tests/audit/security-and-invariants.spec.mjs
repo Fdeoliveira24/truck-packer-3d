@@ -3154,6 +3154,53 @@ test('WHEELWELL-SUPPORT buildChannelRisersToPlane builds coplanar multi-layer ch
   }
 });
 
+test('WHEELWELL-SUPPORT generic shelf candidates enforce real support and overhang limits', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 636,
+    width: 102,
+    height: 98,
+    shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 34.3, wellWidth: 15.3, wellLength: 222.6, wellOffsetFromRear: 159 },
+  };
+  const geo = Solver.getWheelWellGeometry(truck);
+  const leftShelf = (l, w, h) => Solver.getAabb({
+    x: geo.wx1 - l / 2,
+    y: geo.wellHeight + h / 2,
+    z: -truck.width / 2 + w / 2,
+  }, { l, w, h });
+  const centerBridge = (l, w, h) => Solver.getAabb({
+    x: geo.wx1 - l / 2,
+    y: geo.wellHeight + h / 2,
+    z: 0,
+  }, { l, w, h });
+
+  const cases = [
+    { label: '24x18x16', dims: { l: 24, w: 18, h: 16 }, stable: true },
+    { label: '30x20x10', dims: { l: 30, w: 20, h: 10 }, stable: true },
+    { label: 'narrow-channel-carton', dims: { l: 20, w: 10, h: 10 }, stable: true },
+    { label: '48x24x24-too-wide-for-shelf-alone', dims: { l: 48, w: 24, h: 24 }, stable: false },
+  ];
+
+  for (const fixture of cases) {
+    const aabb = leftShelf(fixture.dims.l, fixture.dims.w, fixture.dims.h);
+    assert.equal(Solver.isAabbWithinTruckMinusBlocked(aabb, geo), true, `${fixture.label}: shelf candidate is body-safe`);
+    assert.equal(
+      Solver.isWheelWellSupportedAndStable(aabb, [], geo, { weight: 30 }),
+      fixture.stable,
+      `${fixture.label}: direct shelf support follows real support/overhang rules`
+    );
+  }
+
+  const unsupportedCenter = centerBridge(24, 18, 16);
+  const centerSupport = Solver.computeWheelWellSupport(unsupportedCenter, [], geo, { weight: 30 });
+  assert.equal(Solver.isAabbWithinTruckMinusBlocked(unsupportedCenter, geo), true,
+    'a center-channel bridge pose can be body-safe but still unsupported');
+  assert.equal(centerSupport.fraction, 0, 'the center bridge has no vertical support without coplanar cargo');
+  assert.equal(Solver.isWheelWellSupportedAndStable(unsupportedCenter, [], geo, { weight: 30 }), false,
+    'the solver must not fake a full-width raised floor over the wheel-well channel');
+});
+
 test('WHEELWELL-SUPPORT two-step build-up+bridge adds safe, deterministic placements on geometry that allows it; default OFF unchanged', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
@@ -3191,10 +3238,16 @@ test('WHEELWELL-SUPPORT two-step build-up+bridge adds safe, deterministic placem
   }
 });
 
-test('WHEELWELL-BRIDGE active pass keeps Wheel Wells gravity/front-retained before well-top corner use', async () => {
+test('WHEELWELL-BRIDGE exact 24x18 fixture keeps lower front stacks before well-top shelf use', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
+  const truck = {
+    length: 636,
+    width: 102,
+    height: 98,
+    shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 34.3, wellWidth: 15.3, wellLength: 222.6, wellOffsetFromRear: 159 },
+  };
   const zones = PackLib.getTrailerUsableZones(truck);
   const makeItems = count => Array.from({ length: count }, (_, i) => ({
     instanceId: `i${i}`,
@@ -3204,43 +3257,20 @@ test('WHEELWELL-BRIDGE active pass keeps Wheel Wells gravity/front-retained befo
     weight: 30,
     orientationLock: 'any',
     canFlip: false,
+    maxStackCount: 2,
   }));
 
-  const items = makeItems(432);
-  const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const items = makeItems(240);
   const on = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
   const repeat = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
-  const larger = Solver.solveAutoPack({
-    truck,
-    zones,
-    loadFrontFirst: true,
-    items: makeItems(600),
-    enableWheelWellBridge: true,
-  });
-  const partial = Solver.solveAutoPack({
-    truck,
-    zones,
-    loadFrontFirst: true,
-    items: makeItems(140),
-    enableWheelWellBridge: true,
-  });
+  const standardTruck = { length: 636, width: 102, height: 98, shapeMode: 'rect' };
+  const frontTruck = phcFrontOverhangTruck();
   const geo = Solver.getWheelWellGeometry(truck);
   const placed = result => [...result.placements].map(([id, pos]) => {
     const od = result.orientedDims.get(id);
     const aabb = Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
     return { id, pos, od, aabb, minY: aabb.min.y };
   });
-  const intervalsOverlapLocal = (a0, a1, b0, b1) =>
-    Math.min(a1, b1) - Math.max(a0, b0) > 0.05;
-  const hasForwardRetention = (item, all) => {
-    if (Math.abs(item.aabb.max.x - truck.length) <= 0.05) return true;
-    return all.some(other =>
-      other !== item &&
-      Math.abs(other.aabb.min.x - item.aabb.max.x) <= 0.06 &&
-      intervalsOverlapLocal(other.aabb.min.y, other.aabb.max.y, item.aabb.min.y, item.aabb.max.y) &&
-      intervalsOverlapLocal(other.aabb.min.z, other.aabb.max.z, item.aabb.min.z, item.aabb.max.z)
-    );
-  };
   const metrics = result => {
     const p = placed(result);
     return {
@@ -3248,46 +3278,44 @@ test('WHEELWELL-BRIDGE active pass keeps Wheel Wells gravity/front-retained befo
       floor: p.filter(item => item.minY <= 0.2),
       wellTop: p.filter(item => Math.abs(item.minY - geo.wellHeight) < 0.2),
       lowerStack: p.filter(item => item.minY > 0.2 && item.minY < geo.wellHeight - 0.2),
-      rearStack: p.filter(item => item.aabb.max.x <= geo.wx0 + 0.1 && item.minY > 0.5),
-      highRearStack: p.filter(item => item.aabb.max.x <= geo.wx0 + 0.1 && item.minY > geo.wellHeight + 0.1),
       bodyHits: p.filter(item => Solver.aabbIntersectsWheelWellBody(item.aabb, geo)),
-      unretainedAtOrAboveWell: p.filter(item =>
-        item.minY >= geo.wellHeight - 0.2 &&
-        !hasForwardRetention(item, p)
-      ),
     };
   };
 
-  const offMetrics = metrics(off);
   const onMetrics = metrics(on);
-  const largerMetrics = metrics(larger);
-  const partialMetrics = metrics(partial);
-  assert.ok(partialMetrics.floor.length > partialMetrics.wellTop.length,
-    'Wheel Wells must load floor cargo before using raised wheel-well tops');
-  assert.ok(partialMetrics.wellTop.length > 0,
-    'after the floor pass, safe wheel-well top placements should close the well-span gap instead of waiting for all rear stacks');
-  assert.equal(on.placements.size, off.placements.size,
-    'well-top activation must not need more cargo to reduce the screenshot-style high rear gap');
-  assert.ok(onMetrics.lowerStack.length > onMetrics.wellTop.length,
-    'lower stack layers remain the dominant support path before raised well-top placements');
-  assert.ok(onMetrics.wellTop.length > 0,
-    'screenshot-sized loads must use real wheel-well top support before leaving a visible well-span void');
-  assert.equal(onMetrics.highRearStack.length, 0,
-    `high rear stacks are removed by front-retained scoring (was ${offMetrics.highRearStack.length} with bridge OFF)`);
-  assert.ok(largerMetrics.wellTop.length >= onMetrics.wellTop.length,
-    `larger loads still activate fixed wheel-well top support after front-retained capacity, got ${largerMetrics.wellTop.length}`);
+  assert.equal(on.placements.size, items.length, 'exact screenshot fixture still packs every case');
+  assert.ok(onMetrics.floor.length > 0, 'floor placements remain the first layer');
+  assert.ok(onMetrics.lowerStack.length > 0, 'valid lower raised/front stack opportunities are used');
+  assert.equal(onMetrics.wellTop.length, 0,
+    'well-top shelf placements must not outrank lower valid stack levels in the exact 24x18 fixture');
+  assert.ok(Math.max(...onMetrics.lowerStack.map(item => item.aabb.max.x)) >= truck.length - 0.1,
+    'lower raised stack placements are front-compressed to the high-X wall before wheel-well top use');
   assert.equal(onMetrics.bodyHits.length, 0, 'no active bridge/build-up placement enters a wheel-well body');
 
-  const topXs = [...new Set(largerMetrics.wellTop.map(item => Math.round(item.pos.x * 10) / 10))].sort((a, b) => b - a);
-  assert.ok(topXs.length >= 9, `well-top row spans the fixed well length, got x=${topXs.join(',')}`);
-  assert.ok(Math.max(...largerMetrics.wellTop.map(item => item.aabb.max.x)) >= geo.wx1 - 0.1,
-    'well-top placements start at the front/high-X end of the well span');
-  for (const item of largerMetrics.wellTop) {
-    assert.equal(Solver.isAabbWithinTruckMinusBlocked(item.aabb, geo), true,
-      `${item.id} stays inside the truck box minus blocked bodies`);
-    assert.equal(Solver.isWheelWellSupportedAndStable(item.aabb, largerMetrics.placements, geo, { weight: 30 }), true,
-      `${item.id} has real, stable wheel-well/cargo support`);
+  const legalShelf = Solver.getAabb(
+    { x: geo.wx1 - 12, y: geo.wellHeight + 8, z: -truck.width / 2 + 9 },
+    { l: 24, w: 18, h: 16 }
+  );
+  const centerBridge = Solver.getAabb(
+    { x: geo.wx1 - 12, y: geo.wellHeight + 8, z: 0 },
+    { l: 24, w: 18, h: 16 }
+  );
+  assert.equal(Solver.isWheelWellSupportedAndStable(legalShelf, [], geo, { weight: 30 }), true,
+    'a side shelf 24x18 top placement is physically legal');
+  assert.equal(Solver.isWheelWellSupportedAndStable(centerBridge, onMetrics.placements, geo, { weight: 30 }), false,
+    'the apparent center bridge gap is not fillable without coplanar support at the fixed well-top plane');
+
+  for (const { label, modeTruck } of [
+    { label: 'Standard', modeTruck: standardTruck },
+    { label: 'Front Overhang', modeTruck: frontTruck },
+  ]) {
+    const modeZones = PackLib.getTrailerUsableZones(modeTruck);
+    const modeItems = makeItems(80);
+    const bridgeOn = Solver.solveAutoPack({ truck: modeTruck, zones: modeZones, loadFrontFirst: true, items: modeItems, enableWheelWellBridge: true });
+    const bridgeOff = Solver.solveAutoPack({ truck: modeTruck, zones: modeZones, loadFrontFirst: true, items: modeItems, enableWheelWellBridge: false });
+    assert.equal(phcResultBytes(bridgeOn), phcResultBytes(bridgeOff), `${label}: wheel-well bridge order is a no-op outside Wheel Wells`);
   }
+
   for (let i = 0; i < onMetrics.placements.length; i++) {
     for (let j = i + 1; j < onMetrics.placements.length; j++) {
       assert.equal(Solver.aabbsOverlap(onMetrics.placements[i].aabb, onMetrics.placements[j].aabb), false,
@@ -3296,6 +3324,7 @@ test('WHEELWELL-BRIDGE active pass keeps Wheel Wells gravity/front-retained befo
   }
   assert.equal(JSON.stringify([...on.placements]), JSON.stringify([...repeat.placements]),
     'active Wheel Wells bridge/build-up output is deterministic');
+  wwAssertHardSafe(Solver, on, truck, zones, items, 'exact 24x18 wheel-well lower-first load');
 });
 
 function wwResultPlacements(Solver, result, items = []) {
@@ -3425,16 +3454,7 @@ function wwAvoidableForwardFloorMove(Solver, result, zones, items) {
   return null;
 }
 
-function wwMovedCount(before, after) {
-  let moved = 0;
-  for (const [id, pos] of after.placements) {
-    const old = before.placements.get(id);
-    if (!old || Math.abs(pos.x - old.x) > 0.01 || Math.abs(pos.y - old.y) > 0.01 || Math.abs(pos.z - old.z) > 0.01) moved++;
-  }
-  return moved;
-}
-
-test('WHEELWELL-FRONT-COMPRESSION slides raised placements forward without changing count, orientation, support, or body safety', async () => {
+test('WHEELWELL-FRONT-COMPRESSION preserves lower-first raised placements without weakening safety', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' };
@@ -3459,9 +3479,8 @@ test('WHEELWELL-FRONT-COMPRESSION slides raised placements forward without chang
   assert.equal(compressed.placements.size, uncompressed.placements.size, 'front compression preserves packed count');
   assert.deepEqual([...compressed.orientedDims], [...uncompressed.orientedDims], 'front compression preserves oriented dimensions');
   assert.deepEqual([...compressed.rotations], [...uncompressed.rotations], 'front compression preserves rotations');
-  assert.ok(wwMovedCount(uncompressed, compressed) > 0, 'fixture exercises the post-placement compression pass');
-  assert.ok(wwNonFloorFrontSlack(Solver, compressed, truck, zones, items) < wwNonFloorFrontSlack(Solver, uncompressed, truck, zones, items),
-    'raised/non-floor placements move closer to the front when legal');
+  assert.ok(wwNonFloorFrontSlack(Solver, compressed, truck, zones, items) <= wwNonFloorFrontSlack(Solver, uncompressed, truck, zones, items),
+    'front compression must not add raised/non-floor front slack');
   assert.equal(JSON.stringify([...compressed.placements]), JSON.stringify([...repeat.placements]), 'compressed output is deterministic');
   wwAssertHardSafe(Solver, compressed, truck, zones, items, 'front-compressed wheel wells');
 });

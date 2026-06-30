@@ -2697,15 +2697,6 @@ function placeWheelWellBuildUpBridges(output, packed, itemsById, geometry, loadF
   return placed;
 }
 
-function shouldRunPreStackWheelWellBridge(geometry, items) {
-  if (!geometry || !geometry.tops.length || !items || !items.length) return false;
-  const wellSpan = geometry.wx1 - geometry.wx0;
-  const minLength = Math.min(
-    ...items.flatMap(item => (item.candidates || []).map(candidate => candidate.l).filter(l => l > 0))
-  );
-  return Number.isFinite(minLength) && wellSpan >= minLength * 4;
-}
-
 export function solveAutoPack(input = {}) {
   const truck = normalizeTruck(input.truck || {});
   const zones = normalizeZones(input.zones || []);
@@ -2846,27 +2837,13 @@ export function solveAutoPack(input = {}) {
     floorCompactionOptions
   ).freeRects;
 
-  // Wheel Wells physical geometry (null for every other truck mode). The opt-in
-  // pre-stack pass runs only after floor/filler has created real lower support.
-  // That keeps the gravity/Tetris rule (no top-first well loading) while letting
-  // safe well-top opportunities close the wheel-well span before ordinary stacks
-  // grow into avoidable rear/upper blocks.
+  // Wheel Wells physical geometry (null for every other truck mode). Wheel-well
+  // candidates are considered inside the ordinary stack scorer below, so the
+  // global order remains gravity-like: lower valid stack levels beat higher
+  // well-top/bridge placements, then front position breaks ties.
   const itemsById = new Map(items.map(it => [it.id, it]));
   let stackQueue = sortItemsForStack(stackDeferred, layoutQualityEnabled, items);
   let stackCount = 0;
-  if (
-    wheelWell &&
-    input.enableWheelWellBridge === true &&
-    stackQueue.length &&
-    shouldRunPreStackWheelWellBridge(wheelWell, stackQueue)
-  ) {
-    const previousUnpacked = output.unpacked;
-    output.unpacked = stackQueue.map(item => item.id);
-    placeWheelWellBuildUpBridges(output, packed, itemsById, wheelWell, loadFrontFirst);
-    const stillUnpacked = new Set(output.unpacked);
-    stackQueue = stackQueue.filter(item => stillUnpacked.has(item.id));
-    output.unpacked = previousUnpacked;
-  }
 
   for (const item of stackQueue) {
     const placement = findStackPlacement(

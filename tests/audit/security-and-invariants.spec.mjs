@@ -3658,6 +3658,70 @@ test('WHEELWELL-FLOOR-CHANNEL-COMPACTION mixed loads keep smaller cartons in leg
   wwAssertHardSafe(Solver, result, truck, zones, items, 'mixed floor/channel-compacted wheel wells');
 });
 
+test('WHEELWELL-CHANNEL-LANE-ALIGNMENT floor/channel compaction keeps channel rows column-aligned (no lateral zigzag)', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 636, width: 102, height: 98, shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 34.3, wellWidth: 15.3, wellLength: 222.6, wellOffsetFromRear: 159 },
+  };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const geo = Solver.getWheelWellGeometry(truck);
+
+  // Distinct lateral (z) lanes used by channel floor cargo. A clean load keeps a
+  // small canonical set of lanes; the zigzag defect (compaction pulling rows to
+  // opposite channel walls) shows up as extra offset lanes.
+  const channelFloorLanes = (result, items) => {
+    const lanes = new Set();
+    for (const p of wwResultPlacements(Solver, result, items)) {
+      if (p.aabb.min.y > 0.06) continue;
+      if (p.aabb.min.x < geo.wx0 - 0.06 || p.aabb.max.x > geo.wx1 + 0.06) continue;
+      if (p.aabb.min.z < -geo.betweenHalfW - 0.06 || p.aabb.max.z > geo.betweenHalfW + 0.06) continue;
+      lanes.add(((p.aabb.min.z + p.aabb.max.z) / 2).toFixed(1));
+    }
+    return lanes;
+  };
+
+  // Generic carton fixtures (not hardcoded screenshot coordinates) that overflow
+  // the front full-width zone into the wheel-well centre channel.
+  const fixtures = [
+    { caseId: 'A', dims: { l: 24, w: 18, h: 16 }, count: 160 },
+    { caseId: 'B', dims: { l: 30, w: 20, h: 10 }, count: 160 },
+  ];
+  for (const { caseId, dims, count } of fixtures) {
+    const items = Array.from({ length: count }, (_, i) => ({
+      instanceId: `${caseId}${i}`, caseId, dims, shape: 'box',
+      orientationLock: 'any', canFlip: false, weight: 25, maxStackCount: 2,
+    }));
+    // Default browser path: channel compaction ON.
+    const enabled = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+    // Baseline: channel compaction OFF (the clean floor-pass lane layout).
+    const disabled = Solver.solveAutoPack({
+      truck, zones, loadFrontFirst: true, items,
+      enableWheelWellBridge: true, enableWheelWellFloorChannelCompaction: false,
+    });
+
+    assert.equal(enabled.placements.size, count, `${caseId}: every carton packs`);
+    assert.equal(enabled.placements.size, disabled.placements.size, `${caseId}: compaction preserves packed count`);
+
+    const enabledLanes = channelFloorLanes(enabled, items);
+    const disabledLanes = channelFloorLanes(disabled, items);
+    assert.ok(enabledLanes.size > 1, `${caseId}: load reaches the channel`);
+    // Anti-zigzag: channel compaction must NOT introduce extra lateral lanes
+    // beyond the clean floor-pass baseline. The previous defect roughly doubled
+    // the lane count by pulling alternating rows to opposite channel walls.
+    assert.ok(enabledLanes.size <= disabledLanes.size,
+      `${caseId}: channel compaction adds no lateral zigzag lanes (enabled ${enabledLanes.size} <= baseline ${disabledLanes.size})`);
+
+    wwAssertHardSafe(Solver, enabled, truck, zones, items, `${caseId} channel alignment`);
+
+    // Deterministic: identical placements on repeat.
+    const repeat = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+    assert.deepEqual([...repeat.placements.entries()], [...enabled.placements.entries()],
+      `${caseId}: channel-aligned pack is deterministic`);
+  }
+});
+
 test('G2-SHAPE-CONTRACT frontBonus main zone spans the full main box from x=0 to x=truck.length', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = {
@@ -10356,7 +10420,12 @@ test('PHASE-E2B Standard and Wheel Wells solver bytes match the E2B channel-laye
     ['wheelWells/24x18/40', 'f50bbb6728343bc36bcbb04e92ff238831236c7b5720dc32d9145508930275ed'],
     // E2B: channel stack layers now follow the footprint below (no per-layer drift).
     ['wheelWells/24x18/100', '6f40fc5cec6050c903b59422d17d9164487cdc6816ab872417c7b2a9c6385565'],
-    ['wheelWells/42x10/100', 'ad189129c6b38475aff08af418d31b9efbc59fefa52ff916b51ab59d27e52a6d'],
+    // Channel-floor alignment fix: the narrow-channel floor compaction no longer
+    // shuffles rows laterally between the two channel walls, so the 42x10 channel
+    // settles into a single column-aligned lane set (matching the clean
+    // compaction-off layout). Packed count, yaw-mix, and hard-safety are unchanged;
+    // every other rect/* and wheelWells/* fixture stays byte-identical.
+    ['wheelWells/42x10/100', '29f234d6677a5937ba36b06f123dc56db24c3ca4226c4d45b9d55136d890fadf'],
   ]);
   const dimensionFixtures = [
     { label: '24x18', dims: { l: 24, w: 18, h: 16 }, counts: [6, 20, 40, 100] },

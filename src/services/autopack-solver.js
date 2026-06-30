@@ -1889,6 +1889,18 @@ function compactFloorPlacements(
     return rebuildFloorStateFromPacked(zones, packed, frontSurfaceFirst, retentionContext);
   }
 
+  // E2B fix: the narrow wheel-well centre channel has lateral (z) slack the floor
+  // pass already resolves into clean, wall-flush, column-aligned lanes. Letting
+  // compaction also move channel boxes along z lets different rows hug opposite
+  // channel walls (sideDistance rewards either wall equally), producing a zigzag
+  // floor and mirror-misaligned stacks above it. Inside a channel zone, keep each
+  // box in its established lane and compact it forward (x) only. Full-width zones
+  // and Standard (no narrow channel zone) are unaffected.
+  const channelZones = narrowChannelZones(zones);
+  const widestZoneWidth = zones.length
+    ? Math.max(...zones.map(z => z.max.z - z.min.z))
+    : 0;
+
   let changed = false;
   const ordered = [...compactable].sort((a, b) => {
     const ax = loadFrontFirst ? -a.aabb.max.x : a.aabb.min.x;
@@ -1900,6 +1912,8 @@ function compactFloorPlacements(
   for (let pass = 0; pass < 2; pass++) {
     for (const placement of ordered) {
       const others = packed.filter(other => other !== placement);
+      const placementInChannel =
+        channelZones.length > 0 && aabbInNarrowChannel(placement.aabb, channelZones);
       let best = null;
       let bestScore = scoreCompactionCandidate(
         placement.aabb,
@@ -1912,7 +1926,12 @@ function compactFloorPlacements(
 
       for (const zone of getCompatibleCompactionZones(placement, zones, allowCompatibleZoneMoves)) {
         const xAnchors = candidateCompactionAnchors(placement, others, zone, loadFrontFirst, 'x');
-        const zAnchors = candidateCompactionAnchors(placement, others, zone, loadFrontFirst, 'z');
+        const zoneIsChannel =
+          channelZones.length > 0 && (zone.max.z - zone.min.z) < widestZoneWidth - FREE_RECT_EPS;
+        const zAnchors = (placementInChannel && zoneIsChannel)
+          ? [clampAnchor(placement.aabb.min.z, zone.min.z, zone.max.z, placement.dims.w)]
+              .filter(value => value !== null)
+          : candidateCompactionAnchors(placement, others, zone, loadFrontFirst, 'z');
 
         for (const xMin of xAnchors) {
           for (const zMin of zAnchors) {

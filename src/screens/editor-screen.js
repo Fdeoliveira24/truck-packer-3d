@@ -18,6 +18,31 @@ import { getCaseHandlingSummary, getInstanceHandlingSummary } from '../services/
 
 // Editor screen + 3D interaction helpers (extracted from src/app.js; behavior preserved)
 
+function caseCountText(count) {
+  return `${count} case${count === 1 ? '' : 's'}`;
+}
+
+function getDeleteFinalSelection(result) {
+  return result && Array.isArray(result.finalSelectionIds) ? result.finalSelectionIds : [];
+}
+
+function formatDeleteResultMessage(result, fallbackDeletedIds = []) {
+  const deletedIds = result && Array.isArray(result.deletedInstanceIds)
+    ? result.deletedInstanceIds
+    : [];
+  const fallbackCount = Array.isArray(fallbackDeletedIds) ? fallbackDeletedIds.length : 0;
+  const deletedCount = deletedIds.length || fallbackCount;
+  const dependentCount = result && Array.isArray(result.dependentStagedIds)
+    ? result.dependentStagedIds.length
+    : 0;
+
+  let message = `Deleted ${caseCountText(deletedCount)}.`;
+  if (dependentCount) {
+    message += ` ${dependentCount} dependent ${caseCountText(dependentCount)} ${dependentCount === 1 ? 'was' : 'were'} moved to staging because their support changed.`;
+  }
+  return message;
+}
+
 function createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, rotation) {
   const caseData = inst ? CaseLibrary.getById(inst.caseId) : null;
   if (caseData && caseData.dimensions && typeof PackLibrary.createOrientationLockPatch === 'function') {
@@ -1580,9 +1605,13 @@ export function createInteractionManager({
       const ids = getSelection();
       if (!ids.length) return;
       const packId = StateStore.get('currentPackId');
-      PackLibrary.removeInstances(packId, ids);
-      setSelection([]);
-      UIComponents.showToast(`Deleted ${ids.length} case(s)`, 'info');
+      const result = PackLibrary.removeInstances(packId, ids);
+      setSelection(getDeleteFinalSelection(result));
+      if (!result) {
+        UIComponents.showToast('Delete failed. Please try again.', 'error');
+        return;
+      }
+      UIComponents.showToast(formatDeleteResultMessage(result, ids), 'info');
     }
 
     return { init: initInteraction, setSelection, selectAllInPack, deleteSelection, rotateSelection };
@@ -2249,6 +2278,25 @@ export function createEditorScreen({
       return false;
     }
 
+    function setSelectionFromDeleteResult(result) {
+      const nextIds = getDeleteFinalSelection(result);
+      StateStore.set({ selectedInstanceIds: nextIds }, { skipHistory: true });
+      CaseScene.setSelected(nextIds);
+    }
+
+    function deleteInstancesWithFeedback(packId, instanceIds) {
+      const ids = Array.isArray(instanceIds) ? instanceIds : [];
+      if (!ids.length) return null;
+      const result = PackLibrary.removeInstances(packId, ids);
+      setSelectionFromDeleteResult(result);
+      if (!result) {
+        UIComponents.showToast('Delete failed. Please try again.', 'error');
+        return null;
+      }
+      UIComponents.showToast(formatDeleteResultMessage(result, ids), 'info');
+      return result;
+    }
+
     function addCaseToPack(caseId, positionInches) {
       if (editorMutationBlocked()) return;
       const packId = StateStore.get('currentPackId');
@@ -2419,9 +2467,7 @@ export function createEditorScreen({
         danger: true,
         onClick: () => {
           if (editorMutationBlocked()) return;
-          PackLibrary.removeInstances(pack.id, [inst.id]);
-          StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
-          CaseScene.setSelected([]);
+          deleteInstancesWithFeedback(pack.id, [inst.id]);
         },
       });
       card.appendChild(deleteButton);
@@ -3399,9 +3445,7 @@ export function createEditorScreen({
         danger: true,
         onClick: () => {
           if (editorMutationBlocked()) return;
-          PackLibrary.removeInstances(pack.id, [inst.id]);
-          StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
-          CaseScene.setSelected([]);
+          deleteInstancesWithFeedback(pack.id, [inst.id]);
         },
       });
       actRow.appendChild(setCategory);

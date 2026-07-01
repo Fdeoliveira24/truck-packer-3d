@@ -1632,10 +1632,45 @@ export function updateInstance(packId, instanceId, patch) {
 export function removeInstances(packId, instanceIds) {
   const pack = getById(packId);
   if (!pack) return null;
-  const idSet = new Set(instanceIds || []);
+  const requestedDeletedIds = Array.isArray(instanceIds) ? instanceIds : [];
+  const idSet = new Set(requestedDeletedIds);
+  const deletedInstanceIds = (pack.cases || [])
+    .filter(i => i && idSet.has(i.id))
+    .map(i => i.id);
   const nextInstances = (pack.cases || []).filter(i => !idSet.has(i.id));
   const result = updateCasesWithManualRevalidation(packId, nextInstances, CaseLibrary.getCases());
-  return result ? result.pack : null;
+  if (!result) return null;
+
+  const deletedSet = new Set(deletedInstanceIds);
+  const dependentStagedIds = (result.stagedIds || []).filter(id => !deletedSet.has(id));
+  const mutation = {
+    type: 'removeInstances',
+    requestedDeletedIds: [...requestedDeletedIds],
+    deletedInstanceIds,
+    dependentStagedIds,
+    dependentStagedCount: dependentStagedIds.length,
+    finalSelectionIds: [],
+    revalidation: {
+      adjustedIds: result.adjustedIds || [],
+      stagedIds: result.stagedIds || [],
+      failedIds: result.failedIds || [],
+      invalidIds: result.invalidIds || [],
+      summary: result.summary || {},
+      warnings: result.warnings || [],
+    },
+  };
+
+  return {
+    ...result.pack,
+    pack: result.pack,
+    mutation,
+    deletedInstanceIds,
+    requestedDeletedIds: [...requestedDeletedIds],
+    dependentStagedIds,
+    dependentStagedCount: dependentStagedIds.length,
+    finalSelectionIds: [],
+    revalidation: mutation.revalidation,
+  };
 }
 
 function computeShapeAwareOOGWarnings(pack, caseLibrary) {

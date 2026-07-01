@@ -2356,9 +2356,17 @@ test('PLACEMENT-STATE-S2 manual delete of a support recursively settles dependen
     preferences: {},
   });
 
-  PackLibrary.removeInstances('pack-manual-stack-delete', ['base']);
+  const result = PackLibrary.removeInstances('pack-manual-stack-delete', ['base']);
   const pack = PackLibrary.getById('pack-manual-stack-delete');
   const byId = new Map(pack.cases.map(inst => [inst.id, inst]));
+  assert.deepEqual(result.deletedInstanceIds, ['base'],
+    'removeInstances must report the exact selected instance ID that was deleted');
+  assert.deepEqual(result.dependentStagedIds, [],
+    'settled dependents must not be reported as staged');
+  assert.equal(result.dependentStagedCount, 0,
+    'staged dependent count must remain zero when dependents settle safely');
+  assert.deepEqual(result.finalSelectionIds, [],
+    'delete mutation result must tell callers to clear stale selection');
   assert.equal(byId.has('base'), false, 'deleted support must be removed');
   assert.equal(byId.get('child').transform.position.y, 5,
     'first dependent must settle to the floor instead of floating at the old stack height');
@@ -2366,6 +2374,132 @@ test('PLACEMENT-STATE-S2 manual delete of a support recursively settles dependen
     'second dependent must settle recursively onto the adjusted first dependent');
   assert.equal(pack.cases.every(inst => inst.placement === 'packed'), true,
     'settled dependents inside usable geometry remain packed');
+});
+
+test('DELETE-REVALIDATION removeInstances stages invalid non-selected dependents instead of deleting them', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({
+    id: 'case-delete-revalidation-wheelwell',
+    dimensions: { length: 18, width: 18, height: 12 },
+  });
+  const mk = (id, position, placement = 'packed') => makePackImportInstance(caseData.id, {
+    id,
+    transform: { position, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+    placement,
+  });
+
+  StateStore.init({
+    caseLibrary: [caseData],
+    packLibrary: [{
+      id: 'pack-delete-revalidation-wheelwell',
+      title: 'Delete Revalidation Wheel Wells',
+      truck: {
+        length: 120,
+        width: 60,
+        height: 60,
+        shapeMode: 'wheelWells',
+        shapeConfig: {
+          wellHeight: 20,
+          wellWidth: 12,
+          wellLength: 40,
+          wellOffsetFromRear: 40,
+        },
+      },
+      cases: [
+        mk('selected-support', { x: 12, y: 6, z: 0 }),
+        // This pose straddles the center channel / raised shelf seam. Revalidation
+        // cannot make it a legal packed pose at the same X/Z, so it must be staged.
+        mk('dependent-needs-staging', { x: 60, y: 36, z: 18 }),
+        mk('unrelated-front', { x: 100, y: 6, z: 0 }),
+      ],
+    }],
+    folderLibrary: [],
+    preferences: {},
+  });
+
+  const result = PackLibrary.removeInstances('pack-delete-revalidation-wheelwell', ['selected-support']);
+  const pack = PackLibrary.getById('pack-delete-revalidation-wheelwell');
+  const byId = new Map(pack.cases.map(inst => [inst.id, inst]));
+
+  assert.deepEqual(result.deletedInstanceIds, ['selected-support'],
+    'only the selected support instance may be reported as deleted');
+  assert.equal(byId.has('selected-support'), false,
+    'selected support instance must be removed');
+  assert.equal(byId.has('dependent-needs-staging'), true,
+    'non-selected dependent must not be deleted by revalidation');
+  assert.equal(byId.get('dependent-needs-staging').placement, 'staged',
+    'invalid non-selected dependent must be moved to staging instead of left packed/floating');
+  assert.deepEqual(result.dependentStagedIds, ['dependent-needs-staging'],
+    'delete mutation result must report the dependent moved to staging');
+  assert.equal(result.dependentStagedCount, 1,
+    'delete mutation result must report the dependent staging count');
+  assert.equal(byId.has('unrelated-front'), true,
+    'delete near Wheel Wells must not remove unrelated packed cases');
+  assert.equal(byId.get('unrelated-front').placement, 'packed',
+    'unrelated packed cases must remain packed');
+});
+
+test('DELETE-REVALIDATION multi-delete removes exactly selected instance IDs', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-delete-revalidation-multi' });
+  const mk = (id, x) => makePackImportInstance(caseData.id, {
+    id,
+    transform: { position: { x, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+    placement: 'packed',
+  });
+
+  StateStore.init({
+    caseLibrary: [caseData],
+    packLibrary: [{
+      id: 'pack-delete-revalidation-multi',
+      title: 'Delete Revalidation Multi',
+      truck: { length: 120, width: 60, height: 60, shapeMode: 'rect' },
+      cases: [mk('keep-a', 10), mk('delete-a', 25), mk('delete-b', 40), mk('keep-b', 55)],
+    }],
+    folderLibrary: [],
+    preferences: {},
+  });
+
+  const result = PackLibrary.removeInstances('pack-delete-revalidation-multi', ['delete-a', 'delete-b']);
+  const pack = PackLibrary.getById('pack-delete-revalidation-multi');
+  const ids = pack.cases.map(inst => inst.id).sort();
+
+  assert.deepEqual(result.deletedInstanceIds, ['delete-a', 'delete-b'],
+    'multi-delete must report only selected instance IDs as deleted');
+  assert.deepEqual(ids, ['keep-a', 'keep-b'],
+    'multi-delete must remove exactly selected instances and keep all others');
+  assert.deepEqual(result.dependentStagedIds, [],
+    'multi-delete with no invalid dependents must not report staged dependents');
+  assert.deepEqual(result.finalSelectionIds, [],
+    'multi-delete result must clear stale selection IDs');
+});
+
+test('DELETE-REVALIDATION editor delete paths report staged dependents and clear stale selection', async () => {
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  assert.match(editorSrc, /function formatDeleteResultMessage\(result, fallbackDeletedIds = \[\]\)/,
+    'editor must centralize delete feedback formatting');
+  assert.match(editorSrc, /dependent \$\{caseCountText\(dependentCount\)\} \$\{dependentCount === 1 \? 'was' : 'were'\} moved to staging because their support changed/,
+    'delete feedback must explain staged dependents');
+
+  const interactionStart = editorSrc.indexOf('function deleteSelection()');
+  const interactionBlock = editorSrc.slice(interactionStart, interactionStart + 650);
+  assert.match(interactionBlock, /const result = PackLibrary\.removeInstances\(packId, ids\)/,
+    'keyboard Delete/Backspace path must receive the removeInstances mutation result');
+  assert.match(interactionBlock, /setSelection\(getDeleteFinalSelection\(result\)\)/,
+    'keyboard Delete/Backspace path must clear or rebuild selection from the mutation result');
+  assert.match(interactionBlock, /formatDeleteResultMessage\(result, ids\)/,
+    'keyboard Delete/Backspace path must report staged dependents');
+
+  const helperStart = editorSrc.indexOf('function deleteInstancesWithFeedback(packId, instanceIds)');
+  const helperBlock = editorSrc.slice(helperStart, helperStart + 700);
+  assert.match(helperBlock, /const result = PackLibrary\.removeInstances\(packId, ids\)/,
+    'inspector Delete helper must receive the removeInstances mutation result');
+  assert.match(helperBlock, /setSelectionFromDeleteResult\(result\)/,
+    'inspector Delete helper must clear or rebuild selection from the mutation result');
+  assert.match(helperBlock, /formatDeleteResultMessage\(result, ids\)/,
+    'inspector Delete helper must report staged dependents');
 });
 
 test('PLACEMENT-STATE-S2 manual movement of a support revalidates the unsupported child', async () => {
@@ -17233,8 +17367,8 @@ test('G1.2C-INSPECTOR-CARD-POLISH Actions card preserves all six actions and Del
 
   assert.match(multiBlock, /onClick: \(\) => InteractionManager\.deleteSelection\(\)/,
     'multi-selection Delete must keep calling InteractionManager.deleteSelection()');
-  assert.match(singleBlock, /PackLibrary\.removeInstances\(pack\.id, \[inst\.id\]\)/,
-    'single-selection Delete must keep calling PackLibrary.removeInstances(pack.id, [inst.id])');
+  assert.match(singleBlock, /deleteInstancesWithFeedback\(pack\.id, \[inst\.id\]\)/,
+    'single-selection Delete must use the shared delete feedback helper');
 });
 
 test('G1.2C-INSPECTOR-CARD-POLISH Actions card layout has no inline layout CSS', async () => {
@@ -17659,9 +17793,9 @@ test('OPERATION-LIFECYCLE-AMEND editor panel add/duplicate/delete mutations are 
   const dupStart = editorSrc.indexOf('function duplicateSelection(');
   assert.match(editorSrc.slice(dupStart, dupStart + 220), /if \(editorMutationBlocked\(\)\) return;/,
     'duplicateSelection must be blocked while busy');
-  // Inspector "Delete item/Delete" buttons guard the direct removeInstances calls.
-  const directDeletes = editorSrc.match(/onClick: \(\) => \{\s*if \(editorMutationBlocked\(\)\) return;\s*PackLibrary\.removeInstances\(/g) || [];
-  assert.ok(directDeletes.length >= 2, 'inspector delete buttons must guard removeInstances with the busy check');
+  // Inspector "Delete item/Delete" buttons guard the shared delete feedback path.
+  const guardedDeletes = editorSrc.match(/onClick: \(\) => \{\s*if \(editorMutationBlocked\(\)\) return;\s*deleteInstancesWithFeedback\(/g) || [];
+  assert.ok(guardedDeletes.length >= 2, 'inspector delete buttons must guard deleteInstancesWithFeedback with the busy check');
 });
 
 test('OPERATION-LIFECYCLE-AMEND pending truck config card renders the pending (effective) truck mode', async () => {

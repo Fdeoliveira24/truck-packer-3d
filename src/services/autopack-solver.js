@@ -16,6 +16,11 @@ import {
   rulesMaxStackCount,
   weightAllowsSupport,
 } from '../packing-core/validation.js';
+import {
+  REJECTION_CODES,
+  makeRejectionReason,
+  rejectionCodeForValidationReason,
+} from '../packing-core/explain.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
 
 export { aabbsOverlap, computeXzOverlapArea, isAabbContainedInAnyZone };
@@ -241,6 +246,7 @@ function makeEmptyOutput() {
     retentionDependencies: new Map(),
     unpacked: [],
     warnings: [],
+    rejectionReasons: [],
     phaseStats: {
       laneCount: 0,
       floorCount: 0,
@@ -2139,6 +2145,13 @@ function stageRejectedPlacements(output, rejected) {
   for (const { placement, reason } of rejected) {
     unpacked.add(placement.instanceId);
     output.warnings.push(`Item ${placement.instanceId} was staged after validation: ${reason}.`);
+    // Structured mirror of the same reason text (one source of truth for both).
+    output.rejectionReasons.push(makeRejectionReason(
+      placement.instanceId,
+      rejectionCodeForValidationReason(reason),
+      'validation',
+      `Staged after final validation: ${reason}.`
+    ));
   }
   output.unpacked = [...unpacked];
 }
@@ -2700,6 +2713,68 @@ function placeWheelWellBuildUpBridges(output, packed, itemsById, geometry, loadF
   return placed;
 }
 
+function orientationFitsZone(orientation, zone) {
+  return orientation.l <= zone.max.x - zone.min.x + FREE_RECT_EPS &&
+    orientation.w <= zone.max.z - zone.min.z + FREE_RECT_EPS &&
+    orientation.h <= zone.max.y - zone.min.y + FREE_RECT_EPS;
+}
+
+function orientationsFitSomeZone(orientations, zones) {
+  return (orientations || []).some(orientation =>
+    (zones || []).some(zone => orientationFitsZone(orientation, zone))
+  );
+}
+
+/**
+ * Diagnose WHY an item ended unplaced, using only statically provable facts
+ * (zone cross-sections, orientation policy, wheel-well channel/shelf widths).
+ * Dynamic failures (space simply full) fall back to NO_STACK_CANDIDATE with the
+ * item's existing warning text as detail. Diagnosis never changes placement.
+ */
+function diagnoseUnplacedItem(item, zones, wheelWell, fallbackDetail) {
+  if (!orientationsFitSomeZone(item.candidates, zones)) {
+    const unrestricted = buildOrientationCandidates(item.dims, { orientationLock: 'any', canFlip: true });
+    if (orientationsFitSomeZone(unrestricted, zones)) {
+      return makeRejectionReason(
+        item.id,
+        REJECTION_CODES.ORIENTATION_LOCKED,
+        'stack',
+        'An orientation that fits exists, but the case orientation policy or instance lock excludes it.'
+      );
+    }
+    return makeRejectionReason(
+      item.id,
+      REJECTION_CODES.NO_FIT_ANY_SURFACE,
+      'stack',
+      'No allowed orientation fits any usable surface of this truck.'
+    );
+  }
+
+  if (wheelWell) {
+    const channelWidth = 2 * wheelWell.betweenHalfW;
+    const shelfWidth = wheelWell.wellWidth;
+    const tooWideForChannel = item.candidates.every(o => o.w > channelWidth + FREE_RECT_EPS);
+    const tooWideForShelf = item.candidates.every(o => o.w > shelfWidth + FREE_RECT_EPS);
+    const context = { channelWidth, shelfWidth, tooWideForChannel, tooWideForShelf };
+    // TOO_WIDE_FOR_CHANNEL is only claimed when it is provable for every allowed
+    // orientation. Shelf width alone is never a primary cause here (most cargo is
+    // wider than a wheel-well shelf); it stays available as context and for the
+    // future shelf-targeted leftover pass.
+    if (tooWideForChannel) {
+      return makeRejectionReason(
+        item.id,
+        REJECTION_CODES.TOO_WIDE_FOR_CHANNEL,
+        'stack',
+        'Every allowed orientation is wider than the center channel between the wheel wells, and no other valid position remained.',
+        context
+      );
+    }
+    return makeRejectionReason(item.id, REJECTION_CODES.NO_STACK_CANDIDATE, 'stack', fallbackDetail, context);
+  }
+
+  return makeRejectionReason(item.id, REJECTION_CODES.NO_STACK_CANDIDATE, 'stack', fallbackDetail);
+}
+
 export function solveAutoPack(input = {}) {
   const truck = normalizeTruck(input.truck || {});
   const zones = normalizeZones(input.zones || []);
@@ -2739,9 +2814,20 @@ export function solveAutoPack(input = {}) {
   if (!truck.length || !truck.width || !truck.height || !floorZones.length) {
     output.unpacked = items.map(item => item.id);
     output.warnings.push('AutoPack floor solver skipped: missing truck dimensions or usable zones.');
+    output.rejectionReasons = items.map(item => makeRejectionReason(
+      item.id,
+      REJECTION_CODES.NO_USABLE_SPACE,
+      'floor',
+      'Missing truck dimensions or usable zones.'
+    ));
     output.phaseStats.unpackedCount = output.unpacked.length;
     return output;
   }
+
+  // Structured rejection reasons for items the main loop cannot place. Recorded
+  // per id and merged at the end so an item later placed by the wheel-well pass
+  // (or re-staged by validation with a more specific reason) is never mislabeled.
+  const mainLoopRejections = new Map();
 
   const deferred = [];
   // E2A scope: layout quality now also drives the ORDINARY/leftover/filler floor and
@@ -2860,11 +2946,11 @@ export function solveAutoPack(input = {}) {
     );
     if (!placement) {
       output.unpacked.push(item.id);
-      if (item.lanePlacementFailed) {
-        output.warnings.push(`Lane item ${item.id} could not fit in a safe lengthwise lane or any fallback floor/stack position.`);
-      } else {
-        output.warnings.push(`Item ${item.id} could not fit on the floor or on a safe supported stack.`);
-      }
+      const warning = item.lanePlacementFailed
+        ? `Lane item ${item.id} could not fit in a safe lengthwise lane or any fallback floor/stack position.`
+        : `Item ${item.id} could not fit on the floor or on a safe supported stack.`;
+      output.warnings.push(warning);
+      mainLoopRejections.set(item.id, diagnoseUnplacedItem(item, floorZones, wheelWell, warning));
       continue;
     }
 
@@ -2935,5 +3021,14 @@ export function solveAutoPack(input = {}) {
   output.phaseStats.unpackedCount = output.unpacked.length;
   refreshPhaseStats(output, packed);
   recordRetentionDependencies(output, packed, retentionContext);
+  // Merge main-loop diagnoses for items that stayed unplaced. Validation-staged
+  // items already carry their (more specific) validation reason; items rescued by
+  // the wheel-well pass are no longer unpacked and get no reason.
+  const explained = new Set(output.rejectionReasons.map(reason => reason.instanceId));
+  for (const id of output.unpacked) {
+    if (explained.has(id)) continue;
+    const reason = mainLoopRejections.get(id);
+    if (reason) output.rejectionReasons.push(reason);
+  }
   return output;
 }

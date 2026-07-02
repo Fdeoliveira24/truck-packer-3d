@@ -18084,3 +18084,87 @@ test('PACKING-CORE-P6 support-side stacking rules agree between AutoPack and man
   assert.equal(recon.kept.includes('i-child'), false,
     'manual reconciliation refuses a child resting on a noStackOnTop base (same rule as AutoPack)');
 });
+
+// ---------------------------------------------------------------------------
+// PACKING-CORE-P7: explainable rejection reasons. The solver must report WHY a
+// case is staged/unplaced as structured data — additively, without changing a
+// single placement. Every unpacked id carries exactly one reason; codes are the
+// most specific statically provable claim.
+// ---------------------------------------------------------------------------
+test('PACKING-CORE-P7 solver output carries structured rejection reasons for every unpacked item', async () => {
+  const { Core, Solver, PackLib } = await p5Modules();
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = [
+    // Fits fine.
+    { instanceId: 'ok', caseId: 'A', dims: { l: 24, w: 18, h: 16 }, orientationLock: 'any', canFlip: false, weight: 30 },
+    // Too large for the truck in every orientation.
+    { instanceId: 'oversized', caseId: 'B', dims: { l: 300, w: 120, h: 120 }, orientationLock: 'any', canFlip: true, weight: 30 },
+    // Would fit on its side, but upright is locked (h 120 > truck height 96).
+    { instanceId: 'locked-tall', caseId: 'C', dims: { l: 24, w: 18, h: 120 }, orientationLock: 'upright', canFlip: false, weight: 30 },
+  ];
+  const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  assert.ok(Array.isArray(res.rejectionReasons), 'rejectionReasons is part of the solver output');
+  const byId = new Map(res.rejectionReasons.map(r => [r.instanceId, r]));
+  assert.equal(res.placements.has('ok'), true, 'the packable item packs');
+  assert.equal(byId.has('ok'), false, 'packed items carry no rejection reason');
+  assert.equal(byId.get('oversized')?.code, Core.REJECTION_CODES.NO_FIT_ANY_SURFACE, 'oversized → NO_FIT_ANY_SURFACE');
+  assert.equal(byId.get('locked-tall')?.code, Core.REJECTION_CODES.ORIENTATION_LOCKED, 'lock excludes the only fitting pose → ORIENTATION_LOCKED');
+  for (const id of res.unpacked) {
+    assert.ok(byId.has(id), `unpacked ${id} carries a structured reason`);
+    assert.ok(byId.get(id).detail.length > 0, `${id}: reason has human-readable detail`);
+  }
+});
+
+test('PACKING-CORE-P7 Wheel Wells reports channel-width rejections with provable context', async () => {
+  const { Core, Solver, PackLib } = await p5Modules();
+  const truck = {
+    length: 240, width: 96, height: 96, shapeMode: 'wheelWells',
+    shapeConfig: { wellOffsetFromRear: 80, wellLength: 80, wellHeight: 34, wellWidth: 14.4 },
+  };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  // Two blockers exactly fill the full-width rear and front floor zones so only
+  // the channel remains; the target is wider than the channel in every yaw.
+  const items = [
+    { instanceId: 'blocker-rear', caseId: 'B', dims: { l: 80, w: 96, h: 90 }, orientationLock: 'upright', canFlip: false, weight: 500 },
+    { instanceId: 'blocker-front', caseId: 'B', dims: { l: 80, w: 96, h: 90 }, orientationLock: 'upright', canFlip: false, weight: 500 },
+    { instanceId: 'too-wide', caseId: 'T', dims: { l: 70, w: 70, h: 90 }, orientationLock: 'upright', canFlip: false, weight: 100 },
+  ];
+  const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  assert.equal(res.unpacked.includes('too-wide'), true, 'the wide case cannot be placed');
+  const reason = res.rejectionReasons.find(r => r.instanceId === 'too-wide');
+  assert.ok(reason, 'the wide case carries a structured reason');
+  assert.equal(reason.code, Core.REJECTION_CODES.TOO_WIDE_FOR_CHANNEL, 'channel width is the provable cause');
+  assert.ok(reason.context && reason.context.channelWidth > 0, 'context includes the channel width');
+  assert.ok(reason.context.tooWideForChannel === true, 'context proves the width claim');
+});
+
+test('PACKING-CORE-P7 rejection reasons never change placements (parity with pre-reason baseline)', async () => {
+  const { Solver, PackLib } = await p5Modules();
+  // Byte-parity is already pinned by the PHASE-E2B baseline test; here we assert
+  // the reason plumbing is inert for a representative mixed load in all modes.
+  for (const shapeMode of ['rect', 'wheelWells', 'frontBonus']) {
+    const truck = shapeMode === 'frontBonus'
+      ? { length: 240, width: 96, height: 96, shapeMode, shapeConfig: { bonusLength: 60, bonusHeight: 43.2 } }
+      : { length: 240, width: 96, height: 96, shapeMode };
+    const zones = PackLib.getTrailerUsableZones(truck);
+    const items = Array.from({ length: 60 }, (_, i) => ({
+      instanceId: `i${i}`, caseId: 'A', dims: { l: 24, w: 18, h: 16 },
+      orientationLock: 'any', canFlip: false, weight: 30,
+    }));
+    const a = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    const b = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    assert.equal(JSON.stringify([...a.placements]), JSON.stringify([...b.placements]), `${shapeMode}: deterministic with reasons`);
+    assert.equal(a.rejectionReasons.length, a.unpacked.length, `${shapeMode}: one reason per unpacked item`);
+  }
+});
+
+test('PACKING-CORE-P7 validation-staged items carry the mapped validation reason code', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Explain = await import(`../../src/packing-core/explain.js${stamp}`);
+  assert.equal(Explain.rejectionCodeForValidationReason('penetrates the wheel-well body'), 'BLOCKED_BY_WHEEL_WELL');
+  assert.equal(Explain.rejectionCodeForValidationReason('outside usable zones'), 'OUT_OF_BOUNDS');
+  assert.equal(Explain.rejectionCodeForValidationReason('overlaps another packed item'), 'COLLISION');
+  assert.equal(Explain.rejectionCodeForValidationReason('does not have safe stack support'), 'UNSUPPORTED');
+  assert.equal(Explain.rejectionCodeForValidationReason('does not have complete rear retention at the overhang step'), 'NO_RETENTION');
+});

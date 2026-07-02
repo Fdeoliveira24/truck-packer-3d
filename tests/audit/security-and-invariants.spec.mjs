@@ -18286,3 +18286,72 @@ test('PACKING-CORE-P8 pass is inert for Standard and Front Overhang and gated by
   const rerun = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
   assert.equal(JSON.stringify([...on.placements]), JSON.stringify([...rerun.placements]), 'deterministic with the pass on');
 });
+
+// ---------------------------------------------------------------------------
+// PACKING-CORE-P9: multi-strategy solution model. The PackingSolution envelope
+// wraps real solver variants only; the selected default solution must be
+// exactly what the current single-solution UI already receives from the direct
+// solver call, so adopting the envelope later cannot change behavior.
+// ---------------------------------------------------------------------------
+test('PACKING-CORE-P9 default solution is byte-equivalent to the direct solver call', async () => {
+  const { Core, Solver, PackLib } = await p5Modules();
+  for (const shapeMode of ['rect', 'wheelWells']) {
+    const truck = { length: 240, width: 96, height: 96, shapeMode };
+    const zones = PackLib.getTrailerUsableZones(truck);
+    const items = Array.from({ length: 50 }, (_, i) => ({
+      instanceId: `i${i}`, caseId: 'A', dims: { l: 24, w: 18, h: 16 },
+      orientationLock: 'any', canFlip: false, weight: 30,
+    }));
+    const input = { truck, zones, loadFrontFirst: true, items };
+    const direct = Solver.solveAutoPack(input);
+    const solution = Core.runPackingStrategies(input);
+    assert.equal(solution.selected, 'default', 'default strategy is selected');
+    assert.equal(solution.selectedSolution, solution.solutions[0], 'selectedSolution is the first solution');
+    const sel = solution.selectedSolution;
+    assert.equal(JSON.stringify([...sel.placements]), JSON.stringify([...direct.placements]),
+      `${shapeMode}: placements identical to the direct call`);
+    assert.deepEqual(sel.unpacked, direct.unpacked, `${shapeMode}: unpacked identical`);
+    assert.equal(sel.rejectionReasons.length, direct.rejectionReasons.length, `${shapeMode}: reasons identical`);
+    assert.deepEqual(sel.stats, direct.phaseStats, `${shapeMode}: stats mirror phaseStats`);
+  }
+});
+
+test('PACKING-CORE-P9 multiple strategies produce independent deterministic solutions', async () => {
+  const { Core, Solver, PackLib } = await p5Modules();
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = Array.from({ length: 60 }, (_, i) => ({
+    instanceId: `i${i}`, caseId: 'A', dims: { l: 24, w: 18, h: 16 },
+    orientationLock: 'any', canFlip: false, weight: 30,
+  }));
+  const input = { truck, zones, loadFrontFirst: true, items };
+  const solution = Core.runPackingStrategies(input, ['default', 'compact-fill']);
+  assert.equal(solution.solutions.length, 2, 'one StrategyResult per requested strategy');
+  assert.deepEqual(solution.solutions.map(s => s.id), ['default', 'compact-fill'], 'ids preserved in order');
+  const compactDirect = Solver.solveAutoPack({ ...input, layoutQuality: false });
+  assert.equal(
+    JSON.stringify([...solution.solutions[1].placements]),
+    JSON.stringify([...compactDirect.placements]),
+    'compact-fill is exactly the real layout-quality-off solver variant'
+  );
+  const again = Core.runPackingStrategies(input, ['default', 'compact-fill']);
+  for (let i = 0; i < 2; i++) {
+    assert.equal(
+      JSON.stringify([...solution.solutions[i].placements]),
+      JSON.stringify([...again.solutions[i].placements]),
+      `strategy ${i} deterministic on repeat`
+    );
+  }
+});
+
+test('PACKING-CORE-P9 unknown strategy ids fail loudly and the registry stays honest', async () => {
+  const { Core } = await p5Modules();
+  assert.throws(() => Core.runPackingStrategies({ truck: {}, zones: [], items: [] }, ['wall-build']),
+    /Unknown packing strategy/, 'unregistered strategies are a programming error, never a silent fallback');
+  for (const preset of Core.PACKING_STRATEGIES) {
+    assert.ok(preset.id && preset.strategy && preset.label, `${preset.id}: complete descriptor`);
+    assert.ok(Object.isFrozen(preset), `${preset.id}: descriptor frozen`);
+  }
+  assert.equal(Core.getPackingStrategy('default').id, 'default', 'default strategy registered');
+  assert.equal(Core.getPackingStrategy('nope'), null, 'unknown lookup returns null');
+});

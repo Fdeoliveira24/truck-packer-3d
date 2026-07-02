@@ -30,6 +30,11 @@ export {
   rejectionCodeForValidationReason,
 } from './explain.js';
 export {
+  PACKING_STRATEGIES,
+  getPackingStrategy,
+  runPackingStrategies,
+} from './solution.js';
+export {
   canonicalOrientationLock,
   RIGHT_ANGLE_RAD,
   normalizeRightAngle,

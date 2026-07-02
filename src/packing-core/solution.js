@@ -83,6 +83,7 @@ function toStrategyResult(preset, result) {
     unpacked: result.unpacked,
     warnings: result.warnings,
     rejectionReasons: result.rejectionReasons,
+    solveStatus: result.solveStatus,
     phaseStats: result.phaseStats,
     stats: result.phaseStats,
   };

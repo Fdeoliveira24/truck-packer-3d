@@ -45,8 +45,11 @@ export { repairDependentPlacements } from './repair.js';
 export { createSolveBudget, DEFAULT_SOLVE_BUDGET_MS } from './budget.js';
 export {
   REJECTION_CODES,
+  PARTIAL_CAUSES,
   makeRejectionReason,
   rejectionCodeForValidationReason,
+  classifyRejectionCause,
+  summarizeSolveStatus,
 } from './explain.js';
 export {
   PACKING_STRATEGIES,

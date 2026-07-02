@@ -54,6 +54,58 @@ export function makeRejectionReason(instanceId, code, phase, detail, context = n
 }
 
 /**
+ * High-level cause classes for a partial solve. A solve is partial when any
+ * item stayed unpacked; the causes say WHY in product terms:
+ * - fit: geometry — the item does not fit the remaining/any space;
+ * - safety: support/stability/collision/retention/blocked-body rules;
+ * - rules: cargo handling rules (orientation locks, stacking permissions);
+ * - budget: the interactive time budget stopped the solve early.
+ */
+export const PARTIAL_CAUSES = Object.freeze({
+  FIT: 'fit',
+  SAFETY: 'safety',
+  RULES: 'rules',
+  BUDGET: 'budget',
+});
+
+/** Classify one rejection code into a PARTIAL_CAUSES class. */
+export function classifyRejectionCause(code) {
+  switch (code) {
+    case REJECTION_CODES.SOLVE_BUDGET_EXCEEDED:
+      return PARTIAL_CAUSES.BUDGET;
+    case REJECTION_CODES.ORIENTATION_LOCKED:
+      return PARTIAL_CAUSES.RULES;
+    case REJECTION_CODES.BLOCKED_BY_WHEEL_WELL:
+    case REJECTION_CODES.OUT_OF_BOUNDS:
+    case REJECTION_CODES.COLLISION:
+    case REJECTION_CODES.UNSUPPORTED:
+    case REJECTION_CODES.NO_RETENTION:
+      return PARTIAL_CAUSES.SAFETY;
+    default:
+      // NO_USABLE_SPACE, NO_FIT_ANY_SURFACE, TOO_WIDE_*, NO_FLOOR/STACK_CANDIDATE
+      return PARTIAL_CAUSES.FIT;
+  }
+}
+
+/**
+ * Summarize a solve into the engine's completion contract: whether everything
+ * packed, how many items stayed staged, and the distinct partial causes
+ * (derived from the structured rejection reasons — one per unpacked item).
+ */
+export function summarizeSolveStatus(unpackedIds, rejectionReasons) {
+  const unpackedCount = Array.isArray(unpackedIds) ? unpackedIds.length : 0;
+  const causes = new Set();
+  for (const reason of rejectionReasons || []) {
+    causes.add(classifyRejectionCause(reason.code));
+  }
+  return {
+    complete: unpackedCount === 0,
+    unpackedCount,
+    partialCauses: [...causes].sort(),
+  };
+}
+
+/**
  * Map the solver's final-validation reason text (the exact strings
  * validatePackedPlacements has always produced for warnings) to a code, so
  * warnings and structured reasons stay one source of truth.

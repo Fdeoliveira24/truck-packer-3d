@@ -40,6 +40,7 @@ import {
   REJECTION_CODES,
   makeRejectionReason,
   rejectionCodeForValidationReason,
+  summarizeSolveStatus,
 } from '../packing-core/explain.js';
 import { createSolveBudget } from '../packing-core/budget.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
@@ -242,6 +243,7 @@ function makeEmptyOutput() {
     unpacked: [],
     warnings: [],
     rejectionReasons: [],
+    solveStatus: { complete: true, unpackedCount: 0, partialCauses: [] },
     phaseStats: {
       laneCount: 0,
       floorCount: 0,
@@ -2719,6 +2721,7 @@ export function solveAutoPack(input = {}) {
       'Missing truck dimensions or usable zones.'
     ));
     output.phaseStats.unpackedCount = output.unpacked.length;
+    output.solveStatus = summarizeSolveStatus(output.unpacked, output.rejectionReasons);
     return output;
   }
 
@@ -3075,5 +3078,8 @@ export function solveAutoPack(input = {}) {
     const reason = mainLoopRejections.get(id);
     if (reason) output.rejectionReasons.push(reason);
   }
+  // Completion contract: complete vs partial, and WHY it is partial
+  // (fit / safety / rules / budget) — derived from the structured reasons.
+  output.solveStatus = summarizeSolveStatus(output.unpacked, output.rejectionReasons);
   return output;
 }

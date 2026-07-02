@@ -661,6 +661,7 @@ export function createAutoPackEngine({
             unpacked: unpacked.length,
             rejectedPlacements: 0,
             phaseStats: solverResult.phaseStats || null,
+            solveStatus: solverResult.solveStatus || null,
             timings: {
               solverMs: Math.round(solverMs),
               animationMs: Math.round(animationMs),

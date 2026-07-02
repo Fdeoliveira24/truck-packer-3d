@@ -22,8 +22,28 @@ import {
   getOrientedDimsForRotation,
 } from '../core/oriented-dims.js';
 import { cargoComparisonKey, cargoFieldsEqual } from '../core/cargo-canonical.js';
+// Hard-rule predicates and tolerances come from the single validation authority
+// shared with the AutoPack solver (packing-core/validation.js), so manual
+// revalidation and AutoPack can never silently diverge on a rule or epsilon.
+// Imported directly (not via packing-core/index.js) to keep the graph cycle-free.
+import {
+  CONTAINMENT_EPS_INCHES,
+  PLACEMENT_EPS,
+  MIN_SUPPORT_FRACTION,
+  aabbsOverlap as validationAabbsOverlap,
+  isAabbContainedInZone as validationAabbContainedInZone,
+  isAabbContainedInAnyZone as validationAabbContainedInAnyZone,
+  computeSupportFraction as validationComputeSupportFraction,
+  rulesAllowStackOnTop,
+  rulesMaxStackCount,
+  weightAllowsSupport,
+} from '../packing-core/validation.js';
 import { computeCoG } from './cog-service.js';
 import { computePalletWarnings } from './oog-service.js';
+
+// Re-export the shared tolerances so existing consumers importing them from
+// pack-library keep working while the single source lives in packing-core.
+export { CONTAINMENT_EPS_INCHES, PLACEMENT_EPS, MIN_SUPPORT_FRACTION };
 
 // Re-export the shared oriented-dimension helpers so existing consumers that
 // import them from pack-library (autopack-engine, editor-screen) keep working
@@ -251,20 +271,13 @@ function getTrailerCapacityInches3(truck) {
   }, 0);
 }
 
-export const CONTAINMENT_EPS_INCHES = 0.05;
-
 /** Maximum accepted gap between a retaining wall's front face and the overhang step. */
 export const REAR_RETENTION_MAX_STEP_GAP_INCHES = 0.05;
 
 /** Rear retention requires the candidate's complete width; vertical support uses a separate rule. */
 export const MIN_REAR_RETENTION_WIDTH_FRACTION = 1.0;
 
-function aabbContainedInZone(aabb, z, epsilon = CONTAINMENT_EPS_INCHES) {
-  if (!aabb || !z) return false;
-  return aabb.min.x >= z.min.x - epsilon && aabb.max.x <= z.max.x + epsilon &&
-    aabb.min.y >= z.min.y - epsilon && aabb.max.y <= z.max.y + epsilon &&
-    aabb.min.z >= z.min.z - epsilon && aabb.max.z <= z.max.z + epsilon;
-}
+const aabbContainedInZone = validationAabbContainedInZone;
 
 /**
  * Resolve the true raised Front Overhang deck and its main-floor step geometry.
@@ -378,27 +391,9 @@ export function evaluateFrontOverhangRearRetention(
 /**
  * Inch-space containment contract: all AABBs and usable zones passed here use
  * inches, and all active trailer-containment callers share the same physical
- * tolerance through CONTAINMENT_EPS_INCHES.
+ * tolerance through CONTAINMENT_EPS_INCHES (single source: packing-core).
  */
-function isAabbContainedInAnyZone(aabb, zones) {
-  // Bug 5 fix: add small epsilon tolerance for floating-point rounding.
-  // AutoPack places items with fp arithmetic, so a box at x=0.0000000001
-  // would fail an exact >= 0 check. 0.05 inches is imperceptible visually.
-  const EPS = CONTAINMENT_EPS_INCHES;
-  for (const z of zones || []) {
-    if (
-      aabb.min.x >= z.min.x - EPS &&
-      aabb.max.x <= z.max.x + EPS &&
-      aabb.min.y >= z.min.y - EPS &&
-      aabb.max.y <= z.max.y + EPS &&
-      aabb.min.z >= z.min.z - EPS &&
-      aabb.max.z <= z.max.z + EPS
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
+const isAabbContainedInAnyZone = validationAabbContainedInAnyZone;
 
 export function createOrientationLockPatch(rotation = {}, dimensions = {}) {
   const lockedRotation = normalizeRightAngleRotation(rotation);
@@ -586,17 +581,7 @@ function makeAabb(position, dims) {
   };
 }
 
-function aabbsOverlap(a, b) {
-  const EPS = 0.001;
-  return (
-    a.min.x < b.max.x - EPS &&
-    a.max.x > b.min.x + EPS &&
-    a.min.y < b.max.y - EPS &&
-    a.max.y > b.min.y + EPS &&
-    a.min.z < b.max.z - EPS &&
-    a.max.z > b.min.z + EPS
-  );
-}
+const aabbsOverlap = validationAabbsOverlap;
 
 export function aabbIntersectsWheelWellBlockedBody(aabb, truck) {
   if (!aabb) return false;
@@ -978,48 +963,13 @@ function repairPackInstancePlacements(pack, caseLibrary) {
 
 // ============================================================================
 // SECTION: SHARED PLACEMENT VALIDATION CONSTANTS AND HELPERS
-// These are exported so that editor-screen.js and future placement validators
-// all use the same epsilon and support-fraction threshold.
+// PLACEMENT_EPS, MIN_SUPPORT_FRACTION, and computeSupportFraction are re-exported
+// from packing-core/validation.js (the single validation authority) so
+// editor-screen.js and every placement validator share one epsilon,
+// support-fraction threshold, and coverage computation.
 // ============================================================================
 
-/** Shared epsilon for AABB overlap checks across all placement code paths. */
-export const PLACEMENT_EPS = 0.001;
-
-/** Minimum fraction of a case's bottom face that must be covered by supporters. */
-export const MIN_SUPPORT_FRACTION = 0.5;
-
-/**
- * Compute what fraction of the candidate's bottom face is covered by supporter AABBs.
- * Works with plain {min,max} objects in any consistent coordinate space (inches or world units).
- *
- * Floor is not a supporter — callers should treat fraction=0 as "falls to floor".
- * Touching faces (otherAabb.max.y === candidate.min.y ± tolerance) count as support.
- * Tiny-corner overlap produces a fraction well below MIN_SUPPORT_FRACTION.
- *
- * @param {{ min: {x,y,z}, max: {x,y,z} }} candidateAabb
- * @param {Array<{ min: {x,y,z}, max: {x,y,z} }>} supporterAabbs
- * @param {number} [tolerance=PLACEMENT_EPS] - Y tolerance for flush-top detection
- * @returns {number} fraction in [0, 1]
- */
-export function computeSupportFraction(candidateAabb, supporterAabbs, tolerance = PLACEMENT_EPS) {
-  if (!candidateAabb) return 0;
-  const footprintL = candidateAabb.max.x - candidateAabb.min.x;
-  const footprintW = candidateAabb.max.z - candidateAabb.min.z;
-  const candidateArea = Math.max(1e-9, footprintL * footprintW);
-  const bottom = candidateAabb.min.y;
-  let supportArea = 0;
-
-  for (const sup of supporterAabbs || []) {
-    if (!sup) continue;
-    // Only count surfaces whose top face is flush with the candidate's bottom face.
-    if (Math.abs(bottom - sup.max.y) > tolerance) continue;
-    const overlapL = Math.max(0, Math.min(candidateAabb.max.x, sup.max.x) - Math.max(candidateAabb.min.x, sup.min.x));
-    const overlapW = Math.max(0, Math.min(candidateAabb.max.z, sup.max.z) - Math.max(candidateAabb.min.z, sup.min.z));
-    supportArea += overlapL * overlapW;
-  }
-
-  return Math.min(1, supportArea / candidateArea);
-}
+export const computeSupportFraction = validationComputeSupportFraction;
 
 // ============================================================================
 // SECTION: TRUCK GEOMETRY CHANGE RECONCILIATION
@@ -1059,13 +1009,16 @@ function directChildCount(support, accepted, tol = RECON_TOL) {
 
 function supportCanCarry(candidate, support, accepted) {
   const rules = support.caseData || {};
-  if (rules.noStackOnTop === true || rules.stackable === false) return false;
-  const limit = Math.max(0, Math.floor(Number(rules.maxStackCount) || 0));
+  if (!rulesAllowStackOnTop(rules)) return false;
+  // Manual pipeline floors the cap at its boundary (canonicalization already
+  // floors stored values; this keeps legacy data behavior unchanged).
+  const limit = Math.max(0, Math.floor(rulesMaxStackCount(rules)));
   if (limit && directChildCount(support, accepted) >= limit) return false;
-  if (rules.isPallet === true) return true;
-  const candidateWeight = Math.max(0, Number(candidate.caseData && candidate.caseData.weight) || 0);
-  const supportWeight = Math.max(0, Number(rules.weight) || 0);
-  return candidateWeight <= supportWeight;
+  return weightAllowsSupport(
+    Math.max(0, Number(candidate.caseData && candidate.caseData.weight) || 0),
+    Math.max(0, Number(rules.weight) || 0),
+    rules.isPallet === true
+  );
 }
 
 function aabbIsSupported(candidate, aabb, accepted, zones, tol = RECON_TOL) {

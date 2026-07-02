@@ -55,6 +55,7 @@ const autoPackEnginePath = new URL('../../src/services/autopack-engine.js', impo
 const autoPackLegacySolverPath = new URL('../../src/services/autopack-legacy-solver.js', import.meta.url);
 const autoPackSolverPath = new URL('../../src/services/autopack-solver.js', import.meta.url);
 const packingCorePath = new URL('../../src/packing-core/index.js', import.meta.url);
+const packingCoreValidationPath = new URL('../../src/packing-core/validation.js', import.meta.url);
 const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 const truckChangeControllerPath = new URL('../../src/ui/truck-change-controller.js', import.meta.url);
@@ -5700,11 +5701,16 @@ test('CARGO-RULE-V7 storage keeps the cap and the solver gate blocks children un
   const saved = StateStore.get('caseLibrary').find(c => c.id === 'base');
   assert.equal(saved.noStackOnTop, true, 'no-top-load persisted');
   assert.equal(saved.maxStackCount, 5, 'stack cap preserved alongside no-top-load (not erased)');
-  // The solver's "can have items on top" gate is governed by noStackOnTop/stackable,
-  // independent of maxStackCount, so the preserved cap is ignored while no-top-load is on.
-  const solverSrc = await fs.readFile(autoPackSolverPath, 'utf8');
-  assert.match(solverSrc, /!\(rules\.noStackOnTop \|\| rules\.stackable === false\)/,
+  // The "can have items on top" gate is governed by noStackOnTop/stackable,
+  // independent of maxStackCount, so the preserved cap is ignored while no-top-load
+  // is on. The gate lives once in packing-core/validation.js (the single validation
+  // authority) and the solver delegates to it.
+  const validationSrc = await fs.readFile(packingCoreValidationPath, 'utf8');
+  assert.match(validationSrc, /!\(rules\.noStackOnTop \|\| rules\.stackable === false\)/,
     'the top-load gate depends on noStackOnTop/stackable, not on maxStackCount');
+  const solverSrc = await fs.readFile(autoPackSolverPath, 'utf8');
+  assert.match(solverSrc, /rulesAllowStackOnTop\(getPlacementRules\(placement\)\)/,
+    'the solver delegates the top-load gate to the shared validation authority');
 });
 
 test('CARGO-RULE-V7 pallet + no-top-load shows an explanatory note; pallet warning is dormant when not a pallet', async () => {
@@ -17981,4 +17987,100 @@ test('PACKING-CORE-P5 solver output is identical when zones come from the SpaceM
     );
     assert.deepEqual(direct.unpacked, viaModel.unpacked, `${shapeMode}: unpacked identical`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// PACKING-CORE-P6: one hard-rule validation authority. The solver and the
+// manual/reconciliation pipeline must answer containment, overlap, support
+// fraction, and support-side stacking questions identically because both
+// delegate to packing-core/validation.js. These tests pin that agreement
+// behaviorally (never by source pattern alone).
+// ---------------------------------------------------------------------------
+test('PACKING-CORE-P6 containment and overlap agree across solver, pack-library, and validation', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Validation = await import(`${packingCoreValidationPath.href}${stamp}`);
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+  const zones = PackLib.getTrailerUsableZones({ length: 636, width: 102, height: 98, shapeMode: 'wheelWells' });
+  const mk = (min, max) => ({ min, max });
+  const fixtures = [
+    mk({ x: 0, y: 0, z: -51 }, { x: 24, y: 16, z: -33 }),           // rear floor, wall-flush
+    mk({ x: -0.04, y: 0, z: -51 }, { x: 24, y: 16, z: -33 }),      // inside eps tolerance
+    mk({ x: -0.06, y: 0, z: -51 }, { x: 24, y: 16, z: -33 }),      // outside eps tolerance
+    mk({ x: 200, y: 0, z: -20 }, { x: 224, y: 16, z: -2 }),        // center channel
+    mk({ x: 200, y: 0, z: -51 }, { x: 224, y: 16, z: -33 }),       // inside a blocked well body
+    mk({ x: 630, y: 90, z: 0 }, { x: 660, y: 110, z: 20 }),        // out of bounds front/top
+  ];
+  for (const [i, aabb] of fixtures.entries()) {
+    assert.equal(
+      Solver.isAabbContainedInAnyZone(aabb, zones),
+      PackLib.isAabbContainedInAnyZone(aabb, zones),
+      `fixture ${i}: solver and pack-library containment agree`
+    );
+    assert.equal(
+      Solver.isAabbContainedInAnyZone(aabb, zones),
+      Validation.isAabbContainedInAnyZone(aabb, zones),
+      `fixture ${i}: containment comes from the shared authority`
+    );
+  }
+  const a = mk({ x: 0, y: 0, z: 0 }, { x: 10, y: 10, z: 10 });
+  const touching = mk({ x: 10, y: 0, z: 0 }, { x: 20, y: 10, z: 10 });
+  const overlapping = mk({ x: 9.9, y: 0, z: 0 }, { x: 20, y: 10, z: 10 });
+  assert.equal(Validation.aabbsOverlap(a, touching), false, 'flush faces never overlap');
+  assert.equal(Validation.aabbsOverlap(a, overlapping), true, 'interior penetration overlaps');
+  assert.equal(Solver.aabbsOverlap(a, overlapping), Validation.aabbsOverlap(a, overlapping),
+    'solver overlap is the shared authority');
+  assert.equal(
+    PackLib.computeSupportFraction(a, [mk({ x: 0, y: -10, z: 0 }, { x: 5, y: 0, z: 10 })]),
+    Validation.computeSupportFraction(a, [mk({ x: 0, y: -10, z: 0 }, { x: 5, y: 0, z: 10 })]),
+    'support fraction is the shared authority (half footprint = 0.5)'
+  );
+});
+
+test('PACKING-CORE-P6 support-side stacking rules agree between AutoPack and manual reconciliation', async () => {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  const Validation = await import(`${packingCoreValidationPath.href}${stamp}`);
+  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
+  const PackLib = await import(`${packLibraryPath.href}${stamp}`);
+
+  // Rule-level agreement on the shared predicates.
+  assert.equal(Validation.rulesAllowStackOnTop({ noStackOnTop: true }), false, 'no-top-load blocks support');
+  assert.equal(Validation.rulesAllowStackOnTop({ stackable: false }), false, 'stackable:false blocks support');
+  assert.equal(Validation.rulesAllowStackOnTop({}), true, 'default allows support');
+  assert.equal(Validation.rulesMaxStackCount({ maxStackCount: 0 }), 0, '0 = unlimited');
+  assert.equal(Validation.rulesMaxStackCount({ maxStackCount: 2 }), 2, 'cap preserved');
+  assert.equal(Validation.weightAllowsSupport(50, 30, false), false, 'heavier child rejected');
+  assert.equal(Validation.weightAllowsSupport(50, 30, true), true, 'pallet bypasses the weight rule');
+
+  // Behavioral agreement: a noStackOnTop base gets no children from the solver,
+  // and manual reconciliation refuses the same stacked pose.
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = [
+    { instanceId: 'base', caseId: 'B', dims: { l: 48, w: 48, h: 12 }, orientationLock: 'upright', canFlip: false, weight: 100, noStackOnTop: true },
+    { instanceId: 'child', caseId: 'C', dims: { l: 240, w: 96, h: 12 }, orientationLock: 'upright', canFlip: false, weight: 10 },
+  ];
+  const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const basePos = res.placements.get('base');
+  const childPos = res.placements.get('child');
+  if (basePos && childPos) {
+    assert.ok(Math.abs((childPos.y - 6) - (basePos.y + 6)) > 0.05,
+      'solver never rests the child on the noStackOnTop base');
+  }
+
+  const caseLib = [
+    { id: 'B', name: 'Base', dimensions: { length: 48, width: 48, height: 12 }, weight: 100, noStackOnTop: true },
+    { id: 'C', name: 'Child', dimensions: { length: 24, width: 24, height: 12 }, weight: 10 },
+  ];
+  const pack = {
+    truck,
+    cases: [
+      { id: 'i-base', caseId: 'B', placement: 'packed', transform: { position: { x: 216, y: 6, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } },
+      { id: 'i-child', caseId: 'C', placement: 'packed', transform: { position: { x: 216, y: 18, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } },
+    ],
+  };
+  const recon = PackLib.reconcilePlacementsForTruck(pack, truck, caseLib);
+  assert.ok(recon.kept.includes('i-base'), 'base placement is valid');
+  assert.equal(recon.kept.includes('i-child'), false,
+    'manual reconciliation refuses a child resting on a noStackOnTop base (same rule as AutoPack)');
 });

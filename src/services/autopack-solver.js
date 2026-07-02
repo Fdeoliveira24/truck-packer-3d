@@ -1,9 +1,24 @@
 import {
-  CONTAINMENT_EPS_INCHES,
   evaluateFrontOverhangRearRetention,
   getFrontOverhangRetentionGeometry,
 } from './pack-library.js';
+// Hard-rule predicates and tolerances come from the single validation authority
+// (packing-core/validation.js) so AutoPack and manual revalidation can never
+// silently diverge. Imported directly (not via packing-core/index.js) to keep
+// the module graph cycle-free.
+import {
+  CONTAINMENT_EPS_INCHES,
+  aabbsOverlap,
+  computeXzOverlapArea,
+  isAabbContainedInZone,
+  isAabbContainedInAnyZone,
+  rulesAllowStackOnTop,
+  rulesMaxStackCount,
+  weightAllowsSupport,
+} from '../packing-core/validation.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
+
+export { aabbsOverlap, computeXzOverlapArea, isAabbContainedInAnyZone };
 import {
   RIGHT_ANGLE_RAD,
   normalizeRightAngleRotation,
@@ -139,23 +154,6 @@ export function getAabb(position = {}, dims = {}) {
   };
 }
 
-export function aabbsOverlap(a, b, epsilon = 0.001) {
-  if (!a || !b) return false;
-  return a.min.x < b.max.x - epsilon &&
-    a.max.x > b.min.x + epsilon &&
-    a.min.y < b.max.y - epsilon &&
-    a.max.y > b.min.y + epsilon &&
-    a.min.z < b.max.z - epsilon &&
-    a.max.z > b.min.z + epsilon;
-}
-
-export function computeXzOverlapArea(a, b) {
-  if (!a || !b) return 0;
-  const overlapL = Math.max(0, Math.min(a.max.x, b.max.x) - Math.max(a.min.x, b.min.x));
-  const overlapW = Math.max(0, Math.min(a.max.z, b.max.z) - Math.max(a.min.z, b.min.z));
-  return overlapL * overlapW;
-}
-
 export function computeSupportFraction(candidateAabb, supports = [], tolerance = 0.05) {
   if (!candidateAabb) return 0;
   const candidateArea = Math.max(
@@ -184,8 +182,7 @@ function getPlacementRules(placement = {}) {
 }
 
 function canSupportStack(placement = {}) {
-  const rules = getPlacementRules(placement);
-  return !(rules.noStackOnTop || rules.stackable === false);
+  return rulesAllowStackOnTop(getPlacementRules(placement));
 }
 
 function getPlacementWeight(placement = {}) {
@@ -202,10 +199,11 @@ function isPalletSupport(placement = {}) {
 
 function canSupportCandidateWeight(candidateItem, support) {
   if (!candidateItem) return true;
-  if (isPalletSupport(support)) return true;
-  const candidateWeight = finiteNumber(candidateItem.weight, 0);
-  const supportWeight = getPlacementWeight(support);
-  return candidateWeight <= supportWeight;
+  return weightAllowsSupport(
+    finiteNumber(candidateItem.weight, 0),
+    getPlacementWeight(support),
+    isPalletSupport(support)
+  );
 }
 
 export function classifyAutoPackItem(item = {}) {
@@ -288,19 +286,6 @@ function normalizeZones(zones = []) {
     );
 }
 
-function isAabbContainedInZone(aabb, zone, epsilon = CONTAINMENT_EPS_INCHES) {
-  return aabb.min.x >= zone.min.x - epsilon &&
-    aabb.max.x <= zone.max.x + epsilon &&
-    aabb.min.y >= zone.min.y - epsilon &&
-    aabb.max.y <= zone.max.y + epsilon &&
-    aabb.min.z >= zone.min.z - epsilon &&
-    aabb.max.z <= zone.max.z + epsilon;
-}
-
-export function isAabbContainedInAnyZone(aabb, zones = [], epsilon = CONTAINMENT_EPS_INCHES) {
-  return (zones || []).some(zone => isAabbContainedInZone(aabb, zone, epsilon));
-}
-
 function collidesPacked(aabb, packed) {
   return packed.some(placement => aabbsOverlap(aabb, placement.aabb));
 }
@@ -337,8 +322,7 @@ function wallContactCount(aabb, zone, loadFrontFirst) {
 }
 
 function getMaxStackCount(placement = {}) {
-  const maxStackCount = finiteNumber(getPlacementRules(placement).maxStackCount, 0);
-  return maxStackCount > 0 ? maxStackCount : 0;
+  return rulesMaxStackCount(getPlacementRules(placement));
 }
 
 function countDirectStackChildren(support, packed, tolerance = 0.05) {

@@ -54,6 +54,7 @@ const packLibraryPath = new URL('../../src/services/pack-library.js', import.met
 const autoPackEnginePath = new URL('../../src/services/autopack-engine.js', import.meta.url);
 const autoPackLegacySolverPath = new URL('../../src/services/autopack-legacy-solver.js', import.meta.url);
 const autoPackSolverPath = new URL('../../src/services/autopack-solver.js', import.meta.url);
+const packingCorePath = new URL('../../src/packing-core/index.js', import.meta.url);
 const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 const truckChangeControllerPath = new URL('../../src/ui/truck-change-controller.js', import.meta.url);
@@ -17829,4 +17830,155 @@ test('OPERATION-LIFECYCLE-AMEND pending truck config card renders the pending (e
   // Config commit payloads keep the pending dims/mode.
   assert.doesNotMatch(editorSrc, /const nextTruck = \{ \.\.\.pack\.truck, shapeConfig: nextCfg \};/,
     'config save/reset must commit from the effective truck so pending shape/dims are preserved');
+});
+
+// ---------------------------------------------------------------------------
+// PACKING-CORE-P5: SpaceModel adapter parity. buildSpaceModel must be a pure
+// composition of the existing production geometry (usable zones, blocked zones,
+// wheel-well physical geometry, front-overhang retention) — never a re-derivation
+// that can drift. These tests pin byte-parity for all three truck modes plus
+// degenerate configs, and prove the solver output is unchanged when zones are
+// sourced through the SpaceModel.
+// ---------------------------------------------------------------------------
+async function p5Modules() {
+  const stamp = `?t=${Date.now()}-${Math.random()}`;
+  return {
+    Core: await import(`${packingCorePath.href}${stamp}`),
+    Solver: await import(`${autoPackSolverPath.href}${stamp}`),
+    PackLib: await import(`${packLibraryPath.href}${stamp}`),
+  };
+}
+
+test('PACKING-CORE-P5 Standard truck normalizes to a single-floor SpaceModel with zone parity', async () => {
+  const { Core, PackLib } = await p5Modules();
+  const truck = { length: 636, width: 102, height: 98, shapeMode: 'rect' };
+  const model = Core.buildSpaceModel(truck);
+  assert.deepEqual(model.zones, PackLib.getTrailerUsableZones(truck), 'zones are the production usable zones');
+  assert.deepEqual(model.blocked, [], 'Standard has no blocked volumes');
+  assert.equal(model.wheelWell, null, 'no wheel-well geometry');
+  assert.equal(model.retention, null, 'no retention geometry');
+  assert.equal(model.constrainedZones.length, 0, 'a single zone is never constrained');
+  assert.equal(model.surfaces.length, 1, 'one surface');
+  assert.deepEqual(
+    { kind: model.surfaces[0].kind, y: model.surfaces[0].y, rigid: model.surfaces[0].rigid },
+    { kind: 'floor', y: 0, rigid: true },
+    'the single surface is the rigid floor'
+  );
+  assert.deepEqual(model.bounds, { min: { x: 0, y: 0, z: -51 }, max: { x: 636, y: 98, z: 51 } }, 'bounds are the truck box');
+  assert.equal(model.loadFrontFirst, true, 'front-first is the engine default');
+});
+
+test('PACKING-CORE-P5 Wheel Wells truck normalizes zones, blocked bodies, rigid tops, and channel parity', async () => {
+  const { Core, Solver, PackLib } = await p5Modules();
+  const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
+  const model = Core.buildSpaceModel(truck);
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const blocked = PackLib.getWheelWellsBlockedZones(truck);
+  const geometry = Solver.getWheelWellGeometry(truck);
+
+  assert.deepEqual(model.zones, zones, 'zones are the production 5-zone split');
+  assert.equal(model.blocked.length, 2, 'two blocked well bodies');
+  model.blocked.forEach((body, i) => {
+    assert.equal(body.kind, 'wheelWellBody', `blocked[${i}] kind`);
+    assert.deepEqual({ min: body.min, max: body.max }, { min: blocked[i].min, max: blocked[i].max },
+      `blocked[${i}] equals the production blocked zone`);
+  });
+  assert.deepEqual(model.wheelWell, geometry, 'wheel-well physical geometry is the solver geometry, unmodified');
+
+  const floors = model.surfaces.filter(s => s.kind === 'floor');
+  const raised = model.surfaces.filter(s => s.kind === 'raisedFloor');
+  const rigidTops = model.surfaces.filter(s => s.kind === 'rigidTop');
+  assert.equal(floors.length, 3, 'rear + channel + front floors');
+  assert.equal(raised.length, 2, 'two raised shelf zones');
+  assert.equal(rigidTops.length, 2, 'two rigid well tops');
+  rigidTops.forEach((top, i) => {
+    assert.deepEqual(
+      { y: top.y, minX: top.minX, maxX: top.maxX, minZ: top.minZ, maxZ: top.maxZ },
+      {
+        y: geometry.tops[i].min.y,
+        minX: geometry.tops[i].min.x,
+        maxX: geometry.tops[i].max.x,
+        minZ: geometry.tops[i].min.z,
+        maxZ: geometry.tops[i].max.z,
+      },
+      `rigid top ${i} matches solver geometry top`
+    );
+  });
+  // The constrained-zone definition must agree with the solver's channel notion:
+  // exactly the zones strictly narrower than the widest zone (the center channel).
+  const widest = Math.max(...zones.map(z => z.max.z - z.min.z));
+  assert.deepEqual(
+    model.constrainedZones,
+    zones.filter(z => (z.max.z - z.min.z) < widest - 0.05),
+    'constrained zones are the narrow channel zones'
+  );
+});
+
+test('PACKING-CORE-P5 Front Overhang truck normalizes deck, cab void, and retention parity', async () => {
+  const { Core, PackLib } = await p5Modules();
+  const truck = {
+    length: 240, width: 96, height: 96, shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 60, bonusHeight: 43.2 },
+  };
+  const model = Core.buildSpaceModel(truck);
+  const zones = PackLib.getTrailerUsableZones(truck);
+  assert.deepEqual(model.zones, zones, 'zones are the production main + deck zones');
+  assert.equal(model.blocked.length, 1, 'one cab void');
+  assert.equal(model.blocked[0].kind, 'cabVoid', 'cab void kind');
+  assert.deepEqual(
+    { min: model.blocked[0].min, max: model.blocked[0].max },
+    (() => { const [v] = PackLib.getFrontBonusBlockedZones(truck); return { min: v.min, max: v.max }; })(),
+    'cab void equals the production blocked zone'
+  );
+  assert.deepEqual(model.retention, PackLib.getFrontOverhangRetentionGeometry(truck, zones),
+    'retention geometry is the production step geometry');
+  assert.equal(model.wheelWell, null, 'no wheel-well geometry');
+  const kinds = model.surfaces.map(s => s.kind).sort();
+  assert.deepEqual(kinds, ['floor', 'raisedFloor'], 'main floor + raised deck surfaces');
+  assert.equal(model.bounds.max.x, 300, 'bounds extend over the deck (240 + 60)');
+});
+
+test('PACKING-CORE-P5 degenerate configs collapse exactly like production geometry', async () => {
+  const { Core, Solver, PackLib } = await p5Modules();
+  // Zero-height wells: blocked zones sanitize away and solver geometry is null.
+  const flatWells = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells', shapeConfig: { wellHeight: 0 } };
+  const flatModel = Core.buildSpaceModel(flatWells);
+  assert.deepEqual(flatModel.zones, PackLib.getTrailerUsableZones(flatWells), 'zones still match production');
+  assert.deepEqual(flatModel.blocked, [], 'no blocked bodies for zero-height wells');
+  assert.equal(flatModel.wheelWell, Solver.getWheelWellGeometry(flatWells), 'wheel-well geometry matches (null)');
+  assert.equal(flatModel.surfaces.filter(s => s.kind === 'rigidTop').length, 0, 'no rigid tops');
+  // Zero-length overhang: frontBonus is geometrically a plain box.
+  const flatBonus = { length: 240, width: 96, height: 96, shapeMode: 'frontBonus', shapeConfig: { bonusLength: 0 } };
+  const bonusModel = Core.buildSpaceModel(flatBonus);
+  assert.equal(bonusModel.zones.length, 1, 'overhang zone sanitized away');
+  assert.equal(bonusModel.retention, null, 'no retention geometry without a deck');
+  // Malformed truck: empty model, no throw.
+  const emptyModel = Core.buildSpaceModel(null);
+  assert.deepEqual(emptyModel.zones, [], 'no zones for malformed truck');
+  assert.deepEqual(emptyModel.blocked, [], 'no blocked volumes for malformed truck');
+});
+
+test('PACKING-CORE-P5 solver output is identical when zones come from the SpaceModel', async () => {
+  const { Core, Solver, PackLib } = await p5Modules();
+  for (const shapeMode of ['rect', 'wheelWells', 'frontBonus']) {
+    const truck = shapeMode === 'frontBonus'
+      ? { length: 240, width: 96, height: 96, shapeMode, shapeConfig: { bonusLength: 60, bonusHeight: 43.2 } }
+      : { length: 636, width: 102, height: 98, shapeMode };
+    const items = Array.from({ length: 40 }, (_, i) => ({
+      instanceId: `i${i}`, caseId: 'A', dims: { l: 24, w: 18, h: 16 },
+      orientationLock: 'any', canFlip: false, weight: 30,
+    }));
+    const direct = Solver.solveAutoPack({
+      truck, zones: PackLib.getTrailerUsableZones(truck), loadFrontFirst: true, items,
+    });
+    const viaModel = Solver.solveAutoPack({
+      truck, zones: Core.buildSpaceModel(truck).zones, loadFrontFirst: true, items,
+    });
+    assert.equal(
+      JSON.stringify([...direct.placements]),
+      JSON.stringify([...viaModel.placements]),
+      `${shapeMode}: placements identical via SpaceModel zones`
+    );
+    assert.deepEqual(direct.unpacked, viaModel.unpacked, `${shapeMode}: unpacked identical`);
+  }
 });

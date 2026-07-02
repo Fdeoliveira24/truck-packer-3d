@@ -9,19 +9,22 @@
  * rejection reasons, phase stats), so future multi-solution UI can navigate
  * variants without re-solving.
  *
- * Only strategies that genuinely exist in the solver today are registered.
- * `default` is the production pipeline; `compact-fill` is the real
- * layout-quality-off variant (original waste-first density ordering — packs at
- * least as many cases, may mix orientations). Future strategies
- * (constrained-first reservation, wall-build, stack-priority) get presets here
- * only once the solver actually implements their semantics — never as renamed
- * aliases of existing options.
- *
- * The engine still calls solveAutoPack directly (that call is a pinned
- * AUTO-PACK-A1-R6 contract); routing it through runPackingStrategies is a
- * deliberate later step once multi-solution UI work starts. Until then the UI
- * consuming the direct solver result is exactly equivalent to consuming the
- * selected `default` solution — proven by test.
+ * Only strategies that genuinely exist in the solver are registered — every
+ * preset maps to real solver mechanics, never a renamed alias:
+ * - `default`: the full production pipeline (front-first, layout-quality
+ *   ranked, wheel-well aware, leftover recovery built in).
+ * - `compact-fill`: layout-quality re-ranking off — original waste-first
+ *   density ordering; packs at least as many cases, may mix orientations.
+ * - `floor-first`: stacking disabled — nothing is ever lifted onto cargo;
+ *   items that fit no floor position stage with an honest reason.
+ * - `stack-priority`: an item that fails the floor is offered a safe supported
+ *   stack immediately (favors vertical use over floor spread).
+ * - `constrained-first`: constrained (narrower) zones are reserved and filled
+ *   with best-fitting cargo before the open floor phases run.
+ * Leftover recovery runs inside EVERY strategy (it is part of the pipeline,
+ * not a separate preset). The production engine routes through
+ * runPackingStrategies and consumes the selected default solution; future
+ * multi-solution UI can request additional strategies without engine changes.
  * @module packing-core/solution
  */
 
@@ -32,7 +35,7 @@ export const PACKING_STRATEGIES = Object.freeze([
     id: 'default',
     strategy: 'front-first-balanced',
     label: 'Balanced (recommended)',
-    description: 'Production pipeline: front-first, layout-quality ranked, wheel-well aware.',
+    description: 'Production pipeline: front-first, layout-quality ranked, wheel-well aware, leftover recovery.',
     options: Object.freeze({}),
   }),
   Object.freeze({
@@ -41,6 +44,27 @@ export const PACKING_STRATEGIES = Object.freeze([
     label: 'Compact fill',
     description: 'Densest local packing without layout-quality re-ranking; may mix orientations.',
     options: Object.freeze({ layoutQuality: false }),
+  }),
+  Object.freeze({
+    id: 'floor-first',
+    strategy: 'floor-only',
+    label: 'Floor first (no stacking)',
+    description: 'Single-layer loading: nothing is placed on top of other cargo; unfittable items stage.',
+    options: Object.freeze({ enableStackPhase: false }),
+  }),
+  Object.freeze({
+    id: 'stack-priority',
+    strategy: 'stack-priority',
+    label: 'Stack priority',
+    description: 'Items failing the floor try a safe supported stack immediately, favoring vertical use.',
+    options: Object.freeze({ stackFallbackImmediate: true }),
+  }),
+  Object.freeze({
+    id: 'constrained-first',
+    strategy: 'constrained-space-first',
+    label: 'Constrained space first',
+    description: 'Reserves narrow zones (e.g. the wheel-well channel) for fitting cargo before open floor fills.',
+    options: Object.freeze({ constrainedSpaceFirst: true }),
   }),
 ]);
 

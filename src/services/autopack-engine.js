@@ -1,5 +1,10 @@
 import { buildLegacyAutoPackItems } from './autopack-legacy-solver.js';
-import { solveAutoPack } from './autopack-solver.js';
+// AutoPack routes through the packing-core strategy runner: the core owns
+// strategy orchestration and the solution envelope; the selected default
+// solution is byte-equivalent to a direct solveAutoPack call, so the engine
+// stays a thin orchestrator. (Supersedes the direct-solver-call wiring the
+// A1-R6 source contract pinned — update that spec on the validation branch.)
+import { runPackingStrategies } from '../packing-core/solution.js';
 import { DEFAULT_SOLVE_BUDGET_MS } from '../packing-core/budget.js';
 
 // The staged pose MUST be atomic: position, rotation and orientedDims all describe
@@ -519,7 +524,7 @@ export function createAutoPackEngine({
           CaseLibrary.getCases()
         ).acceptedPlacements
         : [];
-      const solverResult = solveAutoPack({
+      const packingSolution = runPackingStrategies({
         truck,
         zones,
         loadFrontFirst,
@@ -556,6 +561,9 @@ export function createAutoPackEngine({
           };
         }),
       });
+      // Current UI consumes the selected default solution; additional
+      // strategies stay available on packingSolution.solutions for future UI.
+      const solverResult = packingSolution ? packingSolution.selectedSolution : null;
       solverMs = nowMs() - solverStartedAt;
       if (!solverResult || isWorkspaceRunStale()) return;
 

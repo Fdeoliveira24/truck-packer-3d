@@ -2518,16 +2518,17 @@ function placeWheelWellBuildUpBridges(output, packed, itemsById, geometry, loadF
 }
 
 // ---------------------------------------------------------------------------
-// WHEEL WELLS: constrained leftover pass. After the floor/filler/stack phases
-// (and the well-top build-up/bridge pass) some staged leftovers can still fit
-// remaining LEGAL floor holes — especially in the constrained center channel,
-// where the repeated-grid and batch phases may leave openings that only a
-// smaller or channel-fitting carton can use. This pass retries exactly those
-// leftovers through the ordinary findFloorPlacement hard-rule pipeline
-// (containment, collision, retention, zone height) against the final floor
-// state, so it can only ADD legal floor-resting placements: no bridge faking,
-// no blocked-body entry, no floating, no shelf forcing. Wheel Wells only —
-// every other mode has no wheel-well geometry and skips it entirely.
+// LEFTOVER RECOVERY: after the floor/filler/stack phases (and, for Wheel Wells,
+// the well-top build-up/bridge pass) some staged leftovers can still fit
+// remaining LEGAL holes — compaction and earlier placements changed the world
+// since each leftover's original attempt. This pass retries exactly those
+// leftovers through the ordinary findFloorPlacement / findStackPlacement
+// hard-rule pipelines (containment, collision, support, retention, zone
+// height) against the FINAL layout, so it can only ADD legal placements: no
+// bridge faking, no blocked-body entry, no floating, no shelf forcing. It is
+// generic across space types: in constrained geometries (wheel-well center
+// channel, future narrow zones) channel-fitting and smaller cartons are
+// retried first; in single-zone spaces it is a plain smallest-first retry.
 // ---------------------------------------------------------------------------
 
 /**
@@ -2550,7 +2551,7 @@ export function sortConstrainedLeftoverQueue(items, channelZones) {
   );
 }
 
-export function placeWheelWellConstrainedLeftovers(
+export function placeLeftoverRecovery(
   output,
   packed,
   itemsById,
@@ -2560,9 +2561,10 @@ export function placeWheelWellConstrainedLeftovers(
   wheelWell,
   layoutQualityEnabled,
   wheelWellBridge = null,
-  budget = null
+  budget = null,
+  allowStack = true
 ) {
-  if (!wheelWell || !output.unpacked.length) return 0;
+  if (!output.unpacked.length) return 0;
   const floorState = rebuildFloorStateFromPacked(floorZones, packed, false, retentionContext);
 
   const channelZones = narrowChannelZones(floorZones);
@@ -2579,7 +2581,7 @@ export function placeWheelWellConstrainedLeftovers(
       ? findFloorPlacement(item, floorState, packed, loadFrontFirst, { layoutQualityEnabled })
       : null;
     let phase = 'filler';
-    if (!placement) {
+    if (!placement && allowStack) {
       // Final safe stack/raised attempt against the FINAL layout: compaction and
       // earlier leftover rescues changed the world since the main stack phase, so
       // a supported stack (or, with bridge geometry, a legal well-top pose) may
@@ -2605,6 +2607,9 @@ export function placeWheelWellConstrainedLeftovers(
   if (placed) output.unpacked = output.unpacked.filter(id => !placedIds.has(id));
   return placed;
 }
+
+// Back-compat alias from when this pass was Wheel Wells-only.
+export { placeLeftoverRecovery as placeWheelWellConstrainedLeftovers };
 
 function orientationFitsZone(orientation, zone) {
   return orientation.l <= zone.max.x - zone.min.x + FREE_RECT_EPS &&
@@ -2762,6 +2767,31 @@ export function solveAutoPack(input = {}) {
   let laneCount = 0;
   let floorCount = 0;
   let fillerCount = 0;
+  let stackCount = 0;
+  // Strategy mechanics (packing-core/solution.js registers the presets):
+  // - enableStackPhase:false → floor-first: nothing is ever lifted onto cargo.
+  // - stackFallbackImmediate → stack-priority: an item that fails the floor is
+  //   offered a safe supported stack right away instead of waiting for the
+  //   final stack phase (favors vertical use over floor spread).
+  const stackPhaseEnabled = input.enableStackPhase !== false;
+  const stackFallbackImmediate = stackPhaseEnabled && input.stackFallbackImmediate === true;
+  const wheelWellBridgeGeometry = input.enableWheelWellBridge === true ? wheelWell : null;
+  const tryImmediateStack = item => {
+    if (!stackFallbackImmediate) return false;
+    const stackPlacement = findStackPlacement(
+      item,
+      floorZones,
+      packed,
+      loadFrontFirst,
+      layoutQualityEnabled,
+      retentionContext,
+      wheelWellBridgeGeometry
+    );
+    if (!stackPlacement) return false;
+    recordPlacement(output, packed, item, stackPlacement, 'stack');
+    stackCount++;
+    return true;
+  };
 
   for (let i = 0; i < laneItems.length; i++) {
     if (budget.expired()) {
@@ -2781,8 +2811,41 @@ export function solveAutoPack(input = {}) {
     laneCount++;
   }
 
+  // constrained-space-first strategy: reserve the constrained (narrower) zones
+  // by filling them with best-fitting cargo BEFORE the open full-width floor
+  // phases consume the flexible items — wide cargo that can never use a narrow
+  // channel keeps the open zones. Geometry-driven (zones narrower than the
+  // widest zone), so Standard and Front Overhang have no constrained zones and
+  // are untouched. Every placement goes through the ordinary hard-rule floor
+  // pipeline; occupancy is mirrored into the main floor state so later phases
+  // see the reserved space.
+  const constrainedReserved = new Set();
+  if (input.constrainedSpaceFirst === true) {
+    const constrainedZones = narrowChannelZones(floorZones);
+    if (constrainedZones.length) {
+      const constrainedState = createFloorState(constrainedZones, frontSurfaceFirst, retentionContext);
+      const maxConstrainedWidth = Math.max(...constrainedZones.map(zone => zone.max.z - zone.min.z));
+      const fitting = sortConstrainedLeftoverQueue(
+        nonLaneItems.filter(item => item.candidates.some(o => o.w <= maxConstrainedWidth + FREE_RECT_EPS)),
+        constrainedZones
+      );
+      for (const item of fitting) {
+        if (budget.expired()) break;
+        const placement = findFloorPlacement(item, constrainedState, packed, loadFrontFirst, { layoutQualityEnabled });
+        if (!placement) continue;
+        recordPlacement(output, packed, item, placement, 'floor');
+        occupyFloorSpace(constrainedState, placement);
+        occupyFloorSpace(floorState, placement);
+        constrainedReserved.add(item);
+        floorCount++;
+      }
+    }
+  }
+
   const remainingNonLaneItems = placeRepeatedFloorBatches(
-    nonLaneItems,
+    constrainedReserved.size
+      ? nonLaneItems.filter(item => !constrainedReserved.has(item))
+      : nonLaneItems,
     floorState,
     packed,
     output,
@@ -2804,6 +2867,7 @@ export function solveAutoPack(input = {}) {
     const item = mainFloorItems[i];
     const placement = findFloorPlacement(item, floorState, packed, loadFrontFirst, { layoutQualityEnabled });
     if (!placement) {
+      if (tryImmediateStack(item)) continue;
       deferred.push(item);
       continue;
     }
@@ -2840,6 +2904,7 @@ export function solveAutoPack(input = {}) {
     const item = fillerQueue[i];
     const placement = findFloorPlacement(item, floorState, packed, loadFrontFirst, { layoutQualityEnabled });
     if (!placement) {
+      if (tryImmediateStack(item)) continue;
       stackDeferred.push(item);
       continue;
     }
@@ -2867,7 +2932,6 @@ export function solveAutoPack(input = {}) {
   // well-top/bridge placements, then front position breaks ties.
   const itemsById = new Map(items.map(it => [it.id, it]));
   let stackQueue = sortItemsForStack(stackDeferred, layoutQualityEnabled, items);
-  let stackCount = 0;
 
   for (let i = 0; i < stackQueue.length; i++) {
     if (budget.expired()) {
@@ -2875,22 +2939,30 @@ export function solveAutoPack(input = {}) {
       break;
     }
     const item = stackQueue[i];
-    const placement = findStackPlacement(
-      item,
-      floorZones,
-      packed,
-      loadFrontFirst,
-      layoutQualityEnabled,
-      retentionContext,
-      input.enableWheelWellBridge === true ? wheelWell : null
-    );
+    // floor-first strategy: never lift cargo onto other cargo — an item that
+    // found no floor position stays staged with an honest reason.
+    const placement = stackPhaseEnabled
+      ? findStackPlacement(
+        item,
+        floorZones,
+        packed,
+        loadFrontFirst,
+        layoutQualityEnabled,
+        retentionContext,
+        wheelWellBridgeGeometry
+      )
+      : null;
     if (!placement) {
       output.unpacked.push(item.id);
-      const warning = item.lanePlacementFailed
-        ? `Lane item ${item.id} could not fit in a safe lengthwise lane or any fallback floor/stack position.`
-        : `Item ${item.id} could not fit on the floor or on a safe supported stack.`;
+      const warning = !stackPhaseEnabled
+        ? `Item ${item.id} could not fit on the floor (stacking is disabled by the floor-first strategy).`
+        : item.lanePlacementFailed
+          ? `Lane item ${item.id} could not fit in a safe lengthwise lane or any fallback floor/stack position.`
+          : `Item ${item.id} could not fit on the floor or on a safe supported stack.`;
       output.warnings.push(warning);
-      mainLoopRejections.set(item.id, diagnoseUnplacedItem(item, floorZones, wheelWell, warning));
+      mainLoopRejections.set(item.id, !stackPhaseEnabled
+        ? makeRejectionReason(item.id, REJECTION_CODES.NO_FLOOR_CANDIDATE, 'floor', warning)
+        : diagnoseUnplacedItem(item, floorZones, wheelWell, warning));
       continue;
     }
 
@@ -2902,19 +2974,21 @@ export function solveAutoPack(input = {}) {
   // opt-in pass is a final leftover sweep; production Wheel Wells now also runs
   // the same safe well-top logic before ordinary stacking so front/middle support
   // opportunities are not starved by rear stack placements.
-  if (wheelWell && input.enableWheelWellBridge === true && !budget.expired()) {
+  if (wheelWell && input.enableWheelWellBridge === true && stackPhaseEnabled && !budget.expired()) {
     stackCount += placeWheelWellBuildUpBridges(output, packed, itemsById, wheelWell, loadFrontFirst);
   }
 
-  // Constrained leftover pass (Wheel Wells only): retry staged leftovers into
-  // remaining legal floor/channel holes — and, when nothing at floor level
-  // works, one final safe supported stack/raised attempt against the FINAL
-  // layout (compaction and earlier leftovers changed the world since the main
-  // stack phase ran). Channel-fitting and smaller cartons go first. Runs BEFORE
-  // final validation so every rescued placement is re-checked by the same
-  // hard-rule pipeline as everything else.
-  if (wheelWell && input.enableWheelWellLeftoverPass !== false && !budget.expired()) {
-    fillerCount += placeWheelWellConstrainedLeftovers(
+  // Leftover recovery (all space types): retry staged leftovers into remaining
+  // legal floor holes — and, when nothing at floor level works, one final safe
+  // supported stack/raised attempt against the FINAL layout (compaction and
+  // earlier leftovers changed the world since each item's original attempt).
+  // Channel-fitting and smaller cartons go first in constrained geometries.
+  // Runs BEFORE final validation so every rescued placement is re-checked by
+  // the same hard-rule pipeline as everything else.
+  const leftoverPassEnabled = input.enableLeftoverPass !== false &&
+    (!wheelWell || input.enableWheelWellLeftoverPass !== false);
+  if (leftoverPassEnabled && !budget.expired()) {
+    fillerCount += placeLeftoverRecovery(
       output,
       packed,
       itemsById,
@@ -2923,8 +2997,9 @@ export function solveAutoPack(input = {}) {
       retentionContext,
       wheelWell,
       layoutQualityEnabled,
-      input.enableWheelWellBridge === true ? wheelWell : null,
-      budget
+      wheelWellBridgeGeometry,
+      budget,
+      stackPhaseEnabled
     );
   }
 

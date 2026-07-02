@@ -10629,7 +10629,27 @@ function e1LayerFollowFraction(P) {
   return { stacked, following, fraction: stacked ? following / stacked : 1 };
 }
 
-test('PHASE-E1 Standard 800 identical 24x18: one yaw, every stacked case follows an aligned supporter, no placement regression, deterministic', async () => {
+// ---------------------------------------------------------------------------
+// STRESS GATE — the 800/1200-case solver runs are performance/stress coverage,
+// not daily correctness gates: each solves the full lexicographic pipeline over
+// hundreds of items (several minutes combined), which made normal `npm test`
+// impractical for routine validation. They are RECLASSIFIED, not removed: they
+// run whenever TP3D_STRESS=1 (`npm run test:stress` / `npm run test:all`) and
+// appear as explicit skips in a normal run so the gate is always visible.
+// Smaller fixture sizes of the same behaviors stay in the normal suite.
+// ---------------------------------------------------------------------------
+const STRESS_ENABLED = process.env.TP3D_STRESS === '1';
+const stressTest = (name, fn) => STRESS_ENABLED
+  ? test(name, fn)
+  : test(name, { skip: 'stress-gated: set TP3D_STRESS=1 (npm run test:stress)' }, fn);
+// Keep the fast fixture sizes of a mixed-size loop in the normal run; sizes at or
+// above the 500-item stress threshold run only under TP3D_STRESS=1.
+const STRESS_COUNT_THRESHOLD = 500;
+const stressCounts = counts => STRESS_ENABLED
+  ? counts
+  : counts.filter(n => n < STRESS_COUNT_THRESHOLD);
+
+stressTest('PHASE-E1 Standard 800 identical 24x18: one yaw, every stacked case follows an aligned supporter, no placement regression, deterministic', async () => {
   const { Solver, PackLib } = await phbSolverModules();
   const truth = await threeOrientedTruth();
   const truck = { length: 636, width: 102, height: 98, shapeMode: 'rect' };
@@ -10658,7 +10678,7 @@ test('PHASE-E1 Standard 800 identical 24x18: one yaw, every stacked case follows
   assert.equal(JSON.stringify([...res.placements]), JSON.stringify([...res2.placements]), 'deterministic on repeat');
 });
 
-test('PHASE-E1 Standard 800 cube and 42x10 stay safe, broad, and lose no placements', async () => {
+stressTest('PHASE-E1 Standard 800 cube and 42x10 stay safe, broad, and lose no placements', async () => {
   const { Solver, PackLib } = await phbSolverModules();
   const truck = { length: 636, width: 102, height: 98, shapeMode: 'rect' };
   const zones = PackLib.getTrailerUsableZones(truck);
@@ -10680,7 +10700,7 @@ test('PHASE-E1 Wheel Wells 100 and 800 identical 24x18: improved stack layer con
   const { Solver, PackLib } = await phbSolverModules();
   const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
   const zones = PackLib.getTrailerUsableZones(truck);
-  for (const n of [100, 800]) {
+  for (const n of stressCounts([100, 800])) {
     const items = e1Items(n, { l: 24, w: 18, h: 16 });
     const res = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
     const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, layoutQuality: false });
@@ -10699,7 +10719,7 @@ test('PHASE-E1 Wheel Wells 100 and 800 identical 24x18: improved stack layer con
   }
 });
 
-test('PHASE-E1 Wheel Wells 800 cube: no safety or capacity regression', async () => {
+stressTest('PHASE-E1 Wheel Wells 800 cube: no safety or capacity regression', async () => {
   const { Solver, PackLib } = await phbSolverModules();
   const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
   const zones = PackLib.getTrailerUsableZones(truck);
@@ -10805,7 +10825,7 @@ test('PHASE-E2A Standard identical 24x18 (61/100/300/800): single floor yaw, can
   const { Solver, PackLib } = await phbSolverModules();
   const truck = { length: 636, width: 102, height: 98, shapeMode: 'rect' };
   const zones = PackLib.getTrailerUsableZones(truck);
-  for (const n of [61, 100, 300, 800]) {
+  for (const n of stressCounts([61, 100, 300, 800])) {
     const items = e1Items(n, { l: 24, w: 18, h: 16 });
     const on = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
     const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, layoutQuality: false });
@@ -10824,7 +10844,7 @@ test('PHASE-E2A Wheel Wells identical 24x18 (100/300/800): no regression, yaw-mi
   const { Solver, PackLib } = await phbSolverModules();
   const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
   const zones = PackLib.getTrailerUsableZones(truck);
-  for (const n of [100, 300, 800]) {
+  for (const n of stressCounts([100, 300, 800])) {
     const items = e1Items(n, { l: 24, w: 18, h: 16 });
     const on = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
     const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, layoutQuality: false });
@@ -10902,7 +10922,7 @@ test('PHASE-E2B Wheel Wells channel stack layers follow the floor footprint (uni
   const { Solver, PackLib } = await phbSolverModules();
   const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
   const zones = PackLib.getTrailerUsableZones(truck);
-  for (const n of [100, 300, 800]) {
+  for (const n of stressCounts([100, 300, 800])) {
     const items = e1Items(n, { l: 24, w: 18, h: 16 });
     const on = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
     const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, layoutQuality: false });
@@ -10922,7 +10942,7 @@ test('PHASE-E2B Wheel Wells channel stack layers follow the floor footprint (uni
   }
 });
 
-test('PHASE-E2B Wheel Wells x800 keeps at least the E2A placed count (701) and channel layers no longer drift', async () => {
+stressTest('PHASE-E2B Wheel Wells x800 keeps at least the E2A placed count (701) and channel layers no longer drift', async () => {
   const { Solver, PackLib } = await phbSolverModules();
   const truck = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
   const zones = PackLib.getTrailerUsableZones(truck);
@@ -11450,7 +11470,7 @@ test('AUTO-PACK-A1-PERF-1 AutoPack persists final state before animation and byp
     'small loads still reset to staged pose and use the existing batched animation');
 });
 
-test('AUTO-PACK-A1-PERF-1 1200 identical cartons are safe solver outputs and qualify for instant rendering', async () => {
+stressTest('AUTO-PACK-A1-PERF-1 1200 identical cartons are safe solver outputs and qualify for instant rendering', async () => {
   const { Solver, PackLib } = await phbSolverModules();
   const Engine = await import(`${autoPackEnginePath.href}?t=${Date.now()}-${Math.random()}`);
   const fixtures = [

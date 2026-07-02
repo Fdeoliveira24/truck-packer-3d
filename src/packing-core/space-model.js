@@ -19,7 +19,7 @@ import {
   getFrontBonusBlockedZones,
   getFrontOverhangRetentionGeometry,
 } from '../services/pack-library.js';
-import { getWheelWellGeometry } from '../services/autopack-solver.js';
+import { getWheelWellGeometry } from './wheel-well-model.js';
 import { SURFACE_KINDS, BLOCKED_KINDS, makeSurface, makeBlockedVolume } from './domain.js';
 
 const EPS = CONTAINMENT_EPS_INCHES;

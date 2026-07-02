@@ -38,6 +38,15 @@ import {
   rulesMaxStackCount,
   weightAllowsSupport,
 } from '../packing-core/validation.js';
+// The wheel-well physical model shared with the solver: manual revalidation
+// must accept the same legal on-well/bridge poses AutoPack produces, or any
+// manual edit near the wells ejects solver-legal cargo to staging.
+import {
+  getWheelWellGeometry,
+  isAabbWithinTruckMinusBlocked,
+  isWheelWellSupportedAndStable,
+} from '../packing-core/wheel-well-model.js';
+import { repairDependentPlacements } from '../packing-core/repair.js';
 import { computeCoG } from './cog-service.js';
 import { computePalletWarnings } from './oog-service.js';
 
@@ -916,7 +925,9 @@ export function isAabbInStagingZone(pack, aabb, options = {}) {
 function getPlacementForAabb(pack, aabb) {
   if (aabbIntersectsWheelWellBlockedBody(aabb, pack && pack.truck)) return 'staged';
   const zones = getTrailerUsableZones(pack && pack.truck);
-  return isAabbContainedInAnyZone(aabb, zones) ? 'packed' : 'staged';
+  return isAabbInsideTruckGeometry(aabb, zones, getWheelWellGeometry(pack && pack.truck))
+    ? 'packed'
+    : 'staged';
 }
 
 function buildAcceptedAabbs(pack, instances, caseLibrary) {
@@ -1032,17 +1043,38 @@ function aabbIsSupported(candidate, aabb, accepted, zones, tol = RECON_TOL) {
   return computeSupportFraction(aabb, supporters.map(support => support.aabb), tol) >= MIN_SUPPORT_FRACTION;
 }
 
-function aabbIsFullyValid(candidate, aabb, accepted, zones, truck, tol = RECON_TOL) {
-  return isAabbContainedInAnyZone(aabb, zones) &&
+/**
+ * Containment for manual/reconciliation checks: inside the usable zones, OR —
+ * for wheelWells trucks — inside the exact truck-minus-blocked union. The union
+ * form accepts solver-legal poses that span zone seams (resting on or bridging
+ * the rigid well tops) which single-zone containment can never express.
+ */
+function isAabbInsideTruckGeometry(aabb, zones, wheelWell) {
+  if (isAabbContainedInAnyZone(aabb, zones)) return true;
+  return Boolean(wheelWell) && isAabbWithinTruckMinusBlocked(aabb, wheelWell);
+}
+
+function aabbIsFullyValid(candidate, aabb, accepted, zones, truck, tol = RECON_TOL, wheelWell = null) {
+  return isAabbInsideTruckGeometry(aabb, zones, wheelWell) &&
     !aabbIntersectsWheelWellBlockedBody(aabb, truck) &&
     !overlapsAny(aabb, (accepted || []).map(entry => entry.aabb)) &&
-    aabbIsSupported(candidate, aabb, accepted, zones, tol) &&
+    (
+      aabbIsSupported(candidate, aabb, accepted, zones, tol) ||
+      (Boolean(wheelWell) && isWheelWellSupportedAndStable(
+        aabb,
+        accepted,
+        wheelWell,
+        { weight: Number(candidate?.caseData?.weight) || 0 }
+      ))
+    ) &&
     evaluateFrontOverhangRearRetention(aabb, accepted, truck, zones).retained;
 }
 
 // Candidate floor/deck/support bottom-Y levels under a footprint at its current
 // X/Z, lowest first (so a safe snap chooses the lowest valid resting surface).
-function candidateSnapBottoms(curAabb, accepted, zones, tol = RECON_TOL) {
+// Rigid wheel-well tops count as candidate resting levels too; the full
+// validity check decides whether the combined support/stability rules pass.
+function candidateSnapBottoms(curAabb, accepted, zones, tol = RECON_TOL, wheelWell = null) {
   const footprintArea = Math.max(1e-9, (curAabb.max.x - curAabb.min.x) * (curAabb.max.z - curAabb.min.z));
   const bottoms = [];
   for (const z of zones || []) {
@@ -1055,6 +1087,9 @@ function candidateSnapBottoms(curAabb, accepted, zones, tol = RECON_TOL) {
     if (reconXzOverlapArea(curAabb, support.aabb) >= 0.5 * footprintArea) {
       bottoms.push(support.aabb.max.y);
     }
+  }
+  for (const top of wheelWell ? wheelWell.tops : []) {
+    if (reconXzOverlapArea(curAabb, top) > 0.05) bottoms.push(top.max.y);
   }
   return [...new Set(bottoms.map(b => Math.round(b * 1e6) / 1e6))].sort((a, b) => a - b);
 }
@@ -1070,6 +1105,7 @@ function candidateSnapBottoms(curAabb, accepted, zones, tol = RECON_TOL) {
 export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary) {
   const basePack = pack && typeof pack === 'object' ? pack : {};
   const zones = getTrailerUsableZones(nextTruck);
+  const wheelWell = getWheelWellGeometry(nextTruck);
   const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
   const allInstances = Array.isArray(basePack.cases) ? basePack.cases : [];
   const indexById = new Map(allInstances.map((inst, i) => [inst, i]));
@@ -1130,7 +1166,7 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary) {
     }
 
     const currentAabb = makeAabb(curPos, dims);
-    if (aabbIsFullyValid(node, currentAabb, accepted, zones, nextTruck)) {
+    if (aabbIsFullyValid(node, currentAabb, accepted, zones, nextTruck, RECON_TOL, wheelWell)) {
       const entry = { ...node, aabb: currentAabb, position: curPos };
       accepted.push(entry);
       kept.push(inst.id);
@@ -1140,10 +1176,10 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary) {
 
     // 2) Safe vertical snap: same X/Z, lowest valid floor/deck/support level.
     let snapped = null;
-    for (const bottom of candidateSnapBottoms(node.curAabb, accepted, zones)) {
+    for (const bottom of candidateSnapBottoms(node.curAabb, accepted, zones, RECON_TOL, wheelWell)) {
       const sPos = { x: curPos.x, y: bottom + dims.height / 2, z: curPos.z };
       const sAabb = makeAabb(sPos, dims);
-      if (aabbIsFullyValid(node, sAabb, accepted, zones, nextTruck)) {
+      if (aabbIsFullyValid(node, sAabb, accepted, zones, nextTruck, RECON_TOL, wheelWell)) {
         snapped = { pos: sPos, aabb: sAabb };
         break;
       }
@@ -1305,7 +1341,83 @@ export function repairRestoredPackPlacements(pack, caseLibrary) {
   ).pack;
 }
 
-export function revalidateManualPlacements(pack, caseLibrary) {
+/**
+ * Local repair of reconciliation-invalid placements: try to re-settle each
+ * affected case INSIDE the truck (same X/Z drop first, then nearby legal
+ * anchors) through the full aabbIsFullyValid pipeline before staging is even
+ * considered. Never moves valid placements; never rearranges the load.
+ * Returns updated cases plus the ids repaired and the ids still invalid.
+ */
+function repairInvalidPlacementsLocally(reconResult, truck, caseLibrary) {
+  const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
+  const zones = getTrailerUsableZones(truck);
+  const wheelWell = getWheelWellGeometry(truck);
+  const invalidSet = new Set(reconResult.invalid || []);
+  const accepted = [...(reconResult.acceptedPlacements || [])];
+  const cases = (reconResult.nextPack && reconResult.nextPack.cases) || [];
+
+  const nodes = cases
+    .map((inst, index) => ({ inst, index }))
+    .filter(entry => invalidSet.has(entry.inst.id))
+    .map(entry => {
+      const caseData = caseMap.get(entry.inst.caseId);
+      const canonical = getCanonicalInstanceEffectiveDims(entry.inst, caseData);
+      const position = normalizeTransformPosition(entry.inst.transform && entry.inst.transform.position);
+      if (!caseData || !canonical.ok || !canonical.orientationAllowed || !canonical.lockConsistent || !position) {
+        return null;
+      }
+      return {
+        id: entry.inst.id,
+        inst: entry.inst,
+        caseData,
+        canonical,
+        dims: canonical.dims,
+        position,
+        index: entry.index,
+      };
+    })
+    .filter(Boolean)
+    // Bottom-up so lower dependents become support for the ones above them.
+    .sort((a, b) => (a.position.y - b.position.y) || (a.index - b.index));
+
+  const positioned = new Map();
+  const { repaired } = repairDependentPlacements(nodes, {
+    zones,
+    neighborAabbs: () => accepted.map(entry => entry.aabb),
+    bottomsFor: (node, x, z) => {
+      const probe = makeAabb({ x, y: node.dims.height / 2, z }, node.dims);
+      return candidateSnapBottoms(probe, accepted, zones, RECON_TOL, wheelWell);
+    },
+    validate: (node, position) => {
+      const aabb = makeAabb(position, node.dims);
+      return aabbIsFullyValid(node, aabb, accepted, zones, truck, RECON_TOL, wheelWell);
+    },
+    onRepaired: (node, position) => {
+      const aabb = makeAabb(position, node.dims);
+      accepted.push({ ...node, aabb, position });
+      positioned.set(node.id, { position, canonical: node.canonical });
+    },
+  });
+
+  const nextCases = cases.map(inst => {
+    const entry = positioned.get(inst.id);
+    if (!entry) return inst;
+    const next = applyCanonicalInstancePose(inst, entry.canonical);
+    next.transform.position = entry.position;
+    next.placement = 'packed';
+    return next;
+  });
+
+  const repairedIds = repaired.map(entry => entry.id);
+  const repairedSet = new Set(repairedIds);
+  return {
+    pack: { ...reconResult.nextPack, cases: nextCases },
+    repairedIds,
+    stillInvalidIds: (reconResult.invalid || []).filter(id => !repairedSet.has(id)),
+  };
+}
+
+export function revalidateManualPlacements(pack, caseLibrary, options = {}) {
   const source = pack && typeof pack === 'object' ? pack : {};
   const truck = source.truck && typeof source.truck === 'object' ? source.truck : {};
   const reconciliation = reconcilePlacementsForTruck(source, truck, caseLibrary);
@@ -1313,9 +1425,21 @@ export function revalidateManualPlacements(pack, caseLibrary) {
   let stagedIds = [];
   let failedIds = [];
   let warnings = [];
+  let repairedIds = [];
+  let invalidForStaging = reconciliation.invalid || [];
 
-  if (reconciliation.invalid.length) {
-    const staged = stagePlacementIds(nextPack, reconciliation.invalid, truck, caseLibrary);
+  // Local repair before staging (delete/removal path): re-settle affected
+  // dependents inside the truck when legally possible so removing one box
+  // never ejects cargo that still has a valid nearby resting place.
+  if (options.repairDependents === true && invalidForStaging.length) {
+    const repair = repairInvalidPlacementsLocally(reconciliation, truck, caseLibrary);
+    nextPack = repair.pack;
+    repairedIds = repair.repairedIds;
+    invalidForStaging = repair.stillInvalidIds;
+  }
+
+  if (invalidForStaging.length) {
+    const staged = stagePlacementIds(nextPack, invalidForStaging, truck, caseLibrary);
     nextPack = staged.pack;
     stagedIds = staged.stagedIds;
     failedIds = staged.failedIds;
@@ -1325,23 +1449,25 @@ export function revalidateManualPlacements(pack, caseLibrary) {
   return {
     pack: nextPack,
     adjustedIds: (reconciliation.adjusted || []).map(entry => entry.id),
+    repairedIds,
     stagedIds,
     failedIds,
     warnings,
     invalidIds: reconciliation.invalid || [],
     summary: {
       adjusted: (reconciliation.adjusted || []).length,
+      repaired: repairedIds.length,
       staged: stagedIds.length,
       failed: failedIds.length,
     },
   };
 }
 
-export function updateCasesWithManualRevalidation(packId, nextCases, caseLibrary = CaseLibrary.getCases()) {
+export function updateCasesWithManualRevalidation(packId, nextCases, caseLibrary = CaseLibrary.getCases(), options = {}) {
   const pack = getById(packId);
   if (!pack) return null;
   const proposed = { ...pack, cases: Array.isArray(nextCases) ? nextCases : [] };
-  const result = revalidateManualPlacements(proposed, caseLibrary);
+  const result = revalidateManualPlacements(proposed, caseLibrary, options);
   const updated = update(packId, { cases: result.pack.cases });
   return { ...result, pack: updated || result.pack };
 }
@@ -1349,7 +1475,7 @@ export function updateCasesWithManualRevalidation(packId, nextCases, caseLibrary
 // Repack the invalid items into the NEW truck's free floor/deck space front-first
 // (high +X first), without moving any kept/adjusted item or changing AutoPack
 // scoring. Items that still do not fit fall back to organized staging.
-function findRepackFloorPosition(node, zones, accepted, truck) {
+function findRepackFloorPosition(node, zones, accepted, truck, wheelWell = null) {
   const dims = node.dims;
   const orderedZones = [...zones].sort((a, b) => b.max.x - a.max.x); // front-first
   const STEP_MIN = 2;
@@ -1361,7 +1487,7 @@ function findRepackFloorPosition(node, zones, accepted, truck) {
       for (let cz = z.min.z + dims.width / 2; cz <= z.max.z - dims.width / 2 + RECON_TOL; cz += stepZ) {
         const pos = { x: cx, y: z.min.y + dims.height / 2, z: cz };
         const aabb = makeAabb(pos, dims);
-        if (aabbIsFullyValid(node, aabb, accepted, zones, truck)) return { position: pos, aabb };
+        if (aabbIsFullyValid(node, aabb, accepted, zones, truck, RECON_TOL, wheelWell)) return { position: pos, aabb };
       }
     }
   }
@@ -1371,6 +1497,7 @@ function findRepackFloorPosition(node, zones, accepted, truck) {
 export function repackInvalidPlacements(reconResult, nextTruck, caseLibrary) {
   const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
   const zones = getTrailerUsableZones(nextTruck);
+  const wheelWell = getWheelWellGeometry(nextTruck);
   const invalidSet = new Set(reconResult.invalid || []);
   const accepted = [...(reconResult.acceptedPlacements || [])];
   const cases = (reconResult.nextPack && reconResult.nextPack.cases) || [];
@@ -1398,7 +1525,7 @@ export function repackInvalidPlacements(reconResult, nextTruck, caseLibrary) {
       continue;
     }
     const node = { inst, caseData, canonical, dims: canonical.dims };
-    const placed = findRepackFloorPosition(node, zones, accepted, nextTruck);
+    const placed = findRepackFloorPosition(node, zones, accepted, nextTruck, wheelWell);
     if (placed) {
       accepted.push({ ...node, position: placed.position, aabb: placed.aabb });
       positioned.set(inst.id, { position: placed.position, canonical });
@@ -1591,20 +1718,28 @@ export function removeInstances(packId, instanceIds) {
     .filter(i => i && idSet.has(i.id))
     .map(i => i.id);
   const nextInstances = (pack.cases || []).filter(i => !idSet.has(i.id));
-  const result = updateCasesWithManualRevalidation(packId, nextInstances, CaseLibrary.getCases());
+  // Delete path enables local dependent repair: affected cases are re-settled
+  // inside the truck when legally possible; only truly unplaceable ones stage.
+  const result = updateCasesWithManualRevalidation(packId, nextInstances, CaseLibrary.getCases(), {
+    repairDependents: true,
+  });
   if (!result) return null;
 
   const deletedSet = new Set(deletedInstanceIds);
   const dependentStagedIds = (result.stagedIds || []).filter(id => !deletedSet.has(id));
+  const dependentRepairedIds = (result.repairedIds || []).filter(id => !deletedSet.has(id));
   const mutation = {
     type: 'removeInstances',
     requestedDeletedIds: [...requestedDeletedIds],
     deletedInstanceIds,
     dependentStagedIds,
     dependentStagedCount: dependentStagedIds.length,
+    dependentRepairedIds,
+    dependentRepairedCount: dependentRepairedIds.length,
     finalSelectionIds: [],
     revalidation: {
       adjustedIds: result.adjustedIds || [],
+      repairedIds: result.repairedIds || [],
       stagedIds: result.stagedIds || [],
       failedIds: result.failedIds || [],
       invalidIds: result.invalidIds || [],
@@ -1621,6 +1756,8 @@ export function removeInstances(packId, instanceIds) {
     requestedDeletedIds: [...requestedDeletedIds],
     dependentStagedIds,
     dependentStagedCount: dependentStagedIds.length,
+    dependentRepairedIds,
+    dependentRepairedCount: dependentRepairedIds.length,
     finalSelectionIds: [],
     revalidation: mutation.revalidation,
   };
@@ -1629,6 +1766,7 @@ export function removeInstances(packId, instanceIds) {
 function computeShapeAwareOOGWarnings(pack, caseLibrary) {
   if (!pack || !Array.isArray(pack.cases) || !pack.truck) return [];
   const zonesInches = getTrailerUsableZones(pack.truck);
+  const oogWheelWell = getWheelWellGeometry(pack.truck);
   const truck = pack.truck || {};
   const truckL = Number(truck.length) || 0;
   const truckW = Number(truck.width) || 0;
@@ -1653,7 +1791,7 @@ function computeShapeAwareOOGWarnings(pack, caseLibrary) {
       min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
       max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
     };
-    if (isAabbContainedInAnyZone(aabb, zonesInches)) return;
+    if (isAabbInsideTruckGeometry(aabb, zonesInches, oogWheelWell)) return;
 
     const issues = [];
     if (aabb.min.x < -0.05) issues.push('protrudesRear');
@@ -1677,6 +1815,7 @@ function computeShapeAwareOOGWarnings(pack, caseLibrary) {
 
 export function computeStats(pack, caseLibraryOverride) {
   const zonesInches = getTrailerUsableZones(pack && pack.truck);
+  const statsWheelWell = getWheelWellGeometry(pack && pack.truck);
   const truckVol = getTrailerCapacityInches3(pack && pack.truck);
   let usedIn3 = 0;
   let totalWeight = 0;
@@ -1709,7 +1848,7 @@ export function computeStats(pack, caseLibraryOverride) {
       min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
       max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
     };
-    const insideTruck = isAabbContainedInAnyZone(aabb, zonesInches);
+    const insideTruck = isAabbInsideTruckGeometry(aabb, zonesInches, statsWheelWell);
     if (!insideTruck) {
       stagedCases++;
       return;

@@ -131,3 +131,69 @@ export function weightAllowsSupport(candidateWeight, supportWeight, supportIsPal
   if (supportIsPallet === true) return true;
   return finiteNumber(candidateWeight, 0) <= finiteNumber(supportWeight, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Placement-shaped rule helpers. A "placement" here is any of the shapes the
+// app actually passes around: a solver packed placement ({ item: { item } }),
+// a reconciliation node ({ caseData }), or a raw rules object. Unwrapping once
+// here lets the solver and the manual pipeline share the SAME support-side
+// stacking, capacity, and weight decisions on their native shapes.
+// ---------------------------------------------------------------------------
+
+/** Unwrap the cargo-rule source from any placement-like shape. */
+export function getPlacementRules(placement = {}) {
+  return (placement.item && placement.item.item) || placement.item || placement.caseData || placement;
+}
+
+/** Support-side stacking permission for a placement-like value. */
+export function canSupportStack(placement = {}) {
+  return rulesAllowStackOnTop(getPlacementRules(placement));
+}
+
+/** Weight carried by a placement-like value (normalized item weight wins). */
+export function getPlacementWeight(placement = {}) {
+  if (placement.item && Number.isFinite(Number(placement.item.weight))) {
+    return finiteNumber(placement.item.weight, 0);
+  }
+  return finiteNumber(getPlacementRules(placement).weight, 0);
+}
+
+/** Whether a placement-like value acts as a pallet support. */
+export function isPalletSupport(placement = {}) {
+  const rules = getPlacementRules(placement);
+  return rules.isPallet === true || placement.isPallet === true;
+}
+
+/** Child-vs-support weight check for placement-like values. */
+export function canSupportCandidateWeight(candidateItem, support) {
+  if (!candidateItem) return true;
+  return weightAllowsSupport(
+    finiteNumber(candidateItem.weight, 0),
+    getPlacementWeight(support),
+    isPalletSupport(support)
+  );
+}
+
+/** Direct-child stack cap for a placement-like value; 0 = unlimited. */
+export function getMaxStackCount(placement = {}) {
+  return rulesMaxStackCount(getPlacementRules(placement));
+}
+
+/** Count items resting directly on this support's top face. */
+export function countDirectStackChildren(support, packed, tolerance = CONTACT_EPS) {
+  const supportTop = support.aabb.max.y;
+  let count = 0;
+  for (const placement of packed) {
+    if (placement === support) continue;
+    if (Math.abs(placement.aabb.min.y - supportTop) > tolerance) continue;
+    if (computeXzOverlapArea(placement.aabb, support.aabb) <= 0.05) continue;
+    count++;
+  }
+  return count;
+}
+
+/** Whether a support still has direct-child capacity under its maxStackCount. */
+export function hasStackCapacity(placement, packed) {
+  const maxStackCount = getMaxStackCount(placement);
+  return !maxStackCount || countDirectStackChildren(placement, packed) < maxStackCount;
+}

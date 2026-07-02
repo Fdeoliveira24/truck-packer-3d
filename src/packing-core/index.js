@@ -23,7 +23,25 @@ export {
   rulesAllowStackOnTop,
   rulesMaxStackCount,
   weightAllowsSupport,
+  getPlacementRules,
+  canSupportStack,
+  getPlacementWeight,
+  isPalletSupport,
+  canSupportCandidateWeight,
+  getMaxStackCount,
+  countDirectStackChildren,
+  hasStackCapacity,
 } from './validation.js';
+export {
+  MAX_WHEELWELL_OVERHANG_FRACTION,
+  getWheelWellGeometry,
+  aabbIntersectsWheelWellBody,
+  isAabbWithinTruckMinusBlocked,
+  countWheelWellSideContacts,
+  computeWheelWellSupport,
+  isWheelWellSupportedAndStable,
+} from './wheel-well-model.js';
+export { repairDependentPlacements } from './repair.js';
 export {
   REJECTION_CODES,
   makeRejectionReason,

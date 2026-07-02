@@ -35,8 +35,14 @@ function formatDeleteResultMessage(result, fallbackDeletedIds = []) {
   const dependentCount = result && Array.isArray(result.dependentStagedIds)
     ? result.dependentStagedIds.length
     : 0;
+  const repairedCount = result && Array.isArray(result.dependentRepairedIds)
+    ? result.dependentRepairedIds.length
+    : 0;
 
   let message = `Deleted ${caseCountText(deletedCount)}.`;
+  if (repairedCount) {
+    message += ` ${repairedCount} nearby ${caseCountText(repairedCount)} ${repairedCount === 1 ? 'was' : 'were'} re-settled inside the truck.`;
+  }
   if (dependentCount) {
     message += ` ${dependentCount} dependent ${caseCountText(dependentCount)} ${dependentCount === 1 ? 'was' : 'were'} moved to staging because their support changed.`;
   }

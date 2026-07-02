@@ -42,6 +42,7 @@ export {
   isWheelWellSupportedAndStable,
 } from './wheel-well-model.js';
 export { repairDependentPlacements } from './repair.js';
+export { createSolveBudget, DEFAULT_SOLVE_BUDGET_MS } from './budget.js';
 export {
   REJECTION_CODES,
   makeRejectionReason,

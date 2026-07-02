@@ -1,5 +1,6 @@
 import { buildLegacyAutoPackItems } from './autopack-legacy-solver.js';
 import { solveAutoPack } from './autopack-solver.js';
+import { DEFAULT_SOLVE_BUDGET_MS } from '../packing-core/budget.js';
 
 // The staged pose MUST be atomic: position, rotation and orientedDims all describe
 // the SAME deterministic valid orientation. The chosen orientation is the first
@@ -523,6 +524,9 @@ export function createAutoPackEngine({
         zones,
         loadFrontFirst,
         enableWheelWellBridge: mode === 'wheelWells',
+        // Interactive main-thread solve: cap the synchronous work so a huge
+        // load returns the best partial plan instead of freezing the tab.
+        solveBudgetMs: DEFAULT_SOLVE_BUDGET_MS,
         retentionPlacements: hiddenRetention,
         items: packItems.map(({ inst, caseData }) => {
           const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
@@ -624,6 +628,15 @@ export function createAutoPackEngine({
         stats.packedCases === totalPackable ? 'success' : 'warning',
         { title: 'AutoPack' }
       );
+      const budgetWarning = Array.isArray(solverResult.warnings) &&
+        solverResult.warnings.some(w => String(w).includes('time budget'));
+      if (budgetWarning) {
+        UIComponents.showToast(
+          'AutoPack reached its time budget; remaining items were staged. The placed layout is fully validated.',
+          'warning',
+          { title: 'AutoPack' }
+        );
+      }
       if (stats.unresolvedInstances > 0) {
         UIComponents.showToast(
           `${stats.unresolvedInstances} item(s) were excluded — their case definition is missing`,

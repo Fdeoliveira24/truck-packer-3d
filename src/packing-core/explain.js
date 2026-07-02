@@ -38,6 +38,8 @@ export const REJECTION_CODES = Object.freeze({
   UNSUPPORTED: 'UNSUPPORTED',
   /** Final validation: Front Overhang deck pose lacks complete rear retention. */
   NO_RETENTION: 'NO_RETENTION',
+  /** The solve-time budget was reached before this item could be tried. */
+  SOLVE_BUDGET_EXCEEDED: 'SOLVE_BUDGET_EXCEEDED',
 });
 
 /** Build one structured RejectionReason record. */

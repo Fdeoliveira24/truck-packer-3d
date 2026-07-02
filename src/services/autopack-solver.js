@@ -41,6 +41,7 @@ import {
   makeRejectionReason,
   rejectionCodeForValidationReason,
 } from '../packing-core/explain.js';
+import { createSolveBudget } from '../packing-core/budget.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
 
 export { aabbsOverlap, computeXzOverlapArea, isAabbContainedInAnyZone };
@@ -372,11 +373,21 @@ function normalizedItemFrom(value = {}) {
   return null;
 }
 
+// Group keys are pure functions of fields that never change after item
+// normalization, and layout-quality scoring recomputes them for EVERY packed
+// placement per candidate — a hot string-building loop on large loads.
+// Memoized per normalized-item identity.
+const layoutGroupKeyCache = new WeakMap();
+
 function layoutGroupKey(value = {}) {
   const normalized = normalizedItemFrom(value);
+  if (normalized) {
+    const cached = layoutGroupKeyCache.get(normalized);
+    if (cached !== undefined) return cached;
+  }
   const source = normalized ? normalized.item : (value.item || value);
   const dims = normalized ? normalized.dims : readDims(source?.dims || source?.dimensions);
-  return [
+  const key = [
     'cargo',
     source?.caseId || '',
     dims.l,
@@ -389,6 +400,8 @@ function layoutGroupKey(value = {}) {
     source?.stackable === false ? 'no-stack' : 'stack-ok',
     finiteNumber(source?.maxStackCount, 0),
   ].join('|');
+  if (normalized) layoutGroupKeyCache.set(normalized, key);
+  return key;
 }
 
 function stableTextCompare(a, b) {
@@ -1474,10 +1487,10 @@ function buildStackAxisAnchors(rect, orientation, packed, loadFrontFirst, axis) 
   return capAnchorValues(anchors, anchorCapForPackedCount(packed), scoreAnchor, comparator);
 }
 
-function buildStackCandidates(orientation, packed, yLevel, loadFrontFirst) {
+function buildStackCandidates(orientation, packed, yLevel, loadFrontFirst, layerRects = null) {
   const placements = [];
 
-  for (const rect of buildStackLayerFreeRects(packed, yLevel)) {
+  for (const rect of layerRects || buildStackLayerFreeRects(packed, yLevel)) {
     if (orientation.l > freeRectLength(rect) + FREE_RECT_EPS) continue;
     if (orientation.w > freeRectWidth(rect) + FREE_RECT_EPS) continue;
     const xMins = buildStackAxisAnchors(rect, orientation, packed, loadFrontFirst, 'x');
@@ -1635,11 +1648,24 @@ function findStackPlacement(
     (a, b) => a - b
   );
 
+  // The free-rect layer decomposition is identical for every orientation of the
+  // same item — compute it once per level (instead of per orientation × level).
+  // This removes the dominant repeated cost of large-load stacking.
+  const layerRectsByLevel = new Map();
+  const layerRectsFor = yLevel => {
+    let rects = layerRectsByLevel.get(yLevel);
+    if (!rects) {
+      rects = buildStackLayerFreeRects(packed, yLevel);
+      layerRectsByLevel.set(yLevel, rects);
+    }
+    return rects;
+  };
+
   for (const orientation of item.candidates) {
     /** @type {Array<any>} */
     const candidates = [];
     for (const yLevel of yLevels) {
-      candidates.push(...buildStackCandidates(orientation, packed, yLevel, loadFrontFirst));
+      candidates.push(...buildStackCandidates(orientation, packed, yLevel, loadFrontFirst, layerRectsFor(yLevel)));
     }
     if (wheelWell) {
       candidates.push(...buildWheelWellStackCandidates(orientation, packed, wheelWell, loadFrontFirst));
@@ -2532,11 +2558,12 @@ export function placeWheelWellConstrainedLeftovers(
   loadFrontFirst,
   retentionContext,
   wheelWell,
-  layoutQualityEnabled
+  layoutQualityEnabled,
+  wheelWellBridge = null,
+  budget = null
 ) {
   if (!wheelWell || !output.unpacked.length) return 0;
   const floorState = rebuildFloorStateFromPacked(floorZones, packed, false, retentionContext);
-  if (!floorState.freeRects.length) return 0;
 
   const channelZones = narrowChannelZones(floorZones);
   const queue = sortConstrainedLeftoverQueue(
@@ -2547,9 +2574,29 @@ export function placeWheelWellConstrainedLeftovers(
   let placed = 0;
 
   for (const item of queue) {
-    const placement = findFloorPlacement(item, floorState, packed, loadFrontFirst, { layoutQualityEnabled });
+    if (budget && budget.expired()) break;
+    let placement = floorState.freeRects.length
+      ? findFloorPlacement(item, floorState, packed, loadFrontFirst, { layoutQualityEnabled })
+      : null;
+    let phase = 'filler';
+    if (!placement) {
+      // Final safe stack/raised attempt against the FINAL layout: compaction and
+      // earlier leftover rescues changed the world since the main stack phase, so
+      // a supported stack (or, with bridge geometry, a legal well-top pose) may
+      // exist now. Same hard-rule pipeline as the main phase — nothing is forced.
+      placement = findStackPlacement(
+        item,
+        floorZones,
+        packed,
+        loadFrontFirst,
+        layoutQualityEnabled,
+        retentionContext,
+        wheelWellBridge
+      );
+      phase = 'stack';
+    }
     if (!placement) continue;
-    recordPlacement(output, packed, item, placement, 'filler');
+    recordPlacement(output, packed, item, placement, phase);
     occupyFloorSpace(floorState, placement);
     placedIds.add(item.id);
     placed++;
@@ -2675,6 +2722,27 @@ export function solveAutoPack(input = {}) {
   // (or re-staged by validation with a more specific reason) is never mislabeled.
   const mainLoopRejections = new Map();
 
+  // Solve-time budget: the interactive engine passes solveBudgetMs so a huge
+  // load returns the best PARTIAL plan instead of freezing the tab. Default is
+  // unlimited (deterministic) for pure/offline callers. When the budget trips,
+  // remaining queue items are staged with a structured reason; everything
+  // already placed still goes through full validation below — hard rules are
+  // never relaxed for speed.
+  const budget = createSolveBudget(input.solveBudgetMs);
+  let budgetExhausted = false;
+  const stopForBudget = (remainingItems, phase) => {
+    budgetExhausted = true;
+    for (const leftover of remainingItems) {
+      output.unpacked.push(leftover.id);
+      mainLoopRejections.set(leftover.id, makeRejectionReason(
+        leftover.id,
+        REJECTION_CODES.SOLVE_BUDGET_EXCEEDED,
+        phase,
+        'AutoPack reached its time budget before this item could be tried; it was staged.'
+      ));
+    }
+  };
+
   const deferred = [];
   // E2A scope: layout quality now also drives the ORDINARY/leftover/filler floor and
   // lane SCORERS (the audited defect — these gated continuity behind the Front
@@ -2695,7 +2763,12 @@ export function solveAutoPack(input = {}) {
   let floorCount = 0;
   let fillerCount = 0;
 
-  for (const item of laneItems) {
+  for (let i = 0; i < laneItems.length; i++) {
+    if (budget.expired()) {
+      stopForBudget(laneItems.slice(i), 'lane');
+      break;
+    }
+    const item = laneItems[i];
     const placement = findLanePlacement(item, floorState, packed, loadFrontFirst, layoutQualityEnabled);
     if (!placement) {
       item.lanePlacementFailed = true;
@@ -2723,7 +2796,12 @@ export function solveAutoPack(input = {}) {
   );
   const fillerItems = remainingNonLaneItems.filter(item => item.className === 'FILLER');
 
-  for (const item of mainFloorItems) {
+  for (let i = 0; i < mainFloorItems.length; i++) {
+    if (budget.expired()) {
+      stopForBudget(mainFloorItems.slice(i), 'floor');
+      break;
+    }
+    const item = mainFloorItems[i];
     const placement = findFloorPlacement(item, floorState, packed, loadFrontFirst, { layoutQualityEnabled });
     if (!placement) {
       deferred.push(item);
@@ -2735,22 +2813,31 @@ export function solveAutoPack(input = {}) {
     floorCount++;
   }
 
-  floorState.freeRects = compactFloorPlacements(
-    output,
-    packed,
-    floorZones,
-    loadFrontFirst,
-    frontSurfaceFirst,
-    retentionContext,
-    floorCompactionOptions
-  ).freeRects;
+  // Compaction is a quality pass over already-valid placements — skip it when
+  // the budget is spent (the floor state is still rebuilt for later phases).
+  floorState.freeRects = (budget.expired()
+    ? rebuildFloorStateFromPacked(floorZones, packed, frontSurfaceFirst, retentionContext)
+    : compactFloorPlacements(
+      output,
+      packed,
+      floorZones,
+      loadFrontFirst,
+      frontSurfaceFirst,
+      retentionContext,
+      floorCompactionOptions
+    )).freeRects;
 
   const fillerQueue = [
     ...sortItemsForFloor(deferred, frontSurfaceFirst, items),
     ...sortItemsForFiller(fillerItems, frontSurfaceFirst, items),
   ];
   const stackDeferred = [];
-  for (const item of fillerQueue) {
+  for (let i = 0; i < fillerQueue.length; i++) {
+    if (budget.expired()) {
+      stopForBudget(fillerQueue.slice(i), 'filler');
+      break;
+    }
+    const item = fillerQueue[i];
     const placement = findFloorPlacement(item, floorState, packed, loadFrontFirst, { layoutQualityEnabled });
     if (!placement) {
       stackDeferred.push(item);
@@ -2762,15 +2849,17 @@ export function solveAutoPack(input = {}) {
     fillerCount++;
   }
 
-  floorState.freeRects = compactFloorPlacements(
-    output,
-    packed,
-    floorZones,
-    loadFrontFirst,
-    frontSurfaceFirst,
-    retentionContext,
-    floorCompactionOptions
-  ).freeRects;
+  floorState.freeRects = (budget.expired()
+    ? rebuildFloorStateFromPacked(floorZones, packed, frontSurfaceFirst, retentionContext)
+    : compactFloorPlacements(
+      output,
+      packed,
+      floorZones,
+      loadFrontFirst,
+      frontSurfaceFirst,
+      retentionContext,
+      floorCompactionOptions
+    )).freeRects;
 
   // Wheel Wells physical geometry (null for every other truck mode). Wheel-well
   // candidates are considered inside the ordinary stack scorer below, so the
@@ -2780,7 +2869,12 @@ export function solveAutoPack(input = {}) {
   let stackQueue = sortItemsForStack(stackDeferred, layoutQualityEnabled, items);
   let stackCount = 0;
 
-  for (const item of stackQueue) {
+  for (let i = 0; i < stackQueue.length; i++) {
+    if (budget.expired()) {
+      stopForBudget(stackQueue.slice(i), 'stack');
+      break;
+    }
+    const item = stackQueue[i];
     const placement = findStackPlacement(
       item,
       floorZones,
@@ -2808,15 +2902,18 @@ export function solveAutoPack(input = {}) {
   // opt-in pass is a final leftover sweep; production Wheel Wells now also runs
   // the same safe well-top logic before ordinary stacking so front/middle support
   // opportunities are not starved by rear stack placements.
-  if (wheelWell && input.enableWheelWellBridge === true) {
+  if (wheelWell && input.enableWheelWellBridge === true && !budget.expired()) {
     stackCount += placeWheelWellBuildUpBridges(output, packed, itemsById, wheelWell, loadFrontFirst);
   }
 
   // Constrained leftover pass (Wheel Wells only): retry staged leftovers into
-  // remaining legal floor/channel holes, channel-fitting and smaller cartons
-  // first. Runs BEFORE final validation so every rescued placement is re-checked
-  // by the same hard-rule pipeline as everything else.
-  if (wheelWell && input.enableWheelWellLeftoverPass !== false) {
+  // remaining legal floor/channel holes — and, when nothing at floor level
+  // works, one final safe supported stack/raised attempt against the FINAL
+  // layout (compaction and earlier leftovers changed the world since the main
+  // stack phase ran). Channel-fitting and smaller cartons go first. Runs BEFORE
+  // final validation so every rescued placement is re-checked by the same
+  // hard-rule pipeline as everything else.
+  if (wheelWell && input.enableWheelWellLeftoverPass !== false && !budget.expired()) {
     fillerCount += placeWheelWellConstrainedLeftovers(
       output,
       packed,
@@ -2825,7 +2922,16 @@ export function solveAutoPack(input = {}) {
       loadFrontFirst,
       retentionContext,
       wheelWell,
-      layoutQualityEnabled
+      layoutQualityEnabled,
+      input.enableWheelWellBridge === true ? wheelWell : null,
+      budget
+    );
+  }
+
+  if (budgetExhausted) {
+    output.warnings.push(
+      `AutoPack reached its ${Math.round(budget.limitMs)}ms time budget and returned the best partial plan; ` +
+      'remaining items were staged.'
     );
   }
 
@@ -2864,6 +2970,7 @@ export function solveAutoPack(input = {}) {
 
   const runWheelWellFrontCompression =
     wheelWell &&
+    !budget.expired() &&
     input.enableWheelWellFrontCompression !== false &&
     (input.enableWheelWellFrontCompression === true || packed.length <= MAX_DEFAULT_FRONT_COMPRESSION_PLACEMENTS);
   if (runWheelWellFrontCompression) {

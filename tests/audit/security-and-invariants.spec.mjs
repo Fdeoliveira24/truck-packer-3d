@@ -18168,3 +18168,121 @@ test('PACKING-CORE-P7 validation-staged items carry the mapped validation reason
   assert.equal(Explain.rejectionCodeForValidationReason('does not have safe stack support'), 'UNSUPPORTED');
   assert.equal(Explain.rejectionCodeForValidationReason('does not have complete rear retention at the overhang step'), 'NO_RETENTION');
 });
+
+// ---------------------------------------------------------------------------
+// PACKING-CORE-P8: Wheel Wells constrained leftover pass. Staged leftovers get
+// one more chance at remaining LEGAL floor/channel holes — channel-fitting and
+// smaller cartons first — through the ordinary hard-rule floor pipeline. The
+// pass must never fake support, enter a blocked body, force a too-wide carton,
+// or touch Standard / Front Overhang behavior.
+// ---------------------------------------------------------------------------
+function p8WheelWellTruck() {
+  return {
+    length: 240, width: 96, height: 96, shapeMode: 'wheelWells',
+    shapeConfig: { wellOffsetFromRear: 80, wellLength: 80, wellHeight: 34, wellWidth: 14.4 },
+  };
+}
+function p8Item(Solver, id, dims, extra = {}) {
+  const raw = { instanceId: id, caseId: id, orientationLock: 'upright', canFlip: false, weight: 50, ...extra };
+  const candidates = Solver.buildOrientationCandidates(dims, raw);
+  return {
+    id, item: raw, dims, candidates,
+    volume: dims.l * dims.w * dims.h, footprint: dims.l * dims.w,
+    weight: raw.weight, index: 0, className: 'STANDARD',
+  };
+}
+function p8PackedEntry(Solver, item, position) {
+  const orientation = item.candidates[0];
+  const dims = { l: orientation.l, w: orientation.w, h: orientation.h };
+  return {
+    instanceId: item.id, item, pos: position, dims,
+    aabb: Solver.getAabb(position, dims), orientation, phase: 'floor', zone: null,
+  };
+}
+
+test('PACKING-CORE-P8 leftover pass fills a legal channel hole and refuses too-wide cartons', async () => {
+  const { Solver, PackLib } = await p5Modules();
+  const truck = p8WheelWellTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const wheelWell = Solver.getWheelWellGeometry(truck);
+  assert.ok(wheelWell, 'fixture produces wheel-well geometry');
+
+  // Rear and front full-width floor zones fully occupied; only the channel is open.
+  const blockerRear = p8Item(Solver, 'blocker-rear', { l: 80, w: 96, h: 90 }, { noStackOnTop: true });
+  const blockerFront = p8Item(Solver, 'blocker-front', { l: 80, w: 96, h: 90 }, { noStackOnTop: true });
+  const packed = [
+    p8PackedEntry(Solver, blockerRear, { x: 40, y: 45, z: 0 }),
+    p8PackedEntry(Solver, blockerFront, { x: 200, y: 45, z: 0 }),
+  ];
+
+  const fits = p8Item(Solver, 'fits-channel', { l: 24, w: 18, h: 16 });
+  const tooWide = p8Item(Solver, 'too-wide', { l: 70, w: 70, h: 16 });
+  const itemsById = new Map([[fits.id, fits], [tooWide.id, tooWide]]);
+  const output = {
+    placements: new Map(), rotations: new Map(), orientedDims: new Map(),
+    retentionDependencies: new Map(), unpacked: ['too-wide', 'fits-channel'],
+    warnings: [], rejectionReasons: [],
+    phaseStats: { laneCount: 0, floorCount: 0, stackCount: 0, fillerCount: 0, unpackedCount: 2 },
+  };
+
+  const placed = Solver.placeWheelWellConstrainedLeftovers(
+    output, packed, itemsById, zones, true, null, wheelWell, true
+  );
+  assert.equal(placed, 1, 'exactly the channel-fitting carton is rescued');
+  assert.deepEqual(output.unpacked, ['too-wide'], 'the too-wide carton is never forced');
+  const pos = output.placements.get('fits-channel');
+  assert.ok(pos, 'rescued placement recorded');
+  const od = output.orientedDims.get('fits-channel');
+  const aabb = Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
+  assert.equal(PackLib.isAabbContainedInAnyZone(aabb, zones), true, 'rescue is inside usable zones');
+  assert.equal(Solver.aabbIntersectsWheelWellBody(aabb, wheelWell), false, 'rescue never enters a blocked body');
+  assert.ok(Math.abs(aabb.min.y) <= 0.05, 'rescue rests on the floor (no floating)');
+  const channel = zones.find(z => z.min.y <= 0.05 && (z.max.z - z.min.z) < 96 - 0.05);
+  assert.ok(aabb.min.x >= channel.min.x - 0.05 && aabb.max.x <= channel.max.x + 0.05,
+    'rescue landed in the center channel (the only remaining opening)');
+});
+
+test('PACKING-CORE-P8 leftover queue prioritizes channel-fitting then smaller cartons deterministically', async () => {
+  const { Solver, PackLib } = await p5Modules();
+  const truck = p8WheelWellTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const channelZones = zones.filter(z => z.min.y <= 0.05 && (z.max.z - z.min.z) < 96 - 0.05);
+  const wide = p8Item(Solver, 'a-wide', { l: 70, w: 70, h: 16 });        // cannot use the channel
+  const bigFits = p8Item(Solver, 'b-big', { l: 40, w: 30, h: 16 });     // fits channel, larger
+  const smallFits = p8Item(Solver, 'c-small', { l: 20, w: 15, h: 16 }); // fits channel, smaller
+  const ordered = Solver.sortConstrainedLeftoverQueue([wide, bigFits, smallFits], channelZones);
+  assert.deepEqual(ordered.map(i => i.id), ['c-small', 'b-big', 'a-wide'],
+    'channel-fitting first, smaller footprint first, non-fitting last');
+});
+
+test('PACKING-CORE-P8 pass is inert for Standard and Front Overhang and gated by option for Wheel Wells', async () => {
+  const { Solver, PackLib } = await p5Modules();
+  for (const shapeMode of ['rect', 'frontBonus']) {
+    const truck = shapeMode === 'frontBonus'
+      ? { length: 240, width: 96, height: 96, shapeMode, shapeConfig: { bonusLength: 60, bonusHeight: 43.2 } }
+      : { length: 240, width: 96, height: 96, shapeMode };
+    const zones = PackLib.getTrailerUsableZones(truck);
+    const items = Array.from({ length: 50 }, (_, i) => ({
+      instanceId: `i${i}`, caseId: 'A', dims: { l: 24, w: 18, h: 16 },
+      orientationLock: 'any', canFlip: false, weight: 30,
+    }));
+    const on = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+    const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellLeftoverPass: false });
+    assert.equal(JSON.stringify([...on.placements]), JSON.stringify([...off.placements]),
+      `${shapeMode}: pass on/off byte-identical (no wheel-well geometry)`);
+  }
+  // Wheel Wells: the pass can only add placements, never drop them, and stays rule-safe.
+  const truck = p8WheelWellTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = Array.from({ length: 90 }, (_, i) => ({
+    instanceId: `i${i}`, caseId: 'A', dims: { l: 24, w: 18, h: 16 },
+    orientationLock: 'any', canFlip: false, weight: 30,
+  }));
+  const on = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellLeftoverPass: false });
+  assert.ok(on.placements.size >= off.placements.size,
+    `leftover pass never drops placements (${on.placements.size} >= ${off.placements.size})`);
+  e1AssertSafe(Solver, PackLib, e1Placed(Solver, on), zones, 'p8/ww/90');
+  const rerun = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  assert.equal(JSON.stringify([...on.placements]), JSON.stringify([...rerun.placements]), 'deterministic with the pass on');
+});

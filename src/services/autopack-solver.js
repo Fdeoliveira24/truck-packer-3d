@@ -2713,6 +2713,74 @@ function placeWheelWellBuildUpBridges(output, packed, itemsById, geometry, loadF
   return placed;
 }
 
+// ---------------------------------------------------------------------------
+// WHEEL WELLS: constrained leftover pass. After the floor/filler/stack phases
+// (and the well-top build-up/bridge pass) some staged leftovers can still fit
+// remaining LEGAL floor holes — especially in the constrained center channel,
+// where the repeated-grid and batch phases may leave openings that only a
+// smaller or channel-fitting carton can use. This pass retries exactly those
+// leftovers through the ordinary findFloorPlacement hard-rule pipeline
+// (containment, collision, retention, zone height) against the final floor
+// state, so it can only ADD legal floor-resting placements: no bridge faking,
+// no blocked-body entry, no floating, no shelf forcing. Wheel Wells only —
+// every other mode has no wheel-well geometry and skips it entirely.
+// ---------------------------------------------------------------------------
+
+/**
+ * Deterministic leftover retry order: channel-fitting cartons first (they are
+ * the only ones that can use the constrained opening), then smaller footprint,
+ * then smaller volume, then stable id order.
+ */
+export function sortConstrainedLeftoverQueue(items, channelZones) {
+  const channelWidth = (channelZones || []).length
+    ? Math.max(...channelZones.map(zone => zone.max.z - zone.min.z))
+    : 0;
+  const fitsChannel = item => (item.candidates || []).some(o => o.w <= channelWidth + FREE_RECT_EPS)
+    ? 0
+    : 1;
+  return [...(items || [])].sort((a, b) =>
+    fitsChannel(a) - fitsChannel(b) ||
+    a.footprint - b.footprint ||
+    a.volume - b.volume ||
+    stableTextCompare(a.id, b.id)
+  );
+}
+
+export function placeWheelWellConstrainedLeftovers(
+  output,
+  packed,
+  itemsById,
+  floorZones,
+  loadFrontFirst,
+  retentionContext,
+  wheelWell,
+  layoutQualityEnabled
+) {
+  if (!wheelWell || !output.unpacked.length) return 0;
+  const floorState = rebuildFloorStateFromPacked(floorZones, packed, false, retentionContext);
+  if (!floorState.freeRects.length) return 0;
+
+  const channelZones = narrowChannelZones(floorZones);
+  const queue = sortConstrainedLeftoverQueue(
+    output.unpacked.map(id => itemsById.get(id)).filter(Boolean),
+    channelZones
+  );
+  const placedIds = new Set();
+  let placed = 0;
+
+  for (const item of queue) {
+    const placement = findFloorPlacement(item, floorState, packed, loadFrontFirst, { layoutQualityEnabled });
+    if (!placement) continue;
+    recordPlacement(output, packed, item, placement, 'filler');
+    occupyFloorSpace(floorState, placement);
+    placedIds.add(item.id);
+    placed++;
+  }
+
+  if (placed) output.unpacked = output.unpacked.filter(id => !placedIds.has(id));
+  return placed;
+}
+
 function orientationFitsZone(orientation, zone) {
   return orientation.l <= zone.max.x - zone.min.x + FREE_RECT_EPS &&
     orientation.w <= zone.max.z - zone.min.z + FREE_RECT_EPS &&
@@ -2964,6 +3032,23 @@ export function solveAutoPack(input = {}) {
   // opportunities are not starved by rear stack placements.
   if (wheelWell && input.enableWheelWellBridge === true) {
     stackCount += placeWheelWellBuildUpBridges(output, packed, itemsById, wheelWell, loadFrontFirst);
+  }
+
+  // Constrained leftover pass (Wheel Wells only): retry staged leftovers into
+  // remaining legal floor/channel holes, channel-fitting and smaller cartons
+  // first. Runs BEFORE final validation so every rescued placement is re-checked
+  // by the same hard-rule pipeline as everything else.
+  if (wheelWell && input.enableWheelWellLeftoverPass !== false) {
+    fillerCount += placeWheelWellConstrainedLeftovers(
+      output,
+      packed,
+      itemsById,
+      floorZones,
+      loadFrontFirst,
+      retentionContext,
+      wheelWell,
+      layoutQualityEnabled
+    );
   }
 
   const initialValidation = validatePackedPlacements(output, packed, floorZones, {

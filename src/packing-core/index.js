@@ -44,6 +44,11 @@ export {
 export { repairDependentPlacements } from './repair.js';
 export { createSolveBudget, DEFAULT_SOLVE_BUDGET_MS } from './budget.js';
 export {
+  RETENTION_MAX_STEP_GAP,
+  isRetainerAtStep,
+  computeDeckRetentionCoverage,
+} from './retention-model.js';
+export {
   REJECTION_CODES,
   PARTIAL_CAUSES,
   makeRejectionReason,

@@ -43,12 +43,14 @@ import {
   summarizeSolveStatus,
 } from '../packing-core/explain.js';
 import { createSolveBudget } from '../packing-core/budget.js';
+import { computeDeckRetentionCoverage } from '../packing-core/retention-model.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
 
 export { aabbsOverlap, computeXzOverlapArea, isAabbContainedInAnyZone };
 import {
   RIGHT_ANGLE_RAD,
   normalizeRightAngleRotation,
+  rotateVectorXYZ,
   getOrientedDimsForRotation as getOrientedDimsForRotationCanonical,
 } from '../core/oriented-dims.js';
 
@@ -141,14 +143,40 @@ export function buildOrientationCandidates(dims = {}, item = {}) {
     candidates.push(makeCandidate(o.l, o.w, o.h, rotation));
   }
 
+  // ROTATE vs FLIP product contract:
+  // - Rotating (footprint yaw: length/width swap, height axis unchanged) is
+  //   ALWAYS available when the orientation policy allows the face — it never
+  //   requires "Allow flipping". Both upright yaws are generated for
+  //   'any'/'upright', and BOTH footprint yaws of every side face are
+  //   generated for 'onSide'.
+  // - Flipping/tipping (resting on another face, vertical height changes) is
+  //   generated only when the policy permits it: canFlip under 'any', or the
+  //   'onSide' policy itself. Scoring chooses among candidates, so a tipped
+  //   pose is used only when it genuinely fits/scores better.
   if (lock === 'upright' || lock === 'any') {
     add(0, 0, 0);
     add(0, RIGHT_ANGLE_RAD, 0);
   }
 
   if (lock === 'onSide') {
-    add(0, 0, RIGHT_ANGLE_RAD);
-    add(RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
+    // Physical uprightness test: raw euler components can COMPOSE back to an
+    // upright pose (e.g. X90+Y90 keeps the height axis vertical), so onSide
+    // candidates are filtered by where the rotation actually sends the case's
+    // own height axis — never by the euler components alone.
+    const addSide = (x, y, z) => {
+      const heightAxis = rotateVectorXYZ({ x: 0, y: 1, z: 0 }, normalizeRightAngleRotation({ x, y, z }));
+      if (Math.abs(Math.abs(heightAxis.y) - 1) < 1e-9) return;
+      add(x, y, z);
+    };
+    addSide(0, 0, RIGHT_ANGLE_RAD);
+    addSide(RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
+    // Footprint yaw variants of the side faces: a case lying on its side may
+    // still be rotated on the floor. Appended after the historical two so the
+    // dims-dedupe keeps existing rotations for already-covered triples.
+    addSide(0, RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD);
+    addSide(RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD);
+    addSide(RIGHT_ANGLE_RAD, 0, 0);
+    addSide(RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD, 0);
   }
 
   // canFlip may only introduce tipped (non-upright) faces when the case policy
@@ -160,6 +188,10 @@ export function buildOrientationCandidates(dims = {}, item = {}) {
     add(RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
     add(RIGHT_ANGLE_RAD, 0, 0);
     add(RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD, 0);
+    // Complete the side-face yaw coverage (all 6 distinct face×yaw triples of
+    // a box). Appended last: pure dedupe no-ops for triples already covered.
+    add(0, RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD);
+    add(RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD);
   }
 
   return candidates;
@@ -2553,6 +2585,119 @@ export function sortConstrainedLeftoverQueue(items, channelZones) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// FRONT OVERHANG: deck retaining-wall pass. The raised deck is legally usable
+// only behind cargo that is flush with the overhang step and spans the deck
+// level (C2 retention). Until now that wall only formed by accident, so the
+// deck stayed unused whenever front cargo was too short. This pass
+// intentionally builds the missing wall segments FROM LEFTOVERS ONLY, through
+// the ordinary hard-rule pipeline (containment, collision, full support rules)
+// — every wall segment is legal front cargo in its own right, and the deck is
+// still gated per candidate by candidateHasRearRetention plus final
+// validation. Nothing is moved, nothing is faked, retention is not weakened.
+// ---------------------------------------------------------------------------
+function wallBottomsAt(packed, mainZone, minX, maxX, minZ, maxZ) {
+  const bottoms = [mainZone.min.y];
+  for (const placement of packed) {
+    const ox = Math.min(maxX, placement.aabb.max.x) - Math.max(minX, placement.aabb.min.x);
+    const oz = Math.min(maxZ, placement.aabb.max.z) - Math.max(minZ, placement.aabb.min.z);
+    if (ox > 0.05 && oz > 0.05) bottoms.push(placement.aabb.max.y);
+  }
+  return uniqueSorted(bottoms, (a, b) => a - b);
+}
+
+function buildDeckRetentionWall(output, packed, itemsById, retentionContext, budget) {
+  const geometry = retentionContext?.geometry;
+  if (!geometry || !output.unpacked.length) return 0;
+  const { stepX, deckY, deckZone, mainZone } = geometry;
+
+  const deckL = deckZone.max.x - deckZone.min.x;
+  const deckW = deckZone.max.z - deckZone.min.z;
+  const deckH = deckZone.max.y - deckZone.min.y;
+  const leftovers = output.unpacked.map(id => itemsById.get(id)).filter(Boolean);
+  // Build the wall only when some leftover could actually use the deck behind it.
+  const anyDeckFit = leftovers.some(item => item.candidates.some(o =>
+    o.l <= deckL + FREE_RECT_EPS && o.w <= deckW + FREE_RECT_EPS && o.h <= deckH + FREE_RECT_EPS));
+  if (!anyDeckFit) return 0;
+
+  const tallest = item => Math.max(0, ...item.candidates.map(o => o.h));
+  const queue = [...leftovers].sort((a, b) =>
+    tallest(b) - tallest(a) ||
+    b.footprint - a.footprint ||
+    stableTextCompare(a.id, b.id)
+  );
+  const placedIds = new Set();
+  let placed = 0;
+  let progress = true;
+  let guard = queue.length * 4 + 8;
+
+  while (progress && guard-- > 0) {
+    progress = false;
+    if (budget && budget.expired()) break;
+    const { uncovered } = computeDeckRetentionCoverage(geometry, packed);
+    if (!uncovered.length) break;
+    const target = uncovered[0];
+    // A below-plane base is only worth placing while a remaining leftover could
+    // still span the deck level on top of it.
+    const maxRemainingHeight = Math.max(0, ...queue.filter(item => !placedIds.has(item.id)).map(tallest));
+
+    let stepPlaced = false;
+    for (const item of queue) {
+      if (placedIds.has(item.id)) continue;
+      for (const orientation of item.candidates) {
+        const xMin = stepX - orientation.l;
+        if (xMin < mainZone.min.x - FREE_RECT_EPS) continue;
+        const zAnchors = uniqueSorted(
+          [target.minZ, target.maxZ - orientation.w]
+            .map(z => clampAnchor(z, mainZone.min.z, mainZone.max.z, orientation.w))
+            .filter(z => z !== null),
+          (a, b) => a - b
+        );
+        for (const zMin of zAnchors) {
+          for (const bottom of wallBottomsAt(packed, mainZone, xMin, stepX, zMin, zMin + orientation.w)) {
+            if (bottom + orientation.h > mainZone.max.y + FREE_RECT_EPS) continue;
+            const position = {
+              x: xMin + orientation.l / 2,
+              y: bottom + orientation.h / 2,
+              z: zMin + orientation.w / 2,
+            };
+            const dims = { l: orientation.l, w: orientation.w, h: orientation.h };
+            const aabb = getAabb(position, dims);
+            if (!isAabbContainedInZone(aabb, mainZone)) continue;
+            if (collidesPacked(aabb, packed)) continue;
+            const onFloor = Math.abs(aabb.min.y - mainZone.min.y) <= CONTACT_EPS;
+            if (!onFloor && !supportsCandidate(aabb, packed, item)) continue;
+            // The segment must progress the wall: span the deck level itself,
+            // or be a base a remaining leftover could still span from.
+            const spansDeck = aabb.max.y >= deckY - CONTACT_EPS && aabb.min.y <= deckY + CONTACT_EPS;
+            const buildsToward = aabb.max.y <= deckY + CONTACT_EPS &&
+              aabb.max.y + maxRemainingHeight >= deckY - CONTACT_EPS;
+            if (!spansDeck && !buildsToward) continue;
+            recordPlacement(
+              output,
+              packed,
+              item,
+              { position, dims, aabb, orientation, zone: mainZone },
+              onFloor ? 'floor' : 'stack'
+            );
+            placedIds.add(item.id);
+            placed++;
+            progress = true;
+            stepPlaced = true;
+            break;
+          }
+          if (stepPlaced) break;
+        }
+        if (stepPlaced) break;
+      }
+      if (stepPlaced) break;
+    }
+  }
+
+  if (placed) output.unpacked = output.unpacked.filter(id => !placedIds.has(id));
+  return placed;
+}
+
 export function placeLeftoverRecovery(
   output,
   packed,
@@ -2979,6 +3124,15 @@ export function solveAutoPack(input = {}) {
   // opportunities are not starved by rear stack placements.
   if (wheelWell && input.enableWheelWellBridge === true && stackPhaseEnabled && !budget.expired()) {
     stackCount += placeWheelWellBuildUpBridges(output, packed, itemsById, wheelWell, loadFrontFirst);
+  }
+
+  // Front Overhang deck enablement: intentionally complete the retaining wall
+  // from leftovers so the raised deck becomes legally usable (C2 retention
+  // rules unchanged). The leftover recovery below then fills the deck through
+  // the ordinary hard-rule pipeline, which still gates every deck pose on the
+  // real barrier via candidateHasRearRetention.
+  if (retentionContext?.geometry && input.enableDeckRetentionWall !== false && !budget.expired()) {
+    floorCount += buildDeckRetentionWall(output, packed, itemsById, retentionContext, budget);
   }
 
   // Leftover recovery (all space types): retry staged leftovers into remaining

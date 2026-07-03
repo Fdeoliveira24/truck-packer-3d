@@ -2368,8 +2368,11 @@ export function createEditorScreen({
             // Respect any oriented dimensions produced by AutoPack (prevents overlap when
             // cases were rotated/flipped while packed). Never fabricate dimensions for an
             // unresolved (dangling) item — leave it untouched rather than invent a cube.
+            const canonical = c && typeof PackLibrary.getCanonicalInstanceEffectiveDims === 'function'
+              ? PackLibrary.getCanonicalInstanceEffectiveDims(inst, c)
+              : null;
             const od = inst && inst.orientedDims ? inst.orientedDims : null;
-            const baseDims = od || (c && c.dimensions) || null;
+            const baseDims = canonical && canonical.ok ? canonical.dims : (od || (c && c.dimensions) || null);
             if (!baseDims) continue;
             const dims = {
               length: baseDims.length,
@@ -2387,6 +2390,7 @@ export function createEditorScreen({
             movedCount += 1;
             stagedById.set(inst.id, {
               ...inst,
+              orientedDims: { ...dims },
               transform: {
                 ...inst.transform,
                 position: staged.position,

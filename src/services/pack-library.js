@@ -652,8 +652,10 @@ export function findSafeStagingPosition(pack, dims, acceptedAabbs, options = {})
   const availableX = Math.max(0, maxX - minX);
   const cols = Math.max(1, Math.floor(availableX / stepX) + 1);
   const startZ = layout.originZ + dims.width / 2;
+  const accepted = Array.isArray(acceptedAabbs) ? acceptedAabbs : [];
+  const maxRows = Math.max(200, Math.ceil((accepted.length + 1) / cols) + 20);
 
-  for (let row = 0; row < 200; row++) {
+  for (let row = 0; row < maxRows; row++) {
     for (let col = 0; col < cols; col++) {
       const position = {
         x: Math.min(minX + col * stepX, maxX),
@@ -661,15 +663,22 @@ export function findSafeStagingPosition(pack, dims, acceptedAabbs, options = {})
         z: startZ + row * stepZ,
       };
       const aabb = makeAabb(position, dims);
-      if (!overlapsAny(aabb, acceptedAabbs)) return { position, aabb };
+      if (!overlapsAny(aabb, accepted)) return { position, aabb };
     }
   }
 
-  const fallback = {
-    x: layout.originX - gap - dims.length / 2,
-    y: dims.height / 2,
-    z: startZ,
-  };
+  let overflowZ = startZ;
+  for (const aabb of accepted) {
+    if (Number.isFinite(Number(aabb && aabb.max && aabb.max.z))) {
+      overflowZ = Math.max(overflowZ, Number(aabb.max.z) + gap + dims.width / 2);
+    }
+  }
+  const fallback = { x: minX, y: dims.height / 2, z: overflowZ };
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const position = { ...fallback, z: overflowZ + attempt * stepZ };
+    const aabb = makeAabb(position, dims);
+    if (!overlapsAny(aabb, accepted)) return { position, aabb };
+  }
   return { position: fallback, aabb: makeAabb(fallback, dims) };
 }
 
@@ -1102,8 +1111,9 @@ function candidateSnapBottoms(curAabb, accepted, zones, tol = RECON_TOL, wheelWe
  * - invalid: ids that cannot be kept or safely snapped (left at current position
  *   in the preview; the caller resolves them via repack/stage/cancel).
  */
-export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary) {
+export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, options = {}) {
   const basePack = pack && typeof pack === 'object' ? pack : {};
+  const preserveStagedPositions = options.preserveStagedPositions === true;
   const zones = getTrailerUsableZones(nextTruck);
   const wheelWell = getWheelWellGeometry(nextTruck);
   const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
@@ -1208,9 +1218,20 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary) {
     const current = node.curAabb;
     const insideTruck = isAabbContainedInAnyZone(current, zones);
     const blockedBody = aabbIntersectsWheelWellBlockedBody(current, nextTruck);
+    const collidesStaged = overlapsAny(current, stagingAccepted);
     const collides = overlapsAny(current, [...packedAabbs, ...stagingAccepted]);
     const onFloor = Math.abs(current.min.y) <= RECON_TOL;
     const reachable = isAabbInStagingZone({ truck: nextTruck }, current);
+    if (preserveStagedPositions && !insideTruck && !blockedBody && !collidesStaged && reachable) {
+      const position = onFloor ? node.curPos : { ...node.curPos, y: node.dims.height / 2 };
+      const aabb = onFloor ? current : makeAabb(position, node.dims);
+      if (!overlapsAny(aabb, stagingAccepted)) {
+        stagingAccepted.push(aabb);
+        stagedUnchanged.push(node.inst.id);
+        resultByInst.set(node.inst, { status: 'staged-unchanged', position, node });
+        continue;
+      }
+    }
     if (!insideTruck && !blockedBody && !collides && onFloor && reachable) {
       stagingAccepted.push(current);
       stagedUnchanged.push(node.inst.id);
@@ -1420,7 +1441,9 @@ function repairInvalidPlacementsLocally(reconResult, truck, caseLibrary) {
 export function revalidateManualPlacements(pack, caseLibrary, options = {}) {
   const source = pack && typeof pack === 'object' ? pack : {};
   const truck = source.truck && typeof source.truck === 'object' ? source.truck : {};
-  const reconciliation = reconcilePlacementsForTruck(source, truck, caseLibrary);
+  const reconciliation = reconcilePlacementsForTruck(source, truck, caseLibrary, {
+    preserveStagedPositions: options.preserveStagedPositions !== false,
+  });
   let nextPack = reconciliation.nextPack;
   let stagedIds = [];
   let failedIds = [];

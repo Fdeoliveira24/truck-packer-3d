@@ -1222,7 +1222,7 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
     const collides = overlapsAny(current, [...packedAabbs, ...stagingAccepted]);
     const onFloor = Math.abs(current.min.y) <= RECON_TOL;
     const reachable = isAabbInStagingZone({ truck: nextTruck }, current);
-    if (preserveStagedPositions && !insideTruck && !blockedBody && !collidesStaged && reachable) {
+    if (preserveStagedPositions && !insideTruck && !blockedBody && !collidesStaged) {
       const position = onFloor ? node.curPos : { ...node.curPos, y: node.dims.height / 2 };
       const aabb = onFloor ? current : makeAabb(position, node.dims);
       if (!overlapsAny(aabb, stagingAccepted)) {

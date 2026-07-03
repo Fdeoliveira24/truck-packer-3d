@@ -931,11 +931,12 @@ function scoreFreeRectCandidate(
     return [
       ...scoreFloorSurface(candidate.aabb, loadFrontFirst, true),
       ...groupScore.continuity,
+      groupScore.orientationPenalty,
+      groupScore.surfaceOrientationPenalty,
       -contactScore,
       Math.min(leftoverX, leftoverZ),
       wasteArea,
       leftoverZ,
-      groupScore.orientationPenalty,
       candidate.aabb.min.z,
       leftoverX,
     ];
@@ -3583,19 +3584,25 @@ export function solveAutoPack(input = {}) {
   const leftoverPassEnabled = input.enableLeftoverPass !== false &&
     (!wheelWell || input.enableWheelWellLeftoverPass !== false);
   if (leftoverPassEnabled && !budget.cleanupExpired()) {
-    fillerCount += placeLeftoverRecovery(
-      output,
-      packed,
-      itemsById,
-      floorZones,
-      loadFrontFirst,
-      retentionContext,
-      wheelWell,
-      layoutQualityEnabled,
-      wheelWellBridgeGeometry,
-      budget,
-      stackPhaseEnabled
-    );
+    const MAX_LEFTOVER_RECOVERY_PASSES = 4;
+    for (let pass = 0; pass < MAX_LEFTOVER_RECOVERY_PASSES; pass++) {
+      if (!output.unpacked.length || budget.cleanupExpired()) break;
+      const placedThisPass = placeLeftoverRecovery(
+        output,
+        packed,
+        itemsById,
+        floorZones,
+        loadFrontFirst,
+        retentionContext,
+        wheelWell,
+        layoutQualityEnabled,
+        wheelWellBridgeGeometry,
+        budget,
+        stackPhaseEnabled
+      );
+      if (!placedThisPass) break;
+      fillerCount += placedThisPass;
+    }
   }
 
   if (budgetExhausted) {

@@ -2541,6 +2541,99 @@ export function createEditorScreen({
       return btn;
     }
 
+    function getCaseCategoryKey(caseData) {
+      if (!caseData || caseData.category == null) return '';
+      return String(caseData.category).trim().toLowerCase();
+    }
+
+    function getSelectedCategoryContext(pack, selectedIds) {
+      const selected = Array.isArray(selectedIds) ? selectedIds : [];
+      const firstId = selected[0];
+      if (!firstId) return null;
+      const inst = (pack.cases || []).find(item => item && item.id === firstId);
+      if (!inst) return null;
+      const caseData = CaseLibrary.getById(inst.caseId);
+      const categoryKey = getCaseCategoryKey(caseData);
+      if (!categoryKey) return null;
+      return { inst, caseData, categoryKey };
+    }
+
+    function getCategorySelectionBuckets(pack, categoryKey) {
+      const target = String(categoryKey || '').trim().toLowerCase();
+      const truck = [];
+      const staging = [];
+      if (!target) return { truck, staging, everywhere: [] };
+
+      (pack.cases || []).forEach(inst => {
+        if (!inst || !inst.id || !inst.caseId) return;
+        const caseData = CaseLibrary.getById(inst.caseId);
+        if (getCaseCategoryKey(caseData) !== target) return;
+        if (inst.placement === 'packed') truck.push(inst.id);
+        if (inst.placement === 'staged') staging.push(inst.id);
+      });
+
+      return { truck, staging, everywhere: [...truck, ...staging] };
+    }
+
+    function getCategoryScopeLabel(scope) {
+      if (scope === 'truck') return 'in the truck';
+      if (scope === 'staging') return 'in staging';
+      return 'in the truck or staging';
+    }
+
+    function selectCategoryGroup(pack, categoryKey, scope) {
+      const buckets = getCategorySelectionBuckets(pack, categoryKey);
+      const ids = buckets[scope] || [];
+      const meta = CategoryService.meta(categoryKey || 'default');
+      if (!ids.length) {
+        UIComponents.showToast(`No ${meta.name} cases found ${getCategoryScopeLabel(scope)}.`, 'info');
+        return;
+      }
+      InteractionManager.setSelection(ids);
+      renderInspector(pack);
+      UIComponents.showToast(`Selected ${ids.length} ${meta.name} case${ids.length === 1 ? '' : 's'}.`, 'info');
+    }
+
+    function renderCategorySelectionCard(pack, categoryKey) {
+      const buckets = getCategorySelectionBuckets(pack, categoryKey);
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.classList.add('tp3d-editor-card-grid-gap-12');
+      card.appendChild(cardHeaderWithInfo(
+        'Category Selection',
+        'Select all cases in this category without changing placement or staging layout.'
+      ));
+
+      const row = document.createElement('div');
+      row.className = 'tp3d-editor-action-grid';
+      [
+        {
+          scope: 'truck',
+          label: 'In Truck',
+          iconClass: 'fa-solid fa-truck-ramp-box',
+        },
+        {
+          scope: 'staging',
+          label: 'In Staging',
+          iconClass: 'fa-solid fa-boxes-stacked',
+        },
+        {
+          scope: 'everywhere',
+          label: 'Everywhere',
+          iconClass: 'fa-solid fa-layer-group',
+        },
+      ].forEach(({ scope, label, iconClass }) => {
+        row.appendChild(makeActionButton({
+          label,
+          iconClass,
+          disabled: !buckets[scope].length,
+          onClick: () => selectCategoryGroup(pack, categoryKey, scope),
+        }));
+      });
+      card.appendChild(row);
+      return card;
+    }
+
     function makeVisibilityButton(pack, selectedIds) {
       const ids = Array.isArray(selectedIds) ? selectedIds : [];
       const instances = ids.map(id => (pack.cases || []).find(i => i.id === id)).filter(Boolean);
@@ -3261,6 +3354,11 @@ export function createEditorScreen({
       actRow.appendChild(btnDelete);
       actCard.appendChild(actRow);
       inspectorEl.appendChild(actCard);
+
+      const categoryContext = getSelectedCategoryContext(pack, selected);
+      if (categoryContext) {
+        inspectorEl.appendChild(renderCategorySelectionCard(pack, categoryContext.categoryKey));
+      }
     }
 
     function renderSingleInspector(pack, inst, caseData, prefs) {
@@ -3478,6 +3576,11 @@ export function createEditorScreen({
       actRow.appendChild(deleteButton);
       actCard.appendChild(actRow);
       inspectorEl.appendChild(actCard);
+
+      const categoryKey = getCaseCategoryKey(caseData);
+      if (categoryKey) {
+        inspectorEl.appendChild(renderCategorySelectionCard(pack, categoryKey));
+      }
     }
 
     /**

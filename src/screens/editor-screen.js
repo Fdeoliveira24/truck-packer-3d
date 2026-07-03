@@ -301,6 +301,9 @@ export function createCaseScene({
       applySelection(Array.from(selectedIds));
       applyHover(hoveredId);
       applyDragging(draggedId);
+      if (typeof SceneManager.requestShadowRefresh === 'function') {
+        SceneManager.requestShadowRefresh();
+      }
     }
 
     function buildSignature(inst, caseData) {
@@ -1726,6 +1729,10 @@ export function createEditorScreen({
     function clearPendingTruck() {
       pendingTruck = null;
     }
+    function hasPendingTruckChange(pack) {
+      return Boolean(pendingTruck && pack && pendingTruck.__packId === pack.id) &&
+        !TruckChangeController.truckGeometryEqual(pack.truck, pendingTruck);
+    }
 
     function setViewportHintOpen(open) {
       if (!viewportHintBtn) return;
@@ -2331,6 +2338,16 @@ export function createEditorScreen({
         UIComponents.showToast('Nothing to unpack', 'info');
         return;
       }
+      if (hasPendingTruckChange(pack)) {
+        clearPendingTruck();
+        render();
+        UIComponents.showToast(
+          'Pending truck changes were cleared. Click Unpack again to use the saved truck layout.',
+          'info',
+          { title: 'Unpack' }
+        );
+        return;
+      }
       // Claim the single mutating-operation slot so AutoPack / Truck Change cannot
       // run concurrently with the (synchronous, O(n^2)) staging computation below.
       const opToken = OperationLifecycle ? OperationLifecycle.beginOperation('unpacking', { packId }) : null;
@@ -2351,7 +2368,6 @@ export function createEditorScreen({
         const livePack = PackLibrary.getById(packId);
         if (!livePack) return;
 
-        const acceptedAabbs = [];
         const stagedById = new Map();
         const stagingLayout = PackLibrary.getStagingLayout(livePack.truck || {});
         const categoryBandGap = stagingLayout.gap * 2;
@@ -2362,7 +2378,7 @@ export function createEditorScreen({
           caseId => CaseLibrary.getById(caseId)
         );
         for (const group of stagingGroups) {
-          let groupMaxZ = categoryOriginZ;
+          const payload = [];
           for (const inst of group.instances) {
             const c = CaseLibrary.getById(inst.caseId);
             // Respect any oriented dimensions produced by AutoPack (prevents overlap when
@@ -2379,30 +2395,46 @@ export function createEditorScreen({
               width: baseDims.width,
               height: baseDims.height,
             };
-            const staged = PackLibrary.findSafeStagingPosition(
-              livePack,
-              dims,
-              acceptedAabbs,
-              { originZ: categoryOriginZ }
-            );
-            acceptedAabbs.push(staged.aabb);
-            groupMaxZ = Math.max(groupMaxZ, staged.aabb.max.z);
+            payload.push({ inst, caseData: c, dims });
+          }
+          payload.sort((a, b) =>
+            String((a.caseData && a.caseData.name) || a.inst.caseId)
+              .localeCompare(String((b.caseData && b.caseData.name) || b.inst.caseId)) ||
+            (b.dims.length * b.dims.width - a.dims.length * a.dims.width) ||
+            String(a.inst.id).localeCompare(String(b.inst.id))
+          );
+          if (!payload.length) continue;
+          const cellLength = Math.max(...payload.map(item => item.dims.length)) + stagingLayout.gap;
+          const cellWidth = Math.max(...payload.map(item => item.dims.width)) + stagingLayout.gap;
+          const cols = Math.max(1, Math.floor((stagingLayout.truckL + stagingLayout.gap) / Math.max(1, cellLength)));
+          payload.forEach((item, index) => {
+            const col = index % cols;
+            const row = Math.floor(index / cols);
+            const stagedPosition = {
+              x: stagingLayout.originX + item.dims.length / 2 + col * cellLength,
+              y: item.dims.height / 2,
+              z: categoryOriginZ + item.dims.width / 2 + row * cellWidth,
+            };
             movedCount += 1;
-            stagedById.set(inst.id, {
-              ...inst,
-              orientedDims: { ...dims },
+            stagedById.set(item.inst.id, {
+              ...item.inst,
+              orientedDims: { ...item.dims },
               transform: {
-                ...inst.transform,
-                position: staged.position,
+                ...item.inst.transform,
+                position: stagedPosition,
               },
               placement: 'staged',
             });
-          }
-          if (groupMaxZ > categoryOriginZ) categoryOriginZ = groupMaxZ + categoryBandGap;
+          });
+          const rows = Math.ceil(payload.length / cols);
+          categoryOriginZ += rows * cellWidth + categoryBandGap;
         }
         const nextCases = (livePack.cases || []).map(inst => stagedById.get(inst.id) || inst);
         if (OperationLifecycle && !OperationLifecycle.isCurrent(opToken)) return;
         PackLibrary.update(packId, { cases: nextCases });
+        if (typeof SceneManager.requestShadowRefresh === 'function') {
+          SceneManager.requestShadowRefresh();
+        }
         UIComponents.showToast(`Moved ${movedCount} case${movedCount === 1 ? '' : 's'} to staging.`, 'info', { title: 'Unpack' });
         render();
       } finally {

@@ -89,10 +89,27 @@ function toStrategyResult(preset, result) {
   };
 }
 
+function placementCount(result) {
+  return result && result.placements instanceof Map ? result.placements.size : 0;
+}
+
+function unpackedCount(result) {
+  return Array.isArray(result && result.unpacked) ? result.unpacked.length : Number.MAX_SAFE_INTEGER;
+}
+
+function compareStrategyResults(a, b) {
+  const packedDelta = placementCount(b.result) - placementCount(a.result);
+  if (packedDelta) return packedDelta;
+  const unpackedDelta = unpackedCount(a.result) - unpackedCount(b.result);
+  if (unpackedDelta) return unpackedDelta;
+  return a.index - b.index;
+}
+
 /**
  * Run the requested strategies over one PackingInput-shaped solver input and
- * return the PackingSolution envelope. The first requested strategy is the
- * selected default handed to the current single-solution UI.
+ * return the PackingSolution envelope. When multiple strategies are requested,
+ * the selected default is the highest packed-count solution, with request order
+ * retained as the deterministic tie-break.
  *
  * @param {object} input - solveAutoPack input (truck, zones, items, options)
  * @param {string[]} [strategyIds=['default']]
@@ -100,16 +117,19 @@ function toStrategyResult(preset, result) {
  */
 export function runPackingStrategies(input, strategyIds = ['default'], solve = solveAutoPack) {
   const ids = Array.isArray(strategyIds) && strategyIds.length ? strategyIds : ['default'];
-  const solutions = ids.map(id => {
+  const ranked = ids.map((id, index) => {
     const preset = getPackingStrategy(id);
     if (!preset) {
       throw new Error(`Unknown packing strategy: ${id}`);
     }
-    return toStrategyResult(preset, solve({ ...input, ...preset.options }));
+    const result = toStrategyResult(preset, solve({ ...input, ...preset.options }));
+    return { index, result };
   });
+  const solutions = ranked.map(entry => entry.result);
+  const selected = [...ranked].sort(compareStrategyResults)[0]?.result || solutions[0];
   return {
     solutions,
-    selected: solutions[0].id,
-    selectedSolution: solutions[0],
+    selected: selected ? selected.id : null,
+    selectedSolution: selected || null,
   };
 }

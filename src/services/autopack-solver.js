@@ -510,6 +510,10 @@ function createLayoutGroupTieBreaker(items, layoutQualityEnabled, groupUniverse 
   };
 }
 
+function baseSupportRank(item = {}) {
+  return canSupportStack({ item }) ? 0 : 1;
+}
+
 function sortItemsForFloor(items, layoutQualityEnabled = false, groupUniverse = items) {
   const tieBreak = createLayoutGroupTieBreaker(items, layoutQualityEnabled, groupUniverse);
   return [...items].sort((a, b) => {
@@ -521,6 +525,8 @@ function sortItemsForFloor(items, layoutQualityEnabled = false, groupUniverse = 
     if (volumeDelta) return volumeDelta;
     const priorityDelta = finiteNumber(b.item.loadPriority, 0) - finiteNumber(a.item.loadPriority, 0);
     if (priorityDelta) return priorityDelta;
+    const supportDelta = baseSupportRank(a) - baseSupportRank(b);
+    if (supportDelta) return supportDelta;
     return tieBreak(a, b);
   });
 }
@@ -536,6 +542,8 @@ function sortItemsForFiller(items, layoutQualityEnabled = false, groupUniverse =
     if (priorityDelta) return priorityDelta;
     const weightDelta = b.weight - a.weight;
     if (weightDelta) return weightDelta;
+    const supportDelta = baseSupportRank(a) - baseSupportRank(b);
+    if (supportDelta) return supportDelta;
     return tieBreak(a, b);
   });
 }
@@ -549,6 +557,8 @@ function sortItemsForStack(items, layoutQualityEnabled = false, groupUniverse = 
     if (footprintDelta) return footprintDelta;
     const volumeDelta = b.volume - a.volume;
     if (volumeDelta) return volumeDelta;
+    const supportDelta = baseSupportRank(a) - baseSupportRank(b);
+    if (supportDelta) return supportDelta;
     return tieBreak(a, b);
   });
 }
@@ -1225,6 +1235,8 @@ function buildRepeatedBatches(items, layoutQualityEnabled = false) {
       if (footprintDelta) return footprintDelta;
       const weightDelta = repeatedGroupWeight(b) - repeatedGroupWeight(a);
       if (weightDelta) return weightDelta;
+      const supportDelta = baseSupportRank(a[0]) - baseSupportRank(b[0]);
+      if (supportDelta) return supportDelta;
       const countDelta = b.length - a.length;
       if (countDelta) return countDelta;
       return layoutQualityEnabled
@@ -1850,6 +1862,210 @@ function findStackPlacement(
   }
 
   return best;
+}
+
+function stackBatchBudgetExpired(budget, useCleanupBudget = false) {
+  if (!budget) return false;
+  return useCleanupBudget ? budget.cleanupExpired() : budget.expired();
+}
+
+function scoreRepeatedStackOrientation(orientation, layerRects, groupSize = 0) {
+  let capacity = 0;
+  let bestRows = 0;
+  let bestCols = 0;
+  let wastedWidth = 0;
+  let wastedLength = 0;
+
+  for (const rect of layerRects || []) {
+    const cols = Math.floor((freeRectLength(rect) + FREE_RECT_EPS) / orientation.l);
+    const rows = Math.floor((freeRectWidth(rect) + FREE_RECT_EPS) / orientation.w);
+    if (cols <= 0 || rows <= 0) continue;
+    capacity += cols * rows;
+    bestRows = Math.max(bestRows, rows);
+    bestCols = Math.max(bestCols, cols);
+    wastedWidth += freeRectWidth(rect) - rows * orientation.w;
+    wastedLength += freeRectLength(rect) - cols * orientation.l;
+  }
+
+  return [
+    capacity > 0 ? 0 : 1,
+    groupSize > 0 && capacity >= groupSize ? 0 : 1,
+    -capacity,
+    orientation.h,
+    wastedWidth,
+    wastedLength,
+    -bestRows,
+    -bestCols,
+  ];
+}
+
+function rankedRepeatedStackOrientations(group, layerRects) {
+  const first = group && group[0];
+  if (!first || !first.candidates.length) return [];
+  return first.candidates
+    .map((orientation, orderIndex) => ({
+      orientation,
+      score: [
+        ...scoreRepeatedStackOrientation(orientation, layerRects, group.length),
+        orderIndex,
+      ],
+    }))
+    .filter(entry => entry.score[0] === 0)
+    .sort((a, b) => compareScore(a.score, b.score))
+    .map(entry => entry.orientation);
+}
+
+function stackBatchLayerLevels(packed) {
+  const capacityCache = createStackCapacityCache(packed);
+  return uniqueSorted(
+    packed
+      .filter(placement => canSupportStack(placement) && capacityCache.hasCapacity(placement))
+      .map(placement => placement.aabb.max.y),
+    (a, b) => a - b
+  );
+}
+
+function stackBatchCellMins(rect, orientation, loadFrontFirst) {
+  const cols = Math.floor((freeRectLength(rect) + FREE_RECT_EPS) / orientation.l);
+  const rows = Math.floor((freeRectWidth(rect) + FREE_RECT_EPS) / orientation.w);
+  if (cols <= 0 || rows <= 0) return [];
+
+  const cells = [];
+  for (let col = 0; col < cols; col++) {
+    const xMin = loadFrontFirst
+      ? rect.maxX - (col + 1) * orientation.l
+      : rect.minX + col * orientation.l;
+    for (let row = 0; row < rows; row++) {
+      cells.push({ xMin, zMin: rect.minZ + row * orientation.w });
+    }
+  }
+  return cells;
+}
+
+function repeatedStackCandidateIsLegal(candidate, item, zones, packed, retentionContext, wheelWell) {
+  const containedInUsableZone = isAabbContainedInAnyZone(candidate.aabb, zones);
+  if (wheelWell) {
+    if (!isAabbWithinTruckMinusBlocked(candidate.aabb, wheelWell)) return false;
+  } else if (!containedInUsableZone) {
+    return false;
+  }
+
+  if (collidesPacked(candidate.aabb, packed)) return false;
+
+  if (containedInUsableZone) {
+    if (!supportsCandidate(candidate.aabb, packed, item)) return false;
+  } else if (!wheelWell || !isWheelWellSupportedAndStable(candidate.aabb, packed, wheelWell, item)) {
+    return false;
+  }
+
+  return candidateHasRearRetention(candidate.aabb, packed, retentionContext);
+}
+
+function placeRepeatedStackGroup(
+  group,
+  zones,
+  packed,
+  output,
+  loadFrontFirst,
+  retentionContext,
+  wheelWell,
+  budget = null,
+  useCleanupBudget = false
+) {
+  const queue = [...(group || [])];
+  let placed = 0;
+  let progress = true;
+
+  while (queue.length && progress && !stackBatchBudgetExpired(budget, useCleanupBudget)) {
+    progress = false;
+    const levels = stackBatchLayerLevels(packed);
+
+    for (const yLevel of levels) {
+      if (!queue.length || stackBatchBudgetExpired(budget, useCleanupBudget)) break;
+      const layerRects = buildStackLayerFreeRects(packed, yLevel);
+      const orientations = rankedRepeatedStackOrientations(queue, layerRects);
+      if (!orientations.length) continue;
+
+      const rects = [...layerRects].sort((a, b) => {
+        const ax = loadFrontFirst ? -a.maxX : a.minX;
+        const bx = loadFrontFirst ? -b.maxX : b.minX;
+        if (ax !== bx) return ax - bx;
+        return a.minZ - b.minZ;
+      });
+
+      for (const orientation of orientations) {
+        let orientationPlaced = false;
+        for (const rect of rects) {
+          if (!queue.length || stackBatchBudgetExpired(budget, useCleanupBudget)) break;
+          if (orientation.l > freeRectLength(rect) + FREE_RECT_EPS) continue;
+          if (orientation.w > freeRectWidth(rect) + FREE_RECT_EPS) continue;
+
+          for (const { xMin, zMin } of stackBatchCellMins(rect, orientation, loadFrontFirst)) {
+            if (!queue.length || stackBatchBudgetExpired(budget, useCleanupBudget)) break;
+            const item = queue[0];
+            const dims = { l: orientation.l, w: orientation.w, h: orientation.h };
+            const position = {
+              x: xMin + orientation.l / 2,
+              y: yLevel + orientation.h / 2,
+              z: zMin + orientation.w / 2,
+            };
+            const aabb = getAabb(position, dims);
+            const candidate = { position, dims, aabb, orientation, freeRect: rect };
+            if (!repeatedStackCandidateIsLegal(candidate, item, zones, packed, retentionContext, wheelWell)) {
+              continue;
+            }
+
+            recordPlacement(output, packed, item, candidate, 'stack');
+            queue.shift();
+            placed++;
+            progress = true;
+            orientationPlaced = true;
+          }
+        }
+        if (orientationPlaced) break;
+      }
+
+      if (progress) break;
+    }
+  }
+
+  return { placed, remaining: queue };
+}
+
+function placeRepeatedStackBatches(
+  items,
+  zones,
+  packed,
+  output,
+  loadFrontFirst,
+  layoutQualityEnabled,
+  retentionContext,
+  wheelWell,
+  budget = null,
+  useCleanupBudget = false
+) {
+  const remaining = new Set(items || []);
+  for (const group of buildRepeatedBatches(items, layoutQualityEnabled)) {
+    if (stackBatchBudgetExpired(budget, useCleanupBudget)) break;
+    const activeGroup = group.filter(item => remaining.has(item));
+    if (activeGroup.length < REPEATED_BATCH_MIN) continue;
+    const result = placeRepeatedStackGroup(
+      activeGroup,
+      zones,
+      packed,
+      output,
+      loadFrontFirst,
+      retentionContext,
+      wheelWell,
+      budget,
+      useCleanupBudget
+    );
+    const stillRemaining = new Set(result.remaining);
+    for (const item of activeGroup) {
+      if (!stillRemaining.has(item)) remaining.delete(item);
+    }
+  }
+  return [...remaining];
 }
 
 function recordPlacement(output, packed, item, placement, phase) {
@@ -2860,12 +3076,35 @@ export function placeLeftoverRecovery(
   const floorState = rebuildFloorStateFromPacked(floorZones, packed, false, retentionContext);
 
   const channelZones = narrowChannelZones(floorZones);
-  const queue = sortConstrainedLeftoverQueue(
+  let queue = sortConstrainedLeftoverQueue(
     output.unpacked.map(id => itemsById.get(id)).filter(Boolean),
     channelZones
   );
   const placedIds = new Set();
   let placed = 0;
+
+  if (allowStack && queue.length && !(budget && budget.cleanupExpired())) {
+    const stackRemaining = placeRepeatedStackBatches(
+      queue,
+      floorZones,
+      packed,
+      output,
+      loadFrontFirst,
+      layoutQualityEnabled,
+      retentionContext,
+      wheelWellBridge,
+      budget,
+      true
+    );
+    const stackRemainingSet = new Set(stackRemaining);
+    for (const item of queue) {
+      if (!stackRemainingSet.has(item)) {
+        placedIds.add(item.id);
+        placed++;
+      }
+    }
+    queue = stackRemaining;
+  }
 
   for (const item of queue) {
     if (budget && budget.cleanupExpired()) break;
@@ -3238,6 +3477,22 @@ export function solveAutoPack(input = {}) {
   // well-top/bridge placements, then front position breaks ties.
   const itemsById = new Map(items.map(it => [it.id, it]));
   let stackQueue = sortItemsForStack(stackDeferred, layoutQualityEnabled, items);
+
+  if (stackPhaseEnabled && stackQueue.length && !budget.expired()) {
+    const beforeBatch = stackQueue.length;
+    stackQueue = placeRepeatedStackBatches(
+      stackQueue,
+      floorZones,
+      packed,
+      output,
+      loadFrontFirst,
+      layoutQualityEnabled,
+      retentionContext,
+      wheelWellBridgeGeometry,
+      budget
+    );
+    stackCount += beforeBatch - stackQueue.length;
+  }
 
   for (let i = 0; i < stackQueue.length; i++) {
     if (budget.expired()) {

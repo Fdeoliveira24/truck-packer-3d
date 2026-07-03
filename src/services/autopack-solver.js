@@ -46,6 +46,7 @@ import {
 import { createSolveBudget } from '../packing-core/budget.js';
 import { computeDeckRetentionCoverage } from '../packing-core/retention-model.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
+import { canonicalCargoForStorage } from '../core/cargo-canonical.js';
 
 export { aabbsOverlap, computeXzOverlapArea, isAabbContainedInAnyZone };
 import {
@@ -420,9 +421,10 @@ function createStackCapacityCache(packed) {
 }
 
 function normalizeItem(item = {}, index = 0) {
-  const dims = readDims(item.dims || item.dimensions || item.orientedDims);
-  const id = item.instanceId || item.id || `autopack-item-${index}`;
-  const candidates = buildOrientationCandidates(dims, item)
+  const source = { ...item, ...canonicalCargoForStorage(item) };
+  const dims = readDims(source.dims || source.dimensions || source.orientedDims);
+  const id = source.instanceId || source.id || `autopack-item-${index}`;
+  const candidates = buildOrientationCandidates(dims, source)
     .filter(candidate => candidate.l > 0 && candidate.w > 0 && candidate.h > 0)
     .sort((a, b) => {
       const footprintDelta = (b.l * b.w) - (a.l * a.w);
@@ -431,20 +433,20 @@ function normalizeItem(item = {}, index = 0) {
       if (heightDelta) return heightDelta;
       return b.l - a.l;
     });
-  const classificationDims = item.orientationLocked === true && candidates[0]
+  const classificationDims = source.orientationLocked === true && candidates[0]
     ? { l: candidates[0].l, w: candidates[0].w, h: candidates[0].h }
     : dims;
 
   return {
     id,
-    item,
+    item: source,
     dims,
     candidates,
     volume: dims.l * dims.w * dims.h,
     footprint: dims.l * dims.w,
-    weight: finiteNumber(item.weight, 0),
+    weight: finiteNumber(source.weight, 0),
     index,
-    className: classifyAutoPackItem({ ...item, classificationDims }),
+    className: classifyAutoPackItem({ ...source, classificationDims }),
   };
 }
 
@@ -3160,6 +3162,23 @@ function orientationsFitSomeZone(orientations, zones) {
   );
 }
 
+function buildRuleRejectionContext(item = {}) {
+  const source = item.item || item;
+  return {
+    rules: {
+      orientationLock: canonicalOrientationLock(source.orientationLock),
+      orientationLocked: source.orientationLocked === true,
+      canFlip: source.canFlip === true,
+      noStackOnTop: source.noStackOnTop === true,
+      stackable: source.stackable !== false,
+      maxStackCount: finiteNumber(source.maxStackCount, 0),
+      laneItem: source.laneItem === true ? 'always' : source.laneItem === false ? 'never' : 'auto',
+      loadPriority: finiteNumber(source.loadPriority, 0),
+      candidates: Array.isArray(item.candidates) ? item.candidates.length : 0,
+    },
+  };
+}
+
 /**
  * Diagnose WHY an item ended unplaced, using only statically provable facts
  * (zone cross-sections, orientation policy, wheel-well channel/shelf widths).
@@ -3167,6 +3186,7 @@ function orientationsFitSomeZone(orientations, zones) {
  * item's existing warning text as detail. Diagnosis never changes placement.
  */
 function diagnoseUnplacedItem(item, zones, wheelWell, fallbackDetail) {
+  const ruleContext = buildRuleRejectionContext(item);
   if (!orientationsFitSomeZone(item.candidates, zones)) {
     const unrestricted = buildOrientationCandidates(item.dims, { orientationLock: 'any', canFlip: true });
     if (orientationsFitSomeZone(unrestricted, zones)) {
@@ -3174,14 +3194,16 @@ function diagnoseUnplacedItem(item, zones, wheelWell, fallbackDetail) {
         item.id,
         REJECTION_CODES.ORIENTATION_LOCKED,
         'stack',
-        'An orientation that fits exists, but the case orientation policy or instance lock excludes it.'
+        'An orientation that fits exists, but the case orientation policy or instance lock excludes it.',
+        ruleContext
       );
     }
     return makeRejectionReason(
       item.id,
       REJECTION_CODES.NO_FIT_ANY_SURFACE,
       'stack',
-      'No allowed orientation fits any usable surface of this truck.'
+      'No allowed orientation fits any usable surface of this truck.',
+      ruleContext
     );
   }
 
@@ -3190,7 +3212,7 @@ function diagnoseUnplacedItem(item, zones, wheelWell, fallbackDetail) {
     const shelfWidth = wheelWell.wellWidth;
     const tooWideForChannel = item.candidates.every(o => o.w > channelWidth + FREE_RECT_EPS);
     const tooWideForShelf = item.candidates.every(o => o.w > shelfWidth + FREE_RECT_EPS);
-    const context = { channelWidth, shelfWidth, tooWideForChannel, tooWideForShelf };
+    const context = { ...ruleContext, channelWidth, shelfWidth, tooWideForChannel, tooWideForShelf };
     // TOO_WIDE_FOR_CHANNEL is only claimed when it is provable for every allowed
     // orientation. Shelf width alone is never a primary cause here (most cargo is
     // wider than a wheel-well shelf); it stays available as context and for the
@@ -3207,7 +3229,7 @@ function diagnoseUnplacedItem(item, zones, wheelWell, fallbackDetail) {
     return makeRejectionReason(item.id, REJECTION_CODES.NO_STACK_CANDIDATE, 'stack', fallbackDetail, context);
   }
 
-  return makeRejectionReason(item.id, REJECTION_CODES.NO_STACK_CANDIDATE, 'stack', fallbackDetail);
+  return makeRejectionReason(item.id, REJECTION_CODES.NO_STACK_CANDIDATE, 'stack', fallbackDetail, ruleContext);
 }
 
 export function solveAutoPack(input = {}) {

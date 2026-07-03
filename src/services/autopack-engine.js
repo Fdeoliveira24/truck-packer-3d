@@ -1,4 +1,5 @@
 import { buildLegacyAutoPackItems } from './autopack-legacy-solver.js';
+import { canonicalCargoForStorage } from '../core/cargo-canonical.js';
 // AutoPack routes through the packing-core strategy runner: the core owns
 // strategy orchestration and the solution envelope; the selected default
 // solution is byte-equivalent to a direct solveAutoPack call, so the engine
@@ -30,10 +31,34 @@ export function buildStagedPose(item) {
 
 const ANIMATION_BOUNDARY_EPS = 0.05;
 export const LARGE_LOAD_ANIMATION_THRESHOLD = 300;
+const CARGO_RULE_FIELDS = [
+  'canFlip',
+  'noStackOnTop',
+  'isPallet',
+  'stackable',
+  'maxStackCount',
+  'maxPalletWeight',
+  'laneItem',
+  'loadPriority',
+  'orientationLock',
+  'shape',
+];
 
 function animationNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value || {}, key);
+}
+
+function getSolverCargoRules(inst = {}, caseData = {}) {
+  const source = { ...caseData };
+  for (const field of CARGO_RULE_FIELDS) {
+    if (hasOwn(inst, field) && inst[field] !== undefined) source[field] = inst[field];
+  }
+  return canonicalCargoForStorage(source);
 }
 
 export function shouldSnapLargeAutoPackLoad(placementCount, threshold = LARGE_LOAD_ANIMATION_THRESHOLD) {
@@ -568,24 +593,26 @@ export function createAutoPackEngine({
         retentionPlacements: hiddenRetention,
         items: packItems.map(({ inst, caseData }) => {
           const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
+          const rules = getSolverCargoRules(inst, caseData);
           return {
             instanceId: inst.id,
             caseId: inst.caseId,
             dims: { l: d.length, w: d.width, h: d.height },
-            shape: caseData.shape,
+            shape: rules.shape,
             weight: caseData.weight,
-            canFlip: caseData.canFlip,
-            orientationLock: caseData.orientationLock,
+            canFlip: rules.canFlip,
+            orientationLock: rules.orientationLock,
             orientationLocked: inst.orientationLocked,
             lockedRotation: inst.lockedRotation,
             orientedDims: inst.orientedDims,
             transform: inst.transform,
-            noStackOnTop: caseData.noStackOnTop,
-            stackable: caseData.stackable,
-            maxStackCount: caseData.maxStackCount,
-            isPallet: caseData.isPallet,
-            laneItem: caseData.laneItem,
-            loadPriority: inst.loadPriority ?? caseData.loadPriority,
+            noStackOnTop: rules.noStackOnTop,
+            stackable: rules.stackable,
+            maxStackCount: rules.maxStackCount,
+            maxPalletWeight: rules.maxPalletWeight,
+            isPallet: rules.isPallet,
+            laneItem: rules.laneItem,
+            loadPriority: rules.loadPriority,
             mustLoadLast: inst.mustLoadLast ?? caseData.mustLoadLast,
             mustUnloadFirst: inst.mustUnloadFirst ?? caseData.mustUnloadFirst,
             stopGroup: inst.stopGroup ?? caseData.stopGroup,

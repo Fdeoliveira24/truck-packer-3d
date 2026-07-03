@@ -162,6 +162,16 @@ export function countWheelWellSideContacts(aabb, geometry) {
  */
 export function computeWheelWellSupport(candidateAabb, packed, geometry, candidateItem = null, tolerance = CONTACT_EPS) {
   const bottom = candidateAabb.min.y;
+  // Continuous truck floor: a candidate resting at the truck floor level is
+  // fully supported by the real floor. The usable-zone split (rear / channel /
+  // front) is bookkeeping, not a physical gap — a box straddling a zone seam
+  // at floor level stands on solid floor. Blocked-body overlap is excluded
+  // separately by every caller (isWheelWellSupportedAndStable /
+  // isAabbWithinTruckMinusBlocked), so this can never grant support over a
+  // well body.
+  if (geometry && Math.abs(bottom - geometry.truckBox.min.y) <= tolerance) {
+    return { fraction: 1, comSupported: true, overhangFraction: 0, supportCount: 1 };
+  }
   const footprint = Math.max(
     1e-9,
     (candidateAabb.max.x - candidateAabb.min.x) * (candidateAabb.max.z - candidateAabb.min.z)

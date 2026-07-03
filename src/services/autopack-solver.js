@@ -15,6 +15,7 @@ import {
   rulesAllowStackOnTop,
   canSupportCandidateWeight,
   hasStackCapacity,
+  getMaxStackCount,
 } from '../packing-core/validation.js';
 // The wheel-well physical model lives in packing-core so the manual pipeline
 // (pack-library reconciliation/repair) applies the exact same body/top/support
@@ -364,12 +365,58 @@ function getCandidateSupports(candidateAabb, packed, tolerance = 0.05) {
   );
 }
 
-function supportsCandidate(candidateAabb, packed, candidateItem = null) {
+function supportsCandidate(candidateAabb, packed, candidateItem = null, capacityCache = null) {
   const supports = getCandidateSupports(candidateAabb, packed);
   if (!supports.length) return false;
-  if (supports.some(support => !canSupportStack(support) || !hasStackCapacity(support, packed))) return false;
+  if (supports.some(support =>
+    !canSupportStack(support) ||
+    !(capacityCache ? capacityCache.hasCapacity(support) : hasStackCapacity(support, packed))
+  )) return false;
   if (supports.some(support => !canSupportCandidateWeight(candidateItem, support))) return false;
   return computeSupportFraction(candidateAabb, supports) >= MIN_SUPPORT_FRACTION;
+}
+
+/**
+ * Per-call stack-capacity cache. Direct-child counting scans the whole packed
+ * list per support (O(n) each, O(n²)+ across a findStackPlacement call). The
+ * packed list does not change WITHIN one placement search, so bucket the
+ * placements by bottom level once and memoize counts per support. Exact same
+ * tolerance and overlap rules as validation.countDirectStackChildren.
+ */
+function createStackCapacityCache(packed) {
+  const tolerance = CONTACT_EPS;
+  const bucketOf = value => Math.round(value / tolerance);
+  const byBottom = new Map();
+  for (const placement of packed) {
+    const key = bucketOf(placement.aabb.min.y);
+    let bucket = byBottom.get(key);
+    if (!bucket) byBottom.set(key, bucket = []);
+    bucket.push(placement);
+  }
+  const counts = new Map();
+  const countChildren = support => {
+    let count = counts.get(support);
+    if (count !== undefined) return count;
+    const top = support.aabb.max.y;
+    const topBucket = bucketOf(top);
+    count = 0;
+    for (let key = topBucket - 1; key <= topBucket + 1; key++) {
+      for (const child of byBottom.get(key) || []) {
+        if (child === support) continue;
+        if (Math.abs(child.aabb.min.y - top) > tolerance) continue;
+        if (computeXzOverlapArea(child.aabb, support.aabb) <= 0.05) continue;
+        count++;
+      }
+    }
+    counts.set(support, count);
+    return count;
+  };
+  return {
+    hasCapacity(placement) {
+      const maxStackCount = getMaxStackCount(placement);
+      return !maxStackCount || countChildren(placement) < maxStackCount;
+    },
+  };
 }
 
 function normalizeItem(item = {}, index = 0) {
@@ -765,6 +812,29 @@ function scoreStackSupportMatch(candidateAabb, orientation, supports) {
   return [orientationMismatch, columnMismatch];
 }
 
+// Per-solve group index: layout-quality scoring needs "all packed placements
+// of this item's group" for EVERY candidate — filtering the whole packed list
+// each time was an O(n)-per-candidate hot loop. The index is rebuilt only when
+// the placement array identity or length changes (placements are appended,
+// never removed, during search phases; compaction moves placements in place,
+// which does not change group membership).
+let groupIndexState = { packed: null, length: -1, map: null };
+
+function groupPlacementsFor(packed, groupKey) {
+  const list = packed || [];
+  if (groupIndexState.packed !== list || groupIndexState.length !== list.length) {
+    const map = new Map();
+    for (const placement of list) {
+      const key = layoutGroupKey(placement);
+      let group = map.get(key);
+      if (!group) map.set(key, group = []);
+      group.push(placement);
+    }
+    groupIndexState = { packed: list, length: list.length, map };
+  }
+  return groupIndexState.map.get(groupKey) || [];
+}
+
 function scoreLayoutGroupContinuity(
   aabb,
   orientation,
@@ -775,7 +845,7 @@ function scoreLayoutGroupContinuity(
 ) {
   if (!layoutQualityEnabled) return { continuity: [], orientationPenalty: 0, surfaceOrientationPenalty: 0 };
   const groupKey = layoutGroupKey(item);
-  const matches = (packed || []).filter(placement => layoutGroupKey(placement) === groupKey);
+  const matches = groupPlacementsFor(packed, groupKey);
   if (!matches.length) {
     return { continuity: [0, 0, 0, 0, 0], orientationPenalty: 0, surfaceOrientationPenalty: 0 };
   }
@@ -1279,7 +1349,7 @@ function findRepeatedForwardWallCompletion(
   return isMoreForward ? candidate : null;
 }
 
-function placeRepeatedBatchFloor(group, orientation, floorState, packed, output, loadFrontFirst) {
+function placeRepeatedBatchFloor(group, orientation, floorState, packed, output, loadFrontFirst, budget = null) {
   if (!group.length || !orientation) return [];
   const queue = [...group];
   const rects = [...(floorState.freeRects || [])]
@@ -1293,6 +1363,7 @@ function placeRepeatedBatchFloor(group, orientation, floorState, packed, output,
 
   for (const rect of rects) {
     if (!queue.length) break;
+    if (budget && budget.expired()) break;
     if (orientation.h > rect.zone.max.y - rect.zone.min.y + FREE_RECT_EPS) continue;
     const cols = Math.floor((freeRectLength(rect) + FREE_RECT_EPS) / orientation.l);
     const rows = Math.floor((freeRectWidth(rect) + FREE_RECT_EPS) / orientation.w);
@@ -1370,15 +1441,19 @@ function placeRepeatedFloorBatches(
   packed,
   output,
   loadFrontFirst,
-  layoutQualityEnabled = false
+  layoutQualityEnabled = false,
+  budget = null
 ) {
   const remaining = new Set(items || []);
   for (const group of buildRepeatedBatches(items, layoutQualityEnabled)) {
+    // Remaining groups flow to the ordinary floor loop, which stages them with
+    // an honest budget reason if the main budget is spent.
+    if (budget && budget.expired()) break;
     const activeGroup = group.filter(item => remaining.has(item));
     if (activeGroup.length < REPEATED_BATCH_MIN) continue;
     const orientation = chooseRepeatedBatchOrientation(activeGroup, floorState);
     if (!orientation) continue;
-    const gridLeftovers = placeRepeatedBatchFloor(activeGroup, orientation, floorState, packed, output, loadFrontFirst);
+    const gridLeftovers = placeRepeatedBatchFloor(activeGroup, orientation, floorState, packed, output, loadFrontFirst, budget);
     // Phase B2A: finish every legal floor position for this same repeated group
     // before another caseId group can consume the opening. The shelf orientation
     // remains the first preference, while every original policy-approved
@@ -1458,11 +1533,12 @@ function mergeAdjacentStackRects(rects) {
   );
 }
 
-export function buildStackLayerFreeRects(packed, yLevel) {
+export function buildStackLayerFreeRects(packed, yLevel, capacityCache = null) {
   let rects = [];
   for (const support of packed || []) {
     if (!support?.aabb || Math.abs(support.aabb.max.y - yLevel) > CONTACT_EPS) continue;
-    if (!canSupportStack(support) || !hasStackCapacity(support, packed)) continue;
+    if (!canSupportStack(support)) continue;
+    if (!(capacityCache ? capacityCache.hasCapacity(support) : hasStackCapacity(support, packed))) continue;
     rects.push({
       id: `stack-layer-${support.instanceId}`,
       zone: null,
@@ -1669,15 +1745,19 @@ function findStackPlacement(
   loadFrontFirst,
   layoutQualityEnabled = false,
   retentionContext = null,
-  wheelWell = null
+  wheelWell = null,
+  budget = null
 ) {
   let best = null;
   let bestScore = null;
   // E2B: wheel-well channel stacks must follow the floor block+filler footprint.
   const channelZones = layoutQualityEnabled ? narrowChannelZones(zones) : [];
+  // Capacity answers are stable within one placement search — memoize them so
+  // the yLevel filter and per-candidate support checks stop rescanning packed.
+  const capacityCache = createStackCapacityCache(packed);
   const yLevels = uniqueSorted(
     packed
-      .filter(placement => canSupportStack(placement) && hasStackCapacity(placement, packed))
+      .filter(placement => canSupportStack(placement) && capacityCache.hasCapacity(placement))
       .map(placement => placement.aabb.max.y),
     (a, b) => a - b
   );
@@ -1689,13 +1769,15 @@ function findStackPlacement(
   const layerRectsFor = yLevel => {
     let rects = layerRectsByLevel.get(yLevel);
     if (!rects) {
-      rects = buildStackLayerFreeRects(packed, yLevel);
+      rects = buildStackLayerFreeRects(packed, yLevel, capacityCache);
       layerRectsByLevel.set(yLevel, rects);
     }
     return rects;
   };
 
   for (const orientation of item.candidates) {
+    // One expensive item must not burn past the hard cleanup deadline.
+    if (budget && budget.cleanupExpired()) break;
     /** @type {Array<any>} */
     const candidates = [];
     for (const yLevel of yLevels) {
@@ -1715,7 +1797,7 @@ function findStackPlacement(
         if (!wheelWell || !isAabbWithinTruckMinusBlocked(candidate.aabb, wheelWell)) continue;
         if (!isWheelWellSupportedAndStable(candidate.aabb, packed, wheelWell, item)) continue;
       }
-      if (!wheelWellCandidate && containedInUsableZone && !supportsCandidate(candidate.aabb, packed, item)) {
+      if (!wheelWellCandidate && containedInUsableZone && !supportsCandidate(candidate.aabb, packed, item, capacityCache)) {
         continue;
       }
       if (collidesPacked(candidate.aabb, packed)) continue;
@@ -1932,8 +2014,12 @@ function compactFloorPlacements(
     return a.aabb.min.z - b.aabb.min.z;
   });
 
-  for (let pass = 0; pass < 2; pass++) {
+  const compactionBudget = options.budget || null;
+  for (let pass = 0; pass < 2 && !(compactionBudget && compactionBudget.cleanupExpired()); pass++) {
     for (const placement of ordered) {
+      // Quality-only pass: bail mid-sweep at the hard cleanup deadline. Every
+      // move already accepted remains fully validated.
+      if (compactionBudget && compactionBudget.cleanupExpired()) break;
       const others = packed.filter(other => other !== placement);
       const placementInChannel =
         channelZones.length > 0 && aabbInNarrowChannel(placement.aabb, channelZones);
@@ -2110,7 +2196,7 @@ function collectForwardCompressionAnchors(placement, others, bounds, loadFrontFi
     .slice(0, maxAnchors);
 }
 
-function compressWheelWellPlacementsForward(output, packed, zones, loadFrontFirst, retentionContext, wheelWell) {
+function compressWheelWellPlacementsForward(output, packed, zones, loadFrontFirst, retentionContext, wheelWell, budget = null) {
   if (!wheelWell || !packed.length) return { changed: false, moved: 0 };
   const ordered = [...packed].sort((a, b) =>
     a.aabb.min.y - b.aabb.min.y ||
@@ -2121,6 +2207,8 @@ function compressWheelWellPlacementsForward(output, packed, zones, loadFrontFirs
   let moved = 0;
 
   for (const placement of ordered) {
+    // Quality-only pass: time-budgeted so it can never become a freeze source.
+    if (budget && budget.cleanupExpired()) break;
     if (!shouldFrontCompressPlacement(placement, zones)) continue;
     const bounds = getFrontCompressionBounds(placement, zones, wheelWell);
     if (!bounds) continue;
@@ -2633,7 +2721,7 @@ function buildDeckRetentionWall(output, packed, itemsById, retentionContext, bud
 
   while (progress && guard-- > 0) {
     progress = false;
-    if (budget && budget.expired()) break;
+    if (budget && budget.cleanupExpired()) break;
     const { uncovered } = computeDeckRetentionCoverage(geometry, packed);
     if (!uncovered.length) break;
     const target = uncovered[0];
@@ -2698,6 +2786,63 @@ function buildDeckRetentionWall(output, packed, itemsById, retentionContext, bud
   return placed;
 }
 
+// Wheel Wells continuous-floor seam candidates: ordinary floor candidates come
+// from per-zone free rects, so they can never straddle the rear/channel/front
+// zone seams even though the truck floor is physically continuous there. When
+// zone lengths are not multiples of the cargo length this wastes a strip at
+// every seam. This generator proposes floor-level (bottom at the truck floor)
+// poses that straddle a seam, validated by the exact truck-minus-blocked
+// containment, collision, and the wheel-well support model (which recognizes
+// the continuous floor). Never raised, never bridged, never inside a body.
+function findWheelWellSeamFloorPlacement(item, packed, geometry, loadFrontFirst) {
+  const floorY = geometry.truckBox.min.y;
+  const seams = [geometry.wx0, geometry.wx1];
+  let best = null;
+  let bestScore = null;
+
+  for (const orientation of item.candidates) {
+    const { l, w, h } = orientation;
+    if (floorY + h > geometry.truckBox.max.y + CONTAINMENT_EPS_INCHES) continue;
+    const xRaw = [];
+    for (const seam of seams) xRaw.push(seam - l / 2);
+    const zRaw = [-geometry.betweenHalfW, geometry.betweenHalfW - w];
+    for (const placement of packed) {
+      if (Math.abs(placement.aabb.min.y - floorY) > CONTACT_EPS) continue;
+      xRaw.push(placement.aabb.max.x, placement.aabb.min.x - l);
+      zRaw.push(placement.aabb.min.z, placement.aabb.max.z - w, placement.aabb.min.z - w, placement.aabb.max.z);
+    }
+    // Only genuinely seam-straddling poses: everything else is the ordinary
+    // floor pass's job. A straddler overlaps the well x-range, so its width
+    // must sit inside the channel walls (the union check would reject the rest
+    // anyway; the pre-filter just avoids wasted candidates).
+    const xCands = uniqueSorted(xRaw, loadFrontFirst ? (a, b) => b - a : (a, b) => a - b)
+      .filter(xMin => seams.some(seam => xMin < seam - FREE_RECT_EPS && xMin + l > seam + FREE_RECT_EPS))
+      .slice(0, 16);
+    const zCands = uniqueSorted(zRaw, (a, b) => a - b)
+      .filter(zMin => zMin >= -geometry.betweenHalfW - FREE_RECT_EPS &&
+        zMin + w <= geometry.betweenHalfW + FREE_RECT_EPS)
+      .slice(0, 12);
+
+    for (const xMin of xCands) {
+      for (const zMin of zCands) {
+        const position = { x: xMin + l / 2, y: floorY + h / 2, z: zMin + w / 2 };
+        const dims = { l, w, h };
+        const aabb = getAabb(position, dims);
+        if (!isAabbWithinTruckMinusBlocked(aabb, geometry)) continue;
+        if (collidesPacked(aabb, packed)) continue;
+        if (!isWheelWellSupportedAndStable(aabb, packed, geometry, item)) continue;
+        const score = [loadFrontFirst ? -aabb.max.x : aabb.min.x, aabb.min.z, h];
+        if (!best || compareScore(score, bestScore) < 0) {
+          best = { position, dims, aabb, orientation, zone: null };
+          bestScore = score;
+        }
+      }
+    }
+  }
+
+  return best;
+}
+
 export function placeLeftoverRecovery(
   output,
   packed,
@@ -2723,11 +2868,16 @@ export function placeLeftoverRecovery(
   let placed = 0;
 
   for (const item of queue) {
-    if (budget && budget.expired()) break;
+    if (budget && budget.cleanupExpired()) break;
     let placement = floorState.freeRects.length
       ? findFloorPlacement(item, floorState, packed, loadFrontFirst, { layoutQualityEnabled })
       : null;
     let phase = 'filler';
+    if (!placement && wheelWell) {
+      // Continuous-floor seam retry: legal floor poses straddling the zone
+      // seams that per-zone free rects can never generate.
+      placement = findWheelWellSeamFloorPlacement(item, packed, wheelWell, loadFrontFirst);
+    }
     if (!placement && allowStack) {
       // Final safe stack/raised attempt against the FINAL layout: compaction and
       // earlier leftover rescues changed the world since the main stack phase, so
@@ -2740,7 +2890,8 @@ export function placeLeftoverRecovery(
         loadFrontFirst,
         layoutQualityEnabled,
         retentionContext,
-        wheelWellBridge
+        wheelWellBridge,
+        budget
       );
       phase = 'stack';
     }
@@ -2881,7 +3032,11 @@ export function solveAutoPack(input = {}) {
   // remaining queue items are staged with a structured reason; everything
   // already placed still goes through full validation below — hard rules are
   // never relaxed for speed.
-  const budget = createSolveBudget(input.solveBudgetMs);
+  // Cleanup contract: when the MAIN budget trips, placement search stops and
+  // remaining items stage with honest reasons — but a BOUNDED cleanup window
+  // still runs leftover recovery, compaction, and front compression so the
+  // returned layout is never an abruptly-truncated, uncompacted mess.
+  const budget = createSolveBudget(input.solveBudgetMs, undefined, input.cleanupBudgetMs);
   let budgetExhausted = false;
   const stopForBudget = (remainingItems, phase) => {
     budgetExhausted = true;
@@ -2933,7 +3088,8 @@ export function solveAutoPack(input = {}) {
       loadFrontFirst,
       layoutQualityEnabled,
       retentionContext,
-      wheelWellBridgeGeometry
+      wheelWellBridgeGeometry,
+      budget
     );
     if (!stackPlacement) return false;
     recordPlacement(output, packed, item, stackPlacement, 'stack');
@@ -2998,7 +3154,8 @@ export function solveAutoPack(input = {}) {
     packed,
     output,
     loadFrontFirst,
-    frontSurfaceFirst
+    frontSurfaceFirst,
+    budget
   );
   const mainFloorItems = sortItemsForFloor(
     remainingNonLaneItems.filter(item => item.className !== 'FILLER'),
@@ -3025,9 +3182,10 @@ export function solveAutoPack(input = {}) {
     floorCount++;
   }
 
-  // Compaction is a quality pass over already-valid placements — skip it when
-  // the budget is spent (the floor state is still rebuilt for later phases).
-  floorState.freeRects = (budget.expired()
+  // Compaction is a quality pass over already-valid placements — it runs while
+  // the bounded CLEANUP window remains (with internal per-placement budget
+  // checks) so a main-budget hit still gets a tidy layout, never unbounded.
+  floorState.freeRects = (budget.cleanupExpired()
     ? rebuildFloorStateFromPacked(floorZones, packed, frontSurfaceFirst, retentionContext)
     : compactFloorPlacements(
       output,
@@ -3036,7 +3194,7 @@ export function solveAutoPack(input = {}) {
       loadFrontFirst,
       frontSurfaceFirst,
       retentionContext,
-      floorCompactionOptions
+      { ...floorCompactionOptions, budget }
     )).freeRects;
 
   const fillerQueue = [
@@ -3062,7 +3220,7 @@ export function solveAutoPack(input = {}) {
     fillerCount++;
   }
 
-  floorState.freeRects = (budget.expired()
+  floorState.freeRects = (budget.cleanupExpired()
     ? rebuildFloorStateFromPacked(floorZones, packed, frontSurfaceFirst, retentionContext)
     : compactFloorPlacements(
       output,
@@ -3071,7 +3229,7 @@ export function solveAutoPack(input = {}) {
       loadFrontFirst,
       frontSurfaceFirst,
       retentionContext,
-      floorCompactionOptions
+      { ...floorCompactionOptions, budget }
     )).freeRects;
 
   // Wheel Wells physical geometry (null for every other truck mode). Wheel-well
@@ -3097,7 +3255,8 @@ export function solveAutoPack(input = {}) {
         loadFrontFirst,
         layoutQualityEnabled,
         retentionContext,
-        wheelWellBridgeGeometry
+        wheelWellBridgeGeometry,
+        budget
       )
       : null;
     if (!placement) {
@@ -3122,7 +3281,7 @@ export function solveAutoPack(input = {}) {
   // opt-in pass is a final leftover sweep; production Wheel Wells now also runs
   // the same safe well-top logic before ordinary stacking so front/middle support
   // opportunities are not starved by rear stack placements.
-  if (wheelWell && input.enableWheelWellBridge === true && stackPhaseEnabled && !budget.expired()) {
+  if (wheelWell && input.enableWheelWellBridge === true && stackPhaseEnabled && !budget.cleanupExpired()) {
     stackCount += placeWheelWellBuildUpBridges(output, packed, itemsById, wheelWell, loadFrontFirst);
   }
 
@@ -3131,7 +3290,7 @@ export function solveAutoPack(input = {}) {
   // rules unchanged). The leftover recovery below then fills the deck through
   // the ordinary hard-rule pipeline, which still gates every deck pose on the
   // real barrier via candidateHasRearRetention.
-  if (retentionContext?.geometry && input.enableDeckRetentionWall !== false && !budget.expired()) {
+  if (retentionContext?.geometry && input.enableDeckRetentionWall !== false && !budget.cleanupExpired()) {
     floorCount += buildDeckRetentionWall(output, packed, itemsById, retentionContext, budget);
   }
 
@@ -3142,9 +3301,11 @@ export function solveAutoPack(input = {}) {
   // Channel-fitting and smaller cartons go first in constrained geometries.
   // Runs BEFORE final validation so every rescued placement is re-checked by
   // the same hard-rule pipeline as everything else.
+  // Leftover recovery is the last chance for staged items — including items
+  // the MAIN budget staged — so it runs under the bounded cleanup window.
   const leftoverPassEnabled = input.enableLeftoverPass !== false &&
     (!wheelWell || input.enableWheelWellLeftoverPass !== false);
-  if (leftoverPassEnabled && !budget.expired()) {
+  if (leftoverPassEnabled && !budget.cleanupExpired()) {
     fillerCount += placeLeftoverRecovery(
       output,
       packed,
@@ -3202,7 +3363,7 @@ export function solveAutoPack(input = {}) {
 
   const runWheelWellFrontCompression =
     wheelWell &&
-    !budget.expired() &&
+    !budget.cleanupExpired() &&
     input.enableWheelWellFrontCompression !== false &&
     (input.enableWheelWellFrontCompression === true || packed.length <= MAX_DEFAULT_FRONT_COMPRESSION_PLACEMENTS);
   if (runWheelWellFrontCompression) {
@@ -3212,7 +3373,8 @@ export function solveAutoPack(input = {}) {
       floorZones,
       loadFrontFirst,
       retentionContext,
-      wheelWell
+      wheelWell,
+      budget
     );
   }
 

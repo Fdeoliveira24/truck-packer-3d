@@ -1066,12 +1066,6 @@ export function createSceneRuntime({
       return true;
     }
 
-    function requestShadowRefresh() {
-      if (renderer && renderer.shadowMap) {
-        renderer.shadowMap.needsUpdate = true;
-      }
-    }
-
     function updateCoG(cogData) {
       if (!scene) return;
       if (!cogData) {
@@ -1124,7 +1118,6 @@ export function createSceneRuntime({
       toggleGrid,
       toggleShadows,
       restoreShadows,
-      requestShadowRefresh,
       toggleDevOverlay: () => DevOverlay.toggle(),
       getScene: () => scene,
       getCamera: () => camera,

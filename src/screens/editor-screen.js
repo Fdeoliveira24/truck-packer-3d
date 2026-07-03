@@ -301,9 +301,6 @@ export function createCaseScene({
       applySelection(Array.from(selectedIds));
       applyHover(hoveredId);
       applyDragging(draggedId);
-      if (typeof SceneManager.requestShadowRefresh === 'function') {
-        SceneManager.requestShadowRefresh();
-      }
     }
 
     function buildSignature(inst, caseData) {
@@ -1729,11 +1726,6 @@ export function createEditorScreen({
     function clearPendingTruck() {
       pendingTruck = null;
     }
-    function hasPendingTruckChange(pack) {
-      return Boolean(pendingTruck && pack && pendingTruck.__packId === pack.id) &&
-        !TruckChangeController.truckGeometryEqual(pack.truck, pendingTruck);
-    }
-
     function setViewportHintOpen(open) {
       if (!viewportHintBtn) return;
       viewportHintOpen = Boolean(open);
@@ -2338,16 +2330,7 @@ export function createEditorScreen({
         UIComponents.showToast('Nothing to unpack', 'info');
         return;
       }
-      if (hasPendingTruckChange(pack)) {
-        clearPendingTruck();
-        render();
-        UIComponents.showToast(
-          'Pending truck changes were cleared. Click Unpack again to use the saved truck layout.',
-          'info',
-          { title: 'Unpack' }
-        );
-        return;
-      }
+      clearPendingTruck();
       // Claim the single mutating-operation slot so AutoPack / Truck Change cannot
       // run concurrently with the (synchronous, O(n^2)) staging computation below.
       const opToken = OperationLifecycle ? OperationLifecycle.beginOperation('unpacking', { packId }) : null;
@@ -2432,9 +2415,6 @@ export function createEditorScreen({
         const nextCases = (livePack.cases || []).map(inst => stagedById.get(inst.id) || inst);
         if (OperationLifecycle && !OperationLifecycle.isCurrent(opToken)) return;
         PackLibrary.update(packId, { cases: nextCases });
-        if (typeof SceneManager.requestShadowRefresh === 'function') {
-          SceneManager.requestShadowRefresh();
-        }
         UIComponents.showToast(`Moved ${movedCount} case${movedCount === 1 ? '' : 's'} to staging.`, 'info', { title: 'Unpack' });
         render();
       } finally {

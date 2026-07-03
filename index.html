@@ -253,7 +253,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
     <!-- ===== STYLES: App CSS (single-file) ===== -->
-    <link rel="stylesheet" href="styles/main.css?v=20260605-filter-overlay" />
+    <link rel="stylesheet" href="styles/main.css?v=20260703-autopack-overlay" />
     <style media="not all">
       /* moved to styles/main.css */
     </style>
@@ -1132,7 +1132,7 @@
           boot.showAppStatusOverlay('maintenance');
         }
       } else {
-        import('./src/app.js?v=20260605-filter-overlay').catch(err => {
+        import('./src/app.js?v=20260703-autopack-overlay').catch(err => {
           console.error('[TruckPackerApp] app import failed:', err);
           if (typeof boot.showAppStatusOverlay === 'function') {
             boot.showAppStatusOverlay('fatal');

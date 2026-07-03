@@ -11,6 +11,20 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
+const AUTOPACK_LOADING_IMAGE_SRC = 'media/autopack-loading-truck-480w.gif?v=20260703';
+const AUTOPACK_LOADING_MESSAGE_INTERVAL_MS = 2600;
+const AUTOPACK_LOADING_MAX_MS = 90000;
+const AUTOPACK_LOADING_MESSAGES = Object.freeze([
+  'Preparing your load plan...',
+  'Checking fit, stacking, and safety rules...',
+  'Testing legal rotations and orientations...',
+  'Looking for stable support surfaces...',
+  'Filling usable floor space...',
+  'Checking wheel wells and raised surfaces...',
+  'Recovering leftover cargo where possible...',
+  'Finalizing your load plan...',
+]);
+
 export function createUIComponents() {
   const modalRoot = document.getElementById('modal-root');
   const toastContainer = document.getElementById('toast-container');
@@ -178,6 +192,127 @@ export function createUIComponents() {
 
     modalRoot.appendChild(overlay);
     return { close, overlay, modal, body };
+  }
+
+  function showAutoPackLoadingOverlay(options = {}) {
+    const root = modalRoot || document.body;
+    const messages = Array.isArray(options.messages) && options.messages.length
+      ? options.messages.map(message => String(message || '')).filter(Boolean)
+      : AUTOPACK_LOADING_MESSAGES;
+    const imageSrc = String(options.imageSrc || AUTOPACK_LOADING_IMAGE_SRC || '').trim();
+    const resolvedImageSrc = imageSrc
+      ? (() => {
+          try {
+            return new URL(imageSrc, document.baseURI).href;
+          } catch {
+            return imageSrc;
+          }
+        })()
+      : '';
+    const titleText = String(options.title || 'Building your load plan');
+    const titleId = `autopack-loading-title-${Date.now()}`;
+    const messageId = `autopack-loading-message-${Date.now()}`;
+    let messageIndex = 0;
+    let closed = false;
+    let intervalId = null;
+    let maxTimerId = null;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay autopack-loading-overlay';
+    overlay.dataset.tp3dAutopackLoading = '1';
+
+    const modal = document.createElement('div');
+    modal.className = 'modal autopack-loading-modal';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-labelledby', titleId);
+    modal.setAttribute('aria-describedby', messageId);
+
+    const body = document.createElement('div');
+    body.className = 'autopack-loading-body';
+
+    const visual = document.createElement('div');
+    visual.className = 'autopack-loading-visual';
+    visual.setAttribute('aria-hidden', 'true');
+
+    const fallback = document.createElement('div');
+    fallback.className = 'autopack-loading-fallback';
+    fallback.hidden = true;
+    fallback.innerHTML = '<i class="fa-solid fa-truck-ramp-box"></i><i class="fa-solid fa-spinner fa-spin"></i>';
+
+    if (resolvedImageSrc) {
+      const img = document.createElement('img');
+      img.className = 'autopack-loading-image';
+      img.src = resolvedImageSrc;
+      img.alt = '';
+      img.decoding = 'async';
+      img.loading = 'eager';
+      img.addEventListener('load', () => {
+        visual.classList.add('has-image');
+      }, { once: true });
+      img.addEventListener('error', () => {
+        img.hidden = true;
+        fallback.hidden = false;
+        visual.classList.add('is-fallback');
+      }, { once: true });
+      visual.appendChild(img);
+    } else {
+      fallback.hidden = false;
+      visual.classList.add('is-fallback');
+    }
+    visual.appendChild(fallback);
+
+    const title = document.createElement('h3');
+    title.className = 'autopack-loading-title';
+    title.id = titleId;
+    title.textContent = titleText;
+
+    const message = document.createElement('p');
+    message.className = 'autopack-loading-message';
+    message.id = messageId;
+    message.setAttribute('role', 'status');
+    message.setAttribute('aria-live', 'polite');
+
+    const progress = document.createElement('div');
+    progress.className = 'autopack-loading-progress';
+    progress.setAttribute('aria-hidden', 'true');
+    progress.appendChild(document.createElement('span'));
+
+    body.appendChild(visual);
+    body.appendChild(title);
+    body.appendChild(message);
+    body.appendChild(progress);
+    modal.appendChild(body);
+    overlay.appendChild(modal);
+    root.appendChild(overlay);
+
+    const setMessage = nextMessage => {
+      const text = String(nextMessage || '').trim();
+      if (text) message.textContent = text;
+    };
+    setMessage(options.initialMessage || messages[0]);
+    messageIndex = 1;
+
+    if (messages.length > 1) {
+      intervalId = window.setInterval(() => {
+        setMessage(messages[messageIndex % messages.length]);
+        messageIndex += 1;
+      }, AUTOPACK_LOADING_MESSAGE_INTERVAL_MS);
+    }
+
+    maxTimerId = window.setTimeout(() => {
+      close();
+    }, Number.isFinite(options.maxMs) ? options.maxMs : AUTOPACK_LOADING_MAX_MS);
+
+    function close() {
+      if (closed) return;
+      closed = true;
+      if (intervalId) window.clearInterval(intervalId);
+      if (maxTimerId) window.clearTimeout(maxTimerId);
+      if (overlay.parentElement) overlay.parentElement.removeChild(overlay);
+    }
+
+    return { close, setMessage, overlay, modal };
   }
 
   function confirm(options) {
@@ -435,5 +570,5 @@ export function createUIComponents() {
     }
   }
 
-  return { showToast, showModal, confirm, openDropdown, closeAllDropdowns };
+  return { showToast, showModal, showAutoPackLoadingOverlay, confirm, openDropdown, closeAllDropdowns };
 }

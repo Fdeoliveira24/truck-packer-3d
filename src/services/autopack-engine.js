@@ -352,6 +352,26 @@ export function createAutoPackEngine({
       return;
     }
     let opToken = null;
+    let loadingOverlay = null;
+    const updateLoadingOverlay = message => {
+      try {
+        if (loadingOverlay && typeof loadingOverlay.setMessage === 'function') {
+          loadingOverlay.setMessage(message);
+        }
+      } catch {
+        // Loading UI is best-effort and must not affect packing.
+      }
+    };
+    const closeLoadingOverlay = () => {
+      try {
+        if (loadingOverlay && typeof loadingOverlay.close === 'function') {
+          loadingOverlay.close();
+        }
+      } catch {
+        // ignore
+      }
+      loadingOverlay = null;
+    };
     const runWorkspaceGeneration = workspaceGeneration;
     // Stale if the workspace/project changed mid-run, OR another operation has taken
     // over the editor slot. The isBusy() clause is essential: after this run's own
@@ -426,6 +446,15 @@ export function createAutoPackEngine({
     // Claim the single mutating-operation slot for the whole run. No await ran
     // between the isBusy() check above and here, so this cannot lose a race.
     opToken = OperationLifecycle ? OperationLifecycle.beginOperation('autopacking', { packId }) : null;
+    try {
+      if (UIComponents && typeof UIComponents.showAutoPackLoadingOverlay === 'function') {
+        loadingOverlay = UIComponents.showAutoPackLoadingOverlay({
+          initialMessage: 'Preparing your load plan...',
+        });
+      }
+    } catch {
+      loadingOverlay = null;
+    }
     cancelAllTweens();
     const runStartedAt = nowMs();
     let solverMs = 0;
@@ -445,6 +474,7 @@ export function createAutoPackEngine({
         : null;
 
     try {
+      updateLoadingOverlay('Preparing your load plan...');
       toast('Building load plan…', 'info', { title: 'AutoPack', duration: 1800 });
 
       const truck = packData.truck;
@@ -463,6 +493,7 @@ export function createAutoPackEngine({
       const xStep = Math.max(2, Math.min(12, truckL / 60));
       const zStep = Math.max(2, Math.min(12, truckW / 20));
 
+      updateLoadingOverlay('Testing legal rotations and orientations...');
       const packItems = buildLegacyAutoPackItems({
         instances: packData.cases || [],
         getCaseById: caseId => CaseLibrary.getById(caseId),
@@ -492,6 +523,7 @@ export function createAutoPackEngine({
       // Paint a concrete working state, then yield a frame, BEFORE the synchronous
       // solver locks the main thread — otherwise large packs look frozen at their
       // old positions with a stale "starting" toast.
+      updateLoadingOverlay('Checking fit, stacking, and safety rules...');
       toast('Checking fit, stacking, and safety rules…', 'info', { title: 'AutoPack', duration: 4000 });
       await waitForAnimationFrames(2);
       if (isWorkspaceRunStale()) return;
@@ -510,10 +542,11 @@ export function createAutoPackEngine({
           });
         }
       } catch {
-        // ignore
+          // ignore
       }
 
       const solverStartedAt = nowMs();
+      updateLoadingOverlay('Filling usable floor space...');
       const hiddenPacked = (packData.cases || []).filter(inst =>
         inst && inst.hidden === true && inst.placement !== 'staged'
       );
@@ -567,6 +600,7 @@ export function createAutoPackEngine({
       solverMs = nowMs() - solverStartedAt;
       if (!solverResult || isWorkspaceRunStale()) return;
 
+      updateLoadingOverlay('Recovering leftover cargo where possible...');
       const placements = solverResult.placements;
       const rotations = solverResult.rotations;
       const orientedDimsMap = solverResult.orientedDims;
@@ -579,6 +613,7 @@ export function createAutoPackEngine({
       animationMetrics.placementCount = packedCount;
       const largeLoadSnap = shouldSnapLargeAutoPackLoad(packedCount);
 
+      updateLoadingOverlay('Finalizing your load plan...');
       toast('Preparing final layout…', 'info', { title: 'AutoPack', duration: 1600 });
 
       const nextCases = buildAutoPackNextCases(
@@ -694,6 +729,7 @@ export function createAutoPackEngine({
       }
       toast('AutoPack failed', 'error', { title: 'AutoPack' });
     } finally {
+      closeLoadingOverlay();
       isRunning = false;
       if (opToken && OperationLifecycle) OperationLifecycle.finishOperation(opToken);
     }

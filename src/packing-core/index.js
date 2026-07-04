@@ -60,6 +60,7 @@ export {
   PACKING_STRATEGIES,
   getPackingStrategy,
   runPackingStrategies,
+  runAdaptiveAutoPack,
 } from './solution.js';
 export {
   canonicalOrientationLock,

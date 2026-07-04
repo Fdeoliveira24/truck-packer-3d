@@ -5,7 +5,7 @@ import { canonicalCargoForStorage } from '../core/cargo-canonical.js';
 // solution is byte-equivalent to a direct solveAutoPack call, so the engine
 // stays a thin orchestrator. (Supersedes the direct-solver-call wiring the
 // A1-R6 source contract pinned — update that spec on the validation branch.)
-import { runPackingStrategies } from '../packing-core/solution.js';
+import { runAdaptiveAutoPack } from '../packing-core/solution.js';
 import { DEFAULT_SOLVE_BUDGET_MS } from '../packing-core/budget.js';
 
 // The staged pose MUST be atomic: position, rotation and orientedDims all describe
@@ -582,7 +582,12 @@ export function createAutoPackEngine({
           CaseLibrary.getCases()
         ).acceptedPlacements
         : [];
-      const packingSolution = runPackingStrategies({
+      // Adaptive production entry: default strategy first; bounded real-strategy
+      // recovery only when the default legitimately could not place everything
+      // (never on budget-caused or statically impossible misses). The selected
+      // solution is the best practical result by packed count, ties keeping the
+      // default's layout-quality plan.
+      const packingSolution = runAdaptiveAutoPack({
         truck,
         zones,
         loadFrontFirst,

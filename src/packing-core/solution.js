@@ -29,6 +29,8 @@
  */
 
 import { solveAutoPack } from '../services/autopack-solver.js';
+import { getWheelWellGeometry } from './wheel-well-model.js';
+import { REJECTION_CODES } from './explain.js';
 
 export const PACKING_STRATEGIES = Object.freeze([
   Object.freeze({
@@ -131,5 +133,73 @@ export function runPackingStrategies(input, strategyIds = ['default'], solve = s
     solutions,
     selected: selected ? selected.id : null,
     selectedSolution: selected || null,
+  };
+}
+
+// Rejection codes no alternate strategy can ever overcome: the item statically
+// cannot exist in this truck (or there is no usable space at all), or the
+// orientation policy excludes every fitting pose — identical under every
+// strategy. Recovery re-solves are pointless for loads staged ONLY for these.
+const STATIC_REJECTION_CODES = new Set([
+  REJECTION_CODES.NO_FIT_ANY_SURFACE,
+  REJECTION_CODES.NO_USABLE_SPACE,
+  REJECTION_CODES.ORIENTATION_LOCKED,
+]);
+
+function recoveryCouldHelp(solution) {
+  const reasons = Array.isArray(solution.rejectionReasons) ? solution.rejectionReasons : [];
+  // No structured reasons for the staged items → assume a retry could help.
+  if (!reasons.length) return (solution.unpacked || []).length > 0;
+  return reasons.some(reason => !STATIC_REJECTION_CODES.has(reason.code));
+}
+
+/**
+ * Production AutoPack entry: run the default strategy, and — only when it
+ * legitimately could not place everything — retry with the real alternate
+ * strategies that can beat it on hard fits (stack-priority everywhere,
+ * constrained-first on wheel-well trucks), then select the best practical
+ * result: highest packed count first, ties preferring the default strategy's
+ * layout-quality-ranked plan.
+ *
+ * Bounded on purpose:
+ * - never retries when the primary miss was BUDGET-caused (more synchronous
+ *   solving would burn more main-thread time for the same reason);
+ * - never retries when every staged item is statically impossible;
+ * - recovery solves run under half the primary solve budget (min 2s) so the
+ *   worst-case interactive wait stays capped;
+ * - `strategyRecovery: false` opts out entirely (diagnostics/tests).
+ * Hard rules are untouched — every strategy runs the same validation pipeline.
+ */
+export function runAdaptiveAutoPack(input, solve = solveAutoPack) {
+  const primary = runPackingStrategies(input, ['default'], solve);
+  const primarySolution = primary.selectedSolution;
+  if (!primarySolution || input.strategyRecovery === false) return primary;
+
+  const status = primarySolution.solveStatus || null;
+  const complete = status
+    ? status.complete === true
+    : (primarySolution.unpacked || []).length === 0;
+  const budgetCaused = Boolean(
+    status && Array.isArray(status.partialCauses) && status.partialCauses.includes('budget')
+  );
+  if (complete || budgetCaused || !recoveryCouldHelp(primarySolution)) return primary;
+
+  const recoveryIds = ['stack-priority'];
+  if (getWheelWellGeometry(input.truck || {})) recoveryIds.push('constrained-first');
+
+  const primaryBudget = Number(input.solveBudgetMs);
+  const recoveryInput = Number.isFinite(primaryBudget) && primaryBudget > 0
+    ? { ...input, solveBudgetMs: Math.max(2000, primaryBudget / 2) }
+    : input;
+  const recovery = runPackingStrategies(recoveryInput, recoveryIds, solve);
+
+  // Primary first so merit ties keep the default's layout-quality plan.
+  const ranked = [...primary.solutions, ...recovery.solutions]
+    .map((result, index) => ({ index, result }));
+  const selected = [...ranked].sort(compareStrategyResults)[0].result;
+  return {
+    solutions: ranked.map(entry => entry.result),
+    selected: selected.id,
+    selectedSolution: selected,
   };
 }

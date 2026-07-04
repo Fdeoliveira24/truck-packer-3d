@@ -925,8 +925,9 @@ function scoreFreeRectCandidate(
     loadFrontFirst,
     frontSurfaceFirst || layoutQualityEnabled
   );
-  // Front Overhang true high-+X raised surface ordering (Phase C) — unchanged, so the
-  // overhang deck/wall behavior and its byte baselines stay exactly as before.
+  // Front Overhang keeps the richer continuity branch and lets a retained
+  // forward deck surface compete on front position once the hard retention gate
+  // has passed.
   if (frontSurfaceFirst) {
     return [
       ...scoreFloorSurface(candidate.aabb, loadFrontFirst, true),
@@ -1126,9 +1127,9 @@ function scoreLaneCandidate(
   const rectWaste = candidate.freeRect
     ? Math.max(0, freeRectArea(candidate.freeRect) - orientation.l * orientation.w)
     : 0;
-  // Phase B keeps lane length and the lowest layer ahead of high-X. Phase C moves
-  // the shared Front Overhang surface score ahead of lane length so a legal raised
-  // forward deck candidate cannot lose merely because its independent floor is high.
+  // Phase B keeps lane length and the lowest layer ahead of high-X. Front Overhang
+  // moves the shared raised-surface score ahead of lane length so a retained
+  // forward deck candidate can win when it is physically legal.
   const surfaceScore = scoreFloorSurface(candidate.aabb, loadFrontFirst, frontSurfaceFirst);
   const groupScore = scoreLayoutGroupContinuity(
     candidate.aabb,
@@ -1138,7 +1139,8 @@ function scoreLaneCandidate(
     loadFrontFirst,
     frontSurfaceFirst || layoutQualityEnabled
   );
-  // Front Overhang raised-surface ordering — unchanged.
+  // Front Overhang keeps this branch for continuity scoring, with raised-surface
+  // ordering supplied by scoreFloorSurface().
   if (frontSurfaceFirst) {
     return [
       ...surfaceScore,
@@ -2496,6 +2498,21 @@ function stageRejectedPlacements(output, rejected) {
   output.unpacked = [...unpacked];
 }
 
+function frontOverhangValidationRank(placement, retentionContext) {
+  const geometry = retentionContext?.geometry;
+  const aabb = placement?.aabb;
+  if (!geometry || !aabb) return 0;
+  if (isAabbContainedInZone(aabb, geometry.deckZone)) return 2;
+  const stepGap = geometry.stepX - aabb.max.x;
+  const isStepRetainer =
+    isAabbContainedInZone(aabb, geometry.mainZone) &&
+    stepGap >= -CONTAINMENT_EPS_INCHES &&
+    stepGap <= CONTACT_EPS + 1e-9 &&
+    !(aabb.min.y > geometry.deckY + CONTAINMENT_EPS_INCHES ||
+      aabb.max.y < geometry.deckY - CONTAINMENT_EPS_INCHES);
+  return isStepRetainer ? 0 : 1;
+}
+
 function validatePackedPlacements(output, packed, zones) {
   const options = arguments[3] || {};
   const stageRejected = options.stageRejected !== false;
@@ -2512,6 +2529,7 @@ function validatePackedPlacements(output, packed, zones) {
   const validationOrder = retentionContext?.geometry
     ? [...packed].sort((a, b) =>
       a.aabb.min.y - b.aabb.min.y ||
+      frontOverhangValidationRank(a, retentionContext) - frontOverhangValidationRank(b, retentionContext) ||
       stableTextCompare(a.instanceId, b.instanceId)
     )
     : packed;
@@ -3005,6 +3023,171 @@ function buildDeckRetentionWall(output, packed, itemsById, retentionContext, bud
   return placed;
 }
 
+function frontOverhangRetentionPlacements(retentionContext, packed) {
+  return [
+    ...(Array.isArray(retentionContext?.fixedPlacements) ? retentionContext.fixedPlacements : []),
+    ...(packed || []),
+  ];
+}
+
+function frontOverhangDeckFillZones(retentionContext, packed) {
+  const geometry = retentionContext?.geometry;
+  if (!geometry) return [];
+  return computeDeckRetentionCoverage(geometry, frontOverhangRetentionPlacements(retentionContext, packed)).covered
+    .map(interval => ({
+      min: {
+        x: geometry.deckZone.min.x,
+        y: geometry.deckY,
+        z: Math.max(geometry.deckZone.min.z, interval.minZ),
+      },
+      max: {
+        x: geometry.deckZone.max.x,
+        y: geometry.deckZone.max.y,
+        z: Math.min(geometry.deckZone.max.z, interval.maxZ),
+      },
+    }))
+    .filter(zone =>
+      zone.max.x - zone.min.x > FREE_RECT_EPS &&
+      zone.max.y - zone.min.y > FREE_RECT_EPS &&
+      zone.max.z - zone.min.z > FREE_RECT_EPS
+    );
+}
+
+function createFrontOverhangDeckFillState(retentionContext, packed) {
+  const zones = frontOverhangDeckFillZones(retentionContext, packed);
+  if (!zones.length) return null;
+  return rebuildFloorStateFromPacked(zones, packed, false, retentionContext);
+}
+
+function scoreFrontOverhangDeckFillCandidate(candidate, orientation, item, packed, retentionContext) {
+  const geometry = retentionContext?.geometry;
+  const rect = candidate.freeRect;
+  const leftoverX = rect ? Math.max(0, freeRectLength(rect) - candidate.dims.l) : 0;
+  const leftoverZ = rect ? Math.max(0, freeRectWidth(rect) - candidate.dims.w) : 0;
+  const wasteArea = rect ? Math.max(0, freeRectArea(rect) - candidate.dims.l * candidate.dims.w) : 0;
+  const groupScore = scoreLayoutGroupContinuity(
+    candidate.aabb,
+    orientation,
+    item,
+    packed,
+    false,
+    true
+  );
+  return [
+    Math.max(0, candidate.aabb.min.x - (geometry?.stepX || candidate.aabb.min.x)),
+    ...groupScore.continuity,
+    candidate.aabb.min.z,
+    groupScore.orientationPenalty,
+    groupScore.surfaceOrientationPenalty,
+    Math.min(leftoverX, leftoverZ),
+    wasteArea,
+    leftoverX,
+    leftoverZ,
+    orientation.h,
+  ];
+}
+
+function findFrontOverhangDeckFillPlacement(item, floorState, packed, retentionContext) {
+  const geometry = retentionContext?.geometry;
+  if (!geometry || !floorState?.freeRects?.length) return null;
+  const { deckZone, deckY } = geometry;
+
+  let best = null;
+  let bestScore = null;
+  for (const orientation of item.candidates || []) {
+    if (orientation.h > deckZone.max.y - deckY + FREE_RECT_EPS) continue;
+    for (const candidate of buildFreeRectCandidates(orientation, floorState, false, packed)) {
+      if (Math.abs(candidate.aabb.min.y - deckY) > CONTACT_EPS) continue;
+      if (!isAabbContainedInZone(candidate.aabb, deckZone)) continue;
+      if (collidesPacked(candidate.aabb, packed)) continue;
+      if (!candidateHasRearRetention(candidate.aabb, packed, retentionContext)) continue;
+      const scoredCandidate = {
+        ...candidate,
+        orientation,
+        deckFill: true,
+      };
+      const score = scoreFrontOverhangDeckFillCandidate(scoredCandidate, orientation, item, packed, retentionContext);
+      if (!best || compareScore(score, bestScore) < 0) {
+        best = scoredCandidate;
+        bestScore = score;
+      }
+    }
+  }
+
+  return best;
+}
+
+function placeFrontOverhangDeckFill(
+  queue,
+  output,
+  packed,
+  retentionContext,
+  loadFrontFirst,
+  budget = null,
+  groupUniverse = null
+) {
+  if (!retentionContext?.geometry || !Array.isArray(queue) || !queue.length) {
+    return { remaining: queue || [], placed: 0 };
+  }
+
+  const floorState = createFrontOverhangDeckFillState(retentionContext, packed);
+  if (!floorState?.freeRects?.length) return { remaining: queue, placed: 0 };
+
+  const original = [...queue];
+  const ranked = sortItemsForFloor(original, true, groupUniverse || original);
+  const placedIds = new Set();
+  let placed = 0;
+  for (const item of ranked) {
+    if (placedIds.has(item.id)) continue;
+    if (budget && budget.cleanupExpired()) {
+      break;
+    }
+    const placement = findFrontOverhangDeckFillPlacement(
+      item,
+      floorState,
+      packed,
+      retentionContext
+    );
+    if (!placement) continue;
+    recordPlacement(output, packed, item, placement, 'floor');
+    occupyFloorSpace(floorState, placement);
+    placedIds.add(item.id);
+    placed++;
+  }
+
+  return {
+    remaining: original.filter(item => !placedIds.has(item.id)),
+    placed,
+  };
+}
+
+function placeFrontOverhangDeckFillFromUnpacked(
+  output,
+  packed,
+  itemsById,
+  retentionContext,
+  loadFrontFirst,
+  budget = null,
+  groupUniverse = null
+) {
+  if (!retentionContext?.geometry || !output.unpacked.length) return 0;
+  const queue = output.unpacked.map(id => itemsById.get(id)).filter(Boolean);
+  const eligibleIds = new Set(queue.map(item => item.id));
+  const deckFill = placeFrontOverhangDeckFill(
+    queue,
+    output,
+    packed,
+    retentionContext,
+    loadFrontFirst,
+    budget,
+    groupUniverse
+  );
+  if (!deckFill.placed) return 0;
+  const remainingIds = new Set(deckFill.remaining.map(item => item.id));
+  output.unpacked = output.unpacked.filter(id => !eligibleIds.has(id) || remainingIds.has(id));
+  return deckFill.placed;
+}
+
 // Wheel Wells continuous-floor seam candidates: ordinary floor candidates come
 // from per-zone free rects, so they can never straddle the rear/channel/front
 // zone seams even though the truck floor is physically continuous there. When
@@ -3076,7 +3259,7 @@ export function placeLeftoverRecovery(
   allowStack = true
 ) {
   if (!output.unpacked.length) return 0;
-  const floorState = rebuildFloorStateFromPacked(floorZones, packed, false, retentionContext);
+  let floorState = rebuildFloorStateFromPacked(floorZones, packed, false, retentionContext);
 
   const channelZones = narrowChannelZones(floorZones);
   let queue = sortConstrainedLeftoverQueue(
@@ -3085,6 +3268,26 @@ export function placeLeftoverRecovery(
   );
   const placedIds = new Set();
   let placed = 0;
+
+  if (retentionContext?.geometry && queue.length && !(budget && budget.cleanupExpired())) {
+    const deckFill = placeFrontOverhangDeckFill(
+      queue,
+      output,
+      packed,
+      retentionContext,
+      loadFrontFirst,
+      budget,
+      queue
+    );
+    if (deckFill.placed) {
+      for (const item of queue) {
+        if (!deckFill.remaining.includes(item)) placedIds.add(item.id);
+      }
+      placed += deckFill.placed;
+      queue = deckFill.remaining;
+      floorState = rebuildFloorStateFromPacked(floorZones, packed, false, retentionContext);
+    }
+  }
 
   if (allowStack && queue.length && !(budget && budget.cleanupExpired())) {
     const stackRemaining = placeRepeatedStackBatches(
@@ -3515,6 +3718,30 @@ export function solveAutoPack(input = {}) {
       budget
     );
     stackCount += beforeBatch - stackQueue.length;
+    if (stackQueue.length && !budget.cleanupExpired()) {
+      const deckFill = placeFrontOverhangDeckFill(
+        stackQueue,
+        output,
+        packed,
+        retentionContext,
+        loadFrontFirst,
+        budget,
+        items
+      );
+      stackQueue = deckFill.remaining;
+      floorCount += deckFill.placed;
+    }
+    if (output.unpacked.length && !budget.cleanupExpired()) {
+      floorCount += placeFrontOverhangDeckFillFromUnpacked(
+        output,
+        packed,
+        itemsById,
+        retentionContext,
+        loadFrontFirst,
+        budget,
+        items
+      );
+    }
   }
 
   for (let i = 0; i < stackQueue.length; i++) {
@@ -3553,6 +3780,34 @@ export function solveAutoPack(input = {}) {
 
     recordPlacement(output, packed, item, placement, 'stack');
     stackCount++;
+    if (!budget.cleanupExpired()) {
+      if (i + 1 < stackQueue.length) {
+        const deckFill = placeFrontOverhangDeckFill(
+          stackQueue.slice(i + 1),
+          output,
+          packed,
+          retentionContext,
+          loadFrontFirst,
+          budget,
+          items
+        );
+        if (deckFill.placed) {
+          stackQueue = [...stackQueue.slice(0, i + 1), ...deckFill.remaining];
+          floorCount += deckFill.placed;
+        }
+      }
+      if (output.unpacked.length) {
+        floorCount += placeFrontOverhangDeckFillFromUnpacked(
+          output,
+          packed,
+          itemsById,
+          retentionContext,
+          loadFrontFirst,
+          budget,
+          items
+        );
+      }
+    }
   }
 
   // Carry wheel-well geometry into validation as defence in depth. The remaining
@@ -3563,6 +3818,21 @@ export function solveAutoPack(input = {}) {
     stackCount += placeWheelWellBuildUpBridges(output, packed, itemsById, wheelWell, loadFrontFirst);
   }
 
+  // If the main/stack phases naturally created deck-height retention at the
+  // overhang step, immediately fill retained deck sections from staged
+  // leftovers. The generic leftover pass below can still fill other legal holes.
+  if (retentionContext?.geometry && output.unpacked.length && !budget.cleanupExpired()) {
+    floorCount += placeFrontOverhangDeckFillFromUnpacked(
+      output,
+      packed,
+      itemsById,
+      retentionContext,
+      loadFrontFirst,
+      budget,
+      items
+    );
+  }
+
   // Front Overhang deck enablement: intentionally complete the retaining wall
   // from leftovers so the raised deck becomes legally usable (C2 retention
   // rules unchanged). The leftover recovery below then fills the deck through
@@ -3570,6 +3840,17 @@ export function solveAutoPack(input = {}) {
   // real barrier via candidateHasRearRetention.
   if (retentionContext?.geometry && input.enableDeckRetentionWall !== false && !budget.cleanupExpired()) {
     floorCount += buildDeckRetentionWall(output, packed, itemsById, retentionContext, budget);
+    if (output.unpacked.length && !budget.cleanupExpired()) {
+      floorCount += placeFrontOverhangDeckFillFromUnpacked(
+        output,
+        packed,
+        itemsById,
+        retentionContext,
+        loadFrontFirst,
+        budget,
+        items
+      );
+    }
   }
 
   // Leftover recovery (all space types): retry staged leftovers into remaining

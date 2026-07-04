@@ -701,6 +701,7 @@ function buildDuplicateSourcePayload(sourceInstances, caseLibrary) {
       if (!hasPositiveFiniteDims(dims)) return null;
       return {
         inst,
+        caseData,
         dims,
         position: getDuplicateSourcePosition(inst, dims),
       };
@@ -739,14 +740,81 @@ function buildDuplicateExistingAabbs(pack, caseLibrary) {
     .filter(Boolean);
 }
 
-function duplicateAabbIsPackedSafe(pack, aabb) {
+function duplicateAabbIsInsideTruckGeometry(pack, aabb) {
   if (!aabb || aabbIntersectsWheelWellBlockedBody(aabb, pack && pack.truck)) return false;
   const zones = getTrailerUsableZones(pack && pack.truck);
-  return isAabbContainedInAnyZone(aabb, zones);
+  return isAabbInsideTruckGeometry(aabb, zones, getWheelWellGeometry(pack && pack.truck));
 }
 
-function duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, requirePacked) {
+function buildDuplicateExistingEntries(pack, caseLibrary) {
+  const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
+  return (pack && Array.isArray(pack.cases) ? pack.cases : [])
+    .filter(inst => inst && inst.hidden !== true)
+    .map(inst => {
+      const caseData = caseMap.get(inst.caseId);
+      if (!caseData) return null;
+      const dims = getInstanceEffectiveDims(inst, caseData);
+      if (!hasPositiveFiniteDims(dims)) return null;
+      const position = getDuplicateSourcePosition(inst, dims);
+      return {
+        id: inst.id,
+        inst,
+        caseData,
+        dims,
+        position,
+        aabb: makeAabb(position, dims),
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildDuplicateAcceptedSupportEntries(pack, caseLibrary) {
+  const zones = getTrailerUsableZones(pack && pack.truck);
+  const wheelWell = getWheelWellGeometry(pack && pack.truck);
+  const accepted = [];
+  const entries = buildDuplicateExistingEntries(pack, caseLibrary)
+    .filter(entry => entry.inst.placement !== 'staged' && duplicateAabbIsInsideTruckGeometry(pack, entry.aabb))
+    .sort((a, b) =>
+      a.aabb.min.y - b.aabb.min.y ||
+      a.aabb.min.x - b.aabb.min.x ||
+      a.aabb.min.z - b.aabb.min.z ||
+      String(a.id).localeCompare(String(b.id))
+    );
+
+  for (const entry of entries) {
+    const candidate = { id: entry.id, caseData: entry.caseData };
+    if (!aabbIsFullyValid(candidate, entry.aabb, accepted, zones, pack && pack.truck, RECON_TOL, wheelWell)) {
+      continue;
+    }
+    accepted.push({ id: entry.id, aabb: entry.aabb, caseData: entry.caseData });
+  }
+
+  return { accepted, zones, wheelWell };
+}
+
+function duplicatePackedGroupIsFullyValid(pack, records, caseLibrary) {
+  const { accepted, zones, wheelWell } = buildDuplicateAcceptedSupportEntries(pack, caseLibrary);
+  const ordered = [...records].sort((a, b) =>
+    a.aabb.min.y - b.aabb.min.y ||
+    a.aabb.min.x - b.aabb.min.x ||
+    a.aabb.min.z - b.aabb.min.z ||
+    String(a.inst?.id || '').localeCompare(String(b.inst?.id || ''))
+  );
+
+  for (const record of ordered) {
+    const candidate = { id: record.inst?.id, caseData: record.caseData };
+    if (!aabbIsFullyValid(candidate, record.aabb, accepted, zones, pack && pack.truck, RECON_TOL, wheelWell)) {
+      return false;
+    }
+    accepted.push({ id: record.inst?.id, aabb: record.aabb, caseData: record.caseData });
+  }
+
+  return true;
+}
+
+function duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, requirePacked, caseLibrary) {
   const candidateAabbs = [];
+  const records = [];
   for (const item of payload) {
     const position = {
       x: item.position.x + offset.x,
@@ -754,21 +822,22 @@ function duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, requirePack
       z: item.position.z + offset.z,
     };
     const aabb = makeAabb(position, item.dims);
-    if (requirePacked && !duplicateAabbIsPackedSafe(pack, aabb)) return false;
     if (overlapsAny(aabb, existingAabbs)) return false;
     if (overlapsAny(aabb, candidateAabbs)) return false;
     candidateAabbs.push(aabb);
+    records.push({ ...item, position, aabb });
   }
+  if (requirePacked && !duplicatePackedGroupIsFullyValid(pack, records, caseLibrary)) return false;
   return true;
 }
 
-function findDuplicateOffset(pack, payload, existingAabbs) {
+function findDuplicateOffset(pack, payload, existingAabbs, caseLibrary) {
   if (!payload.length) return null;
   const bounds = buildDuplicatePayloadBounds(payload);
   const spanX = Math.max(1, bounds.max.x - bounds.min.x);
   const spanZ = Math.max(1, bounds.max.z - bounds.min.z);
   const sourceInsideTruck = payload.every(item =>
-    duplicateAabbIsPackedSafe(pack, makeAabb(item.position, item.dims))
+    duplicateAabbIsInsideTruckGeometry(pack, makeAabb(item.position, item.dims))
   );
   const insideOffsets = [
     { x: spanX, y: 0, z: 0 },
@@ -782,7 +851,7 @@ function findDuplicateOffset(pack, payload, existingAabbs) {
   ];
   if (sourceInsideTruck) {
     const packedOffset = insideOffsets.find(offset =>
-      duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, true)
+      duplicateOffsetIsSafe(pack, payload, existingAabbs, offset, true, caseLibrary)
     );
     if (packedOffset) return { offset: packedOffset, staged: false };
   }
@@ -803,7 +872,7 @@ function findDuplicateOffset(pack, payload, existingAabbs) {
     y: staged.position.y - groupCenter.y,
     z: staged.position.z - groupCenter.z,
   };
-  if (duplicateOffsetIsSafe(pack, payload, existingAabbs, stagedOffset, false)) {
+  if (duplicateOffsetIsSafe(pack, payload, existingAabbs, stagedOffset, false, caseLibrary)) {
     return { offset: stagedOffset, staged: true };
   }
   return null;
@@ -822,7 +891,7 @@ export function buildSafeDuplicateInstances(pack, sourceInstances, caseLibrary =
     };
   }
 
-  const placement = findDuplicateOffset(pack, payload, buildDuplicateExistingAabbs(pack, caseLibrary));
+  const placement = findDuplicateOffset(pack, payload, buildDuplicateExistingAabbs(pack, caseLibrary), caseLibrary);
   if (!placement) {
     return {
       cases: Array.isArray(pack.cases) ? pack.cases : [],

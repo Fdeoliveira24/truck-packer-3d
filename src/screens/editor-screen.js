@@ -2531,6 +2531,56 @@ export function createEditorScreen({
       ].join('');
     }
 
+    function categoryTruckIconSvg() {
+      return [
+        '<svg aria-hidden="true" focusable="false" width="18" height="18" viewBox="0 0 24 24" fill="none"',
+        ' xmlns="http://www.w3.org/2000/svg">',
+        '<path d="M3.5 7.5h10.2v7.2H3.5V7.5Z" stroke="currentColor" stroke-width="2.1"',
+        ' stroke-linecap="round" stroke-linejoin="round"/>',
+        '<path d="M13.7 10h3.35l3.45 3.2v1.5h-6.8V10Z" stroke="currentColor" stroke-width="2.1"',
+        ' stroke-linecap="round" stroke-linejoin="round"/>',
+        '<path d="M5.2 17.1a1.65 1.65 0 1 0 3.3 0 1.65 1.65 0 0 0-3.3 0Z"',
+        ' stroke="currentColor" stroke-width="2.1"/>',
+        '<path d="M16.1 17.1a1.65 1.65 0 1 0 3.3 0 1.65 1.65 0 0 0-3.3 0Z"',
+        ' stroke="currentColor" stroke-width="2.1"/>',
+        '<path d="M8.6 17.1h7.5M2.8 17.1h2.4" stroke="currentColor" stroke-width="2.1"',
+        ' stroke-linecap="round"/>',
+        '</svg>',
+      ].join('');
+    }
+
+    function planningIconSvg() {
+      return [
+        '<svg aria-hidden="true" focusable="false" width="18" height="18" viewBox="0 0 24 24" fill="none"',
+        ' xmlns="http://www.w3.org/2000/svg">',
+        '<path d="M8.4 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h6.2"',
+        ' stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>',
+        '<path d="M15.6 5H17a2 2 0 0 1 2 2v5.2" stroke="currentColor" stroke-width="2.1"',
+        ' stroke-linecap="round" stroke-linejoin="round"/>',
+        '<path d="M8.4 5a3.6 3.6 0 0 1 7.2 0H8.4Z" stroke="currentColor" stroke-width="2.1"',
+        ' stroke-linejoin="round"/>',
+        '<path d="M8.4 10.2h6M8.4 14h3.2"',
+        ' stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>',
+        '<path d="M15 19.1l4.55-4.55a1.55 1.55 0 0 1 2.2 2.2L17.2 21.3l-2.8.7.6-2.9Z"',
+        ' stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>',
+        '</svg>',
+      ].join('');
+    }
+
+    function deselectBoxIconSvg() {
+      return [
+        '<svg aria-hidden="true" focusable="false" width="18" height="18" viewBox="0 0 24 24" fill="none"',
+        ' xmlns="http://www.w3.org/2000/svg">',
+        '<path d="M12 3.2 4.4 7.3 12 11.5l7.6-4.2L12 3.2Z" stroke="currentColor"',
+        ' stroke-width="2.1" stroke-linejoin="round"/>',
+        '<path d="M4.4 7.3v8.4l7.6 4.1 2.2-1.2M19.6 7.3v5.1M12 11.5v4.1"',
+        ' stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>',
+        '<path d="M16.2 16.2 20 20M20 16.2 16.2 20" stroke="currentColor" stroke-width="2.2"',
+        ' stroke-linecap="round"/>',
+        '</svg>',
+      ].join('');
+    }
+
     function makeActionButton({ label, iconClass = '', iconHtml = '', danger = false, disabled = false, onClick }) {
       const btn = document.createElement('button');
       btn.className = danger ? 'btn btn-danger' : 'btn';
@@ -2610,22 +2660,23 @@ export function createEditorScreen({
         {
           scope: 'truck',
           label: 'In Truck',
-          iconClass: 'fa-solid fa-truck-ramp-box',
+          iconHtml: categoryTruckIconSvg(),
         },
         {
           scope: 'staging',
           label: 'In Staging',
-          iconClass: 'fa-solid fa-boxes-stacked',
+          iconHtml: planningIconSvg(),
         },
         {
           scope: 'everywhere',
           label: 'Everywhere',
           iconClass: 'fa-solid fa-layer-group',
         },
-      ].forEach(({ scope, label, iconClass }) => {
+      ].forEach(({ scope, label, iconClass, iconHtml }) => {
         row.appendChild(makeActionButton({
           label,
           iconClass,
+          iconHtml,
           disabled: !buckets[scope].length,
           onClick: () => selectCategoryGroup(pack, categoryKey, scope),
         }));
@@ -3331,7 +3382,7 @@ export function createEditorScreen({
       const btnVisibility = makeVisibilityButton(pack, selected);
       const btnClear = makeActionButton({
         label: 'Deselect',
-        iconClass: 'fa-solid fa-xmark',
+        iconHtml: deselectBoxIconSvg(),
         onClick: () => InteractionManager.setSelection([]),
       });
       const btnDuplicate = makeActionButton({
@@ -3548,7 +3599,7 @@ export function createEditorScreen({
       const visibility = makeVisibilityButton(pack, [inst.id]);
       const clear = makeActionButton({
         label: 'Deselect',
-        iconClass: 'fa-solid fa-xmark',
+        iconHtml: deselectBoxIconSvg(),
         onClick: () => {
           StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
           CaseScene.setSelected([]);

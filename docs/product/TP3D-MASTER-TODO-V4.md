@@ -1,21 +1,69 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-06-29 | Synthesized from all prior TODO versions + QA report + comparison research + competitive landscape + Codex/Copilot/Claude audit cross-check + storage/space planning vertical
+**Last updated:** 2026-07-05 | Synthesized from all prior TODO versions + QA report + comparison research + competitive landscape + Codex/Copilot/Claude audit cross-check + storage/space planning vertical
 
 ---
 
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `e9c86c0` |
-| Active branch | `fix/autopack-wheelwell-support-stability` (local, validated, not merged/pushed; stacked on `fix/editor-operation-lifecycle-ux`) |
-| Active phase | **Validated AutoPack quality + Wheel-well support/stability stack, ready for final merge/push.** Full local stack now includes E1/E2A/E2B quality, large-load snap safety, operation lifecycle guards, gated Wheel-well support foundation, manual Wheel-well blocked-body protection, and recursive manual support revalidation. Latest branch: `fix/autopack-wheelwell-support-stability` at `d3580a3`. Validation: `728/728` tests, lint `0 errors` with existing warnings only, typecheck pass, diff checks pass, and browser smoke confirmed Wheel Wells AutoPack, blocked-body rejection, and no floating dependents after support delete/move. Bridge/build-up generation remains gated OFF unless `enableWheelWellBridge` is explicitly passed. |
-| Next planned phase | **Fast-forward merge the validated stack to `main`, run final smoke/verification, then push.** After push, open a separate branch for Wheel-well bridge/build-up activation/order. Visible Wheel-well gaps are a quality follow-up under the currently gated bridge/build-up behavior, not a manual-editor safety blocker. |
-| Waiting for | Final merge/push confirmation. Do not run another broad repair cycle unless browser smoke finds a new hard safety blocker. |
-| Do not start simultaneously | Do not enable `enableWheelWellBridge` in `autopack-engine.js`; do not start Front Overhang retaining-wall strategy, multiple AutoPack solutions, manual vertical placement, organized Unpack, Web Worker refactor, InstancedMesh/LOD, Stripe/billing patches, auth/membership/workspace/security work, or broad AutoPack strategy work until this validated stack is merged, pushed, and recorded. |
+| Stable main commit | `e9c86c0` (unchanged until `epic/autopack-core-engine` is merged) |
+| Active branch | `epic/autopack-core-engine` pushed at `817a5bc` |
+| Active phase | **AutoPack Core Engine pre-merge validation is complete and ready for PR/merge decision.** The epic is pushed and clean at `817a5bc`; automated validation is green except `npm run validate`, which still fails only because `format:check` reports existing 87-file formatting drift. Do not auto-format this branch. |
+| Next planned phase | Manual browser smoke, PR confirmation, then merge/push the AutoPack Core Engine epic. |
+| Waiting for | Manual browser smoke / PR confirmation. |
+| Do not start simultaneously | Do not start `app.js` splitting, broad solver cleanup, legacy solver/item-prep deletion, solution strategy expansion, whole-project formatting, billing/auth/security work, or unrelated UI/CSS work before the epic merge decision. |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
-> **Current source-of-truth note (2026-06-29):** `main` / `origin/main` remain stable at `e9c86c0` until the validated stack is pushed. The full local stack is now on `fix/autopack-wheelwell-support-stability` through `d3580a3` and includes E1/E2A/E2B, large-load snap safety, operation lifecycle, Wheel-well support/stability foundation, manual Wheel-well blocked-body protection, and recursive support revalidation. The two manual editor blockers are fixed and browser-smoked: cases cannot be moved into wheel-well blocked bodies, and stacked dependents no longer float after support delete/move. Bridge/build-up generation remains gated OFF. Next action is controlled fast-forward merge to `main`, final verification, then push.
+> **Current source-of-truth note (2026-07-05):** `main` / `origin/main` remain stable at `e9c86c0` until `epic/autopack-core-engine` is merged. The active epic is pushed and clean at `817a5bc` with AutoPack Core Engine validation complete. The only known project-wide gate issue is pre-existing 87-file formatting drift under `npm run validate`; do not auto-format this branch.
+
+## AutoPack Core Engine Epic — Pre-merge Evidence (2026-07-05, `817a5bc`)
+
+### Status
+- Epic branch `epic/autopack-core-engine` is pushed and automated validation is green.
+- Production AutoPack routes through packing-core/adaptive strategy selection.
+- Multiple-solution foundation exists internally.
+- Floating AutoPack Results panel exists in the 3D canvas area.
+- Results panel shows “Best load selected” for one option and “X more options available” when alternates exist.
+- Front Overhang retained-section deck loading works.
+- Wheel Wells support/containment fixes are in.
+- Duplicate packed placement now physically validates support/retention before staying packed.
+- Category selection from the Inspector exists.
+- Stale test contracts were updated.
+- E2B baseline was updated.
+- Do not auto-format this branch.
+
+### Validation evidence
+- `git diff --check` passed
+- `npm run typecheck` passed
+- `npm test` passed: `763 pass`, `5 skipped`, `0 fail`
+- `npm run test:stress` passed: `20 pass`, `0 fail`
+- `npm run test:all` passed: `768 pass`, `0 fail`
+- `npm run lint` passed with warnings only
+- `npm run validate` still fails only because `format:check` reports existing formatting drift across 87 files
+
+### Commit evidence
+- `2ef7902` fix(autopack): resolve pre-merge safety blockers
+- `1cc0fc3` test(autopack): update core engine validation contracts
+- `55b490f` test(autopack): update E2B solver baseline
+- `817a5bc` fix(lint): remove extra boolean cast
+
+### Merge gate checklist
+1. Standard AutoPack browser smoke.
+2. Wheel Wells AutoPack browser smoke.
+3. Front Overhang AutoPack browser smoke.
+4. AutoPack Results panel appears.
+5. View Options expands.
+6. Apply alternate option works without re-solving.
+7. Move/delete/unpack/truck edits disable stale Apply.
+8. Unpack still works.
+9. Category Selection works.
+10. Duplicate elevated boxes do not create floating packed boxes.
+11. No new red console runtime errors.
+12. Decide whether existing format drift blocks merge.
+
+### Architecture note
+This is a validated bridge architecture, not a full solver deletion/rewrite. `packing-core` now owns shared validation, strategy/result envelopes, budgets, wheel-well support model, retention coverage, repair helpers, and diagnostics, but `autopack-solver.js` still owns most placement search/scoring/phase sequencing. Cleanup must continue in smaller branches after merge.
 
 ## AutoPack Quality Wave — Front Overhang, Wheel Wells, Layer Quality, Performance, and Operation UX (2026-06-24)
 
@@ -42,14 +90,14 @@
 7. ⬜ **Organized Unpack** — unpack should create clean grouped staging rows, not random scattered placement.
 
 ### Current AutoPack implementation order
-1. 🔄 **Fast-forward merge validated stack to `main`** — merge the existing branch sequence in order and verify `main` remains ahead only by the intended stack.
-2. 🔄 **Final verification on `main`** — use focused smoke plus required final checks; avoid unnecessary repeated broad repair loops unless a hard blocker appears.
-3. 🔄 **Push `main` after verification** — then update this TODO with pushed evidence.
-4. ⬜ **Wheel-well production activation/order branch** — after foundation merge only, decide whether and when to pass `enableWheelWellBridge`, where the pass should run, and how it interacts with E2B channel/filler behavior.
-5. ⬜ **Front Overhang wall-building** — create retaining wall first, validate it, then populate the deck.
-6. ⬜ **Manual vertical placement** — allow rule-validated vertical drag/snap/place.
-7. ⬜ **Organized Unpack** — clean grouped staging layout.
-8. ⬜ **Broader AutoPack strategies / multiple valid solutions** — only after Wheel-well and Front Overhang hard-rule behavior is stable.
+1. 🔄 **Manual browser smoke for `epic/autopack-core-engine`** — Standard, Wheel Wells, Front Overhang, results panel, stale-apply guard, Unpack, Category Selection, duplicate safety, and console.
+2. 🔄 **Merge/push AutoPack Core Engine epic** — only after manual smoke / PR confirmation.
+3. ⬜ **Formatting-only branch if `validate` is treated as a hard gate** — isolate the existing 87-file formatting drift; do not auto-format the epic.
+4. ⬜ **Legacy item-prep cleanup branch** — extract live item prep before deleting legacy solver code.
+5. ⬜ **Manual vertical placement** — allow rule-validated vertical drag/snap/place.
+6. ⬜ **AutoPack solution portfolio expansion** — expose richer alternate strategy labels/options after the core epic is merged.
+7. ⬜ **`app.js` modularization inventory** — start with M0 inventory, not extraction.
+8. ⬜ **Organized Unpack polish** — clean grouped staging layout.
 
 ### Important product rules from recent audits
 - A layout can pass containment/collision/support tests and still fail product quality. Hard-rule validity and load-planning quality must both be evaluated.
@@ -467,11 +515,11 @@ Release-gate items block **public launch**, not isolated product development. Pr
 ## PART 3 — CODE ARCHITECTURE & CLEANUP
 
 ### 3A — App Modularization
-*Do Phase A only after the geometry epsilon is unified (3B). Do Phase B and C only after release gate is green.*
+*Do not split `app.js` until after the AutoPack Core Engine epic is merged. The first step is M0 inventory of globals, storage keys, BroadcastChannels, custom events, and exported surfaces. Do Phase B and C only after release gate is green.*
 
 | Status | Item |
 |--------|------|
-| ⬜ | **M0 — Inventory first**: Create written inventory of all app globals, storage keys, BroadcastChannels, custom events, and exported surfaces before splitting `src/app.js` (currently 9,290 lines) |
+| ⬜ | **M0 — Inventory first after AutoPack epic merge**: Create written inventory of all app globals, storage keys, BroadcastChannels, custom events, and exported surfaces before splitting `src/app.js` |
 | ⬜ | **M0**: Write focused tests for `getProRuleSet()` before extracting it |
 | ⬜ | **Phase A — low risk, do first**: Extract `AccountSwitcher` from `src/app.js` → `src/ui/account-switcher.js`. It is self-contained with its own unmount path. Validate: account menu, workspace switch, settings, logout. |
 | ⬜ | **Phase A — medium-low risk**: Extract `TrailerGeometry` from `src/app.js` → `src/services/trailer-geometry.js`, but ONLY after tolerance is unified (see 3B). Validate: rect, wheel wells, front bonus, AutoPack. |
@@ -490,9 +538,10 @@ Release-gate items block **public launch**, not isolated product development. Pr
 |--------|------|
 | 🔄 | **Unify trailer geometry tolerance — technical blocker for placement work.** Implemented the canonical inch-space containment contract on `fix/3b-geometry-tolerance-unification`: `pack-library.js` now exports `CONTAINMENT_EPS_INCHES = 0.05`; `autopack-solver.js` and `app.js` reference that shared constant; editor drag feedback now converts the world-space object AABB to inches and passes inch-space usable zones instead of converting zones to world. Automated validation completed with targeted 3B tests passing (4/4), full audit suite passing (532/532), lint zero errors (existing warnings only), typecheck passing, and diff whitespace checks passing. **In-browser logic verification 2026-06-17** (Chromium via Playwright, real shipped modules over a local static server, no auth): the app boots with **0 page errors / 0 console errors** (only 2 benign headless-WebGL GPU-stall perf warnings); `CONTAINMENT_EPS_INCHES` reads `0.05` live; and `pack-library.getTrailerUsableZones` + `isAabbContainedInAnyZone` give the correct canonical 0.05" verdicts for all three modes — Standard (on-boundary accepted, 0.04" outside accepted, 0.06" outside rejected, 0.06" below-floor rejected), Wheel Wells (inside blocked well staged, above-well accepted, center-corridor accepted), Front Overhang (deck accepted, cab-void rejected, seam-crossing staged, main-box accepted). **Still 🔄 — interactive editor checks remain** (need a signed-in session driving the 3D canvas): live drag inside/outside feedback agreeing with the saved drop for the same final position (exercises `editor-screen.isInsideTruck` world→inch path, not reachable headless), rotate/flip, collision rejection, and Stats / out-of-gauge agreement. See "Remaining manual editor checklist" below. |
 | ⬜ | After tolerance is unified: consolidate `TrailerGeometry` into a single canonical module (currently duplicated between `app.js` and `pack-library.js`) |
-| ⬜ | `solveLegacyAutoPack()` — confirm truly unused (`rg` shows only its own definition; no production caller found), then delete |
-| ⬜ | `buildLegacyAutoPackItems()` — still live (imported and called in `autopack-engine.js`); do NOT remove yet |
-| ⬜ | Safe AutoPack item builder cleanup path: create `src/services/autopack-item-builder.js`, move `buildLegacyAutoPackItems` and helpers, update `autopack-engine.js`, update invariant tests, run `npm test` + browser AutoPack fixtures, then trim `autopack-legacy-solver.js` only after `rg solveLegacyAutoPack` shows zero production references |
+| 🔄 | `solveLegacyAutoPack()` — epic audit confirmed it is not used by normal production AutoPack, but do not delete it until live item prep is extracted and tests are updated |
+| ⬜ | Move live `buildLegacyAutoPackItems()` into a new `src/services/autopack-item-builder.js` module with a compatibility re-export; update `autopack-engine.js` and invariant tests before trimming legacy files |
+| ⬜ | After the item-builder extraction is validated: trim `autopack-legacy-solver.js` only after `rg solveLegacyAutoPack` shows zero production references |
+| ⬜ | Future only after merge + item-builder cleanup: split `autopack-solver.js` by responsibility (placement search, scoring, phase sequencing, recovery/repair), one narrow branch at a time |
 
 #### Remaining manual editor checklist (3B + 5A — signed-in session, one pack per truck mode)
 *The headless run above proved the containment math and the solver contract in a real browser; these steps cover the interactive UX that needs a human at the 3D canvas. Enable `localStorage.tp3dDebug = "1"` for extra logging. Do not commit any browser-only debug code.*
@@ -515,6 +564,8 @@ Release-gate items block **public launch**, not isolated product development. Pr
 ### 3D — Code Quality
 | Status | Item |
 |--------|------|
+| ✅ | `npm run lint` passes with warnings only on `epic/autopack-core-engine` at `817a5bc`; warnings remain cleanup debt, not the current merge blocker |
+| ⬜ | Formatting-only branch for the existing 87-file `format:check` drift; do not auto-format the AutoPack Core Engine epic |
 | 🔄 | Fix remaining eslint warnings (unused vars, no-use-before-define) — no behavior changes |
 | 🔄 | Replace browser-native `window.prompt`/`alert` in app flows with app UI modal patterns |
 | ⬜ | Fix html-validate warnings (prefer native button) in highest-impact UI first |

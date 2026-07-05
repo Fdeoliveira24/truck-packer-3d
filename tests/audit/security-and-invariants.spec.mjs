@@ -52,6 +52,7 @@ const folderLibraryPath = new URL('../../src/services/folder-library.js', import
 const caseLibraryPath = new URL('../../src/services/case-library.js', import.meta.url);
 const packLibraryPath = new URL('../../src/services/pack-library.js', import.meta.url);
 const autoPackEnginePath = new URL('../../src/services/autopack-engine.js', import.meta.url);
+const autoPackItemBuilderPath = new URL('../../src/services/autopack-item-builder.js', import.meta.url);
 const autoPackLegacySolverPath = new URL('../../src/services/autopack-legacy-solver.js', import.meta.url);
 const autoPackSolverPath = new URL('../../src/services/autopack-solver.js', import.meta.url);
 const packingCorePath = new URL('../../src/packing-core/index.js', import.meta.url);
@@ -4946,7 +4947,7 @@ test('AUTO-PACK-A1-3 AutoPack validates support, containment, and staging separa
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
   const src = await fs.readFile(autoPackLegacySolverPath, 'utf8');
   const supportStart = src.indexOf('const MIN_STACK_SUPPORT_RATIO = 0.5;');
-  const supportEnd = src.indexOf('\nexport function buildLegacyAutoPackItems', supportStart);
+  const supportEnd = src.indexOf('\nexport async function solveLegacyAutoPack', supportStart);
   const supportBlock = supportStart >= 0 && supportEnd > supportStart ? src.slice(supportStart, supportEnd) : '';
   const stagingStart = engineSrc.indexOf('function buildStagingMap(packItems, truck)');
   const stagingEnd = engineSrc.indexOf('\n  async function animatePlacements', stagingStart);
@@ -7344,8 +7345,8 @@ test('AUTO-PACK-A1-R6 live AutoPack routes through the logistics solver from the
     'packing-core must expose the adaptive production entry point');
   assert.doesNotMatch(engineSrc, /solveLegacyAutoPack\(/,
     'A1-R6 must not keep calling the legacy placement solver');
-  assert.match(legacySrc, /function buildOrientations\(dims, caseData, inst, orientationTools\)/,
-    'A1-R6 must leave the legacy solver file in place until browser proof is complete');
+  assert.match(legacySrc, /export \{ buildLegacyAutoPackItems \} from '\.\/autopack-item-builder\.js';/,
+    'A1-R6 must keep the legacy solver compatibility export while item prep moves out');
   assert.match(legacySrc, /const X_TIGHTNESS_WEIGHT = 0\.8;/,
     'A1-R6 must not delete the legacy scoring path before A1-R7 cleanup approval');
   assert.match(legacySrc, /function capXAnchorsSorted\(arr, maxCount\)/,
@@ -7381,9 +7382,10 @@ test('AUTO-PACK-A1-CLEAN-1 app keeps legacy scanner isolated outside app.js', as
   const appSrc = await fs.readFile(appPath, 'utf8');
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
   const legacySrc = await fs.readFile(autoPackLegacySolverPath, 'utf8');
+  const itemBuilderSrc = await fs.readFile(autoPackItemBuilderPath, 'utf8');
 
-  assert.match(engineSrc, /import \{ buildLegacyAutoPackItems \} from '\.\/autopack-legacy-solver\.js';/,
-    'the AutoPack runtime may use the temporary legacy item adapter before A1-R7 cleanup');
+  assert.match(engineSrc, /import \{ buildLegacyAutoPackItems \} from '\.\/autopack-item-builder\.js';/,
+    'the AutoPack runtime must import live item preparation from the item-builder module');
   assert.doesNotMatch(engineSrc, /solveLegacyAutoPack\(/,
     'the AutoPack runtime must not use the legacy placement solver after A1-R6');
   assert.doesNotMatch(appSrc, /function buildOrientations\(dims, caseData, inst/,
@@ -7394,10 +7396,14 @@ test('AUTO-PACK-A1-CLEAN-1 app keeps legacy scanner isolated outside app.js', as
     'app.js must not keep the legacy X-anchor scanner inline');
   assert.doesNotMatch(appSrc, /const X_TIGHTNESS_WEIGHT = 0\.8;/,
     'app.js must not carry the legacy scoring constant inline');
-  assert.match(legacySrc, /function buildOrientations\(dims, caseData, inst, orientationTools\)/,
-    'the legacy solver module must preserve the old orientation behavior during the extraction');
+  assert.match(itemBuilderSrc, /function buildOrientations\(dims, caseData, inst, orientationTools\)/,
+    'the live item builder must own orientation candidate preparation');
+  assert.match(legacySrc, /export \{ buildLegacyAutoPackItems \} from '\.\/autopack-item-builder\.js';/,
+    'the legacy solver module keeps a compatibility re-export for existing imports/tests');
+  assert.doesNotMatch(legacySrc, /function buildOrientations\(dims, caseData, inst, orientationTools\)/,
+    'live item-prep orientation generation must no longer live in the legacy solver module');
   assert.match(legacySrc, /const X_TIGHTNESS_WEIGHT = 0\.8;/,
-    'the legacy solver module must preserve the old scoring behavior during the extraction');
+    'the legacy solver module must preserve the old placement scoring behavior until the dead solver deletion branch');
   assert.doesNotMatch(legacySrc, /\b(?:getBillingState|getProRuleSet|UIComponents|StateStore|Supabase|Stripe)\b/,
     'the legacy solver must stay isolated from billing, auth, UI, and app state orchestration');
 });
@@ -7943,11 +7949,11 @@ test('EDITOR rotate and flip paths reject unsafe candidates before persistence',
 
 test('AUTO-PACK-A0 AutoPack respects locked orientation and keeps unlocked orientation generation', async () => {
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
-  const src = await fs.readFile(autoPackLegacySolverPath, 'utf8');
+  const src = await fs.readFile(autoPackItemBuilderPath, 'utf8');
   const lockedStart = src.indexOf('function buildLockedOrientation(dims, inst, orientationTools)');
-  const buildEnd = src.indexOf('\n      // ── Core: gravity-based free-space packing', lockedStart);
+  const buildEnd = src.indexOf('\nexport function buildLegacyAutoPackItems', lockedStart);
   const block = lockedStart >= 0
-    ? src.slice(lockedStart, buildEnd > lockedStart ? buildEnd : src.indexOf('\nfunction findRestingY', lockedStart))
+    ? src.slice(lockedStart, buildEnd > lockedStart ? buildEnd : src.length)
     : '';
 
   assert.match(block, /inst\.orientationLocked !== true/,
@@ -7961,9 +7967,9 @@ test('AUTO-PACK-A0 AutoPack respects locked orientation and keeps unlocked orien
   assert.match(block, /if \(lockedOrientation\) return \[lockedOrientation\];[\s\S]*tryOri\(0, 0, 0\)/,
     'locked items must test only one orientation while unlocked items keep normal orientation candidates (rotation-derived dims)');
   assert.match(src, /const orientations = buildOrientations\(d, caseData, inst, orientationTools\)/,
-    'legacy AutoPack item setup must pass the instance into orientation generation');
+    'AutoPack item setup must pass the instance into orientation generation');
   assert.match(engineSrc, /buildLegacyAutoPackItems\(\{[\s\S]*orientationTools:/,
-    'AutoPack runtime orchestration must supply orientation helpers to the legacy solver');
+    'AutoPack runtime orchestration must supply orientation helpers to the item builder');
 });
 
 // ---------------------------------------------------------------------------

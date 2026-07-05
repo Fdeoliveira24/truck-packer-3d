@@ -1,4 +1,4 @@
-import { buildLegacyAutoPackItems } from './autopack-legacy-solver.js';
+import { buildLegacyAutoPackItems } from './autopack-item-builder.js';
 import { canonicalCargoForStorage } from '../core/cargo-canonical.js';
 // AutoPack routes through the packing-core strategy runner: the core owns
 // strategy orchestration and the solution envelope; the selected default

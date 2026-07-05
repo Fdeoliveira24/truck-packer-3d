@@ -6,16 +6,16 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `5a530f0` (AutoPack Core Engine epic merged/pushed to `main`) |
-| Active branch | `main` pushed at `5a530f0`; next branch: `cleanup/autopack-item-prep` |
-| Active phase | **AutoPack Core Engine epic has been merged and pushed to `main`.** Automated validation is green except `npm run validate`, which still fails only because `format:check` reports existing 87-file formatting drift. Manual browser smoke was acceptable enough to merge. Known UI polish: AutoPack Results panel works but needs future design refinement. |
-| Next planned phase | Legacy item-prep cleanup branch: extract live `buildLegacyAutoPackItems()` into a clearly named item-builder module with compatibility re-export. |
-| Waiting for | Post-merge cleanup branch setup / next implementation prompt. |
-| Do not start simultaneously | Do not mix `app.js` splitting, manual vertical movement, solution portfolio expansion, broad solver cleanup, legacy solver deletion, whole-project formatting, billing/auth/security work, or unrelated UI/CSS work into the post-merge item-prep cleanup. |
+| Stable main commit | `e136258` (AutoPack item-prep cleanup merged/pushed to `main`) |
+| Active branch | `main` pushed at `e136258`; next branch: `feature/manual-vertical-placement` |
+| Active phase | **AutoPack item-prep cleanup has been merged and pushed to `main`.** Live `buildLegacyAutoPackItems()` ownership was moved out of `autopack-legacy-solver.js` into `src/services/autopack-item-builder.js`; `autopack-legacy-solver.js` keeps a compatibility re-export. Validation passed: `git diff --check`, `npm run typecheck`, `npm test` (`763 pass`, `5 skipped`), and `npm run test:stress` (`20 pass`). |
+| Next planned phase | Manual vertical placement discovery/planning, then implementation on `feature/manual-vertical-placement`: Move Up, Move Down, Drop to nearest valid surface, and safe placement onto supported surfaces with collision/support/retention/orientation validation. |
+| Waiting for | Manual vertical placement audit/implementation plan before code changes. |
+| Do not start simultaneously | Do not mix `app.js` splitting, AutoPack solution portfolio expansion, Results panel carousel UI polish, organized Unpack polish, broad solver cleanup, legacy solver deletion, whole-project formatting, billing/auth/security work, or unrelated UI/CSS work into manual vertical placement. |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
-> **Current source-of-truth note (2026-07-05):** `main` / `origin/main` include the AutoPack Core Engine epic through `5a530f0`. The only known project-wide gate issue is pre-existing 87-file formatting drift under `npm run validate`; do not auto-format the AutoPack Core Engine merge. Next action is the focused `cleanup/autopack-item-prep` branch.
+> **Current source-of-truth note (2026-07-05):** `main` / `origin/main` include the AutoPack Core Engine epic and the first cleanup branch through `e136258`. Live AutoPack item prep now lives in `src/services/autopack-item-builder.js`; `autopack-legacy-solver.js` remains only as the legacy solve module plus compatibility re-export. The only known project-wide gate issue remains pre-existing 87-file formatting drift under `npm run validate`; do not auto-format feature branches. Next action is the focused manual vertical placement discovery/planning branch.
 
 ## AutoPack Core Engine Epic — Merged Evidence (2026-07-05, `5a530f0`)
 
@@ -56,6 +56,27 @@ Manual browser smoke was acceptable enough to merge. Known follow-up: the AutoPa
 ### Architecture note
 This is a validated bridge architecture, not a full solver deletion/rewrite. `packing-core` now owns shared validation, strategy/result envelopes, budgets, wheel-well support model, retention coverage, repair helpers, and diagnostics, but `autopack-solver.js` still owns most placement search/scoring/phase sequencing. Cleanup must continue in smaller branches after merge.
 
+## AutoPack Item-Prep Cleanup — Merged Evidence (2026-07-05, `e136258`)
+
+### Status
+- ✅ Cleanup branch `cleanup/autopack-item-prep` was fast-forward merged and pushed to `main`.
+- ✅ Live `buildLegacyAutoPackItems()` ownership moved into `src/services/autopack-item-builder.js`.
+- ✅ `autopack-engine.js` now imports item prep from `./autopack-item-builder.js`.
+- ✅ `autopack-legacy-solver.js` keeps `export { buildLegacyAutoPackItems } from './autopack-item-builder.js';` as a compatibility re-export.
+- ✅ `solveLegacyAutoPack()` and legacy placement/scoring/support helpers remain in `autopack-legacy-solver.js`; do not delete them until a separate audit/deletion branch.
+- ✅ Behavior intent unchanged; this was a cleanup/ownership move only.
+- ✅ Commit removed about 139 lines from the legacy solver path.
+
+### Validation evidence
+- `git diff --check` passed
+- `node --check` on changed JS/test files passed
+- `npm run typecheck` passed
+- `npm test` passed: `763 pass`, `5 skipped`
+- `npm run test:stress` passed: `20 pass`, `0 fail`
+
+### Next cleanup note
+Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, use a separate branch after `rg "solveLegacyAutoPack|buildLegacyAutoPackItems" src tests` confirms production callers and compatibility tests are safe.
+
 ## AutoPack Quality Wave — Front Overhang, Wheel Wells, Layer Quality, Performance, and Operation UX (2026-06-24)
 
 ### Status summary
@@ -81,12 +102,14 @@ This is a validated bridge architecture, not a full solver deletion/rewrite. `pa
 7. ⬜ **Organized Unpack** — unpack should create clean grouped staging rows, not random scattered placement.
 
 ### Current AutoPack implementation order
-1. 🔄 **Legacy item-prep cleanup branch** — extract live item prep before deleting legacy solver code.
-2. ⬜ **Formatting-only branch if `validate` is treated as a hard gate** — isolate the existing 87-file formatting drift; do not auto-format AutoPack work.
-3. ⬜ **Manual vertical placement** — allow rule-validated vertical drag/snap/place.
-4. ⬜ **AutoPack solution portfolio expansion** — expose richer alternate strategy labels/options after cleanup priorities.
-5. ⬜ **`app.js` modularization inventory** — start with M0 inventory, not extraction.
-6. ⬜ **Organized Unpack polish** — clean grouped staging layout.
+1. 🔄 **Manual vertical placement discovery/planning** — audit current manual move/drag/position code and define safe Move Up / Move Down / Drop to nearest valid surface behavior before implementation.
+2. ⬜ **Manual vertical placement implementation** — allow rule-validated vertical movement and placement onto supported surfaces without floating, collision, blocked-volume, or retention violations.
+3. ⬜ **Formatting-only branch if `validate` is treated as a hard gate** — isolate the existing 87-file formatting drift; do not auto-format feature branches.
+4. ⬜ **AutoPack solution portfolio expansion** — generate up to 5–7 bounded, meaningful non-duplicate solution variants.
+5. ⬜ **AutoPack Results panel UI enhancement** — compact carousel/slide pattern with previous/next arrows and a visible drag handle.
+6. ⬜ **`app.js` modularization inventory** — start with M0 inventory, not extraction.
+7. ⬜ **Organized Unpack polish** — clean grouped staging layout for very large packs.
+8. ⬜ **Legacy solver trim audit** — only after item-prep extraction is stable and tests/callers prove dead solve code can be removed safely.
 
 ### AutoPack / UI follow-up
 | Status | Item |
@@ -532,8 +555,9 @@ Release-gate items block **public launch**, not isolated product development. Pr
 |--------|------|
 | 🔄 | **Unify trailer geometry tolerance — technical blocker for placement work.** Implemented the canonical inch-space containment contract on `fix/3b-geometry-tolerance-unification`: `pack-library.js` now exports `CONTAINMENT_EPS_INCHES = 0.05`; `autopack-solver.js` and `app.js` reference that shared constant; editor drag feedback now converts the world-space object AABB to inches and passes inch-space usable zones instead of converting zones to world. Automated validation completed with targeted 3B tests passing (4/4), full audit suite passing (532/532), lint zero errors (existing warnings only), typecheck passing, and diff whitespace checks passing. **In-browser logic verification 2026-06-17** (Chromium via Playwright, real shipped modules over a local static server, no auth): the app boots with **0 page errors / 0 console errors** (only 2 benign headless-WebGL GPU-stall perf warnings); `CONTAINMENT_EPS_INCHES` reads `0.05` live; and `pack-library.getTrailerUsableZones` + `isAabbContainedInAnyZone` give the correct canonical 0.05" verdicts for all three modes — Standard (on-boundary accepted, 0.04" outside accepted, 0.06" outside rejected, 0.06" below-floor rejected), Wheel Wells (inside blocked well staged, above-well accepted, center-corridor accepted), Front Overhang (deck accepted, cab-void rejected, seam-crossing staged, main-box accepted). **Still 🔄 — interactive editor checks remain** (need a signed-in session driving the 3D canvas): live drag inside/outside feedback agreeing with the saved drop for the same final position (exercises `editor-screen.isInsideTruck` world→inch path, not reachable headless), rotate/flip, collision rejection, and Stats / out-of-gauge agreement. See "Remaining manual editor checklist" below. |
 | ⬜ | After tolerance is unified: consolidate `TrailerGeometry` into a single canonical module (currently duplicated between `app.js` and `pack-library.js`) |
-| 🔄 | `solveLegacyAutoPack()` — epic audit confirmed it is not used by normal production AutoPack, but do not delete it until live item prep is extracted and tests are updated |
-| ⬜ | Move live `buildLegacyAutoPackItems()` into a new `src/services/autopack-item-builder.js` module with a compatibility re-export; update `autopack-engine.js` and invariant tests before trimming legacy files |
+| 🔄 | `solveLegacyAutoPack()` — epic audit confirmed it is not used by normal production AutoPack, and live item prep has now been extracted. Do not delete legacy solve code until a separate trim audit confirms callers/tests and compatibility expectations are safe. |
+| ✅ | Move live `buildLegacyAutoPackItems()` into `src/services/autopack-item-builder.js` with a compatibility re-export from `autopack-legacy-solver.js`; `autopack-engine.js` now imports the item builder directly. Merged to `main` at `e136258`. |
+| ⬜ | Future legacy trim branch: audit and remove dead `solveLegacyAutoPack()` code only after compatibility re-export and tests prove it is safe. |
 | ⬜ | After the item-builder extraction is validated: trim `autopack-legacy-solver.js` only after `rg solveLegacyAutoPack` shows zero production references |
 | ⬜ | Future only after merge + item-builder cleanup: split `autopack-solver.js` by responsibility (placement search, scoring, phase sequencing, recovery/repair), one narrow branch at a time |
 
@@ -558,7 +582,7 @@ Release-gate items block **public launch**, not isolated product development. Pr
 ### 3D — Code Quality
 | Status | Item |
 |--------|------|
-| ✅ | `npm run lint` passes with warnings only on `epic/autopack-core-engine` at `817a5bc`; warnings remain cleanup debt, not the current merge blocker |
+| ✅ | `npm run lint` passes with warnings only on `main` after AutoPack Core Engine + item-prep cleanup; warnings remain cleanup debt, not the current feature blocker. |
 | ⬜ | Formatting-only branch for the existing 87-file `format:check` drift; do not auto-format the AutoPack Core Engine epic |
 | 🔄 | Fix remaining eslint warnings (unused vars, no-use-before-define) — no behavior changes |
 | 🔄 | Replace browser-native `window.prompt`/`alert` in app flows with app UI modal patterns |

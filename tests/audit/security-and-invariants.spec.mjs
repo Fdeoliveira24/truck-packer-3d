@@ -1145,6 +1145,39 @@ function assertPackImportNoOverlaps(instances, caseData) {
   }
 }
 
+function testAabbInsideTruckBox(aabb, truck, eps = 0.05) {
+  return (
+    aabb.min.x >= -eps &&
+    aabb.max.x <= Number(truck.length) + eps &&
+    aabb.min.y >= -eps &&
+    aabb.max.y <= Number(truck.height) + eps &&
+    aabb.min.z >= -Number(truck.width) / 2 - eps &&
+    aabb.max.z <= Number(truck.width) / 2 + eps
+  );
+}
+
+function testAabbInsidePhysicalTrailer(PackLib, aabb, zones, truck, eps = 0.05) {
+  if (PackLib.isAabbContainedInAnyZone(aabb, zones, eps)) return true;
+  if (truck?.shapeMode !== 'wheelWells') return false;
+  return (
+    testAabbInsideTruckBox(aabb, truck, eps) &&
+    !PackLib.aabbIntersectsWheelWellBlockedBody(aabb, truck)
+  );
+}
+
+function testAabbOnPhysicalFloor(PackLib, aabb, zones, truck, eps = 0.05) {
+  const onZoneFloor = zones.some(zone =>
+    Math.abs(aabb.min.y - zone.min.y) <= eps &&
+    PackLib.isAabbContainedInAnyZone(aabb, [zone], eps)
+  );
+  if (onZoneFloor) return true;
+  return (
+    truck?.shapeMode === 'wheelWells' &&
+    Math.abs(aabb.min.y) <= eps &&
+    testAabbInsidePhysicalTrailer(PackLib, aabb, zones, truck, eps)
+  );
+}
+
 function makePackImportPayload(caseData, instances, overrides = {}) {
   return {
     pack: {
@@ -2378,7 +2411,7 @@ test('PLACEMENT-STATE-S2 manual delete of a support recursively settles dependen
     'settled dependents inside usable geometry remain packed');
 });
 
-test('DELETE-REVALIDATION removeInstances stages invalid non-selected dependents instead of deleting them', async () => {
+test('DELETE-REVALIDATION removeInstances repairs invalid non-selected dependents when possible, otherwise stages them', async () => {
   const StateStore = await import(stateStorePath.href);
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const caseData = makePackImportSafeCase({
@@ -2411,7 +2444,7 @@ test('DELETE-REVALIDATION removeInstances stages invalid non-selected dependents
       cases: [
         mk('selected-support', { x: 12, y: 6, z: 0 }),
         // This pose straddles the center channel / raised shelf seam. Revalidation
-        // cannot make it a legal packed pose at the same X/Z, so it must be staged.
+        // must either repair it to a physically valid packed pose or stage it.
         mk('dependent-needs-staging', { x: 60, y: 36, z: 18 }),
         mk('unrelated-front', { x: 100, y: 6, z: 0 }),
       ],
@@ -2430,12 +2463,31 @@ test('DELETE-REVALIDATION removeInstances stages invalid non-selected dependents
     'selected support instance must be removed');
   assert.equal(byId.has('dependent-needs-staging'), true,
     'non-selected dependent must not be deleted by revalidation');
-  assert.equal(byId.get('dependent-needs-staging').placement, 'staged',
-    'invalid non-selected dependent must be moved to staging instead of left packed/floating');
-  assert.deepEqual(result.dependentStagedIds, ['dependent-needs-staging'],
-    'delete mutation result must report the dependent moved to staging');
-  assert.equal(result.dependentStagedCount, 1,
-    'delete mutation result must report the dependent staging count');
+  const repairedOrStagedCount = result.dependentRepairedIds.length + result.dependentStagedIds.length;
+  assert.equal(repairedOrStagedCount, 1,
+    'invalid non-selected dependent must be accounted for exactly once as repaired or staged');
+  const dependent = byId.get('dependent-needs-staging');
+  if (dependent.placement === 'packed') {
+    const zones = PackLibrary.getTrailerUsableZones(pack.truck);
+    const aabb = getPackImportAabb(dependent, caseData);
+    assert.equal(testAabbInsidePhysicalTrailer(PackLibrary, aabb, zones, pack.truck), true,
+      'repaired dependent must be inside the physically allowed trailer geometry');
+    assert.equal(testAabbOnPhysicalFloor(PackLibrary, aabb, zones, pack.truck), true,
+      'repaired dependent must rest on valid floor/surface support');
+    assert.deepEqual(result.dependentRepairedIds, ['dependent-needs-staging'],
+      'delete mutation result must report the dependent repaired in-place');
+    assert.deepEqual(result.dependentStagedIds, [],
+      'a successfully repaired dependent must not also be reported as staged');
+    assert.equal(result.dependentStagedCount, 0,
+      'staged dependent count remains zero when repair succeeds');
+  } else {
+    assert.equal(dependent.placement, 'staged',
+      'unrepairable non-selected dependent must be moved to staging instead of left packed/floating');
+    assert.deepEqual(result.dependentStagedIds, ['dependent-needs-staging'],
+      'delete mutation result must report the dependent moved to staging');
+    assert.equal(result.dependentStagedCount, 1,
+      'delete mutation result must report the dependent staging count');
+  }
   assert.equal(byId.has('unrelated-front'), true,
     'delete near Wheel Wells must not remove unrelated packed cases');
   assert.equal(byId.get('unrelated-front').placement, 'packed',
@@ -2615,13 +2667,15 @@ test('UNPACK-CATEGORY-GROUPING unpackAll allocates staging slots in grouped orde
   const end = src.indexOf('\n    function renderInspectorNoPack', start);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
+  assert.match(block, /const stagingLayout = PackLibrary\.getStagingLayout\(livePack\.truck \|\| \{\}\);/,
+    'unpackAll must derive category staging bands from the canonical staging layout');
   assert.match(block, /const stagingGroups = groupInstancesForUnpackStaging\(/,
     'unpackAll must build explicit category groups before placing cases');
   assert.match(block, /for \(const group of stagingGroups\)[\s\S]*for \(const inst of group\.instances\)/,
     'unpackAll must allocate safe staging positions one category group at a time');
-  assert.match(block, /PackLibrary\.findSafeStagingPosition\(\s*livePack,\s*dims,\s*acceptedAabbs,\s*\{\s*originZ: categoryOriginZ\s*\}\s*\)/,
-    'unpackAll must pass a category-specific staging origin so later categories cannot backfill holes in earlier groups');
-  assert.match(block, /categoryOriginZ = groupMaxZ \+ categoryBandGap/,
+  assert.match(block, /const stagedPosition = \{[\s\S]*x: stagingLayout\.originX \+ item\.dims\.length \/ 2 \+ col \* cellLength,[\s\S]*y: item\.dims\.height \/ 2,[\s\S]*z: categoryOriginZ \+ item\.dims\.width \/ 2 \+ row \* cellWidth,[\s\S]*\};/,
+    'unpackAll must allocate each category from its current category-specific staging origin');
+  assert.match(block, /categoryOriginZ \+= rows \* cellWidth \+ categoryBandGap;/,
     'unpackAll must advance the next category band after the previous category block');
   assert.match(block, /const nextCases = \(livePack\.cases \|\| \[\]\)\.map\(inst => stagedById\.get\(inst\.id\) \|\| inst\)/,
     'unpackAll must preserve the pack case array order while applying grouped staging poses by id');
@@ -4044,21 +4098,26 @@ test('G2-SHAPE-CONTRACT computeStats does not flag a properly placed item in the
 test('3B-GEOMETRY-TOLERANCE uses one shared inch-space containment tolerance', async () => {
   const packSrc = await fs.readFile(packLibraryPath, 'utf8');
   const solverSrc = await fs.readFile(autoPackSolverPath, 'utf8');
+  const validationSrc = await fs.readFile(packingCoreValidationPath, 'utf8');
   const appSrc = await fs.readFile(appPath, 'utf8');
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
-  const productionSrc = [packSrc, solverSrc, appSrc, editorSrc].join('\n');
+  const productionSrc = [packSrc, solverSrc, validationSrc, appSrc, editorSrc].join('\n');
 
-  const definitions = productionSrc.match(/\bconst\s+CONTAINMENT_EPS_INCHES\s*=/g) || [];
+  const definitions = productionSrc.match(/\b(?:export\s+)?const\s+CONTAINMENT_EPS_INCHES\s*=/g) || [];
   assert.equal(definitions.length, 1,
     'CONTAINMENT_EPS_INCHES must have exactly one production definition');
-  assert.match(packSrc, /export const CONTAINMENT_EPS_INCHES = 0\.05;/,
-    'pack-library.js must export the canonical 0.05 inch containment tolerance');
-  assert.match(packSrc, /const EPS = CONTAINMENT_EPS_INCHES;/,
-    'pack-library.js containment helper must use the shared tolerance constant');
-  assert.match(solverSrc, /import \{[\s\S]*?CONTAINMENT_EPS_INCHES,[\s\S]*?\} from '\.\/pack-library\.js';/,
-    'autopack-solver.js must import the shared containment tolerance');
-  assert.match(solverSrc, /epsilon = CONTAINMENT_EPS_INCHES/,
-    'autopack-solver.js containment defaults must reference the shared tolerance');
+  assert.match(validationSrc, /export const CONTAINMENT_EPS_INCHES = 0\.05;/,
+    'packing-core/validation.js must define the canonical 0.05 inch containment tolerance');
+  assert.match(packSrc, /CONTAINMENT_EPS_INCHES,[\s\S]*?from '\.\.\/packing-core\/validation\.js';/,
+    'pack-library.js must import the canonical containment tolerance from packing-core');
+  assert.match(packSrc, /export \{ CONTAINMENT_EPS_INCHES, PLACEMENT_EPS, MIN_SUPPORT_FRACTION \};/,
+    'pack-library.js must re-export the canonical tolerance for existing consumers');
+  assert.match(solverSrc, /CONTAINMENT_EPS_INCHES,[\s\S]*?from '\.\.\/packing-core\/validation\.js';/,
+    'autopack-solver.js must import the shared containment tolerance from packing-core');
+  assert.match(validationSrc, /export function isAabbContainedInAnyZone\(aabb, zones, epsilon = CONTAINMENT_EPS_INCHES\)/,
+    'canonical containment defaults must reference the shared tolerance');
+  assert.match(solverSrc, /\bisAabbContainedInAnyZone\(/,
+    'autopack-solver.js must call the canonical containment helper instead of a local tolerance');
 
   const appHelperStart = appSrc.indexOf('function isAabbContainedInAnyZone(aabb, zones)');
   const appHelperEnd = appSrc.indexOf('\n      function zonesInchesToWorld', appHelperStart);
@@ -4926,26 +4985,30 @@ test('STAGING-S1 pack-library exposes one canonical staging layout helper', asyn
     'findSafeStagingPosition must derive its geometry from the canonical getStagingLayout helper and pass through staging options');
 });
 
-test('STAGING-S1 unpackAll uses the canonical staging helper instead of a hardcoded offset', async () => {
+test('STAGING-S1 unpackAll uses canonical staging layout bands instead of a hardcoded offset', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const start = src.indexOf('function unpackAll()');
   const end = src.indexOf('\n    function renderInspectorNoPack', start);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(block.length > 0, 'editor-screen must define unpackAll()');
-  assert.match(block, /PackLibrary\.findSafeStagingPosition\(\s*livePack,\s*dims,\s*acceptedAabbs,/,
-    'unpackAll must place staged cases through the canonical staging helper');
-  assert.doesNotMatch(block, /stageZStart|truckW|truckL/,
+  assert.match(block, /const stagingLayout = PackLibrary\.getStagingLayout\(livePack\.truck \|\| \{\}\);/,
+    'unpackAll must derive grouped staging bands from the canonical staging layout helper');
+  assert.match(block, /const stagingGroups = groupInstancesForUnpackStaging\(/,
+    'unpackAll must keep category-aware staging groups instead of one global grid');
+  assert.match(block, /categoryOriginZ \+= rows \* cellWidth \+ categoryBandGap;/,
+    'unpackAll must advance each category band with canonical layout spacing');
+  assert.doesNotMatch(block, /stageZStart|truckW|\bconst truckL\b|\blet truckL\b/,
     'unpackAll must not keep its own hardcoded staging offset');
 });
 
 test('STAGING-S1 duplicate staging fallback uses the canonical staging helper instead of a hardcoded grid', async () => {
   const src = await fs.readFile(packLibraryPath, 'utf8');
-  const start = src.indexOf('function findDuplicateOffset(pack, payload, existingAabbs)');
+  const start = src.indexOf('function findDuplicateOffset(pack, payload, existingAabbs, caseLibrary)');
   const end = src.indexOf('\nexport function buildSafeDuplicateInstances', start);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
-  assert.ok(block.length > 0, 'pack-library must define findDuplicateOffset(pack, payload, existingAabbs)');
+  assert.ok(block.length > 0, 'pack-library must define findDuplicateOffset(pack, payload, existingAabbs, caseLibrary)');
   assert.match(block, /findSafeStagingPosition\(pack, groupDims, existingAabbs\)/,
     'duplicate staging fallback must reuse the canonical staging helper for the group bounding box');
   assert.doesNotMatch(block, /stagingGap|stageStartZ|stageStartX/,
@@ -6092,9 +6155,12 @@ test('AUTO-PACK-A1-R1 normalizers add logistics defaults and preserve explicit v
 
 test('AUTO-PACK-A1-R1 solver scaffold is pure and returns the expected output shape', async () => {
   const src = await fs.readFile(autoPackSolverPath, 'utf8');
+  const executableSrc = src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
   assert.doesNotMatch(src, /import\s+.*from\s+['"][^'"]*(?:three|supabase|stripe|billing|state-store|ui-components)/i,
     'solver scaffold must not import app infrastructure or payment/auth dependencies');
-  assert.doesNotMatch(src, /\b(?:window|document|localStorage|StateStore|UIComponents)\b/,
+  assert.doesNotMatch(executableSrc, /\b(?:window|document|localStorage|StateStore|UIComponents)\b/,
     'solver scaffold must remain independent of browser globals and app state');
 
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
@@ -6613,13 +6679,15 @@ test('5A case normalizer preserves explicit stackable:false and maxStackCount:0'
 
 test('5A engine adapter forwards stacking metadata from caseData to the solver', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
-  const start = src.indexOf('solveAutoPack({');
-  assert.ok(start !== -1, 'engine must call solveAutoPack');
+  const start = src.indexOf('runAdaptiveAutoPack({');
+  assert.ok(start !== -1, 'engine must call runAdaptiveAutoPack');
   const block = src.slice(start, start + 1400);
-  assert.match(block, /noStackOnTop:\s*caseData\.noStackOnTop/, 'engine must forward noStackOnTop from caseData');
-  assert.match(block, /stackable:\s*caseData\.stackable/, 'engine must forward stackable from caseData');
-  assert.match(block, /maxStackCount:\s*caseData\.maxStackCount/, 'engine must forward maxStackCount from caseData');
-  assert.match(block, /isPallet:\s*caseData\.isPallet/, 'engine must forward isPallet from caseData');
+  assert.match(block, /const rules = getSolverCargoRules\(inst, caseData\);/,
+    'engine must normalize solver cargo rules before forwarding them');
+  assert.match(block, /noStackOnTop:\s*rules\.noStackOnTop/, 'engine must forward noStackOnTop from normalized case rules');
+  assert.match(block, /stackable:\s*rules\.stackable/, 'engine must forward stackable from normalized case rules');
+  assert.match(block, /maxStackCount:\s*rules\.maxStackCount/, 'engine must forward maxStackCount from normalized case rules');
+  assert.match(block, /isPallet:\s*rules\.isPallet/, 'engine must forward isPallet from normalized case rules');
   assert.match(block, /weight:\s*caseData\.weight/, 'engine must forward weight from caseData');
   assert.match(block, /enableWheelWellBridge:\s*mode === 'wheelWells'/,
     'production AutoPack must activate bridge/build-up only for Wheel Wells');
@@ -6877,8 +6945,8 @@ test('AUTO-PACK-A1-R6.3 floor compaction rebuilds free space before filler and s
     'floor compaction must keep cross-zone movement opt-in for shape-specific passes');
   assert.doesNotMatch(src, /function compactFloorPlacements[\s\S]*?\{\s*void output;\s*void packed;\s*void zones;\s*void loadFrontFirst;/,
     'floor compaction must not regress to the old no-op implementation');
-  assert.match(src, /floorState\.freeRects = compactFloorPlacements\(\s*output,\s*packed,\s*floorZones,\s*loadFrontFirst,\s*frontSurfaceFirst,\s*retentionContext,\s*floorCompactionOptions\s*\)\.freeRects;/,
-    'compaction must rebuild the free-space map before later placement phases use it');
+  assert.match(src, /floorState\.freeRects = \(budget\.cleanupExpired\(\)[\s\S]*?compactFloorPlacements\(\s*output,\s*packed,\s*floorZones,\s*loadFrontFirst,\s*frontSurfaceFirst,\s*retentionContext,\s*\{ \.\.\.floorCompactionOptions, budget \}\s*\)\)\.freeRects;/,
+    'compaction must rebuild the free-space map before later placement phases use it while respecting cleanup budget');
   assert.match(src, /writeOutputPlacements\(output, packed\);/,
     'accepted compaction moves must be reflected in the solver output maps');
 });
@@ -7259,14 +7327,21 @@ test('AUTO-PACK-A1-R6.5 repeated same-footprint heavy groups reserve floor befor
 test('AUTO-PACK-A1-R6 live AutoPack routes through the logistics solver from the runtime engine only', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
+  const solutionSrc = await fs.readFile(new URL('../../src/packing-core/solution.js', import.meta.url), 'utf8');
   const legacySrc = await fs.readFile(autoPackLegacySolverPath, 'utf8');
 
   assert.doesNotMatch(appSrc, /autopack-solver\.js|solveAutoPack/,
     'app.js must stay an orchestrator consumer and must not import the solver directly');
-  assert.match(engineSrc, /import \{ solveAutoPack \} from '\.\/autopack-solver\.js';/,
-    'A1-R6 must wire the pure logistics solver through the runtime engine');
-  assert.match(engineSrc, /const solverResult = solveAutoPack\(\{/,
-    'runtime AutoPack must call the logistics solver for live placement');
+  assert.match(engineSrc, /import \{ getPackingStrategy, runAdaptiveAutoPack \} from '\.\.\/packing-core\/solution\.js';/,
+    'A1-R6 must route runtime AutoPack through the packing-core solution runner');
+  assert.match(engineSrc, /const packingSolution = runAdaptiveAutoPack\(\{/,
+    'runtime AutoPack must call the adaptive core-engine path for live placement');
+  assert.match(engineSrc, /const solverResult = packingSolution \? packingSolution\.selectedSolution : null;/,
+    'runtime AutoPack must apply the selected core solution to the scene');
+  assert.match(solutionSrc, /export function runPackingStrategies\(input, strategyIds = \['default'\], solve = solveAutoPack\)/,
+    'packing-core must own strategy execution and keep solveAutoPack injectable');
+  assert.match(solutionSrc, /export function runAdaptiveAutoPack\(input, solve = solveAutoPack\)/,
+    'packing-core must expose the adaptive production entry point');
   assert.doesNotMatch(engineSrc, /solveLegacyAutoPack\(/,
     'A1-R6 must not keep calling the legacy placement solver');
   assert.match(legacySrc, /function buildOrientations\(dims, caseData, inst, orientationTools\)/,
@@ -7443,10 +7518,14 @@ test('EDITOR selection Actions cards stay minimal, ordered, and bound to existin
   assert.match(makeSelectBlock, /function duplicateSelection\(pack,\s*selectedIds\)[\s\S]*PackLibrary\.duplicateInstancesSafely\(pack\.id,\s*source,\s*CaseLibrary\.getCases\(\)\)/,
     'Actions Duplicate must use the shared safe duplicate helper before saving clones');
   const packLibSrc = await fs.readFile(packLibraryPath, 'utf8');
-  assert.match(packLibSrc, /function duplicateAabbIsPackedSafe\(pack,\s*aabb\)[\s\S]*aabbIntersectsWheelWellBlockedBody\(aabb,\s*pack && pack\.truck\)[\s\S]*isAabbContainedInAnyZone\(aabb,\s*zones\)/,
-    'shared Duplicate helper must use wheel-well body and usable-zone checks for packed placements');
-  assert.match(packLibSrc, /function findDuplicateOffset\(pack,\s*payload,\s*existingAabbs\)[\s\S]*duplicateOffsetIsSafe\(pack,\s*payload,\s*existingAabbs,\s*offset,\s*true\)[\s\S]*duplicateOffsetIsSafe\(pack,\s*payload,\s*existingAabbs,\s*stagedOffset,\s*false\)/,
-    'shared Duplicate helper must try safe in-truck placement first, then collision-free staging');
+  assert.match(packLibSrc, /function duplicateAabbIsInsideTruckGeometry\(pack,\s*aabb\)[\s\S]*aabbIntersectsWheelWellBlockedBody\(aabb,\s*pack && pack\.truck\)[\s\S]*isAabbInsideTruckGeometry\(aabb,\s*zones,\s*getWheelWellGeometry\(pack && pack\.truck\)\)/,
+    'shared Duplicate helper must reject blocked wheel-well bodies and require valid truck geometry for packed placements');
+  assert.match(packLibSrc, /function buildDuplicateAcceptedSupportEntries\(pack,\s*caseLibrary\)[\s\S]*aabbIsFullyValid\(/,
+    'shared Duplicate helper must build accepted support entries from physically valid packed cargo');
+  assert.match(packLibSrc, /function duplicatePackedGroupIsFullyValid\(pack,\s*records,\s*caseLibrary\)[\s\S]*aabbIsFullyValid\(/,
+    'shared Duplicate helper must validate duplicated packed groups bottom-up against full physical rules');
+  assert.match(packLibSrc, /function findDuplicateOffset\(pack,\s*payload,\s*existingAabbs,\s*caseLibrary\)[\s\S]*duplicateOffsetIsSafe\(pack,\s*payload,\s*existingAabbs,\s*offset,\s*true,\s*caseLibrary\)[\s\S]*duplicateOffsetIsSafe\(pack,\s*payload,\s*existingAabbs,\s*stagedOffset,\s*false,\s*caseLibrary\)/,
+    'shared Duplicate helper must try fully valid in-truck placement first, then collision-free staging');
   assert.doesNotMatch(makeSelectBlock, /position:\s*\{\s*x:\s*pos\.x \+ 12,\s*y:\s*pos\.y,\s*z:\s*pos\.z \+ 12/,
     'Actions Duplicate must not use the old fixed +12 inch offset that can overlap selected boxes');
   assert.doesNotMatch(src, /function deleteAllCases|Delete All|renderPackActionsCard/,
@@ -7881,7 +7960,7 @@ test('AUTO-PACK-A0 AutoPack respects locked orientation and keeps unlocked orien
     'locked orientation dimensions must come from the shared geometry helper');
   assert.match(block, /if \(lockedOrientation\) return \[lockedOrientation\];[\s\S]*tryOri\(0, 0, 0\)/,
     'locked items must test only one orientation while unlocked items keep normal orientation candidates (rotation-derived dims)');
-  assert.match(src, /const orientations = buildOrientations\(d, c, inst, orientationTools\)/,
+  assert.match(src, /const orientations = buildOrientations\(d, caseData, inst, orientationTools\)/,
     'legacy AutoPack item setup must pass the instance into orientation generation');
   assert.match(engineSrc, /buildLegacyAutoPackItems\(\{[\s\S]*orientationTools:/,
     'AutoPack runtime orchestration must supply orientation helpers to the legacy solver');
@@ -8387,11 +8466,10 @@ test('REPAIR-1C 7+8+9: corrected beam — every placed item is THREE-correct, co
   const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
   const PackLib = await import(`${packLibraryPath.href}${stamp}`);
   const truth = await threeOrientedTruth();
-  // Standard and Front Overhang have a single 240in-long usable zone, so a 144in
-  // lengthwise beam fits. Wheel Wells segments the usable zones (longest single
-  // zone ~96in), so a 144in beam legitimately cannot fit any one zone — the engine
-  // correctly leaves it unpacked (and it stages horizontal — see REPAIR-1C 6).
-  const mustPack = { rect: true, wheelWells: false, frontBonus: true };
+  // Wheel Wells now use the shared physical model instead of a simplified
+  // single-zone-only check, so a lengthwise beam may legally span compatible
+  // floor/channel space as long as it does not intersect blocked well bodies.
+  const mustPack = { rect: true, wheelWells: true, frontBonus: true };
   for (const shapeMode of ['rect', 'wheelWells', 'frontBonus']) {
     const truck = { length: 240, width: 96, height: 96, shapeMode };
     const zones = PackLib.getTrailerUsableZones(truck);
@@ -8406,7 +8484,10 @@ test('REPAIR-1C 7+8+9: corrected beam — every placed item is THREE-correct, co
       assert.equal(od.height, 8, `${shapeMode}: stays horizontal (never stands tall)`);
       const pos = res.placements.get(id);
       const aabb = Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
-      assert.equal(PackLib.isAabbContainedInAnyZone(aabb, zones), true, `${shapeMode}: contained in a usable zone (no blocked region / out-of-bounds)`);
+      assert.equal(testAabbInsidePhysicalTrailer(PackLib, aabb, zones, truck), true,
+        `${shapeMode}: contained in physically allowed trailer geometry (no blocked region / out-of-bounds)`);
+      assert.equal(testAabbOnPhysicalFloor(PackLib, aabb, zones, truck), true,
+        `${shapeMode}: lengthwise beam rests on a valid floor/surface`);
       aabbs.push(aabb);
     }
     for (let a = 0; a < aabbs.length; a++) for (let b = a + 1; b < aabbs.length; b++) {
@@ -8611,7 +8692,10 @@ test('REPAIR-1D 8+9: no float frames in Standard / Wheel Wells / Front Overhang;
       const t = truth({ length: 144, width: 8, height: 8 }, res.rotations.get(id));
       assert.deepEqual({ l: od.length, w: od.width, h: od.height }, { l: t.length, w: t.width, h: t.height }, `${shapeMode}: packed dims == THREE`);
       const aabb = Solver.getAabb(res.placements.get(id), { l: od.length, w: od.width, h: od.height });
-      assert.equal(PackLib.isAabbContainedInAnyZone(aabb, zones), true, `${shapeMode}: contained`);
+      assert.equal(testAabbInsidePhysicalTrailer(PackLib, aabb, zones, truck), true,
+        `${shapeMode}: contained in physically allowed trailer geometry`);
+      assert.equal(testAabbOnPhysicalFloor(PackLib, aabb, zones, truck), true,
+        `${shapeMode}: packed beam rests on a valid floor/surface`);
       aabbs.push(aabb);
     }
     for (let a = 0; a < aabbs.length; a++) for (let b = a + 1; b < aabbs.length; b++) {
@@ -8847,11 +8931,15 @@ function assertReconLayoutSafe(PackLib, finalCases, truck, label) {
         aabb.min.z < bz.max.z - 0.05 && aabb.max.z > bz.min.z + 0.05;
       assert.equal(inBlocked, false, `${label}: ${c.id} must not enter a blocked zone`);
     }
+    if (truck?.shapeMode === 'wheelWells') {
+      assert.equal(PackLib.aabbIntersectsWheelWellBlockedBody(aabb, truck), false,
+        `${label}: ${c.id} must not enter a wheel-well blocked body`);
+    }
     if (c.placement === 'packed') {
-      assert.equal(PackLib.isAabbContainedInAnyZone(aabb, zones), true, `${label}: packed ${c.id} is contained (no OOB)`);
+      assert.equal(testAabbInsidePhysicalTrailer(PackLib, aabb, zones, truck), true,
+        `${label}: packed ${c.id} is physically contained (no OOB/blocked body)`);
       // No floating: rests on a zone floor OR on another item with support >= MIN.
-      const onFloor = zones.some(z => Math.abs(aabb.min.y - z.min.y) <= 0.05 &&
-        aabb.min.x >= z.min.x - 0.05 && aabb.max.x <= z.max.x + 0.05 && aabb.min.z >= z.min.z - 0.05 && aabb.max.z <= z.max.z + 0.05);
+      const onFloor = testAabbOnPhysicalFloor(PackLib, aabb, zones, truck);
       if (!onFloor) {
         const supporters = aabbs.filter(o => o.c !== c && Math.abs(aabb.min.y - o.aabb.max.y) <= 0.05).map(o => o.aabb);
         assert.ok(PackLib.computeSupportFraction(aabb, supporters, 0.05) >= PackLib.MIN_SUPPORT_FRACTION, `${label}: packed ${c.id} is supported (not floating)`);
@@ -8888,10 +8976,13 @@ function assertCanonicalReconLayoutSafe(PackLib, finalCases, truck, caseLibrary,
       assert.equal(PackLib.isAabbInStagingZone({ truck }, entry.aabb), true, `${label}: staged ${entry.c.id} is reachable`);
       continue;
     }
-    assert.equal(PackLib.isAabbContainedInAnyZone(entry.aabb, zones), true, `${label}: packed ${entry.c.id} contained`);
-    const onFloor = zones.some(zone => Math.abs(entry.aabb.min.y - zone.min.y) <= 0.05 &&
-      entry.aabb.min.x >= zone.min.x - 0.05 && entry.aabb.max.x <= zone.max.x + 0.05 &&
-      entry.aabb.min.z >= zone.min.z - 0.05 && entry.aabb.max.z <= zone.max.z + 0.05);
+    assert.equal(testAabbInsidePhysicalTrailer(PackLib, entry.aabb, zones, truck), true,
+      `${label}: packed ${entry.c.id} physically contained`);
+    if (truck?.shapeMode === 'wheelWells') {
+      assert.equal(PackLib.aabbIntersectsWheelWellBlockedBody(entry.aabb, truck), false,
+        `${label}: packed ${entry.c.id} clears wheel-well blocked bodies`);
+    }
+    const onFloor = testAabbOnPhysicalFloor(PackLib, entry.aabb, zones, truck);
     if (!onFloor) {
       const supports = packed.filter(other => other !== entry && Math.abs(entry.aabb.min.y - other.aabb.max.y) <= 0.05);
       assert.ok(PackLib.computeSupportFraction(entry.aabb, supports.map(s => s.aabb), 0.05) >= PackLib.MIN_SUPPORT_FRACTION,
@@ -8906,11 +8997,13 @@ const reconFB = (bonusHeight = 43.2, bonusLength = 48) => ({ length: 240, width:
 
 test('RECON mode switches (Std↔WheelWells, Std↔FrontOverhang) keep valid items and report invalid ones safely', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  // Cartons across the floor; one centered where the wheel well will appear.
+  // Cartons across the floor. The centered row remains valid in Wheel Wells
+  // because it clears the blocked bodies and sits in the legal channel.
   const cases = [reconInst('i0', 30, 8, 0), reconInst('i1', 90, 8, 0), reconInst('i2', 150, 8, 0), reconInst('i3', 210, 8, 0)];
   // Std → Wheel Wells
   const r = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, RECON_WW, RECON_CASE_LIB);
-  assert.ok(r.summary.invalid >= 1, 'an item straddling the wheel well is reported invalid');
+  assert.equal(r.summary.invalid, 0,
+    'center-channel floor cargo remains valid when it clears Wheel Wells blocked bodies');
   for (const id of r.kept) {
     const before = cases.find(c => c.id === id);
     const after = r.nextPack.cases.find(c => c.id === id);
@@ -9845,17 +9938,15 @@ function phb2AssertDirectStackLimit(Solver, result, limit, label) {
   }
 }
 
-function phb2AssertSafe(Solver, PackLib, result, zones, label) {
+function phb2AssertSafe(Solver, PackLib, result, zones, label, truck = null) {
   const placed = phbPlaced(Solver, result, PHB_DIMS);
   for (let i = 0; i < placed.length; i++) {
-    assert.equal(PackLib.isAabbContainedInAnyZone(placed[i].aabb, zones), true, `${label}: contained ${placed[i].id}`);
+    assert.equal(testAabbInsidePhysicalTrailer(PackLib, placed[i].aabb, zones, truck), true,
+      `${label}: contained ${placed[i].id}`);
     for (let j = i + 1; j < placed.length; j++) {
       assert.equal(Solver.aabbsOverlap(placed[i].aabb, placed[j].aabb), false, `${label}: no overlap ${placed[i].id}/${placed[j].id}`);
     }
-    const onFloor = zones.some(zone =>
-      PackLib.isAabbContainedInAnyZone(placed[i].aabb, [zone]) &&
-      Math.abs(placed[i].aabb.min.y - zone.min.y) <= 0.05
-    );
+    const onFloor = testAabbOnPhysicalFloor(PackLib, placed[i].aabb, zones, truck);
     if (!onFloor) {
       const supports = placed.filter(other =>
         other !== placed[i] &&
@@ -9890,7 +9981,7 @@ test('PHASE-B2A repeated groups preserve legal yaw candidates and exhaust same-c
     assert.equal(phb2FloorCount(result, zones, Solver), fixture.expectedFloor, `${fixture.label}: legal residual floor slots are used`);
     assert.equal(phb2FloorHole(Solver, result, zones, itemSpec), null, `${fixture.label}: no legal floor opening remains while identical cases stack`);
     assert.deepEqual(result.unpacked, [], `${fixture.label}: all cases resolve`);
-    phb2AssertSafe(Solver, PackLib, result, zones, fixture.label);
+    phb2AssertSafe(Solver, PackLib, result, zones, fixture.label, truck);
     const repeat = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
     assert.equal(JSON.stringify([...result.placements]), JSON.stringify([...repeat.placements]), `${fixture.label}: deterministic layout`);
     assert.equal(JSON.stringify([...result.orientedDims]), JSON.stringify([...repeat.orientedDims]), `${fixture.label}: deterministic orientations`);
@@ -9921,7 +10012,7 @@ test('PHASE-B2A mixed repeated groups complete legal A strips before B consumes 
     new Map(items.map(item => [item.instanceId, item]))
   ), null, 'mixed groups never advance rearward past a legal same-case wall completion');
   assert.equal(phb2FloorHole(Solver, result, zones, aSpec), null, 'no legal A floor opening is left behind');
-  phb2AssertSafe(Solver, PackLib, result, zones, 'mixed A/B');
+  phb2AssertSafe(Solver, PackLib, result, zones, 'mixed A/B', truck);
 });
 
 test('PHASE-B2A identical-case matrix stays safe and deterministic in Standard, Wheel Wells, and real Front Overhang geometry', async () => {
@@ -9937,7 +10028,7 @@ test('PHASE-B2A identical-case matrix stays safe and deterministic in Standard, 
       const itemSpec = { caseId: 'A', dims: { l: 24, w: 18, h: 16 }, orientationLock: 'any', canFlip: false, weight: 30 };
       const items = Array.from({ length: count }, (_, index) => ({ ...itemSpec, instanceId: `i${index}` }));
       const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
-      phb2AssertSafe(Solver, PackLib, result, zones, `${shapeMode}/${count}`);
+      phb2AssertSafe(Solver, PackLib, result, zones, `${shapeMode}/${count}`, truck);
       for (const [id, dims] of result.orientedDims) {
         const expected = truth(PHB_DIMS, result.rotations.get(id));
         assert.deepEqual(dims, expected, `${shapeMode}/${count}: ${id} uses THREE-compatible dimensions`);
@@ -10049,7 +10140,7 @@ test('PHASE-B2C sequential oracle, hard rules, and B2B animation hold for 100 id
       assert.deepEqual(result.unpacked, [], `${label}: every case resolves`);
       assert.equal(phb2SequentialForwardViolation(Solver, result, zones, itemSpecsById), null,
         `${label}: no rearward transition skips a legal same-layer forward candidate`);
-      phb2AssertSafe(Solver, PackLib, result, zones, label);
+      phb2AssertSafe(Solver, PackLib, result, zones, label, truck);
       phb2AssertDirectStackLimit(Solver, result, 2, label);
 
       const legalOrientations = Solver.buildOrientationCandidates(itemSpec.dims, itemSpec);
@@ -10306,7 +10397,7 @@ test('PHASE-C2 accepted walls emit dependencies and animate before retained deck
   assert.deepEqual(deckAabb, phc2Aabb(244.8, 268.8, 43.2, 59.2, -48, -30), 'retained deck exact AABB');
   assert.deepEqual(wallDims, truth({ length: 24, width: 18, height: 48 }, result.rotations.get('wall')));
   assert.deepEqual(deckDims, truth({ length: 24, width: 18, height: 16 }, result.rotations.get('deck')));
-  phb2AssertSafe(Solver, PackLib, result, zones, 'C2 wall/deck');
+  phb2AssertSafe(Solver, PackLib, result, zones, 'C2 wall/deck', truck);
 
   const caseIds = new Map(items.map(item => [item.instanceId, item.caseId]));
   const batches = Engine.buildPlacementAnimationBatches(
@@ -10424,7 +10515,7 @@ test('PHASE-C2 empty Front Overhang deck stays unused for 24x18 × 6/20/40/100 a
     assert.equal(result.retentionDependencies.size, 0,
       `${fixture.label}: no invalid deck dependency is emitted`);
     assert.deepEqual(result.unpacked, [], `${fixture.label}: every case resolves`);
-    phb2AssertSafe(Solver, PackLib, result, zones, fixture.label);
+    phb2AssertSafe(Solver, PackLib, result, zones, fixture.label, truck);
     phb2AssertDirectStackLimit(Solver, result, 2, fixture.label);
 
     const legal = Solver.buildOrientationCandidates(itemSpec.dims, itemSpec);
@@ -10537,7 +10628,7 @@ test('PHASE-C2 ordinary, filler, forced-lane, repeated, and mixed cargo use only
     assert.ok(aabb.max.x <= 240 + 0.05 && Math.abs(aabb.min.y) <= 0.05,
       `${id}: case too tall for deck continues on main floor`);
   }
-  phb2AssertSafe(Solver, PackLib, mixed, zones, 'mixed deck fit/too tall');
+  phb2AssertSafe(Solver, PackLib, mixed, zones, 'mixed deck fit/too tall', truck);
 });
 
 test('PHASE-E2B Standard and Wheel Wells solver bytes match the E2B channel-layer baseline', async () => {
@@ -11101,7 +11192,7 @@ test('PHASE-D stable global grouping removes avoidable A/B row fragments and pre
   assert.equal(phb2SequentialForwardViolation(
     Solver, result, zones, specsById, { sameLayerOnly: true }
   ), null, 'group continuity never skips a legal candidate on its eligible surface');
-  phb2AssertSafe(Solver, PackLib, result, zones, 'Phase D grouped floor');
+  phb2AssertSafe(Solver, PackLib, result, zones, 'Phase D grouped floor', truck);
   phb2AssertDirectStackLimit(Solver, result, 2, 'Phase D grouped floor');
 
   const snapshot = phcResultBytes(result);
@@ -11140,7 +11231,7 @@ test('PHASE-D groups equal-priority lanes and keeps equal-capacity row orientati
   const laneRows = phdSpatialRows(Solver, laneResult, laneItems);
   assert.deepEqual(laneRows.map(row => row.cases), ['AAABBB'],
     'matching long cargo forms one contiguous front lane wall');
-  phb2AssertSafe(Solver, PackLib, laneResult, laneZones, 'Phase D grouped lanes');
+  phb2AssertSafe(Solver, PackLib, laneResult, laneZones, 'Phase D grouped lanes', laneTruck);
 
   const rotationTruck = {
     length: 120, width: 50, height: 72, shapeMode: 'frontBonus',
@@ -11159,7 +11250,7 @@ test('PHASE-D groups equal-priority lanes and keeps equal-capacity row orientati
     assert.equal(new Set(row.orientations).size, 1,
       `${row.row}: equal-capacity row retains one orientation`);
   }
-  phb2AssertSafe(Solver, PackLib, rotationResult, rotationZones, 'Phase D orientation continuity');
+  phb2AssertSafe(Solver, PackLib, rotationResult, rotationZones, 'Phase D orientation continuity', rotationTruck);
 
   const mixedItems = [];
   for (let index = 0; index < 3; index++) {
@@ -11191,7 +11282,7 @@ test('PHASE-D groups equal-priority lanes and keeps equal-capacity row orientati
         `${id}: grouping never overrides the deck height limit`);
     }
   }
-  phb2AssertSafe(Solver, PackLib, mixed, laneZones, 'Phase D mixed height');
+  phb2AssertSafe(Solver, PackLib, mixed, laneZones, 'Phase D mixed height', laneTruck);
 });
 
 test('PHASE-D stack groups remain contiguous, supported, deterministic, and animation-safe', async () => {
@@ -11208,13 +11299,26 @@ test('PHASE-D stack groups remain contiguous, supported, deterministic, and anim
   const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
   const rows = phdSpatialRows(Solver, result, items);
 
-  assert.equal(result.placements.size, 12, 'unsafe unretained deck overflow is staged instead of counted as placed');
-  assert.equal(result.phaseStats.stackCount, 9, 'fixture exercises production stack placement');
-  assert.equal(result.unpacked.length, 2, 'items that cannot fit safely are reported');
+  assert.equal(result.placements.size, 10, 'unsafe unretained deck overflow is staged instead of counted as placed');
+  assert.equal(result.phaseStats.stackCount, 7, 'fixture exercises production stack placement without unretained deck overflow');
+  assert.equal(result.unpacked.length, 4, 'items that cannot fit safely are reported');
   assert.equal(phdRowFragmentCount(rows), 0,
     'no stack/floor row returns to a case group after another group starts');
-  phb2AssertSafe(Solver, PackLib, result, zones, 'Phase D grouped stacks');
+  phb2AssertSafe(Solver, PackLib, result, zones, 'Phase D grouped stacks', truck);
   phb2AssertDirectStackLimit(Solver, result, 2, 'Phase D grouped stacks');
+  const deckY = truck.shapeConfig.bonusHeight;
+  const overhangPlaced = phbPlaced(Solver, result, PHB_DIMS).filter(p => p.aabb.min.x >= truck.length - 0.05);
+  assert.ok(overhangPlaced.length > 0,
+    'retained covered Front Overhang sections are used once a legal retainer exists');
+  const directDeckPlacements = overhangPlaced.filter(p => Math.abs(p.aabb.min.y - deckY) <= 0.05);
+  assert.ok(directDeckPlacements.length > 0,
+    'at least one overhang row rests directly on the configured deck height');
+  for (const placement of overhangPlaced) {
+    assert.ok(placement.aabb.min.y >= deckY - 0.05,
+      `${placement.id}: overhang cargo must not occupy the cab void below deckY`);
+    assert.ok((result.retentionDependencies.get(placement.id) || []).length > 0,
+      `${placement.id}: overhang cargo must keep rear-retention dependencies`);
+  }
 
   const repeated = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
   assert.equal(phcResultBytes(repeated), phcResultBytes(result),
@@ -11322,7 +11426,7 @@ test('PHASE-B2B production animation planner preserves semantic boundaries (Std/
         `${shapeMode}/${n}: batch-size shadows preserve one semantic animation order`);
       assert.equal(JSON.stringify([...result.placements]), placementSnapshot,
         `${shapeMode}/${n}: animation planning does not mutate final solver positions`);
-      phb2AssertSafe(Solver, PackLib, result, zones, `${shapeMode}/${n}/animation`);
+      phb2AssertSafe(Solver, PackLib, result, zones, `${shapeMode}/${n}/animation`, truck);
       for (const [id, dims] of result.orientedDims) {
         assert.deepEqual(dims, truth(PHB_DIMS, result.rotations.get(id)), `${shapeMode}/${n}: ${id} THREE dimensions`);
       }
@@ -11426,8 +11530,8 @@ test('AUTO-PACK-A1-ANIM-1 AutoPack diagnostics report solver and animation timin
 
   assert.match(src, /const runStartedAt = nowMs\(\);[\s\S]*let solverMs = 0;[\s\S]*let animationMs = 0;[\s\S]*const animationMetrics = \{ animated: 0, batches: 0, fallbackCount: 0 \};/,
     'AutoPack must initialize timing and animation metrics for each run');
-  assert.match(src, /const solverStartedAt = nowMs\(\);[\s\S]*const solverResult = solveAutoPack\(\{[\s\S]*solverMs = nowMs\(\) - solverStartedAt;/,
-    'AutoPack must measure synchronous solver time');
+  assert.match(src, /const solverStartedAt = nowMs\(\);[\s\S]*const packingSolution = runAdaptiveAutoPack\(\{[\s\S]*const solverResult = packingSolution \? packingSolution\.selectedSolution : null;[\s\S]*solverMs = nowMs\(\) - solverStartedAt;/,
+    'AutoPack must measure synchronous adaptive solver time');
   assert.match(src, /const animationStartedAt = nowMs\(\);[\s\S]*animatePlacements\([\s\S]*animationMetrics[\s\S]*animationMs = nowMs\(\) - animationStartedAt;/,
     'AutoPack must measure animation time');
   assert.match(endBlock, /timings: \{[\s\S]*solverMs: Math\.round\(solverMs\),[\s\S]*animationMs: Math\.round\(animationMs\),[\s\S]*totalMs: Math\.round\(nowMs\(\) - runStartedAt\),[\s\S]*\}/,
@@ -11502,7 +11606,7 @@ stressTest('AUTO-PACK-A1-PERF-1 1200 identical cartons are safe solver outputs a
       `${fixture.shapeMode}: packed placement count chooses instant rendering`);
     assert.ok(legacyAnimationMs >= 45000,
       `${fixture.shapeMode}: old batched animation would be long enough to look frozen (${legacyAnimationMs}ms)`);
-    phb2AssertSafe(Solver, PackLib, result, zones, `${fixture.shapeMode}/1200/perf`);
+    phb2AssertSafe(Solver, PackLib, result, zones, `${fixture.shapeMode}/1200/perf`, truck);
   }
 });
 

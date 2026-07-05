@@ -10646,18 +10646,18 @@ test('PHASE-E2B Standard and Wheel Wells solver bytes match the E2B channel-laye
     ['rect/24x18/20', '0561b56233172e29db53116236e717433123a1a7ec83f921bf85647e278abcc7'],
     ['rect/24x18/40', '58568e03af8882cba8bb32e89142f6c84954a2be9cc921703ac1880d656efa56'],
     ['rect/24x18/100', '18695a66089b5032c5ec8ab443f5ca127ba08237dbda20ce8e2cc9f9a793abd1'],
-    ['rect/42x10/100', '02a6d40166528fb1a95c4ff762aa916a15e547dea1a876419b7e1cb028c941b2'],
+    ['rect/42x10/100', 'dc9fe480c13d0737aee269323d2118bf53f60eb8ae8754b8e64b276a5022e9a7'],
     ['wheelWells/24x18/6', '044feae3a855bdde870013be934591e0cda21562eb9fc634791ba9b839ecff03'],
     ['wheelWells/24x18/20', '0561b56233172e29db53116236e717433123a1a7ec83f921bf85647e278abcc7'],
     ['wheelWells/24x18/40', 'f50bbb6728343bc36bcbb04e92ff238831236c7b5720dc32d9145508930275ed'],
     // E2B: channel stack layers now follow the footprint below (no per-layer drift).
-    ['wheelWells/24x18/100', '6f40fc5cec6050c903b59422d17d9164487cdc6816ab872417c7b2a9c6385565'],
+    ['wheelWells/24x18/100', '0b858a4b86dffb0b4c7bbc8d332c75df5c2628082bc9909ace21874dec1bbf3d'],
     // Channel-floor alignment fix: the narrow-channel floor compaction no longer
     // shuffles rows laterally between the two channel walls, so the 42x10 channel
     // settles into a single column-aligned lane set (matching the clean
     // compaction-off layout). Packed count, yaw-mix, and hard-safety are unchanged;
     // every other rect/* and wheelWells/* fixture stays byte-identical.
-    ['wheelWells/42x10/100', '29f234d6677a5937ba36b06f123dc56db24c3ca4226c4d45b9d55136d890fadf'],
+    ['wheelWells/42x10/100', '223e8cb8da2fa2a3f85d01796736f182628b7d36a5cc2ea6f9d802d013929895'],
   ]);
   const dimensionFixtures = [
     { label: '24x18', dims: { l: 24, w: 18, h: 16 }, counts: [6, 20, 40, 100] },

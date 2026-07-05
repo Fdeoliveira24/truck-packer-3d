@@ -13,6 +13,7 @@
 
 import { createCaseGeometry } from '../editor/geometry-factory.js';
 import { openCaseModal as openSharedCaseModal } from '../ui/overlays/case-modal.js';
+import { buildAutoPackCaseRuleSignature, buildAutoPackResultSignature } from '../services/autopack-engine.js';
 import { MIN_SUPPORT_FRACTION } from '../services/pack-library.js';
 import { getCaseHandlingSummary, getInstanceHandlingSummary } from '../services/case-rule-summary.js';
 
@@ -1733,6 +1734,317 @@ export function createEditorScreen({
       viewportHintBtn.setAttribute('aria-expanded', viewportHintOpen ? 'true' : 'false');
     }
 
+    function getAutoPackResultsHost() {
+      return viewportEl ? viewportEl.closest('.canvas-wrap') : null;
+    }
+
+    function removeAutoPackResultsPanel() {
+      const host = getAutoPackResultsHost();
+      if (!host) return;
+      const existing = host.querySelector('[data-role="autopack-results-panel"]');
+      if (existing) existing.remove();
+    }
+
+    function getAutoPackResultsState() {
+      const results = StateStore.get('autoPackResults');
+      return results && typeof results === 'object' ? results : null;
+    }
+
+    function patchAutoPackResultsState(patch) {
+      const current = getAutoPackResultsState();
+      if (!current) return;
+      StateStore.set({ autoPackResults: { ...current, ...patch } }, { skipHistory: true });
+    }
+
+    function isAutoPackResultsStale(pack, results) {
+      if (!pack || !results || results.packId !== pack.id) return true;
+      const effectiveTruck = getEffectiveTruck(pack);
+      const signaturePack = effectiveTruck && effectiveTruck !== pack.truck
+        ? { ...pack, truck: effectiveTruck }
+        : pack;
+      if (buildAutoPackResultSignature(signaturePack) !== results.currentSignature) return true;
+      const caseRuleSignature = buildAutoPackCaseRuleSignature(signaturePack, caseId => CaseLibrary.getById(caseId));
+      return caseRuleSignature !== results.caseRuleSignature;
+    }
+
+    function getCurrentAutoPackOption(results) {
+      const options = Array.isArray(results && results.options) ? results.options : [];
+      return options.find(option => option.id === results.selectedId) || options[0] || null;
+    }
+
+    function formatAutoPackResultNumber(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return '0';
+      return number.toLocaleString();
+    }
+
+    function formatAutoPackResultVolume(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? `${number.toFixed(1)}%` : '—';
+    }
+
+    function cloneAutoPackCases(cases) {
+      if (Utils && typeof Utils.deepClone === 'function') return Utils.deepClone(cases);
+      return JSON.parse(JSON.stringify(cases));
+    }
+
+    function applyAutoPackResultOption(optionId) {
+      const results = getAutoPackResultsState();
+      const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+      if (!results || !pack || results.packId !== pack.id) return;
+      if (isAutoPackResultsStale(pack, results)) {
+        UIComponents.showToast('Rerun AutoPack after edits.', 'info', { title: 'AutoPack Results' });
+        return;
+      }
+      const option = (results.options || []).find(item => item.id === optionId);
+      if (!option || !Array.isArray(option.nextCases)) return;
+      if (option.id === results.selectedId) return;
+
+      PackLibrary.update(pack.id, { cases: cloneAutoPackCases(option.nextCases) });
+      StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
+      CaseScene.setSelected([]);
+      StateStore.set({
+        autoPackResults: {
+          ...results,
+          selectedId: option.id,
+          currentSignature: option.signature,
+          closed: false,
+        },
+      }, { skipHistory: true });
+      UIComponents.showToast(`Applied ${option.label || 'load option'}.`, 'success', { title: 'AutoPack Results' });
+      render();
+    }
+
+    function makeAutoPackResultStat(label, value) {
+      const stat = document.createElement('div');
+      stat.className = 'tp3d-autopack-results__stat';
+      const labelEl = document.createElement('span');
+      labelEl.className = 'tp3d-autopack-results__stat-label';
+      labelEl.textContent = label;
+      const valueEl = document.createElement('strong');
+      valueEl.className = 'tp3d-autopack-results__stat-value';
+      valueEl.textContent = value;
+      stat.appendChild(labelEl);
+      stat.appendChild(valueEl);
+      return stat;
+    }
+
+    function clampAutoPackResultsPosition(host, panel, position) {
+      if (!host || !panel || !position) return null;
+      const hostRect = host.getBoundingClientRect();
+      const margin = 10;
+      const maxX = Math.max(margin, hostRect.width - panel.offsetWidth - margin);
+      const maxY = Math.max(margin, hostRect.height - panel.offsetHeight - margin);
+      return {
+        x: Math.min(Math.max(Number(position.x) || margin, margin), maxX),
+        y: Math.min(Math.max(Number(position.y) || margin, margin), maxY),
+      };
+    }
+
+    function attachAutoPackResultsDrag(panel, host) {
+      const handle = panel.querySelector('[data-role="autopack-results-drag"]');
+      if (!(handle instanceof HTMLElement) || !host) return;
+      handle.addEventListener('pointerdown', ev => {
+        if (ev.button !== 0) return;
+        if (ev.target instanceof Element && ev.target.closest('button')) return;
+        const hostRect = host.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        const start = {
+          pointerX: ev.clientX,
+          pointerY: ev.clientY,
+          left: panelRect.left - hostRect.left,
+          top: panelRect.top - hostRect.top,
+        };
+        let nextPosition = null;
+        let dragging = false;
+        const onMove = moveEv => {
+          const dx = moveEv.clientX - start.pointerX;
+          const dy = moveEv.clientY - start.pointerY;
+          if (!dragging && Math.hypot(dx, dy) < 5) return;
+          dragging = true;
+          moveEv.preventDefault();
+          nextPosition = clampAutoPackResultsPosition(host, panel, {
+            x: start.left + dx,
+            y: start.top + dy,
+          });
+          if (!nextPosition) return;
+          panel.classList.add('is-dragged');
+          panel.style.left = `${nextPosition.x}px`;
+          panel.style.top = `${nextPosition.y}px`;
+          panel.style.transform = 'none';
+        };
+        const onUp = () => {
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+          if (dragging && nextPosition) {
+            patchAutoPackResultsState({ position: nextPosition });
+          }
+        };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+      });
+    }
+
+    function renderAutoPackResultsPanel(pack) {
+      removeAutoPackResultsPanel();
+      const host = getAutoPackResultsHost();
+      const results = getAutoPackResultsState();
+      const options = Array.isArray(results && results.options) ? results.options : [];
+      if (!host || !pack || !results || results.closed || results.packId !== pack.id || !options.length) return;
+
+      const currentOption = getCurrentAutoPackOption(results);
+      if (!currentOption) return;
+      const stale = isAutoPackResultsStale(pack, results);
+      const hasAlternates = options.length > 1;
+      const expanded = results.expanded === true && hasAlternates;
+      const otherCount = Math.max(0, options.length - 1);
+      const panel = document.createElement('section');
+      panel.className = `tp3d-autopack-results ${expanded ? 'is-expanded' : 'is-compact'}`;
+      panel.dataset.role = 'autopack-results-panel';
+      panel.setAttribute('aria-label', 'AutoPack results');
+      panel.setAttribute('aria-live', 'polite');
+
+      const position = clampAutoPackResultsPosition(host, panel, results.position);
+      if (position) {
+        panel.classList.add('is-dragged');
+        panel.style.left = `${position.x}px`;
+        panel.style.top = `${position.y}px`;
+        panel.style.transform = 'none';
+      }
+
+      const header = document.createElement('div');
+      header.className = 'tp3d-autopack-results__header';
+      header.dataset.role = 'autopack-results-drag';
+
+      const titleWrap = document.createElement('div');
+      titleWrap.className = 'tp3d-autopack-results__title-wrap';
+      const title = document.createElement('div');
+      title.className = 'tp3d-autopack-results__title';
+      title.textContent = expanded ? 'AutoPack Results' : 'Best load selected';
+      titleWrap.appendChild(title);
+      if (stale || hasAlternates) {
+        const sub = document.createElement('div');
+        sub.className = 'tp3d-autopack-results__sub';
+        sub.textContent = stale
+          ? 'Rerun AutoPack after edits.'
+          : `${otherCount} more option${otherCount === 1 ? '' : 's'} available`;
+        titleWrap.appendChild(sub);
+      }
+
+      const headerActions = document.createElement('div');
+      headerActions.className = 'tp3d-autopack-results__header-actions';
+      if (expanded) {
+        const collapseBtn = document.createElement('button');
+        collapseBtn.type = 'button';
+        collapseBtn.className = 'tp3d-autopack-results__icon-btn';
+        collapseBtn.setAttribute('aria-label', 'Minimize AutoPack results');
+        collapseBtn.innerHTML = '<i class="fa-solid fa-chevron-up"></i>';
+        collapseBtn.addEventListener('click', () => patchAutoPackResultsState({ expanded: false }));
+        headerActions.appendChild(collapseBtn);
+      }
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'tp3d-autopack-results__icon-btn';
+      closeBtn.setAttribute('aria-label', 'Close AutoPack results');
+      closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+      closeBtn.addEventListener('click', () => patchAutoPackResultsState({ closed: true }));
+      headerActions.appendChild(closeBtn);
+
+      header.appendChild(titleWrap);
+      header.appendChild(headerActions);
+      panel.appendChild(header);
+
+      const stats = document.createElement('div');
+      stats.className = 'tp3d-autopack-results__stats';
+      stats.appendChild(makeAutoPackResultStat('Packed', formatAutoPackResultNumber(currentOption.packedCount)));
+      stats.appendChild(makeAutoPackResultStat('Staged', formatAutoPackResultNumber(currentOption.stagedCount)));
+      stats.appendChild(makeAutoPackResultStat('Volume', formatAutoPackResultVolume(currentOption.volumePercent)));
+      panel.appendChild(stats);
+
+      if (!expanded) {
+        if (hasAlternates) {
+          const footer = document.createElement('div');
+          footer.className = 'tp3d-autopack-results__footer';
+          const viewBtn = document.createElement('button');
+          viewBtn.type = 'button';
+          viewBtn.className = 'btn btn-sm btn-primary tp3d-autopack-results__view-btn';
+          viewBtn.textContent = 'View options';
+          viewBtn.setAttribute('aria-expanded', 'false');
+          viewBtn.addEventListener('click', () => patchAutoPackResultsState({ expanded: true }));
+          footer.appendChild(viewBtn);
+          panel.appendChild(footer);
+        }
+      } else {
+        const list = document.createElement('div');
+        list.className = 'tp3d-autopack-results__list';
+        options.forEach(option => {
+          const isCurrent = option.id === results.selectedId;
+          const row = document.createElement('div');
+          row.className = `tp3d-autopack-results__option ${isCurrent ? 'is-current' : ''}`;
+
+          const meta = document.createElement('div');
+          meta.className = 'tp3d-autopack-results__option-meta';
+          const labelRow = document.createElement('div');
+          labelRow.className = 'tp3d-autopack-results__option-title-row';
+          const label = document.createElement('div');
+          label.className = 'tp3d-autopack-results__option-title';
+          label.textContent = option.label || option.strategy || 'Load option';
+          labelRow.appendChild(label);
+          if (isCurrent) {
+            const current = document.createElement('span');
+            current.className = 'tp3d-autopack-results__current-pill';
+            current.textContent = 'Current';
+            labelRow.appendChild(current);
+          }
+          const metrics = document.createElement('div');
+          metrics.className = 'tp3d-autopack-results__option-metrics';
+          metrics.textContent = [
+            `${formatAutoPackResultNumber(option.packedCount)} packed`,
+            `${formatAutoPackResultNumber(option.stagedCount)} staged`,
+            `${formatAutoPackResultVolume(option.volumePercent)} volume`,
+          ].join(' · ');
+          meta.appendChild(labelRow);
+          meta.appendChild(metrics);
+
+          const side = document.createElement('div');
+          side.className = 'tp3d-autopack-results__option-side';
+          const status = document.createElement('span');
+          status.className = `tp3d-autopack-results__status tp3d-autopack-results__status--${option.status === 'complete' ? 'complete' : 'partial'}`;
+          status.textContent = option.statusLabel || (option.status === 'complete' ? 'Complete' : 'Partial');
+          const apply = document.createElement('button');
+          apply.type = 'button';
+          apply.className = 'btn btn-sm tp3d-autopack-results__apply-btn';
+          apply.textContent = isCurrent ? 'Current' : 'Apply';
+          apply.disabled = isCurrent || stale;
+          apply.addEventListener('click', () => applyAutoPackResultOption(option.id));
+          side.appendChild(status);
+          side.appendChild(apply);
+
+          row.appendChild(meta);
+          row.appendChild(side);
+          list.appendChild(row);
+        });
+        panel.appendChild(list);
+        if (stale) {
+          const note = document.createElement('div');
+          note.className = 'tp3d-autopack-results__stale';
+          note.textContent = 'Rerun AutoPack after edits.';
+          panel.appendChild(note);
+        }
+      }
+
+      host.appendChild(panel);
+      if (results.position) {
+        const clamped = clampAutoPackResultsPosition(host, panel, results.position);
+        if (clamped) {
+          panel.style.left = `${clamped.x}px`;
+          panel.style.top = `${clamped.y}px`;
+          panel.style.transform = 'none';
+        }
+      }
+      attachAutoPackResultsDrag(panel, host);
+    }
+
     function initEditorUI() {
       if (!supportsWebGL) {
         SystemOverlay.show({
@@ -1892,6 +2204,7 @@ export function createEditorScreen({
         CaseScene.sync(null);
         renderCaseBrowser();
         renderInspectorNoPack();
+        renderAutoPackResultsPanel(null);
         SceneManager.resize();
         return;
       }
@@ -1903,6 +2216,7 @@ export function createEditorScreen({
 
       renderCaseBrowser();
       renderInspector(pack);
+      renderAutoPackResultsPanel(pack);
       SceneManager.resize();
     }
 

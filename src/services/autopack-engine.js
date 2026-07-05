@@ -5,7 +5,7 @@ import { canonicalCargoForStorage } from '../core/cargo-canonical.js';
 // solution is byte-equivalent to a direct solveAutoPack call, so the engine
 // stays a thin orchestrator. (Supersedes the direct-solver-call wiring the
 // A1-R6 source contract pinned — update that spec on the validation branch.)
-import { runAdaptiveAutoPack } from '../packing-core/solution.js';
+import { getPackingStrategy, runAdaptiveAutoPack } from '../packing-core/solution.js';
 import { DEFAULT_SOLVE_BUDGET_MS } from '../packing-core/budget.js';
 
 // The staged pose MUST be atomic: position, rotation and orientedDims all describe
@@ -43,6 +43,120 @@ const CARGO_RULE_FIELDS = [
   'orientationLock',
   'shape',
 ];
+
+const AUTOPACK_RESULT_SIGNATURE_PRECISION = 1000;
+
+function normalizeSignatureNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.round(number * AUTOPACK_RESULT_SIGNATURE_PRECISION) / AUTOPACK_RESULT_SIGNATURE_PRECISION;
+}
+
+function normalizeSignatureValue(value) {
+  if (Array.isArray(value)) return value.map(normalizeSignatureValue);
+  if (value && typeof value === 'object') {
+    return Object.keys(value).sort().reduce((acc, key) => {
+      if (key.startsWith('__')) return acc;
+      const normalized = normalizeSignatureValue(value[key]);
+      if (normalized !== undefined) acc[key] = normalized;
+      return acc;
+    }, {});
+  }
+  if (typeof value === 'number') return normalizeSignatureNumber(value);
+  if (value === undefined) return null;
+  return value;
+}
+
+function stableSignature(value) {
+  return JSON.stringify(normalizeSignatureValue(value));
+}
+
+function getSignaturePosition(inst) {
+  const pos = inst && inst.transform && inst.transform.position ? inst.transform.position : {};
+  return {
+    x: normalizeSignatureNumber(pos.x),
+    y: normalizeSignatureNumber(pos.y),
+    z: normalizeSignatureNumber(pos.z),
+  };
+}
+
+function getSignatureRotation(inst) {
+  const rot = inst && inst.transform && inst.transform.rotation ? inst.transform.rotation : {};
+  return {
+    x: normalizeSignatureNumber(rot.x),
+    y: normalizeSignatureNumber(rot.y),
+    z: normalizeSignatureNumber(rot.z),
+  };
+}
+
+function getSignatureDims(dims) {
+  if (!dims) return null;
+  return {
+    length: normalizeSignatureNumber(dims.length),
+    width: normalizeSignatureNumber(dims.width),
+    height: normalizeSignatureNumber(dims.height),
+  };
+}
+
+function getSignatureCaseRules(caseData) {
+  if (!caseData) return null;
+  const rules = {
+    id: caseData.id || null,
+    dimensions: getSignatureDims(caseData.dimensions),
+    weight: normalizeSignatureNumber(caseData.weight),
+  };
+  CARGO_RULE_FIELDS.forEach(field => {
+    if (hasOwn(caseData, field)) rules[field] = caseData[field];
+  });
+  return rules;
+}
+
+function getSignatureInstanceRules(inst) {
+  const rules = {};
+  [
+    ...CARGO_RULE_FIELDS,
+    'orientationLocked',
+    'lockedRotation',
+    'mustLoadLast',
+    'mustUnloadFirst',
+    'stopGroup',
+    'keepTogetherGroup',
+    'deliverySequence',
+  ].forEach(field => {
+    if (hasOwn(inst, field)) rules[field] = inst[field];
+  });
+  return normalizeSignatureValue(rules);
+}
+
+export function buildAutoPackResultSignature(pack) {
+  const truck = normalizeSignatureValue((pack && pack.truck) || {});
+  const cases = (Array.isArray(pack && pack.cases) ? pack.cases : [])
+    .map(inst => ({
+      id: inst && inst.id ? String(inst.id) : '',
+      caseId: inst && inst.caseId ? String(inst.caseId) : '',
+      hidden: Boolean(inst && inst.hidden),
+      placement: inst && inst.placement ? String(inst.placement) : '',
+      position: getSignaturePosition(inst),
+      rotation: getSignatureRotation(inst),
+      orientedDims: getSignatureDims(inst && inst.orientedDims),
+      rules: getSignatureInstanceRules(inst || {}),
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return stableSignature({ truck, cases });
+}
+
+export function buildAutoPackCaseRuleSignature(pack, getCaseById) {
+  const caseIds = Array.from(new Set(
+    (Array.isArray(pack && pack.cases) ? pack.cases : [])
+      .map(inst => inst && inst.caseId ? String(inst.caseId) : '')
+      .filter(Boolean)
+  )).sort();
+  const cases = caseIds.map(caseId => {
+    const caseData = typeof getCaseById === 'function' ? getCaseById(caseId) : null;
+    return getSignatureCaseRules(caseData) || { id: caseId, missing: true };
+  });
+  return stableSignature({ cases });
+}
 
 function animationNumber(value, fallback = 0) {
   const number = Number(value);
@@ -308,6 +422,100 @@ export function createAutoPackEngine({
     return workspaceGeneration;
   }
 
+  function cloneForAutoPackResults(value) {
+    if (Utils && typeof Utils.deepClone === 'function') return Utils.deepClone(value);
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function getSolutionLabel(solution, index) {
+    const preset = getPackingStrategy(solution && solution.id);
+    if (preset && preset.label) return preset.label;
+    const raw = String((solution && (solution.strategy || solution.id)) || `Option ${index + 1}`);
+    return raw
+      .split(/[-_\s]+/)
+      .filter(Boolean)
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+  }
+
+  function buildAutoPackResultOption(solution, index, packData, stagingMap) {
+    const nextCases = buildAutoPackNextCases(
+      packData.cases || [],
+      solution.placements,
+      solution.rotations,
+      solution.orientedDims,
+      stagingMap
+    );
+    const optionPack = { ...packData, cases: nextCases };
+    const stats = PackLibrary.computeStats(optionPack);
+    const stagedCount = Number(stats && stats.stagedCases) || 0;
+    const solverComplete = solution.solveStatus
+      ? solution.solveStatus.complete === true
+      : !(Array.isArray(solution.unpacked) && solution.unpacked.length);
+    const complete = solverComplete && stagedCount === 0;
+    const id = String(solution.id || solution.strategy || `option-${index + 1}`);
+    return {
+      id,
+      label: getSolutionLabel(solution, index),
+      strategy: String(solution.strategy || id),
+      packedCount: Number(stats && stats.packedCases) || 0,
+      stagedCount,
+      volumePercent: Number.isFinite(stats && stats.volumePercent) ? Number(stats.volumePercent) : null,
+      status: complete ? 'complete' : 'partial',
+      statusLabel: complete ? 'Complete' : 'Partial',
+      signature: buildAutoPackResultSignature(optionPack),
+      nextCases: cloneForAutoPackResults(nextCases),
+    };
+  }
+
+  function buildAutoPackResultsState({ packId, packData, packingSolution, selectedSolution, stagingMap }) {
+    const solverSolutions = Array.isArray(packingSolution && packingSolution.solutions)
+      ? packingSolution.solutions
+      : [];
+    const solutions = solverSolutions.length
+      ? solverSolutions
+      : (selectedSolution && selectedSolution.placements instanceof Map ? [selectedSolution] : []);
+
+    const rawOptions = solutions
+      .filter(solution => solution && solution.placements instanceof Map)
+      .map((solution, index) => buildAutoPackResultOption(solution, index, packData, stagingMap));
+    if (!rawOptions.length) return null;
+
+    const options = [];
+    const signatureToId = new Map();
+    rawOptions.forEach(option => {
+      if (signatureToId.has(option.signature)) return;
+      signatureToId.set(option.signature, option.id);
+      options.push(option);
+    });
+    if (!options.length) return null;
+
+    const selectedRawId = String(
+      (selectedSolution && selectedSolution.id) ||
+      (packingSolution && packingSolution.selected) ||
+      options[0].id
+    );
+    const selectedRaw = rawOptions.find(option => option.id === selectedRawId) || rawOptions[0];
+    const selectedId = selectedRaw && signatureToId.has(selectedRaw.signature)
+      ? signatureToId.get(selectedRaw.signature)
+      : options[0].id;
+    const selectedOption = options.find(option => option.id === selectedId) || options[0];
+
+    return {
+      runId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      packId,
+      selectedId: selectedOption.id,
+      currentSignature: selectedOption.signature,
+      caseRuleSignature: buildAutoPackCaseRuleSignature(packData, caseId => CaseLibrary.getById(caseId)),
+      expanded: false,
+      closed: false,
+      position: null,
+      attemptedSolutionCount: rawOptions.length,
+      hasAlternates: options.length > 1,
+      options,
+    };
+  }
+
   function cancelAllTweens() {
     const T = runtimeWindow.TWEEN || null;
     if (T && typeof T.removeAll === 'function') { T.removeAll(); }
@@ -466,6 +674,8 @@ export function createAutoPackEngine({
       UIComponents.showToast('No cases to pack', 'warning');
       return;
     }
+
+    StateStore.set({ autoPackResults: null }, { skipHistory: true });
 
     isRunning = true;
     // Claim the single mutating-operation slot for the whole run. No await ran
@@ -719,6 +929,16 @@ export function createAutoPackEngine({
           { title: 'AutoPack' }
         );
       }
+
+      StateStore.set({
+        autoPackResults: buildAutoPackResultsState({
+          packId,
+          packData,
+          packingSolution,
+          selectedSolution: solverResult,
+          stagingMap,
+        }),
+      }, { skipHistory: true });
 
       try {
         if (diag && typeof diag.autopackEnd === 'function') {

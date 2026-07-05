@@ -9251,6 +9251,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
           AppShell.renderShell();
           EditorUI.render();
         }
+        if (changes.autoPackResults) {
+          EditorUI.render();
+        }
         if (changes.selectedInstanceIds) {
           EditorUI.render();
         }

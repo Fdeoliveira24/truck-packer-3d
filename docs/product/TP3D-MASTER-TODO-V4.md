@@ -6,21 +6,23 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `e9c86c0` (unchanged until `epic/autopack-core-engine` is merged) |
-| Active branch | `epic/autopack-core-engine` pushed at `817a5bc` |
-| Active phase | **AutoPack Core Engine pre-merge validation is complete and ready for PR/merge decision.** The epic is pushed and clean at `817a5bc`; automated validation is green except `npm run validate`, which still fails only because `format:check` reports existing 87-file formatting drift. Do not auto-format this branch. |
-| Next planned phase | Manual browser smoke, PR confirmation, then merge/push the AutoPack Core Engine epic. |
-| Waiting for | Manual browser smoke / PR confirmation. |
-| Do not start simultaneously | Do not start `app.js` splitting, broad solver cleanup, legacy solver/item-prep deletion, solution strategy expansion, whole-project formatting, billing/auth/security work, or unrelated UI/CSS work before the epic merge decision. |
+| Stable main commit | `5a530f0` (AutoPack Core Engine epic merged/pushed to `main`) |
+| Active branch | `main` pushed at `5a530f0`; next branch: `cleanup/autopack-item-prep` |
+| Active phase | **AutoPack Core Engine epic has been merged and pushed to `main`.** Automated validation is green except `npm run validate`, which still fails only because `format:check` reports existing 87-file formatting drift. Manual browser smoke was acceptable enough to merge. Known UI polish: AutoPack Results panel works but needs future design refinement. |
+| Next planned phase | Legacy item-prep cleanup branch: extract live `buildLegacyAutoPackItems()` into a clearly named item-builder module with compatibility re-export. |
+| Waiting for | Post-merge cleanup branch setup / next implementation prompt. |
+| Do not start simultaneously | Do not mix `app.js` splitting, manual vertical movement, solution portfolio expansion, broad solver cleanup, legacy solver deletion, whole-project formatting, billing/auth/security work, or unrelated UI/CSS work into the post-merge item-prep cleanup. |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
-> **Current source-of-truth note (2026-07-05):** `main` / `origin/main` remain stable at `e9c86c0` until `epic/autopack-core-engine` is merged. The active epic is pushed and clean at `817a5bc` with AutoPack Core Engine validation complete. The only known project-wide gate issue is pre-existing 87-file formatting drift under `npm run validate`; do not auto-format this branch.
+> **Current source-of-truth note (2026-07-05):** `main` / `origin/main` include the AutoPack Core Engine epic through `5a530f0`. The only known project-wide gate issue is pre-existing 87-file formatting drift under `npm run validate`; do not auto-format the AutoPack Core Engine merge. Next action is the focused `cleanup/autopack-item-prep` branch.
 
-## AutoPack Core Engine Epic — Pre-merge Evidence (2026-07-05, `817a5bc`)
+## AutoPack Core Engine Epic — Merged Evidence (2026-07-05, `5a530f0`)
 
 ### Status
-- Epic branch `epic/autopack-core-engine` is pushed and automated validation is green.
+- Epic branch `epic/autopack-core-engine` was fast-forward merged and pushed to `main`.
+- Final main commit after merge: `5a530f0`.
+- Automated validation is green.
 - Production AutoPack routes through packing-core/adaptive strategy selection.
 - Multiple-solution foundation exists internally.
 - Floating AutoPack Results panel exists in the 3D canvas area.
@@ -48,19 +50,8 @@
 - `55b490f` test(autopack): update E2B solver baseline
 - `817a5bc` fix(lint): remove extra boolean cast
 
-### Merge gate checklist
-1. Standard AutoPack browser smoke.
-2. Wheel Wells AutoPack browser smoke.
-3. Front Overhang AutoPack browser smoke.
-4. AutoPack Results panel appears.
-5. View Options expands.
-6. Apply alternate option works without re-solving.
-7. Move/delete/unpack/truck edits disable stale Apply.
-8. Unpack still works.
-9. Category Selection works.
-10. Duplicate elevated boxes do not create floating packed boxes.
-11. No new red console runtime errors.
-12. Decide whether existing format drift blocks merge.
+### Merge gate result
+Manual browser smoke was acceptable enough to merge. Known follow-up: the AutoPack Results panel is functional but needs future design refinement. Existing 87-file format drift remains a separate decision and should not be mixed into AutoPack cleanup work.
 
 ### Architecture note
 This is a validated bridge architecture, not a full solver deletion/rewrite. `packing-core` now owns shared validation, strategy/result envelopes, budgets, wheel-well support model, retention coverage, repair helpers, and diagnostics, but `autopack-solver.js` still owns most placement search/scoring/phase sequencing. Cleanup must continue in smaller branches after merge.
@@ -90,14 +81,17 @@ This is a validated bridge architecture, not a full solver deletion/rewrite. `pa
 7. ⬜ **Organized Unpack** — unpack should create clean grouped staging rows, not random scattered placement.
 
 ### Current AutoPack implementation order
-1. 🔄 **Manual browser smoke for `epic/autopack-core-engine`** — Standard, Wheel Wells, Front Overhang, results panel, stale-apply guard, Unpack, Category Selection, duplicate safety, and console.
-2. 🔄 **Merge/push AutoPack Core Engine epic** — only after manual smoke / PR confirmation.
-3. ⬜ **Formatting-only branch if `validate` is treated as a hard gate** — isolate the existing 87-file formatting drift; do not auto-format the epic.
-4. ⬜ **Legacy item-prep cleanup branch** — extract live item prep before deleting legacy solver code.
-5. ⬜ **Manual vertical placement** — allow rule-validated vertical drag/snap/place.
-6. ⬜ **AutoPack solution portfolio expansion** — expose richer alternate strategy labels/options after the core epic is merged.
-7. ⬜ **`app.js` modularization inventory** — start with M0 inventory, not extraction.
-8. ⬜ **Organized Unpack polish** — clean grouped staging layout.
+1. 🔄 **Legacy item-prep cleanup branch** — extract live item prep before deleting legacy solver code.
+2. ⬜ **Formatting-only branch if `validate` is treated as a hard gate** — isolate the existing 87-file formatting drift; do not auto-format AutoPack work.
+3. ⬜ **Manual vertical placement** — allow rule-validated vertical drag/snap/place.
+4. ⬜ **AutoPack solution portfolio expansion** — expose richer alternate strategy labels/options after cleanup priorities.
+5. ⬜ **`app.js` modularization inventory** — start with M0 inventory, not extraction.
+6. ⬜ **Organized Unpack polish** — clean grouped staging layout.
+
+### AutoPack / UI follow-up
+| Status | Item |
+|--------|------|
+| ⬜ | **AutoPack Results panel UI enhancement** — current panel is functional but visually clunky. Improve button styling to match the app’s design system; replace the long expanded list with a compact carousel/slide pattern when multiple load options exist; add previous/next arrows to cycle through load options; add a small drag handle in the upper-left corner so users know the panel can be moved; keep it floating, compact, non-modal, and draggable. Do not implement until after the merge and cleanup priorities are complete. |
 
 ### Important product rules from recent audits
 - A layout can pass containment/collision/support tests and still fail product quality. Hard-rule validity and load-planning quality must both be evaluated.

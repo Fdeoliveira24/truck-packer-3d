@@ -1133,7 +1133,7 @@ function isAabbInsideTruckGeometry(aabb, zones, wheelWell) {
 }
 
 function aabbIsFullyValid(candidate, aabb, accepted, zones, truck, tol = RECON_TOL, wheelWell = null) {
-  const physicallySupported = Boolean(wheelWell)
+  const physicallySupported = wheelWell
     ? isWheelWellSupportedAndStable(
       aabb,
       accepted,

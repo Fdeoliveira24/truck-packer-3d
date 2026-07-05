@@ -1133,18 +1133,18 @@ function isAabbInsideTruckGeometry(aabb, zones, wheelWell) {
 }
 
 function aabbIsFullyValid(candidate, aabb, accepted, zones, truck, tol = RECON_TOL, wheelWell = null) {
+  const physicallySupported = Boolean(wheelWell)
+    ? isWheelWellSupportedAndStable(
+      aabb,
+      accepted,
+      wheelWell,
+      { weight: Number(candidate?.caseData?.weight) || 0 }
+    )
+    : aabbIsSupported(candidate, aabb, accepted, zones, tol);
   return isAabbInsideTruckGeometry(aabb, zones, wheelWell) &&
     !aabbIntersectsWheelWellBlockedBody(aabb, truck) &&
     !overlapsAny(aabb, (accepted || []).map(entry => entry.aabb)) &&
-    (
-      aabbIsSupported(candidate, aabb, accepted, zones, tol) ||
-      (Boolean(wheelWell) && isWheelWellSupportedAndStable(
-        aabb,
-        accepted,
-        wheelWell,
-        { weight: Number(candidate?.caseData?.weight) || 0 }
-      ))
-    ) &&
+    physicallySupported &&
     evaluateFrontOverhangRearRetention(aabb, accepted, truck, zones).retained;
 }
 

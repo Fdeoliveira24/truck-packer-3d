@@ -52,7 +52,6 @@ export { aabbsOverlap, computeXzOverlapArea, isAabbContainedInAnyZone };
 import {
   RIGHT_ANGLE_RAD,
   normalizeRightAngleRotation,
-  rotateVectorXYZ,
   getOrientedDimsForRotation as getOrientedDimsForRotationCanonical,
 } from '../core/oriented-dims.js';
 
@@ -149,8 +148,8 @@ export function buildOrientationCandidates(dims = {}, item = {}) {
   // - Rotating (footprint yaw: length/width swap, height axis unchanged) is
   //   ALWAYS available when the orientation policy allows the face — it never
   //   requires "Allow flipping". Both upright yaws are generated for
-  //   'any'/'upright', and BOTH footprint yaws of every side face are
-  //   generated for 'onSide'.
+  //   'any'/'upright'. The 'onSide' policy stays aligned with legacy item-prep:
+  //   two side-face candidates, no identity/horizontal yaw fallback.
   // - Flipping/tipping (resting on another face, vertical height changes) is
   //   generated only when the policy permits it: canFlip under 'any', or the
   //   'onSide' policy itself. Scoring chooses among candidates, so a tipped
@@ -161,24 +160,8 @@ export function buildOrientationCandidates(dims = {}, item = {}) {
   }
 
   if (lock === 'onSide') {
-    // Physical uprightness test: raw euler components can COMPOSE back to an
-    // upright pose (e.g. X90+Y90 keeps the height axis vertical), so onSide
-    // candidates are filtered by where the rotation actually sends the case's
-    // own height axis — never by the euler components alone.
-    const addSide = (x, y, z) => {
-      const heightAxis = rotateVectorXYZ({ x: 0, y: 1, z: 0 }, normalizeRightAngleRotation({ x, y, z }));
-      if (Math.abs(Math.abs(heightAxis.y) - 1) < 1e-9) return;
-      add(x, y, z);
-    };
-    addSide(0, 0, RIGHT_ANGLE_RAD);
-    addSide(RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
-    // Footprint yaw variants of the side faces: a case lying on its side may
-    // still be rotated on the floor. Appended after the historical two so the
-    // dims-dedupe keeps existing rotations for already-covered triples.
-    addSide(0, RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD);
-    addSide(RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD);
-    addSide(RIGHT_ANGLE_RAD, 0, 0);
-    addSide(RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD, 0);
+    add(0, 0, RIGHT_ANGLE_RAD);
+    add(RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
   }
 
   // canFlip may only introduce tipped (non-upright) faces when the case policy
@@ -421,6 +404,7 @@ function createStackCapacityCache(packed) {
 }
 
 function normalizeItem(item = {}, index = 0) {
+  /** @type {any} */
   const source = { ...item, ...canonicalCargoForStorage(item) };
   const dims = readDims(source.dims || source.dimensions || source.orientedDims);
   const id = source.instanceId || source.id || `autopack-item-${index}`;
@@ -1807,14 +1791,13 @@ function findStackPlacement(
     for (const candidate of candidates) {
       const wheelWellCandidate = candidate.wheelWellCandidate === true;
       const containedInUsableZone = isAabbContainedInAnyZone(candidate.aabb, zones);
-      if (wheelWellCandidate) {
+      if (wheelWell) {
         if (!isAabbWithinTruckMinusBlocked(candidate.aabb, wheelWell)) continue;
         if (!isWheelWellSupportedAndStable(candidate.aabb, packed, wheelWell, item)) continue;
       } else if (!containedInUsableZone) {
-        if (!wheelWell || !isAabbWithinTruckMinusBlocked(candidate.aabb, wheelWell)) continue;
-        if (!isWheelWellSupportedAndStable(candidate.aabb, packed, wheelWell, item)) continue;
+        continue;
       }
-      if (!wheelWellCandidate && containedInUsableZone && !supportsCandidate(candidate.aabb, packed, item, capacityCache)) {
+      if (!wheelWell && containedInUsableZone && !supportsCandidate(candidate.aabb, packed, item, capacityCache)) {
         continue;
       }
       if (collidesPacked(candidate.aabb, packed)) continue;
@@ -1827,7 +1810,7 @@ function findStackPlacement(
       );
       const supportFraction = wheelWellCandidate
         ? candidate.supportFraction
-        : (!containedInUsableZone && wheelWell)
+        : wheelWell
           ? computeWheelWellSupport(candidate.aabb, packed, wheelWell, item).fraction
         : computeSupportFraction(candidate.aabb, supports);
       const scoredCandidate = { ...candidate, supportFraction, orientation };
@@ -1951,16 +1934,15 @@ function repeatedStackCandidateIsLegal(candidate, item, zones, packed, retention
   const containedInUsableZone = isAabbContainedInAnyZone(candidate.aabb, zones);
   if (wheelWell) {
     if (!isAabbWithinTruckMinusBlocked(candidate.aabb, wheelWell)) return false;
+    if (!isWheelWellSupportedAndStable(candidate.aabb, packed, wheelWell, item)) return false;
   } else if (!containedInUsableZone) {
     return false;
   }
 
   if (collidesPacked(candidate.aabb, packed)) return false;
 
-  if (containedInUsableZone) {
+  if (!wheelWell && containedInUsableZone) {
     if (!supportsCandidate(candidate.aabb, packed, item)) return false;
-  } else if (!wheelWell || !isWheelWellSupportedAndStable(candidate.aabb, packed, wheelWell, item)) {
-    return false;
   }
 
   return candidateHasRearRetention(candidate.aabb, packed, retentionContext);
@@ -2315,21 +2297,16 @@ function getFrontCompressionBounds(placement, zones, wheelWell) {
 }
 
 function placementHasValidVerticalSupport(placement, packedWithoutPlacement, zones, wheelWell) {
-  const containedInUsableZone = isAabbContainedInAnyZone(placement.aabb, zones);
+  if (wheelWell) {
+    return isWheelWellSupportedAndStable(
+      placement.aabb,
+      packedWithoutPlacement,
+      wheelWell,
+      placement.item
+    );
+  }
   return isPlacementOnZoneFloor(placement.aabb, zones) ||
-    (containedInUsableZone && supportsCandidate(placement.aabb, packedWithoutPlacement, placement.item)) ||
-    (wheelWell && !containedInUsableZone && isWheelWellSupportedAndStable(
-      placement.aabb,
-      packedWithoutPlacement,
-      wheelWell,
-      placement.item
-    )) ||
-    (wheelWell && isWheelWellSupportedAndStable(
-      placement.aabb,
-      packedWithoutPlacement,
-      wheelWell,
-      placement.item
-    ));
+    supportsCandidate(placement.aabb, packedWithoutPlacement, placement.item);
 }
 
 function placementPassesCompressionRules(placement, packedWithoutPlacement, zones, retentionContext, wheelWell) {
@@ -3235,7 +3212,7 @@ function findWheelWellSeamFloorPlacement(item, packed, geometry, loadFrontFirst)
         if (!isWheelWellSupportedAndStable(aabb, packed, geometry, item)) continue;
         const score = [loadFrontFirst ? -aabb.max.x : aabb.min.x, aabb.min.z, h];
         if (!best || compareScore(score, bestScore) < 0) {
-          best = { position, dims, aabb, orientation, zone: null };
+          best = { position, dims, aabb, orientation, zone: null, freeRect: null };
           bestScore = score;
         }
       }

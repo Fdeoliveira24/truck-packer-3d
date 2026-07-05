@@ -106,6 +106,7 @@ export function buildRepairAnchors(node, zones, neighborAabbs, options = {}) {
  * @param {Array} [helpers.zones] - usable zones for anchor generation.
  * @param {() => Array} [helpers.neighborAabbs] - current accepted AABBs
  *   (re-read per node so freshly repaired cases become anchor neighbors).
+ * @param {Object} [helpers.anchorOptions] - optional anchor search tuning.
  * @returns {{ repaired: Array<{id, position}>, failed: Array }}
  */
 export function repairDependentPlacements(nodes, helpers) {

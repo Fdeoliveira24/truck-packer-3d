@@ -1172,6 +1172,166 @@ function candidateSnapBottoms(curAabb, accepted, zones, tol = RECON_TOL, wheelWe
   return [...new Set(bottoms.map(b => Math.round(b * 1e6) / 1e6))].sort((a, b) => a - b);
 }
 
+// Toast-ready reasons for manual vertical placement outcomes, keyed by code.
+const MANUAL_VERTICAL_REASONS = {
+  'invalid-selection': 'Select one placed case to move vertically.',
+  'staged-case': 'Staged cases cannot be moved vertically. Place the case in the truck first.',
+  'already-resting': 'This case is already resting on the nearest valid surface.',
+  'no-level-above': 'No valid support level above this case at its current spot.',
+  'no-level-below': 'No valid support level below this case at its current spot.',
+  'blocked-collision': 'Another case or a blocked zone is in the way.',
+  'no-clearance-above': 'Not enough clearance above for this case.',
+  'support-rules': 'The surface there cannot support this case (stacking or weight rules).',
+  'needs-rear-retention': 'The raised deck needs rear retention at the step before this case can rest there.',
+  'outside-truck': 'The requested position is outside the truck.',
+};
+
+function manualVerticalFailure(code) {
+  return { ok: false, code, reason: MANUAL_VERTICAL_REASONS[code] || 'Cannot move this case vertically.' };
+}
+
+// Explain why the nearest rejected level failed, mirroring aabbIsFullyValid's
+// factor order so the toast names the first hard rule that actually blocked it.
+function explainInvalidLevel(node, aabb, accepted, zones, truck, wheelWell, mode) {
+  if (!isAabbInsideTruckGeometry(aabb, zones, wheelWell)) {
+    return manualVerticalFailure(mode === 'up' ? 'no-clearance-above' : 'blocked-collision');
+  }
+  if (aabbIntersectsWheelWellBlockedBody(aabb, truck) ||
+      overlapsAny(aabb, (accepted || []).map(entry => entry.aabb))) {
+    return manualVerticalFailure('blocked-collision');
+  }
+  const physicallySupported = wheelWell
+    ? isWheelWellSupportedAndStable(aabb, accepted, wheelWell, { weight: Number(node?.caseData?.weight) || 0 })
+    : aabbIsSupported(node, aabb, accepted, zones, RECON_TOL);
+  if (!physicallySupported) return manualVerticalFailure('support-rules');
+  if (!evaluateFrontOverhangRearRetention(aabb, accepted, truck, zones).retained) {
+    return manualVerticalFailure('needs-rear-retention');
+  }
+  return manualVerticalFailure('blocked-collision');
+}
+
+/**
+ * Manual vertical placement resolver for ONE placed instance. Finds the next
+ * valid support level above/below the case at its current X/Z ('up'/'down'),
+ * the nearest valid resting surface below ('drop'), or validates/corrects a
+ * requested position ('resolve', with options.desiredPosition). Every candidate
+ * level flows through the same candidateSnapBottoms + aabbIsFullyValid pipeline
+ * used by reconciliation, so a result can never fake support, penetrate blocked
+ * wheel-well bodies, or bypass Front Overhang rear retention. Pure: reads the
+ * given pack and never mutates state.
+ */
+export function findManualVerticalPlacement(pack, caseLibrary, instanceId, options = {}) {
+  const mode = options && typeof options.mode === 'string' ? options.mode : '';
+  if (!['up', 'down', 'drop', 'resolve'].includes(mode)) return manualVerticalFailure('invalid-selection');
+  const source = pack && typeof pack === 'object' ? pack : {};
+  const truck = source.truck && typeof source.truck === 'object' ? source.truck : {};
+  const zones = getTrailerUsableZones(truck);
+  const wheelWell = getWheelWellGeometry(truck);
+  const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
+
+  let target = null;
+  const accepted = [];
+  for (const inst of (Array.isArray(source.cases) ? source.cases : [])) {
+    if (!inst) continue;
+    const isTarget = inst.id === instanceId;
+    if (inst.placement === 'staged') {
+      if (isTarget) return manualVerticalFailure('staged-case');
+      continue; // staged cargo sits outside the truck and is never an obstacle
+    }
+    const caseData = caseMap.get(inst.caseId);
+    const pos = normalizeTransformPosition(inst.transform && inst.transform.position);
+    const canonical = caseData ? getCanonicalInstanceEffectiveDims(inst, caseData) : { ok: false };
+    if (!caseData || !pos || !canonical.ok) {
+      if (isTarget) return manualVerticalFailure('invalid-selection');
+      continue; // unresolved/malformed neighbors cannot participate as obstacles
+    }
+    const node = {
+      inst,
+      caseData,
+      canonical,
+      dims: canonical.dims,
+      curPos: pos,
+      curAabb: makeAabb(pos, canonical.dims),
+    };
+    if (isTarget) target = node;
+    else accepted.push({ ...node, aabb: node.curAabb, position: pos });
+  }
+  if (!target) return manualVerticalFailure('invalid-selection');
+  if (!target.canonical.orientationAllowed || !target.canonical.lockConsistent) {
+    return manualVerticalFailure('invalid-selection');
+  }
+
+  const dims = target.dims;
+  let probe = target.curAabb;
+  let referenceBottom = target.curAabb.min.y;
+  let anchorX = target.curPos.x;
+  let anchorZ = target.curPos.z;
+  if (mode === 'resolve') {
+    const desired = normalizeTransformPosition(options.desiredPosition);
+    if (!desired) return manualVerticalFailure('invalid-selection');
+    probe = makeAabb(desired, dims);
+    referenceBottom = probe.min.y;
+    anchorX = desired.x;
+    anchorZ = desired.z;
+    // Deliberate out-of-truck moves stay on the caller's legacy staging path.
+    if (!(zones || []).some(z => reconXzOverlapArea(probe, z) > 0)) {
+      return manualVerticalFailure('outside-truck');
+    }
+    if (aabbIsFullyValid(target, probe, accepted, zones, truck, RECON_TOL, wheelWell)) {
+      return {
+        ok: true,
+        position: desired,
+        fromBottom: target.curAabb.min.y,
+        toBottom: probe.min.y,
+        corrected: false,
+      };
+    }
+  }
+
+  const levels = candidateSnapBottoms(probe, accepted, zones, RECON_TOL, wheelWell);
+  let candidates;
+  if (mode === 'up') {
+    candidates = levels.filter(b => b > referenceBottom + RECON_TOL);
+  } else if (mode === 'down') {
+    candidates = levels.filter(b => b < referenceBottom - RECON_TOL).reverse();
+  } else if (mode === 'drop') {
+    candidates = levels.filter(b => b <= referenceBottom + RECON_TOL).reverse();
+  } else {
+    candidates = [...levels].sort((a, b) =>
+      Math.abs(a - referenceBottom) - Math.abs(b - referenceBottom) || a - b);
+  }
+
+  if (!candidates.length) {
+    if (mode === 'up') return manualVerticalFailure('no-level-above');
+    if (mode === 'down' || mode === 'drop') return manualVerticalFailure('no-level-below');
+    return manualVerticalFailure('blocked-collision');
+  }
+
+  for (const bottom of candidates) {
+    const sPos = { x: anchorX, y: bottom + dims.height / 2, z: anchorZ };
+    const sAabb = makeAabb(sPos, dims);
+    if (!aabbIsFullyValid(target, sAabb, accepted, zones, truck, RECON_TOL, wheelWell)) continue;
+    if (mode === 'drop' && Math.abs(bottom - referenceBottom) <= RECON_TOL) {
+      return manualVerticalFailure('already-resting');
+    }
+    return {
+      ok: true,
+      position: sPos,
+      fromBottom: target.curAabb.min.y,
+      toBottom: bottom,
+      corrected: mode === 'resolve',
+    };
+  }
+
+  // Nothing passed. Down keeps the honest "no legal level below" statement (the
+  // current supporter blocks the column by construction); other modes explain
+  // the nearest rejected level so the toast names the blocking hard rule.
+  if (mode === 'down') return manualVerticalFailure('no-level-below');
+  const nearest = candidates[0];
+  const nearestAabb = makeAabb({ x: anchorX, y: nearest + dims.height / 2, z: anchorZ }, dims);
+  return explainInvalidLevel(target, nearestAabb, accepted, zones, truck, wheelWell, mode);
+}
+
 /**
  * PURE: revalidate every placed instance of `pack` against `nextTruck`. Returns
  * { nextPack, kept, adjusted, invalid, summary, acceptedAabbs } with NO mutation.

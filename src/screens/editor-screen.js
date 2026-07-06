@@ -942,6 +942,10 @@ export function createInteractionManager({
     const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     const dragOffset = new THREE.Vector3();
     const tmpVec3 = new THREE.Vector3();
+    // Alt-drag release-outcome preview is throttled so the validated resolve
+    // never runs per pointer event on large loads.
+    const DRAG_PREVIEW_THROTTLE_MS = 120;
+    let lastDragPreviewTime = 0;
 
     let domEl = null;
     let hoveredId = null;
@@ -1426,6 +1430,31 @@ export function createInteractionManager({
         if (!anyCollides) {
           groupIds.forEach(id => CaseScene.setCollision(id, false));
         }
+
+        // V2B release-outcome preview (single packed case only): highlight red
+        // when the validated release would reject this spot outright. A spot
+        // that merely corrects to a nearby legal level stays neutral, and
+        // staging-bound positions are never flagged.
+        if (groupIds.length === 1 && !anyCollides &&
+            typeof PackLibrary.findManualVerticalPlacement === 'function') {
+          const now = performance.now();
+          if (now - lastDragPreviewTime >= DRAG_PREVIEW_THROTTLE_MS) {
+            lastDragPreviewTime = now;
+            const previewPack = PackLibrary.getById(StateStore.get('currentPackId'));
+            const previewInst = previewPack
+              ? (previewPack.cases || []).find(i => i && i.id === draggingId)
+              : null;
+            if (previewInst && previewInst.placement !== 'staged') {
+              const resolved = PackLibrary.findManualVerticalPlacement(
+                previewPack,
+                CaseLibrary.getCases(),
+                draggingId,
+                { mode: 'resolve', desiredPosition: SceneManager.vecWorldToInches(obj.position) }
+              );
+              CaseScene.setCollision(draggingId, !resolved.ok && resolved.code !== 'outside-truck');
+            }
+          }
+        }
         return;
       }
 
@@ -1562,6 +1591,54 @@ export function createInteractionManager({
       if (!pack) {
         resetDrag();
         return;
+      }
+
+      // V2B: a single packed case releases through the validated placement
+      // resolver so an Alt-drag raised position is honored when legal, corrected
+      // to the nearest legal level when not, and never silently settled onto
+      // cargo that cannot carry it. Multi-select, staged-case, and out-of-truck
+      // releases keep the legacy settle path below unchanged.
+      const singleDraggedInst = groupIds.length === 1
+        ? (pack.cases || []).find(i => i && i.id === instanceId)
+        : null;
+      if (singleDraggedInst && singleDraggedInst.placement !== 'staged' &&
+          typeof PackLibrary.findManualVerticalPlacement === 'function' &&
+          typeof PackLibrary.updateCasesWithManualRevalidation === 'function') {
+        const resolved = PackLibrary.findManualVerticalPlacement(pack, CaseLibrary.getCases(), instanceId, {
+          mode: 'resolve',
+          desiredPosition: SceneManager.vecWorldToInches(obj.position),
+        });
+        if (resolved.ok) {
+          obj.position.copy(SceneManager.vecInchesToWorld(resolved.position));
+          CaseScene.setCollision(instanceId, false);
+          const nextCases = (pack.cases || []).map(item =>
+            item.id === instanceId
+              ? { ...item, transform: { ...(item.transform || {}), position: resolved.position }, placement: 'packed' }
+              : item
+          );
+          const result = PackLibrary.updateCasesWithManualRevalidation(packId, nextCases, CaseLibrary.getCases(), {
+            repairDependents: true,
+          });
+          const stagedSelf = result && Array.isArray(result.stagedIds) && result.stagedIds.includes(instanceId);
+          let tone = resolved.corrected ? 'info' : 'success';
+          let base = resolved.corrected ? 'Adjusted to the nearest supported level.' : 'Placed 1 case.';
+          if (stagedSelf) {
+            tone = 'warning';
+            base = 'The case could not rest safely and was moved to staging.';
+          }
+          UIComponents.showToast(result ? formatVerticalMoveMessage(result, instanceId, base) : base, tone);
+          resetDrag();
+          CaseScene.applyOOGHighlights();
+          return;
+        }
+        // Deliberate out-of-truck moves and degenerate references keep the
+        // legacy settle/staging path; physical rule blocks revert honestly.
+        if (resolved.code !== 'outside-truck' && resolved.code !== 'invalid-selection') {
+          revertGroupToStart(groupIds, startMap);
+          UIComponents.showToast(resolved.reason || 'Cannot place here.', 'error');
+          resetDrag();
+          return;
+        }
       }
 
       // Gravity: settle selection bottom-up to preserve stacking.

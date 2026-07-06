@@ -465,3 +465,54 @@ test('MANUAL-VERTICAL vertical placement buttons expose keyboard shortcut hints'
   assert.match(src, /btn\.title = hint;/,
     'shortcut hints must be native title tooltips on the vertical buttons');
 });
+
+// V2B validated drag release: a single packed case must release through the
+// validated resolve path with dependent repair and honest outcome toasts,
+// while multi-select, staged-case, and out-of-truck releases keep the legacy
+// settle/staging path byte-for-byte.
+test('MANUAL-VERTICAL drag release for a single packed case resolves through validated placement', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function finishDrag()');
+  const end = src.indexOf('\n\n    function resetDrag()', start);
+  assert.ok(start >= 0 && end > start, 'finishDrag block must exist');
+  const block = src.slice(start, end);
+
+  assert.match(block, /const singleDraggedInst = groupIds\.length === 1/,
+    'the validated release branch must be gated to a single dragged case');
+  assert.match(block, /singleDraggedInst\.placement !== 'staged'/,
+    'staged-case drag release must keep the legacy path');
+  assert.match(block, /mode: 'resolve',\s*\n\s*desiredPosition: SceneManager\.vecWorldToInches\(obj\.position\)/,
+    'release must resolve the dragged position through findManualVerticalPlacement');
+  assert.match(block, /updateCasesWithManualRevalidation\(packId, nextCases, CaseLibrary\.getCases\(\), \{\s*\n\s*repairDependents: true,/,
+    'the validated release must commit with dependent repair');
+  assert.match(block, /formatVerticalMoveMessage\(result, instanceId/,
+    'release toasts must report the actual post-commit outcome');
+  assert.match(block, /result\.stagedIds\.includes\(instanceId\)/,
+    'a release that ends staged must never claim a plain success');
+  assert.match(block, /revertGroupToStart\(groupIds, startMap\);\s*\n\s*UIComponents\.showToast\(resolved\.reason/,
+    'rule-blocked releases must revert with the blocking reason');
+  assert.match(block, /resolved\.code !== 'outside-truck' && resolved\.code !== 'invalid-selection'/,
+    'out-of-truck releases must fall through to the legacy staging path');
+  // The legacy path must remain intact for multi-select and staged releases.
+  assert.match(block, /CaseScene\.settleY\(id\)/,
+    'the legacy settle path must remain for multi-select and staged releases');
+  assert.match(block, /isAabbContainedInAnyZone\(aabb, zonesInches\) \? 'packed' : 'staged'/,
+    'legacy zone-containment placement classification must remain unchanged');
+});
+
+test('MANUAL-VERTICAL alt-drag shows a throttled release-outcome preview for a single packed case', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function updateDrag(ev)');
+  const end = src.indexOf('function revertGroupToStart', start);
+  assert.ok(start >= 0 && end > start, 'updateDrag block must exist');
+  const block = src.slice(start, end);
+
+  assert.match(block, /DRAG_PREVIEW_THROTTLE_MS/,
+    'the alt-drag validity preview must be throttled');
+  assert.match(block, /groupIds\.length === 1 && !anyCollides/,
+    'the preview must be limited to a single non-colliding dragged case');
+  assert.match(block, /previewInst\.placement !== 'staged'/,
+    'staged-case drags must not run the packed-placement preview');
+  assert.match(block, /!resolved\.ok && resolved\.code !== 'outside-truck'/,
+    'staging-bound drags must not be flagged invalid by the preview');
+});

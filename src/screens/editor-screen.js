@@ -1014,6 +1014,116 @@ export function createCaseScene({
       };
     }
 
+    function addPreviewSurface(surfaces, surface) {
+      if (!surface || !surface.min || !surface.max) return;
+      const minX = Number(surface.min.x);
+      const maxX = Number(surface.max.x);
+      const minZ = Number(surface.min.z);
+      const maxZ = Number(surface.max.z);
+      const topY = Number(surface.topY);
+      if (!Number.isFinite(minX) || !Number.isFinite(maxX) ||
+          !Number.isFinite(minZ) || !Number.isFinite(maxZ) ||
+          !Number.isFinite(topY) ||
+          minX === maxX || minZ === maxZ) {
+        return;
+      }
+      surfaces.push({
+        id: surface.id,
+        kind: surface.kind,
+        min: { x: Math.min(minX, maxX), z: Math.min(minZ, maxZ) },
+        max: { x: Math.max(minX, maxX), z: Math.max(minZ, maxZ) },
+        topY,
+      });
+    }
+
+    function getSurfaceKindForUsableZone(truck, zoneWorld) {
+      const topY = Number(zoneWorld && zoneWorld.min && zoneWorld.min.y);
+      if (!(topY > 1e-6)) return 'truck-floor';
+      return truck && truck.shapeMode === 'wheelWells' ? 'wheel-well-top' : 'front-deck';
+    }
+
+    function getSurfaceFollowingPreviewSurfaces(instanceId) {
+      const packId = StateStore.get('currentPackId');
+      const pack = packId ? PackLibrary.getById(packId) : null;
+      const truck = pack && pack.truck ? pack.truck : null;
+      const packInstances = new Map(
+        (pack && Array.isArray(pack.cases) ? pack.cases : [])
+          .filter(inst => inst && inst.id)
+          .map(inst => [inst.id, inst])
+      );
+      const surfaces = [];
+
+      if (truck &&
+          TrailerGeometry &&
+          typeof TrailerGeometry.getTrailerUsableZones === 'function' &&
+          typeof TrailerGeometry.zonesInchesToWorld === 'function') {
+        const zonesInches = TrailerGeometry.getTrailerUsableZones(truck);
+        const zonesWorld = TrailerGeometry.zonesInchesToWorld(zonesInches);
+        zonesWorld.forEach((zoneWorld, index) => {
+          if (!zoneWorld || !zoneWorld.min || !zoneWorld.max) return;
+          addPreviewSurface(surfaces, {
+            id: `truck-zone-${index}`,
+            kind: getSurfaceKindForUsableZone(truck, zoneWorld),
+            min: { x: zoneWorld.min.x, z: zoneWorld.min.z },
+            max: { x: zoneWorld.max.x, z: zoneWorld.max.z },
+            topY: zoneWorld.min.y,
+          });
+        });
+      }
+
+      if (truck && typeof PackLibrary.getStagingWorkAreaBounds === 'function') {
+        const stagingBounds = PackLibrary.getStagingWorkAreaBounds(truck);
+        if (stagingBounds && stagingBounds.min && stagingBounds.max) {
+          const minWorld = SceneManager.vecInchesToWorld({
+            x: stagingBounds.min.x,
+            y: Number(stagingBounds.min.y) || 0,
+            z: stagingBounds.min.z,
+          });
+          const maxWorld = SceneManager.vecInchesToWorld({
+            x: stagingBounds.max.x,
+            y: Number(stagingBounds.min.y) || 0,
+            z: stagingBounds.max.z,
+          });
+          addPreviewSurface(surfaces, {
+            id: 'staging-floor',
+            kind: 'staging-floor',
+            min: { x: minWorld.x, z: minWorld.z },
+            max: { x: maxWorld.x, z: maxWorld.z },
+            topY: minWorld.y,
+          });
+        }
+      }
+
+      for (const [otherId, otherGroup] of instances.entries()) {
+        if (otherId === instanceId) continue;
+        if (!otherGroup || otherGroup.visible === false) continue;
+        const otherInst = packInstances.get(otherId);
+        if (otherInst && otherInst.placement === 'staged') continue;
+        const aabb = getAabbWorld(otherId);
+        if (!aabb) continue;
+        addPreviewSurface(surfaces, {
+          id: otherId,
+          kind: 'box-top',
+          min: { x: aabb.min.x, z: aabb.min.z },
+          max: { x: aabb.max.x, z: aabb.max.z },
+          topY: aabb.max.y,
+        });
+      }
+
+      return surfaces;
+    }
+
+    function getSurfaceFollowingPreview(instanceId, candidateWorldPos) {
+      const group = instances.get(instanceId);
+      if (!group || !group.userData.halfWorld || !candidateWorldPos) return null;
+      return computeSurfaceFollowingPreviewY({
+        halfWorld: group.userData.halfWorld,
+        centerX: candidateWorldPos.x,
+        centerZ: candidateWorldPos.z,
+        surfaces: getSurfaceFollowingPreviewSurfaces(instanceId),
+      });
+    }
+
     /**
      * Snap a world position to the nearest box edge or truck wall (XZ only).
      * Returns adjusted { x, z } or null if no snap occurred.
@@ -1155,6 +1265,7 @@ export function createCaseScene({
       applyOOGHighlights,
       settleY,
       snapToNearest,
+      getSurfaceFollowingPreview,
       refreshGizmo,
       updateGizmoTransform,
       setGizmoActive,
@@ -1208,6 +1319,7 @@ export function createInteractionManager({
     let dragStartPosWorld = null;
     let dragGroupIds = null;
     let dragGroupStartWorld = null; // Map<instanceId, THREE.Vector3>
+    let surfaceFollowingDrag = false;
     let lastRaycastTime = 0;
     const RAYCAST_THROTTLE = 50; // ms - throttle hover raycasts
 
@@ -1886,6 +1998,15 @@ export function createInteractionManager({
       SceneManager.focusOnWorldPoint(hit.pointWorld, { duration: 700 });
     }
 
+    function canSurfaceFollowNormalDrag(instanceId, groupIds) {
+      if (!instanceId || !Array.isArray(groupIds) || groupIds.length !== 1 || groupIds[0] !== instanceId) {
+        return false;
+      }
+      const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+      const inst = pack ? (pack.cases || []).find(i => i && i.id === instanceId) : null;
+      return Boolean(inst && inst.placement !== 'staged');
+    }
+
     function startDrag() {
       if (!pressed || !pressed.instanceId) return;
       // Do not begin moving a case while a mutating operation owns the editor. Click
@@ -1914,6 +2035,7 @@ export function createInteractionManager({
         const o = CaseScene.getObject(id);
         if (o) dragGroupStartWorld.set(id, o.position.clone());
       });
+      surfaceFollowingDrag = canSurfaceFollowNormalDrag(draggingId, dragGroupIds);
 
       dragPlane.set(new THREE.Vector3(0, 1, 0), -dragStartPosWorld.y);
       dragOffset.copy(CaseScene.getObject(draggingId).position).sub(pressed.pointWorld);
@@ -1936,6 +2058,7 @@ export function createInteractionManager({
       // Alt/Option key: vertical (Y-axis) drag mode
       const altKey = ev && ev.altKey;
       if (altKey) {
+        surfaceFollowingDrag = false;
         // Use a plane facing the camera for vertical movement
         const camDir = camera.getWorldDirection(new THREE.Vector3());
         const vertPlaneNormal = new THREE.Vector3(camDir.x, 0, camDir.z).normalize();
@@ -2023,6 +2146,13 @@ export function createInteractionManager({
         if (!o || !s) return;
         const half = o.userData && o.userData.halfWorld ? o.userData.halfWorld.y : 0.01;
         const candidate = new THREE.Vector3(s.x + deltaX, Math.max(half, s.y), s.z + deltaZ);
+        if (surfaceFollowingDrag && id === draggingId &&
+            typeof CaseScene.getSurfaceFollowingPreview === 'function') {
+          const preview = CaseScene.getSurfaceFollowingPreview(id, candidate);
+          if (preview && preview.ok && Number.isFinite(preview.centerY)) {
+            candidate.y = Math.max(half, preview.centerY);
+          }
+        }
         const check = CaseScene.checkCollision(id, candidate, ignoreSet);
         anyCollides = anyCollides || check.collides;
         CaseScene.setCollision(id, check.collides);
@@ -2170,6 +2300,21 @@ export function createInteractionManager({
         // Deliberate out-of-truck moves and degenerate references keep the
         // legacy settle/staging path; physical rule blocks revert honestly.
         if (resolved.code !== 'outside-truck' && resolved.code !== 'invalid-selection') {
+          if (surfaceFollowingDrag) {
+            const firstHold = !gizmoPending;
+            gizmoPending = { instanceId };
+            resetDrag();
+            CaseScene.setDragging(instanceId);
+            CaseScene.setCollision(instanceId, true);
+            if (firstHold) {
+              UIComponents.showToast(
+                resolved.reason || 'Cannot place here yet. Move or Drop to resolve this held case.',
+                'error'
+              );
+            }
+            CaseScene.refreshGizmo();
+            return;
+          }
           revertGroupToStart(groupIds, startMap);
           UIComponents.showToast(resolved.reason || 'Cannot place here.', 'error');
           resetDrag();
@@ -2264,6 +2409,7 @@ export function createInteractionManager({
       dragStartPosWorld = null;
       dragGroupIds = null;
       dragGroupStartWorld = null;
+      surfaceFollowingDrag = false;
       pressed = null;
       domEl.style.cursor = hoveredId ? 'grab' : 'default';
       CaseScene.setDragging(null);

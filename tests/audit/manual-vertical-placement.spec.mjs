@@ -490,7 +490,7 @@ test('MANUAL-VERTICAL drag release for a single packed case resolves through val
   assert.match(block, /result\.stagedIds\.includes\(instanceId\)/,
     'a release that ends staged must never claim a plain success');
   assert.match(block, /revertGroupToStart\(groupIds, startMap\);\s*\n\s*UIComponents\.showToast\(resolved\.reason/,
-    'rule-blocked releases must revert with the blocking reason');
+    'non-surface-following rule-blocked releases must still revert with the blocking reason');
   assert.match(block, /resolved\.code !== 'outside-truck' && resolved\.code !== 'invalid-selection'/,
     'out-of-truck releases must fall through to the legacy staging path');
   // The legacy path must remain intact for multi-select and staged releases.
@@ -775,4 +775,82 @@ test('MANUAL-VERTICAL preview helper is exported, preview-only, and draft-free',
     'the helper must document that it never validates placement');
   assert.equal(src.includes('manualDraft'), false,
     'no manualDraft state may appear in editor-screen.js');
+});
+
+test('MANUAL-VERTICAL surface-following preview surfaces come only from scene and geometry sources', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function getSurfaceFollowingPreviewSurfaces(instanceId)');
+  const end = src.indexOf('\n\n    function getSurfaceFollowingPreview(instanceId', start);
+  assert.ok(start >= 0 && end > start, 'surface-following surface collector must exist');
+  const block = src.slice(start, end);
+
+  assert.match(block, /TrailerGeometry\.getTrailerUsableZones\(truck\)/,
+    'truck floor, wheel-well shelf, and front-deck surfaces must derive from usable zones');
+  assert.match(block, /TrailerGeometry\.zonesInchesToWorld\(zonesInches\)/,
+    'preview surfaces must be converted into world coordinates before drag math');
+  assert.match(src, /return 'truck-floor';/,
+    'floor-level usable zones must be tagged as truck-floor');
+  assert.match(src, /truck && truck\.shapeMode === 'wheelWells' \? 'wheel-well-top' : 'front-deck'/,
+    'raised usable zones must be tagged as wheel-well tops or front deck');
+  assert.match(block, /PackLibrary\.getStagingWorkAreaBounds\(truck\)/,
+    'staging floor must come from the manual staging work area bounds');
+  assert.match(block, /kind: 'staging-floor'/,
+    'the manual staging work area must be exposed as a preview floor');
+  assert.match(block, /kind: 'box-top'/,
+    'packed case tops must be exposed as rideable preview surfaces');
+  assert.match(block, /if \(otherInst && otherInst\.placement === 'staged'\) continue;/,
+    'staged case tops must not become rideable surfaces in V4A-2');
+  assert.match(block, /if \(otherId === instanceId\) continue;/,
+    'the dragged case must never generate its own support surface');
+  assert.match(src, /getSurfaceFollowingPreview,/,
+    'CaseScene must expose the preview query to InteractionManager without changing the data model');
+});
+
+test('MANUAL-VERTICAL normal single packed drag applies preview Y before collision checks', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  assert.match(src, /let surfaceFollowingDrag = false;/,
+    'normal drag must track whether the surface-following preview is active');
+  assert.match(src, /function canSurfaceFollowNormalDrag\(instanceId, groupIds\) \{[\s\S]*groupIds\.length !== 1[\s\S]*inst\.placement !== 'staged'/,
+    'surface-following must be limited to one non-staged dragged instance');
+  assert.match(src, /surfaceFollowingDrag = canSurfaceFollowNormalDrag\(draggingId, dragGroupIds\);/,
+    'startDrag must enable surface-following only after final drag group selection is known');
+  assert.match(src, /surfaceFollowingDrag = false;\s*\n\s*pressed = null;/,
+    'resetDrag must clear the transient surface-following flag');
+
+  const start = src.indexOf('function updateDrag(ev)');
+  const end = src.indexOf('\n\n    /**\n     * Tween', start);
+  assert.ok(start >= 0 && end > start, 'updateDrag block must exist');
+  const block = src.slice(start, end);
+  const normalStart = block.indexOf('const intersection = tmpVec3;\n      const ok = raycaster.ray.intersectPlane(dragPlane');
+  assert.ok(normalStart >= 0, 'normal X/Z drag block must exist');
+  const altBlock = block.slice(block.indexOf('if (altKey)'), normalStart);
+  const normalBlock = block.slice(normalStart);
+
+  assert.match(altBlock, /surfaceFollowingDrag = false;/,
+    'Alt-drag must disable surface-following so the V2B vertical drag path stays unchanged');
+  assert.equal(altBlock.includes('getSurfaceFollowingPreview'), false,
+    'Alt-drag must not use the surface-following helper');
+  assert.match(normalBlock, /surfaceFollowingDrag && id === draggingId[\s\S]*CaseScene\.getSurfaceFollowingPreview\(id, candidate\)[\s\S]*candidate\.y = Math\.max\(half, preview\.centerY\);[\s\S]*CaseScene\.checkCollision\(id, candidate, ignoreSet\)/,
+    'normal drag must raise the visual candidate from preview surfaces before collision preview runs');
+});
+
+test('MANUAL-VERTICAL surface-following invalid releases hold scene-only pending pose', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function finishDrag()');
+  const end = src.indexOf('\n\n    function resetDrag()', start);
+  assert.ok(start >= 0 && end > start, 'finishDrag block must exist');
+  const block = src.slice(start, end);
+
+  assert.match(block, /mode: 'resolve',\s*\n\s*desiredPosition: SceneManager\.vecWorldToInches\(obj\.position\)/,
+    'release must still resolve the preview pose through PackLibrary validation');
+  assert.match(block, /updateCasesWithManualRevalidation\(packId, nextCases, CaseLibrary\.getCases\(\), \{\s*\n\s*repairDependents: true,/,
+    'valid/corrected releases must still commit with dependent repair');
+  assert.match(block, /if \(surfaceFollowingDrag\) \{\s*\n\s*const firstHold = !gizmoPending;\s*\n\s*gizmoPending = \{ instanceId \};\s*\n\s*resetDrag\(\);\s*\n\s*CaseScene\.setDragging\(instanceId\);/,
+    'surface-following rule-blocked releases must hold the scene pose instead of persisting it');
+  assert.match(block, /CaseScene\.setCollision\(instanceId, true\);/,
+    'a held rule-blocked preview must remain visibly invalid');
+  assert.match(block, /resolved\.code !== 'outside-truck' && resolved\.code !== 'invalid-selection'/,
+    'outside-truck releases must keep the legacy staging path rather than becoming a hold');
+  assert.match(block, /if \(anyCollides\) \{[\s\S]*revertGroupToStart\(groupIds, startMap\);[\s\S]*Cannot place here: collision detected/,
+    'hard physical collisions must still revert immediately');
 });

@@ -1194,7 +1194,9 @@ export function createInteractionManager({
     /**
      * Keyboard shortcuts for selected cases.
      * R = rotate Y 90°, T = tip X 90°, E = roll Z 90°, F = flip
-     * Arrow keys = nudge X/Z, Shift+Arrow = nudge Y
+     * Arrow keys = nudge X/Z 1" (Shift = 6" coarse step)
+     * Alt+ArrowUp / Alt+ArrowDown = move to the next valid level up/down
+     * Alt+Shift+ArrowDown = drop to the nearest valid surface
      * Delete/Backspace = delete selection
      */
     function onKeyDown(ev) {
@@ -1204,7 +1206,7 @@ export function createInteractionManager({
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') { return; }
 
       const halfPI = Math.PI / 2;
-      const nudge = 1; // 1 inch per press
+      const nudge = ev.shiftKey ? 6 : 1; // inches per press (Shift = coarse step)
 
       switch (ev.key) {
         case 'r':
@@ -1228,21 +1230,21 @@ export function createInteractionManager({
           ev.preventDefault();
           break;
         case 'ArrowLeft':
-          nudgeSelection('z', ev.shiftKey ? 0 : -nudge);
-          if (ev.shiftKey) { nudgeSelection('y', nudge); }
+          nudgeSelection('z', -nudge);
           ev.preventDefault();
           break;
         case 'ArrowRight':
-          nudgeSelection('z', ev.shiftKey ? 0 : nudge);
-          if (ev.shiftKey) { nudgeSelection('y', -nudge); }
+          nudgeSelection('z', nudge);
           ev.preventDefault();
           break;
         case 'ArrowUp':
-          nudgeSelection('x', nudge);
+          if (ev.altKey) { moveSelectionVertical('up'); }
+          else { nudgeSelection('x', nudge); }
           ev.preventDefault();
           break;
         case 'ArrowDown':
-          nudgeSelection('x', -nudge);
+          if (ev.altKey) { moveSelectionVertical(ev.shiftKey ? 'drop' : 'down'); }
+          else { nudgeSelection('x', -nudge); }
           ev.preventDefault();
           break;
         case 'Delete':
@@ -3989,13 +3991,14 @@ export function createEditorScreen({
         const vertRow = document.createElement('div');
         vertRow.className = 'tp3d-editor-vert-grid';
         [
-          { text: 'Up', icon: 'fa-arrow-up', tone: 'up', mode: 'up' },
-          { text: 'Down', icon: 'fa-arrow-down', tone: 'down', mode: 'down' },
-          { text: 'Drop', icon: 'fa-arrows-down-to-line', tone: 'drop', mode: 'drop' },
-        ].forEach(({ text, icon, tone, mode }) => {
+          { text: 'Up', icon: 'fa-arrow-up', tone: 'up', mode: 'up', hint: 'Move up to the next valid level (Alt+↑)' },
+          { text: 'Down', icon: 'fa-arrow-down', tone: 'down', mode: 'down', hint: 'Move down to the next valid level (Alt+↓)' },
+          { text: 'Drop', icon: 'fa-arrows-down-to-line', tone: 'drop', mode: 'drop', hint: 'Drop to nearest valid surface (Alt+Shift+↓)' },
+        ].forEach(({ text, icon, tone, mode, hint }) => {
           const btn = document.createElement('button');
           btn.className = `btn tp3d-editor-rot-btn tp3d-editor-vert-btn--${tone}`;
           btn.type = 'button';
+          btn.title = hint;
           btn.innerHTML = `<i class="fa-solid ${icon}"></i><span>${text}</span>`;
           btn.addEventListener('click', () => {
             InteractionManager.moveSelectionVertical(mode);

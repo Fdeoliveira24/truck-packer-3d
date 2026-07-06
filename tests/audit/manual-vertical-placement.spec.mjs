@@ -5,9 +5,11 @@
 // blocked bodies and stability, Front Overhang rear retention). No DOM required.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
 const packLibraryPath = new URL('../../src/services/pack-library.js', import.meta.url);
+const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 
 const RECT_TRUCK = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
 
@@ -426,4 +428,40 @@ test('MANUAL-VERTICAL staged cases and invalid selections fail safely', async ()
   assert.equal(missing.code, 'invalid-selection', 'unknown instances must fail safely');
   const badMode = PackLibrary.findManualVerticalPlacement(pack, [caseData], 'packed-case', { mode: 'sideways' });
   assert.equal(badMode.code, 'invalid-selection', 'unsupported modes must fail safely');
+});
+
+// V2A keyboard precision movement: the editor keyboard map must route vertical
+// shortcuts through the validated moveSelectionVertical path and use a
+// step-aware X/Z nudge instead of the removed raw Shift Y-nudge.
+test('MANUAL-VERTICAL keyboard map routes Alt arrows to validated vertical moves with step-aware nudges', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function onKeyDown(ev)');
+  const end = src.indexOf('function onMove(ev)', start);
+  assert.ok(start >= 0 && end > start, 'onKeyDown block must exist before onMove');
+  const block = src.slice(start, end);
+
+  assert.match(block, /const nudge = ev\.shiftKey \? 6 : 1/,
+    'arrow nudges must use a 1-inch step and a 6-inch Shift coarse step');
+  assert.doesNotMatch(block, /nudgeSelection\('y'/,
+    'the raw keyboard Y-nudge must stay removed; vertical moves go through validation');
+  assert.match(block, /if \(ev\.altKey\) \{ moveSelectionVertical\('up'\); \}/,
+    'Alt+ArrowUp must trigger the validated Move Up');
+  assert.match(block, /if \(ev\.altKey\) \{ moveSelectionVertical\(ev\.shiftKey \? 'drop' : 'down'\); \}/,
+    'Alt+ArrowDown must trigger Move Down and Alt+Shift+ArrowDown must trigger Drop');
+  assert.match(block, /case 'ArrowLeft':\s*\n\s*nudgeSelection\('z', -nudge\)/,
+    'ArrowLeft must nudge Z with the step-aware delta');
+  assert.match(block, /case 'ArrowRight':\s*\n\s*nudgeSelection\('z', nudge\)/,
+    'ArrowRight must nudge Z with the step-aware delta');
+});
+
+test('MANUAL-VERTICAL vertical placement buttons expose keyboard shortcut hints', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  assert.match(src, /Move up to the next valid level \(Alt\+↑\)/,
+    'the Up button must advertise its shortcut');
+  assert.match(src, /Move down to the next valid level \(Alt\+↓\)/,
+    'the Down button must advertise its shortcut');
+  assert.match(src, /Drop to nearest valid surface \(Alt\+Shift\+↓\)/,
+    'the Drop button must advertise its shortcut');
+  assert.match(src, /btn\.title = hint;/,
+    'shortcut hints must be native title tooltips on the vertical buttons');
 });

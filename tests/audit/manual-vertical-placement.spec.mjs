@@ -593,3 +593,86 @@ test('MANUAL-VERTICAL gizmo renders on top with token-driven colors', async () =
   assert.match(colorBlock, /getCssVar\('--success'\)/, 'idle handle color must come from theme tokens');
   assert.match(colorBlock, /getCssVar\('--accent-primary'\)/, 'active handle color must come from theme tokens');
 });
+
+// V3B: X/Z handles + scene-only pending pose (lift → carry → drop). Source
+// contracts only — validation stays in PackLibrary, no pixel testing.
+test('MANUAL-VERTICAL gizmo builds X/Y/Z handles with per-axis colors and orientations', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function createGizmo()');
+  const end = src.indexOf('function setGizmoActive(', start);
+  assert.ok(start >= 0 && end > start, 'createGizmo block must exist');
+  const block = src.slice(start, end);
+  assert.match(block, /\['x', 'y', 'z'\]\.forEach/, 'the gizmo must build one handle per axis');
+  assert.match(block, /handle\.rotation\.z = -Math\.PI \/ 2;/, 'the X handle must be rotated onto the X axis');
+  assert.match(block, /handle\.rotation\.x = Math\.PI \/ 2;/, 'the Z handle must be rotated onto the Z axis');
+  assert.match(block, /hit\.userData\.gizmoHandle = axis;/, 'each grab proxy must carry its axis tag');
+  const colorStart = src.indexOf('function gizmoColor(');
+  const colorBlock = src.slice(colorStart, start);
+  assert.match(colorBlock, /getCssVar\('--error'\)/, 'the X handle must use the app X-axis tone');
+  assert.match(colorBlock, /getCssVar\('--info'\)/, 'the Z handle must use the app Z-axis tone');
+  assert.match(src, /return gizmoGroup && gizmoGroup\.visible \? gizmoHitMeshes : \[\];/,
+    'all axis grab proxies must be raycastable when the gizmo is visible');
+});
+
+test('MANUAL-VERTICAL X/Z strokes constrain movement to one axis at the lifted height', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function beginGizmoDrag()');
+  const end = src.indexOf('function onDblClick(ev)', start);
+  assert.ok(start >= 0 && end > start, 'gizmo drag functions must exist before onDblClick');
+  const block = src.slice(start, end);
+
+  assert.match(block, /dragPlane\.set\(new THREE\.Vector3\(0, 1, 0\), -obj\.position\.y\);/,
+    'the horizontal stroke plane must sit at the case’s current height');
+  assert.match(block, /if \(gizmoAxis === 'x' \|\| gizmoAxis === 'z'\)/,
+    'X/Z strokes must dispatch to the axis-constrained update');
+  assert.match(block, /gizmoAxis === 'x' \? next\.x : dragStartPosWorld\.x,/,
+    'an X stroke must move X only');
+  assert.match(block, /gizmoAxis === 'z' \? next\.z : dragStartPosWorld\.z/,
+    'a Z stroke must move Z only');
+  assert.match(block, /Math\.max\(half \|\| 0\.01, dragStartPosWorld\.y\),/,
+    'X/Z strokes must keep the lifted Y so a raised case can be carried');
+  assert.match(block, /updateDrag\(\{ altKey: true \}\);/,
+    'the Y stroke must keep reusing the Alt-drag vertical-plane math');
+});
+
+test('MANUAL-VERTICAL a held pose stays scene-only until a validated drop commits it', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function beginGizmoDrag()');
+  const end = src.indexOf('function onDblClick(ev)', start);
+  const block = src.slice(start, end);
+
+  assert.match(block, /if \(resolved\.ok && resolved\.corrected !== true\)/,
+    'a directly valid release must commit immediately through finishDrag');
+  assert.match(block, /gizmoPending = \{ instanceId \};\s*\n\s*resetDrag\(\);/,
+    'a not-directly-valid release must hold a scene-only pose and restore controls');
+  const resolveStart = block.indexOf('function resolvePendingPose()');
+  const resolveEnd = block.indexOf('function cancelPendingPose()', resolveStart);
+  assert.ok(resolveStart >= 0 && resolveEnd > resolveStart, 'resolvePendingPose must exist');
+  const resolveBlock = block.slice(resolveStart, resolveEnd);
+  assert.match(resolveBlock, /mode: 'resolve',/,
+    'the drop must resolve through findManualVerticalPlacement');
+  assert.match(resolveBlock, /updateCasesWithManualRevalidation\(packId, nextCases, CaseLibrary\.getCases\(\), \{\s*\n\s*repairDependents: true,/,
+    'the drop must commit with dependent repair');
+  assert.match(resolveBlock, /UIComponents\.showToast\(resolved\.reason \|\| 'Cannot place the held case here\.', 'error'\);/,
+    'a rule-blocked drop must keep holding with the named reason');
+  assert.match(block, /CaseScene\.sync\(PackLibrary\.getById\(StateStore\.get\('currentPackId'\)\)\);/,
+    'cancelling a hold must restore the committed pack pose');
+});
+
+test('MANUAL-VERTICAL every hold exit is wired: Enter, Drop, Escape, selection, drag, sync', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  assert.match(src, /case 'Enter':\s*\n\s*if \(resolvePendingPose\(\)\)/,
+    'Enter must place a held case');
+  assert.match(src, /else if \(gizmoPending\) \{\s*\n\s*cancelPendingPose\(\);/,
+    'Escape must cancel a held case when no stroke is active');
+  assert.match(src, /if \(mode === 'drop'\) \{\s*\n\s*resolvePendingPose\(\);\s*\n\s*return;/,
+    'the Drop action must place a held case');
+  assert.match(src, /gizmoPending && \(ids\.length !== 1 \|\| ids\[0\] !== gizmoPending\.instanceId\)/,
+    'changing selection away from a held case must cancel the hold');
+  assert.match(src, /if \(gizmoPending\) cancelPendingPose\(\);\s*\n\s*draggingId = pressed\.instanceId;/,
+    'starting a normal drag must first resolve the hold safely');
+  assert.match(src, /refreshGizmo\(\);\s*\n\s*if \(pendingPoseWatcher\) pendingPoseWatcher\(\);/,
+    'pack-level scene syncs must notify the hold watcher');
+  assert.match(src, /CaseScene\.setPendingPoseWatcher\(onScenePendingInvalidated\);/,
+    'the InteractionManager must register the hold watcher');
+});

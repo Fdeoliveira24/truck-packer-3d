@@ -1164,7 +1164,7 @@ Release-gate items block **public launch**, not isolated product development. Pr
 - **Integrations**: TMS/WMS/ERP webhooks, white-label embeddable widget, EDI 856/204, Shopify plugin, Zapier/Make
 - **Analytics**: fleet utilization dashboard, case library analytics, AutoPack quality score, exception reporting
 - **Enterprise**: SSO/SAML, custom branding/white-label, immutable audit trail, role-based field visibility, multi-tenant admin console
-- **3D visual polish**: canvas-to-texture labels, category-based materials, ACES tone mapping, quality presets, beveled edges, richer space/truck models
+- **3D visual polish**: canvas-to-texture labels, category-based materials, ACES tone mapping, quality presets, beveled edges, richer space/truck models, manual-placement gizmo redesign (smaller/subtler handles, professional style, dotted guide lines, minimal arrows, rotate handles — user feedback 2026-07-06: current V3 arrows too large/visually heavy)
 
 ---
 

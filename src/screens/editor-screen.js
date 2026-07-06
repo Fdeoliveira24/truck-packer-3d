@@ -333,6 +333,7 @@ export function createCaseScene({
       applyHover(hoveredId);
       applyDragging(draggedId);
       refreshGizmo();
+      if (pendingPoseWatcher) pendingPoseWatcher();
     }
 
     function buildSignature(inst, caseData) {
@@ -614,50 +615,76 @@ export function createCaseScene({
     // of cargo and keeps a constant on-screen size via computeGizmoScale().
     let gizmoGroup = null;
     let gizmoTargetId = null;
-    let gizmoHitMesh = null;
-    let gizmoMaterial = null;
+    let gizmoHitMeshes = [];
+    let gizmoMaterials = null;
     let gizmoControlsHooked = false;
+    let pendingPoseWatcher = null;
 
-    function gizmoColor(active) {
-      const token = active
-        ? (Utils.getCssVar('--accent-primary') || '#ff9f1c')
-        : (Utils.getCssVar('--success') || '#22c55e');
-      return new THREE.Color(String(token).trim() || '#22c55e');
+    // Axis colors follow the app's existing axis language (Turn/Tip/Roll button
+    // tones): Y = --success, X = --error, Z = --info; active = --accent-primary.
+    function gizmoColor(axis, active) {
+      if (active) {
+        return new THREE.Color(String(Utils.getCssVar('--accent-primary') || '#ff9f1c').trim() || '#ff9f1c');
+      }
+      const token = axis === 'x'
+        ? Utils.getCssVar('--error')
+        : axis === 'z'
+          ? Utils.getCssVar('--info')
+          : Utils.getCssVar('--success');
+      return new THREE.Color(String(token || '#22c55e').trim() || '#22c55e');
     }
 
     function createGizmo() {
       const group = new THREE.Group();
       group.visible = false;
       group.renderOrder = 999;
-      gizmoMaterial = new THREE.MeshBasicMaterial({
-        color: gizmoColor(false),
-        transparent: true,
-        opacity: 0.92,
-        depthTest: false,
-        depthWrite: false,
-      });
-      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.6, 12), gizmoMaterial);
-      const coneUp = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.42, 16), gizmoMaterial);
-      coneUp.position.y = 1.0;
-      const coneDown = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.42, 16), gizmoMaterial);
-      coneDown.rotation.x = Math.PI;
-      coneDown.position.y = -1.0;
-      // Fat invisible grab proxy: zero opacity renders nothing but stays
-      // raycastable, giving a generous hit area around the slim arrow.
-      gizmoHitMesh = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.34, 0.34, 2.6, 8),
-        new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthTest: false, depthWrite: false })
-      );
-      gizmoHitMesh.userData.gizmoHandle = 'y';
-      [shaft, coneUp, coneDown, gizmoHitMesh].forEach(mesh => {
-        mesh.renderOrder = 999;
-        group.add(mesh);
+      gizmoMaterials = {};
+      gizmoHitMeshes = [];
+      ['x', 'y', 'z'].forEach(axis => {
+        gizmoMaterials[axis] = new THREE.MeshBasicMaterial({
+          color: gizmoColor(axis, false),
+          transparent: true,
+          opacity: 0.92,
+          depthTest: false,
+          depthWrite: false,
+        });
+        group.add(buildGizmoAxisHandle(axis, gizmoMaterials[axis]));
       });
       return group;
     }
 
-    function setGizmoActive(active) {
-      if (gizmoMaterial && gizmoMaterial.color) gizmoMaterial.color.copy(gizmoColor(active));
+    // TODO(V3-visual): gizmo redesign follow-up — smaller/subtler handles,
+    // professional styling, dotted guide lines, minimal arrows, rotate handles.
+    function buildGizmoAxisHandle(axis, material) {
+      const handle = new THREE.Group();
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.6, 12), material);
+      const coneA = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.42, 16), material);
+      coneA.position.y = 1.0;
+      const coneB = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.42, 16), material);
+      coneB.rotation.x = Math.PI;
+      coneB.position.y = -1.0;
+      // Fat invisible grab proxy: zero opacity renders nothing but stays
+      // raycastable, giving a generous hit area around the slim arrow.
+      const hit = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.3, 0.3, 2.6, 8),
+        new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthTest: false, depthWrite: false })
+      );
+      hit.userData.gizmoHandle = axis;
+      gizmoHitMeshes.push(hit);
+      [shaft, coneA, coneB, hit].forEach(mesh => {
+        mesh.renderOrder = 999;
+        handle.add(mesh);
+      });
+      if (axis === 'x') handle.rotation.z = -Math.PI / 2;
+      if (axis === 'z') handle.rotation.x = Math.PI / 2;
+      return handle;
+    }
+
+    function setGizmoActive(activeAxis) {
+      Object.keys(gizmoMaterials || {}).forEach(axis => {
+        const material = gizmoMaterials[axis];
+        if (material && material.color) material.color.copy(gizmoColor(axis, axis === activeAxis));
+      });
     }
 
     function updateGizmoTransform() {
@@ -715,11 +742,17 @@ export function createCaseScene({
     }
 
     function getGizmoHandleMeshes() {
-      return gizmoGroup && gizmoGroup.visible && gizmoHitMesh ? [gizmoHitMesh] : [];
+      return gizmoGroup && gizmoGroup.visible ? gizmoHitMeshes : [];
     }
 
     function getGizmoTargetId() {
       return gizmoTargetId;
+    }
+
+    // The InteractionManager registers a watcher so a scene-only held pose is
+    // released whenever a pack-level sync re-applies committed transforms.
+    function setPendingPoseWatcher(fn) {
+      pendingPoseWatcher = typeof fn === 'function' ? fn : null;
     }
 
     function getAabbWorld(instanceId, positionOverrideWorld) {
@@ -1046,6 +1079,7 @@ export function createCaseScene({
       setGizmoActive,
       getGizmoHandleMeshes,
       getGizmoTargetId,
+      setPendingPoseWatcher,
     };
   })();
 
@@ -1085,6 +1119,11 @@ export function createInteractionManager({
     let pressed = null;
     let draggingId = null;
     let gizmoDragging = false;
+    let gizmoAxis = null;
+    // Scene-only held pose from a gizmo stroke that did not end on a directly
+    // valid spot: { instanceId }. Never persisted; the pack keeps the committed
+    // pose until a validated drop commits or the hold is cancelled/invalidated.
+    let gizmoPending = null;
     let dragStartPosWorld = null;
     let dragGroupIds = null;
     let dragGroupStartWorld = null; // Map<instanceId, THREE.Vector3>
@@ -1099,6 +1138,9 @@ export function createInteractionManager({
       window.addEventListener('pointerup', onUp);
       domEl.addEventListener('dblclick', onDblClick);
       window.addEventListener('keydown', onKeyDown);
+      if (typeof CaseScene.setPendingPoseWatcher === 'function') {
+        CaseScene.setPendingPoseWatcher(onScenePendingInvalidated);
+      }
     }
 
     function rejectMoveCollision(instanceId, candidateWorld, ignoreSet) {
@@ -1270,6 +1312,14 @@ export function createInteractionManager({
         UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
         return;
       }
+      if (gizmoPending) {
+        if (mode === 'drop') {
+          resolvePendingPose();
+          return;
+        }
+        UIComponents.showToast('Place or cancel the held case first (Drop, Enter, or Esc).', 'info');
+        return;
+      }
       if (typeof PackLibrary.findManualVerticalPlacement !== 'function' ||
           typeof PackLibrary.updateCasesWithManualRevalidation !== 'function') {
         return;
@@ -1335,7 +1385,8 @@ export function createInteractionManager({
      * Arrow keys = nudge X/Z 1" (Shift = 6" coarse step)
      * Alt+ArrowUp / Alt+ArrowDown = move to the next valid level up/down
      * Alt+Shift+ArrowDown = drop to the nearest valid surface
-     * Escape = cancel an active gizmo drag
+     * Enter = place a held (pending) case
+     * Escape = cancel an active gizmo drag or a held case
      * Delete/Backspace = delete selection
      */
     function onKeyDown(ev) {
@@ -1386,9 +1437,17 @@ export function createInteractionManager({
           else { nudgeSelection('x', -nudge); }
           ev.preventDefault();
           break;
+        case 'Enter':
+          if (resolvePendingPose()) {
+            ev.preventDefault();
+          }
+          break;
         case 'Escape':
           if (gizmoDragging) {
             cancelGizmoDrag();
+            ev.preventDefault();
+          } else if (gizmoPending) {
+            cancelPendingPose();
             ev.preventDefault();
           }
           break;
@@ -1518,37 +1577,116 @@ export function createInteractionManager({
       const obj = targetId ? CaseScene.getObject(targetId) : null;
       if (!obj) return false;
       gizmoDragging = true;
+      gizmoAxis = hits[0].object && hits[0].object.userData && hits[0].object.userData.gizmoHandle
+        ? hits[0].object.userData.gizmoHandle
+        : 'y';
       draggingId = targetId;
       dragStartPosWorld = obj.position.clone();
       dragGroupIds = [targetId];
       dragGroupStartWorld = new Map([[targetId, obj.position.clone()]]);
       dragOffset.copy(obj.position).sub(hits[0].point);
+      // Horizontal plane at the case's current height: X/Z strokes carry the
+      // case at its lifted height; the Y stroke uses the Alt-drag vertical plane.
+      dragPlane.set(new THREE.Vector3(0, 1, 0), -obj.position.y);
       const controls = SceneManager.getControls();
       if (controls) controls.enabled = false;
       CaseScene.setDragging(targetId);
-      CaseScene.setGizmoActive(true);
+      CaseScene.setGizmoActive(gizmoAxis);
       return true;
     }
 
     function updateGizmoDrag() {
-      // Reuse the Alt-drag vertical-plane math (and its V2B release-outcome
-      // preview) verbatim: the gizmo is a visible way to start that same drag.
-      updateDrag({ altKey: true });
+      if (gizmoAxis === 'x' || gizmoAxis === 'z') {
+        updateGizmoAxisDrag();
+      } else {
+        // Reuse the Alt-drag vertical-plane math (and its V2B release-outcome
+        // preview) verbatim: the Y handle is a visible way to start that drag.
+        updateDrag({ altKey: true });
+      }
       CaseScene.updateGizmoTransform();
+    }
+
+    /**
+     * X/Z handle stroke: intersect the horizontal plane at the case's current
+     * height and move along the grabbed axis only, keeping the lifted Y so a
+     * raised case can be carried sideways over other cargo.
+     */
+    function updateGizmoAxisDrag() {
+      const camera = SceneManager.getCamera();
+      const obj = draggingId ? CaseScene.getObject(draggingId) : null;
+      if (!camera || !obj) return;
+      raycaster.setFromCamera(pointer, camera);
+      const intersection = tmpVec3;
+      if (!raycaster.ray.intersectPlane(dragPlane, intersection)) return;
+      const next = intersection.clone().add(dragOffset);
+      const half = obj.userData && obj.userData.halfWorld ? obj.userData.halfWorld.y : 0.01;
+      const candidate = new THREE.Vector3(
+        gizmoAxis === 'x' ? next.x : dragStartPosWorld.x,
+        Math.max(half || 0.01, dragStartPosWorld.y),
+        gizmoAxis === 'z' ? next.z : dragStartPosWorld.z
+      );
+      const check = CaseScene.checkCollision(draggingId, candidate, new Set([draggingId]));
+      CaseScene.setCollision(draggingId, check.collides);
+      obj.position.copy(candidate);
     }
 
     function finishGizmoDrag() {
       gizmoDragging = false;
+      gizmoAxis = null;
       CaseScene.setGizmoActive(false);
-      // Release rides the V2B validated single-packed path inside finishDrag:
-      // resolve → repairDependents commit → honest outcome toasts.
-      finishDrag();
+      const instanceId = draggingId;
+      const obj = instanceId ? CaseScene.getObject(instanceId) : null;
+      const packId = StateStore.get('currentPackId');
+      const pack = packId ? PackLibrary.getById(packId) : null;
+      if (!obj || !pack || typeof PackLibrary.findManualVerticalPlacement !== 'function') {
+        finishDrag();
+        CaseScene.refreshGizmo();
+        return;
+      }
+      const resolved = PackLibrary.findManualVerticalPlacement(pack, CaseLibrary.getCases(), instanceId, {
+        mode: 'resolve',
+        desiredPosition: SceneManager.vecWorldToInches(obj.position),
+      });
+      if (resolved.ok && resolved.corrected !== true) {
+        // Directly valid: commit now through the shared validated release.
+        gizmoPending = null;
+        finishDrag();
+        CaseScene.refreshGizmo();
+        return;
+      }
+      if (!resolved.ok && (resolved.code === 'outside-truck' || resolved.code === 'invalid-selection')) {
+        // Deliberate move out of the truck (or degenerate data) keeps the
+        // legacy staging release; re-derive the hold if that release reverted.
+        gizmoPending = null;
+        finishDrag();
+        if (!scenePoseMatchesPack(instanceId)) {
+          gizmoPending = { instanceId };
+          CaseScene.setDragging(instanceId);
+        }
+        CaseScene.refreshGizmo();
+        return;
+      }
+      // Not directly valid: hold a scene-only pending pose so the user can keep
+      // adjusting (lift → carry → drop). The pack keeps the committed pose, so
+      // stats and exports stay truthful; the hold is never persisted.
+      const firstHold = !gizmoPending;
+      gizmoPending = { instanceId };
+      resetDrag();
+      CaseScene.setDragging(instanceId);
+      CaseScene.setCollision(instanceId, !resolved.ok);
+      if (firstHold) {
+        UIComponents.showToast(
+          'Case held above the load. Drop, Enter, or Alt+Shift+↓ places it; Esc cancels.',
+          'info'
+        );
+      }
       CaseScene.refreshGizmo();
     }
 
     function cancelGizmoDrag() {
       if (!gizmoDragging) return;
       gizmoDragging = false;
+      gizmoAxis = null;
       CaseScene.setGizmoActive(false);
       const groupIds = Array.isArray(dragGroupIds) && dragGroupIds.length
         ? dragGroupIds
@@ -1556,7 +1694,107 @@ export function createInteractionManager({
       const startMap = dragGroupStartWorld || new Map();
       revertGroupToStart(groupIds, startMap);
       resetDrag();
+      // A cancelled stroke returns to the stroke start; if that start was a
+      // held pose, the hold (and its temporary look) remains.
+      if (gizmoPending) CaseScene.setDragging(gizmoPending.instanceId);
       CaseScene.refreshGizmo();
+    }
+
+    function scenePoseMatchesPack(instanceId) {
+      const obj = CaseScene.getObject(instanceId);
+      const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+      const inst = pack ? (pack.cases || []).find(i => i && i.id === instanceId) : null;
+      if (!obj || !inst || !inst.transform || !inst.transform.position) return true;
+      return obj.position.distanceTo(SceneManager.vecInchesToWorld(inst.transform.position)) <= 0.01;
+    }
+
+    /**
+     * Commit a held (pending) pose through the same validated pipeline as every
+     * other manual move. Returns true when a hold existed (whatever the outcome).
+     */
+    function resolvePendingPose() {
+      if (!gizmoPending) return false;
+      if (operationsBusy()) return true; // the busy sync will release the hold
+      const instanceId = gizmoPending.instanceId;
+      const obj = CaseScene.getObject(instanceId);
+      const packId = StateStore.get('currentPackId');
+      const pack = packId ? PackLibrary.getById(packId) : null;
+      if (!obj || !pack ||
+          typeof PackLibrary.findManualVerticalPlacement !== 'function' ||
+          typeof PackLibrary.updateCasesWithManualRevalidation !== 'function') {
+        cancelPendingPose();
+        return true;
+      }
+      const resolved = PackLibrary.findManualVerticalPlacement(pack, CaseLibrary.getCases(), instanceId, {
+        mode: 'resolve',
+        desiredPosition: SceneManager.vecWorldToInches(obj.position),
+      });
+      if (!resolved.ok && resolved.code === 'outside-truck') {
+        // The hold was carried out of the truck: reuse the legacy drag release
+        // so it stages honestly, and keep holding if that release reverted.
+        gizmoPending = null;
+        draggingId = instanceId;
+        dragStartPosWorld = obj.position.clone();
+        dragGroupIds = [instanceId];
+        dragGroupStartWorld = new Map([[instanceId, obj.position.clone()]]);
+        finishDrag();
+        if (!scenePoseMatchesPack(instanceId)) {
+          gizmoPending = { instanceId };
+          CaseScene.setDragging(instanceId);
+        }
+        CaseScene.refreshGizmo();
+        return true;
+      }
+      if (!resolved.ok) {
+        // Keep holding; the user can adjust further or press Esc to cancel.
+        UIComponents.showToast(resolved.reason || 'Cannot place the held case here.', 'error');
+        return true;
+      }
+      gizmoPending = null;
+      obj.position.copy(SceneManager.vecInchesToWorld(resolved.position));
+      CaseScene.setDragging(null);
+      CaseScene.setCollision(instanceId, false);
+      const nextCases = (pack.cases || []).map(item =>
+        item.id === instanceId
+          ? { ...item, transform: { ...item.transform, position: resolved.position }, placement: 'packed' }
+          : item
+      );
+      const result = PackLibrary.updateCasesWithManualRevalidation(packId, nextCases, CaseLibrary.getCases(), {
+        repairDependents: true,
+      });
+      const stagedSelf = result && Array.isArray(result.stagedIds) && result.stagedIds.includes(instanceId);
+      let tone = resolved.corrected ? 'info' : 'success';
+      let base = resolved.corrected ? 'Adjusted to the nearest supported level.' : 'Case placed.';
+      if (stagedSelf) {
+        tone = 'warning';
+        base = 'The case could not rest safely and was moved to staging.';
+      }
+      UIComponents.showToast(result ? formatVerticalMoveMessage(result, instanceId, base) : base, tone);
+      CaseScene.refreshGizmo();
+      return true;
+    }
+
+    function cancelPendingPose() {
+      if (!gizmoPending) return;
+      const instanceId = gizmoPending.instanceId;
+      gizmoPending = null;
+      CaseScene.setDragging(null);
+      CaseScene.setCollision(instanceId, false);
+      // Restore every scene pose from the committed pack state.
+      CaseScene.sync(PackLibrary.getById(StateStore.get('currentPackId')));
+      UIComponents.showToast('Move cancelled — case returned to its last placement.', 'info');
+    }
+
+    // Any pack-level sync while holding means committed transforms were just
+    // re-applied to the scene (AutoPack, deletes, overlay actions…): release
+    // the hold instead of tracking a pose the scene no longer shows.
+    function onScenePendingInvalidated() {
+      if (!gizmoPending) return;
+      const instanceId = gizmoPending.instanceId;
+      gizmoPending = null;
+      CaseScene.setDragging(null);
+      CaseScene.setCollision(instanceId, false);
+      UIComponents.showToast('Held case returned to its last placement.', 'info');
     }
 
     function onDblClick(ev) {
@@ -1572,6 +1810,7 @@ export function createInteractionManager({
       // Do not begin moving a case while a mutating operation owns the editor. Click
       // selection (handled in onUp) still works; camera orbit is unaffected.
       if (operationsBusy()) return;
+      if (gizmoPending) cancelPendingPose();
       draggingId = pressed.instanceId;
       dragStartPosWorld = CaseScene.getObject(draggingId).position.clone();
 
@@ -1978,8 +2217,13 @@ export function createInteractionManager({
     }
 
     function setSelection(nextIds) {
-      StateStore.set({ selectedInstanceIds: nextIds }, { skipHistory: true });
-      CaseScene.setSelected(nextIds);
+      const ids = Array.isArray(nextIds) ? nextIds : [];
+      // Changing the selection away from a held case abandons the hold safely.
+      if (gizmoPending && (ids.length !== 1 || ids[0] !== gizmoPending.instanceId)) {
+        cancelPendingPose();
+      }
+      StateStore.set({ selectedInstanceIds: ids }, { skipHistory: true });
+      CaseScene.setSelected(ids);
     }
 
     function selectAllInPack() {

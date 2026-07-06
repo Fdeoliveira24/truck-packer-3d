@@ -516,3 +516,80 @@ test('MANUAL-VERTICAL alt-drag shows a throttled release-outcome preview for a s
   assert.match(block, /!resolved\.ok && resolved\.code !== 'outside-truck'/,
     'staging-bound drags must not be flagged invalid by the preview');
 });
+
+// V3A vertical gizmo handle: pure scale helper + source-slice contracts for
+// pointer routing, attach gating, and release-path reuse. No pixel testing.
+test('MANUAL-VERTICAL computeGizmoScale keeps the handle usable across the zoom range', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('export function computeGizmoScale');
+  assert.ok(start >= 0, 'computeGizmoScale must be exported for unit testing');
+  const end = src.indexOf('\n}', start) + 2;
+  const computeGizmoScale = new Function(
+    `${src.slice(start, end).replace('export ', '')}; return computeGizmoScale;`
+  )();
+  assert.equal(computeGizmoScale(0), 0.35, 'scale must clamp at the close-zoom minimum');
+  assert.equal(computeGizmoScale(1000), 3.5, 'scale must clamp at the far-zoom maximum');
+  assert.ok(Math.abs(computeGizmoScale(40) - 1.8) < 1e-9, 'scale must grow linearly in the working range');
+  assert.equal(computeGizmoScale(NaN), 0.35, 'non-finite distances must fall back to the minimum');
+});
+
+test('MANUAL-VERTICAL gizmo handles take raycast priority and attach only to one packed case', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  const downStart = src.indexOf('function onDown(ev)');
+  const downEnd = src.indexOf('function onUp()', downStart);
+  assert.ok(downStart >= 0 && downEnd > downStart, 'onDown block must exist');
+  const downBlock = src.slice(downStart, downEnd);
+  const gizmoIdx = downBlock.indexOf('beginGizmoDrag()');
+  const caseIdx = downBlock.indexOf('raycastFirst()');
+  assert.ok(gizmoIdx >= 0 && caseIdx > gizmoIdx,
+    'pointer-down must test gizmo handles before case picking');
+
+  const refreshStart = src.indexOf('function refreshGizmo()');
+  const refreshEnd = src.indexOf('function detachGizmo()', refreshStart);
+  assert.ok(refreshStart >= 0 && refreshEnd > refreshStart, 'refreshGizmo block must exist');
+  const refreshBlock = src.slice(refreshStart, refreshEnd);
+  assert.match(refreshBlock, /ids\.length === 1 && instances\.has\(ids\[0\]\)/,
+    'the gizmo must require exactly one selected, live case');
+  assert.match(refreshBlock, /placement !== 'staged'/,
+    'the gizmo must never attach to a staged case');
+  assert.match(refreshBlock, /detachGizmo\(\);/,
+    'anything else must detach the gizmo');
+  assert.match(src, /applyHover\(hoveredId\);\s*\n\s*refreshGizmo\(\);\s*\n\s*\}/,
+    'setSelected must refresh the gizmo on selection changes');
+  assert.match(src, /applyDragging\(draggedId\);\s*\n\s*refreshGizmo\(\);/,
+    'scene sync must refresh the gizmo after pack mutations');
+});
+
+test('MANUAL-VERTICAL gizmo drag reuses the Alt-drag math and the validated release path', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function beginGizmoDrag()');
+  const end = src.indexOf('function onDblClick(ev)', start);
+  assert.ok(start >= 0 && end > start, 'gizmo drag functions must exist before onDblClick');
+  const block = src.slice(start, end);
+
+  assert.match(block, /if \(operationsBusy\(\)\) return false;/,
+    'gizmo drags must respect the operation lifecycle lock');
+  assert.match(block, /controls\.enabled = false;/,
+    'gizmo drags must disable OrbitControls for the stroke');
+  assert.match(block, /updateDrag\(\{ altKey: true \}\);/,
+    'gizmo movement must reuse the Alt-drag vertical-plane math and preview');
+  assert.match(block, /function finishGizmoDrag\(\) \{[\s\S]*?finishDrag\(\);/,
+    'gizmo release must ride the existing validated finishDrag path');
+  assert.match(block, /revertGroupToStart\(groupIds, startMap\);\s*\n\s*resetDrag\(\);/,
+    'Escape cancel must revert the pose and restore controls');
+});
+
+test('MANUAL-VERTICAL gizmo renders on top with token-driven colors', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function createGizmo()');
+  const end = src.indexOf('function setGizmoActive(', start);
+  assert.ok(start >= 0 && end > start, 'createGizmo block must exist');
+  const block = src.slice(start, end);
+  assert.match(block, /depthTest: false/, 'handles must render over cargo');
+  assert.match(block, /renderOrder = 999/, 'handles must draw late in the frame');
+  const colorStart = src.indexOf('function gizmoColor(');
+  const colorBlock = src.slice(colorStart, start);
+  assert.match(colorBlock, /getCssVar\('--success'\)/, 'idle handle color must come from theme tokens');
+  assert.match(colorBlock, /getCssVar\('--accent-primary'\)/, 'active handle color must come from theme tokens');
+});

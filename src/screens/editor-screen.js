@@ -129,6 +129,16 @@ export function computeSettleY(halfWorld, cx, cz, otherAabbs, minSupportFraction
   return bestY;
 }
 
+/**
+ * Constant on-screen gizmo sizing: world scale grows linearly with camera
+ * distance, clamped so the handle stays usable at both OrbitControls zoom
+ * extremes (minDistance 6, maxDistance 220). Exported for unit testing.
+ */
+export function computeGizmoScale(distance) {
+  const d = Number.isFinite(distance) ? distance : 0;
+  return Math.min(3.5, Math.max(0.35, d * 0.045));
+}
+
 function getUnpackCategoryKey(inst, getCaseById) {
   const caseData = inst && typeof getCaseById === 'function' ? getCaseById(inst.caseId) : null;
   const key = caseData && caseData.category != null ? caseData.category : 'default';
@@ -287,6 +297,7 @@ export function createCaseScene({
       const scene = SceneManager.getScene();
       if (!scene) return;
       if (!pack) {
+        detachGizmo();
         clear();
         return;
       }
@@ -321,6 +332,7 @@ export function createCaseScene({
       applySelection(Array.from(selectedIds));
       applyHover(hoveredId);
       applyDragging(draggedId);
+      refreshGizmo();
     }
 
     function buildSignature(inst, caseData) {
@@ -574,6 +586,7 @@ export function createCaseScene({
     function setSelected(instanceIds) {
       applySelection(instanceIds);
       applyHover(hoveredId);
+      refreshGizmo();
     }
 
     function setDragging(instanceId) {
@@ -592,6 +605,121 @@ export function createCaseScene({
         if (group.userData.mesh) meshes.push(group.userData.mesh);
       });
       return meshes;
+    }
+
+    // ── V3A vertical placement gizmo ─────────────────────────────────────
+    // A visible Y handle for the single selected packed case, built from
+    // THREE primitives only (the boot loader exposes THREE + OrbitControls;
+    // TransformControls is deliberately not used). The handle renders on top
+    // of cargo and keeps a constant on-screen size via computeGizmoScale().
+    let gizmoGroup = null;
+    let gizmoTargetId = null;
+    let gizmoHitMesh = null;
+    let gizmoMaterial = null;
+    let gizmoControlsHooked = false;
+
+    function gizmoColor(active) {
+      const token = active
+        ? (Utils.getCssVar('--accent-primary') || '#ff9f1c')
+        : (Utils.getCssVar('--success') || '#22c55e');
+      return new THREE.Color(String(token).trim() || '#22c55e');
+    }
+
+    function createGizmo() {
+      const group = new THREE.Group();
+      group.visible = false;
+      group.renderOrder = 999;
+      gizmoMaterial = new THREE.MeshBasicMaterial({
+        color: gizmoColor(false),
+        transparent: true,
+        opacity: 0.92,
+        depthTest: false,
+        depthWrite: false,
+      });
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.6, 12), gizmoMaterial);
+      const coneUp = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.42, 16), gizmoMaterial);
+      coneUp.position.y = 1.0;
+      const coneDown = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.42, 16), gizmoMaterial);
+      coneDown.rotation.x = Math.PI;
+      coneDown.position.y = -1.0;
+      // Fat invisible grab proxy: zero opacity renders nothing but stays
+      // raycastable, giving a generous hit area around the slim arrow.
+      gizmoHitMesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.34, 0.34, 2.6, 8),
+        new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthTest: false, depthWrite: false })
+      );
+      gizmoHitMesh.userData.gizmoHandle = 'y';
+      [shaft, coneUp, coneDown, gizmoHitMesh].forEach(mesh => {
+        mesh.renderOrder = 999;
+        group.add(mesh);
+      });
+      return group;
+    }
+
+    function setGizmoActive(active) {
+      if (gizmoMaterial && gizmoMaterial.color) gizmoMaterial.color.copy(gizmoColor(active));
+    }
+
+    function updateGizmoTransform() {
+      if (!gizmoGroup || !gizmoGroup.visible || !gizmoTargetId) return;
+      const group = instances.get(gizmoTargetId);
+      const camera = SceneManager.getCamera();
+      if (!group || !camera) return;
+      const aabb = getAabbWorld(gizmoTargetId);
+      if (!aabb) return;
+      const scale = computeGizmoScale(camera.position.distanceTo(group.position));
+      gizmoGroup.scale.setScalar(scale);
+      // Anchor the whole arrow above the case top so faces/labels stay readable.
+      gizmoGroup.position.set(group.position.x, aabb.max.y + 0.3 + 1.35 * scale, group.position.z);
+    }
+
+    /**
+     * Attach the gizmo when exactly one non-staged case is selected; hide it
+     * otherwise (empty selection, multi-select, staged case, removed case).
+     */
+    function refreshGizmo() {
+      const ids = Array.from(selectedIds);
+      let targetId = null;
+      if (ids.length === 1 && instances.has(ids[0])) {
+        const packId = StateStore.get('currentPackId');
+        const pack = packId ? PackLibrary.getById(packId) : null;
+        const inst = pack ? (pack.cases || []).find(i => i && i.id === ids[0]) : null;
+        if (inst && inst.placement !== 'staged') targetId = ids[0];
+      }
+      if (!targetId) {
+        detachGizmo();
+        return;
+      }
+      const scene = SceneManager.getScene();
+      if (!scene) return;
+      if (!gizmoGroup) {
+        gizmoGroup = createGizmo();
+        scene.add(gizmoGroup);
+      }
+      if (!gizmoControlsHooked) {
+        const controls = SceneManager.getControls();
+        if (controls && typeof controls.addEventListener === 'function') {
+          controls.addEventListener('change', updateGizmoTransform);
+          gizmoControlsHooked = true;
+        }
+      }
+      gizmoTargetId = targetId;
+      gizmoGroup.visible = true;
+      setGizmoActive(false);
+      updateGizmoTransform();
+    }
+
+    function detachGizmo() {
+      gizmoTargetId = null;
+      if (gizmoGroup) gizmoGroup.visible = false;
+    }
+
+    function getGizmoHandleMeshes() {
+      return gizmoGroup && gizmoGroup.visible && gizmoHitMesh ? [gizmoHitMesh] : [];
+    }
+
+    function getGizmoTargetId() {
+      return gizmoTargetId;
     }
 
     function getAabbWorld(instanceId, positionOverrideWorld) {
@@ -913,6 +1041,11 @@ export function createCaseScene({
       applyOOGHighlights,
       settleY,
       snapToNearest,
+      refreshGizmo,
+      updateGizmoTransform,
+      setGizmoActive,
+      getGizmoHandleMeshes,
+      getGizmoTargetId,
     };
   })();
 
@@ -951,6 +1084,7 @@ export function createInteractionManager({
     let hoveredId = null;
     let pressed = null;
     let draggingId = null;
+    let gizmoDragging = false;
     let dragStartPosWorld = null;
     let dragGroupIds = null;
     let dragGroupStartWorld = null; // Map<instanceId, THREE.Vector3>
@@ -1201,6 +1335,7 @@ export function createInteractionManager({
      * Arrow keys = nudge X/Z 1" (Shift = 6" coarse step)
      * Alt+ArrowUp / Alt+ArrowDown = move to the next valid level up/down
      * Alt+Shift+ArrowDown = drop to the nearest valid surface
+     * Escape = cancel an active gizmo drag
      * Delete/Backspace = delete selection
      */
     function onKeyDown(ev) {
@@ -1251,6 +1386,12 @@ export function createInteractionManager({
           else { nudgeSelection('x', -nudge); }
           ev.preventDefault();
           break;
+        case 'Escape':
+          if (gizmoDragging) {
+            cancelGizmoDrag();
+            ev.preventDefault();
+          }
+          break;
         case 'Delete':
         case 'Backspace':
           deleteSelection();
@@ -1264,6 +1405,11 @@ export function createInteractionManager({
     function onMove(ev) {
       if (!isEditorActive()) return;
       updatePointer(ev);
+
+      if (gizmoDragging && draggingId) {
+        updateGizmoDrag();
+        return;
+      }
 
       if (pressed && !draggingId) {
         const dx = ev.clientX - pressed.clientX;
@@ -1294,6 +1440,14 @@ export function createInteractionManager({
       if (!isEditorActive()) return;
       if (ev.button !== 0) return;
       updatePointer(ev);
+
+      // V3A: gizmo handles take grab priority over case picking.
+      if (beginGizmoDrag()) {
+        domEl.setPointerCapture(ev.pointerId);
+        domEl.style.cursor = 'grabbing';
+        return;
+      }
+
       const hit = raycastFirst();
 
       if (hit) {
@@ -1322,6 +1476,10 @@ export function createInteractionManager({
       if (!pressed && !draggingId) return;
 
       if (draggingId) {
+        if (gizmoDragging) {
+          finishGizmoDrag();
+          return;
+        }
         finishDrag();
         return;
       }
@@ -1341,6 +1499,64 @@ export function createInteractionManager({
         setSelection([id]);
       }
       pressed = null;
+    }
+
+    /**
+     * V3A vertical gizmo drag: grab priority over case picking. Returns true
+     * when a visible gizmo handle was hit and a constrained vertical drag of
+     * the gizmo's target case started.
+     */
+    function beginGizmoDrag() {
+      if (operationsBusy()) return false;
+      const camera = SceneManager.getCamera();
+      const handles = CaseScene.getGizmoHandleMeshes();
+      if (!camera || !handles.length) return false;
+      raycaster.setFromCamera(pointer, camera);
+      const hits = raycaster.intersectObjects(handles, false);
+      if (!hits.length) return false;
+      const targetId = CaseScene.getGizmoTargetId();
+      const obj = targetId ? CaseScene.getObject(targetId) : null;
+      if (!obj) return false;
+      gizmoDragging = true;
+      draggingId = targetId;
+      dragStartPosWorld = obj.position.clone();
+      dragGroupIds = [targetId];
+      dragGroupStartWorld = new Map([[targetId, obj.position.clone()]]);
+      dragOffset.copy(obj.position).sub(hits[0].point);
+      const controls = SceneManager.getControls();
+      if (controls) controls.enabled = false;
+      CaseScene.setDragging(targetId);
+      CaseScene.setGizmoActive(true);
+      return true;
+    }
+
+    function updateGizmoDrag() {
+      // Reuse the Alt-drag vertical-plane math (and its V2B release-outcome
+      // preview) verbatim: the gizmo is a visible way to start that same drag.
+      updateDrag({ altKey: true });
+      CaseScene.updateGizmoTransform();
+    }
+
+    function finishGizmoDrag() {
+      gizmoDragging = false;
+      CaseScene.setGizmoActive(false);
+      // Release rides the V2B validated single-packed path inside finishDrag:
+      // resolve → repairDependents commit → honest outcome toasts.
+      finishDrag();
+      CaseScene.refreshGizmo();
+    }
+
+    function cancelGizmoDrag() {
+      if (!gizmoDragging) return;
+      gizmoDragging = false;
+      CaseScene.setGizmoActive(false);
+      const groupIds = Array.isArray(dragGroupIds) && dragGroupIds.length
+        ? dragGroupIds
+        : (draggingId ? [draggingId] : []);
+      const startMap = dragGroupStartWorld || new Map();
+      revertGroupToStart(groupIds, startMap);
+      resetDrag();
+      CaseScene.refreshGizmo();
     }
 
     function onDblClick(ev) {

@@ -4993,6 +4993,24 @@ body.modal-open {
   display: none !important;
 }
 
+.tp3d-editor-vert-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tp3d-editor-vert-btn--up i {
+  color: var(--success);
+}
+
+.tp3d-editor-vert-btn--down i {
+  color: var(--info);
+}
+
+.tp3d-editor-vert-btn--drop i {
+  color: var(--text-secondary);
+}
+
 .tp3d-editor-action-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

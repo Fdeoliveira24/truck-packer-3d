@@ -50,6 +50,25 @@ function formatDeleteResultMessage(result, fallbackDeletedIds = []) {
   return message;
 }
 
+// Vertical-move outcome message: base sentence plus what revalidation did to
+// OTHER cases (re-settled / staged dependents), per the delete-path contract.
+function formatVerticalMoveMessage(result, movedId, baseMessage) {
+  let message = baseMessage;
+  const otherIds = ids => (Array.isArray(ids) ? ids.filter(id => id !== movedId) : []);
+  const resettled = new Set([
+    ...otherIds(result && result.adjustedIds),
+    ...otherIds(result && result.repairedIds),
+  ]);
+  if (resettled.size) {
+    message += ` ${resettled.size} nearby ${caseCountText(resettled.size)} ${resettled.size === 1 ? 'was' : 'were'} re-settled.`;
+  }
+  const stagedCount = otherIds(result && result.stagedIds).length;
+  if (stagedCount) {
+    message += ` ${stagedCount} dependent ${caseCountText(stagedCount)} ${stagedCount === 1 ? 'was' : 'were'} moved to staging because their support changed.`;
+  }
+  return message;
+}
+
 function createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, rotation) {
   const caseData = inst ? CaseLibrary.getById(inst.caseId) : null;
   if (caseData && caseData.dimensions && typeof PackLibrary.createOrientationLockPatch === 'function') {
@@ -1102,6 +1121,77 @@ export function createInteractionManager({
     }
 
     /**
+     * Move the single selected packed case to an adjacent valid support level
+     * ('up'/'down') or drop it onto the nearest valid surface ('drop'). All
+     * validation runs through PackLibrary's hard-rule pipeline; the naive scene
+     * gravity settle is bypassed so a validated raised placement is not pulled
+     * back down on commit.
+     */
+    function moveSelectionVertical(mode) {
+      if (operationsBusy()) {
+        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
+        return;
+      }
+      if (typeof PackLibrary.findManualVerticalPlacement !== 'function' ||
+          typeof PackLibrary.updateCasesWithManualRevalidation !== 'function') {
+        return;
+      }
+      const ids = getSelection();
+      if (ids.length !== 1) {
+        UIComponents.showToast('Select a single packed case to move it vertically.', 'info');
+        return;
+      }
+      const packId = StateStore.get('currentPackId');
+      const pack = PackLibrary.getById(packId);
+      if (!pack) { return; }
+      const inst = (pack.cases || []).find(i => i && i.id === ids[0]);
+      if (!inst) { return; }
+      const resolved = PackLibrary.findManualVerticalPlacement(pack, CaseLibrary.getCases(), inst.id, { mode });
+      if (!resolved.ok) {
+        const infoCodes = new Set(['already-resting', 'no-level-above', 'no-level-below']);
+        UIComponents.showToast(
+          resolved.reason || 'Cannot move this case vertically.',
+          infoCodes.has(resolved.code) ? 'info' : 'error'
+        );
+        return;
+      }
+      const nextCases = (pack.cases || []).map(item =>
+        item.id === inst.id
+          ? { ...item, transform: { ...item.transform, position: resolved.position } }
+          : item
+      );
+      const result = PackLibrary.updateCasesWithManualRevalidation(packId, nextCases, CaseLibrary.getCases(), {
+        repairDependents: true,
+      });
+      if (!result) {
+        UIComponents.showToast('Vertical move failed. Please try again.', 'error');
+        return;
+      }
+      // Toast from the actual committed outcome, not the predicted target:
+      // dependent cascades can legally change where the moved case finally rests.
+      const finalInst = ((result.pack && result.pack.cases) || []).find(i => i && i.id === inst.id);
+      const finalY = finalInst && finalInst.transform && finalInst.transform.position
+        ? Number(finalInst.transform.position.y)
+        : null;
+      const startY = Number(inst.transform.position && inst.transform.position.y) || 0;
+      const stagedSelf = Array.isArray(result.stagedIds) && result.stagedIds.includes(inst.id);
+      let tone = 'success';
+      let base;
+      if (stagedSelf) {
+        tone = 'warning';
+        base = 'The case could not rest safely and was moved to staging.';
+      } else if (finalY !== null && Math.abs(finalY - startY) > 0.05) {
+        base = mode === 'drop'
+          ? 'Dropped case to the nearest valid surface.'
+          : `Moved case ${mode === 'up' ? 'up' : 'down'} to the next valid level.`;
+      } else {
+        tone = 'info';
+        base = 'Could not move the case safely; placement kept.';
+      }
+      UIComponents.showToast(formatVerticalMoveMessage(result, inst.id, base), tone);
+    }
+
+    /**
      * Keyboard shortcuts for selected cases.
      * R = rotate Y 90°, T = tip X 90°, E = roll Z 90°, F = flip
      * Arrow keys = nudge X/Z, Shift+Arrow = nudge Y
@@ -1621,7 +1711,7 @@ export function createInteractionManager({
       UIComponents.showToast(formatDeleteResultMessage(result, ids), 'info');
     }
 
-    return { init: initInteraction, setSelection, selectAllInPack, deleteSelection, rotateSelection };
+    return { init: initInteraction, setSelection, selectAllInPack, deleteSelection, rotateSelection, moveSelectionVertical };
   })();
 
   return InteractionManager;
@@ -3832,11 +3922,30 @@ export function createEditorScreen({
           return;
         }
 
-        let finalPos = nextPos;
+        // Validated vertical resolve replaces the naive gravity settle: a typed Y
+        // is honored when it is a legal supported level, corrected to the nearest
+        // legal level otherwise, and never silently settled onto a case that
+        // cannot carry it. Out-of-truck moves keep the legacy settle+stage path.
+        let resolved = null;
+        if (typeof PackLibrary.findManualVerticalPlacement === 'function') {
+          resolved = PackLibrary.findManualVerticalPlacement(pack, CaseLibrary.getCases(), inst.id, {
+            mode: 'resolve',
+            desiredPosition: nextPos,
+          });
+        }
+        if (resolved && !resolved.ok && resolved.code !== 'outside-truck') {
+          UIComponents.showToast(resolved.reason || 'Cannot place here.', 'error');
+          return;
+        }
+        const corrected = Boolean(resolved && resolved.ok && resolved.corrected);
+        const useLegacySettle = !resolved || !resolved.ok;
+        let finalPos = resolved && resolved.ok ? resolved.position : nextPos;
         if (obj) {
-          obj.position.copy(candidateWorld);
-          const settledY = CaseScene.settleY(inst.id);
-          if (settledY !== null) obj.position.y = settledY;
+          obj.position.copy(SceneManager.vecInchesToWorld(finalPos));
+          if (useLegacySettle) {
+            const settledY = CaseScene.settleY(inst.id);
+            if (settledY !== null) obj.position.y = settledY;
+          }
           check = CaseScene.checkCollision(inst.id, obj.position, ignoreSet);
           CaseScene.setCollision(inst.id, check.collides);
           if (check.collides) {
@@ -3844,7 +3953,7 @@ export function createEditorScreen({
             UIComponents.showToast('Cannot place here: collision detected', 'error');
             return;
           }
-          finalPos = SceneManager.vecWorldToInches(obj.position);
+          if (useLegacySettle) { finalPos = SceneManager.vecWorldToInches(obj.position); }
         }
         CaseScene.setCollision(inst.id, false);
         const nextCases = (pack.cases || []).map(item =>
@@ -3852,15 +3961,49 @@ export function createEditorScreen({
             ? { ...item, transform: { ...item.transform, position: finalPos } }
             : item
         );
+        let result = null;
         if (typeof PackLibrary.updateCasesWithManualRevalidation === 'function') {
-          PackLibrary.updateCasesWithManualRevalidation(pack.id, nextCases, CaseLibrary.getCases());
+          result = PackLibrary.updateCasesWithManualRevalidation(pack.id, nextCases, CaseLibrary.getCases(), {
+            repairDependents: true,
+          });
         } else {
           PackLibrary.update(pack.id, { cases: nextCases });
         }
         SceneManager.focusOnWorldPoint(SceneManager.vecInchesToWorld(finalPos), { duration: 420 });
-        UIComponents.showToast('Position updated', 'success');
+        const baseMessage = corrected ? 'Adjusted to the nearest supported level.' : 'Position updated';
+        UIComponents.showToast(
+          result ? formatVerticalMoveMessage(result, inst.id, baseMessage) : baseMessage,
+          corrected ? 'info' : 'success'
+        );
       });
       transformCard.appendChild(savePos);
+
+      // Vertical placement row: single packed case only. Staged cases must be
+      // placed in the truck first, so the row is hidden for them.
+      if (inst.placement !== 'staged') {
+        const vertTitle = document.createElement('div');
+        vertTitle.className = 'label';
+        vertTitle.textContent = 'Vertical placement';
+        transformCard.appendChild(vertTitle);
+
+        const vertRow = document.createElement('div');
+        vertRow.className = 'tp3d-editor-vert-grid';
+        [
+          { text: 'Up', icon: 'fa-arrow-up', tone: 'up', mode: 'up' },
+          { text: 'Down', icon: 'fa-arrow-down', tone: 'down', mode: 'down' },
+          { text: 'Drop', icon: 'fa-arrows-down-to-line', tone: 'drop', mode: 'drop' },
+        ].forEach(({ text, icon, tone, mode }) => {
+          const btn = document.createElement('button');
+          btn.className = `btn tp3d-editor-rot-btn tp3d-editor-vert-btn--${tone}`;
+          btn.type = 'button';
+          btn.innerHTML = `<i class="fa-solid ${icon}"></i><span>${text}</span>`;
+          btn.addEventListener('click', () => {
+            InteractionManager.moveSelectionVertical(mode);
+          });
+          vertRow.appendChild(btn);
+        });
+        transformCard.appendChild(vertRow);
+      }
       inspectorEl.appendChild(transformCard);
 
       // === Rotate / Flip Card ===

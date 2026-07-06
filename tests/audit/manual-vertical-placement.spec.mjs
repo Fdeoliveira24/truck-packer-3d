@@ -676,3 +676,103 @@ test('MANUAL-VERTICAL every hold exit is wired: Enter, Drop, Escape, selection, 
   assert.match(src, /CaseScene\.setPendingPoseWatcher\(onScenePendingInvalidated\);/,
     'the InteractionManager must register the hold watcher');
 });
+
+// V4A-1 surface-following preview height helper: pure, preview-only terrain
+// math for the future ghost drag. It must never validate placement rules —
+// commits keep going through PackLibrary. Evaluated from source (no THREE).
+async function loadSurfaceFollowingPreviewY() {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('export function computeSurfaceFollowingPreviewY');
+  // The destructured-parameter block closes at column 0, so slice to the next
+  // top-level declaration instead of the first "\n}".
+  const end = src.indexOf('\nfunction getUnpackCategoryKey', start);
+  assert.ok(start >= 0 && end > start, 'computeSurfaceFollowingPreviewY must be exported for unit testing');
+  return new Function(
+    `${src.slice(start, end).replace('export ', '')}; return computeSurfaceFollowingPreviewY;`
+  )();
+}
+
+const PREVIEW_HALF = { x: 5, y: 5, z: 5 };
+const PREVIEW_FLOOR = { kind: 'truck-floor', min: { x: 0, z: -30 }, max: { x: 120, z: 30 }, topY: 0 };
+
+test('MANUAL-VERTICAL preview Y rests on the floor and rides the highest overlapping top', async () => {
+  const previewY = await loadSurfaceFollowingPreviewY();
+
+  const onFloor = previewY({ halfWorld: PREVIEW_HALF, centerX: 20, centerZ: 0, surfaces: [PREVIEW_FLOOR] });
+  assert.equal(onFloor.ok, true, 'a floor under the footprint must produce a preview height');
+  assert.equal(onFloor.centerY, 5, 'floor resting center must be topY + half height');
+  assert.equal(onFloor.bottomY, 0, 'floor resting bottom must be the floor top');
+  assert.equal(onFloor.surface.kind, 'truck-floor', 'the selected surface must be returned');
+  assert.equal(onFloor.overlapFraction, 1, 'a fully contained footprint overlaps completely');
+
+  const lifted = previewY({
+    halfWorld: PREVIEW_HALF, centerX: 20, centerZ: 0, surfaces: [PREVIEW_FLOOR], clearance: 0.5,
+  });
+  assert.equal(lifted.centerY, 5.5, 'clearance must lift the preview center');
+  assert.equal(lifted.bottomY, 0.5, 'clearance must lift the preview bottom');
+
+  const boxTop = { kind: 'box-top', min: { x: 15, z: -5 }, max: { x: 25, z: 5 }, topY: 10 };
+  const ridden = previewY({
+    halfWorld: PREVIEW_HALF, centerX: 20, centerZ: 0, surfaces: [PREVIEW_FLOOR, boxTop],
+  });
+  assert.equal(ridden.ok, true, 'an overlapping box top must be rideable');
+  assert.equal(ridden.centerY, 15, 'the highest overlapping top must win over the floor');
+  assert.equal(ridden.surface.kind, 'box-top', 'the winning surface must be the box top');
+});
+
+test('MANUAL-VERTICAL preview Y ignores tiny overlaps and accepts every visual surface kind', async () => {
+  const previewY = await loadSurfaceFollowingPreviewY();
+  const slimBox = { kind: 'box-top', min: { x: 23, z: 3 }, max: { x: 33, z: 13 }, topY: 10 };
+
+  const overFloor = previewY({
+    halfWorld: PREVIEW_HALF, centerX: 20, centerZ: 0, surfaces: [PREVIEW_FLOOR, slimBox],
+  });
+  assert.equal(overFloor.centerY, 5,
+    'a 4% overlap must stay below the default threshold and fall back to the floor');
+  const alone = previewY({ halfWorld: PREVIEW_HALF, centerX: 20, centerZ: 0, surfaces: [slimBox] });
+  assert.equal(alone.ok, false, 'a tiny overlap alone must not produce a surface');
+  assert.equal(alone.reason, 'no-surface', 'tiny-overlap misses must report no-surface');
+
+  const wellTop = { kind: 'wheel-well-top', min: { x: 15, z: -5 }, max: { x: 25, z: 5 }, topY: 20 };
+  assert.equal(previewY({ halfWorld: PREVIEW_HALF, centerX: 20, centerZ: 0, surfaces: [wellTop] }).centerY, 25,
+    'wheel-well tops must be visual terrain');
+  const deck = { kind: 'front-deck', min: { x: 15, z: -5 }, max: { x: 25, z: 5 }, topY: 24 };
+  assert.equal(previewY({ halfWorld: PREVIEW_HALF, centerX: 20, centerZ: 0, surfaces: [deck] }).centerY, 29,
+    'the front overhang deck must be visual terrain');
+  const staging = { kind: 'staging-floor', min: { x: 0, z: 35 }, max: { x: 120, z: 65 }, topY: 0 };
+  const staged = previewY({ halfWorld: PREVIEW_HALF, centerX: 20, centerZ: 40, surfaces: [staging] });
+  assert.equal(staged.ok, true, 'the staging floor must be visual terrain');
+  assert.equal(staged.surface.kind, 'staging-floor', 'the staging surface must be returned');
+});
+
+test('MANUAL-VERTICAL preview Y fails safely on misses and bad input', async () => {
+  const previewY = await loadSurfaceFollowingPreviewY();
+
+  const empty = previewY({ halfWorld: PREVIEW_HALF, centerX: 20, centerZ: 0, surfaces: [] });
+  assert.deepEqual({ ok: empty.ok, reason: empty.reason }, { ok: false, reason: 'no-surface' },
+    'no surfaces must report no-surface');
+  const far = previewY({
+    halfWorld: PREVIEW_HALF, centerX: 20, centerZ: 0,
+    surfaces: [{ kind: 'truck-floor', min: { x: 200, z: -30 }, max: { x: 300, z: 30 }, topY: 0 }],
+  });
+  assert.equal(far.reason, 'no-surface', 'non-overlapping surfaces must report no-surface');
+
+  assert.equal(previewY({ centerX: 20, centerZ: 0, surfaces: [PREVIEW_FLOOR] }).reason, 'bad-input',
+    'a missing halfWorld must report bad-input');
+  assert.equal(previewY({ halfWorld: { x: 0, y: 5, z: 5 }, centerX: 20, centerZ: 0, surfaces: [PREVIEW_FLOOR] }).reason,
+    'bad-input', 'non-positive half extents must report bad-input');
+  assert.equal(previewY({ halfWorld: PREVIEW_HALF, centerX: NaN, centerZ: 0, surfaces: [PREVIEW_FLOOR] }).reason,
+    'bad-input', 'a non-finite center must report bad-input');
+  assert.equal(previewY({ halfWorld: PREVIEW_HALF, centerX: 20, centerZ: 0, surfaces: 'nope' }).reason,
+    'bad-input', 'a non-array surface list must report bad-input');
+});
+
+test('MANUAL-VERTICAL preview helper is exported, preview-only, and draft-free', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  assert.match(src, /export function computeSurfaceFollowingPreviewY\(\{/,
+    'the preview helper must be exported from editor-screen.js');
+  assert.match(src, /NOT a placement validator/,
+    'the helper must document that it never validates placement');
+  assert.equal(src.includes('manualDraft'), false,
+    'no manualDraft state may appear in editor-screen.js');
+});

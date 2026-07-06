@@ -139,6 +139,87 @@ export function computeGizmoScale(distance) {
   return Math.min(3.5, Math.max(0.35, d * 0.045));
 }
 
+/**
+ * PREVIEW-ONLY terrain height for surface-following drag ("ghost over hills").
+ * Returns the visual resting height of a dragged case footprint over the
+ * highest sufficiently-overlapping preview surface (truck floor, box tops,
+ * wheel-well tops, front deck, staging floor).
+ *
+ * This is NOT a placement validator: it deliberately ignores stacking,
+ * weight, noStackOnTop, retention, containment, and every other hard rule so
+ * the ghost can ride over any surface while dragging. Final commits must
+ * still go through PackLibrary validation (findManualVerticalPlacement
+ * resolve + updateCasesWithManualRevalidation).
+ *
+ * Pure and THREE-free: plain numbers/objects in, plain object out; inputs are
+ * never mutated. Exported for unit testing and later drag integration.
+ *
+ * Missing or malformed inputs are reported as `bad-input` at runtime, so every
+ * property is optional at the type level.
+ *
+ * @param {object} [input]
+ * @param {{ x: number, y: number, z: number }} [input.halfWorld] - dragged case half-extents
+ * @param {number} [input.centerX] - dragged case center X
+ * @param {number} [input.centerZ] - dragged case center Z
+ * @param {Array<{ id?: string, kind: string, min: {x: number, z: number}, max: {x: number, z: number}, topY: number }>} [input.surfaces]
+ * @param {number} [input.minOverlapFraction] - footprint overlap needed to ride a surface
+ * @param {number} [input.clearance] - extra visual lift above the surface
+ * @returns {{ ok: boolean, centerY?: number, bottomY?: number, surface?: object,
+ *   overlapFraction?: number, reason?: 'no-surface' | 'bad-input' }}
+ */
+export function computeSurfaceFollowingPreviewY({
+  halfWorld,
+  centerX,
+  centerZ,
+  surfaces,
+  minOverlapFraction = 0.08,
+  clearance = 0,
+} = {}) {
+  const halfX = halfWorld ? Number(halfWorld.x) : NaN;
+  const halfY = halfWorld ? Number(halfWorld.y) : NaN;
+  const halfZ = halfWorld ? Number(halfWorld.z) : NaN;
+  const cx = Number(centerX);
+  const cz = Number(centerZ);
+  if (!Number.isFinite(halfX) || halfX <= 0 ||
+      !Number.isFinite(halfY) || halfY <= 0 ||
+      !Number.isFinite(halfZ) || halfZ <= 0 ||
+      !Number.isFinite(cx) || !Number.isFinite(cz) ||
+      !Array.isArray(surfaces)) {
+    return { ok: false, reason: 'bad-input' };
+  }
+  const threshold = Number.isFinite(Number(minOverlapFraction)) ? Number(minOverlapFraction) : 0.08;
+  const lift = Number.isFinite(Number(clearance)) ? Number(clearance) : 0;
+  const footprintArea = (halfX * 2) * (halfZ * 2);
+  const minX = cx - halfX;
+  const maxX = cx + halfX;
+  const minZ = cz - halfZ;
+  const maxZ = cz + halfZ;
+
+  let best = null;
+  for (const surface of surfaces) {
+    if (!surface || !surface.min || !surface.max) continue;
+    const topY = Number(surface.topY);
+    if (!Number.isFinite(topY)) continue;
+    const overlapX = Math.min(maxX, Number(surface.max.x)) - Math.max(minX, Number(surface.min.x));
+    const overlapZ = Math.min(maxZ, Number(surface.max.z)) - Math.max(minZ, Number(surface.min.z));
+    if (!(overlapX > 0) || !(overlapZ > 0)) continue;
+    const overlapFraction = (overlapX * overlapZ) / footprintArea;
+    if (overlapFraction < threshold) continue;
+    if (!best || topY > best.topY ||
+        (topY === best.topY && overlapFraction > best.overlapFraction)) {
+      best = { topY, overlapFraction, surface };
+    }
+  }
+  if (!best) return { ok: false, reason: 'no-surface' };
+  return {
+    ok: true,
+    centerY: best.topY + halfY + lift,
+    bottomY: best.topY + lift,
+    surface: best.surface,
+    overlapFraction: best.overlapFraction,
+  };
+}
+
 function getUnpackCategoryKey(inst, getCaseById) {
   const caseData = inst && typeof getCaseById === 'function' ? getCaseById(inst.caseId) : null;
   const key = caseData && caseData.category != null ? caseData.category : 'default';

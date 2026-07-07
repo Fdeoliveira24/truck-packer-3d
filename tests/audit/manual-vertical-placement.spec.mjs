@@ -274,6 +274,83 @@ test('MANUAL-VERTICAL resolve rejects a desired position onto a no-stack case', 
   assert.equal(resolved.code, 'support-rules', 'the stacking rule must be named as the blocker');
 });
 
+test('MANUAL-VERTICAL staged candidate may become packed only through manual revalidation', async () => {
+  const caseData = makeVerticalCase({ id: 'case-vertical-stage-into-truck' });
+  const noStack = makeVerticalCase({ id: 'case-vertical-stage-nostack', stackable: false });
+  const { PackLibrary, packId } = await setupVerticalPack({
+    cases: [caseData, noStack],
+    instances: [
+      makeVerticalInstance(noStack.id, 'no-top', { x: 40, y: 5, z: 0 }),
+      makeVerticalInstance(caseData.id, 'staged-case', { x: 160, y: 5, z: 0 }, { placement: 'staged' }),
+    ],
+  });
+
+  const pack = PackLibrary.getById(packId);
+  const validCandidate = pack.cases.map(item =>
+    item.id === 'staged-case'
+      ? { ...item, transform: { ...item.transform, position: { x: 20, y: 5, z: 0 } }, placement: 'packed' }
+      : item
+  );
+  const validPreflight = PackLibrary.revalidateManualPlacements(
+    { ...pack, cases: validCandidate },
+    [caseData, noStack],
+    { repairDependents: true }
+  );
+  const validSelf = validPreflight.pack.cases.find(inst => inst.id === 'staged-case');
+  assert.equal(validSelf.placement, 'packed', 'a staged case proposed at a valid truck floor pose may become packed');
+  const committed = PackLibrary.updateCasesWithManualRevalidation(packId, validCandidate, [caseData, noStack], {
+    repairDependents: true,
+  });
+  assert.equal(
+    committed.pack.cases.find(inst => inst.id === 'staged-case').placement,
+    'packed',
+    'the final commit must still run through updateCasesWithManualRevalidation'
+  );
+
+  const { PackLibrary: BlockedPackLibrary, packId: blockedPackId } = await setupVerticalPack({
+    cases: [caseData, noStack],
+    truck: { ...RECT_TRUCK, length: 10, width: 10 },
+    instances: [
+      makeVerticalInstance(noStack.id, 'no-top', { x: 5, y: 5, z: 0 }),
+      makeVerticalInstance(caseData.id, 'blocked-staged', { x: 40, y: 5, z: 0 }, { placement: 'staged' }),
+    ],
+    packId: 'pack-stage-blocked',
+  });
+  const blockedPack = BlockedPackLibrary.getById(blockedPackId);
+  const invalidCandidate = blockedPack.cases.map(item =>
+    item.id === 'blocked-staged'
+      ? { ...item, transform: { ...item.transform, position: { x: 5, y: 15, z: 0 } }, placement: 'packed' }
+      : item
+  );
+  const invalidPreflight = BlockedPackLibrary.revalidateManualPlacements(
+    { ...blockedPack, cases: invalidCandidate },
+    [caseData, noStack],
+    { repairDependents: true }
+  );
+  assert.notEqual(
+    invalidPreflight.pack.cases.find(inst => inst.id === 'blocked-staged').placement,
+    'packed',
+    'a staged case proposed onto a no-top-load support must not become packed'
+  );
+
+  const outsideCandidate = pack.cases.map(item =>
+    item.id === 'staged-case'
+      ? { ...item, transform: { ...item.transform, position: { x: 160, y: 5, z: 0 } }, placement: 'packed' }
+      : item
+  );
+  const outsidePreflight = PackLibrary.revalidateManualPlacements(
+    { ...pack, cases: outsideCandidate },
+    [caseData, noStack],
+    { repairDependents: true }
+  );
+  const outsideSelf = outsidePreflight.pack.cases.find(inst => inst.id === 'staged-case');
+  assert.notEqual(
+    outsideSelf.transform.position.x,
+    160,
+    'outside staged candidates are not accepted at the user drop X/Z by raw revalidation'
+  );
+});
+
 test('MANUAL-VERTICAL wheel wells: drop lands on the rigid well top and never inside the blocked body', async () => {
   const caseData = makeVerticalCase({
     id: 'case-vertical-shelf',
@@ -467,9 +544,10 @@ test('MANUAL-VERTICAL vertical placement buttons expose keyboard shortcut hints'
 });
 
 // V2B validated drag release: a single packed case must release through the
-// validated resolve path with dependent repair and honest outcome toasts,
-// while multi-select, staged-case, and out-of-truck releases keep the legacy
-// settle/staging path byte-for-byte.
+// validated resolve path with dependent repair and honest outcome toasts.
+// Fix C: a single staged case may preflight as packed through manual
+// revalidation, while multi-select and out-of-truck releases keep the legacy
+// settle/staging path.
 test('MANUAL-VERTICAL drag release for a single packed case resolves through validated placement', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const start = src.indexOf('function finishDrag()');
@@ -480,7 +558,7 @@ test('MANUAL-VERTICAL drag release for a single packed case resolves through val
   assert.match(block, /const singleDraggedInst = groupIds\.length === 1/,
     'the validated release branch must be gated to a single dragged case');
   assert.match(block, /singleDraggedInst\.placement !== 'staged'/,
-    'staged-case drag release must keep the legacy path');
+    'the existing packed-case resolver must stay limited to packed cases');
   assert.match(block, /mode: 'resolve',\s*\n\s*desiredPosition: SceneManager\.vecWorldToInches\(obj\.position\)/,
     'release must resolve the dragged position through findManualVerticalPlacement');
   assert.match(block, /updateCasesWithManualRevalidation\(packId, nextCases, CaseLibrary\.getCases\(\), \{\s*\n\s*repairDependents: true,/,
@@ -493,11 +571,25 @@ test('MANUAL-VERTICAL drag release for a single packed case resolves through val
     'non-surface-following rule-blocked releases must still revert with the blocking reason');
   assert.match(block, /resolved\.code !== 'outside-truck' && resolved\.code !== 'invalid-selection'/,
     'out-of-truck releases must fall through to the legacy staging path');
-  // The legacy path must remain intact for multi-select and staged releases.
+  assert.match(block, /singleDraggedInst && singleDraggedInst\.placement === 'staged' &&\s*\n\s*tryCommitStagedIntoTruck\(packId, pack, singleDraggedInst, obj, groupIds, startMap\)/,
+    'a single staged release must get a narrow staged-to-packed transition path before legacy staging');
+  assert.match(src, /function tryCommitStagedIntoTruck\(packId, pack, inst, obj, groupIds, startMap\) \{[\s\S]*PackLibrary\.revalidateManualPlacements\(\s*\n\s*\{ \.\.\.pack, cases: candidateCases \},\s*\n\s*CaseLibrary\.getCases\(\),\s*\n\s*\{ repairDependents: true \}/,
+    'staged-to-packed preflight must use pure manual revalidation with dependent repair');
+  assert.match(src, /PackLibrary\.updateCasesWithManualRevalidation\(\s*\n\s*packId,\s*\n\s*candidateCases,\s*\n\s*CaseLibrary\.getCases\(\),\s*\n\s*\{ repairDependents: true \}/,
+    'accepted staged-to-packed releases must still commit through manual revalidation with dependent repair');
+  assert.match(src, /preflightSelf\.placement === 'packed' &&[\s\S]*positionsShareManualXZ\(preflightSelf\.transform\.position, desiredPosition\)/,
+    'staged-to-packed acceptance must reject self-repairs that change the dragged case X/Z');
+  assert.match(src, /stagedCandidateIsInsideUsableTruckZone\(pack, inst, desiredPosition\)[\s\S]*Cannot place this staged case in the truck safely/,
+    'inside-truck staged candidates rejected by hard rules must not fall through as successful placements');
+  assert.match(src, /if \(stagedCandidateIsInsideUsableTruckZone\(pack, inst, desiredPosition\)\) \{[\s\S]*return true;\s*\n\s*\}\s*\n\s*return false;/,
+    'outside-truck staged candidates must fall through to the legacy staged release path');
+  // The legacy path must remain intact for multi-select and outside-truck releases.
   assert.match(block, /CaseScene\.settleY\(id\)/,
-    'the legacy settle path must remain for multi-select and staged releases');
+    'the legacy settle path must remain for multi-select and outside-truck releases');
   assert.match(block, /isAabbContainedInAnyZone\(aabb, zonesInches\) \? 'packed' : 'staged'/,
     'legacy zone-containment placement classification must remain unchanged');
+  assert.match(block, /placementValue === 'staged'[\s\S]*finalPos = \{ \.\.\.pos, y: Math\.max\(0, halfY\) \};/,
+    'single staged releases that remain staged must not persist elevated staged Y');
 });
 
 test('MANUAL-VERTICAL alt-drag shows a throttled release-outcome preview for a single packed case', async () => {
@@ -878,12 +970,12 @@ test('MANUAL-VERTICAL surface-following preview surfaces come only from scene an
     'CaseScene must expose the preview query to InteractionManager without changing the data model');
 });
 
-test('MANUAL-VERTICAL normal single packed drag applies preview Y before collision checks', async () => {
+test('MANUAL-VERTICAL normal single-case drag applies preview Y before collision checks', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   assert.match(src, /let surfaceFollowingDrag = false;/,
     'normal drag must track whether the surface-following preview is active');
-  assert.match(src, /function canSurfaceFollowNormalDrag\(instanceId, groupIds\) \{[\s\S]*groupIds\.length !== 1[\s\S]*inst\.placement !== 'staged'/,
-    'surface-following must be limited to one non-staged dragged instance');
+  assert.match(src, /function canSurfaceFollowNormalDrag\(instanceId, groupIds\) \{[\s\S]*groupIds\.length !== 1[\s\S]*return Boolean\(inst\);/,
+    'surface-following must be limited to one dragged instance, including staged cases');
   assert.match(src, /surfaceFollowingDrag = canSurfaceFollowNormalDrag\(draggingId, dragGroupIds\);/,
     'startDrag must enable surface-following only after final drag group selection is known');
   assert.match(src, /surfaceFollowingDrag = false;\s*\n\s*pressed = null;/,
@@ -904,6 +996,8 @@ test('MANUAL-VERTICAL normal single packed drag applies preview Y before collisi
     'Alt-drag must not use the surface-following helper');
   assert.match(normalBlock, /surfaceFollowingDrag && id === draggingId[\s\S]*CaseScene\.getSurfaceFollowingPreview\(id, candidate\)[\s\S]*candidate\.y = Math\.max\(half, preview\.centerY\);[\s\S]*CaseScene\.checkCollision\(id, candidate, ignoreSet\)/,
     'normal drag must raise the visual candidate from preview surfaces before collision preview runs');
+  assert.match(src, /CaseScene\.getGizmoTargetMode && CaseScene\.getGizmoTargetMode\(\) === 'staged'[\s\S]*CaseScene\.getSurfaceFollowingPreview\(draggingId, candidate\)[\s\S]*candidate\.y = Math\.max\(half \|\| 0\.01, preview\.centerY\);/,
+    'limited staged X/Z gizmo strokes must also use preview Y without changing packed gizmo behavior');
 });
 
 test('MANUAL-VERTICAL surface-following invalid releases hold scene-only pending pose', async () => {

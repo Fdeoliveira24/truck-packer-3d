@@ -1365,6 +1365,123 @@ export function createInteractionManager({
       return PackLibrary.update(packId, { cases: nextCases });
     }
 
+    function getInstanceDimsInches(inst) {
+      const caseData = inst ? CaseLibrary.getById(inst.caseId) : null;
+      return (inst && inst.orientedDims) || (caseData && caseData.dimensions) || null;
+    }
+
+    function makeInstanceAabbInches(position, dims) {
+      if (!position || !dims) return null;
+      const half = {
+        x: Number(dims.length) / 2,
+        y: Number(dims.height) / 2,
+        z: Number(dims.width) / 2,
+      };
+      if (!Number.isFinite(half.x) || !Number.isFinite(half.y) || !Number.isFinite(half.z)) return null;
+      return {
+        min: { x: position.x - half.x, y: position.y - half.y, z: position.z - half.z },
+        max: { x: position.x + half.x, y: position.y + half.y, z: position.z + half.z },
+      };
+    }
+
+    function stagedCandidateIsInsideUsableTruckZone(pack, inst, positionInches) {
+      if (!pack || !pack.truck ||
+          typeof PackLibrary.getTrailerUsableZones !== 'function' ||
+          typeof PackLibrary.isAabbContainedInAnyZone !== 'function') {
+        return false;
+      }
+      const dims = getInstanceDimsInches(inst);
+      const aabb = makeInstanceAabbInches(positionInches, dims);
+      if (!aabb) return false;
+      return PackLibrary.isAabbContainedInAnyZone(aabb, PackLibrary.getTrailerUsableZones(pack.truck));
+    }
+
+    function buildStagedToPackedCandidateCases(pack, instanceId, desiredPosition) {
+      return (pack.cases || []).map(item =>
+        item.id === instanceId
+          ? {
+            ...item,
+            transform: { ...(item.transform || {}), position: desiredPosition },
+            placement: 'packed',
+          }
+          : item
+      );
+    }
+
+    function positionsShareManualXZ(a, b) {
+      if (!a || !b) return false;
+      const ax = Number(a.x);
+      const az = Number(a.z);
+      const bx = Number(b.x);
+      const bz = Number(b.z);
+      if (!Number.isFinite(ax) || !Number.isFinite(az) ||
+          !Number.isFinite(bx) || !Number.isFinite(bz)) {
+        return false;
+      }
+      return Math.abs(ax - bx) <= 0.05 && Math.abs(az - bz) <= 0.05;
+    }
+
+    function tryCommitStagedIntoTruck(packId, pack, inst, obj, groupIds, startMap) {
+      if (!inst || inst.placement !== 'staged' || !obj ||
+          typeof PackLibrary.revalidateManualPlacements !== 'function' ||
+          typeof PackLibrary.updateCasesWithManualRevalidation !== 'function') {
+        return false;
+      }
+      const desiredPosition = SceneManager.vecWorldToInches(obj.position);
+      const candidateCases = buildStagedToPackedCandidateCases(pack, inst.id, desiredPosition);
+      const preflight = PackLibrary.revalidateManualPlacements(
+        { ...pack, cases: candidateCases },
+        CaseLibrary.getCases(),
+        { repairDependents: true }
+      );
+      const preflightSelf = preflight && preflight.pack && Array.isArray(preflight.pack.cases)
+        ? preflight.pack.cases.find(item => item && item.id === inst.id)
+        : null;
+      if (preflightSelf && preflightSelf.placement === 'packed' &&
+          preflightSelf.transform &&
+          positionsShareManualXZ(preflightSelf.transform.position, desiredPosition)) {
+        const result = PackLibrary.updateCasesWithManualRevalidation(
+          packId,
+          candidateCases,
+          CaseLibrary.getCases(),
+          { repairDependents: true }
+        );
+        const committedSelf = result && result.pack && Array.isArray(result.pack.cases)
+          ? result.pack.cases.find(item => item && item.id === inst.id)
+          : null;
+        const stagedSelf = !committedSelf || committedSelf.placement !== 'packed' ||
+          !positionsShareManualXZ(committedSelf.transform && committedSelf.transform.position, desiredPosition) ||
+          (Array.isArray(result && result.stagedIds) && result.stagedIds.includes(inst.id));
+        if (committedSelf && committedSelf.transform && committedSelf.transform.position) {
+          obj.position.copy(SceneManager.vecInchesToWorld(committedSelf.transform.position));
+        }
+        CaseScene.setCollision(inst.id, stagedSelf);
+        UIComponents.showToast(
+          result
+            ? formatVerticalMoveMessage(
+              result,
+              inst.id,
+              stagedSelf
+                ? 'The case could not rest safely and stayed in staging.'
+                : 'Placed staged case in the truck.'
+            )
+            : 'Placed staged case in the truck.',
+          stagedSelf ? 'warning' : 'success'
+        );
+        resetDrag();
+        CaseScene.applyOOGHighlights();
+        return true;
+      }
+
+      if (stagedCandidateIsInsideUsableTruckZone(pack, inst, desiredPosition)) {
+        revertGroupToStart(groupIds, startMap);
+        UIComponents.showToast('Cannot place this staged case in the truck safely.', 'error');
+        resetDrag();
+        return true;
+      }
+      return false;
+    }
+
     function applyInstancePatches(pack, patchById) {
       return (pack.cases || []).map(inst => {
         const patch = patchById.get(inst.id);
@@ -1838,6 +1955,13 @@ export function createInteractionManager({
         Math.max(half || 0.01, dragStartPosWorld.y),
         gizmoAxis === 'z' ? next.z : dragStartPosWorld.z
       );
+      if (CaseScene.getGizmoTargetMode && CaseScene.getGizmoTargetMode() === 'staged' &&
+          typeof CaseScene.getSurfaceFollowingPreview === 'function') {
+        const preview = CaseScene.getSurfaceFollowingPreview(draggingId, candidate);
+        if (preview && preview.ok && Number.isFinite(preview.centerY)) {
+          candidate.y = Math.max(half || 0.01, preview.centerY);
+        }
+      }
       const check = CaseScene.checkCollision(draggingId, candidate, new Set([draggingId]));
       CaseScene.setCollision(draggingId, check.collides);
       obj.position.copy(candidate);
@@ -2049,7 +2173,7 @@ export function createInteractionManager({
       }
       const pack = PackLibrary.getById(StateStore.get('currentPackId'));
       const inst = pack ? (pack.cases || []).find(i => i && i.id === instanceId) : null;
-      return Boolean(inst && inst.placement !== 'staged');
+      return Boolean(inst);
     }
 
     function startDrag() {
@@ -2307,8 +2431,9 @@ export function createInteractionManager({
       // V2B: a single packed case releases through the validated placement
       // resolver so an Alt-drag raised position is honored when legal, corrected
       // to the nearest legal level when not, and never silently settled onto
-      // cargo that cannot carry it. Multi-select, staged-case, and out-of-truck
-      // releases keep the legacy settle path below unchanged.
+      // cargo that cannot carry it. A single staged case gets one preflight
+      // chance to become packed below; multi-select and out-of-truck releases
+      // keep the legacy settle/staging path unchanged.
       const singleDraggedInst = groupIds.length === 1
         ? (pack.cases || []).find(i => i && i.id === instanceId)
         : null;
@@ -2365,6 +2490,11 @@ export function createInteractionManager({
           resetDrag();
           return;
         }
+      }
+      if (singleDraggedInst && singleDraggedInst.placement === 'staged' &&
+          tryCommitStagedIntoTruck(packId, pack, singleDraggedInst, obj, groupIds, startMap)) {
+        CaseScene.refreshGizmo();
+        return;
       }
 
       // Gravity: settle selection bottom-up to preserve stacking.
@@ -2435,7 +2565,14 @@ export function createInteractionManager({
         const pos = nextPositions.get(inst.id);
         if (!pos) return inst;
         const placementValue = placementById.get(inst.id) || 'staged';
-        return { ...inst, transform: { ...(inst.transform || {}), position: pos }, placement: placementValue };
+        let finalPos = pos;
+        if (singleDraggedInst && singleDraggedInst.id === inst.id &&
+            singleDraggedInst.placement === 'staged' && placementValue === 'staged') {
+          const dims = getInstanceDimsInches(inst);
+          const halfY = dims && Number.isFinite(Number(dims.height)) ? Number(dims.height) / 2 : pos.y;
+          finalPos = { ...pos, y: Math.max(0, halfY) };
+        }
+        return { ...inst, transform: { ...(inst.transform || {}), position: finalPos }, placement: placementValue };
       });
       commitCasesWithManualRevalidation(packId, nextCases);
 

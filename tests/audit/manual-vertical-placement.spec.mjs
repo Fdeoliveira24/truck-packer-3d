@@ -774,8 +774,61 @@ test('MANUAL-VERTICAL gizmo builds X/Y/Z handles with per-axis colors and orient
   const colorBlock = src.slice(colorStart, start);
   assert.match(colorBlock, /getCssVar\('--error'\)/, 'the X handle must use the app X-axis tone');
   assert.match(colorBlock, /getCssVar\('--info'\)/, 'the Z handle must use the app Z-axis tone');
-  assert.match(src, /return gizmoGroup && gizmoGroup\.visible \? gizmoHitMeshes : \[\];/,
-    'all axis grab proxies must be raycastable when the gizmo is visible');
+  assert.match(src, /function getGizmoHandleMeshes\(\)[\s\S]*?return gizmoHitMeshes;/,
+    'packed targets expose all axis grab proxies when the gizmo is visible');
+});
+
+// Visual polish pass: staged cases expose X/Z only (staged vertical stacking is
+// unsupported), the arrows are slimmed, and per-axis tracking drives the toggle.
+// Source contracts only — no pixel testing, no movement/validation change.
+test('MANUAL-VERTICAL staged gizmo hides the Y control and raycasts X/Z only', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+
+  // createGizmo tracks each axis handle so individual axes can toggle visibility.
+  const createStart = src.indexOf('function createGizmo()');
+  const createEnd = src.indexOf('function buildGizmoAxisHandle(', createStart);
+  assert.ok(createStart >= 0 && createEnd > createStart, 'createGizmo block must exist');
+  const createBlock = src.slice(createStart, createEnd);
+  assert.match(createBlock, /gizmoAxisHandles\[axis\] = handle;/,
+    'createGizmo must record each axis handle for per-axis visibility control');
+  assert.match(createBlock, /opacity: GIZMO_IDLE_OPACITY,/,
+    'idle handle opacity must come from the soft shared constant');
+
+  // The idle opacity constant must be soft (lighter than the old heavy 0.92).
+  assert.match(src, /const GIZMO_IDLE_OPACITY = 0\.8;/,
+    'idle gizmo opacity must be softened for a lighter, professional look');
+
+  // Each axis grab proxy is tracked, and the generous proxy is preserved.
+  const buildStart = src.indexOf('function buildGizmoAxisHandle(');
+  const buildEnd = src.indexOf('function setGizmoActive(', buildStart);
+  assert.ok(buildStart >= 0 && buildEnd > buildStart, 'buildGizmoAxisHandle block must exist');
+  const buildBlock = src.slice(buildStart, buildEnd);
+  assert.match(buildBlock, /gizmoAxisHitMeshes\[axis\] = hit;/,
+    'each axis grab proxy must be tracked for staged filtering');
+  assert.match(buildBlock, /CylinderGeometry\(0\.3, 0\.3, 2\.6, 8\)/,
+    'the generous invisible hit proxy must be preserved after slimming the arrow');
+
+  // refreshGizmo hides the Y visual handle for staged, keeps it for packed.
+  const refreshStart = src.indexOf('function refreshGizmo()');
+  const refreshEnd = src.indexOf('function detachGizmo()', refreshStart);
+  assert.ok(refreshStart >= 0 && refreshEnd > refreshStart, 'refreshGizmo block must exist');
+  const refreshBlock = src.slice(refreshStart, refreshEnd);
+  assert.match(refreshBlock, /gizmoAxisHandles\.y\) gizmoAxisHandles\.y\.visible = targetMode !== 'staged';/,
+    'staged mode must hide the Y visual handle while packed keeps it');
+
+  // getGizmoHandleMeshes drops the Y proxy for staged targets only.
+  const ghmStart = src.indexOf('function getGizmoHandleMeshes()');
+  const ghmEnd = src.indexOf('function getGizmoTargetId()', ghmStart);
+  assert.ok(ghmStart >= 0 && ghmEnd > ghmStart, 'getGizmoHandleMeshes block must exist');
+  const ghmBlock = src.slice(ghmStart, ghmEnd);
+  assert.match(ghmBlock, /if \(!gizmoGroup \|\| !gizmoGroup\.visible\) return \[\];/,
+    'a hidden gizmo exposes no grab proxies');
+  assert.match(ghmBlock, /gizmoTargetMode === 'staged'/,
+    'staged targets must filter the vertical grab proxy');
+  assert.match(ghmBlock, /\['x', 'z'\]\.map\(axis => gizmoAxisHitMeshes\[axis\]\)/,
+    'staged targets expose only the X and Z grab proxies');
+  assert.match(ghmBlock, /return gizmoHitMeshes;/,
+    'packed targets still expose all axis grab proxies');
 });
 
 test('MANUAL-VERTICAL X/Z strokes constrain movement to one axis and surface-follow Y', async () => {

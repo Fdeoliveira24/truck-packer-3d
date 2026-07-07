@@ -702,7 +702,14 @@ export function createCaseScene({
     let gizmoTargetMode = null;
     let gizmoHitMeshes = [];
     let gizmoMaterials = null;
+    // Per-axis references so staged mode can hide the Y control and drop its
+    // grab proxy without disturbing X/Z (see refreshGizmo, getGizmoHandleMeshes).
+    let gizmoAxisHandles = {}; // axis -> visible arrow THREE.Group
+    let gizmoAxisHitMeshes = {}; // axis -> invisible grab proxy Mesh
     let gizmoControlsHooked = false;
+    // Soft idle opacity keeps the handle reading as a refined editor control; the
+    // active axis lifts to full opacity in setGizmoActive.
+    const GIZMO_IDLE_OPACITY = 0.8;
 
     // Axis colors follow the app's existing axis language (Turn/Tip/Roll button
     // tones): Y = --success, X = --error, Z = --info; active = --accent-primary.
@@ -724,37 +731,45 @@ export function createCaseScene({
       group.renderOrder = 999;
       gizmoMaterials = {};
       gizmoHitMeshes = [];
+      gizmoAxisHandles = {};
+      gizmoAxisHitMeshes = {};
       ['x', 'y', 'z'].forEach(axis => {
         gizmoMaterials[axis] = new THREE.MeshBasicMaterial({
           color: gizmoColor(axis, false),
           transparent: true,
-          opacity: 0.92,
+          opacity: GIZMO_IDLE_OPACITY,
           depthTest: false,
           depthWrite: false,
         });
-        group.add(buildGizmoAxisHandle(axis, gizmoMaterials[axis]));
+        const handle = buildGizmoAxisHandle(axis, gizmoMaterials[axis]);
+        gizmoAxisHandles[axis] = handle;
+        group.add(handle);
       });
       return group;
     }
 
-    // TODO(V3-visual): gizmo redesign follow-up — smaller/subtler handles,
-    // professional styling, dotted guide lines, minimal arrows, rotate handles.
+    // TODO(V3-visual): remaining gizmo follow-ups — optional dotted guide lines
+    // and rotate handles. Slim/minimal arrow styling landed in the visual pass.
     function buildGizmoAxisHandle(axis, material) {
       const handle = new THREE.Group();
-      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.6, 12), material);
-      const coneA = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.42, 16), material);
-      coneA.position.y = 1.0;
-      const coneB = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.42, 16), material);
+      // Slim, minimal arrow: a thin shaft with small double-ended cones reads as
+      // a refined editor control rather than a bulky debug gizmo.
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 1.25, 12), material);
+      const coneA = new THREE.Mesh(new THREE.ConeGeometry(0.085, 0.26, 16), material);
+      coneA.position.y = 0.78;
+      const coneB = new THREE.Mesh(new THREE.ConeGeometry(0.085, 0.26, 16), material);
       coneB.rotation.x = Math.PI;
-      coneB.position.y = -1.0;
+      coneB.position.y = -0.78;
       // Fat invisible grab proxy: zero opacity renders nothing but stays
-      // raycastable, giving a generous hit area around the slim arrow.
+      // raycastable, giving a generous hit area around the slim arrow. Kept
+      // generous on purpose — the visible arrow shrank, grabbing must not.
       const hit = new THREE.Mesh(
         new THREE.CylinderGeometry(0.3, 0.3, 2.6, 8),
         new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthTest: false, depthWrite: false })
       );
       hit.userData.gizmoHandle = axis;
       gizmoHitMeshes.push(hit);
+      gizmoAxisHitMeshes[axis] = hit;
       [shaft, coneA, coneB, hit].forEach(mesh => {
         mesh.renderOrder = 999;
         handle.add(mesh);
@@ -767,7 +782,10 @@ export function createCaseScene({
     function setGizmoActive(activeAxis) {
       Object.keys(gizmoMaterials || {}).forEach(axis => {
         const material = gizmoMaterials[axis];
-        if (material && material.color) material.color.copy(gizmoColor(axis, axis === activeAxis));
+        if (!material) return;
+        if (material.color) material.color.copy(gizmoColor(axis, axis === activeAxis));
+        // Subtle emphasis: the active axis lifts to full opacity, idle axes stay soft.
+        material.opacity = axis === activeAxis ? 1 : GIZMO_IDLE_OPACITY;
       });
     }
 
@@ -821,6 +839,12 @@ export function createCaseScene({
       }
       gizmoTargetId = targetId;
       gizmoTargetMode = targetMode;
+      // Staged cargo cannot stack vertically yet: staged cases expose X/Z only,
+      // so the Y arrow is hidden (and its grab proxy dropped in
+      // getGizmoHandleMeshes). Packed cases keep the full X/Y/Z control.
+      if (gizmoAxisHandles.x) gizmoAxisHandles.x.visible = true;
+      if (gizmoAxisHandles.z) gizmoAxisHandles.z.visible = true;
+      if (gizmoAxisHandles.y) gizmoAxisHandles.y.visible = targetMode !== 'staged';
       gizmoGroup.visible = true;
       setGizmoActive(false);
       updateGizmoTransform();
@@ -833,7 +857,13 @@ export function createCaseScene({
     }
 
     function getGizmoHandleMeshes() {
-      return gizmoGroup && gizmoGroup.visible ? gizmoHitMeshes : [];
+      if (!gizmoGroup || !gizmoGroup.visible) return [];
+      // Staged cargo has no grabbable Y proxy — staged vertical stacking is not
+      // supported yet, so only the X/Z proxies stay raycastable.
+      if (gizmoTargetMode === 'staged') {
+        return ['x', 'z'].map(axis => gizmoAxisHitMeshes[axis]).filter(Boolean);
+      }
+      return gizmoHitMeshes;
     }
 
     function getGizmoTargetId() {

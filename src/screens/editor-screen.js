@@ -276,6 +276,7 @@ export function createCaseScene({
     let hoveredId = null;
     let draggedId = null;
     let selectedIds = new Set();
+    let pendingPoseWatcher = null;
 
 
     function generateCaseTexture(caseData, faceIndex, w, h) {
@@ -702,7 +703,6 @@ export function createCaseScene({
     let gizmoHitMeshes = [];
     let gizmoMaterials = null;
     let gizmoControlsHooked = false;
-    let pendingPoseWatcher = null;
 
     // Axis colors follow the app's existing axis language (Turn/Tip/Roll button
     // tones): Y = --success, X = --error, Z = --info; active = --accent-primary.

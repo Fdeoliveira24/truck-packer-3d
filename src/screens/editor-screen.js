@@ -696,6 +696,7 @@ export function createCaseScene({
     // of cargo and keeps a constant on-screen size via computeGizmoScale().
     let gizmoGroup = null;
     let gizmoTargetId = null;
+    let gizmoTargetMode = null;
     let gizmoHitMeshes = [];
     let gizmoMaterials = null;
     let gizmoControlsHooked = false;
@@ -782,17 +783,22 @@ export function createCaseScene({
     }
 
     /**
-     * Attach the gizmo when exactly one non-staged case is selected; hide it
-     * otherwise (empty selection, multi-select, staged case, removed case).
+     * Attach the gizmo when exactly one live case is selected. Packed cases keep
+     * the full validated placement behavior; staged cases use a limited staging
+     * mode that reuses the existing staging drag release path.
      */
     function refreshGizmo() {
       const ids = Array.from(selectedIds);
       let targetId = null;
+      let targetMode = null;
       if (ids.length === 1 && instances.has(ids[0])) {
         const packId = StateStore.get('currentPackId');
         const pack = packId ? PackLibrary.getById(packId) : null;
         const inst = pack ? (pack.cases || []).find(i => i && i.id === ids[0]) : null;
-        if (inst && inst.placement !== 'staged') targetId = ids[0];
+        if (inst) {
+          targetId = ids[0];
+          targetMode = inst.placement === 'staged' ? 'staged' : 'packed';
+        }
       }
       if (!targetId) {
         detachGizmo();
@@ -812,6 +818,7 @@ export function createCaseScene({
         }
       }
       gizmoTargetId = targetId;
+      gizmoTargetMode = targetMode;
       gizmoGroup.visible = true;
       setGizmoActive(false);
       updateGizmoTransform();
@@ -819,6 +826,7 @@ export function createCaseScene({
 
     function detachGizmo() {
       gizmoTargetId = null;
+      gizmoTargetMode = null;
       if (gizmoGroup) gizmoGroup.visible = false;
     }
 
@@ -828,6 +836,10 @@ export function createCaseScene({
 
     function getGizmoTargetId() {
       return gizmoTargetId;
+    }
+
+    function getGizmoTargetMode() {
+      return gizmoTargetMode;
     }
 
     // The InteractionManager registers a watcher so a scene-only held pose is
@@ -1271,6 +1283,7 @@ export function createCaseScene({
       setGizmoActive,
       getGizmoHandleMeshes,
       getGizmoTargetId,
+      getGizmoTargetMode,
       setPendingPoseWatcher,
     };
   })();
@@ -1831,6 +1844,7 @@ export function createInteractionManager({
     }
 
     function finishGizmoDrag() {
+      const axis = gizmoAxis;
       gizmoDragging = false;
       gizmoAxis = null;
       CaseScene.setGizmoActive(false);
@@ -1838,7 +1852,31 @@ export function createInteractionManager({
       const obj = instanceId ? CaseScene.getObject(instanceId) : null;
       const packId = StateStore.get('currentPackId');
       const pack = packId ? PackLibrary.getById(packId) : null;
-      if (!obj || !pack || typeof PackLibrary.findManualVerticalPlacement !== 'function') {
+      if (!obj || !pack) {
+        finishDrag();
+        CaseScene.refreshGizmo();
+        return;
+      }
+      const inst = (pack.cases || []).find(item => item && item.id === instanceId);
+      const stagedGizmo = CaseScene.getGizmoTargetMode && CaseScene.getGizmoTargetMode() === 'staged';
+      if (stagedGizmo || (inst && inst.placement === 'staged')) {
+        if (axis === 'y') {
+          const half = obj.userData && obj.userData.halfWorld ? obj.userData.halfWorld.y : 0.01;
+          const floorCenterY = Math.max(half || 0.01, 0.01);
+          obj.position.y = floorCenterY;
+          UIComponents.showToast(
+            'Staged vertical stacking is not supported yet. Use X/Z handles or normal drag to reposition on the staging floor.',
+            'info'
+          );
+        }
+        // Staged gizmo strokes reuse the same legacy release path as normal
+        // staged drag. Do not call the packed vertical resolver: it intentionally
+        // returns staged-case for staged ids.
+        finishDrag();
+        CaseScene.refreshGizmo();
+        return;
+      }
+      if (typeof PackLibrary.findManualVerticalPlacement !== 'function') {
         finishDrag();
         CaseScene.refreshGizmo();
         return;

@@ -570,7 +570,7 @@ test('MANUAL-VERTICAL computeGizmoScale keeps the handle usable across the zoom 
   assert.equal(computeGizmoScale(NaN), 0.35, 'non-finite distances must fall back to the minimum');
 });
 
-test('MANUAL-VERTICAL gizmo handles take raycast priority and attach only to one packed case', async () => {
+test('MANUAL-VERTICAL gizmo handles take raycast priority and attach to one live case by mode', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
 
   const downStart = src.indexOf('function onDown(ev)');
@@ -588,14 +588,49 @@ test('MANUAL-VERTICAL gizmo handles take raycast priority and attach only to one
   const refreshBlock = src.slice(refreshStart, refreshEnd);
   assert.match(refreshBlock, /ids\.length === 1 && instances\.has\(ids\[0\]\)/,
     'the gizmo must require exactly one selected, live case');
-  assert.match(refreshBlock, /placement !== 'staged'/,
-    'the gizmo must never attach to a staged case');
+  assert.match(refreshBlock, /targetMode = inst\.placement === 'staged' \? 'staged' : 'packed';/,
+    'the gizmo must attach staged cases in limited staged mode and packed cases in full mode');
+  assert.match(refreshBlock, /gizmoTargetMode = targetMode;/,
+    'the selected case mode must be stored with the gizmo target');
+  assert.match(src, /function getGizmoTargetMode\(\) \{\s*\n\s*return gizmoTargetMode;\s*\n\s*\}/,
+    'InteractionManager must be able to distinguish packed and staged gizmo targets');
+  assert.match(src, /gizmoTargetMode = null;\s*\n\s*if \(gizmoGroup\) gizmoGroup\.visible = false;/,
+    'detaching the gizmo must clear staged/packed mode');
   assert.match(refreshBlock, /detachGizmo\(\);/,
-    'anything else must detach the gizmo');
+    'no selection, multi-select, or removed cases must detach the gizmo');
   assert.match(src, /applyHover\(hoveredId\);\s*\n\s*refreshGizmo\(\);\s*\n\s*\}/,
     'setSelected must refresh the gizmo on selection changes');
   assert.match(src, /applyDragging\(draggedId\);\s*\n\s*refreshGizmo\(\);/,
     'scene sync must refresh the gizmo after pack mutations');
+});
+
+test('MANUAL-VERTICAL staged gizmo uses the legacy staged drag release and keeps staged Y non-persistent', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function finishGizmoDrag()');
+  const end = src.indexOf('\n\n    function cancelGizmoDrag()', start);
+  assert.ok(start >= 0 && end > start, 'finishGizmoDrag block must exist');
+  const block = src.slice(start, end);
+
+  const stagedStart = block.indexOf("if (stagedGizmo || (inst && inst.placement === 'staged'))");
+  const stagedEnd = block.indexOf('\n      if (typeof PackLibrary.findManualVerticalPlacement', stagedStart);
+  const resolverStart = block.indexOf('const resolved = PackLibrary.findManualVerticalPlacement', stagedEnd);
+  assert.ok(stagedStart >= 0 && stagedEnd > stagedStart && resolverStart > stagedEnd,
+    'staged gizmo release must branch before the packed manual vertical resolver');
+  const stagedBlock = block.slice(stagedStart, stagedEnd);
+  assert.equal(stagedBlock.includes('PackLibrary.findManualVerticalPlacement('), false,
+    'staged gizmo release must not call findManualVerticalPlacement');
+  assert.match(stagedBlock, /if \(axis === 'y'\) \{[\s\S]*const floorCenterY = Math\.max\(half \|\| 0\.01, 0\.01\);[\s\S]*obj\.position\.y = floorCenterY;/,
+    'staged Y handle movement must be reset to staging-floor center before release');
+  assert.match(stagedBlock, /Staged vertical stacking is not supported yet/,
+    'staged Y handle must give an honest unsupported-stacking message');
+  assert.match(stagedBlock, /finishDrag\(\);\s*\n\s*CaseScene\.refreshGizmo\(\);\s*\n\s*return;/,
+    'staged X/Z handle releases must reuse the existing staged drag release path');
+
+  const packedBlock = block.slice(resolverStart);
+  assert.match(packedBlock, /PackLibrary\.findManualVerticalPlacement\(pack, CaseLibrary\.getCases\(\), instanceId, \{/,
+    'packed gizmo releases must still use the existing full manual vertical resolver');
+  assert.match(packedBlock, /gizmoPending = \{ instanceId \};/,
+    'packed gizmo pending-pose behavior must remain available');
 });
 
 test('MANUAL-VERTICAL gizmo drag reuses the Alt-drag math and the validated release path', async () => {

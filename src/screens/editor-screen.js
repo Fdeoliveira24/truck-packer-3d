@@ -2977,6 +2977,15 @@ export function createEditorScreen({
       const hasAlternates = options.length > 1;
       const expanded = results.expanded === true && hasAlternates;
       const otherCount = Math.max(0, options.length - 1);
+      // Carousel view index is UI-only view state (never persisted, never part of
+      // the result payload): default to the applied option and clamp into range so
+      // a stale index from a larger prior result set can never point out of bounds.
+      const selectedIndex = Math.max(0, options.findIndex(option => option.id === results.selectedId));
+      const requestedIndex = Number.isFinite(Number(results.viewIndex)) ? Number(results.viewIndex) : selectedIndex;
+      const viewIndex = expanded
+        ? Math.min(Math.max(0, requestedIndex), options.length - 1)
+        : selectedIndex;
+      const viewedOption = expanded ? (options[viewIndex] || currentOption) : currentOption;
       const panel = document.createElement('section');
       panel.className = `tp3d-autopack-results ${expanded ? 'is-expanded' : 'is-compact'}`;
       panel.dataset.role = 'autopack-results-panel';
@@ -2995,13 +3004,23 @@ export function createEditorScreen({
       header.className = 'tp3d-autopack-results__header';
       header.dataset.role = 'autopack-results-drag';
 
+      // Small visual grip that hints the whole header is the existing drag handle.
+      const grip = document.createElement('span');
+      grip.className = 'tp3d-autopack-results__grip';
+      grip.setAttribute('aria-hidden', 'true');
+      grip.innerHTML = '<i class="fa-solid fa-grip-vertical"></i>';
+
+      const headerLeft = document.createElement('div');
+      headerLeft.className = 'tp3d-autopack-results__header-left';
       const titleWrap = document.createElement('div');
       titleWrap.className = 'tp3d-autopack-results__title-wrap';
       const title = document.createElement('div');
       title.className = 'tp3d-autopack-results__title';
       title.textContent = expanded ? 'AutoPack Results' : 'Best load selected';
       titleWrap.appendChild(title);
-      if (stale || hasAlternates) {
+      // The carousel nav already shows "Option X of Y", so the "N more options"
+      // hint is only useful in the compact (collapsed) view; the stale hint stays.
+      if (stale || (hasAlternates && !expanded)) {
         const sub = document.createElement('div');
         sub.className = 'tp3d-autopack-results__sub';
         sub.textContent = stale
@@ -3029,15 +3048,49 @@ export function createEditorScreen({
       closeBtn.addEventListener('click', () => patchAutoPackResultsState({ closed: true }));
       headerActions.appendChild(closeBtn);
 
-      header.appendChild(titleWrap);
+      headerLeft.appendChild(grip);
+      headerLeft.appendChild(titleWrap);
+      header.appendChild(headerLeft);
       header.appendChild(headerActions);
       panel.appendChild(header);
 
+      // Multi-option review is a carousel (Option X of Y + arrows) instead of a
+      // long list. Prev/Next only move the UI view index; applying is unchanged.
+      if (expanded) {
+        const nav = document.createElement('div');
+        nav.className = 'tp3d-autopack-results__carousel-nav';
+
+        const prevBtn = document.createElement('button');
+        prevBtn.type = 'button';
+        prevBtn.className = 'tp3d-autopack-results__icon-btn tp3d-autopack-results__carousel-arrow';
+        prevBtn.setAttribute('aria-label', 'Previous option');
+        prevBtn.innerHTML = '<i class="fa-solid fa-chevron-left"></i>';
+        prevBtn.disabled = viewIndex <= 0;
+        prevBtn.addEventListener('click', () => patchAutoPackResultsState({ viewIndex: Math.max(0, viewIndex - 1) }));
+
+        const counter = document.createElement('span');
+        counter.className = 'tp3d-autopack-results__counter';
+        counter.textContent = `Option ${viewIndex + 1} of ${options.length}`;
+
+        const nextBtn = document.createElement('button');
+        nextBtn.type = 'button';
+        nextBtn.className = 'tp3d-autopack-results__icon-btn tp3d-autopack-results__carousel-arrow';
+        nextBtn.setAttribute('aria-label', 'Next option');
+        nextBtn.innerHTML = '<i class="fa-solid fa-chevron-right"></i>';
+        nextBtn.disabled = viewIndex >= options.length - 1;
+        nextBtn.addEventListener('click', () => patchAutoPackResultsState({ viewIndex: Math.min(options.length - 1, viewIndex + 1) }));
+
+        nav.appendChild(prevBtn);
+        nav.appendChild(counter);
+        nav.appendChild(nextBtn);
+        panel.appendChild(nav);
+      }
+
       const stats = document.createElement('div');
       stats.className = 'tp3d-autopack-results__stats';
-      stats.appendChild(makeAutoPackResultStat('Packed', formatAutoPackResultNumber(currentOption.packedCount)));
-      stats.appendChild(makeAutoPackResultStat('Staged', formatAutoPackResultNumber(currentOption.stagedCount)));
-      stats.appendChild(makeAutoPackResultStat('Volume', formatAutoPackResultVolume(currentOption.volumePercent)));
+      stats.appendChild(makeAutoPackResultStat('Packed', formatAutoPackResultNumber(viewedOption.packedCount)));
+      stats.appendChild(makeAutoPackResultStat('Staged', formatAutoPackResultNumber(viewedOption.stagedCount)));
+      stats.appendChild(makeAutoPackResultStat('Volume', formatAutoPackResultVolume(viewedOption.volumePercent)));
       panel.appendChild(stats);
 
       if (!expanded) {
@@ -3054,56 +3107,43 @@ export function createEditorScreen({
           panel.appendChild(footer);
         }
       } else {
-        const list = document.createElement('div');
-        list.className = 'tp3d-autopack-results__list';
-        options.forEach(option => {
-          const isCurrent = option.id === results.selectedId;
-          const row = document.createElement('div');
-          row.className = `tp3d-autopack-results__option ${isCurrent ? 'is-current' : ''}`;
+        // One option at a time. The metrics above already reflect the viewed
+        // option; here we name it, show its status, mark the applied one, and
+        // keep Apply on the existing validated apply path.
+        const isViewedCurrent = viewedOption.id === results.selectedId;
+        const body = document.createElement('div');
+        body.className = 'tp3d-autopack-results__carousel-body';
 
-          const meta = document.createElement('div');
-          meta.className = 'tp3d-autopack-results__option-meta';
-          const labelRow = document.createElement('div');
-          labelRow.className = 'tp3d-autopack-results__option-title-row';
-          const label = document.createElement('div');
-          label.className = 'tp3d-autopack-results__option-title';
-          label.textContent = option.label || option.strategy || 'Load option';
-          labelRow.appendChild(label);
-          if (isCurrent) {
-            const current = document.createElement('span');
-            current.className = 'tp3d-autopack-results__current-pill';
-            current.textContent = 'Current';
-            labelRow.appendChild(current);
-          }
-          const metrics = document.createElement('div');
-          metrics.className = 'tp3d-autopack-results__option-metrics';
-          metrics.textContent = [
-            `${formatAutoPackResultNumber(option.packedCount)} packed`,
-            `${formatAutoPackResultNumber(option.stagedCount)} staged`,
-            `${formatAutoPackResultVolume(option.volumePercent)} volume`,
-          ].join(' · ');
-          meta.appendChild(labelRow);
-          meta.appendChild(metrics);
+        const labelRow = document.createElement('div');
+        labelRow.className = 'tp3d-autopack-results__carousel-title-row';
+        const label = document.createElement('div');
+        label.className = 'tp3d-autopack-results__option-title';
+        label.textContent = viewedOption.label || viewedOption.strategy || 'Load option';
+        labelRow.appendChild(label);
+        const status = document.createElement('span');
+        status.className = `tp3d-autopack-results__status tp3d-autopack-results__status--${viewedOption.status === 'complete' ? 'complete' : 'partial'}`;
+        status.textContent = viewedOption.statusLabel || (viewedOption.status === 'complete' ? 'Complete' : 'Partial');
+        labelRow.appendChild(status);
+        if (isViewedCurrent) {
+          const applied = document.createElement('span');
+          applied.className = 'tp3d-autopack-results__current-pill';
+          applied.textContent = 'Applied';
+          labelRow.appendChild(applied);
+        }
+        body.appendChild(labelRow);
 
-          const side = document.createElement('div');
-          side.className = 'tp3d-autopack-results__option-side';
-          const status = document.createElement('span');
-          status.className = `tp3d-autopack-results__status tp3d-autopack-results__status--${option.status === 'complete' ? 'complete' : 'partial'}`;
-          status.textContent = option.statusLabel || (option.status === 'complete' ? 'Complete' : 'Partial');
-          const apply = document.createElement('button');
-          apply.type = 'button';
-          apply.className = 'btn btn-sm tp3d-autopack-results__apply-btn';
-          apply.textContent = isCurrent ? 'Current' : 'Apply';
-          apply.disabled = isCurrent || stale;
-          apply.addEventListener('click', () => applyAutoPackResultOption(option.id));
-          side.appendChild(status);
-          side.appendChild(apply);
+        const actions = document.createElement('div');
+        actions.className = 'tp3d-autopack-results__carousel-actions';
+        const apply = document.createElement('button');
+        apply.type = 'button';
+        apply.className = 'btn btn-sm btn-primary tp3d-autopack-results__apply-btn';
+        apply.textContent = isViewedCurrent ? 'Applied' : 'Apply this option';
+        apply.disabled = isViewedCurrent || stale;
+        apply.addEventListener('click', () => applyAutoPackResultOption(viewedOption.id));
+        actions.appendChild(apply);
+        body.appendChild(actions);
 
-          row.appendChild(meta);
-          row.appendChild(side);
-          list.appendChild(row);
-        });
-        panel.appendChild(list);
+        panel.appendChild(body);
         if (stale) {
           const note = document.createElement('div');
           note.className = 'tp3d-autopack-results__stale';

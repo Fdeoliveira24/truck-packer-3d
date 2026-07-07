@@ -778,7 +778,7 @@ test('MANUAL-VERTICAL gizmo builds X/Y/Z handles with per-axis colors and orient
     'all axis grab proxies must be raycastable when the gizmo is visible');
 });
 
-test('MANUAL-VERTICAL X/Z strokes constrain movement to one axis at the lifted height', async () => {
+test('MANUAL-VERTICAL X/Z strokes constrain movement to one axis and surface-follow Y', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const start = src.indexOf('function beginGizmoDrag()');
   const end = src.indexOf('function onDblClick(ev)', start);
@@ -794,7 +794,15 @@ test('MANUAL-VERTICAL X/Z strokes constrain movement to one axis at the lifted h
   assert.match(block, /gizmoAxis === 'z' \? next\.z : dragStartPosWorld\.z/,
     'a Z stroke must move Z only');
   assert.match(block, /Math\.max\(half \|\| 0\.01, dragStartPosWorld\.y\),/,
-    'X/Z strokes must keep the lifted Y so a raised case can be carried');
+    'X/Z strokes must start from the lifted Y so a raised case can be carried');
+  const axisStart = block.indexOf('function updateGizmoAxisDrag()');
+  const axisEnd = block.indexOf('\n\n    function finishGizmoDrag()', axisStart);
+  assert.ok(axisStart >= 0 && axisEnd > axisStart, 'updateGizmoAxisDrag block must exist');
+  const axisBlock = block.slice(axisStart, axisEnd);
+  assert.equal(axisBlock.includes("getGizmoTargetMode() === 'staged'"), false,
+    'horizontal gizmo surface-following must not be limited to staged cases');
+  assert.match(axisBlock, /CaseScene\.getSurfaceFollowingPreview\(draggingId, candidate\)[\s\S]*candidate\.y = Math\.max\(half \|\| 0\.01, preview\.centerY\);[\s\S]*CaseScene\.checkCollision\(draggingId, candidate, new Set\(\[draggingId\]\)\)/,
+    'X/Z gizmo strokes must apply preview Y before collision preview');
   assert.match(block, /updateDrag\(\{ altKey: true \}\);/,
     'the Y stroke must keep reusing the Alt-drag vertical-plane math');
 });
@@ -996,8 +1004,8 @@ test('MANUAL-VERTICAL normal single-case drag applies preview Y before collision
     'Alt-drag must not use the surface-following helper');
   assert.match(normalBlock, /surfaceFollowingDrag && id === draggingId[\s\S]*CaseScene\.getSurfaceFollowingPreview\(id, candidate\)[\s\S]*candidate\.y = Math\.max\(half, preview\.centerY\);[\s\S]*CaseScene\.checkCollision\(id, candidate, ignoreSet\)/,
     'normal drag must raise the visual candidate from preview surfaces before collision preview runs');
-  assert.match(src, /CaseScene\.getGizmoTargetMode && CaseScene\.getGizmoTargetMode\(\) === 'staged'[\s\S]*CaseScene\.getSurfaceFollowingPreview\(draggingId, candidate\)[\s\S]*candidate\.y = Math\.max\(half \|\| 0\.01, preview\.centerY\);/,
-    'limited staged X/Z gizmo strokes must also use preview Y without changing packed gizmo behavior');
+  assert.match(src, /function updateGizmoAxisDrag\(\)[\s\S]*CaseScene\.getSurfaceFollowingPreview\(draggingId, candidate\)[\s\S]*candidate\.y = Math\.max\(half \|\| 0\.01, preview\.centerY\);/,
+    'X/Z gizmo strokes must also use preview Y without changing normal drag behavior');
 });
 
 test('MANUAL-VERTICAL surface-following invalid releases hold scene-only pending pose', async () => {

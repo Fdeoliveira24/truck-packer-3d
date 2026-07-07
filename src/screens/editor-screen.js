@@ -1955,8 +1955,7 @@ export function createInteractionManager({
         Math.max(half || 0.01, dragStartPosWorld.y),
         gizmoAxis === 'z' ? next.z : dragStartPosWorld.z
       );
-      if (CaseScene.getGizmoTargetMode && CaseScene.getGizmoTargetMode() === 'staged' &&
-          typeof CaseScene.getSurfaceFollowingPreview === 'function') {
+      if (typeof CaseScene.getSurfaceFollowingPreview === 'function') {
         const preview = CaseScene.getSurfaceFollowingPreview(draggingId, candidate);
         if (preview && preview.ok && Number.isFinite(preview.centerY)) {
           candidate.y = Math.max(half || 0.01, preview.centerY);

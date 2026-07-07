@@ -7,15 +7,15 @@
 | Field | Value |
 |-------|-------|
 | Stable main commit | `e136258` (AutoPack item-prep cleanup merged/pushed to `main`) |
-| Active branch | `main` pushed at `e136258`; next branch: `feature/manual-vertical-placement` |
-| Active phase | **AutoPack item-prep cleanup has been merged and pushed to `main`.** Live `buildLegacyAutoPackItems()` ownership was moved out of `autopack-legacy-solver.js` into `src/services/autopack-item-builder.js`; `autopack-legacy-solver.js` keeps a compatibility re-export. Validation passed: `git diff --check`, `npm run typecheck`, `npm test` (`763 pass`, `5 skipped`), and `npm run test:stress` (`20 pass`). |
-| Next planned phase | Manual vertical placement discovery/planning, then implementation on `feature/manual-vertical-placement`: Move Up, Move Down, Drop to nearest valid surface, and safe placement onto supported surfaces with collision/support/retention/orientation validation. |
-| Waiting for | Manual vertical placement audit/implementation plan before code changes. |
-| Do not start simultaneously | Do not mix `app.js` splitting, AutoPack solution portfolio expansion, Results panel carousel UI polish, organized Unpack polish, broad solver cleanup, legacy solver deletion, whole-project formatting, billing/auth/security work, or unrelated UI/CSS work into manual vertical placement. |
+| Active branch | `feature/manual-vertical-placement` |
+| Active phase | **Manual placement surface-following branch is implemented locally and awaiting independent audit + signed-in browser smoke.** The branch now covers safe manual vertical placement, validated drag release, X/Y/Z gizmo movement, scene-only pending pose, surface-following normal drag, staged-case limited gizmo support, staged/outside-to-truck placement when valid, horizontal gizmo surface-following, and orbit-drag selection preservation. Latest committed HEAD reported by implementation: `c4cc563`; one follow-up refinement may still be uncommitted and must be committed or reverted before merge. |
+| Next planned phase | Independent Copilot/Codex audit of `feature/manual-vertical-placement`, then signed-in browser smoke. If the audit/smoke passes, proceed to a **visual-only gizmo polish** pass: smaller handles, subtler colors, dotted guides, hover/active states, and professional styling. |
+| Waiting for | Fresh independent audit result, clean working tree confirmation, and signed-in browser smoke of the full manual placement workflow. |
+| Do not start simultaneously | Do not mix visual polish with movement/validation changes. Do not mix staged stacking, free/draft/manualDraft mode, app.js splitting, AutoPack solution portfolio expansion, Results panel carousel UI polish, organized Unpack polish, broad solver cleanup, legacy solver deletion, whole-project formatting, billing/auth/security work, or unrelated UI/CSS work into the manual placement branch. |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
-> **Current source-of-truth note (2026-07-05):** `main` / `origin/main` include the AutoPack Core Engine epic and the first cleanup branch through `e136258`. Live AutoPack item prep now lives in `src/services/autopack-item-builder.js`; `autopack-legacy-solver.js` remains only as the legacy solve module plus compatibility re-export. The only known project-wide gate issue remains pre-existing 87-file formatting drift under `npm run validate`; do not auto-format feature branches. Next action is the focused manual vertical placement discovery/planning branch.
+> **Current source-of-truth note (2026-07-06):** `main` / `origin/main` remain stable through AutoPack Core Engine + item-prep cleanup at `e136258`. Active work has moved to `feature/manual-vertical-placement`. That branch is not merged yet. Manual placement is implemented through surface-following drag/gizmo behavior and staged-to-packed transitions, but still needs independent audit, clean-tree confirmation, and signed-in browser smoke before visual polish or merge. The only known project-wide gate issue remains pre-existing 87-file formatting drift under `npm run validate`; do not auto-format feature branches.
 
 ## AutoPack Core Engine Epic — Merged Evidence (2026-07-05, `5a530f0`)
 
@@ -77,6 +77,73 @@ This is a validated bridge architecture, not a full solver deletion/rewrite. `pa
 ### Next cleanup note
 Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, use a separate branch after `rg "solveLegacyAutoPack|buildLegacyAutoPackItems" src tests` confirms production callers and compatibility tests are safe.
 
+## Manual Placement Surface-Following Branch — In Progress Evidence (2026-07-06, `feature/manual-vertical-placement`)
+
+### Status
+- 🔄 **Implemented locally, not merged.** Active branch: `feature/manual-vertical-placement`.
+- 🔄 Latest committed implementation reported: `c4cc563` (`feat(editor): surface-follow horizontal gizmo movement`). A later refinement that lowers drag-time surface overlap, includes staged/outside case tops as preview-only terrain, and keeps the gizmo synced during drag/revert may still be uncommitted; confirm with `git status -sb` before audit/merge.
+- ✅ Safe manual vertical placement foundation exists: Move Up / Move Down / Drop / Apply Position route through validation instead of leaving unsupported floating items.
+- ✅ Single packed-case drag release validates before committing and repairs dependents through the existing manual revalidation path.
+- ✅ Keyboard precision movement exists: arrows for X/Z nudges, Shift for larger nudges, Alt/Option vertical controls, and Drop shortcut.
+- ✅ Visible X/Y/Z gizmo exists for packed cases with scene-only pending pose support.
+- ✅ Normal single-case drag uses surface-following preview so cases visually ride over floor, box tops, wheel-well tops, Front Overhang deck, and staging floor before final validation.
+- ✅ Orbiting/spinning empty canvas no longer deselects the selected case; true empty click still deselects.
+- ✅ Single staged cases now get limited gizmo support.
+- ✅ Staged/outside cases can be dragged into the truck and become packed when the final placement validates.
+- ✅ X/Z gizmo movement now surface-follows for packed and staged single-case strokes.
+- ✅ Final packed commits remain strict: invalid packed cargo must not persist.
+
+### Commit evidence reported on the branch
+- `bf05b88` / `cfd2c49` — V1 manual vertical placement helper, tests, Transform card controls, and Apply Position validation.
+- `f112989` — V2A keyboard precision manual movement.
+- `3b0f117` — V2B validated manual drag release for packed cases.
+- `aa7fdf2` — V3A visible vertical gizmo handle.
+- `913a04e` — V3B X/Y/Z gizmo + scene-only pending pose model.
+- `e9e69e6` — V4A-1 surface-following preview height helper.
+- `0eef8c3` — V4A-2 surface-following normal drag preview.
+- `e2fb134` — Fix A: preserve selection while orbiting empty canvas.
+- `72cda06` — Fix B: limited gizmo support for staged cases.
+- `41126cd` — Fix C: staged cases can be placed into the truck when valid.
+- `c4cc563` — Fix D: horizontal gizmo movement surface-follows.
+
+### Validation evidence reported during implementation
+- Manual placement targeted audit tests reached at least `38/38` passing after Fix D; a later uncommitted refinement reported `39/39` passing.
+- Full `npm test` was reported green after each phase, with latest committed Fix D report: `806 tests: 801 passed, 5 skipped, 0 failed`.
+- `npm run typecheck` passed.
+- `npm run lint` passed with warnings only.
+- `git diff --check` and `node --check` on changed files passed.
+- Browser smoke has **not** been completed after the full stack; do not mark this phase done until signed-in browser testing passes.
+
+### Intended behavior now under audit
+- Select packed case → full gizmo appears.
+- Select staged case → limited gizmo appears.
+- Multi-select → gizmo hidden / conservative behavior unchanged.
+- Empty canvas orbit drag → selection remains.
+- Empty canvas click → selection clears.
+- Normal packed drag over another case → preview rides over surface.
+- X/Z gizmo drag over another case → preview rides over surface.
+- Y gizmo remains vertical.
+- Staged case dragged into empty truck floor → can become packed if valid.
+- Staged case dragged onto valid packed box top → can become packed if rules allow.
+- noStackOnTop / max-stack / wheel-well blocked body / Front Overhang retention rules still reject invalid final placement.
+- Staged case released outside truck remains staged and floor-normalized.
+
+### Explicitly deferred
+- ⬜ Visual gizmo polish: smaller/subtler arrows, professional handle design, dotted guide lines, hover/active states, and eventual rotate handles.
+- ⬜ Staged stacking outside the truck.
+- ⬜ Persistent non-floor staged Y.
+- ⬜ Free/draft/manualDraft placement mode.
+- ⬜ Duplicate F-key shortcut conflict (`editor-screen` Flip vs `app.js` focus selected) on a separate branch.
+- ⬜ AutoPack solution portfolio expansion and Results panel carousel polish.
+
+### Merge gate
+Before merging `feature/manual-vertical-placement`:
+1. Confirm clean working tree: `git status -sb`.
+2. Run independent audit and resolve PASS/WARN/FAIL findings.
+3. Run validation: `git diff --check`, `node --test tests/audit/manual-vertical-placement.spec.mjs`, `npm test`, `npm run typecheck`, `npm run lint`.
+4. Complete signed-in browser smoke for Standard, Wheel Wells, and Front Overhang.
+5. Update this TODO with final audit/browser evidence, merge commit, and pushed status.
+
 ## AutoPack Quality Wave — Front Overhang, Wheel Wells, Layer Quality, Performance, and Operation UX (2026-06-24)
 
 ### Status summary
@@ -98,12 +165,12 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 3. ⚠️ **Wheel-well manual movement blocked-body defect** — automated solver validation now models wheel-well blocked bodies, tops, side contact, and stable support, but manual editor movement can still let a case pass through / into wheel-well blocked volumes. Fix editor containment/collision for drag, move, rotate, nudge, and drop before merge.
 4. 🔄 **Wheel-well support/stability foundation** — implemented and tested, Codex PASS. Bridge/build-up generation is gated OFF unless `enableWheelWellBridge` is passed. Do not enable it yet; create a later activation/order branch after foundation merge.
 5. ⬜ **Front Overhang wall-building strategy** — C2 blocks unsafe deck usage, but the solver does not intentionally build the retaining wall first and then fill the deck. The deck can remain unused until this strategy exists.
-6. ⬜ **Manual vertical placement** — user needs to select a case, move it up/down, snap it onto another case, and leave it there if support/collision/stack/orientation rules pass.
+6. 🔄 **Manual placement surface-following branch** — implemented locally on `feature/manual-vertical-placement` through V4A/Fix D, including vertical controls, validated drag release, X/Y/Z gizmo, pending pose, surface-following normal drag, staged limited gizmo, staged-to-packed transition, and horizontal gizmo surface-following. Awaiting independent audit, clean-tree confirmation, signed-in browser smoke, visual-only gizmo polish, then merge.
 7. ⬜ **Organized Unpack** — unpack should create clean grouped staging rows, not random scattered placement.
 
 ### Current AutoPack implementation order
-1. 🔄 **Manual vertical placement discovery/planning** — audit current manual move/drag/position code and define safe Move Up / Move Down / Drop to nearest valid surface behavior before implementation.
-2. ⬜ **Manual vertical placement implementation** — allow rule-validated vertical movement and placement onto supported surfaces without floating, collision, blocked-volume, or retention violations.
+1. 🔄 **Manual placement independent audit + browser smoke** — `feature/manual-vertical-placement` is implemented locally through surface-following drag/gizmo and staged-to-packed transitions. Run fresh Copilot/Codex audit, resolve blockers, and perform signed-in browser smoke before merge.
+2. 🔄 **Manual placement visual-only polish** — after audit/browser smoke, refine gizmo appearance only: smaller/subtler handles, professional styling, dotted guides, hover/active states, and clearer affordances. Do not change movement/validation logic in this pass.
 3. ⬜ **Formatting-only branch if `validate` is treated as a hard gate** — isolate the existing 87-file formatting drift; do not auto-format feature branches.
 4. ⬜ **AutoPack solution portfolio expansion** — generate up to 5–7 bounded, meaningful non-duplicate solution variants.
 5. ⬜ **AutoPack Results panel UI enhancement** — compact carousel/slide pattern with previous/next arrows and a visible drag handle.

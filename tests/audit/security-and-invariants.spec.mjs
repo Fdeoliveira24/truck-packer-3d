@@ -12013,7 +12013,7 @@ test('AUTO-PACK-A0B clipboard and duplicate flows preserve orientation lock meta
   const copyEnd = src.indexOf('\n      function pasteClipboard()', copyStart);
   const copyBlock = copyStart >= 0 && copyEnd > copyStart ? src.slice(copyStart, copyEnd) : '';
   const pasteStart = src.indexOf('function pasteClipboard()');
-  const pasteEnd = src.indexOf('\n      function focusSelected()', pasteStart);
+  const pasteEnd = src.indexOf('\n      function focusSelected(', pasteStart);
   const pasteBlock = pasteStart >= 0 && pasteEnd > pasteStart ? src.slice(pasteStart, pasteEnd) : '';
   const packLibSrc = await fs.readFile(packLibraryPath, 'utf8');
   const safeStart = packLibSrc.indexOf('export function buildSafeDuplicateInstances(');
@@ -12030,6 +12030,34 @@ test('AUTO-PACK-A0B clipboard and duplicate flows preserve orientation lock meta
     'shared safe duplicate helper must preserve full instance metadata');
   assert.match(safeBlock, /next\.id = Utils\.uuid\(\)/,
     'shared safe duplicate helper must assign new ids after cloning metadata');
+});
+
+test('EDITOR keyboard shortcut ownership keeps bare F for Flip only', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+
+  const shortcutsStart = appSrc.indexOf('\n      shortcuts = {\n');
+  const shortcutsEnd = appSrc.indexOf('\n      };', shortcutsStart);
+  assert.ok(shortcutsStart >= 0 && shortcutsEnd > shortcutsStart, 'KeyboardManager shortcuts block must exist');
+  const shortcutsBlock = appSrc.slice(shortcutsStart, shortcutsEnd);
+  assert.equal(/\n\s*f:\s*focusSelected,/.test(shortcutsBlock), false,
+    'app-level KeyboardManager must not bind bare F');
+  assert.match(shortcutsBlock, /'shift\+f': focusSelected,/,
+    'app-level focus selected may use Shift+F instead of bare F');
+
+  const focusStart = appSrc.indexOf('function focusSelected(');
+  const focusEnd = appSrc.indexOf('\n      function toggleGrid()', focusStart);
+  assert.ok(focusStart >= 0 && focusEnd > focusStart, 'focusSelected handler must exist');
+  const focusBlock = appSrc.slice(focusStart, focusEnd);
+  assert.match(focusBlock, /event && typeof event\.stopPropagation === 'function'[\s\S]*event\.stopPropagation\(\)/,
+    'Shift+F focus must stop propagation so the editor flip handler does not also run');
+
+  const keyStart = editorSrc.indexOf('function onKeyDown(ev)');
+  const keyEnd = editorSrc.indexOf('function onMove(ev)', keyStart);
+  assert.ok(keyStart >= 0 && keyEnd > keyStart, 'editor onKeyDown block must exist');
+  const keyBlock = editorSrc.slice(keyStart, keyEnd);
+  assert.match(keyBlock, /case 'f':\s*\n\s*case 'F':\s*\n\s*rotateSelection\('x', Math\.PI\);/,
+    'editor InteractionManager must keep bare F/F as Flip');
 });
 
 test('AUTO-PACK-A0B editor snapping uses usable-zone walls, not missing TrailerGeometry dimensions', async () => {

@@ -4228,12 +4228,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
         );
       }
 
-      function focusSelected() {
+      function focusSelected(event) {
         if (!inEditor()) return;
         const selected = StateStore.get('selectedInstanceIds') || [];
         if (!selected.length) return;
         const obj = CaseScene.getObject(selected[0]);
         if (!obj) return;
+        if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
         SceneManager.focusOnWorldPoint(obj.position.clone(), { duration: 600 });
       }
 
@@ -4330,7 +4331,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         'ctrl+o': openPackDialog,
         g: toggleGrid,
         s: toggleShadows,
-        f: focusSelected,
+        'shift+f': focusSelected,
         p: () => {
           if (!inEditor()) return;
           SceneManager.toggleDevOverlay();

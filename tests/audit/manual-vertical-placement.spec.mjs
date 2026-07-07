@@ -915,6 +915,10 @@ test('MANUAL-VERTICAL preview Y ignores tiny overlaps and accepts every visual s
   const staged = previewY({ halfWorld: PREVIEW_HALF, centerX: 20, centerZ: 40, surfaces: [staging] });
   assert.equal(staged.ok, true, 'the staging floor must be visual terrain');
   assert.equal(staged.surface.kind, 'staging-floor', 'the staging surface must be returned');
+
+  const stagedTop = { kind: 'staged-box-top', min: { x: 15, z: -5 }, max: { x: 25, z: 5 }, topY: 16 };
+  assert.equal(previewY({ halfWorld: PREVIEW_HALF, centerX: 20, centerZ: 0, surfaces: [stagedTop] }).centerY, 21,
+    'staged/outside case tops must be visual terrain without becoming placement validation');
 });
 
 test('MANUAL-VERTICAL preview Y fails safely on misses and bad input', async () => {
@@ -968,12 +972,20 @@ test('MANUAL-VERTICAL surface-following preview surfaces come only from scene an
     'staging floor must come from the manual staging work area bounds');
   assert.match(block, /kind: 'staging-floor'/,
     'the manual staging work area must be exposed as a preview floor');
-  assert.match(block, /kind: 'box-top'/,
-    'packed case tops must be exposed as rideable preview surfaces');
-  assert.match(block, /if \(otherInst && otherInst\.placement === 'staged'\) continue;/,
-    'staged case tops must not become rideable surfaces in V4A-2');
+  assert.match(block, /const kind = otherInst && otherInst\.placement === 'staged' \? 'staged-box-top' : 'box-top';/,
+    'packed and staged case tops must be exposed as distinct rideable preview surfaces');
+  assert.match(block, /kind,\s*\n\s*min: \{ x: aabb\.min\.x, z: aabb\.min\.z \},/,
+    'case tops must pass the chosen rideable surface kind into the preview collector');
+  assert.equal(block.includes("if (otherInst && otherInst.placement === 'staged') continue;"), false,
+    'staged case tops must not be skipped by the preview surface collector');
+  assert.match(block, /Preview-only terrain: staged tops can lift the ghost[\s\S]*validation still keeps staged Y floor-normalized/,
+    'staged top previews must document that they do not add persistent staged stacking');
   assert.match(block, /if \(otherId === instanceId\) continue;/,
     'the dragged case must never generate its own support surface');
+  assert.match(src, /const SURFACE_PREVIEW_DRAG_MIN_OVERLAP = 0\.02;/,
+    'drag-time preview should start riding surfaces before visible side penetration is obvious');
+  assert.match(src, /minOverlapFraction: SURFACE_PREVIEW_DRAG_MIN_OVERLAP,/,
+    'interactive drag must use the lower drag-time overlap threshold');
   assert.match(src, /getSurfaceFollowingPreview,/,
     'CaseScene must expose the preview query to InteractionManager without changing the data model');
 });
@@ -1006,6 +1018,34 @@ test('MANUAL-VERTICAL normal single-case drag applies preview Y before collision
     'normal drag must raise the visual candidate from preview surfaces before collision preview runs');
   assert.match(src, /function updateGizmoAxisDrag\(\)[\s\S]*CaseScene\.getSurfaceFollowingPreview\(draggingId, candidate\)[\s\S]*candidate\.y = Math\.max\(half \|\| 0\.01, preview\.centerY\);/,
     'X/Z gizmo strokes must also use preview Y without changing normal drag behavior');
+});
+
+test('MANUAL-VERTICAL normal drag and revert keep the gizmo attached to the moved case', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const start = src.indexOf('function updateDrag(ev)');
+  const end = src.indexOf('\n\n    /**\n     * Tween', start);
+  assert.ok(start >= 0 && end > start, 'updateDrag block must exist');
+  const block = src.slice(start, end);
+  const normalStart = block.indexOf('const intersection = tmpVec3;\n      const ok = raycaster.ray.intersectPlane(dragPlane');
+  assert.ok(normalStart >= 0, 'normal X/Z drag block must exist');
+  const altBlock = block.slice(block.indexOf('if (altKey)'), normalStart);
+  const normalBlock = block.slice(normalStart);
+
+  assert.match(altBlock, /CaseScene\.updateGizmoTransform\(\);\s*\n\s*return;/,
+    'Alt/Y movement must sync the gizmo before returning');
+  assert.match(normalBlock, /if \(!anyCollides\) \{[\s\S]*?\}\s*\n\s*CaseScene\.updateGizmoTransform\(\);\s*\n\s*\}/,
+    'normal X/Z movement must sync the gizmo after moving the case');
+
+  const revertStart = src.indexOf('function revertGroupToStart(groupIds, startMap)');
+  const revertEnd = src.indexOf('\n\n    function finishDrag()', revertStart);
+  assert.ok(revertStart >= 0 && revertEnd > revertStart, 'revertGroupToStart block must exist');
+  const revertBlock = src.slice(revertStart, revertEnd);
+  assert.match(revertBlock, /\.onUpdate\(\(\) => CaseScene\.updateGizmoTransform\(\)\)/,
+    'animated invalid-release reverts must keep the gizmo synced during tween movement');
+  assert.match(revertBlock, /\.onComplete\(\(\) => CaseScene\.updateGizmoTransform\(\)\)/,
+    'animated invalid-release reverts must sync the gizmo at tween completion');
+  assert.match(revertBlock, /o\.position\.copy\(s\);\s*\n\s*CaseScene\.updateGizmoTransform\(\);/,
+    'non-animated reverts must sync the gizmo after snapping back');
 });
 
 test('MANUAL-VERTICAL surface-following invalid releases hold scene-only pending pose', async () => {

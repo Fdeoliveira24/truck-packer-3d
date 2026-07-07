@@ -143,7 +143,7 @@ export function computeGizmoScale(distance) {
  * PREVIEW-ONLY terrain height for surface-following drag ("ghost over hills").
  * Returns the visual resting height of a dragged case footprint over the
  * highest sufficiently-overlapping preview surface (truck floor, box tops,
- * wheel-well tops, front deck, staging floor).
+ * staged/outside box tops, wheel-well tops, front deck, staging floor).
  *
  * This is NOT a placement validator: it deliberately ignores stacking,
  * weight, noStackOnTop, retention, containment, and every other hard rule so
@@ -219,6 +219,8 @@ export function computeSurfaceFollowingPreviewY({
     overlapFraction: best.overlapFraction,
   };
 }
+
+const SURFACE_PREVIEW_DRAG_MIN_OVERLAP = 0.02;
 
 function getUnpackCategoryKey(inst, getCaseById) {
   const caseData = inst && typeof getCaseById === 'function' ? getCaseById(inst.caseId) : null;
@@ -1110,12 +1112,14 @@ export function createCaseScene({
         if (otherId === instanceId) continue;
         if (!otherGroup || otherGroup.visible === false) continue;
         const otherInst = packInstances.get(otherId);
-        if (otherInst && otherInst.placement === 'staged') continue;
         const aabb = getAabbWorld(otherId);
         if (!aabb) continue;
+        // Preview-only terrain: staged tops can lift the ghost, but release
+        // validation still keeps staged Y floor-normalized unless placed.
+        const kind = otherInst && otherInst.placement === 'staged' ? 'staged-box-top' : 'box-top';
         addPreviewSurface(surfaces, {
           id: otherId,
-          kind: 'box-top',
+          kind,
           min: { x: aabb.min.x, z: aabb.min.z },
           max: { x: aabb.max.x, z: aabb.max.z },
           topY: aabb.max.y,
@@ -1133,6 +1137,7 @@ export function createCaseScene({
         centerX: candidateWorldPos.x,
         centerZ: candidateWorldPos.z,
         surfaces: getSurfaceFollowingPreviewSurfaces(instanceId),
+        minOverlapFraction: SURFACE_PREVIEW_DRAG_MIN_OVERLAP,
       });
     }
 
@@ -2282,6 +2287,7 @@ export function createInteractionManager({
             }
           }
         }
+        CaseScene.updateGizmoTransform();
         return;
       }
 
@@ -2330,6 +2336,7 @@ export function createInteractionManager({
       if (!anyCollides) {
         groupIds.forEach(id => CaseScene.setCollision(id, false));
       }
+      CaseScene.updateGizmoTransform();
     }
 
     /**
@@ -2346,9 +2353,12 @@ export function createInteractionManager({
           new Tween.Tween(o.position)
             .to({ x: s.x, y: s.y, z: s.z }, 240)
             .easing(Tween.Easing.Cubic.Out)
+            .onUpdate(() => CaseScene.updateGizmoTransform())
+            .onComplete(() => CaseScene.updateGizmoTransform())
             .start();
         } else {
           o.position.copy(s);
+          CaseScene.updateGizmoTransform();
         }
         CaseScene.setCollision(id, false);
       });
@@ -2358,10 +2368,12 @@ export function createInteractionManager({
         window.setTimeout(() => {
           CaseScene.setDragging(null);
           CaseScene.setHover(hoveredId);
+          CaseScene.updateGizmoTransform();
         }, 260);
       } else {
         CaseScene.setDragging(null);
         CaseScene.setHover(hoveredId);
+        CaseScene.updateGizmoTransform();
       }
     }
 

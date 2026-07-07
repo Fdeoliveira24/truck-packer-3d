@@ -517,6 +517,43 @@ test('MANUAL-VERTICAL alt-drag shows a throttled release-outcome preview for a s
     'staging-bound drags must not be flagged invalid by the preview');
 });
 
+test('MANUAL-VERTICAL empty orbit drag preserves selection and pending pose', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  assert.match(src, /const CLICK_DRAG_THRESHOLD_PX = 3;/,
+    'empty orbit classification must share the existing click-vs-drag threshold');
+
+  const moveStart = src.indexOf('function onMove(ev)');
+  const moveEnd = src.indexOf('\n\n    function onDown(ev)', moveStart);
+  assert.ok(moveStart >= 0 && moveEnd > moveStart, 'onMove block must exist');
+  const moveBlock = src.slice(moveStart, moveEnd);
+  assert.match(moveBlock, /Math\.hypot\(dx, dy\) > CLICK_DRAG_THRESHOLD_PX\) startDrag\(\);/,
+    'case drag start must keep using the shared movement threshold');
+
+  const upStart = src.indexOf('function onUp(ev)');
+  const upEnd = src.indexOf('\n\n    /**\n     * V3A vertical gizmo drag', upStart);
+  assert.ok(upStart >= 0 && upEnd > upStart, 'onUp block must accept the pointerup event');
+  const upBlock = src.slice(upStart, upEnd);
+  const emptyStart = upBlock.indexOf('if (!pressed.instanceId)');
+  const emptyEnd = upBlock.indexOf('const current = getSelection()', emptyStart);
+  assert.ok(emptyStart >= 0 && emptyEnd > emptyStart, 'empty click/orbit branch must exist');
+  const emptyBlock = upBlock.slice(emptyStart, emptyEnd);
+
+  assert.match(emptyBlock, /const dx = ev && Number\.isFinite\(ev\.clientX\) \? ev\.clientX - pressed\.clientX : 0;/,
+    'empty pointerup must compare the release point to the original empty press');
+  assert.match(emptyBlock, /if \(Math\.hypot\(dx, dy\) > CLICK_DRAG_THRESHOLD_PX\) \{\s*\n\s*pressed = null;\s*\n\s*return;\s*\n\s*\}/,
+    'empty orbit drags must clear only the transient press and return');
+  const orbitStart = emptyBlock.indexOf('if (Math.hypot(dx, dy) > CLICK_DRAG_THRESHOLD_PX)');
+  const clickStart = emptyBlock.indexOf('if (!pressed.shift)', orbitStart);
+  assert.ok(orbitStart >= 0 && clickStart > orbitStart, 'orbit branch must precede empty-click deselect');
+  const orbitBlock = emptyBlock.slice(orbitStart, clickStart);
+  assert.equal(orbitBlock.includes('setSelection('), false,
+    'empty orbit drag must not clear selection');
+  assert.equal(orbitBlock.includes('cancelPendingPose'), false,
+    'empty orbit drag must not cancel a pending manual pose');
+  assert.match(emptyBlock, /if \(!pressed\.shift\) setSelection\(\[\]\);/,
+    'empty click below the threshold must keep the existing deselect behavior');
+});
+
 // V3A vertical gizmo handle: pure scale helper + source-slice contracts for
 // pointer routing, attach gating, and release-path reuse. No pixel testing.
 test('MANUAL-VERTICAL computeGizmoScale keeps the handle usable across the zoom range', async () => {
@@ -537,7 +574,7 @@ test('MANUAL-VERTICAL gizmo handles take raycast priority and attach only to one
   const src = await fs.readFile(editorScreenPath, 'utf8');
 
   const downStart = src.indexOf('function onDown(ev)');
-  const downEnd = src.indexOf('function onUp()', downStart);
+  const downEnd = src.indexOf('function onUp(ev)', downStart);
   assert.ok(downStart >= 0 && downEnd > downStart, 'onDown block must exist');
   const downBlock = src.slice(downStart, downEnd);
   const gizmoIdx = downBlock.indexOf('beginGizmoDrag()');

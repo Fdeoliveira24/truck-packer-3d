@@ -1321,6 +1321,7 @@ export function createInteractionManager({
     let dragGroupStartWorld = null; // Map<instanceId, THREE.Vector3>
     let surfaceFollowingDrag = false;
     let lastRaycastTime = 0;
+    const CLICK_DRAG_THRESHOLD_PX = 3;
     const RAYCAST_THROTTLE = 50; // ms - throttle hover raycasts
 
     function initInteraction(canvasEl) {
@@ -1666,7 +1667,7 @@ export function createInteractionManager({
       if (pressed && !draggingId) {
         const dx = ev.clientX - pressed.clientX;
         const dy = ev.clientY - pressed.clientY;
-        if (Math.hypot(dx, dy) > 3) startDrag();
+        if (Math.hypot(dx, dy) > CLICK_DRAG_THRESHOLD_PX) startDrag();
       }
 
       if (draggingId) {
@@ -1723,7 +1724,7 @@ export function createInteractionManager({
       }
     }
 
-    function onUp() {
+    function onUp(ev) {
       if (!isEditorActive()) return;
       if (!pressed && !draggingId) return;
 
@@ -1738,6 +1739,12 @@ export function createInteractionManager({
 
       // Click selection
       if (!pressed.instanceId) {
+        const dx = ev && Number.isFinite(ev.clientX) ? ev.clientX - pressed.clientX : 0;
+        const dy = ev && Number.isFinite(ev.clientY) ? ev.clientY - pressed.clientY : 0;
+        if (Math.hypot(dx, dy) > CLICK_DRAG_THRESHOLD_PX) {
+          pressed = null;
+          return;
+        }
         if (!pressed.shift) setSelection([]);
         pressed = null;
         return;

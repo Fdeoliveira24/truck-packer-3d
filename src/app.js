@@ -1373,6 +1373,14 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
         })
         : false;
       if (handled) return getBillingState();
+      if (!_orgAccessLossHandler) {
+        try {
+          const _uic = typeof window !== 'undefined' && window.__TP3D_UI ? window.__TP3D_UI : null;
+          if (_uic && typeof _uic.showToast === 'function') {
+            _uic.showToast('You no longer have access to this workspace.', 'warning', { title: 'Access Denied' });
+          }
+        } catch (_) { /* toast must not throw from billing handler */ }
+      }
     }
 
     _billingState.pending = false;
@@ -1843,6 +1851,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
     return message.length > 240 ? `${message.slice(0, 239)}…` : message;
   }
 
+  let _postBootRejectionToastAt = 0;
+
   function installRuntimeFatalHandlers() {
     if (BootState.runtimeFatalHandlersInstalled) return;
     BootState.runtimeFatalHandlersInstalled = true;
@@ -1873,6 +1883,22 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
       if (BootState.fatalOverlayShown || BootState.maintenanceMode) return;
       if (BootState.appReady === true) {
+        const isAbortLike = reason instanceof DOMException && reason.name === 'AbortError';
+        if (!isAbortLike) {
+          const _now = Date.now();
+          if (_now - _postBootRejectionToastAt > 8000) {
+            _postBootRejectionToastAt = _now;
+            try {
+              if (UIComponents && typeof UIComponents.showToast === 'function') {
+                UIComponents.showToast(
+                  'Something went wrong in the background. If the app feels stuck, reload and try again.',
+                  'warning',
+                  { title: 'Error', duration: 8000 },
+                );
+              }
+            } catch (_) { /* toast must not throw from error handler */ }
+          }
+        }
         return;
       }
       showFatalOverlay({ message });
@@ -6326,6 +6352,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
         try {
           EditorUI.render();
+        } catch {
+          // ignore
+        }
+        try {
+          syncRecoverableErrorOverlay();
         } catch {
           // ignore
         }

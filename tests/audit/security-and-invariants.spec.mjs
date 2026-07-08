@@ -18493,3 +18493,113 @@ test('PACKING-CORE-P9 unknown strategy ids fail loudly and the registry stays ho
   assert.equal(Core.getPackingStrategy('default').id, 'default', 'default strategy registered');
   assert.equal(Core.getPackingStrategy('nope'), null, 'unknown lookup returns null');
 });
+
+// ── Runtime hardening: post-boot rejection toast + missing-pack guard ────────
+
+test('HARDEN-P1A post-boot unhandledrejection handler shows toast for any non-abort rejection', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  // Locate the handler body between its declaration and the subsequent addEventListener calls
+  const handlerDecl = src.indexOf('const handleRuntimeUnhandledRejection = ev =>');
+  const addListenerAnchor = src.indexOf("window.addEventListener('error', handleRuntimeError", handlerDecl);
+  assert.ok(handlerDecl >= 0, 'handleRuntimeUnhandledRejection declaration found');
+  assert.ok(addListenerAnchor > handlerDecl, 'addEventListener anchor found after handler declaration');
+  const handlerBlock = src.slice(handlerDecl, addListenerAnchor);
+
+  // console.error must be retained
+  assert.match(handlerBlock, /console\.error/, 'console.error retained in rejection handler');
+
+  // Old message-gated condition must be gone — messageless rejections must also surface
+  assert.doesNotMatch(
+    handlerBlock,
+    /if\s*\(\s*message\s*&&\s*!isAbortLike\s*\)/,
+    'message-gated toast condition must be removed so messageless rejections also show a toast',
+  );
+
+  // New condition: guard only on isAbortLike
+  assert.match(
+    handlerBlock,
+    /if\s*\(\s*!isAbortLike\s*\)/,
+    'toast must fire for any non-AbortError rejection, checked via !isAbortLike only',
+  );
+
+  // Throttle variable must exist at module level
+  assert.match(src, /_postBootRejectionToastAt/, 'module-level throttle timestamp variable must exist');
+
+  // Toast message must use the spec wording
+  assert.match(handlerBlock, /feels stuck/, 'toast message must include "feels stuck" per spec');
+});
+
+test('HARDEN-P1A boot-time unhandledrejection still shows fatal overlay when appReady is false', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  const handlerDecl = src.indexOf('const handleRuntimeUnhandledRejection = ev =>');
+  const addListenerAnchor = src.indexOf("window.addEventListener('error', handleRuntimeError", handlerDecl);
+  const handlerBlock = src.slice(handlerDecl, addListenerAnchor);
+
+  // appReady check must gate the post-boot early return
+  assert.match(handlerBlock, /BootState\.appReady === true/, 'appReady guard present in rejection handler');
+
+  // showFatalOverlay must be reachable for pre-boot rejections (i.e., appears in handler body)
+  assert.match(handlerBlock, /showFatalOverlay/, 'showFatalOverlay reachable for pre-boot rejections');
+
+  // The appReady check must appear before showFatalOverlay so the early-return branch fires first
+  const appReadyPos = handlerBlock.indexOf('BootState.appReady === true');
+  const fatalPos = handlerBlock.lastIndexOf('showFatalOverlay');
+  assert.ok(fatalPos > appReadyPos, 'showFatalOverlay is reached only after the appReady branch');
+});
+
+test('HARDEN-P1B queueOrgScopedRender calls syncRecoverableErrorOverlay after EditorUI.render', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  const fnStart = src.indexOf('function queueOrgScopedRender(');
+  assert.ok(fnStart >= 0, 'queueOrgScopedRender function found');
+
+  // Extract function body by brace depth
+  let depth = 0;
+  let bodyEnd = -1;
+  for (let i = fnStart; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') {
+      depth--;
+      if (depth === 0) { bodyEnd = i + 1; break; }
+    }
+  }
+  assert.ok(bodyEnd > fnStart, 'queueOrgScopedRender body extracted');
+  const fnBody = src.slice(fnStart, bodyEnd);
+
+  assert.match(fnBody, /EditorUI\.render/, 'EditorUI.render present in queueOrgScopedRender');
+  assert.match(fnBody, /syncRecoverableErrorOverlay/, 'syncRecoverableErrorOverlay called in queueOrgScopedRender');
+
+  // syncRecoverableErrorOverlay must be called AFTER EditorUI.render
+  const editorRenderPos = fnBody.indexOf('EditorUI.render');
+  const syncPos = fnBody.indexOf('syncRecoverableErrorOverlay');
+  assert.ok(syncPos > editorRenderPos, 'syncRecoverableErrorOverlay must follow EditorUI.render in queueOrgScopedRender');
+});
+
+test('HARDEN-P1B hasMissingEditorPack and syncRecoverableErrorOverlay implement pack-not-found path', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  // Both functions must be present
+  assert.match(src, /function hasMissingEditorPack\(\)/, 'hasMissingEditorPack function present');
+  assert.match(src, /function syncRecoverableErrorOverlay\(\)/, 'syncRecoverableErrorOverlay function present');
+
+  // hasMissingEditorPack must check screen, packId, and PackLibrary.getById
+  const missingStart = src.indexOf('function hasMissingEditorPack()');
+  const missingEnd = src.indexOf('\n    function syncRecoverableErrorOverlay', missingStart);
+  const missingFn = missingStart >= 0 && missingEnd > missingStart
+    ? src.slice(missingStart, missingEnd)
+    : src.slice(missingStart, missingStart + 400);
+  assert.match(missingFn, /editor/, 'hasMissingEditorPack checks for editor screen');
+  assert.match(missingFn, /currentPackId/, 'hasMissingEditorPack reads currentPackId');
+  assert.match(missingFn, /PackLibrary\.getById/, 'hasMissingEditorPack calls PackLibrary.getById');
+
+  // syncRecoverableErrorOverlay must call hasMissingEditorPack and show pack overlay
+  const syncStart = src.indexOf('function syncRecoverableErrorOverlay()');
+  const syncEnd = src.indexOf('\n    // ===', syncStart);
+  const syncFn = syncStart >= 0 && syncEnd > syncStart
+    ? src.slice(syncStart, syncEnd)
+    : src.slice(syncStart, syncStart + 500);
+  assert.match(syncFn, /hasMissingEditorPack/, 'syncRecoverableErrorOverlay calls hasMissingEditorPack');
+  assert.match(syncFn, /kind.*pack|pack.*kind/, "syncRecoverableErrorOverlay shows overlay with kind:'pack'");
+});

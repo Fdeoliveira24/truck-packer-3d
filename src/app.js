@@ -1373,11 +1373,15 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
         })
         : false;
       if (handled) return getBillingState();
-      if (!_orgAccessLossHandler) {
+      if (!handled) {
         try {
           const _uic = typeof window !== 'undefined' && window.__TP3D_UI ? window.__TP3D_UI : null;
           if (_uic && typeof _uic.showToast === 'function') {
-            _uic.showToast('You no longer have access to this workspace.', 'warning', { title: 'Access Denied' });
+            _uic.showToast(
+              'You no longer have access to this workspace. Switch workspace or contact the owner.',
+              'warning',
+              { title: 'Access Denied' },
+            );
           }
         } catch (_) { /* toast must not throw from billing handler */ }
       }
@@ -2366,6 +2370,31 @@ const TP3D_BUILD_STAMP = Object.freeze({
         },
         { passive: true }
       );
+    } catch {
+      // ignore
+    }
+
+    // Persistent offline indicator — small non-blocking chip shown while navigator.onLine === false
+    try {
+      (function () {
+        const _offlineEl = document.createElement('div');
+        _offlineEl.id = 'tp3d-offline-indicator';
+        _offlineEl.setAttribute('role', 'status');
+        _offlineEl.setAttribute('aria-live', 'polite');
+        _offlineEl.textContent = 'Offline';
+        document.body.appendChild(_offlineEl);
+
+        function _syncOfflineIndicator() {
+          try {
+            const _isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+            _offlineEl.classList.toggle('active', _isOffline);
+          } catch { /* ignore */ }
+        }
+
+        _syncOfflineIndicator(); // sync on boot
+        window.addEventListener('online', _syncOfflineIndicator, { passive: true });
+        window.addEventListener('offline', _syncOfflineIndicator, { passive: true });
+      })();
     } catch {
       // ignore
     }
@@ -6019,7 +6048,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const _uic = typeof window !== 'undefined' && window.__TP3D_UI ? window.__TP3D_UI : null;
         if (_uic && typeof _uic.showToast === 'function') {
           _uic.showToast(
-            'You no longer have access to this workspace.',
+            'You no longer have access to this workspace. Switch workspace or contact the owner.',
             'warning',
             { title: 'Workspace access', duration: 8000 },
           );

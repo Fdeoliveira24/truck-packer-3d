@@ -2381,7 +2381,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         _offlineEl.id = 'tp3d-offline-indicator';
         _offlineEl.setAttribute('role', 'status');
         _offlineEl.setAttribute('aria-live', 'polite');
-        _offlineEl.innerHTML = '<i class="fa-solid fa-wifi tp3d-offline-icon" aria-hidden="true"></i>Offline mode';
+        _offlineEl.innerHTML = '<i class="fa-solid fa-wifi tp3d-offline-icon" aria-hidden="true"></i> You\'re Offline';
         document.body.appendChild(_offlineEl);
 
         function _syncOfflineIndicator() {
@@ -4768,17 +4768,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (!window.jspdf) missing.push('PDF generation');
 
       if (missing.length) {
-        // Log technical details to console
+        // Log technical details to console — not shown to users
         console.error('[TruckPackerApp] Missing libraries:', missing);
 
-        // Show user-friendly message — no technical jargon
         SystemOverlay.show({
-          title: 'Unable to load',
-          message: 'Some features could not be loaded. Please check your internet connection and try again.',
+          title: 'Some app files could not load',
+          message: 'Check your connection, disable blocking extensions, or reload.',
           items: [
             'Make sure you are connected to the internet',
-            'Try refreshing the page',
-            'If the problem persists, try a different browser',
+            'Disable ad blockers or script-blocking browser extensions',
+            'Click "Try Again" to reload',
           ],
         });
         return false;

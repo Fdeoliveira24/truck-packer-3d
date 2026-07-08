@@ -135,7 +135,7 @@ test('AUTOPACK-CAROUSEL apply keeps the validated path, marks Applied with a che
     'apply must keep clearing selection after swapping the load');
 });
 
-test('AUTOPACK-CAROUSEL view/minimize state is UI-only, clamped, and absent from the payload', async () => {
+test('AUTOPACK-CAROUSEL view/minimize state is clamped; panel starts collapsed on each new run', async () => {
   const { render } = await renderBlock();
 
   assert.match(render, /const selectedIndex = Math\.max\(0, options\.findIndex\(option => option\.id === results\.selectedId\)\);/,
@@ -147,7 +147,9 @@ test('AUTOPACK-CAROUSEL view/minimize state is UI-only, clamped, and absent from
 
   const engineSrc = await fs.readFile(enginePath, 'utf8');
   assert.equal(engineSrc.includes('viewIndex'), false, 'the result payload must not carry carousel view state');
-  assert.equal(engineSrc.includes('minimized'), false, 'the result payload must not carry minimize state');
+  // minimized: true is intentionally set in the initial payload so each new AutoPack
+  // run starts with the panel collapsed (the user expands it with the chevron toggle).
+  assert.match(engineSrc, /minimized: true/, 'result payload must set minimized:true so the panel starts collapsed on every new run');
 });
 
 test('AUTOPACK-CAROUSEL detail styling: bordered arrows, uppercase tiles, neutral status badge', async () => {

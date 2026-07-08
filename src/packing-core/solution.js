@@ -161,19 +161,41 @@ function recoveryCouldHelp(solution) {
  * result: highest packed count first, ties preferring the default strategy's
  * layout-quality-ranked plan.
  *
+ * Also always runs compact-fill as a second portfolio option so users can
+ * compare the default's layout-quality plan against the densest local-fill
+ * ordering. compact-fill runs under half the primary budget (min 2 s) to
+ * keep the total main-thread time bounded; deduplication in the engine
+ * removes it silently when both produce the identical layout.
+ *
  * Bounded on purpose:
  * - never retries when the primary miss was BUDGET-caused (more synchronous
  *   solving would burn more main-thread time for the same reason);
  * - never retries when every staged item is statically impossible;
- * - recovery solves run under half the primary solve budget (min 2s) so the
- *   worst-case interactive wait stays capped;
- * - `strategyRecovery: false` opts out entirely (diagnostics/tests).
+ * - portfolio and recovery solves run under half the primary solve budget
+ *   (min 2s) so the worst-case interactive wait stays capped;
+ * - `strategyRecovery: false` opts out of recovery AND portfolio entirely
+ *   (diagnostics/tests).
  * Hard rules are untouched — every strategy runs the same validation pipeline.
  */
 export function runAdaptiveAutoPack(input, solve = solveAutoPack) {
   const primary = runPackingStrategies(input, ['default'], solve);
   const primarySolution = primary.selectedSolution;
   if (!primarySolution || input.strategyRecovery === false) return primary;
+
+  // Bounded budget shared by every non-primary solve.
+  const primaryBudget = Number(input.solveBudgetMs);
+  const secondaryBudgetMs = Number.isFinite(primaryBudget) && primaryBudget > 0
+    ? Math.max(2000, primaryBudget / 2)
+    : undefined;
+  const secondaryInput = secondaryBudgetMs !== undefined
+    ? { ...input, solveBudgetMs: secondaryBudgetMs }
+    : input;
+
+  // Always offer compact-fill as a portfolio alternative. It runs the same
+  // solver pipeline without layout-quality re-ranking, producing the densest
+  // local-waste-first packing. Default stays first so index-order ties keep
+  // the default's layout-quality plan as the auto-selected result.
+  const portfolio = runPackingStrategies(secondaryInput, ['compact-fill'], solve);
 
   const status = primarySolution.solveStatus || null;
   const complete = status
@@ -182,23 +204,26 @@ export function runAdaptiveAutoPack(input, solve = solveAutoPack) {
   const budgetCaused = Boolean(
     status && Array.isArray(status.partialCauses) && status.partialCauses.includes('budget')
   );
-  if (complete || budgetCaused || !recoveryCouldHelp(primarySolution)) return primary;
 
-  const recoveryIds = ['stack-priority'];
-  if (getWheelWellGeometry(input.truck || {})) recoveryIds.push('constrained-first');
+  // Recovery pass: only when default was partial and retrying with strategies
+  // that can beat it on hard fits. compact-fill is intentionally excluded from
+  // the recovery IDs — it is already part of the portfolio run above and must
+  // not run twice.
+  let recoverySolutions = [];
+  if (!complete && !budgetCaused && recoveryCouldHelp(primarySolution)) {
+    const recoveryIds = ['stack-priority'];
+    if (getWheelWellGeometry(input.truck || {})) recoveryIds.push('constrained-first');
+    const recovery = runPackingStrategies(secondaryInput, recoveryIds, solve);
+    recoverySolutions = recovery.solutions;
+  }
 
-  const primaryBudget = Number(input.solveBudgetMs);
-  const recoveryInput = Number.isFinite(primaryBudget) && primaryBudget > 0
-    ? { ...input, solveBudgetMs: Math.max(2000, primaryBudget / 2) }
-    : input;
-  const recovery = runPackingStrategies(recoveryInput, recoveryIds, solve);
-
-  // Primary first so merit ties keep the default's layout-quality plan.
-  const ranked = [...primary.solutions, ...recovery.solutions]
-    .map((result, index) => ({ index, result }));
+  // Default first, then compact-fill, then any recovery solutions.
+  // Default wins all merit ties (index 0 in the sorted order).
+  const allSolutions = [...primary.solutions, ...portfolio.solutions, ...recoverySolutions];
+  const ranked = allSolutions.map((result, index) => ({ index, result }));
   const selected = [...ranked].sort(compareStrategyResults)[0].result;
   return {
-    solutions: ranked.map(entry => entry.result),
+    solutions: allSolutions,
     selected: selected.id,
     selectedSolution: selected,
   };

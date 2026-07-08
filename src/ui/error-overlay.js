@@ -70,7 +70,7 @@ export function createErrorOverlay() {
   function showMaintenance() {
     _render(
       "We'll be back soon",
-      'Truck Packer 3D is temporarily unavailable while maintenance is in progress.',
+      'Truck Packer 3D is temporarily unavailable while we perform maintenance. Please try again soon.',
       [_btn('Reload', () => window.location.reload())],
       { iconVariant: 'info', iconClass: 'fa-clock' }
     );

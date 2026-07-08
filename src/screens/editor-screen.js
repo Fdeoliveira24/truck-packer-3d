@@ -3011,58 +3011,21 @@ export function createEditorScreen({
         attachAutoPackResultsDrag(el, host);
       };
 
-      // Minimal 2×3 dot grip (fa-grip-vertical) hinting the drag handle.
+      // 2×3 dot-grid grip hinting the header drag handle.
       const makeAutoPackGrip = () => {
         const grip = document.createElement('span');
         grip.className = 'tp3d-autopack-results__grip';
         grip.setAttribute('aria-hidden', 'true');
-        grip.innerHTML = '<i class="fa-solid fa-grip-vertical"></i>';
+        for (let dot = 0; dot < 6; dot += 1) {
+          const dotEl = document.createElement('span');
+          dotEl.className = 'tp3d-autopack-results__grip-dot';
+          grip.appendChild(dotEl);
+        }
         return grip;
       };
 
-      // Minimized: a small floating pill that stays draggable and restores the
-      // panel. Close stays separate. The chip never mutates the pack.
-      if (minimized) {
-        const chip = document.createElement('section');
-        chip.className = 'tp3d-autopack-results tp3d-autopack-results--chip';
-        chip.setAttribute('aria-label', 'AutoPack results (minimized)');
-        chip.setAttribute('aria-live', 'polite');
-
-        const inner = document.createElement('div');
-        inner.className = 'tp3d-autopack-results__chip-inner';
-        inner.dataset.role = 'autopack-results-drag';
-        inner.appendChild(makeAutoPackGrip());
-
-        const chipLabel = document.createElement('span');
-        chipLabel.className = 'tp3d-autopack-results__chip-label';
-        chipLabel.textContent = hasAlternates
-          ? `AutoPack · Option ${viewIndex + 1} of ${options.length}`
-          : 'AutoPack · Best load';
-        inner.appendChild(chipLabel);
-
-        const restoreBtn = document.createElement('button');
-        restoreBtn.type = 'button';
-        restoreBtn.className = 'tp3d-autopack-results__icon-btn';
-        restoreBtn.setAttribute('aria-label', 'Restore AutoPack results');
-        restoreBtn.innerHTML = '<i class="fa-solid fa-expand"></i>';
-        restoreBtn.addEventListener('click', () => patchAutoPackResultsState({ minimized: false }));
-        inner.appendChild(restoreBtn);
-
-        const chipClose = document.createElement('button');
-        chipClose.type = 'button';
-        chipClose.className = 'tp3d-autopack-results__icon-btn';
-        chipClose.setAttribute('aria-label', 'Close AutoPack results');
-        chipClose.innerHTML = '<i class="fa-solid fa-xmark"></i>';
-        chipClose.addEventListener('click', () => patchAutoPackResultsState({ closed: true }));
-        inner.appendChild(chipClose);
-
-        chip.appendChild(inner);
-        placeAutoPackResultsEl(chip);
-        return;
-      }
-
       const panel = document.createElement('section');
-      panel.className = `tp3d-autopack-results ${hasAlternates ? 'is-carousel' : 'is-compact'}`;
+      panel.className = `tp3d-autopack-results ${minimized ? 'is-minimized' : (hasAlternates ? 'is-carousel' : 'is-compact')}`;
       panel.setAttribute('aria-label', 'AutoPack results');
       panel.setAttribute('aria-live', 'polite');
 
@@ -3083,13 +3046,15 @@ export function createEditorScreen({
 
       const headerActions = document.createElement('div');
       headerActions.className = 'tp3d-autopack-results__header-actions';
-      const minimizeBtn = document.createElement('button');
-      minimizeBtn.type = 'button';
-      minimizeBtn.className = 'tp3d-autopack-results__icon-btn';
-      minimizeBtn.setAttribute('aria-label', 'Minimize AutoPack results');
-      minimizeBtn.innerHTML = '<i class="fa-solid fa-minus"></i>';
-      minimizeBtn.addEventListener('click', () => patchAutoPackResultsState({ minimized: true }));
-      headerActions.appendChild(minimizeBtn);
+      // A single chevron toggles collapse/expand: up collapses the panel to its
+      // header, down restores it. Close stays a separate dismiss action.
+      const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = 'tp3d-autopack-results__icon-btn';
+      toggleBtn.setAttribute('aria-label', minimized ? 'Restore AutoPack results' : 'Minimize AutoPack results');
+      toggleBtn.innerHTML = `<i class="fa-solid fa-chevron-${minimized ? 'down' : 'up'}"></i>`;
+      toggleBtn.addEventListener('click', () => patchAutoPackResultsState({ minimized: !minimized }));
+      headerActions.appendChild(toggleBtn);
       const closeBtn = document.createElement('button');
       closeBtn.type = 'button';
       closeBtn.className = 'tp3d-autopack-results__icon-btn';
@@ -3101,6 +3066,15 @@ export function createEditorScreen({
       header.appendChild(headerLeft);
       header.appendChild(headerActions);
       panel.appendChild(header);
+
+      // Collapsed: render only the header (still the drag handle) — nothing below.
+      if (minimized) {
+        placeAutoPackResultsEl(panel);
+        return;
+      }
+
+      const body = document.createElement('div');
+      body.className = 'tp3d-autopack-results__body';
 
       // Multiple results: a compact one-at-a-time carousel (Option X of Y +
       // arrows). Prev/Next only move the UI view index; applying is unchanged.
@@ -3131,7 +3105,7 @@ export function createEditorScreen({
         nav.appendChild(prevBtn);
         nav.appendChild(counter);
         nav.appendChild(nextBtn);
-        panel.appendChild(nav);
+        body.appendChild(nav);
       }
 
       const stats = document.createElement('div');
@@ -3139,14 +3113,14 @@ export function createEditorScreen({
       stats.appendChild(makeAutoPackResultStat('Packed', formatAutoPackResultNumber(viewedOption.packedCount)));
       stats.appendChild(makeAutoPackResultStat('Staged', formatAutoPackResultNumber(viewedOption.stagedCount)));
       stats.appendChild(makeAutoPackResultStat('Volume', formatAutoPackResultVolume(viewedOption.volumePercent)));
-      panel.appendChild(stats);
+      body.appendChild(stats);
 
       // Multiple results: name the viewed option, show its status, mark the
       // applied one, and keep Apply on the existing validated apply path.
       if (hasAlternates) {
         const isViewedCurrent = viewedOption.id === results.selectedId;
-        const body = document.createElement('div');
-        body.className = 'tp3d-autopack-results__carousel-body';
+        const optionRow = document.createElement('div');
+        optionRow.className = 'tp3d-autopack-results__carousel-body';
 
         const labelRow = document.createElement('div');
         labelRow.className = 'tp3d-autopack-results__carousel-title-row';
@@ -3164,28 +3138,26 @@ export function createEditorScreen({
           applied.textContent = 'Applied';
           labelRow.appendChild(applied);
         }
-        body.appendChild(labelRow);
+        optionRow.appendChild(labelRow);
 
         const actions = document.createElement('div');
         actions.className = 'tp3d-autopack-results__carousel-actions';
         const apply = document.createElement('button');
         apply.type = 'button';
-        apply.className = 'btn btn-sm btn-primary tp3d-autopack-results__apply-btn';
-        apply.textContent = isViewedCurrent ? 'Applied' : 'Apply this option';
+        apply.className = `btn btn-sm btn-primary tp3d-autopack-results__apply-btn${isViewedCurrent ? ' tp3d-autopack-results__apply-btn--applied' : ''}`;
         apply.disabled = isViewedCurrent || stale;
+        if (isViewedCurrent) {
+          apply.innerHTML = '<i class="fa-solid fa-check"></i> Applied';
+        } else {
+          apply.textContent = 'Apply this option';
+        }
         apply.addEventListener('click', () => applyAutoPackResultOption(viewedOption.id));
         actions.appendChild(apply);
-        body.appendChild(actions);
-        panel.appendChild(body);
+        optionRow.appendChild(actions);
+        body.appendChild(optionRow);
       }
 
-      if (stale) {
-        const note = document.createElement('div');
-        note.className = 'tp3d-autopack-results__stale';
-        note.textContent = 'Rerun AutoPack after edits.';
-        panel.appendChild(note);
-      }
-
+      panel.appendChild(body);
       placeAutoPackResultsEl(panel);
     }
 

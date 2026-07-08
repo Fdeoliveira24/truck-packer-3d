@@ -1,10 +1,10 @@
 // AutoPack Results floating panel (UI-only refinement). Source-contract tests
 // for the panel in editor-screen.js: multiple results render a compact
-// one-at-a-time carousel ("Option X of Y" + clamped Prev/Next); the header has
-// separate minimize and close controls; minimize collapses to a small draggable
-// chip that restores the panel; applying still runs through the existing
-// validated PackLibrary path; and carousel/minimize view state is UI-only
-// (never written into the AutoPack result payload). No DOM/pixel testing.
+// one-at-a-time carousel ("Option X of Y" + bordered, clamped Prev/Next); the
+// header has a chevron collapse/expand toggle plus a separate close; collapsing
+// leaves only the header (still the drag handle); applying still runs through
+// the existing validated PackLibrary path; and carousel/minimize view state is
+// UI-only (never written into the AutoPack result payload). No DOM/pixel testing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -28,76 +28,74 @@ async function renderBlock() {
 test('AUTOPACK-CAROUSEL multi-result panel shows a compact Option X of Y carousel', async () => {
   const { render } = await renderBlock();
 
-  // Carousel is driven purely by having alternates — no "expanded"/"View options"
-  // intermediate step remains from the earlier iteration.
   assert.match(render, /const hasAlternates = options\.length > 1;/,
     'multiple-option detection must stay based on options.length');
-  assert.equal(render.includes('View options'), false,
-    'the compact "View options" intermediate must be gone');
-  assert.equal(render.includes('results.expanded'), false,
-    'the panel must no longer depend on an expanded toggle');
+  assert.equal(render.includes('View options'), false, 'no compact "View options" step should remain');
+  assert.equal(render.includes('results.expanded'), false, 'the panel must not depend on an expanded toggle');
 
   const nav = sliceFn(render, 'if (hasAlternates) {', 'const stats = document.createElement');
-  assert.match(nav, /tp3d-autopack-results__carousel-nav/,
-    'the carousel nav must render for multiple options');
+  assert.match(nav, /tp3d-autopack-results__carousel-nav/, 'the carousel nav must render for multiple options');
   assert.match(nav, /`Option \$\{viewIndex \+ 1\} of \$\{options\.length\}`/,
     'the counter must show the 1-based option index out of the total');
 });
 
-test('AUTOPACK-CAROUSEL header exposes separate minimize and close controls', async () => {
+test('AUTOPACK-CAROUSEL header has a chevron collapse/expand toggle separate from close', async () => {
   const { render } = await renderBlock();
 
-  assert.match(render, /minimizeBtn\.setAttribute\('aria-label', 'Minimize AutoPack results'\);/,
-    'a minimize control with an accessible label must exist');
-  assert.match(render, /minimizeBtn\.addEventListener\('click', \(\) => patchAutoPackResultsState\(\{ minimized: true \}\)\);/,
-    'minimize must set UI-only minimized state, not close');
+  // Single chevron toggle: up = collapse, down = restore. Not a minus line.
+  assert.match(render, /toggleBtn\.setAttribute\('aria-label', minimized \? 'Restore AutoPack results' : 'Minimize AutoPack results'\);/,
+    'the toggle must carry the correct accessible label for each state');
+  assert.match(render, /fa-chevron-\$\{minimized \? 'down' : 'up'\}/,
+    'the toggle must use a chevron (down to expand, up to collapse), not a minus line');
+  assert.equal(render.includes('fa-minus'), false, 'the collapse control must not be a minus/line icon');
+  assert.match(render, /patchAutoPackResultsState\(\{ minimized: !minimized \}\)/,
+    'the toggle must flip the UI-only minimized state');
+
+  // Close stays a separate dismiss.
   assert.match(render, /closeBtn\.setAttribute\('aria-label', 'Close AutoPack results'\);/,
     'a close control with an accessible label must exist');
   assert.match(render, /closeBtn\.addEventListener\('click', \(\) => patchAutoPackResultsState\(\{ closed: true \}\)\);/,
-    'close must remain a separate dismiss action');
+    'close must remain separate from collapse');
 
-  // A visible drag grip hints the existing header drag handle.
-  assert.match(render, /grip\.className = 'tp3d-autopack-results__grip';/,
-    'the header must keep a visible drag grip');
-  assert.match(render, /header\.dataset\.role = 'autopack-results-drag';/,
-    'the header must remain the existing drag handle');
+  // 2×3 dot-grid drag grip on the header drag handle.
+  assert.match(render, /grip\.className = 'tp3d-autopack-results__grip';/, 'the header must keep a drag grip');
+  assert.match(render, /tp3d-autopack-results__grip-dot/, 'the grip must be a dot grid');
+  assert.match(render, /for \(let dot = 0; dot < 6; dot \+= 1\)/, 'the grip must render six dots (2×3)');
+  assert.match(render, /header\.dataset\.role = 'autopack-results-drag';/, 'the header must remain the drag handle');
 });
 
-test('AUTOPACK-CAROUSEL minimize collapses to a compact draggable chip that restores', async () => {
+test('AUTOPACK-CAROUSEL collapse leaves only the header (no chip, no second drag system)', async () => {
   const { render, src } = await renderBlock();
-  const chip = sliceFn(render, 'if (minimized) {', "const panel = document.createElement('section');");
 
-  // Compact chip/pill.
-  assert.match(chip, /tp3d-autopack-results--chip/, 'minimized state must render a chip modifier');
-  assert.match(chip, /tp3d-autopack-results__chip-label/, 'the chip must show a short label');
-  assert.match(chip, /`AutoPack · Option \$\{viewIndex \+ 1\} of \$\{options\.length\}`/,
-    'the multi chip label must summarize the current option');
-  assert.match(chip, /return;/, 'the minimized branch must render only the chip');
+  assert.match(render, /const minimized = results\.minimized === true;/,
+    'minimized must be read from UI-only panel state');
+  assert.match(render, /minimized \? 'is-minimized'/, 'the collapsed panel must be marked with is-minimized');
 
-  // Restore + close on the chip, restore returns to the panel.
-  assert.match(chip, /restoreBtn\.setAttribute\('aria-label', 'Restore AutoPack results'\);/,
-    'the chip must have an accessible restore control');
-  assert.match(chip, /patchAutoPackResultsState\(\{ minimized: false \}\)/,
-    'restore must clear the minimized state');
-  assert.match(chip, /patchAutoPackResultsState\(\{ closed: true \}\)/,
-    'the chip must keep close separate from restore');
+  // The minimized branch renders only the header and returns before the body.
+  const minIdx = render.indexOf('if (minimized) {');
+  const bodyIdx = render.indexOf("body.className = 'tp3d-autopack-results__body'");
+  assert.ok(minIdx >= 0 && bodyIdx > minIdx, 'the minimized early-return must precede the body build');
+  const minBranch = sliceFn(render, 'if (minimized) {', 'const body = document.createElement');
+  assert.match(minBranch, /placeAutoPackResultsEl\(panel\);/, 'collapsed state must place the header-only panel');
+  assert.match(minBranch, /return;/, 'collapsed state must render nothing below the header');
 
-  // Chip reuses the existing drag role + shared placement (no second drag system).
-  assert.match(chip, /inner\.dataset\.role = 'autopack-results-drag';/,
-    'the chip must reuse the existing drag-handle role');
-  assert.match(chip, /placeAutoPackResultsEl\(chip\);/,
-    'the chip must go through the shared position/drag placement');
+  // No pill/chip remnants anywhere.
+  assert.equal(render.includes('--chip'), false, 'the pill/chip markup must be gone');
+  assert.equal(render.includes('chip-label'), false, 'the chip label must be gone');
+  assert.equal(render.includes('AutoPack · '), false, 'the chip label text must be gone');
 
+  // Shared placement reuses the one existing drag/position system.
   const place = sliceFn(src, 'const placeAutoPackResultsEl = el =>', 'const makeAutoPackGrip = () =>');
   assert.match(place, /clampAutoPackResultsPosition\(host, el, results\.position\)/,
     'shared placement must reuse the existing position clamp');
   assert.match(place, /attachAutoPackResultsDrag\(el, host\)/,
     'shared placement must reuse the existing drag attachment');
 
-  // Chip pill styling exists in the scoped CSS.
+  // Styling: is-minimized divider control + no chip CSS.
   const css = await fs.readFile(stylesPath, 'utf8');
-  assert.match(css, /\.tp3d-autopack-results--chip/, 'the chip must have scoped pill styling');
-  assert.match(css, /\.tp3d-autopack-results__chip-inner/, 'the chip inner drag row must be styled');
+  assert.match(css, /\.tp3d-autopack-results:not\(\.is-minimized\) \.tp3d-autopack-results__header/,
+    'the header divider must only apply when expanded');
+  assert.equal(css.includes('--chip'), false, 'chip CSS must be removed');
 });
 
 test('AUTOPACK-CAROUSEL Prev/Next stay view-only and never apply or mutate', async () => {
@@ -116,18 +114,18 @@ test('AUTOPACK-CAROUSEL Prev/Next stay view-only and never apply or mutate', asy
   assert.equal(nav.includes('PackLibrary'), false, 'Prev/Next must not mutate the pack');
 });
 
-test('AUTOPACK-CAROUSEL apply keeps the existing validated apply path and stale guard', async () => {
+test('AUTOPACK-CAROUSEL apply keeps the validated path, marks Applied with a check, drops the rerun note', async () => {
   const { render, src } = await renderBlock();
 
   assert.match(render, /apply\.addEventListener\('click', \(\) => applyAutoPackResultOption\(viewedOption\.id\)\);/,
     'carousel Apply must call the existing applyAutoPackResultOption path');
   assert.match(render, /apply\.disabled = isViewedCurrent \|\| stale;/,
     'Apply must be disabled for the applied option and for stale results');
-  assert.match(render, /applied\.textContent = 'Applied';/, 'the applied option must be clearly marked');
-  assert.match(render, /const stale = isAutoPackResultsStale\(pack, results\);/,
-    'the stale check must remain');
-  assert.match(render, /note\.textContent = 'Rerun AutoPack after edits\.';/,
-    'stale results must still surface the rerun note');
+  assert.match(render, /<i class="fa-solid fa-check"><\/i> Applied/,
+    'the applied option button must show a check icon');
+  assert.match(render, /tp3d-autopack-results__apply-btn--applied/, 'the applied button must carry its modifier class');
+  assert.equal(render.includes('Rerun AutoPack after edits.'), false,
+    'the rerun note text must not be rendered in the panel');
 
   const apply = sliceFn(src, 'function applyAutoPackResultOption(optionId)', 'function makeAutoPackResultStat(');
   assert.match(apply, /if \(isAutoPackResultsStale\(pack, results\)\)/, 'apply must keep the stale guard');
@@ -140,8 +138,6 @@ test('AUTOPACK-CAROUSEL apply keeps the existing validated apply path and stale 
 test('AUTOPACK-CAROUSEL view/minimize state is UI-only, clamped, and absent from the payload', async () => {
   const { render } = await renderBlock();
 
-  assert.match(render, /const minimized = results\.minimized === true;/,
-    'minimized must be read from UI-only panel state');
   assert.match(render, /const selectedIndex = Math\.max\(0, options\.findIndex\(option => option\.id === results\.selectedId\)\);/,
     'the default view index must be the applied option index');
   assert.match(render, /Number\.isFinite\(Number\(results\.viewIndex\)\) \? Number\(results\.viewIndex\) : selectedIndex/,
@@ -149,10 +145,22 @@ test('AUTOPACK-CAROUSEL view/minimize state is UI-only, clamped, and absent from
   assert.match(render, /Math\.min\(Math\.max\(0, requestedIndex\), options\.length - 1\)/,
     'the view index must be clamped into range every render');
 
-  // Neither carousel nor minimize view state may be baked into the result payload.
   const engineSrc = await fs.readFile(enginePath, 'utf8');
-  assert.equal(engineSrc.includes('viewIndex'), false,
-    'the AutoPack engine/result payload must not carry carousel view state');
-  assert.equal(engineSrc.includes('minimized'), false,
-    'the AutoPack engine/result payload must not carry minimize state');
+  assert.equal(engineSrc.includes('viewIndex'), false, 'the result payload must not carry carousel view state');
+  assert.equal(engineSrc.includes('minimized'), false, 'the result payload must not carry minimize state');
+});
+
+test('AUTOPACK-CAROUSEL detail styling: bordered arrows, uppercase tiles, neutral status badge', async () => {
+  const css = await fs.readFile(stylesPath, 'utf8');
+
+  assert.match(css, /\.tp3d-autopack-results__carousel-arrow \{[^}]*border: 1px solid var\(--border-subtle\);/,
+    'carousel arrows must have a visible border');
+  assert.match(css, /\.tp3d-autopack-results__carousel-arrow \{[^}]*border-radius: var\(--radius-sm\);/,
+    'carousel arrows must be rounded squares');
+  assert.match(css, /\.tp3d-autopack-results__stat-label \{[^}]*text-transform: uppercase;/,
+    'metric labels must be uppercase like the reference');
+  assert.match(css, /\.tp3d-autopack-results__stat-label \{[^}]*font-size: 10px;/,
+    'metric labels must be small');
+  assert.match(css, /\.tp3d-autopack-results__status \{\s*background: var\(--bg-hover\);/,
+    'the status badge must be a neutral pill');
 });

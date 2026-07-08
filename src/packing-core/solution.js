@@ -161,11 +161,12 @@ function recoveryCouldHelp(solution) {
  * result: highest packed count first, ties preferring the default strategy's
  * layout-quality-ranked plan.
  *
- * Also always runs compact-fill as a second portfolio option so users can
- * compare the default's layout-quality plan against the densest local-fill
- * ordering. compact-fill runs under half the primary budget (min 2 s) to
- * keep the total main-thread time bounded; deduplication in the engine
- * removes it silently when both produce the identical layout.
+ * Also always runs compact-fill and floor-first as second and third portfolio
+ * options so users can compare the default's layout-quality plan against the
+ * densest local-fill ordering (compact-fill) and a deliberate single-layer
+ * no-stacking layout (floor-first). Both run under half the primary budget
+ * (min 2 s) to keep the total main-thread time bounded; deduplication in the
+ * engine removes them silently when a strategy produces the identical layout.
  *
  * Bounded on purpose:
  * - never retries when the primary miss was BUDGET-caused (more synchronous
@@ -191,11 +192,15 @@ export function runAdaptiveAutoPack(input, solve = solveAutoPack) {
     ? { ...input, solveBudgetMs: secondaryBudgetMs }
     : input;
 
-  // Always offer compact-fill as a portfolio alternative. It runs the same
-  // solver pipeline without layout-quality re-ranking, producing the densest
-  // local-waste-first packing. Default stays first so index-order ties keep
-  // the default's layout-quality plan as the auto-selected result.
-  const portfolio = runPackingStrategies(secondaryInput, ['compact-fill'], solve);
+  // Always offer compact-fill and floor-first as portfolio alternatives.
+  // compact-fill: densest local-waste-first packing without layout-quality
+  // re-ranking. floor-first: single-layer no-stacking layout; may pack fewer
+  // cases on loads where stacking is required, but is a deliberate style
+  // option for users who need a flat, accessible load. Both run under the
+  // same secondary budget cap so the total main-thread time stays bounded.
+  // Default stays first so index-order ties keep the default's layout-quality
+  // plan as the auto-selected result.
+  const portfolio = runPackingStrategies(secondaryInput, ['compact-fill', 'floor-first'], solve);
 
   const status = primarySolution.solveStatus || null;
   const complete = status

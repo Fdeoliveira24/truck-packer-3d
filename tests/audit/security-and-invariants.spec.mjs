@@ -2624,12 +2624,12 @@ test('PLACEMENT-STATE-S2 unpackAll records "staged" placement for every case', a
     'unpackAll must mark every case as staged placement');
 });
 
-test('UNPACK-CATEGORY-GROUPING staging order keeps categories contiguous and stable', async () => {
+test('UNPACK-CATEGORY-GROUPING staging order keeps case types contiguous and stable', async () => {
   const EditorScreen = await import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
   assert.equal(typeof EditorScreen.sortInstancesForUnpackStaging, 'function',
     'editor-screen must export sortInstancesForUnpackStaging for deterministic unpack grouping');
   assert.equal(typeof EditorScreen.groupInstancesForUnpackStaging, 'function',
-    'editor-screen must expose category groups so Unpack can stage each category in its own band');
+    'editor-screen must expose case-type groups so Unpack can stage each case type in its own band');
 
   const casesById = new Map([
     ['alpha-case', { id: 'alpha-case', category: 'Alpha' }],
@@ -2650,16 +2650,17 @@ test('UNPACK-CATEGORY-GROUPING staging order keeps categories contiguous and sta
     .map(inst => inst.id);
 
   assert.deepEqual(sorted, ['a-1', 'a-2', 'b-1', 'b-2', 'd-1', 'missing-1'],
-    'unpack staging must group by first-seen category while preserving order inside each category');
+    'unpack staging must group by first-seen case type while preserving order within each type');
 
   const groups = EditorScreen
     .groupInstancesForUnpackStaging(instances, caseId => casesById.get(caseId))
     .map(group => ({ categoryKey: group.categoryKey, ids: group.instances.map(inst => inst.id) }));
   assert.deepEqual(groups, [
-    { categoryKey: 'alpha', ids: ['a-1', 'a-2'] },
-    { categoryKey: 'beta', ids: ['b-1', 'b-2'] },
-    { categoryKey: 'default', ids: ['d-1', 'missing-1'] },
-  ], 'unpack staging must keep each category as an explicit contiguous group');
+    { categoryKey: 'alpha-case', ids: ['a-1', 'a-2'] },
+    { categoryKey: 'beta-case', ids: ['b-1', 'b-2'] },
+    { categoryKey: 'default-case', ids: ['d-1'] },
+    { categoryKey: 'missing-case', ids: ['missing-1'] },
+  ], 'unpack staging must keep each case type (caseId) as an explicit contiguous group');
 });
 
 test('UNPACK-CATEGORY-GROUPING unpackAll allocates staging slots in grouped order', async () => {

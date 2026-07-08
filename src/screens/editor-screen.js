@@ -223,9 +223,9 @@ export function computeSurfaceFollowingPreviewY({
 const SURFACE_PREVIEW_DRAG_MIN_OVERLAP = 0.02;
 
 function getUnpackCategoryKey(inst, getCaseById) {
-  const caseData = inst && typeof getCaseById === 'function' ? getCaseById(inst.caseId) : null;
-  const key = caseData && caseData.category != null ? caseData.category : 'default';
-  return String(key || 'default').trim().toLowerCase() || 'default';
+  // Group by caseId so all instances of the same case type land in one band,
+  // giving each band an exact uniform cell size with no mixed-dimension waste.
+  return String(inst && inst.caseId ? inst.caseId : 'unknown').trim() || 'unknown';
 }
 
 export function sortInstancesForUnpackStaging(instances, getCaseById) {
@@ -3790,6 +3790,18 @@ export function createEditorScreen({
           livePack.cases || [],
           caseId => CaseLibrary.getById(caseId)
         );
+        // Sort groups: largest-footprint case type first so big cases land in
+        // the nearest staging rows (closest to the truck, easiest to grab).
+        stagingGroups.sort((a, b) => {
+          const groupFootprint = (group) => {
+            const inst = group.instances[0];
+            if (!inst) return 0;
+            const c = CaseLibrary.getById(inst.caseId);
+            const dims = (inst.orientedDims) || (c && c.dimensions) || {};
+            return (Number(dims.length) || 0) * (Number(dims.width) || 0);
+          };
+          return groupFootprint(b) - groupFootprint(a);
+        });
         for (const group of stagingGroups) {
           const payload = [];
           for (const inst of group.instances) {

@@ -3841,7 +3841,8 @@ body.modal-open {
 
 .tp3d-autopack-results {
   position: absolute;
-  top: 64px;
+  top: auto;
+  bottom: 16px;
   left: 50%;
   z-index: 12;
   width: min(420px, calc(100% - 32px));
@@ -3860,6 +3861,7 @@ body.modal-open {
 
 .tp3d-autopack-results.is-dragged {
   transform: none;
+  bottom: auto;
 }
 
 [data-theme='dark'] .tp3d-autopack-results {
@@ -4109,9 +4111,14 @@ body.modal-open {
   opacity: 1;
 }
 
+.tp3d-autopack-results__apply-btn--applied:disabled i {
+  color: #fff;
+}
+
 @media (max-width: 899px) {
   .tp3d-autopack-results {
-    top: 72px;
+    top: auto;
+    bottom: 12px;
     width: min(380px, calc(100% - 20px));
   }
 }

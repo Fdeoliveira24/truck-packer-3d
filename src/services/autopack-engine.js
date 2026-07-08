@@ -509,6 +509,7 @@ export function createAutoPackEngine({
       caseRuleSignature: buildAutoPackCaseRuleSignature(packData, caseId => CaseLibrary.getById(caseId)),
       expanded: false,
       closed: false,
+      minimized: true,
       position: null,
       attemptedSolutionCount: rawOptions.length,
       hasAlternates: options.length > 1,

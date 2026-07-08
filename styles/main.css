@@ -3632,26 +3632,34 @@ body.modal-open {
 ================================== */
 #tp3d-offline-indicator {
   display: none;
+  align-items: center;
+  gap: 5px;
   position: fixed;
-  top: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--warning);
-  color: #fff;
+  bottom: 18px;
+  right: 18px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-sm);
   font-family: var(--font-family);
   font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  letter-spacing: 0.04em;
-  padding: 3px 14px 4px;
-  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
-  z-index: 12000;
+  font-weight: var(--font-medium);
+  padding: 5px 10px 5px 8px;
+  border-radius: 999px;
+  z-index: 11000;
   pointer-events: none;
   user-select: none;
   white-space: nowrap;
 }
 
 #tp3d-offline-indicator.active {
-  display: block;
+  display: flex;
+}
+
+#tp3d-offline-indicator .tp3d-offline-icon {
+  color: var(--warning);
+  font-size: 0.72rem;
+  flex-shrink: 0;
 }
 
 /* ================================

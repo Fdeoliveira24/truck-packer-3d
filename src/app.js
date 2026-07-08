@@ -2381,7 +2381,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         _offlineEl.id = 'tp3d-offline-indicator';
         _offlineEl.setAttribute('role', 'status');
         _offlineEl.setAttribute('aria-live', 'polite');
-        _offlineEl.textContent = 'Offline';
+        _offlineEl.innerHTML = '<i class="fa-solid fa-wifi tp3d-offline-icon" aria-hidden="true"></i>Offline mode';
         document.body.appendChild(_offlineEl);
 
         function _syncOfflineIndicator() {

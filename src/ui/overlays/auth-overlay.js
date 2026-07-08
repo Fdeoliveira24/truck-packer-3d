@@ -530,7 +530,7 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
     const googleBtn = buildGoogleButton();
 
     const pageEl = el('div', { className: 'auth-page' }, [
-      renderBrandHeader('Sign in to your account'),
+      renderBrandHeader('Please sign in to continue.'),
       form,
       googleBtn,
       el('div', { className: 'auth-footer-links' }, [

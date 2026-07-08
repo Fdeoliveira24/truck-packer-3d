@@ -6,16 +6,16 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `6effd9f` (Manual placement + AutoPack Results panel polish merged/pushed to `main`) |
-| Active branch | `harden/app-failure-states` |
-| Active phase | **Runtime/access/offline hardening batch is implemented, tested, pushed, and awaiting final merge to `main`.** The branch includes post-boot async rejection feedback, missing-pack mid-session not-found guard, 403/org-access fallback toast, persistent offline indicator with polished bottom-right pill UI, session sign-in copy polish, clearer vendor dependency failure copy, and maintenance gate copy/safety check. |
-| Next planned phase | Merge `harden/app-failure-states` into `main`, push, then move to `polish/organized-unpack`. |
-| Waiting for | Final merge/push evidence for `harden/app-failure-states`. Full validation was reported green: `820 tests`, `815 pass`, `0 fail`, `5 skipped`; typecheck passed; lint passed with `0 errors` and existing warnings only. |
-| Do not start simultaneously | Do not mix visual polish with movement/validation changes. Do not mix staged stacking, free/draft/manualDraft mode, app.js splitting, AutoPack solution portfolio expansion, Results panel carousel UI polish, organized Unpack polish, broad solver cleanup, legacy solver deletion, whole-project formatting, billing/auth/security work, or unrelated UI/CSS work into the manual placement branch. |
+| Stable main commit | `497cb2f` (Runtime/access/offline hardening merged/pushed to `main` after Manual Placement and AutoPack Results panel polish) |
+| Active branch | `polish/organized-unpack` |
+| Active phase | **Organized Unpack polish is implemented, tested, and awaiting final merge to `main`.** Commit `f615174` changes Unpack staging from broad category grouping to deterministic per-`caseId` grouping, with larger footprint groups staged closest to the truck. Existing `PackLibrary.getStagingLayout()` positioning remains untouched. |
+| Next planned phase | Merge `polish/organized-unpack` into `main`, push, then start `feat/autopack-solution-portfolio`. |
+| Waiting for | Final merge/push evidence for `polish/organized-unpack`. Targeted validation and browser smoke were reported green: clean grouped staging rows, same `caseId` items grouped, no overlaps, selectable/draggable/rotatable/AutoPackable after Unpack, and Standard/Wheel Wells/Front Overhang smoke passed. |
+| Do not start simultaneously | Do not mix AutoPack solution portfolio expansion, app.js modularization, 3D viewer visual-quality work, billing/auth/security work, broad solver cleanup, legacy solver deletion, whole-project formatting, or unrelated UI/CSS work into the Organized Unpack branch. |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
-> **Current source-of-truth note (2026-07-07):** `main` / `origin/main` are stable through Manual Placement surface-following/gizmo polish and AutoPack Results panel design-reference polish at `6effd9f`. The active branch is `harden/app-failure-states`, currently pushed and awaiting final merge after successful validation and a final read-only sanity audit. Runtime/access/offline hardening completed five small phases: async rejection feedback, missing-pack overlay, org-access fallback, offline indicator, session copy, vendor dependency failure copy, and maintenance gate copy/safety check. Final sanity audit verdict: PASS with one non-blocking WARN for possible repeated defensive 403 fallback toasts in rare background-org scenarios. The only known project-wide gate issue remains pre-existing formatting drift under `npm run validate`; do not auto-format feature branches.
+> **Current source-of-truth note (2026-07-07):** `main` / `origin/main` are stable through Manual Placement surface-following/gizmo polish, AutoPack Results panel design-reference polish, and Runtime/access/offline hardening at `497cb2f`. The active branch is `polish/organized-unpack`, currently implemented at `f615174` and awaiting final merge. Organized Unpack now stages unpacked cases in deterministic per-case-type rows using `caseId`, with larger footprint groups closest to the truck and the existing canonical staging layout helper untouched. Next planned branch after merge: `feat/autopack-solution-portfolio`. The only known project-wide gate issue remains pre-existing formatting drift under `npm run validate`; do not auto-format feature branches.
 
 ## AutoPack Core Engine Epic — Merged Evidence (2026-07-05, `5a530f0`)
 
@@ -196,14 +196,14 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 4. 🔄 **Wheel-well support/stability foundation** — implemented and tested, Codex PASS. Bridge/build-up generation is gated OFF unless `enableWheelWellBridge` is passed. Do not enable it yet; create a later activation/order branch after foundation merge.
 5. ⬜ **Front Overhang wall-building strategy** — C2 blocks unsafe deck usage, but the solver does not intentionally build the retaining wall first and then fill the deck. The deck can remain unused until this strategy exists.
 6. ✅ **Manual placement surface-following + gizmo polish branch** — merged and pushed to `main` at `bbe6d44`, including vertical controls, validated drag release, X/Y/Z gizmo, pending pose, surface-following normal drag, staged limited gizmo, staged-to-packed transition, horizontal gizmo surface-following, orbit/F-key fixes, and staged X/Z-only polished gizmo. Independent audits returned PASS and signed-in browser smoke succeeded across all truck types. Non-blocking follow-up: F/Flip blocked toast copy says “Cannot rotate...” instead of “Cannot flip...”.
-7. ⬜ **Organized Unpack** — unpack should create clean grouped staging rows, not random scattered placement.
+7. 🔄 **Organized Unpack** — implemented on `polish/organized-unpack` at `f615174`, awaiting final merge to `main`. Unpack now groups staged cases by `caseId`, sorts larger footprint groups closest to the truck, preserves the existing shared staging layout helper, and keeps cases selectable/draggable/rotatable/AutoPackable after Unpack.
 
 ### Current AutoPack implementation order
 1. ✅ **Manual placement surface-following + gizmo polish** — merged and pushed to `main` at `bbe6d44`; signed-in browser smoke passed across Standard, Wheel Wells, and Front Overhang.
 2. ✅ **AutoPack Results panel UI enhancement** — merged and pushed to `main` at `6effd9f`; compact design-reference carousel/collapsed-card UI is now in place.
-3. 🔄 **Runtime/access/offline hardening batch** — active on `harden/app-failure-states`; implemented, pushed, validated, and sanity-audited PASS with one non-blocking WARN; awaiting final merge to `main`.
-4. ⬜ **Organized Unpack polish** — clean grouped staging layout for very large packs.
-5. ⬜ **AutoPack solution portfolio expansion** — generate up to 5–7 bounded, meaningful non-duplicate solution variants.
+3. ✅ **Runtime/access/offline hardening batch** — merged/pushed to `main` before Organized Unpack; final sanity audit PASS with one non-blocking WARN for rare repeated defensive 403 fallback toasts.
+4. 🔄 **Organized Unpack polish** — implemented on `polish/organized-unpack` at `f615174`; awaiting final merge/push evidence.
+5. ⬜ **AutoPack solution portfolio expansion** — generate up to 5–7 bounded, meaningful non-duplicate solution variants. This is the next planned branch after Organized Unpack merge.
 6. ⬜ **Formatting-only branch if `validate` is treated as a hard gate** — isolate the existing formatting drift; do not auto-format feature branches.
 7. ⬜ **`app.js` modularization inventory** — start with M0 inventory, not extraction.
 8. ⬜ **Legacy solver trim audit** — only after item-prep extraction is stable and tests/callers prove dead solve code can be removed safely.
@@ -212,6 +212,45 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 | Status | Item |
 |--------|------|
 | ✅ | **AutoPack Results panel UI enhancement** — completed and merged at `6effd9f`. Panel now uses a compact design-reference carousel/collapsed-card layout with previous/next controls, compact metrics, polished applied state, and a visible dot-grid drag affordance. |
+
+
+## Organized Unpack Polish — In Progress Evidence (2026-07-07, `f615174`)
+
+### Status
+- 🔄 Branch `polish/organized-unpack` is implemented and tested, awaiting final merge to `main`.
+- 🔄 Commit: `f615174`.
+- ✅ Current Unpack path was audited before implementation.
+- ✅ UI trigger remains `editor-screen.js` `btnUnpack.click`, guarded by the existing OperationLifecycle path.
+- ✅ Orchestration remains `unpackAll()` with the existing double-rAF yield, staleness guard, and `PackLibrary.update()` commit path.
+- ✅ Canonical positioning still uses `getStagingLayout()` in `pack-library.js`; that helper was intentionally untouched.
+- ✅ Grouping changed from broad category grouping to per-`caseId` grouping so each staging band contains one case type.
+- ✅ Groups are sorted by descending footprint so larger case types land first/closest to the truck.
+- ✅ Existing within-group deterministic sort remains: name, descending footprint, then id.
+- ✅ AutoPack solver, PackLibrary validation, manual placement validation, app hardening, billing/auth/security, and data model were not changed.
+
+### Validation evidence
+- `git diff --check` passed.
+- `node --check editor-screen.js` passed.
+- `node --check tests/audit/security-and-invariants.spec.mjs` passed.
+- `npm run -s typecheck` passed.
+- `npm run lint` passed with `0 errors` and existing warnings only.
+- `node --test tests/audit/security-and-invariants.spec.mjs` passed: `763 pass`, `0 fail`; both Unpack tests green.
+
+### Browser smoke evidence
+- Opened a pack with many mixed packed cases and clicked Unpack.
+- Cases appeared in clean per-type rows.
+- Largest footprint group landed first/closest to the truck.
+- No obvious overlaps.
+- Same `caseId` items stayed grouped.
+- Cases remained selectable, draggable, rotatable, and AutoPackable again.
+- Standard, Wheel Wells, and Front Overhang behavior was consistent.
+- No red console errors.
+
+### Merge gate
+- ⬜ Merge `polish/organized-unpack` into `main`.
+- ⬜ Push `main`.
+- ⬜ Record final merge/push evidence here.
+
 
 ### Important product rules from recent audits
 - A layout can pass containment/collision/support tests and still fail product quality. Hard-rule validity and load-planning quality must both be evaluated.
@@ -310,7 +349,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 ## Near-Term Execution Queue
 *Approved order. Do not combine items. Do not skip steps.*
 
-*Current 2026-07-07 execution note:* Manual placement, AutoPack Results panel polish, and runtime/access/offline hardening were advanced after the AutoPack Core Engine merge. After `harden/app-failure-states` is merged, the next recommended product branch is `polish/organized-unpack`.
+*Current 2026-07-07 execution note:* Manual placement, AutoPack Results panel polish, and runtime/access/offline hardening are merged on `main`. Organized Unpack is implemented on `polish/organized-unpack` at `f615174` and awaiting final merge. After that merge, the next recommended branch is `feat/autopack-solution-portfolio`.
 
 *Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified; 3B geometry epsilon unification merged (`33b362a`); 5A stacking-safety audit + runtime tests merged (`0aa58c3`); 3B/5A in-browser logic verification recorded (`819d3de`).*
 
@@ -583,6 +622,8 @@ Release-gate items block **public launch**, not isolated product development. Pr
 - Phase 4 `513b385`: clearer vendor dependency failure message.
 - Phase 5 `b7f3135`: maintenance gate copy/safety check.
 - Final validation before merge reported: `820 tests`, `815 pass`, `0 fail`, `5 skipped`; typecheck passed; lint passed with `0 errors` and existing warnings only.
+- Final read-only sanity audit verdict: PASS with one non-blocking WARN for possible repeated defensive 403 fallback toasts in rare background-org scenarios.
+- Merged/pushed to `main` before Organized Unpack started; next known main baseline reported by implementation was `497cb2f`.
 - Remaining future operational enhancements, not blockers for this branch: remote maintenance config/admin UI, deeper monitoring/Sentry, service worker/offline mode, and broader auth/access page redesigns.
 
 ### 2B — Data Export / Import

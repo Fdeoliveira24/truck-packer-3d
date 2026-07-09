@@ -1254,10 +1254,21 @@ export function createCaseScene({
     function applyOOGHighlights() {
       const prevOog = new Set(oogSet);
       oogSet.clear();
+      const packId = StateStore.get('currentPackId');
+      const pack = packId ? PackLibrary.getById(packId) : null;
+      const instanceById = new Map(
+        pack && Array.isArray(pack.cases)
+          ? pack.cases.filter(inst => inst && inst.id).map(inst => [inst.id, inst])
+          : []
+      );
       for (const [id, group] of instances.entries()) {
         if (!group || !group.userData.mesh) continue;
         // Skip hidden instances
         if (group.visible === false) continue;
+        // Staged cases intentionally live outside the truck in the staging area;
+        // do not mark them as out-of-gauge cargo.
+        const inst = instanceById.get(id);
+        if (inst && inst.placement === 'staged') continue;
         const aabb = getAabbWorld(id);
         if (!aabb) continue;
         const inside = isInsideTruck(aabb);

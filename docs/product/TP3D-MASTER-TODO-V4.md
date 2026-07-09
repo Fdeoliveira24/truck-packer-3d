@@ -6,16 +6,16 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `b13d0fd` (AutoPack Solution Portfolio Phase 1 merged/pushed to `main`; Phase 2 branch validated at `819de80`, awaiting merge to `main`) |
-| Active branch | `feat/autopack-portfolio-floor-first` |
-| Active phase | **AutoPack Solution Portfolio Phase 2 is implemented, tested, browser-smoked, and awaiting final merge to `main`.** Commit `819de80` adds `Floor first (no stacking)` as the third safe portfolio option after `Balanced` and `Compact fill`. Current visible options can include Balanced, Compact fill, Floor first, and existing recovery options such as Stack priority when distinct. Existing hard-rule validation, solver safety, apply path, dedupe, and Results panel UI remain unchanged. |
-| Next planned phase | Merge `feat/autopack-portfolio-floor-first` into `main`, push, then start Phase 3 on `feat/autopack-portfolio-stack-constrained` to make Stack priority an intentional always-available safe portfolio option and keep Constrained first Wheel-well-gated. |
-| Waiting for | Final merge/push evidence for AutoPack Solution Portfolio Phase 2. Validation was reported green: `820` tests total, `815` pass, `0` fail, `5` skipped; typecheck passed; lint passed with `0 errors` and existing warnings only; targeted AutoPack/portfolio tests passed; browser smoke showed Balanced, Compact fill, Floor first, and Stack priority options working with no console errors. |
-| Do not start simultaneously | Do not mix Phase 3, Heavy-Low Rear Priority, Rear-Access Heavy Load, tooltip/help copy, Settings/Resources documentation, Exception Fit / Force Fit Analysis, app.js modularization, billing/auth/security work, legacy solver deletion, whole-project formatting, or unrelated UI/CSS work into the Phase 2 merge. |
+| Stable main commit | `819de80` (AutoPack Solution Portfolio Phase 2 merged/pushed to `main`; Floor first is now the third safe portfolio option) |
+| Active branch | `feat/autopack-portfolio-stack-constrained` |
+| Active phase | **AutoPack Solution Portfolio Phase 3 branch is created, but no Phase 3 code commit is present yet.** Current `HEAD` is still `819de80`, the Phase 2 Floor-first commit. The visible `Stack priority` option can appear today as an existing recovery option on partial/recoverable packs; Phase 3 still needs a focused implementation to make Stack priority an intentional portfolio option and keep Constrained first Wheel-well-gated without duplicate recovery runs. |
+| Next planned phase | Implement Phase 3 on `feat/autopack-portfolio-stack-constrained`: make Stack priority an intentional always-available safe portfolio option, add Constrained first only for Wheel Wells when distinct, and prevent those strategies from running twice as both portfolio and recovery options. |
+| Waiting for | Phase 3 implementation evidence. Before coding, confirm `git diff --name-only` only shows this TODO file and `git log --oneline --decorate -8` shows `819de80` at `HEAD`; then run a focused Codex/Copilot implementation for `src/packing-core/solution.js` only. |
+| Do not start simultaneously | Do not mix Heavy-Low Rear Priority, Rear-Access Heavy Load, tooltip/help copy, Settings/Resources documentation, Exception Fit / Force Fit Analysis, app.js modularization, billing/auth/security work, legacy solver deletion, whole-project formatting, or unrelated UI/CSS work into Phase 3. |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
-> **Current source-of-truth note (2026-07-08):** `main` / `origin/main` are stable through Organized Unpack and AutoPack Solution Portfolio Phase 1 at `b13d0fd`. Phase 1 added Compact fill as a safe second portfolio option after Balanced when layouts differ. The active branch is `feat/autopack-portfolio-floor-first`, implemented at `819de80`, adding Floor first (no stacking) as the third safe portfolio option. Browser smoke reported Balanced, Compact fill, Floor first, and Stack priority visible/working where distinct. Next action: fast-forward merge Phase 2 to `main`, run final typecheck/lint/diff checks, push, then update this TODO with final pushed evidence. Do not implement Force Fit / Exception Fit in the safe portfolio branch; keep it as a separate future workflow with physical containment/no-overlap preserved and explicit exception reporting.
+> **Current source-of-truth note (2026-07-08):** `main` / `origin/main` are stable through Organized Unpack and AutoPack Solution Portfolio Phase 2 at `819de80`. Phase 1 added Compact fill as a safe second portfolio option after Balanced when layouts differ. Phase 2 added Floor first (no stacking) as the third safe portfolio option. The active branch is now `feat/autopack-portfolio-stack-constrained`, but `HEAD` is still `819de80`; no Phase 3 code commit is present yet. The `Stack priority` option can already appear today as an existing recovery option on partial/recoverable packs, which is different from Phase 3's goal of making it an intentional safe portfolio option with duplicate recovery avoidance. Next action: implement Phase 3 in `src/packing-core/solution.js` only unless tests prove otherwise. Do not implement Heavy-Low, tooltip/docs, or Force Fit in Phase 3.
 
 ## AutoPack Core Engine Epic — Merged Evidence (2026-07-05, `5a530f0`)
 
@@ -204,8 +204,8 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 3. ✅ **Runtime/access/offline hardening batch** — merged/pushed to `main`; final sanity audit PASS with one non-blocking WARN for rare repeated defensive 403 fallback toasts.
 4. ✅ **Organized Unpack polish** — merged and pushed to `main` at `f615174`; grouped staging rows by `caseId` are in place.
 5. ✅ **AutoPack Solution Portfolio Phase 1** — merged and pushed to `main` at `59737db`/recorded on `main` at `b13d0fd`; Compact fill is offered as a safe second option when distinct.
-6. 🔄 **AutoPack Solution Portfolio Phase 2** — implemented and pushed on `feat/autopack-portfolio-floor-first` at `819de80`; Floor first (no stacking) is the third safe option and is awaiting final merge/push to `main`.
-7. ⬜ **AutoPack Solution Portfolio Phase 3** — next branch: `feat/autopack-portfolio-stack-constrained`; make Stack priority an intentional always-available safe portfolio option and keep Constrained first Wheel-well-gated, with no duplicate recovery runs.
+6. ✅ **AutoPack Solution Portfolio Phase 2** — merged and pushed to `main` at `819de80`; Floor first (no stacking) is the third safe option after Balanced and Compact fill.
+7. 🔄 **AutoPack Solution Portfolio Phase 3** — active branch: `feat/autopack-portfolio-stack-constrained`; branch currently points at `819de80` with no Phase 3 code commit yet. Goal: make Stack priority an intentional always-available safe portfolio option and keep Constrained first Wheel-well-gated, with no duplicate recovery runs.
 8. ⬜ **Heavy-Low / Rear-Access safe operational strategy audit** — separate future audit after Phase 3. Good labels: Heavy-Low Rear Priority, Rear-Access Heavy Load, Unload-Friendly Heavy Load. Avoid axle/legal claims until those rules are actually modeled.
 9. ⬜ **Tooltip/help copy for AutoPack modes** — future UI/documentation polish after the portfolio list stabilizes; likely brief tooltips plus a Settings/Resources explanation.
 10. ⬜ **Exception Fit / Force Fit Analysis** — separate future workflow only. Must preserve physical containment/no-overlap and report any relaxed handling/business rules with explicit exception approval language. Do not mix into safe AutoPack portfolio.
@@ -257,7 +257,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 - ✅ Record final merge/push evidence here.
 
 
-## AutoPack Solution Portfolio — Phase 1 and Phase 2 Evidence (2026-07-08)
+## AutoPack Solution Portfolio — Phase 1, Phase 2, and Phase 3 Evidence (2026-07-08)
 
 ### Phase 1 — Compact fill safe option
 - ✅ Branch `feat/autopack-solution-portfolio` implemented Compact fill as a safe second portfolio option.
@@ -268,9 +268,8 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 - ✅ No Floor first, Stack-priority always-on, Rear-priority, Heavy-low, tooltip UI, Settings docs, or Force Fit behavior was added in Phase 1.
 - ✅ Phase 1 was merged/pushed to `main` and recorded at `b13d0fd`.
 
-### Phase 2 — Floor first safe option
-- 🔄 Branch `feat/autopack-portfolio-floor-first` is implemented, tested, browser-smoked, and awaiting final merge to `main`.
-- 🔄 Commit `819de80`: `feat(autopack): add floor-first as third portfolio option`.
+- ✅ Branch `feat/autopack-portfolio-floor-first` was implemented, tested, browser-smoked, merged, and pushed to `main`.
+- ✅ Commit `819de80`: `feat(autopack): add floor-first as third portfolio option`.
 - ✅ Option order is now `Balanced`, `Compact fill`, `Floor first`, then recovery options when applicable/distinct.
 - ✅ Floor first uses the existing registered preset with `enableStackPhase: false`; it is a deliberate no-stacking layout style and may pack fewer cases.
 - ✅ Default remains selected on ties; Floor first should only auto-select if existing ranking says it packs strictly more cases.
@@ -280,8 +279,18 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 - ✅ Browser smoke reported Balanced, Compact fill, Floor first, and Stack priority options visible/working where distinct, applying options uses the existing safe apply path, and no console errors were observed.
 - 🚫 No rear-priority, heavy-low, stack-priority always-on, tooltip UI, Settings docs, or Force Fit behavior was added in Phase 2.
 
+
+### Phase 3 — Stack priority / Constrained first portfolio cleanup
+- 🔄 Active branch: `feat/autopack-portfolio-stack-constrained`.
+- 🔄 Current branch `HEAD` is still `819de80`; no Phase 3 code commit is present yet.
+- 🟡 Current browser behavior can show `Stack priority` as an existing recovery option on partial/recoverable packs. That is not the same as Phase 3 being implemented.
+- ⬜ Phase 3 implementation goal: make Stack priority an intentional always-available safe portfolio option.
+- ⬜ Phase 3 implementation goal: add Constrained first only when Wheel-well geometry is present and the result is distinct.
+- ⬜ Phase 3 implementation goal: avoid duplicate strategy runs by not rerunning the same strategies again in recovery after they were already produced as portfolio options.
+- ⬜ Keep hard-rule validation, solver safety, apply path, dedupe, and Results panel UI unchanged.
+- 🚫 Do not add Heavy-Low Rear Priority, Rear-Access Heavy Load, tooltip/help copy, Settings/Resources docs, or Exception Fit / Force Fit Analysis in Phase 3.
+
 ### Future portfolio notes
-- ⬜ Phase 3 should make Stack priority an intentional safe portfolio option and keep Constrained first gated to Wheel Wells, without duplicate recovery runs.
 - ⬜ Heavy-Low Rear Priority / Rear-Access Heavy Load / Unload-Friendly Heavy Load should be audited as a safe operational strategy later. Avoid labels like Axle Balanced, DOT Safe, Legally Balanced, or Weight-Compliant until those rules are actually modeled.
 - ⬜ Add tooltips or a Settings/Resources explanation for AutoPack modes after the mode list stabilizes.
 - ⬜ Exception Fit / Force Fit Analysis is a separate future workflow. It must preserve physical containment and no-overlap, may relax selected handling/business rules only with explicit violation reporting, and must never be presented as a normal recommended safe transport plan.
@@ -384,7 +393,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 ## Near-Term Execution Queue
 *Approved order. Do not combine items. Do not skip steps.*
 
-*Current 2026-07-08 execution note:* Organized Unpack is merged on `main`. AutoPack Solution Portfolio Phase 1 is merged on `main` and Phase 2 is implemented on `feat/autopack-portfolio-floor-first` at `819de80`, awaiting final merge. After Phase 2 merge/push, start `feat/autopack-portfolio-stack-constrained` for Phase 3. Do not mix Heavy-Low Rear Priority, tooltips/docs, or Exception Fit into Phase 2/3 implementation.
+*Current 2026-07-08 execution note:* Organized Unpack is merged on `main`. AutoPack Solution Portfolio Phase 1 and Phase 2 are merged on `main` through `819de80`. The active branch is `feat/autopack-portfolio-stack-constrained`, currently still at `819de80` with no Phase 3 code commit. Next work is Phase 3 implementation in `src/packing-core/solution.js`: make Stack priority intentional, keep Constrained first Wheel-well-gated, and avoid duplicate recovery runs. Do not mix Heavy-Low Rear Priority, tooltips/docs, or Exception Fit into Phase 3.
 
 *Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified; 3B geometry epsilon unification merged (`33b362a`); 5A stacking-safety audit + runtime tests merged (`0aa58c3`); 3B/5A in-browser logic verification recorded (`819d3de`).*
 

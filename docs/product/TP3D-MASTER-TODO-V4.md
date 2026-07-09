@@ -6,16 +6,16 @@
 ## CURRENT ACTIVE WORK
 | Field | Value |
 |-------|-------|
-| Stable main commit | `497cb2f` (Runtime/access/offline hardening merged/pushed to `main` after Manual Placement and AutoPack Results panel polish) |
-| Active branch | `polish/organized-unpack` |
-| Active phase | **Organized Unpack polish is implemented, tested, and awaiting final merge to `main`.** Commit `f615174` changes Unpack staging from broad category grouping to deterministic per-`caseId` grouping, with larger footprint groups staged closest to the truck. Existing `PackLibrary.getStagingLayout()` positioning remains untouched. |
-| Next planned phase | Merge `polish/organized-unpack` into `main`, push, then start `feat/autopack-solution-portfolio`. |
-| Waiting for | Final merge/push evidence for `polish/organized-unpack`. Targeted validation and browser smoke were reported green: clean grouped staging rows, same `caseId` items grouped, no overlaps, selectable/draggable/rotatable/AutoPackable after Unpack, and Standard/Wheel Wells/Front Overhang smoke passed. |
-| Do not start simultaneously | Do not mix AutoPack solution portfolio expansion, app.js modularization, 3D viewer visual-quality work, billing/auth/security work, broad solver cleanup, legacy solver deletion, whole-project formatting, or unrelated UI/CSS work into the Organized Unpack branch. |
+| Stable main commit | `b13d0fd` (AutoPack Solution Portfolio Phase 1 merged/pushed to `main`; Phase 2 branch validated at `819de80`, awaiting merge to `main`) |
+| Active branch | `feat/autopack-portfolio-floor-first` |
+| Active phase | **AutoPack Solution Portfolio Phase 2 is implemented, tested, browser-smoked, and awaiting final merge to `main`.** Commit `819de80` adds `Floor first (no stacking)` as the third safe portfolio option after `Balanced` and `Compact fill`. Current visible options can include Balanced, Compact fill, Floor first, and existing recovery options such as Stack priority when distinct. Existing hard-rule validation, solver safety, apply path, dedupe, and Results panel UI remain unchanged. |
+| Next planned phase | Merge `feat/autopack-portfolio-floor-first` into `main`, push, then start Phase 3 on `feat/autopack-portfolio-stack-constrained` to make Stack priority an intentional always-available safe portfolio option and keep Constrained first Wheel-well-gated. |
+| Waiting for | Final merge/push evidence for AutoPack Solution Portfolio Phase 2. Validation was reported green: `820` tests total, `815` pass, `0` fail, `5` skipped; typecheck passed; lint passed with `0 errors` and existing warnings only; targeted AutoPack/portfolio tests passed; browser smoke showed Balanced, Compact fill, Floor first, and Stack priority options working with no console errors. |
+| Do not start simultaneously | Do not mix Phase 3, Heavy-Low Rear Priority, Rear-Access Heavy Load, tooltip/help copy, Settings/Resources documentation, Exception Fit / Force Fit Analysis, app.js modularization, billing/auth/security work, legacy solver deletion, whole-project formatting, or unrelated UI/CSS work into the Phase 2 merge. |
 
 *Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
 
-> **Current source-of-truth note (2026-07-07):** `main` / `origin/main` are stable through Manual Placement surface-following/gizmo polish, AutoPack Results panel design-reference polish, and Runtime/access/offline hardening at `497cb2f`. The active branch is `polish/organized-unpack`, currently implemented at `f615174` and awaiting final merge. Organized Unpack now stages unpacked cases in deterministic per-case-type rows using `caseId`, with larger footprint groups closest to the truck and the existing canonical staging layout helper untouched. Next planned branch after merge: `feat/autopack-solution-portfolio`. The only known project-wide gate issue remains pre-existing formatting drift under `npm run validate`; do not auto-format feature branches.
+> **Current source-of-truth note (2026-07-08):** `main` / `origin/main` are stable through Organized Unpack and AutoPack Solution Portfolio Phase 1 at `b13d0fd`. Phase 1 added Compact fill as a safe second portfolio option after Balanced when layouts differ. The active branch is `feat/autopack-portfolio-floor-first`, implemented at `819de80`, adding Floor first (no stacking) as the third safe portfolio option. Browser smoke reported Balanced, Compact fill, Floor first, and Stack priority visible/working where distinct. Next action: fast-forward merge Phase 2 to `main`, run final typecheck/lint/diff checks, push, then update this TODO with final pushed evidence. Do not implement Force Fit / Exception Fit in the safe portfolio branch; keep it as a separate future workflow with physical containment/no-overlap preserved and explicit exception reporting.
 
 ## AutoPack Core Engine Epic — Merged Evidence (2026-07-05, `5a530f0`)
 
@@ -178,8 +178,8 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 
 ### Status summary
 - ✅ **Merged to main (`e9c86c0`)**: Phase C/C2/D + truck-change preview cleanup. The raised Front Overhang deck is no longer treated as immediately usable; it requires rear retention. Truck layout changes now render an ephemeral preview instead of showing the old load behind a new-truck modal.
-- 🔄 **Validated local stack, not merged**: Operation lifecycle branch `fix/editor-operation-lifecycle-ux` is validated locally (`714/714` tests, lint `0 errors`, existing warnings only). Wheel-well foundation branch `fix/autopack-wheelwell-support-stability` is stacked on it and validated (`723/723` tests; Codex PASS; typecheck and diff checks passed per Codex). Merge lifecycle first, then rebase/validate and merge Wheel-well.
-- 🟡 **Wheel-well foundation status**: `da9e099` adds safe wheel-well contact/support validation and `46671fc` adds a gated support-build/bridge foundation. Bridge/build-up generation remains OFF in production unless `enableWheelWellBridge` is explicitly passed. Wheel-well validation is production-active and can reject blocked-body penetration or unsafe support in Wheel Wells.
+- ✅ **Wheel-well support/manual safety stack merged earlier**: Operation lifecycle, Wheel-well support/stability foundation, manual Wheel-well blocked-body protection, and recursive support revalidation were validated and merged before the current AutoPack Solution Portfolio work. Bridge/build-up generation remains a separate future activation/order branch.
+- 🟡 **Wheel-well foundation status**: Wheel-well validation is production-active and can reject blocked-body penetration or unsafe support in Wheel Wells. Bridge/build-up generation remains OFF in production unless `enableWheelWellBridge` is explicitly passed; do not enable it inside AutoPack Solution Portfolio phases.
 - ✅ **Manual editor safety blockers fixed locally**: `97b2a8e` blocks manual Wheel-well body placements; `d3580a3` revalidates stacked dependents after manual delete/move/rotate/nudge/apply so unsupported children do not float. Browser smoke passed on Wheel Wells.
 
 ### What is fixed in the current candidate
@@ -192,21 +192,26 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 ### Known remaining issues / decisions
 1. ⚠️ **Operation lifecycle / UX concurrency gap** — AutoPack, Unpack, Truck Change, preview capture, and animation can still feel unsynchronized. Large loads may show “AutoPack starting…” with no visible progress for 10–20 seconds, Unpack can delay, Truck Change can open preview before explicit Update, and users have no clear stop/cancel behavior. Audit before implementation.
 2. ⚠️ **Large-load performance still has a synchronous solve/render wait** — the long animation path is skipped after `05f56f4`, but solving/building/rendering many cases can still block the main thread. The next fix should improve perceived responsiveness and operation messaging before deeper architecture like Web Workers.
-3. ⚠️ **Wheel-well manual movement blocked-body defect** — automated solver validation now models wheel-well blocked bodies, tops, side contact, and stable support, but manual editor movement can still let a case pass through / into wheel-well blocked volumes. Fix editor containment/collision for drag, move, rotate, nudge, and drop before merge.
-4. 🔄 **Wheel-well support/stability foundation** — implemented and tested, Codex PASS. Bridge/build-up generation is gated OFF unless `enableWheelWellBridge` is passed. Do not enable it yet; create a later activation/order branch after foundation merge.
+3. ✅ **Wheel-well manual movement blocked-body defect** — fixed earlier. Manual drag/drop, rotate/flip, keyboard nudge, inspector apply, and explicit add/drop now reject or stage wheel-well blocked-body penetration.
+4. 🔄 **Wheel-well support/stability foundation** — foundation is merged and validation is production-active, but bridge/build-up generation remains gated OFF unless `enableWheelWellBridge` is passed. Do not enable it until a separate Wheel-well production activation/order branch.
 5. ⬜ **Front Overhang wall-building strategy** — C2 blocks unsafe deck usage, but the solver does not intentionally build the retaining wall first and then fill the deck. The deck can remain unused until this strategy exists.
 6. ✅ **Manual placement surface-following + gizmo polish branch** — merged and pushed to `main` at `bbe6d44`, including vertical controls, validated drag release, X/Y/Z gizmo, pending pose, surface-following normal drag, staged limited gizmo, staged-to-packed transition, horizontal gizmo surface-following, orbit/F-key fixes, and staged X/Z-only polished gizmo. Independent audits returned PASS and signed-in browser smoke succeeded across all truck types. Non-blocking follow-up: F/Flip blocked toast copy says “Cannot rotate...” instead of “Cannot flip...”.
-7. 🔄 **Organized Unpack** — implemented on `polish/organized-unpack` at `f615174`, awaiting final merge to `main`. Unpack now groups staged cases by `caseId`, sorts larger footprint groups closest to the truck, preserves the existing shared staging layout helper, and keeps cases selectable/draggable/rotatable/AutoPackable after Unpack.
+7. ✅ **Organized Unpack** — merged and pushed to `main` at `f615174`. Unpack now groups staged cases by `caseId`, sorts larger footprint groups closest to the truck, preserves the existing shared staging layout helper, and keeps cases selectable/draggable/rotatable/AutoPackable after Unpack.
 
 ### Current AutoPack implementation order
 1. ✅ **Manual placement surface-following + gizmo polish** — merged and pushed to `main` at `bbe6d44`; signed-in browser smoke passed across Standard, Wheel Wells, and Front Overhang.
 2. ✅ **AutoPack Results panel UI enhancement** — merged and pushed to `main` at `6effd9f`; compact design-reference carousel/collapsed-card UI is now in place.
-3. ✅ **Runtime/access/offline hardening batch** — merged/pushed to `main` before Organized Unpack; final sanity audit PASS with one non-blocking WARN for rare repeated defensive 403 fallback toasts.
-4. 🔄 **Organized Unpack polish** — implemented on `polish/organized-unpack` at `f615174`; awaiting final merge/push evidence.
-5. ⬜ **AutoPack solution portfolio expansion** — generate up to 5–7 bounded, meaningful non-duplicate solution variants. This is the next planned branch after Organized Unpack merge.
-6. ⬜ **Formatting-only branch if `validate` is treated as a hard gate** — isolate the existing formatting drift; do not auto-format feature branches.
-7. ⬜ **`app.js` modularization inventory** — start with M0 inventory, not extraction.
-8. ⬜ **Legacy solver trim audit** — only after item-prep extraction is stable and tests/callers prove dead solve code can be removed safely.
+3. ✅ **Runtime/access/offline hardening batch** — merged/pushed to `main`; final sanity audit PASS with one non-blocking WARN for rare repeated defensive 403 fallback toasts.
+4. ✅ **Organized Unpack polish** — merged and pushed to `main` at `f615174`; grouped staging rows by `caseId` are in place.
+5. ✅ **AutoPack Solution Portfolio Phase 1** — merged and pushed to `main` at `59737db`/recorded on `main` at `b13d0fd`; Compact fill is offered as a safe second option when distinct.
+6. 🔄 **AutoPack Solution Portfolio Phase 2** — implemented and pushed on `feat/autopack-portfolio-floor-first` at `819de80`; Floor first (no stacking) is the third safe option and is awaiting final merge/push to `main`.
+7. ⬜ **AutoPack Solution Portfolio Phase 3** — next branch: `feat/autopack-portfolio-stack-constrained`; make Stack priority an intentional always-available safe portfolio option and keep Constrained first Wheel-well-gated, with no duplicate recovery runs.
+8. ⬜ **Heavy-Low / Rear-Access safe operational strategy audit** — separate future audit after Phase 3. Good labels: Heavy-Low Rear Priority, Rear-Access Heavy Load, Unload-Friendly Heavy Load. Avoid axle/legal claims until those rules are actually modeled.
+9. ⬜ **Tooltip/help copy for AutoPack modes** — future UI/documentation polish after the portfolio list stabilizes; likely brief tooltips plus a Settings/Resources explanation.
+10. ⬜ **Exception Fit / Force Fit Analysis** — separate future workflow only. Must preserve physical containment/no-overlap and report any relaxed handling/business rules with explicit exception approval language. Do not mix into safe AutoPack portfolio.
+11. ⬜ **Formatting-only branch if `validate` is treated as a hard gate** — isolate existing formatting drift; do not auto-format feature branches.
+12. ⬜ **`app.js` modularization inventory** — start with M0 inventory, not extraction.
+13. ⬜ **Legacy solver trim audit** — only after item-prep extraction is stable and tests/callers prove dead solve code can be removed safely.
 
 ### AutoPack / UI follow-up
 | Status | Item |
@@ -217,7 +222,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 ## Organized Unpack Polish — In Progress Evidence (2026-07-07, `f615174`)
 
 ### Status
-- 🔄 Branch `polish/organized-unpack` is implemented and tested, awaiting final merge to `main`.
+- ✅ Branch `polish/organized-unpack` was implemented, tested, merged, and pushed to `main`.
 - 🔄 Commit: `f615174`.
 - ✅ Current Unpack path was audited before implementation.
 - ✅ UI trigger remains `editor-screen.js` `btnUnpack.click`, guarded by the existing OperationLifecycle path.
@@ -247,9 +252,39 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 - No red console errors.
 
 ### Merge gate
-- ⬜ Merge `polish/organized-unpack` into `main`.
-- ⬜ Push `main`.
-- ⬜ Record final merge/push evidence here.
+- ✅ Merge `polish/organized-unpack` into `main`.
+- ✅ Push `main`.
+- ✅ Record final merge/push evidence here.
+
+
+## AutoPack Solution Portfolio — Phase 1 and Phase 2 Evidence (2026-07-08)
+
+### Phase 1 — Compact fill safe option
+- ✅ Branch `feat/autopack-solution-portfolio` implemented Compact fill as a safe second portfolio option.
+- ✅ Commit `59737db`: `feat(autopack): always offer compact-fill portfolio option`.
+- ✅ `runAdaptiveAutoPack()` now runs default first, then Compact fill with a bounded smaller budget.
+- ✅ Default remains first in `solutions[]`, so Balanced remains selected when counts tie.
+- ✅ Existing result dedupe removes Compact fill when it produces the same layout.
+- ✅ No Floor first, Stack-priority always-on, Rear-priority, Heavy-low, tooltip UI, Settings docs, or Force Fit behavior was added in Phase 1.
+- ✅ Phase 1 was merged/pushed to `main` and recorded at `b13d0fd`.
+
+### Phase 2 — Floor first safe option
+- 🔄 Branch `feat/autopack-portfolio-floor-first` is implemented, tested, browser-smoked, and awaiting final merge to `main`.
+- 🔄 Commit `819de80`: `feat(autopack): add floor-first as third portfolio option`.
+- ✅ Option order is now `Balanced`, `Compact fill`, `Floor first`, then recovery options when applicable/distinct.
+- ✅ Floor first uses the existing registered preset with `enableStackPhase: false`; it is a deliberate no-stacking layout style and may pack fewer cases.
+- ✅ Default remains selected on ties; Floor first should only auto-select if existing ranking says it packs strictly more cases.
+- ✅ Existing dedupe removes Floor first when it produces the same layout as another option.
+- ✅ Recovery logic and hard-rule validation are unchanged.
+- ✅ Validation reported: `820` tests total, `815` pass, `0` fail, `5` skipped; typecheck passed; lint passed with `0 errors` and existing warnings only; targeted AutoPack/portfolio tests passed.
+- ✅ Browser smoke reported Balanced, Compact fill, Floor first, and Stack priority options visible/working where distinct, applying options uses the existing safe apply path, and no console errors were observed.
+- 🚫 No rear-priority, heavy-low, stack-priority always-on, tooltip UI, Settings docs, or Force Fit behavior was added in Phase 2.
+
+### Future portfolio notes
+- ⬜ Phase 3 should make Stack priority an intentional safe portfolio option and keep Constrained first gated to Wheel Wells, without duplicate recovery runs.
+- ⬜ Heavy-Low Rear Priority / Rear-Access Heavy Load / Unload-Friendly Heavy Load should be audited as a safe operational strategy later. Avoid labels like Axle Balanced, DOT Safe, Legally Balanced, or Weight-Compliant until those rules are actually modeled.
+- ⬜ Add tooltips or a Settings/Resources explanation for AutoPack modes after the mode list stabilizes.
+- ⬜ Exception Fit / Force Fit Analysis is a separate future workflow. It must preserve physical containment and no-overlap, may relax selected handling/business rules only with explicit violation reporting, and must never be presented as a normal recommended safe transport plan.
 
 
 ### Important product rules from recent audits
@@ -349,7 +384,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 ## Near-Term Execution Queue
 *Approved order. Do not combine items. Do not skip steps.*
 
-*Current 2026-07-07 execution note:* Manual placement, AutoPack Results panel polish, and runtime/access/offline hardening are merged on `main`. Organized Unpack is implemented on `polish/organized-unpack` at `f615174` and awaiting final merge. After that merge, the next recommended branch is `feat/autopack-solution-portfolio`.
+*Current 2026-07-08 execution note:* Organized Unpack is merged on `main`. AutoPack Solution Portfolio Phase 1 is merged on `main` and Phase 2 is implemented on `feat/autopack-portfolio-floor-first` at `819de80`, awaiting final merge. After Phase 2 merge/push, start `feat/autopack-portfolio-stack-constrained` for Phase 3. Do not mix Heavy-Low Rear Priority, tooltips/docs, or Exception Fit into Phase 2/3 implementation.
 
 *Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified; 3B geometry epsilon unification merged (`33b362a`); 5A stacking-safety audit + runtime tests merged (`0aa58c3`); 3B/5A in-browser logic verification recorded (`819d3de`).*
 

@@ -2927,8 +2927,10 @@ test('STAGING-S3.2 finishDrag does not reject staged placement based on staging 
     'finishDrag must no longer show a staging-area rejection toast');
   assert.match(block, /placementById\.set\(id, PackLibrary\.isAabbContainedInAnyZone\(aabb, zonesInches\) \? 'packed' : 'staged'\)/,
     'finishDrag must derive placement purely from trailer usable-zone containment');
-  assert.match(block, /if \(anyCollides\) \{[\s\S]*revertGroupToStart\(groupIds, startMap\)/,
-    'finishDrag must still revert the drag group on collision');
+  assert.match(block, /if \(anyCollides && groupIds\.length === 1\) \{[\s\S]*revertGroupToStart\(groupIds, startMap\)/,
+    'finishDrag must still revert a single-case raw collision');
+  assert.match(block, /groupIds\.length > 1 && tryCommitAtomicManualGroup\(packId, pack, groupIds, startMap\)/,
+    'multi-select collisions must still route through tolerant atomic revalidation');
 });
 
 test('STAGING-S3.2 staging work-area helpers remain exported but are no longer enforced by the editor', async () => {

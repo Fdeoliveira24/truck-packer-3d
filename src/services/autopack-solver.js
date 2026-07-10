@@ -1643,6 +1643,41 @@ function buildWheelWellStackCandidates(orientation, packed, geometry, loadFrontF
     });
 }
 
+// Raised-layer poses at/above the wheel-well top plane whose footprint
+// OVERHANGS a narrow support layer (e.g. cartons on a stack-base row resting on
+// the well tops). buildStackCandidates only proposes footprints fully inside a
+// merged support rect, while the wheel-well support model legally accepts
+// >= MIN_SUPPORT_FRACTION combined support with the COM over the supported area
+// and at most MAX_WHEELWELL_OVERHANG_FRACTION per-side cantilever — so without
+// these anchors, legal stable poses over the wells are never generated and
+// fitting cargo stages while that space stays visibly empty. A rect narrower
+// than half the footprint on either axis can never reach the support fraction
+// and is skipped. Every candidate still runs the caller's full hard-rule
+// pipeline (containment, collision, combined support, COM, overhang, retention);
+// nothing here creates validity.
+function buildWheelWellOverhangStackCandidates(orientation, layerRects, geometry) {
+  const { l, w, h } = orientation;
+  const out = [];
+  for (const rect of layerRects || []) {
+    if (rect.yLevel < geometry.wellHeight - CONTACT_EPS) continue;
+    if (rect.yLevel + h > geometry.truckBox.max.y + CONTAINMENT_EPS_INCHES) continue;
+    const rectL = freeRectLength(rect);
+    const rectW = freeRectWidth(rect);
+    if (l <= rectL + FREE_RECT_EPS && w <= rectW + FREE_RECT_EPS) continue; // fully-contained poses come from buildStackCandidates
+    if (l > 2 * rectL + FREE_RECT_EPS || w > 2 * rectW + FREE_RECT_EPS) continue;
+    const xMins = uniqueSorted([rect.minX, rect.maxX - l, rect.minX + (rectL - l) / 2], (a, b) => a - b);
+    const zMins = uniqueSorted([rect.minZ, rect.maxZ - w, rect.minZ + (rectW - w) / 2], (a, b) => a - b);
+    for (const xMin of xMins) {
+      for (const zMin of zMins) {
+        const position = { x: xMin + l / 2, y: rect.yLevel + h / 2, z: zMin + w / 2 };
+        const dims = { l, w, h };
+        out.push({ position, dims, aabb: getAabb(position, dims), freeRect: rect });
+      }
+    }
+  }
+  return out;
+}
+
 function candidateHasForwardRetention(aabb, packed, zones, loadFrontFirst) {
   const zoneLimit = loadFrontFirst
     ? Math.max(...(zones || []).map(zone => zone.max.x))
@@ -1786,6 +1821,9 @@ function findStackPlacement(
     }
     if (wheelWell) {
       candidates.push(...buildWheelWellStackCandidates(orientation, packed, wheelWell, loadFrontFirst));
+      for (const yLevel of yLevels) {
+        candidates.push(...buildWheelWellOverhangStackCandidates(orientation, layerRectsFor(yLevel), wheelWell));
+      }
     }
 
     for (const candidate of candidates) {

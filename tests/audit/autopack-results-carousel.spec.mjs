@@ -301,15 +301,134 @@ test('AUTOPACK-CAROUSEL apply is rejected while another operation owns the edito
     'the busy guard must run before the stale check and before any mutation');
 });
 
+function adaptiveAuditStrategyId(input = {}) {
+  if (input.constrainedSpaceFirst === true) return 'constrained-first';
+  if (input.stackFallbackImmediate === true) return 'stack-priority';
+  if (input.enableStackPhase === false) return 'floor-first';
+  if (input.layoutQuality === false) return 'compact-fill';
+  return 'default';
+}
+
+function makeAdaptiveAuditResult(strategyId, packedCount = 2, complete = true) {
+  const strategyOffset = {
+    default: 0,
+    'compact-fill': 5,
+    'floor-first': 10,
+    'stack-priority': 15,
+    'constrained-first': 20,
+  }[strategyId] || 0;
+  const placements = new Map(Array.from({ length: packedCount }, (_, index) => [
+    `item-${index}`,
+    { x: strategyOffset + (index * 30), y: 1, z: 0 },
+  ]));
+  return {
+    placements,
+    rotations: new Map(),
+    orientedDims: new Map(),
+    retentionDependencies: new Map(),
+    unpacked: complete ? [] : ['staged-item'],
+    warnings: [],
+    rejectionReasons: [],
+    solveStatus: {
+      complete,
+      unpackedCount: complete ? 0 : 1,
+      partialCauses: [],
+    },
+    phaseStats: {
+      laneCount: 0,
+      floorCount: strategyId === 'stack-priority' ? 0 : packedCount,
+      stackCount: strategyId === 'stack-priority' ? packedCount : 0,
+      fillerCount: 0,
+      unpackedCount: complete ? 0 : 1,
+    },
+  };
+}
+
+function runAdaptiveAudit(Solution, truck, { complete = true, packedCounts = {} } = {}) {
+  const calls = [];
+  const result = Solution.runAdaptiveAutoPack({
+    truck,
+    zones: [],
+    items: [],
+    solveBudgetMs: 4000,
+  }, input => {
+    const id = adaptiveAuditStrategyId(input);
+    calls.push({ id, input });
+    return makeAdaptiveAuditResult(id, packedCounts[id] ?? 2, complete);
+  });
+  return { calls, result };
+}
+
+test('AUTOPACK-PHASE3 intentional portfolio order is mode-gated even when Balanced is complete', async () => {
+  const Solution = await import(solutionPath.href);
+  const baseTruck = { length: 240, width: 96, height: 96 };
+  const baseOrder = ['default', 'compact-fill', 'floor-first', 'stack-priority'];
+  const fixtures = [
+    { name: 'Standard', truck: { ...baseTruck, shapeMode: 'rect' }, expected: baseOrder },
+    { name: 'Front Overhang', truck: { ...baseTruck, shapeMode: 'frontBonus' }, expected: baseOrder },
+    {
+      name: 'Wheel Wells',
+      truck: { ...baseTruck, shapeMode: 'wheelWells' },
+      expected: [...baseOrder, 'constrained-first'],
+    },
+    {
+      name: 'degenerate Wheel Wells',
+      truck: { ...baseTruck, shapeMode: 'wheelWells', shapeConfig: { wellHeight: 0 } },
+      expected: baseOrder,
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    const { calls, result } = runAdaptiveAudit(Solution, fixture.truck, { complete: true });
+    assert.deepEqual(calls.map(call => call.id), fixture.expected,
+      `${fixture.name}: each intentional strategy runs once in product order`);
+    assert.deepEqual(result.solutions.map(solution => solution.id), fixture.expected,
+      `${fixture.name}: result order matches the intentional portfolio order`);
+    assert.equal(result.selected, 'default', `${fixture.name}: Balanced wins packed-count ties`);
+  }
+
+  assert.equal(Solution.getPackingStrategy('floor-first').options.enableStackPhase, false,
+    'Floor first must continue to disable the stack phase');
+});
+
+test('AUTOPACK-PHASE3 partial Wheel Wells load does not rerun portfolio strategies as recovery', async () => {
+  const Solution = await import(solutionPath.href);
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' };
+  const expected = ['default', 'compact-fill', 'floor-first', 'stack-priority', 'constrained-first'];
+  const { calls, result } = runAdaptiveAudit(Solution, truck, { complete: false });
+
+  assert.deepEqual(calls.map(call => call.id), expected,
+    'a helpful partial result still runs every intentional option exactly once');
+  assert.deepEqual(result.solutions.map(solution => solution.id), expected,
+    'no duplicate Stack priority or Constrained space first recovery result is appended');
+  for (const id of expected) {
+    assert.equal(calls.filter(call => call.id === id).length, 1, `${id} solver run occurs exactly once`);
+  }
+
+  const optedOutCalls = [];
+  const optedOut = Solution.runAdaptiveAutoPack({ truck, strategyRecovery: false }, input => {
+    const id = adaptiveAuditStrategyId(input);
+    optedOutCalls.push(id);
+    return makeAdaptiveAuditResult(id, 1, false);
+  });
+  assert.deepEqual(optedOutCalls, ['default'], 'strategyRecovery:false still opts out of portfolio and recovery');
+  assert.deepEqual(optedOut.solutions.map(solution => solution.id), ['default'],
+    'diagnostic opt-out still returns only Balanced');
+});
+
 test('AUTOPACK-CAROUSEL option descriptions come from the strategy presets and render in both panel modes', async () => {
   const Solution = await import(solutionPath.href);
   for (const preset of Solution.PACKING_STRATEGIES) {
     assert.ok(preset.description && preset.description.length > 0, `${preset.id} must carry a user-facing description`);
   }
-  assert.match(Solution.getPackingStrategy('stack-priority').description, /^Recovery: /,
-    'stack-priority must be described as a recovery strategy');
-  assert.match(Solution.getPackingStrategy('constrained-first').description, /^Recovery: /,
-    'constrained-first must be described as a recovery strategy');
+  assert.doesNotMatch(Solution.getPackingStrategy('stack-priority').description, /^Recovery: /,
+    'intentional Stack priority must not be described as recovery-only');
+  assert.match(Solution.getPackingStrategy('stack-priority').description, /Stacks earlier/,
+    'Stack priority description explains its intentional layout behavior');
+  assert.doesNotMatch(Solution.getPackingStrategy('constrained-first').description, /^Recovery: /,
+    'intentional Constrained space first must not be described as recovery-only');
+  assert.match(Solution.getPackingStrategy('constrained-first').description, /Wheel Wells/,
+    'Constrained space first description makes its Wheel Wells scope clear');
 
   const engineSrc = await fs.readFile(enginePath, 'utf8');
   const optionBlock = sliceFn(engineSrc, 'function buildAutoPackResultOption(', '\n  function buildAutoPackResultsState');
@@ -395,4 +514,14 @@ test('AUTOPACK-CAROUSEL Balanced stays selected on a packed-count tie; a truly b
       ? makeResult([['a', { x: 9, y: 1, z: 0 }], ['b', { x: 20, y: 1, z: 0 }], ['c', { x: 40, y: 1, z: 0 }]])
       : makeResult([['a', { x: 0, y: 1, z: 0 }], ['b', { x: 30, y: 1, z: 0 }]]));
   assert.equal(better.selected, 'compact-fill', 'an option that truly packs more must be selected');
+
+  const standardTruck = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
+  const adaptiveTie = runAdaptiveAudit(Solution, standardTruck).result;
+  assert.equal(adaptiveTie.selected, 'default', 'Balanced must also win ties across the full Phase 3 portfolio');
+
+  const adaptiveBetter = runAdaptiveAudit(Solution, standardTruck, {
+    packedCounts: { default: 2, 'compact-fill': 2, 'floor-first': 1, 'stack-priority': 3 },
+  }).result;
+  assert.equal(adaptiveBetter.selected, 'stack-priority',
+    'an intentional Phase 3 option may be selected only when it truly packs more cases');
 });

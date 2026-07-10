@@ -3455,6 +3455,16 @@ export function createEditorScreen({
     }
 
     function applyAutoPackResultOption(optionId) {
+      // Applying swaps the whole load — a mutating path that must respect the
+      // single-operation lifecycle like every other editor mutation.
+      if (OperationLifecycle && typeof OperationLifecycle.isBusy === 'function' && OperationLifecycle.isBusy()) {
+        UIComponents.showToast(
+          'Wait for the current operation to finish before applying AutoPack results.',
+          'info',
+          { title: 'AutoPack Results' }
+        );
+        return;
+      }
       const results = getAutoPackResultsState();
       const pack = PackLibrary.getById(StateStore.get('currentPackId'));
       if (!results || !pack || results.packId !== pack.id) return;
@@ -3493,6 +3503,41 @@ export function createEditorScreen({
       stat.appendChild(labelEl);
       stat.appendChild(valueEl);
       return stat;
+    }
+
+    const AUTOPACK_PARTIAL_CAUSE_LABELS = {
+      fit: 'no safe fit for the remaining items',
+      safety: 'safety rules blocked the remaining items',
+      rules: 'cargo handling rules blocked the remaining items',
+      budget: 'time limit reached before every item was tried',
+    };
+
+    function formatAutoPackPartialReason(option) {
+      const causes = Array.isArray(option && option.partialCauses) ? option.partialCauses : [];
+      if (!causes.length) return '';
+      return `Partial — ${causes.map(cause => AUTOPACK_PARTIAL_CAUSE_LABELS[cause] || String(cause)).join('; ')}`;
+    }
+
+    function makeAutoPackResultDescription(option) {
+      if (!option || !option.description) return null;
+      const desc = document.createElement('div');
+      desc.className = 'tp3d-autopack-results__option-desc';
+      desc.textContent = option.description;
+      return desc;
+    }
+
+    function makeAutoPackResultChip(label, value) {
+      const chip = document.createElement('span');
+      chip.className = 'tp3d-autopack-results__stat-chip';
+      const labelEl = document.createElement('span');
+      labelEl.className = 'tp3d-autopack-results__stat-chip-label';
+      labelEl.textContent = label;
+      const valueEl = document.createElement('strong');
+      valueEl.className = 'tp3d-autopack-results__stat-chip-value';
+      valueEl.textContent = value;
+      chip.appendChild(labelEl);
+      chip.appendChild(valueEl);
+      return chip;
     }
 
     function clampAutoPackResultsPosition(host, panel, position) {
@@ -3629,6 +3674,14 @@ export function createEditorScreen({
       title.className = 'tp3d-autopack-results__title';
       title.textContent = hasAlternates ? 'AutoPack Results' : 'Best load selected';
       titleWrap.appendChild(title);
+      // Staleness must stay visible in every mode — the header renders in the
+      // carousel, compact, and minimized states alike, so the badge lives here.
+      if (stale) {
+        const staleBadge = document.createElement('span');
+        staleBadge.className = 'tp3d-autopack-results__stale-badge';
+        staleBadge.textContent = 'Outdated — rerun AutoPack';
+        titleWrap.appendChild(staleBadge);
+      }
       headerLeft.appendChild(titleWrap);
 
       const headerActions = document.createElement('div');
@@ -3695,12 +3748,28 @@ export function createEditorScreen({
         body.appendChild(nav);
       }
 
+      const metrics = document.createElement('div');
+      metrics.className = 'tp3d-autopack-results__metrics';
       const stats = document.createElement('div');
       stats.className = 'tp3d-autopack-results__stats';
       stats.appendChild(makeAutoPackResultStat('Packed', formatAutoPackResultNumber(viewedOption.packedCount)));
       stats.appendChild(makeAutoPackResultStat('Staged', formatAutoPackResultNumber(viewedOption.stagedCount)));
       stats.appendChild(makeAutoPackResultStat('Volume', formatAutoPackResultVolume(viewedOption.volumePercent)));
-      body.appendChild(stats);
+      metrics.appendChild(stats);
+      // Floor/Stacked stay visible but secondary: compact chips, not full tiles.
+      const statChips = document.createElement('div');
+      statChips.className = 'tp3d-autopack-results__stat-chips';
+      statChips.appendChild(makeAutoPackResultChip('Floor', formatAutoPackResultNumber(viewedOption.floorCount)));
+      statChips.appendChild(makeAutoPackResultChip('Stacked', formatAutoPackResultNumber(viewedOption.stackedCount)));
+      metrics.appendChild(statChips);
+      body.appendChild(metrics);
+
+      // Single-option mode has no option title row; the strategy description
+      // still explains what kind of load the user is looking at.
+      if (!hasAlternates) {
+        const compactDescription = makeAutoPackResultDescription(viewedOption);
+        if (compactDescription) body.appendChild(compactDescription);
+      }
 
       // Multiple results: name the viewed option, show its status, mark the
       // applied one, and keep Apply on the existing validated apply path.
@@ -3718,6 +3787,13 @@ export function createEditorScreen({
         const status = document.createElement('span');
         status.className = `tp3d-autopack-results__status tp3d-autopack-results__status--${viewedOption.status === 'complete' ? 'complete' : 'partial'}`;
         status.textContent = viewedOption.statusLabel || (viewedOption.status === 'complete' ? 'Complete' : 'Partial');
+        if (viewedOption.status !== 'complete') {
+          const partialReason = formatAutoPackPartialReason(viewedOption);
+          if (partialReason) {
+            status.title = partialReason;
+            status.setAttribute('aria-label', partialReason);
+          }
+        }
         labelRow.appendChild(status);
         if (isViewedCurrent) {
           const applied = document.createElement('span');
@@ -3726,6 +3802,8 @@ export function createEditorScreen({
           labelRow.appendChild(applied);
         }
         optionRow.appendChild(labelRow);
+        const optionDescription = makeAutoPackResultDescription(viewedOption);
+        if (optionDescription) optionRow.appendChild(optionDescription);
 
         const actions = document.createElement('div');
         actions.className = 'tp3d-autopack-results__carousel-actions';
@@ -3752,6 +3830,16 @@ export function createEditorScreen({
         actions.appendChild(apply);
         optionRow.appendChild(actions);
         body.appendChild(optionRow);
+      }
+
+      // Dedupe transparency, single-option mode only: that is the case where a
+      // user genuinely wonders where the other options went. With alternates
+      // visible the carousel already tells the story, so the note stays quiet.
+      if (!hasAlternates && Number(results.attemptedSolutionCount) > options.length) {
+        const dedupeNote = document.createElement('div');
+        dedupeNote.className = 'tp3d-autopack-results__dedupe-note';
+        dedupeNote.textContent = 'Other strategies produced the same layout.';
+        body.appendChild(dedupeNote);
       }
 
       panel.appendChild(body);

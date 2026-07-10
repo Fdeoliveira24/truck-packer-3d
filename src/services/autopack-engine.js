@@ -459,6 +459,11 @@ export function createAutoPackEngine({
       .join(' ');
   }
 
+  function getSolutionDescription(solution) {
+    const preset = getPackingStrategy(solution && solution.id);
+    return preset && preset.description ? String(preset.description) : '';
+  }
+
   function buildAutoPackResultOption(solution, index, packData, stagingMap) {
     const nextCases = buildAutoPackNextCases(
       packData.cases || [],
@@ -475,15 +480,27 @@ export function createAutoPackEngine({
       : !(Array.isArray(solution.unpacked) && solution.unpacked.length);
     const complete = solverComplete && stagedCount === 0;
     const id = String(solution.id || solution.strategy || `option-${index + 1}`);
+    // Placement-level split from the solver's phase stats: lane/floor/filler are
+    // all floor-level phases, stack is the only raised phase.
+    const phase = solution.phaseStats && typeof solution.phaseStats === 'object' ? solution.phaseStats : {};
+    const floorCount = (Number(phase.laneCount) || 0) + (Number(phase.floorCount) || 0) + (Number(phase.fillerCount) || 0);
+    const stackedCount = Number(phase.stackCount) || 0;
+    const partialCauses = solution.solveStatus && Array.isArray(solution.solveStatus.partialCauses)
+      ? [...solution.solveStatus.partialCauses]
+      : [];
     return {
       id,
       label: getSolutionLabel(solution, index),
+      description: getSolutionDescription(solution),
       strategy: String(solution.strategy || id),
       packedCount: Number(stats && stats.packedCases) || 0,
       stagedCount,
+      floorCount,
+      stackedCount,
       volumePercent: Number.isFinite(stats && stats.volumePercent) ? Number(stats.volumePercent) : null,
       status: complete ? 'complete' : 'partial',
       statusLabel: complete ? 'Complete' : 'Partial',
+      partialCauses,
       signature: buildAutoPackResultSignature(optionPack),
       layoutSignature: buildAutoPackLayoutSignature(optionPack),
       nextCases: cloneForAutoPackResults(nextCases),

@@ -3909,6 +3909,22 @@ body.modal-open {
   white-space: nowrap;
 }
 
+/* Stale badge: lives in the header so it stays visible in the carousel,
+   compact, and minimized states alike. */
+.tp3d-autopack-results__stale-badge {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.16);
+  color: var(--warning, #f59e0b);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.2px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
 /* 2×3 dot-grid drag grip. */
 .tp3d-autopack-results__grip {
   display: grid;
@@ -3962,8 +3978,8 @@ body.modal-open {
 .tp3d-autopack-results__body {
   display: flex;
   flex-direction: column;
-  gap: 13px;
-  padding: 13px;
+  gap: 9px;
+  padding: 11px 12px;
 }
 
 .tp3d-autopack-results__carousel-nav {
@@ -3983,8 +3999,8 @@ body.modal-open {
 
 /* Bordered rounded-square carousel arrows. */
 .tp3d-autopack-results__carousel-arrow {
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   background: var(--bg-elevated);
@@ -4000,15 +4016,22 @@ body.modal-open {
   cursor: not-allowed;
 }
 
+/* Metrics: primary tile row + secondary chip row, tighter than section gap. */
+.tp3d-autopack-results__metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .tp3d-autopack-results__stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .tp3d-autopack-results__stat {
   min-width: 0;
-  padding: 9px 11px;
+  padding: 6px 9px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   background: var(--bg-elevated);
@@ -4016,6 +4039,42 @@ body.modal-open {
 
 [data-theme='dark'] .tp3d-autopack-results__stat {
   background: rgba(37, 37, 45, 0.72);
+}
+
+/* Secondary metrics (Floor/Stacked): compact chips, deliberately lighter than
+   the primary Packed/Staged/Volume tiles. */
+.tp3d-autopack-results__stat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tp3d-autopack-results__stat-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+}
+
+[data-theme='dark'] .tp3d-autopack-results__stat-chip {
+  background: rgba(37, 37, 45, 0.72);
+}
+
+.tp3d-autopack-results__stat-chip-label {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.tp3d-autopack-results__stat-chip-value {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .tp3d-autopack-results__stat-label {
@@ -4030,12 +4089,12 @@ body.modal-open {
 
 .tp3d-autopack-results__stat-value {
   display: block;
-  margin-top: 5px;
+  margin-top: 3px;
   overflow: hidden;
   color: var(--text-primary);
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 700;
-  letter-spacing: -0.4px;
+  letter-spacing: -0.2px;
   line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4082,15 +4141,36 @@ body.modal-open {
   font-weight: var(--font-semibold);
 }
 
+/* Muted one-line strategy description (under the option title in the
+   carousel, under the stats in single-option mode). */
+.tp3d-autopack-results__option-desc {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Quiet footnote for the single-option dedupe explanation. */
+.tp3d-autopack-results__dedupe-note {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-style: italic;
+  line-height: var(--leading-tight);
+  opacity: 0.85;
+}
+
 .tp3d-autopack-results__carousel-actions {
   display: flex;
   justify-content: flex-end;
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .tp3d-autopack-results .btn {
-  min-height: 32px;
-  padding: 7px 16px;
+  min-height: 28px;
+  padding: 5px 14px;
   border-radius: 999px;
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);

@@ -70,6 +70,10 @@ async function setupVerticalPack({ cases, instances, truck = RECT_TRUCK, packId 
   return { StateStore, PackLibrary, packId };
 }
 
+async function loadEditorScreenModule() {
+  return import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
+}
+
 test('MANUAL-VERTICAL move up performs a stack reorder that ends fully supported', async () => {
   const caseData = makeVerticalCase({ id: 'case-vertical-up' });
   const { PackLibrary, packId } = await setupVerticalPack({
@@ -507,6 +511,360 @@ test('MANUAL-VERTICAL staged cases and invalid selections fail safely', async ()
   assert.equal(badMode.code, 'invalid-selection', 'unsupported modes must fail safely');
 });
 
+test('MANUAL-GROUP legal floor and stacked moves preserve exact rigid offsets', async () => {
+  const caseData = makeVerticalCase({ id: 'case-group-rigid' });
+  const instances = [
+    makeVerticalInstance(caseData.id, 'floor-a', { x: 20, y: 5, z: -10 }),
+    makeVerticalInstance(caseData.id, 'floor-b', { x: 20, y: 5, z: 10 }),
+    makeVerticalInstance(caseData.id, 'stack-base', { x: 50, y: 5, z: 0 }),
+    makeVerticalInstance(caseData.id, 'stack-child', { x: 50, y: 15, z: 0 }),
+  ];
+  const { PackLibrary, packId } = await setupVerticalPack({ cases: [caseData], instances });
+  const EditorScreen = await loadEditorScreenModule();
+  const pack = PackLibrary.getById(packId);
+  const movedIds = ['floor-a', 'floor-b', 'stack-base', 'stack-child'];
+  const proposed = pack.cases.map(inst => {
+    if (!movedIds.includes(inst.id)) return inst;
+    return {
+      ...inst,
+      transform: {
+        ...inst.transform,
+        position: { ...inst.transform.position, x: inst.transform.position.x + 30 },
+      },
+    };
+  });
+  const preflight = PackLibrary.revalidateManualPlacements(
+    { ...pack, cases: proposed },
+    [caseData],
+    { repairDependents: true }
+  );
+
+  assert.deepEqual(EditorScreen.validateAtomicManualGroupResult(proposed, preflight, movedIds), { ok: true },
+    'a legal rigid group move must survive preflight without selected-case correction');
+  const validatedById = new Map(preflight.pack.cases.map(inst => [inst.id, inst]));
+  movedIds.forEach(id => {
+    const expected = proposed.find(inst => inst.id === id).transform.position;
+    assert.deepEqual(validatedById.get(id).transform.position, expected, `${id} must keep its exact proposed pose`);
+  });
+  assert.equal(
+    validatedById.get('stack-child').transform.position.y - validatedById.get('stack-base').transform.position.y,
+    10,
+    'a selected stack must not reorder, climb, or self-settle'
+  );
+});
+
+test('MANUAL-GROUP cargo and selected-sibling overlaps fail atomic preflight', async () => {
+  const caseData = makeVerticalCase({ id: 'case-group-overlap' });
+  const { PackLibrary, packId } = await setupVerticalPack({
+    cases: [caseData],
+    instances: [
+      makeVerticalInstance(caseData.id, 'obstacle', { x: 60, y: 5, z: 0 }),
+      makeVerticalInstance(caseData.id, 'selected-a', { x: 20, y: 5, z: 0 }),
+      makeVerticalInstance(caseData.id, 'selected-b', { x: 40, y: 5, z: 0 }),
+    ],
+  });
+  const EditorScreen = await loadEditorScreenModule();
+  const pack = PackLibrary.getById(packId);
+  const movedIds = ['selected-a', 'selected-b'];
+
+  const cargoOverlap = pack.cases.map(inst => {
+    if (inst.id === 'selected-a') {
+      return { ...inst, transform: { ...inst.transform, position: { x: 60, y: 5, z: 0 } } };
+    }
+    if (inst.id === 'selected-b') {
+      return { ...inst, transform: { ...inst.transform, position: { x: 80, y: 5, z: 0 } } };
+    }
+    return inst;
+  });
+  const cargoResult = PackLibrary.revalidateManualPlacements(
+    { ...pack, cases: cargoOverlap },
+    [caseData],
+    { repairDependents: true }
+  );
+  assert.equal(EditorScreen.validateAtomicManualGroupResult(cargoOverlap, cargoResult, movedIds).ok, false,
+    'a selected case corrected away from non-selected cargo must reject the whole group');
+
+  const siblingOverlap = pack.cases.map(inst => movedIds.includes(inst.id)
+    ? { ...inst, transform: { ...inst.transform, position: { x: 90, y: 5, z: 0 } } }
+    : inst);
+  const siblingResult = PackLibrary.revalidateManualPlacements(
+    { ...pack, cases: siblingOverlap },
+    [caseData],
+    { repairDependents: true }
+  );
+  assert.equal(EditorScreen.validateAtomicManualGroupResult(siblingOverlap, siblingResult, movedIds).ok, false,
+    'selected siblings that require separation must reject atomically');
+});
+
+test('MANUAL-GROUP Front Overhang cab void cannot survive as staged data', async () => {
+  const caseData = makeVerticalCase({ id: 'case-group-cab' });
+  const proposed = [
+    makeVerticalInstance(caseData.id, 'cab-case', { x: 115, y: 5, z: 0 }, { placement: 'staged' }),
+    makeVerticalInstance(caseData.id, 'outside-case', { x: 30, y: 5, z: 50 }, { placement: 'staged' }),
+  ];
+  const { PackLibrary, packId } = await setupVerticalPack({
+    cases: [caseData],
+    instances: proposed,
+    truck: FRONT_OVERHANG_TRUCK,
+  });
+  const EditorScreen = await loadEditorScreenModule();
+  const pack = PackLibrary.getById(packId);
+  const cabAabb = {
+    min: { x: 110, y: 0, z: -5 },
+    max: { x: 120, y: 10, z: 5 },
+  };
+  assert.equal(PackLibrary.aabbIntersectsFrontBonusBlockedBody(cabAabb, FRONT_OVERHANG_TRUCK), true,
+    'the staged candidate must intersect the canonical cab-void blocked body');
+
+  const preflight = PackLibrary.revalidateManualPlacements(pack, [caseData], { repairDependents: true });
+  const cabCase = preflight.pack.cases.find(inst => inst.id === 'cab-case');
+  const repairedCabAabb = {
+    min: { x: cabCase.transform.position.x - 5, y: cabCase.transform.position.y - 5, z: cabCase.transform.position.z - 5 },
+    max: { x: cabCase.transform.position.x + 5, y: cabCase.transform.position.y + 5, z: cabCase.transform.position.z + 5 },
+  };
+  assert.equal(PackLibrary.aabbIntersectsFrontBonusBlockedBody(repairedCabAabb, FRONT_OVERHANG_TRUCK), false,
+    'revalidation must move staged cargo out of the cab void');
+  assert.notDeepEqual(cabCase.transform.position, proposed[0].transform.position,
+    'the illegal staged cab-void transform must not be preserved');
+  assert.equal(EditorScreen.validateAtomicManualGroupResult(pack.cases, preflight, ['cab-case', 'outside-case']).ok, false,
+    'a group preflight must reject when cab-void repair changes a selected transform');
+
+  PackLibrary.updateCasesWithManualRevalidation(packId, pack.cases, [caseData], { repairDependents: true });
+  const persistedCabCase = PackLibrary.getById(packId).cases.find(inst => inst.id === 'cab-case');
+  const persistedCabAabb = {
+    min: { x: persistedCabCase.transform.position.x - 5, y: persistedCabCase.transform.position.y - 5, z: persistedCabCase.transform.position.z - 5 },
+    max: { x: persistedCabCase.transform.position.x + 5, y: persistedCabCase.transform.position.y + 5, z: persistedCabCase.transform.position.z + 5 },
+  };
+  assert.equal(PackLibrary.aabbIntersectsFrontBonusBlockedBody(persistedCabAabb, FRONT_OVERHANG_TRUCK), false,
+    'the committed pack state must not retain a staged transform in the cab void');
+});
+
+test('MANUAL-GROUP Wheel Wells blocked body rejects while legal channel and top poses remain exact', async () => {
+  const caseData = makeVerticalCase({ id: 'case-group-wheel' });
+  const blockedGroup = [
+    makeVerticalInstance(caseData.id, 'blocked', { x: 50, y: 5, z: 24 }, { placement: 'staged' }),
+    makeVerticalInstance(caseData.id, 'outside', { x: 20, y: 5, z: 50 }, { placement: 'staged' }),
+  ];
+  const { PackLibrary, packId } = await setupVerticalPack({
+    cases: [caseData],
+    instances: blockedGroup,
+    truck: WHEEL_WELL_TRUCK,
+  });
+  const EditorScreen = await loadEditorScreenModule();
+  const blockedPack = PackLibrary.getById(packId);
+  const blockedResult = PackLibrary.revalidateManualPlacements(blockedPack, [caseData], { repairDependents: true });
+  assert.equal(EditorScreen.validateAtomicManualGroupResult(
+    blockedPack.cases,
+    blockedResult,
+    ['blocked', 'outside']
+  ).ok, false, 'a selected Wheel Wells blocked-body pose must reject atomically');
+
+  const legalCases = [
+    makeVerticalInstance(caseData.id, 'channel', { x: 50, y: 5, z: 0 }),
+    makeVerticalInstance(caseData.id, 'well-top', { x: 50, y: 25, z: 24 }),
+  ];
+  const legalResult = PackLibrary.revalidateManualPlacements(
+    { ...blockedPack, cases: legalCases },
+    [caseData],
+    { repairDependents: true }
+  );
+  assert.deepEqual(EditorScreen.validateAtomicManualGroupResult(
+    legalCases,
+    legalResult,
+    ['channel', 'well-top']
+  ), { ok: true }, 'legal Wheel Wells channel and rigid-top placements must remain accepted');
+});
+
+test('MANUAL-GROUP legal outside-truck staging preserves the selected poses', async () => {
+  const caseData = makeVerticalCase({ id: 'case-group-staging' });
+  const stagedCases = [
+    makeVerticalInstance(caseData.id, 'staged-a', { x: 20, y: 5, z: 50 }, { placement: 'staged' }),
+    makeVerticalInstance(caseData.id, 'staged-b', { x: 40, y: 5, z: 50 }, { placement: 'staged' }),
+  ];
+  const { PackLibrary, packId } = await setupVerticalPack({ cases: [caseData], instances: stagedCases });
+  const EditorScreen = await loadEditorScreenModule();
+  const pack = PackLibrary.getById(packId);
+  const result = PackLibrary.revalidateManualPlacements(pack, [caseData], { repairDependents: true });
+
+  assert.deepEqual(EditorScreen.validateAtomicManualGroupResult(
+    pack.cases,
+    result,
+    ['staged-a', 'staged-b']
+  ), { ok: true }, 'non-colliding floor-normalized staging poses must remain legal');
+  assert.deepEqual(result.pack.cases.map(inst => inst.transform.position), stagedCases.map(inst => inst.transform.position),
+    'legal outside-truck staging must keep exact group offsets');
+});
+
+test('MANUAL-GROUP accepted support move reports non-selected dependent repair honestly', async () => {
+  const caseData = makeVerticalCase({ id: 'case-group-message' });
+  const { PackLibrary, packId } = await setupVerticalPack({
+    cases: [caseData],
+    instances: [
+      makeVerticalInstance(caseData.id, 'selected-support', { x: 20, y: 5, z: 0 }),
+      makeVerticalInstance(caseData.id, 'dependent', { x: 20, y: 15, z: 0 }),
+      makeVerticalInstance(caseData.id, 'selected-peer', { x: 40, y: 5, z: 0 }),
+    ],
+  });
+  const EditorScreen = await loadEditorScreenModule();
+  const pack = PackLibrary.getById(packId);
+  const movedIds = ['selected-support', 'selected-peer'];
+  const proposed = pack.cases.map(inst => {
+    if (inst.id === 'selected-support') {
+      return { ...inst, transform: { ...inst.transform, position: { x: 70, y: 5, z: 0 } } };
+    }
+    if (inst.id === 'selected-peer') {
+      return { ...inst, transform: { ...inst.transform, position: { x: 90, y: 5, z: 0 } } };
+    }
+    return inst;
+  });
+  const result = PackLibrary.revalidateManualPlacements(
+    { ...pack, cases: proposed },
+    [caseData],
+    { repairDependents: true }
+  );
+
+  assert.deepEqual(EditorScreen.validateAtomicManualGroupResult(proposed, result, movedIds), { ok: true },
+    'dependent repair must not invalidate an otherwise exact selected group');
+  assert.equal(result.adjustedIds.includes('dependent'), true,
+    'the non-selected dependent must be reported as adjusted');
+  assert.match(
+    EditorScreen.formatManualGroupMoveMessage(result, movedIds, 'Placed 2 cases.'),
+    /1 nearby case was re-settled\./,
+    'group outcome copy must disclose the non-selected dependent repair'
+  );
+  assert.match(
+    EditorScreen.formatManualGroupMoveMessage({ stagedIds: ['dependent'] }, movedIds, 'Placed 2 cases.'),
+    /1 dependent case was moved to staging because its support changed\./,
+    'group outcome copy must disclose a non-selected dependent staged by revalidation'
+  );
+});
+
+test('MANUAL-GROUP swept AABB detects tunneling while allowing exact contact', async () => {
+  const EditorScreen = await loadEditorScreenModule();
+  const movingStart = {
+    min: { x: 0, y: 0, z: 0 },
+    max: { x: 10, y: 10, z: 10 },
+  };
+  const movingEnd = {
+    min: { x: 30, y: 0, z: 0 },
+    max: { x: 40, y: 10, z: 10 },
+  };
+  const crossedObstacle = {
+    min: { x: 15, y: 0, z: 0 },
+    max: { x: 25, y: 10, z: 10 },
+  };
+  const crossingTime = EditorScreen.getSweptAabbCollisionTime(
+    movingStart,
+    movingEnd,
+    crossedObstacle
+  );
+  assert.equal(Number.isFinite(crossingTime), true,
+    'a clear start and clear endpoint must still detect an obstacle crossed between pointer events');
+  assert.ok(crossingTime > 0 && crossingTime < 1,
+    'the swept hit must occur inside the movement segment');
+
+  const tangentObstacle = {
+    min: { x: 15, y: 10, z: 0 },
+    max: { x: 25, y: 20, z: 10 },
+  };
+  assert.equal(
+    EditorScreen.getSweptAabbCollisionTime(movingStart, movingEnd, tangentObstacle),
+    null,
+    'moving with exact face contact must remain legal'
+  );
+
+  const awayEnd = {
+    min: { x: -20, y: 0, z: 0 },
+    max: { x: -10, y: 10, z: 10 },
+  };
+  const touchingObstacle = {
+    min: { x: 10, y: 0, z: 0 },
+    max: { x: 20, y: 10, z: 10 },
+  };
+  assert.equal(
+    EditorScreen.getSweptAabbCollisionTime(movingStart, awayEnd, touchingObstacle),
+    null,
+    'a box touching an obstacle must still be able to move away'
+  );
+});
+
+test('MANUAL-GROUP surface following applies the greatest required lift to every member', async () => {
+  const EditorScreen = await loadEditorScreenModule();
+  const halfWorld = { x: 5, y: 5, z: 5 };
+  const members = [
+    { id: 'left', start: { x: 0, y: 5, z: 0 }, halfWorld },
+    { id: 'right', start: { x: 20, y: 5, z: 0 }, halfWorld },
+  ];
+  const surfaces = [
+    { kind: 'truck-floor', min: { x: -100, z: -100 }, max: { x: 100, z: 100 }, topY: 0 },
+    { kind: 'box-top', min: { x: 25, z: -5 }, max: { x: 35, z: 5 }, topY: 20 },
+  ];
+  const preview = EditorScreen.computeRigidGroupSurfaceFollowingDelta({
+    members,
+    surfaces,
+    deltaX: 10,
+    deltaZ: 0,
+    minOverlapFraction: 0.02,
+  });
+
+  assert.equal(preview.ok, true, 'a valid rigid group must produce a shared preview delta');
+  assert.equal(preview.deltaY, 20,
+    'the member over the 20-unit box top must lift the entire group by 20 units');
+  assert.deepEqual(
+    members.map(member => member.start.y + preview.deltaY),
+    [25, 25],
+    'every member must receive exactly the same Y delta'
+  );
+});
+
+test('MANUAL-GROUP surface following preserves a selected vertical stack as one rigid shape', async () => {
+  const EditorScreen = await loadEditorScreenModule();
+  const halfWorld = { x: 5, y: 5, z: 5 };
+  const members = [
+    { id: 'base', start: { x: 0, y: 5, z: 0 }, halfWorld },
+    { id: 'child', start: { x: 0, y: 15, z: 0 }, halfWorld },
+  ];
+  const preview = EditorScreen.computeRigidGroupSurfaceFollowingDelta({
+    members,
+    surfaces: [
+      { kind: 'truck-floor', min: { x: -100, z: -100 }, max: { x: 100, z: 100 }, topY: 0 },
+      { kind: 'wheel-well-top', min: { x: 5, z: -5 }, max: { x: 15, z: 5 }, topY: 10 },
+    ],
+    deltaX: 10,
+    deltaZ: 0,
+    minOverlapFraction: 0.02,
+  });
+  const nextBaseY = members[0].start.y + preview.deltaY;
+  const nextChildY = members[1].start.y + preview.deltaY;
+
+  assert.equal(preview.deltaY, 10, 'the base must rise onto the wheel-well top');
+  assert.equal(nextChildY - nextBaseY, 10,
+    'the selected child must keep its exact vertical offset instead of settling independently');
+});
+
+test('MANUAL-GROUP surface following lifts across cargo between clear pointer endpoints', async () => {
+  const EditorScreen = await loadEditorScreenModule();
+  const halfWorld = { x: 5, y: 5, z: 5 };
+  const preview = EditorScreen.computeRigidGroupSurfaceFollowingDelta({
+    members: [
+      { id: 'a', start: { x: 0, y: 5, z: 0 }, halfWorld },
+      { id: 'b', start: { x: 20, y: 5, z: 0 }, halfWorld },
+    ],
+    surfaces: [
+      { kind: 'truck-floor', min: { x: -100, z: -100 }, max: { x: 100, z: 100 }, topY: 0 },
+      { kind: 'box-top', min: { x: 30, z: -5 }, max: { x: 40, z: 5 }, topY: 20 },
+    ],
+    fromDeltaX: 0,
+    fromDeltaZ: 0,
+    deltaX: 60,
+    deltaZ: 0,
+    minOverlapFraction: 0.02,
+  });
+
+  assert.equal(preview.deltaY, 20,
+    'a clear endpoint beyond cargo must still lift the group over the crossed box top');
+});
+
 // V2A keyboard precision movement: the editor keyboard map must route vertical
 // shortcuts through the validated moveSelectionVertical path and use a
 // step-aware X/Z nudge instead of the removed raw Shift Y-nudge.
@@ -546,8 +904,8 @@ test('MANUAL-VERTICAL vertical placement buttons expose keyboard shortcut hints'
 // V2B validated drag release: a single packed case must release through the
 // validated resolve path with dependent repair and honest outcome toasts.
 // Fix C: a single staged case may preflight as packed through manual
-// revalidation, while multi-select and out-of-truck releases keep the legacy
-// settle/staging path.
+// revalidation. Multi-select uses a separate atomic group preflight, while a
+// single out-of-truck release keeps the legacy settle/staging path.
 test('MANUAL-VERTICAL drag release for a single packed case resolves through validated placement', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const start = src.indexOf('function finishDrag()');
@@ -583,13 +941,91 @@ test('MANUAL-VERTICAL drag release for a single packed case resolves through val
     'inside-truck staged candidates rejected by hard rules must not fall through as successful placements');
   assert.match(src, /if \(stagedCandidateIsInsideUsableTruckZone\(pack, inst, desiredPosition\)\) \{[\s\S]*return true;\s*\n\s*\}\s*\n\s*return false;/,
     'outside-truck staged candidates must fall through to the legacy staged release path');
-  // The legacy path must remain intact for multi-select and outside-truck releases.
+  assert.match(block, /groupIds\.length > 1 && tryCommitAtomicManualGroup\(packId, pack, groupIds, startMap\)/,
+    'multi-select release must route through the atomic group preflight');
+  assert.ok(
+    block.indexOf('tryCommitAtomicManualGroup(packId, pack, groupIds, startMap)') < block.indexOf('CaseScene.settleY(id)'),
+    'atomic multi-select handling must run before the legacy single-case settle path'
+  );
+  // The legacy path remains only for a single out-of-truck release.
   assert.match(block, /CaseScene\.settleY\(id\)/,
-    'the legacy settle path must remain for multi-select and outside-truck releases');
+    'the legacy settle path must remain for a single out-of-truck release');
   assert.match(block, /isAabbContainedInAnyZone\(aabb, zonesInches\) \? 'packed' : 'staged'/,
     'legacy zone-containment placement classification must remain unchanged');
   assert.match(block, /placementValue === 'staged'[\s\S]*finalPos = \{ \.\.\.pos, y: Math\.max\(0, halfY\) \};/,
     'single staged releases that remain staged must not persist elevated staged Y');
+});
+
+test('MANUAL-GROUP editor release preflights atomically, repairs dependents, and warns the whole selection', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const atomicStart = src.indexOf('function tryCommitAtomicManualGroup(');
+  const atomicEnd = src.indexOf('\n\n    function applyInstancePatches', atomicStart);
+  assert.ok(atomicStart >= 0 && atomicEnd > atomicStart, 'atomic manual group commit helper must exist');
+  const atomicBlock = src.slice(atomicStart, atomicEnd);
+
+  assert.match(atomicBlock, /PackLibrary\.revalidateManualPlacements\([\s\S]*\{ repairDependents: true \}/,
+    'group placement must run a pure preflight with dependent repair enabled');
+  assert.match(atomicBlock, /validateAtomicManualGroupResult\(candidate\.cases, preflight, groupIds\)/,
+    'preflight must require exact selected-case transforms and placement states');
+  assert.match(atomicBlock, /if \(!atomicResult\.ok[\s\S]*revertAtomicManualGroup\(/,
+    'any selected correction must revert the visible group before persistence');
+  assert.match(atomicBlock, /commitCasesWithManualRevalidation\(packId, candidate\.cases, \{ repairDependents: true \}\)/,
+    'an accepted group must commit with dependent repair enabled');
+  assert.match(atomicBlock, /formatManualGroupMoveMessage\(result, groupIds, baseMessage\)/,
+    'the accepted outcome must report non-selected repaired or staged cargo');
+
+  const dragStart = src.indexOf('function updateDrag(ev)');
+  const dragEnd = src.indexOf('function revertGroupToStart', dragStart);
+  const dragBlock = src.slice(dragStart, dragEnd);
+  assert.match(dragBlock, /const anyCollides = applyDragCandidates\(groupIds, candidates, ignoreSet\);/,
+    'Alt group drag must keep the conservative swept live-preview guard');
+  assert.match(dragBlock, /applyDragCandidates\(groupIds, candidates, ignoreSet, \{[\s\S]*sweep: !\(groupIds\.length > 1 && surfaceFollowingDrag\)/,
+    'normal rigid surface-following must use endpoint collision checks after lifting onto terrain');
+
+  const applyStart = src.indexOf('function applyDragCandidates(groupIds, candidates, ignoreSet, options = {})');
+  const applyEnd = src.indexOf('\n\n    function startDrag()', applyStart);
+  assert.ok(applyStart >= 0 && applyEnd > applyStart, 'atomic live-preview helper must exist');
+  const applyBlock = src.slice(applyStart, applyEnd);
+  assert.match(applyBlock, /CaseScene\.checkSweptCollision\(id, accepted, candidate, ignoreSet\)/,
+    'non-surface-following group movement must retain swept collision protection');
+  assert.match(applyBlock, /options\.sweep !== false[\s\S]*CaseScene\.checkCollision\(id, candidate, ignoreSet\)/,
+    'rigid terrain following must still reject true endpoint overlaps');
+  assert.match(applyBlock, /if \(!blocked\) \{[\s\S]*obj\.position\.copy\(candidate\)/,
+    'multi-select meshes must advance only when the entire rigid candidate is clear');
+  assert.match(applyBlock, /dragGroupPreviewBlocked = blocked;/,
+    'the release path must know when the pointer remains over an invalid candidate');
+
+  const finishStart = src.indexOf('function finishDrag()');
+  const finishEnd = src.indexOf('\n\n    function resetDrag()', finishStart);
+  const finishBlock = src.slice(finishStart, finishEnd);
+  assert.match(finishBlock, /groupIds\.length > 1 && dragGroupPreviewBlocked[\s\S]*revertGroupToStart\(groupIds, startMap\)/,
+    'releasing while the live group candidate is blocked must revert the whole selection');
+  assert.match(finishBlock, /if \(anyCollides && groupIds\.length === 1\)/,
+    'raw scene overlap must not outrank tolerant atomic revalidation for a near-flush group');
+
+  const collisionStart = src.indexOf('function checkCollision(instanceId, candidateWorldPos, ignoreIds)');
+  const collisionEnd = src.indexOf('\n\n    function getBlockedAabbsWorld()', collisionStart);
+  const collisionBlock = src.slice(collisionStart, collisionEnd);
+  assert.match(collisionBlock, /intersectsWheelWellBlockedBody\(aabb\) \|\| intersectsFrontOverhangCabVoid\(aabb\)/,
+    'live collision must treat both Wheel Wells bodies and the Front Overhang cab void as hard blocked volumes');
+
+  const sweptStart = src.indexOf('function getBlockedAabbsWorld()');
+  const sweptEnd = src.indexOf('\n\n    /**', sweptStart);
+  const sweptBlock = src.slice(sweptStart, sweptEnd);
+  assert.match(sweptBlock, /PackLibrary\.getWheelWellsBlockedZones\(truck\)/,
+    'swept preview must include canonical Wheel Wells blocked bodies');
+  assert.match(sweptBlock, /PackLibrary\.getFrontBonusBlockedZones\(truck\)/,
+    'swept preview must include the canonical Front Overhang cab void');
+
+  const surfaceStart = src.indexOf('function getSurfaceFollowingPreviewSurfaces(instanceId, ignoreIds)');
+  const surfaceEnd = src.indexOf('\n\n    function getSurfaceFollowingPreview(', surfaceStart);
+  const surfaceBlock = src.slice(surfaceStart, surfaceEnd);
+  assert.match(surfaceBlock, /if \(ignoreSet && ignoreSet\.has\(otherId\)\) continue;/,
+    'selected siblings must be excluded from the group terrain surface set');
+  assert.match(src, /function getRigidGroupSurfaceFollowingPreview\([\s\S]*computeRigidGroupSurfaceFollowingDelta\([\s\S]*surfaces: getSurfaceFollowingPreviewSurfaces\(null, ignoreSet\)/,
+    'group terrain preview must sample all members against one shared non-selected surface set');
+  assert.match(src, /fromDeltaX[\s\S]*fromDeltaZ[\s\S]*getRigidGroupSurfaceFollowingPreview\(/,
+    'normal group drag must carry its last accepted horizontal delta into terrain crossing checks');
 });
 
 test('MANUAL-VERTICAL alt-drag shows a throttled release-outcome preview for a single packed case', async () => {
@@ -904,17 +1340,12 @@ test('MANUAL-VERTICAL every hold exit is wired: Enter, Drop, Escape, selection, 
 
 // V4A-1 surface-following preview height helper: pure, preview-only terrain
 // math for the future ghost drag. It must never validate placement rules —
-// commits keep going through PackLibrary. Evaluated from source (no THREE).
+// commits keep going through PackLibrary.
 async function loadSurfaceFollowingPreviewY() {
-  const src = await fs.readFile(editorScreenPath, 'utf8');
-  const start = src.indexOf('export function computeSurfaceFollowingPreviewY');
-  // The destructured-parameter block closes at column 0, so slice to the next
-  // top-level declaration instead of the first "\n}".
-  const end = src.indexOf('\nfunction getUnpackCategoryKey', start);
-  assert.ok(start >= 0 && end > start, 'computeSurfaceFollowingPreviewY must be exported for unit testing');
-  return new Function(
-    `${src.slice(start, end).replace('export ', '')}; return computeSurfaceFollowingPreviewY;`
-  )();
+  const EditorScreen = await loadEditorScreenModule();
+  assert.equal(typeof EditorScreen.computeSurfaceFollowingPreviewY, 'function',
+    'computeSurfaceFollowingPreviewY must be exported for unit testing');
+  return EditorScreen.computeSurfaceFollowingPreviewY;
 }
 
 const PREVIEW_HALF = { x: 5, y: 5, z: 5 };
@@ -1008,7 +1439,7 @@ test('MANUAL-VERTICAL preview helper is exported, preview-only, and draft-free',
 
 test('MANUAL-VERTICAL surface-following preview surfaces come only from scene and geometry sources', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
-  const start = src.indexOf('function getSurfaceFollowingPreviewSurfaces(instanceId)');
+  const start = src.indexOf('function getSurfaceFollowingPreviewSurfaces(instanceId, ignoreIds)');
   const end = src.indexOf('\n\n    function getSurfaceFollowingPreview(instanceId', start);
   assert.ok(start >= 0 && end > start, 'surface-following surface collector must exist');
   const block = src.slice(start, end);
@@ -1047,8 +1478,8 @@ test('MANUAL-VERTICAL normal single-case drag applies preview Y before collision
   const src = await fs.readFile(editorScreenPath, 'utf8');
   assert.match(src, /let surfaceFollowingDrag = false;/,
     'normal drag must track whether the surface-following preview is active');
-  assert.match(src, /function canSurfaceFollowNormalDrag\(instanceId, groupIds\) \{[\s\S]*groupIds\.length !== 1[\s\S]*return Boolean\(inst\);/,
-    'surface-following must be limited to one dragged instance, including staged cases');
+  assert.match(src, /function canSurfaceFollowNormalDrag\(instanceId, groupIds\) \{[\s\S]*groupIds\.includes\(instanceId\)[\s\S]*return groupIds\.every\(id => packIds\.has\(id\)\);/,
+    'surface-following must accept a complete instance-based drag group, including staged cases');
   assert.match(src, /surfaceFollowingDrag = canSurfaceFollowNormalDrag\(draggingId, dragGroupIds\);/,
     'startDrag must enable surface-following only after final drag group selection is known');
   assert.match(src, /surfaceFollowingDrag = false;\s*\n\s*pressed = null;/,
@@ -1067,8 +1498,10 @@ test('MANUAL-VERTICAL normal single-case drag applies preview Y before collision
     'Alt-drag must disable surface-following so the V2B vertical drag path stays unchanged');
   assert.equal(altBlock.includes('getSurfaceFollowingPreview'), false,
     'Alt-drag must not use the surface-following helper');
-  assert.match(normalBlock, /surfaceFollowingDrag && id === draggingId[\s\S]*CaseScene\.getSurfaceFollowingPreview\(id, candidate\)[\s\S]*candidate\.y = Math\.max\(half, preview\.centerY\);[\s\S]*CaseScene\.checkCollision\(id, candidate, ignoreSet\)/,
-    'normal drag must raise the visual candidate from preview surfaces before collision preview runs');
+  assert.match(normalBlock, /surfaceFollowingDrag && id === draggingId[\s\S]*CaseScene\.getSurfaceFollowingPreview\(id, candidate\)[\s\S]*candidate\.y = Math\.max\(half, preview\.centerY\);[\s\S]*candidates\.set\(id, candidate\);[\s\S]*applyDragCandidates\(groupIds, candidates, ignoreSet, \{/,
+    'normal drag must raise the visual candidate from preview surfaces before the shared collision preview runs');
+  assert.match(src, /if \(groupIds\.length === 1\) \{[\s\S]*CaseScene\.checkCollision\(id, candidate, ignoreSet\);[\s\S]*obj\.position\.copy\(candidate\)/,
+    'the shared preview helper must preserve the existing single-case point-collision path');
   assert.match(src, /function updateGizmoAxisDrag\(\)[\s\S]*CaseScene\.getSurfaceFollowingPreview\(draggingId, candidate\)[\s\S]*candidate\.y = Math\.max\(half \|\| 0\.01, preview\.centerY\);/,
     'X/Z gizmo strokes must also use preview Y without changing normal drag behavior');
 });
@@ -1086,8 +1519,8 @@ test('MANUAL-VERTICAL normal drag and revert keep the gizmo attached to the move
 
   assert.match(altBlock, /CaseScene\.updateGizmoTransform\(\);\s*\n\s*return;/,
     'Alt/Y movement must sync the gizmo before returning');
-  assert.match(normalBlock, /if \(!anyCollides\) \{[\s\S]*?\}\s*\n\s*CaseScene\.updateGizmoTransform\(\);\s*\n\s*\}/,
-    'normal X/Z movement must sync the gizmo after moving the case');
+  assert.match(normalBlock, /applyDragCandidates\(groupIds, candidates, ignoreSet, \{[\s\S]*?\}\);\s*\n\s*CaseScene\.updateGizmoTransform\(\);\s*\n\s*\}/,
+    'normal X/Z movement must apply the guarded group preview and then sync the gizmo');
 
   const revertStart = src.indexOf('function revertGroupToStart(groupIds, startMap)');
   const revertEnd = src.indexOf('\n\n    function finishDrag()', revertStart);
@@ -1118,6 +1551,6 @@ test('MANUAL-VERTICAL surface-following invalid releases hold scene-only pending
     'a held rule-blocked preview must remain visibly invalid');
   assert.match(block, /resolved\.code !== 'outside-truck' && resolved\.code !== 'invalid-selection'/,
     'outside-truck releases must keep the legacy staging path rather than becoming a hold');
-  assert.match(block, /if \(anyCollides\) \{[\s\S]*revertGroupToStart\(groupIds, startMap\);[\s\S]*Cannot place here: collision detected/,
-    'hard physical collisions must still revert immediately');
+  assert.match(block, /if \(anyCollides && groupIds\.length === 1\) \{[\s\S]*revertGroupToStart\(groupIds, startMap\);[\s\S]*Cannot place here: collision detected/,
+    'hard physical single-case collisions must still revert immediately');
 });

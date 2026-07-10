@@ -11,6 +11,7 @@ import fs from 'node:fs/promises';
 
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 const enginePath = new URL('../../src/services/autopack-engine.js', import.meta.url);
+const solutionPath = new URL('../../src/packing-core/solution.js', import.meta.url);
 const stylesPath = new URL('../../styles/main.css', import.meta.url);
 
 function sliceFn(src, startNeedle, endNeedle) {
@@ -261,4 +262,137 @@ test('AUTOPACK-CAROUSEL stale Apply button carries a reachable title and aria-la
     'the stale Apply button must carry an accessible label explaining why it is disabled');
   assert.equal(optionBlock.includes("'Rerun AutoPack after edits.'"), false,
     'the stale explanation must not reuse the removed persistent panel text verbatim');
+});
+
+test('AUTOPACK-CAROUSEL stale badge renders in the header so carousel, compact, and minimized modes all show it', async () => {
+  const { render } = await renderBlock();
+
+  const badgeIdx = render.indexOf("staleBadge.className = 'tp3d-autopack-results__stale-badge'");
+  const minimizedIdx = render.indexOf('if (minimized) {');
+  const bodyIdx = render.indexOf("body.className = 'tp3d-autopack-results__body'");
+  assert.ok(badgeIdx >= 0, 'the stale badge element must be created');
+  assert.ok(minimizedIdx > badgeIdx,
+    'the badge must be built in the header BEFORE the minimized early-return, so the collapsed chip still shows it');
+  assert.ok(bodyIdx > badgeIdx,
+    'the badge must be built before the body, so compact and carousel modes both show it');
+
+  const headerBlock = render.slice(0, minimizedIdx);
+  assert.match(headerBlock, /if \(stale\) \{/, 'the badge must render only when the results are stale');
+  assert.match(headerBlock, /staleBadge\.textContent = 'Outdated — rerun AutoPack';/,
+    'the badge must carry the agreed stale copy');
+  assert.match(headerBlock, /titleWrap\.appendChild\(staleBadge\);/, 'the badge must be attached to the header title wrap');
+
+  const css = await fs.readFile(stylesPath, 'utf8');
+  assert.match(css, /\.tp3d-autopack-results__stale-badge \{/, 'the stale badge must have panel styling');
+});
+
+test('AUTOPACK-CAROUSEL apply is rejected while another operation owns the editor', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const apply = sliceFn(src, 'function applyAutoPackResultOption(optionId)', 'function makeAutoPackResultStat(');
+
+  assert.match(apply, /OperationLifecycle\.isBusy\(\)/,
+    'apply must check the operation lifecycle before mutating the pack');
+  assert.match(apply, /Wait for the current operation to finish before applying AutoPack results\./,
+    'the busy rejection must explain itself with a toast');
+  const busyIdx = apply.indexOf('OperationLifecycle.isBusy()');
+  const staleIdx = apply.indexOf('isAutoPackResultsStale(pack, results)');
+  const updateIdx = apply.indexOf('PackLibrary.update(');
+  assert.ok(busyIdx >= 0 && busyIdx < staleIdx && busyIdx < updateIdx,
+    'the busy guard must run before the stale check and before any mutation');
+});
+
+test('AUTOPACK-CAROUSEL option descriptions come from the strategy presets and render in both panel modes', async () => {
+  const Solution = await import(solutionPath.href);
+  for (const preset of Solution.PACKING_STRATEGIES) {
+    assert.ok(preset.description && preset.description.length > 0, `${preset.id} must carry a user-facing description`);
+  }
+  assert.match(Solution.getPackingStrategy('stack-priority').description, /^Recovery: /,
+    'stack-priority must be described as a recovery strategy');
+  assert.match(Solution.getPackingStrategy('constrained-first').description, /^Recovery: /,
+    'constrained-first must be described as a recovery strategy');
+
+  const engineSrc = await fs.readFile(enginePath, 'utf8');
+  const optionBlock = sliceFn(engineSrc, 'function buildAutoPackResultOption(', '\n  function buildAutoPackResultsState');
+  assert.match(optionBlock, /description: getSolutionDescription\(solution\),/,
+    'each result option must carry the preset description');
+
+  const { render } = await renderBlock();
+  assert.match(render, /const optionDescription = makeAutoPackResultDescription\(viewedOption\);/,
+    'the carousel option must render the description line');
+  assert.match(render, /const compactDescription = makeAutoPackResultDescription\(viewedOption\);/,
+    'the single-option compact mode must render the description line too');
+  assert.match(render, /if \(!hasAlternates\) \{/,
+    'the compact description must be scoped to the single-option mode');
+});
+
+test('AUTOPACK-CAROUSEL Floor/Stacked stats derive from phaseStats and the Partial pill explains itself', async () => {
+  const engineSrc = await fs.readFile(enginePath, 'utf8');
+  const optionBlock = sliceFn(engineSrc, 'function buildAutoPackResultOption(', '\n  function buildAutoPackResultsState');
+  assert.match(optionBlock,
+    /const floorCount = \(Number\(phase\.laneCount\) \|\| 0\) \+ \(Number\(phase\.floorCount\) \|\| 0\) \+ \(Number\(phase\.fillerCount\) \|\| 0\);/,
+    'Floor must sum every floor-level solver phase (lane + floor + filler)');
+  assert.match(optionBlock, /const stackedCount = Number\(phase\.stackCount\) \|\| 0;/,
+    'Stacked must be the solver stack phase count');
+  assert.match(optionBlock, /solution\.phaseStats && typeof solution\.phaseStats === 'object'/,
+    'phase stats must come from the solution phaseStats');
+  assert.match(optionBlock, /partialCauses,/,
+    'each option must carry the solve partialCauses');
+
+  const { render } = await renderBlock();
+  assert.match(render, /makeAutoPackResultStat\('Packed', formatAutoPackResultNumber\(viewedOption\.packedCount\)\)/,
+    'Packed must stay a primary metric tile');
+  assert.match(render, /makeAutoPackResultStat\('Staged', formatAutoPackResultNumber\(viewedOption\.stagedCount\)\)/,
+    'Staged must stay a primary metric tile');
+  assert.match(render, /makeAutoPackResultChip\('Floor', formatAutoPackResultNumber\(viewedOption\.floorCount\)\)/,
+    'Floor must render as a secondary compact chip');
+  assert.match(render, /makeAutoPackResultChip\('Stacked', formatAutoPackResultNumber\(viewedOption\.stackedCount\)\)/,
+    'Stacked must render as a secondary compact chip');
+  assert.match(render, /const partialReason = formatAutoPackPartialReason\(viewedOption\);/,
+    'a partial option must derive a readable reason');
+  assert.match(render, /status\.title = partialReason;/,
+    'the Partial pill must carry the reason as a hover tooltip');
+  assert.match(render, /status\.setAttribute\('aria-label', partialReason\);/,
+    'the Partial pill reason must also be accessible');
+});
+
+test('AUTOPACK-CAROUSEL dedupe-collapsed results explain that other strategies produced the same layout', async () => {
+  const { render } = await renderBlock();
+  assert.match(render, /if \(!hasAlternates && Number\(results\.attemptedSolutionCount\) > options\.length\) \{/,
+    'the note must appear only in single-option mode, where the collapse genuinely needs explaining');
+  assert.match(render, /dedupeNote\.textContent = 'Other strategies produced the same layout\.';/,
+    'the note must carry the agreed copy');
+
+  const css = await fs.readFile(stylesPath, 'utf8');
+  assert.match(css, /\.tp3d-autopack-results__dedupe-note \{/, 'the dedupe note must have panel styling');
+  assert.match(css, /\.tp3d-autopack-results__option-desc \{/, 'the description line must have panel styling');
+  assert.match(css, /\.tp3d-autopack-results__stat-chip \{/, 'the secondary metric chips must have panel styling');
+});
+
+test('AUTOPACK-CAROUSEL Balanced stays selected on a packed-count tie; a truly better option still wins', async () => {
+  const Solution = await import(solutionPath.href);
+  const makeResult = placementEntries => ({
+    placements: new Map(placementEntries),
+    rotations: new Map(),
+    orientedDims: new Map(),
+    retentionDependencies: new Map(),
+    unpacked: [],
+    warnings: [],
+    rejectionReasons: [],
+    solveStatus: { complete: true, unpackedCount: 0, partialCauses: [] },
+    phaseStats: {},
+  });
+
+  // Tie: both strategies pack the same count (different layouts) — default wins.
+  const tie = Solution.runPackingStrategies({}, ['default', 'compact-fill'], input =>
+    input.layoutQuality === false
+      ? makeResult([['a', { x: 9, y: 1, z: 0 }], ['b', { x: 20, y: 1, z: 0 }]])
+      : makeResult([['a', { x: 0, y: 1, z: 0 }], ['b', { x: 30, y: 1, z: 0 }]]));
+  assert.equal(tie.selected, 'default', 'Balanced (default) must win packed-count ties');
+
+  // A strategy that genuinely packs more must beat the default.
+  const better = Solution.runPackingStrategies({}, ['default', 'compact-fill'], input =>
+    input.layoutQuality === false
+      ? makeResult([['a', { x: 9, y: 1, z: 0 }], ['b', { x: 20, y: 1, z: 0 }], ['c', { x: 40, y: 1, z: 0 }]])
+      : makeResult([['a', { x: 0, y: 1, z: 0 }], ['b', { x: 30, y: 1, z: 0 }]]));
+  assert.equal(better.selected, 'compact-fill', 'an option that truly packs more must be selected');
 });

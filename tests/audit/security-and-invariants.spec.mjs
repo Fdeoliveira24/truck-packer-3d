@@ -10383,6 +10383,77 @@ test('PHASE-C2 production solver gates floor, filler, lane, repeated, B2A/B2C, s
   assert.ok(repackedInst.transform.position.x <= 228, 'Repack Invalid places it on the main floor, not the empty deck');
 });
 
+// Floor-first (enableStackPhase:false) must never place cargo on top of other
+// cargo anywhere in the truck, including the Front Overhang deck-retention-wall
+// path (buildDeckRetentionWall), which previously stacked cargo unconditionally
+// to build a tall-enough wall regardless of the flag.
+test('PHASE-C2 floor-first (enableStackPhase:false) never stacks cargo, even where the default strategy builds a retention wall', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = phcFrontOverhangTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const restsOnAnyFloor = aabb => zones.some(zone => Math.abs(aabb.min.y - zone.min.y) <= 0.05);
+
+  // Enough identical cargo to overflow the main floor so the default strategy
+  // resorts to stacking (proves the fixture is non-vacuous).
+  const items = Array.from({ length: 100 }, (_, index) => ({
+    instanceId: `fo${index}`, caseId: 'fo-crowded', dims: { l: 24, w: 18, h: 16 },
+    orientationLock: 'any', canFlip: false, weight: 30,
+  }));
+
+  const defaultResult = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const defaultStackedIds = [...defaultResult.placements].filter(([id, pos]) => {
+    const dims = defaultResult.orientedDims.get(id);
+    return !restsOnAnyFloor(Solver.getAabb(pos, { l: dims.length, w: dims.width, h: dims.height }));
+  });
+  assert.ok(defaultStackedIds.length > 0,
+    'fixture must actually exercise stacking under the default strategy, or the floor-first assertion below is vacuous');
+
+  const floorFirstResult = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableStackPhase: false });
+  for (const [id, pos] of floorFirstResult.placements) {
+    const dims = floorFirstResult.orientedDims.get(id);
+    const aabb = Solver.getAabb(pos, { l: dims.length, w: dims.width, h: dims.height });
+    assert.ok(restsOnAnyFloor(aabb),
+      `floor-first placement ${id} must rest on a zone floor (main or deck), never on top of another case`);
+  }
+  assert.equal(floorFirstResult.phaseStats.stackCount, 0, 'floor-first must report zero stacked placements');
+});
+
+test('PHASE-C2 buildDeckRetentionWall only stacks a wall segment when the stack phase is enabled', async () => {
+  const src = await fs.readFile(autoPackSolverPath, 'utf8');
+  const start = src.indexOf('function buildDeckRetentionWall(');
+  const end = src.indexOf('\nfunction frontOverhangRetentionPlacements', start);
+  assert.ok(start >= 0 && end > start, 'buildDeckRetentionWall must exist');
+  const block = src.slice(start, end);
+
+  assert.match(block,
+    /function buildDeckRetentionWall\(output, packed, itemsById, retentionContext, budget, stackPhaseEnabled = true\)/,
+    'buildDeckRetentionWall must accept the stack-phase flag (defaulting to enabled for existing callers)');
+  assert.match(block,
+    /if \(!onFloor\) \{\s*\n(?:\s*\/\/.*\n)*\s*if \(!stackPhaseEnabled\) continue;\s*\n\s*if \(!supportsCandidate\(aabb, packed, item\)\) continue;\s*\n\s*\}/,
+    'a non-floor (stacked) wall segment must be rejected outright when stackPhaseEnabled is false, ' +
+    'before the ordinary support check ever runs');
+
+  const callSiteSrc = src.slice(end);
+  assert.match(callSiteSrc, /buildDeckRetentionWall\(output, packed, itemsById, retentionContext, budget, stackPhaseEnabled\)/,
+    'solveAutoPack must pass its own stackPhaseEnabled through to buildDeckRetentionWall');
+});
+
+test('PHASE-C2 Front Overhang deck-fill retry is not skipped when stacking is disabled', async () => {
+  const src = await fs.readFile(autoPackSolverPath, 'utf8');
+  const stackBatchStart = src.indexOf('if (stackPhaseEnabled && stackQueue.length && !budget.expired())');
+  assert.ok(stackBatchStart >= 0, 'the stack-phase batch gate must exist');
+  const stackBatchEnd = src.indexOf('\n  }', stackBatchStart);
+  const stackBatchBlock = src.slice(stackBatchStart, stackBatchEnd);
+  assert.equal(stackBatchBlock.includes('placeFrontOverhangDeckFill'), false,
+    'placeFrontOverhangDeckFill must not be nested inside the stackPhaseEnabled batch gate — deck-fill is ' +
+    'raised FLOOR space, not stacking, and must still run when floor-first disables stacking');
+
+  const afterBatch = src.slice(stackBatchEnd, stackBatchEnd + 1200);
+  assert.match(afterBatch, /if \(stackQueue\.length && !budget\.cleanupExpired\(\)\) \{\s*\n\s*const deckFill = placeFrontOverhangDeckFill\(/,
+    'the deck-fill retry against the remaining stack queue must run unconditionally (gated only by its own ' +
+    'pre-existing conditions, not by stackPhaseEnabled)');
+});
+
 test('PHASE-C2 accepted walls emit dependencies and animate before retained deck cargo', async () => {
   const { Solver, PackLib } = await phbSolverModules();
   const Engine = await import(`${autoPackEnginePath.href}?t=${Date.now()}-${Math.random()}`);

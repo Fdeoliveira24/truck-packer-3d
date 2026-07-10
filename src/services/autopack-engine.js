@@ -128,20 +128,41 @@ function getSignatureInstanceRules(inst) {
   return normalizeSignatureValue(rules);
 }
 
+function getSignatureCaseFields(inst) {
+  return {
+    caseId: inst && inst.caseId ? String(inst.caseId) : '',
+    hidden: Boolean(inst && inst.hidden),
+    placement: inst && inst.placement ? String(inst.placement) : '',
+    position: getSignaturePosition(inst),
+    rotation: getSignatureRotation(inst),
+    orientedDims: getSignatureDims(inst && inst.orientedDims),
+    rules: getSignatureInstanceRules(inst || {}),
+  };
+}
+
 export function buildAutoPackResultSignature(pack) {
   const truck = normalizeSignatureValue((pack && pack.truck) || {});
   const cases = (Array.isArray(pack && pack.cases) ? pack.cases : [])
-    .map(inst => ({
-      id: inst && inst.id ? String(inst.id) : '',
-      caseId: inst && inst.caseId ? String(inst.caseId) : '',
-      hidden: Boolean(inst && inst.hidden),
-      placement: inst && inst.placement ? String(inst.placement) : '',
-      position: getSignaturePosition(inst),
-      rotation: getSignatureRotation(inst),
-      orientedDims: getSignatureDims(inst && inst.orientedDims),
-      rules: getSignatureInstanceRules(inst || {}),
-    }))
+    .map(inst => ({ id: inst && inst.id ? String(inst.id) : '', ...getSignatureCaseFields(inst) }))
     .sort((a, b) => a.id.localeCompare(b.id));
+  return stableSignature({ truck, cases });
+}
+
+/**
+ * Dedupe-only layout signature: same fields as buildAutoPackResultSignature
+ * except the raw instance id is never included or sorted on. Two solutions that
+ * place the same physical set of {caseId, placement, position, rotation,
+ * orientedDims, rules} — just assigned to a different permutation of
+ * interchangeable instance ids — hash identically here, so the portfolio dedupe
+ * (buildAutoPackResultsState) can collapse them into one option. Staleness
+ * detection (isAutoPackResultsStale in editor-screen.js) must keep using the
+ * strict, id-aware buildAutoPackResultSignature so a real edit is never missed.
+ */
+export function buildAutoPackLayoutSignature(pack) {
+  const truck = normalizeSignatureValue((pack && pack.truck) || {});
+  const cases = (Array.isArray(pack && pack.cases) ? pack.cases : [])
+    .map(inst => stableSignature(getSignatureCaseFields(inst)))
+    .sort();
   return stableSignature({ truck, cases });
 }
 
@@ -464,6 +485,7 @@ export function createAutoPackEngine({
       status: complete ? 'complete' : 'partial',
       statusLabel: complete ? 'Complete' : 'Partial',
       signature: buildAutoPackResultSignature(optionPack),
+      layoutSignature: buildAutoPackLayoutSignature(optionPack),
       nextCases: cloneForAutoPackResults(nextCases),
     };
   }
@@ -481,11 +503,16 @@ export function createAutoPackEngine({
       .map((solution, index) => buildAutoPackResultOption(solution, index, packData, stagingMap));
     if (!rawOptions.length) return null;
 
+    // Dedupe by physical layout, not raw instance id: two strategies that place
+    // the same {caseId, placement, position, rotation, orientedDims, rules} set
+    // — just assigned to a different permutation of interchangeable instances —
+    // are the same option to the user, even though buildAutoPackResultSignature
+    // (used for staleness, not dedupe) would still tell them apart.
     const options = [];
-    const signatureToId = new Map();
+    const layoutSignatureToId = new Map();
     rawOptions.forEach(option => {
-      if (signatureToId.has(option.signature)) return;
-      signatureToId.set(option.signature, option.id);
+      if (layoutSignatureToId.has(option.layoutSignature)) return;
+      layoutSignatureToId.set(option.layoutSignature, option.id);
       options.push(option);
     });
     if (!options.length) return null;
@@ -496,8 +523,8 @@ export function createAutoPackEngine({
       options[0].id
     );
     const selectedRaw = rawOptions.find(option => option.id === selectedRawId) || rawOptions[0];
-    const selectedId = selectedRaw && signatureToId.has(selectedRaw.signature)
-      ? signatureToId.get(selectedRaw.signature)
+    const selectedId = selectedRaw && layoutSignatureToId.has(selectedRaw.layoutSignature)
+      ? layoutSignatureToId.get(selectedRaw.layoutSignature)
       : options[0].id;
     const selectedOption = options.find(option => option.id === selectedId) || options[0];
 

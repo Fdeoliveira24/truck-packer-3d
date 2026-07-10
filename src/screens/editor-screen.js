@@ -3161,6 +3161,16 @@ export function createEditorScreen({
           apply.innerHTML = '<i class="fa-solid fa-check"></i> Applied';
         } else {
           apply.textContent = 'Apply this option';
+          // Disabled-but-not-applied only happens when stale: give the native
+          // disabled button a reachable explanation (hover tooltip + a11y label)
+          // since a disabled button never fires click, so it can never reach the
+          // toast in applyAutoPackResultOption. Deliberately reworded from the
+          // removed persistent panel text, not a duplicate of it.
+          if (stale) {
+            const staleReason = 'Outdated — rerun AutoPack to refresh this option.';
+            apply.title = staleReason;
+            apply.setAttribute('aria-label', staleReason);
+          }
         }
         apply.addEventListener('click', () => applyAutoPackResultOption(viewedOption.id));
         actions.appendChild(apply);

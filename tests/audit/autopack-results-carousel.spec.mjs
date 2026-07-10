@@ -166,3 +166,99 @@ test('AUTOPACK-CAROUSEL detail styling: bordered arrows, uppercase tiles, neutra
   assert.match(css, /\.tp3d-autopack-results__status \{\s*background: var\(--bg-hover\);/,
     'the status badge must be a neutral pill');
 });
+
+// Portfolio dedupe: two solutions that place the same physical cargo — just with
+// a different permutation of interchangeable instance ids assigned to the same
+// slots — must be treated as ONE option. Staleness detection must keep using the
+// strict, id-aware signature so a real edit is never missed.
+function makeAuditInstance(id, caseId, x, y, z) {
+  return {
+    id,
+    caseId,
+    hidden: false,
+    placement: 'packed',
+    transform: { position: { x, y, z }, rotation: { x: 0, y: 0, z: 0 } },
+    orientedDims: { length: 24, width: 24, height: 24 },
+  };
+}
+
+test('AUTOPACK-CAROUSEL layout signature ignores interchangeable instance id permutation; strict signature does not', async () => {
+  const Engine = await import(enginePath.href);
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
+
+  const packA = {
+    truck,
+    cases: [
+      makeAuditInstance('inst-1', 'case-A', 10, 12, 10),
+      makeAuditInstance('inst-2', 'case-A', 40, 12, 10),
+    ],
+  };
+  // Same two physical slots, instance ids swapped between them.
+  const packB = {
+    truck,
+    cases: [
+      makeAuditInstance('inst-2', 'case-A', 10, 12, 10),
+      makeAuditInstance('inst-1', 'case-A', 40, 12, 10),
+    ],
+  };
+  // A genuinely different physical layout (one case moved to a new slot).
+  const packC = {
+    truck,
+    cases: [
+      makeAuditInstance('inst-1', 'case-A', 10, 12, 10),
+      makeAuditInstance('inst-2', 'case-A', 70, 12, 10),
+    ],
+  };
+
+  assert.notEqual(
+    Engine.buildAutoPackResultSignature(packA),
+    Engine.buildAutoPackResultSignature(packB),
+    'the strict signature (used for staleness) must stay sensitive to which instance id sits where'
+  );
+  assert.equal(
+    Engine.buildAutoPackLayoutSignature(packA),
+    Engine.buildAutoPackLayoutSignature(packB),
+    'the dedupe-only layout signature must be invariant to interchangeable instance id permutation'
+  );
+  assert.notEqual(
+    Engine.buildAutoPackLayoutSignature(packA),
+    Engine.buildAutoPackLayoutSignature(packC),
+    'a genuinely different packed position must still produce a different layout signature'
+  );
+});
+
+test('AUTOPACK-CAROUSEL portfolio dedupe keys on the layout signature, not the strict per-instance signature', async () => {
+  const engineSrc = await fs.readFile(enginePath, 'utf8');
+
+  const optionStart = engineSrc.indexOf('function buildAutoPackResultOption(');
+  const optionEnd = engineSrc.indexOf('\n  function buildAutoPackResultsState', optionStart);
+  assert.ok(optionStart >= 0 && optionEnd > optionStart, 'buildAutoPackResultOption must exist');
+  const optionBlock = engineSrc.slice(optionStart, optionEnd);
+  assert.match(optionBlock, /signature: buildAutoPackResultSignature\(optionPack\),/,
+    'each option must still carry the strict, id-aware signature');
+  assert.match(optionBlock, /layoutSignature: buildAutoPackLayoutSignature\(optionPack\),/,
+    'each option must also carry the dedupe-only layout signature');
+
+  const stateStart = engineSrc.indexOf('function buildAutoPackResultsState(');
+  const stateEnd = engineSrc.indexOf('\n  function cancelAllTweens', stateStart);
+  assert.ok(stateStart >= 0 && stateEnd > stateStart, 'buildAutoPackResultsState must exist');
+  const stateBlock = engineSrc.slice(stateStart, stateEnd);
+  assert.match(stateBlock, /layoutSignatureToId\.has\(option\.layoutSignature\)/,
+    'the option dedupe map must be keyed on the layout signature, not the strict per-instance signature');
+  assert.match(stateBlock, /currentSignature: selectedOption\.signature,/,
+    'the signature exposed for staleness detection must stay the strict, id-aware signature');
+});
+
+test('AUTOPACK-CAROUSEL stale Apply button carries a reachable title and aria-label explanation', async () => {
+  const { render } = await renderBlock();
+  const optionBlock = sliceFn(render, 'const isViewedCurrent = viewedOption.id === results.selectedId;', 'panel.appendChild(body);');
+
+  assert.match(optionBlock, /if \(stale\) \{\s*\n\s*const staleReason = /,
+    'the disabled-but-not-applied case (stale) must set an explanatory reason');
+  assert.match(optionBlock, /apply\.title = staleReason;/,
+    'the stale Apply button must carry a hover tooltip explaining why it is disabled');
+  assert.match(optionBlock, /apply\.setAttribute\('aria-label', staleReason\);/,
+    'the stale Apply button must carry an accessible label explaining why it is disabled');
+  assert.equal(optionBlock.includes("'Rerun AutoPack after edits.'"), false,
+    'the stale explanation must not reuse the removed persistent panel text verbatim');
+});

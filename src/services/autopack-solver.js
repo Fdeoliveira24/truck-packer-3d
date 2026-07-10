@@ -2908,7 +2908,7 @@ function wallBottomsAt(packed, mainZone, minX, maxX, minZ, maxZ) {
   return uniqueSorted(bottoms, (a, b) => a - b);
 }
 
-function buildDeckRetentionWall(output, packed, itemsById, retentionContext, budget) {
+function buildDeckRetentionWall(output, packed, itemsById, retentionContext, budget, stackPhaseEnabled = true) {
   const geometry = retentionContext?.geometry;
   if (!geometry || !output.unpacked.length) return 0;
   const { stepX, deckY, deckZone, mainZone } = geometry;
@@ -2968,7 +2968,13 @@ function buildDeckRetentionWall(output, packed, itemsById, retentionContext, bud
             if (!isAabbContainedInZone(aabb, mainZone)) continue;
             if (collidesPacked(aabb, packed)) continue;
             const onFloor = Math.abs(aabb.min.y - mainZone.min.y) <= CONTACT_EPS;
-            if (!onFloor && !supportsCandidate(aabb, packed, item)) continue;
+            if (!onFloor) {
+              // floor-first (enableStackPhase:false): the retention wall may
+              // never stack cargo to reach the deck — only floor-level bases
+              // count, same "no stacking" contract as every other phase.
+              if (!stackPhaseEnabled) continue;
+              if (!supportsCandidate(aabb, packed, item)) continue;
+            }
             // The segment must progress the wall: span the deck level itself,
             // or be a base a remaining leftover could still span from.
             const spansDeck = aabb.max.y >= deckY - CONTACT_EPS && aabb.min.y <= deckY + CONTACT_EPS;
@@ -3695,30 +3701,35 @@ export function solveAutoPack(input = {}) {
       budget
     );
     stackCount += beforeBatch - stackQueue.length;
-    if (stackQueue.length && !budget.cleanupExpired()) {
-      const deckFill = placeFrontOverhangDeckFill(
-        stackQueue,
-        output,
-        packed,
-        retentionContext,
-        loadFrontFirst,
-        budget,
-        items
-      );
-      stackQueue = deckFill.remaining;
-      floorCount += deckFill.placed;
-    }
-    if (output.unpacked.length && !budget.cleanupExpired()) {
-      floorCount += placeFrontOverhangDeckFillFromUnpacked(
-        output,
-        packed,
-        itemsById,
-        retentionContext,
-        loadFrontFirst,
-        budget,
-        items
-      );
-    }
+  }
+  // Front Overhang deck-fill places cargo on raised FLOOR space (gated on
+  // rear retention), never on top of other cargo — unlike
+  // placeRepeatedStackBatches above, it must stay available even when
+  // stackPhaseEnabled is false (floor-first), so it is not nested under that
+  // gate.
+  if (stackQueue.length && !budget.cleanupExpired()) {
+    const deckFill = placeFrontOverhangDeckFill(
+      stackQueue,
+      output,
+      packed,
+      retentionContext,
+      loadFrontFirst,
+      budget,
+      items
+    );
+    stackQueue = deckFill.remaining;
+    floorCount += deckFill.placed;
+  }
+  if (output.unpacked.length && !budget.cleanupExpired()) {
+    floorCount += placeFrontOverhangDeckFillFromUnpacked(
+      output,
+      packed,
+      itemsById,
+      retentionContext,
+      loadFrontFirst,
+      budget,
+      items
+    );
   }
 
   for (let i = 0; i < stackQueue.length; i++) {
@@ -3816,7 +3827,7 @@ export function solveAutoPack(input = {}) {
   // the ordinary hard-rule pipeline, which still gates every deck pose on the
   // real barrier via candidateHasRearRetention.
   if (retentionContext?.geometry && input.enableDeckRetentionWall !== false && !budget.cleanupExpired()) {
-    floorCount += buildDeckRetentionWall(output, packed, itemsById, retentionContext, budget);
+    floorCount += buildDeckRetentionWall(output, packed, itemsById, retentionContext, budget, stackPhaseEnabled);
     if (output.unpacked.length && !budget.cleanupExpired()) {
       floorCount += placeFrontOverhangDeckFillFromUnpacked(
         output,

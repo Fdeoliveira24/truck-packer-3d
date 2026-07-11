@@ -1,5 +1,33 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-07-10 | Synthesized from all prior TODO versions + QA report + comparison research + competitive landscape + Codex/Copilot/Claude audit cross-check + storage/space planning vertical
+**Last updated:** 2026-07-10 — integration branch refreshed through AutoPack Results clarity (`41d16d6`) and local AutoPack Solution Portfolio Phase 3 implementation pending commit.
+
+## CURRENT STATUS SNAPSHOT — 2026-07-10
+
+| Area | Current status |
+|---|---|
+| Stable main | `main` / `origin/main` are stable through AutoPack Solution Portfolio Phase 2 at `819de80` (`feat(autopack): add floor-first as third portfolio option`). |
+| Current integration branch | `feat/autopack-portfolio-stack-constrained` is the active integration branch. Remote/current clean HEAD before local Phase 3 changes: `41d16d6`. |
+| Integration branch contents | Includes staged-case OOG highlight cleanup (`badfb6d`), AutoPack portfolio dedupe/stale-results fix (`08e5fa7`), Graphify agent configuration (`5432e0c`), multi-select placement safety merge (`f56eca0`, source `8d0d7a2`), Wheel Wells packing-quality merge (`e0f398b`, source `f516d53`), and AutoPack Results clarity/compact panel polish (`41d16d6`). |
+| Local uncommitted work | AutoPack Solution Portfolio Phase 3 is implemented locally but not yet committed. Expected modified files: `src/packing-core/solution.js` and `tests/audit/autopack-results-carousel.spec.mjs`. |
+| Active phase | Final review/commit for AutoPack Solution Portfolio Phase 3. Stack priority is now intended to be an intentional portfolio option; Constrained space first is Wheel-Wells-gated; duplicate recovery runs are prevented. |
+| Waiting for | Final Front Overhang browser smoke, Phase 3 commit hash, TODO follow-up with that hash, final integration smoke, then merge decision for `feat/autopack-portfolio-stack-constrained` into `main`. |
+| Do not run now | Broad all-truck solver audit, legacy solver cleanup, Heavy-Low, Rear-Access, Force Fit, Exception Fit, broad CSS redesign, billing/auth/security, or unrelated refactors. |
+
+### Current integration gate — 2026-07-10
+
+1. 🔄 Finish final Front Overhang browser smoke for the local AutoPack Solution Portfolio Phase 3 implementation.
+2. 🔄 Commit and push Phase 3 if smoke passes. Expected files: `src/packing-core/solution.js` and `tests/audit/autopack-results-carousel.spec.mjs`.
+3. 🔄 Update this TODO again with the final Phase 3 commit hash after commit.
+4. ⬜ Run final integration smoke across Standard, Wheel Wells, Front Overhang, Results panel, staged OOG highlighting, and multi-select/manual placement regression.
+5. ⬜ Merge `feat/autopack-portfolio-stack-constrained` into `main` only after smoke/review passes.
+
+### Current completed integration evidence — 2026-07-10
+
+- ✅ Multi-select manual placement safety is merged into the integration branch at `f56eca0` from source commit `8d0d7a2`.
+- ✅ Wheel Wells packing-quality is merged into the integration branch at `e0f398b` from source commit `f516d53`.
+- ✅ AutoPack Results clarity/compact panel polish is merged into the integration branch at `41d16d6`.
+- 🔄 AutoPack Solution Portfolio Phase 3 is implemented locally but not yet committed; final Front Overhang smoke is the remaining browser check.
+- ⬜ Final integration smoke and merge to `main` remain open.
 
 ---
 

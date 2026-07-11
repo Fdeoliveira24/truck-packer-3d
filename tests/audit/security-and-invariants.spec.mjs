@@ -2927,8 +2927,10 @@ test('STAGING-S3.2 finishDrag does not reject staged placement based on staging 
     'finishDrag must no longer show a staging-area rejection toast');
   assert.match(block, /placementById\.set\(id, PackLibrary\.isAabbContainedInAnyZone\(aabb, zonesInches\) \? 'packed' : 'staged'\)/,
     'finishDrag must derive placement purely from trailer usable-zone containment');
-  assert.match(block, /if \(anyCollides\) \{[\s\S]*revertGroupToStart\(groupIds, startMap\)/,
-    'finishDrag must still revert the drag group on collision');
+  assert.match(block, /if \(anyCollides && groupIds\.length === 1\) \{[\s\S]*revertGroupToStart\(groupIds, startMap\)/,
+    'finishDrag must still revert a single-case raw collision');
+  assert.match(block, /groupIds\.length > 1 && tryCommitAtomicManualGroup\(packId, pack, groupIds, startMap\)/,
+    'multi-select collisions must still route through tolerant atomic revalidation');
 });
 
 test('STAGING-S3.2 staging work-area helpers remain exported but are no longer enforced by the editor', async () => {
@@ -3848,6 +3850,95 @@ test('WHEELWELL-FLOOR-CHANNEL-COMPACTION mixed loads keep smaller cartons in leg
   assert.equal(wwAvoidableForwardFloorMove(Solver, result, zones, items), null,
     'mixed load leaves no legal same-orientation forward floor/channel move');
   wwAssertHardSafe(Solver, result, truck, zones, items, 'mixed floor/channel-compacted wheel wells');
+});
+
+// First staged item that still fits a legal edge-flush/centred overhang pose on
+// a raised support layer at/above the well-top plane (the exact pose family the
+// overhang stack generator searches). Null means the solver harvested them all.
+function wwStagedRaisedOverhangOpportunity(Solver, result, truck, zones, items) {
+  const geo = Solver.getWheelWellGeometry(truck);
+  const packedLike = wwResultPlacements(Solver, result, items).map(p => ({
+    instanceId: p.id,
+    aabb: p.aabb,
+    item: p.item,
+  }));
+  const staged = items.filter(item => !result.placements.has(item.instanceId));
+  const round = value => Math.round(value * 1e6) / 1e6;
+  const yLevels = [...new Set(packedLike.map(p => round(p.aabb.max.y)))]
+    .filter(y => y >= geo.wellHeight - 0.05)
+    .sort((a, b) => a - b);
+  for (const item of staged) {
+    for (const o of Solver.buildOrientationCandidates(item.dims, item)) {
+      for (const y of yLevels) {
+        if (y + o.h > truck.height + 0.05) continue;
+        for (const rect of Solver.buildStackLayerFreeRects(packedLike, y)) {
+          const rectL = rect.maxX - rect.minX;
+          const rectW = rect.maxZ - rect.minZ;
+          if (o.l > 2 * rectL + 0.05 || o.w > 2 * rectW + 0.05) continue;
+          for (const xMin of [rect.minX, rect.maxX - o.l, rect.minX + (rectL - o.l) / 2]) {
+            for (const zMin of [rect.minZ, rect.maxZ - o.w, rect.minZ + (rectW - o.w) / 2]) {
+              const aabb = {
+                min: { x: xMin, y, z: zMin },
+                max: { x: xMin + o.l, y: y + o.h, z: zMin + o.w },
+              };
+              if (!Solver.isAabbWithinTruckMinusBlocked(aabb, geo)) continue;
+              if (packedLike.some(p => Solver.aabbsOverlap(aabb, p.aabb))) continue;
+              if (!Solver.isWheelWellSupportedAndStable(aabb, packedLike, geo, item)) continue;
+              return { id: item.instanceId, aabb };
+            }
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+test('WHEELWELL-RAISED-OVERHANG staged cartons are recovered onto safe overhang poses above the wells instead of staging beside empty space', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = {
+    length: 636, width: 102, height: 98, shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 34.29, wellWidth: 15.31, wellLength: 222.6, wellOffsetFromRear: 159.02 },
+  };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const geo = Solver.getWheelWellGeometry(truck);
+  // Mixed real-world load: big floor cases too light to carry the cartons
+  // (child-vs-support weight rule), narrow heavy stack-bases that pair up on the
+  // well tops, cartons wider than a merged base row (overhang poses required),
+  // and tall no-stack appliances that legitimately cannot fit anywhere raised.
+  const items = [
+    ...Array.from({ length: 30 }, (_, i) => ({
+      instanceId: `big${i}`, caseId: 'big', dims: { l: 48, w: 34, h: 24 },
+      shape: 'box', orientationLock: 'any', canFlip: false, weight: 20, maxStackCount: 3,
+    })),
+    ...Array.from({ length: 90 }, (_, i) => ({
+      instanceId: `carton${i}`, caseId: 'carton', dims: { l: 24, w: 18, h: 16 },
+      shape: 'box', orientationLock: 'any', canFlip: false, weight: 35, maxStackCount: 3,
+    })),
+    ...Array.from({ length: 12 }, (_, i) => ({
+      instanceId: `base${i}`, caseId: 'base', dims: { l: 48, w: 6.5, h: 14 },
+      shape: 'box', orientationLock: 'any', canFlip: false, weight: 180, maxStackCount: 0,
+    })),
+    ...Array.from({ length: 6 }, (_, i) => ({
+      instanceId: `tall${i}`, caseId: 'tall', dims: { l: 30, w: 28, h: 70 },
+      shape: 'box', orientationLock: 'upright', canFlip: false, weight: 185, maxStackCount: 1, noStackOnTop: true,
+    })),
+  ];
+  const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+  const repeat = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true });
+
+  assert.equal(items.filter(item => item.caseId === 'carton' && !result.placements.has(item.instanceId)).length, 0,
+    'every carton is recovered instead of staging while raised space above the wells stays empty');
+  assert.ok(wwResultPlacements(Solver, result, items).some(p =>
+    p.aabb.min.y > geo.wellHeight + 0.05 &&
+    p.aabb.min.x >= geo.wx0 - 0.05 && p.aabb.max.x <= geo.wx1 + 0.05),
+    'recovered cargo actually occupies raised space over the wheel-well region');
+  assert.equal(wwStagedRaisedOverhangOpportunity(Solver, result, truck, zones, items), null,
+    'no staged item still fits a legal overhang pose on a raised support layer');
+  assert.equal(JSON.stringify([...result.placements]), JSON.stringify([...repeat.placements]),
+    'raised-overhang recovery output is deterministic');
+  wwAssertHardSafe(Solver, result, truck, zones, items, 'raised-overhang recovered wheel wells');
 });
 
 test('WHEELWELL-CHANNEL-LANE-ALIGNMENT floor/channel compaction keeps channel rows column-aligned (no lateral zigzag)', async () => {
@@ -10381,6 +10472,77 @@ test('PHASE-C2 production solver gates floor, filler, lane, repeated, B2A/B2C, s
   const repacked = PackLib.repackInvalidPlacements(recon, truck, [deckCase]);
   const repackedInst = repacked.pack.cases.find(inst => inst.id === 'deck-invalid');
   assert.ok(repackedInst.transform.position.x <= 228, 'Repack Invalid places it on the main floor, not the empty deck');
+});
+
+// Floor-first (enableStackPhase:false) must never place cargo on top of other
+// cargo anywhere in the truck, including the Front Overhang deck-retention-wall
+// path (buildDeckRetentionWall), which previously stacked cargo unconditionally
+// to build a tall-enough wall regardless of the flag.
+test('PHASE-C2 floor-first (enableStackPhase:false) never stacks cargo, even where the default strategy builds a retention wall', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = phcFrontOverhangTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const restsOnAnyFloor = aabb => zones.some(zone => Math.abs(aabb.min.y - zone.min.y) <= 0.05);
+
+  // Enough identical cargo to overflow the main floor so the default strategy
+  // resorts to stacking (proves the fixture is non-vacuous).
+  const items = Array.from({ length: 100 }, (_, index) => ({
+    instanceId: `fo${index}`, caseId: 'fo-crowded', dims: { l: 24, w: 18, h: 16 },
+    orientationLock: 'any', canFlip: false, weight: 30,
+  }));
+
+  const defaultResult = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const defaultStackedIds = [...defaultResult.placements].filter(([id, pos]) => {
+    const dims = defaultResult.orientedDims.get(id);
+    return !restsOnAnyFloor(Solver.getAabb(pos, { l: dims.length, w: dims.width, h: dims.height }));
+  });
+  assert.ok(defaultStackedIds.length > 0,
+    'fixture must actually exercise stacking under the default strategy, or the floor-first assertion below is vacuous');
+
+  const floorFirstResult = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableStackPhase: false });
+  for (const [id, pos] of floorFirstResult.placements) {
+    const dims = floorFirstResult.orientedDims.get(id);
+    const aabb = Solver.getAabb(pos, { l: dims.length, w: dims.width, h: dims.height });
+    assert.ok(restsOnAnyFloor(aabb),
+      `floor-first placement ${id} must rest on a zone floor (main or deck), never on top of another case`);
+  }
+  assert.equal(floorFirstResult.phaseStats.stackCount, 0, 'floor-first must report zero stacked placements');
+});
+
+test('PHASE-C2 buildDeckRetentionWall only stacks a wall segment when the stack phase is enabled', async () => {
+  const src = await fs.readFile(autoPackSolverPath, 'utf8');
+  const start = src.indexOf('function buildDeckRetentionWall(');
+  const end = src.indexOf('\nfunction frontOverhangRetentionPlacements', start);
+  assert.ok(start >= 0 && end > start, 'buildDeckRetentionWall must exist');
+  const block = src.slice(start, end);
+
+  assert.match(block,
+    /function buildDeckRetentionWall\(output, packed, itemsById, retentionContext, budget, stackPhaseEnabled = true\)/,
+    'buildDeckRetentionWall must accept the stack-phase flag (defaulting to enabled for existing callers)');
+  assert.match(block,
+    /if \(!onFloor\) \{\s*\n(?:\s*\/\/.*\n)*\s*if \(!stackPhaseEnabled\) continue;\s*\n\s*if \(!supportsCandidate\(aabb, packed, item\)\) continue;\s*\n\s*\}/,
+    'a non-floor (stacked) wall segment must be rejected outright when stackPhaseEnabled is false, ' +
+    'before the ordinary support check ever runs');
+
+  const callSiteSrc = src.slice(end);
+  assert.match(callSiteSrc, /buildDeckRetentionWall\(output, packed, itemsById, retentionContext, budget, stackPhaseEnabled\)/,
+    'solveAutoPack must pass its own stackPhaseEnabled through to buildDeckRetentionWall');
+});
+
+test('PHASE-C2 Front Overhang deck-fill retry is not skipped when stacking is disabled', async () => {
+  const src = await fs.readFile(autoPackSolverPath, 'utf8');
+  const stackBatchStart = src.indexOf('if (stackPhaseEnabled && stackQueue.length && !budget.expired())');
+  assert.ok(stackBatchStart >= 0, 'the stack-phase batch gate must exist');
+  const stackBatchEnd = src.indexOf('\n  }', stackBatchStart);
+  const stackBatchBlock = src.slice(stackBatchStart, stackBatchEnd);
+  assert.equal(stackBatchBlock.includes('placeFrontOverhangDeckFill'), false,
+    'placeFrontOverhangDeckFill must not be nested inside the stackPhaseEnabled batch gate — deck-fill is ' +
+    'raised FLOOR space, not stacking, and must still run when floor-first disables stacking');
+
+  const afterBatch = src.slice(stackBatchEnd, stackBatchEnd + 1200);
+  assert.match(afterBatch, /if \(stackQueue\.length && !budget\.cleanupExpired\(\)\) \{\s*\n\s*const deckFill = placeFrontOverhangDeckFill\(/,
+    'the deck-fill retry against the remaining stack queue must run unconditionally (gated only by its own ' +
+    'pre-existing conditions, not by stackPhaseEnabled)');
 });
 
 test('PHASE-C2 accepted walls emit dependencies and animate before retained deck cargo', async () => {

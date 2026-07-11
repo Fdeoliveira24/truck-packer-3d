@@ -22,9 +22,8 @@
  * - `constrained-first`: constrained (narrower) zones are reserved and filled
  *   with best-fitting cargo before the open floor phases run.
  * Leftover recovery runs inside EVERY strategy (it is part of the pipeline,
- * not a separate preset). The production engine routes through
- * runPackingStrategies and consumes the selected default solution; future
- * multi-solution UI can request additional strategies without engine changes.
+ * not a separate preset). The production engine applies the selected solution
+ * and exposes every distinct strategy result to the AutoPack Results carousel.
  * @module packing-core/solution
  */
 
@@ -37,35 +36,35 @@ export const PACKING_STRATEGIES = Object.freeze([
     id: 'default',
     strategy: 'front-first-balanced',
     label: 'Balanced (recommended)',
-    description: 'Production pipeline: front-first, layout-quality ranked, wheel-well aware, leftover recovery.',
+    description: 'Best overall load quality; tidy rows, wheel-well aware.',
     options: Object.freeze({}),
   }),
   Object.freeze({
     id: 'compact-fill',
     strategy: 'front-first-compact',
     label: 'Compact fill',
-    description: 'Densest local packing without layout-quality re-ranking; may mix orientations.',
+    description: 'Densest fill; may mix orientations.',
     options: Object.freeze({ layoutQuality: false }),
   }),
   Object.freeze({
     id: 'floor-first',
     strategy: 'floor-only',
     label: 'Floor first (no stacking)',
-    description: 'Single-layer loading: nothing is placed on top of other cargo; unfittable items stage.',
+    description: 'Single layer only — nothing stacked; extra items stage.',
     options: Object.freeze({ enableStackPhase: false }),
   }),
   Object.freeze({
     id: 'stack-priority',
     strategy: 'stack-priority',
     label: 'Stack priority',
-    description: 'Items failing the floor try a safe supported stack immediately, favoring vertical use.',
+    description: 'Stacks earlier to use vertical space.',
     options: Object.freeze({ stackFallbackImmediate: true }),
   }),
   Object.freeze({
     id: 'constrained-first',
     strategy: 'constrained-space-first',
     label: 'Constrained space first',
-    description: 'Reserves narrow zones (e.g. the wheel-well channel) for fitting cargo before open floor fills.',
+    description: 'Fills narrow Wheel Wells spaces before open floor.',
     options: Object.freeze({ constrainedSpaceFirst: true }),
   }),
 ]);
@@ -154,19 +153,17 @@ function recoveryCouldHelp(solution) {
 }
 
 /**
- * Production AutoPack entry: run the default strategy, and — only when it
- * legitimately could not place everything — retry with the real alternate
- * strategies that can beat it on hard fits (stack-priority everywhere,
- * constrained-first on wheel-well trucks), then select the best practical
- * result: highest packed count first, ties preferring the default strategy's
- * layout-quality-ranked plan.
+ * Production AutoPack entry: run the default strategy, then an intentional
+ * ordered portfolio of real alternatives. Stack-priority is always offered;
+ * constrained-first is offered only when Wheel Wells geometry exists. If the
+ * default legitimately could not place everything, any remaining recovery
+ * strategies may run only when they were not already attempted as portfolio
+ * options. Select the best practical result by highest packed count first,
+ * with ties preferring the default strategy's layout-quality-ranked plan.
  *
- * Also always runs compact-fill and floor-first as second and third portfolio
- * options so users can compare the default's layout-quality plan against the
- * densest local-fill ordering (compact-fill) and a deliberate single-layer
- * no-stacking layout (floor-first). Both run under half the primary budget
- * (min 2 s) to keep the total main-thread time bounded; deduplication in the
- * engine removes them silently when a strategy produces the identical layout.
+ * Portfolio options run under half the primary budget (min 2 s) to keep each
+ * secondary solve bounded. Deduplication in the engine removes an option
+ * silently when it produces a physically identical layout.
  *
  * Bounded on purpose:
  * - never retries when the primary miss was BUDGET-caused (more synchronous
@@ -183,7 +180,7 @@ export function runAdaptiveAutoPack(input, solve = solveAutoPack) {
   const primarySolution = primary.selectedSolution;
   if (!primarySolution || input.strategyRecovery === false) return primary;
 
-  // Bounded budget shared by every non-primary solve.
+  // Per-solve budget cap applied to every non-primary solve.
   const primaryBudget = Number(input.solveBudgetMs);
   const secondaryBudgetMs = Number.isFinite(primaryBudget) && primaryBudget > 0
     ? Math.max(2000, primaryBudget / 2)
@@ -192,15 +189,22 @@ export function runAdaptiveAutoPack(input, solve = solveAutoPack) {
     ? { ...input, solveBudgetMs: secondaryBudgetMs }
     : input;
 
-  // Always offer compact-fill and floor-first as portfolio alternatives.
+  // Always offer compact-fill, floor-first, and stack-priority as intentional
+  // portfolio alternatives. constrained-first is meaningful only when actual
+  // Wheel Wells geometry exists, so Standard and Front Overhang never run it.
   // compact-fill: densest local-waste-first packing without layout-quality
   // re-ranking. floor-first: single-layer no-stacking layout; may pack fewer
   // cases on loads where stacking is required, but is a deliberate style
-  // option for users who need a flat, accessible load. Both run under the
-  // same secondary budget cap so the total main-thread time stays bounded.
+  // option for users who need a flat, accessible load. Stack-priority offers
+  // safe supported stacking earlier instead of waiting for a partial default
+  // result. All run under the same per-solve secondary budget cap.
   // Default stays first so index-order ties keep the default's layout-quality
   // plan as the auto-selected result.
-  const portfolio = runPackingStrategies(secondaryInput, ['compact-fill', 'floor-first'], solve);
+  const hasWheelWellGeometry = Boolean(getWheelWellGeometry(input.truck || {}));
+  const portfolioIds = ['compact-fill', 'floor-first', 'stack-priority'];
+  if (hasWheelWellGeometry) portfolioIds.push('constrained-first');
+  const portfolio = runPackingStrategies(secondaryInput, portfolioIds, solve);
+  const attemptedStrategyIds = new Set(['default', ...portfolioIds]);
 
   const status = primarySolution.solveStatus || null;
   const complete = status
@@ -210,20 +214,22 @@ export function runAdaptiveAutoPack(input, solve = solveAutoPack) {
     status && Array.isArray(status.partialCauses) && status.partialCauses.includes('budget')
   );
 
-  // Recovery pass: only when default was partial and retrying with strategies
-  // that can beat it on hard fits. compact-fill is intentionally excluded from
-  // the recovery IDs — it is already part of the portfolio run above and must
-  // not run twice.
+  // Recovery pass: only when default was partial and retrying could help. Any
+  // strategy already run as an intentional portfolio option is filtered out,
+  // preventing duplicate synchronous solves and duplicate recovery entries.
   let recoverySolutions = [];
   if (!complete && !budgetCaused && recoveryCouldHelp(primarySolution)) {
     const recoveryIds = ['stack-priority'];
-    if (getWheelWellGeometry(input.truck || {})) recoveryIds.push('constrained-first');
-    const recovery = runPackingStrategies(secondaryInput, recoveryIds, solve);
-    recoverySolutions = recovery.solutions;
+    if (hasWheelWellGeometry) recoveryIds.push('constrained-first');
+    const remainingRecoveryIds = recoveryIds.filter(id => !attemptedStrategyIds.has(id));
+    if (remainingRecoveryIds.length) {
+      const recovery = runPackingStrategies(secondaryInput, remainingRecoveryIds, solve);
+      recoverySolutions = recovery.solutions;
+    }
   }
 
-  // Default first, then compact-fill, then any recovery solutions.
-  // Default wins all merit ties (index 0 in the sorted order).
+  // Default first, then the ordered portfolio, then any remaining recovery
+  // solutions. Default wins all merit ties (index 0 in the sorted order).
   const allSolutions = [...primary.solutions, ...portfolio.solutions, ...recoverySolutions];
   const ranked = allSolutions.map((result, index) => ({ index, result }));
   const selected = [...ranked].sort(compareStrategyResults)[0].result;

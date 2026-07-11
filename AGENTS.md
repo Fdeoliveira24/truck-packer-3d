@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 Last updated: 2026-05-03
 Project: Truck Packer 3D
 
@@ -300,7 +300,7 @@ When you need to understand the codebase, docs, or any files in this project:
 - Key communities: `Core App Runtime`, `Supabase Client & Auth`, `Security & Invariant Specs`
 - Run `/graphify --update` after significant code changes to keep the graph current
 
-# CLAUDE.md — Truck Packer 3D (TP3D) Agent Operating Guide
+# AGENTS.md — Truck Packer 3D (TP3D) Agent Operating Guide
 
 **Last updated:** 2026-06-25
 
@@ -720,14 +720,17 @@ When in doubt:
 - favor backend truth over UI guesswork
 - favor launch stability over elegance
 - document follow-up work instead of widening the patch
-- wait for validation when Codex or Claude finds a merge-blocking nuance
+- wait for validation when Codex or Codex finds a merge-blocking nuance
 
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
+When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+
 Rules:
 - For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

@@ -597,6 +597,11 @@ export function aabbIntersectsWheelWellBlockedBody(aabb, truck) {
   return getWheelWellsBlockedZones(truck).some(blocked => aabbsOverlap(aabb, blocked));
 }
 
+export function aabbIntersectsFrontBonusBlockedBody(aabb, truck) {
+  if (!aabb) return false;
+  return getFrontBonusBlockedZones(truck).some(blocked => aabbsOverlap(aabb, blocked));
+}
+
 function overlapsAny(aabb, acceptedAabbs) {
   return (acceptedAabbs || []).some(other => aabbsOverlap(aabb, other));
 }
@@ -607,7 +612,8 @@ function getSafeImportedPlacement(pack, inst, caseData, acceptedAabbs) {
   const dims = getInstanceEffectiveDims(inst, caseData);
   const aabb = makeAabb(position, dims);
   const zones = getTrailerUsableZones(pack && pack.truck);
-  if (aabbIntersectsWheelWellBlockedBody(aabb, pack && pack.truck)) return null;
+  if (aabbIntersectsWheelWellBlockedBody(aabb, pack && pack.truck) ||
+      aabbIntersectsFrontBonusBlockedBody(aabb, pack && pack.truck)) return null;
   if (!isAabbContainedInAnyZone(aabb, zones)) return null;
   if (overlapsAny(aabb, acceptedAabbs)) return null;
   return { position, dims, aabb };
@@ -741,7 +747,9 @@ function buildDuplicateExistingAabbs(pack, caseLibrary) {
 }
 
 function duplicateAabbIsInsideTruckGeometry(pack, aabb) {
-  if (!aabb || aabbIntersectsWheelWellBlockedBody(aabb, pack && pack.truck)) return false;
+  if (!aabb ||
+      aabbIntersectsWheelWellBlockedBody(aabb, pack && pack.truck) ||
+      aabbIntersectsFrontBonusBlockedBody(aabb, pack && pack.truck)) return false;
   const zones = getTrailerUsableZones(pack && pack.truck);
   return isAabbInsideTruckGeometry(aabb, zones, getWheelWellGeometry(pack && pack.truck));
 }
@@ -1001,7 +1009,8 @@ export function isAabbInStagingZone(pack, aabb, options = {}) {
  * outside (including the staging zone) is "staged".
  */
 function getPlacementForAabb(pack, aabb) {
-  if (aabbIntersectsWheelWellBlockedBody(aabb, pack && pack.truck)) return 'staged';
+  if (aabbIntersectsWheelWellBlockedBody(aabb, pack && pack.truck) ||
+      aabbIntersectsFrontBonusBlockedBody(aabb, pack && pack.truck)) return 'staged';
   const zones = getTrailerUsableZones(pack && pack.truck);
   return isAabbInsideTruckGeometry(aabb, zones, getWheelWellGeometry(pack && pack.truck))
     ? 'packed'
@@ -1143,6 +1152,7 @@ function aabbIsFullyValid(candidate, aabb, accepted, zones, truck, tol = RECON_T
     : aabbIsSupported(candidate, aabb, accepted, zones, tol);
   return isAabbInsideTruckGeometry(aabb, zones, wheelWell) &&
     !aabbIntersectsWheelWellBlockedBody(aabb, truck) &&
+    !aabbIntersectsFrontBonusBlockedBody(aabb, truck) &&
     !overlapsAny(aabb, (accepted || []).map(entry => entry.aabb)) &&
     physicallySupported &&
     evaluateFrontOverhangRearRetention(aabb, accepted, truck, zones).retained;
@@ -1197,6 +1207,7 @@ function explainInvalidLevel(node, aabb, accepted, zones, truck, wheelWell, mode
     return manualVerticalFailure(mode === 'up' ? 'no-clearance-above' : 'blocked-collision');
   }
   if (aabbIntersectsWheelWellBlockedBody(aabb, truck) ||
+      aabbIntersectsFrontBonusBlockedBody(aabb, truck) ||
       overlapsAny(aabb, (accepted || []).map(entry => entry.aabb))) {
     return manualVerticalFailure('blocked-collision');
   }
@@ -1446,7 +1457,8 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
   for (const node of stagedOrder) {
     const current = node.curAabb;
     const insideTruck = isAabbContainedInAnyZone(current, zones);
-    const blockedBody = aabbIntersectsWheelWellBlockedBody(current, nextTruck);
+    const blockedBody = aabbIntersectsWheelWellBlockedBody(current, nextTruck) ||
+      aabbIntersectsFrontBonusBlockedBody(current, nextTruck);
     const collidesStaged = overlapsAny(current, stagingAccepted);
     const collides = overlapsAny(current, [...packedAabbs, ...stagingAccepted]);
     const onFloor = Math.abs(current.min.y) <= RECON_TOL;
@@ -1933,7 +1945,9 @@ export function addInstance(packId, caseId, position) {
   const dims = normalizeDims(caseData.dimensions);
   const acceptedAabbs = buildAcceptedAabbs(pack, pack.cases || [], CaseLibrary.getCases());
   const explicitAabb = explicitPosition ? makeAabb(explicitPosition, dims) : null;
-  const needsSafeStaging = !explicitPosition || aabbIntersectsWheelWellBlockedBody(explicitAabb, pack.truck);
+  const needsSafeStaging = !explicitPosition ||
+    aabbIntersectsWheelWellBlockedBody(explicitAabb, pack.truck) ||
+    aabbIntersectsFrontBonusBlockedBody(explicitAabb, pack.truck);
   const staged = needsSafeStaging ? findSafeStagingPosition(pack, dims, acceptedAabbs) : null;
   const finalPosition = needsSafeStaging ? staged.position : explicitPosition;
   const finalAabb = needsSafeStaging ? staged.aabb : explicitAabb;

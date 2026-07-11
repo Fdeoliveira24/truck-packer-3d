@@ -69,6 +69,123 @@ function formatVerticalMoveMessage(result, movedId, baseMessage) {
   return message;
 }
 
+function manualGroupPositionsMatch(a, b, tolerance = 1e-6) {
+  if (!a || !b) return false;
+  return ['x', 'y', 'z'].every(axis => {
+    const left = Number(a[axis]);
+    const right = Number(b[axis]);
+    return Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) <= tolerance;
+  });
+}
+
+export function validateAtomicManualGroupResult(proposedCases, validationResult, groupIds, tolerance = 1e-6) {
+  const ids = Array.isArray(groupIds) ? [...new Set(groupIds.filter(Boolean))] : [];
+  const validatedCases = validationResult && validationResult.pack && Array.isArray(validationResult.pack.cases)
+    ? validationResult.pack.cases
+    : null;
+  if (ids.length < 2 || !Array.isArray(proposedCases) || !validatedCases) {
+    return { ok: false, reason: 'validation-unavailable' };
+  }
+
+  const proposedById = new Map(proposedCases.filter(Boolean).map(inst => [inst.id, inst]));
+  const validatedById = new Map(validatedCases.filter(Boolean).map(inst => [inst.id, inst]));
+  const invalidIds = new Set([
+    ...(Array.isArray(validationResult.invalidIds) ? validationResult.invalidIds : []),
+    ...(Array.isArray(validationResult.failedIds) ? validationResult.failedIds : []),
+  ]);
+
+  for (const id of ids) {
+    const proposed = proposedById.get(id);
+    const validated = validatedById.get(id);
+    if (!proposed || !validated || invalidIds.has(id)) {
+      return { ok: false, reason: 'selected-invalid', instanceId: id };
+    }
+    if (validated.placement !== proposed.placement) {
+      return { ok: false, reason: 'selected-placement-changed', instanceId: id };
+    }
+    if (!manualGroupPositionsMatch(
+      proposed.transform && proposed.transform.position,
+      validated.transform && validated.transform.position,
+      tolerance
+    )) {
+      return { ok: false, reason: 'selected-position-changed', instanceId: id };
+    }
+  }
+
+  return { ok: true };
+}
+
+export function formatManualGroupMoveMessage(result, movedIds, baseMessage) {
+  const movedSet = new Set(Array.isArray(movedIds) ? movedIds : []);
+  const otherIds = ids => (Array.isArray(ids) ? ids.filter(id => !movedSet.has(id)) : []);
+  const resettled = new Set([
+    ...otherIds(result && result.adjustedIds),
+    ...otherIds(result && result.repairedIds),
+  ]);
+  const stagedCount = new Set(otherIds(result && result.stagedIds)).size;
+
+  let message = baseMessage;
+  if (resettled.size) {
+    message += ` ${resettled.size} nearby ${resettled.size === 1 ? 'case was' : 'cases were'} re-settled.`;
+  }
+  if (stagedCount) {
+    message += ` ${stagedCount} dependent ${stagedCount === 1 ? 'case was' : 'cases were'} moved to staging because ${stagedCount === 1 ? 'its' : 'their'} support changed.`;
+  }
+  return message;
+}
+
+/**
+ * Return the first normalized time (0..1) at which a moving AABB overlaps a
+ * stationary AABB, or null when the swept segment stays clear. Face/edge
+ * contact is allowed, matching the live point-collision tolerance.
+ */
+export function getSweptAabbCollisionTime(startAabb, endAabb, obstacleAabb, epsilon = 1e-6) {
+  if (!startAabb || !endAabb || !obstacleAabb) return null;
+
+  const axes = ['x', 'y', 'z'];
+  const center = {};
+  const delta = {};
+  const half = {};
+  for (const axis of axes) {
+    const startMin = Number(startAabb.min && startAabb.min[axis]);
+    const startMax = Number(startAabb.max && startAabb.max[axis]);
+    const endMin = Number(endAabb.min && endAabb.min[axis]);
+    const endMax = Number(endAabb.max && endAabb.max[axis]);
+    const obstacleMin = Number(obstacleAabb.min && obstacleAabb.min[axis]);
+    const obstacleMax = Number(obstacleAabb.max && obstacleAabb.max[axis]);
+    if (![startMin, startMax, endMin, endMax, obstacleMin, obstacleMax].every(Number.isFinite)) {
+      return null;
+    }
+    center[axis] = (startMin + startMax) / 2;
+    delta[axis] = (endMin + endMax - startMin - startMax) / 2;
+    half[axis] = Math.max(0, (startMax - startMin) / 2);
+  }
+
+  let entry = 0;
+  let exit = 1;
+  for (const axis of axes) {
+    // Minkowski-expand the obstacle by the moving box half-extent, then
+    // shrink by epsilon so exact touching does not count as penetration.
+    const expandedMin = Number(obstacleAabb.min[axis]) - half[axis] + epsilon;
+    const expandedMax = Number(obstacleAabb.max[axis]) + half[axis] - epsilon;
+    if (expandedMin >= expandedMax) return null;
+
+    if (Math.abs(delta[axis]) <= 1e-12) {
+      if (center[axis] < expandedMin || center[axis] > expandedMax) return null;
+      continue;
+    }
+
+    let axisEntry = (expandedMin - center[axis]) / delta[axis];
+    let axisExit = (expandedMax - center[axis]) / delta[axis];
+    if (axisEntry > axisExit) [axisEntry, axisExit] = [axisExit, axisEntry];
+    entry = Math.max(entry, axisEntry);
+    exit = Math.min(exit, axisExit);
+    if (entry > exit) return null;
+  }
+
+  return exit >= 0 && entry <= 1 ? Math.max(0, entry) : null;
+}
+
 function createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, rotation) {
   const caseData = inst ? CaseLibrary.getById(inst.caseId) : null;
   if (caseData && caseData.dimensions && typeof PackLibrary.createOrientationLockPatch === 'function') {
@@ -217,6 +334,145 @@ export function computeSurfaceFollowingPreviewY({
     bottomY: best.topY + lift,
     surface: best.surface,
     overlapFraction: best.overlapFraction,
+  };
+}
+
+function sweptFootprintCrossesSurface(
+  fromX,
+  fromZ,
+  toX,
+  toZ,
+  halfX,
+  halfZ,
+  surface,
+  epsilon = 1e-6
+) {
+  if (!surface || !surface.min || !surface.max) return false;
+  const axes = [
+    { from: fromX, to: toX, half: halfX, min: Number(surface.min.x), max: Number(surface.max.x) },
+    { from: fromZ, to: toZ, half: halfZ, min: Number(surface.min.z), max: Number(surface.max.z) },
+  ];
+  if (axes.some(axis => ![axis.from, axis.to, axis.half, axis.min, axis.max].every(Number.isFinite))) {
+    return false;
+  }
+
+  let entry = 0;
+  let exit = 1;
+  for (const axis of axes) {
+    const expandedMin = axis.min - axis.half + epsilon;
+    const expandedMax = axis.max + axis.half - epsilon;
+    if (expandedMin >= expandedMax) return false;
+    const delta = axis.to - axis.from;
+    if (Math.abs(delta) <= 1e-12) {
+      if (axis.from < expandedMin || axis.from > expandedMax) return false;
+      continue;
+    }
+    let axisEntry = (expandedMin - axis.from) / delta;
+    let axisExit = (expandedMax - axis.from) / delta;
+    if (axisEntry > axisExit) [axisEntry, axisExit] = [axisExit, axisEntry];
+    entry = Math.max(entry, axisEntry);
+    exit = Math.min(exit, axisExit);
+    if (entry > exit) return false;
+  }
+  return exit >= 0 && entry <= 1;
+}
+
+/**
+ * Compute one shared Y delta for a rigid multi-selection over preview terrain.
+ * Every member samples the same surface set at its translated X/Z footprint;
+ * the member needing the greatest lift controls the whole group.
+ *
+ * @param {object} [input]
+ * @param {Array<{ id?: string, start: {x: number, y: number, z: number},
+ *   halfWorld: {x: number, y: number, z: number} }>} [input.members]
+ * @param {Array<{ id?: string, kind: string, min: {x: number, z: number},
+ *   max: {x: number, z: number}, topY: number }>} [input.surfaces]
+ * @param {number} [input.deltaX]
+ * @param {number} [input.deltaZ]
+ * @param {number} [input.fromDeltaX]
+ * @param {number} [input.fromDeltaZ]
+ * @param {number} [input.minOverlapFraction]
+ * @returns {{ ok: boolean, deltaY?: number, previews?: Array<object>,
+ *   reason?: 'bad-input' }}
+ */
+export function computeRigidGroupSurfaceFollowingDelta({
+  members,
+  surfaces,
+  deltaX = 0,
+  deltaZ = 0,
+  fromDeltaX = 0,
+  fromDeltaZ = 0,
+  minOverlapFraction = 0.08,
+} = {}) {
+  const dx = Number(deltaX);
+  const dz = Number(deltaZ);
+  const fromDx = Number(fromDeltaX);
+  const fromDz = Number(fromDeltaZ);
+  if (!Array.isArray(members) || members.length < 2 || !Array.isArray(surfaces) ||
+      !Number.isFinite(dx) || !Number.isFinite(dz) ||
+      !Number.isFinite(fromDx) || !Number.isFinite(fromDz)) {
+    return { ok: false, reason: 'bad-input' };
+  }
+
+  let sharedDeltaY = null;
+  let floorClampDeltaY = -Infinity;
+  const previews = [];
+  for (const member of members) {
+    const start = member && member.start;
+    const halfWorld = member && member.halfWorld;
+    const startX = Number(start && start.x);
+    const startY = Number(start && start.y);
+    const startZ = Number(start && start.z);
+    const halfX = Number(halfWorld && halfWorld.x);
+    const halfY = Number(halfWorld && halfWorld.y);
+    const halfZ = Number(halfWorld && halfWorld.z);
+    if (!Number.isFinite(startX) || !Number.isFinite(startY) || !Number.isFinite(startZ) ||
+        !Number.isFinite(halfX) || halfX <= 0 ||
+        !Number.isFinite(halfY) || halfY <= 0 ||
+        !Number.isFinite(halfZ) || halfZ <= 0) {
+      return { ok: false, reason: 'bad-input' };
+    }
+
+    floorClampDeltaY = Math.max(floorClampDeltaY, halfY - startY);
+    const preview = computeSurfaceFollowingPreviewY({
+      halfWorld,
+      centerX: startX + dx,
+      centerZ: startZ + dz,
+      surfaces,
+      minOverlapFraction,
+    });
+    previews.push({ id: member.id, preview });
+    if (preview.ok && Number.isFinite(preview.centerY)) {
+      const requiredDeltaY = preview.centerY - startY;
+      sharedDeltaY = sharedDeltaY === null
+        ? requiredDeltaY
+        : Math.max(sharedDeltaY, requiredDeltaY);
+    }
+
+    // A fast pointer event may start and end clear while crossing cargo in
+    // between. Keep the whole group high enough to clear every crossed terrain
+    // surface for this event; the endpoint preview lowers it again once the
+    // following segment is fully clear.
+    for (const surface of surfaces) {
+      const topY = Number(surface && surface.topY);
+      if (!Number.isFinite(topY)) continue;
+      if (!sweptFootprintCrossesSurface(
+        startX + fromDx,
+        startZ + fromDz,
+        startX + dx,
+        startZ + dz,
+        halfX,
+        halfZ,
+        surface
+      )) continue;
+      sharedDeltaY = Math.max(sharedDeltaY === null ? -Infinity : sharedDeltaY, topY + halfY - startY);
+    }
+  }
+
+  return {
+    ok: true,
+    deltaY: Math.max(sharedDeltaY === null ? 0 : sharedDeltaY, floorClampDeltaY),
+    previews,
   };
 }
 
@@ -950,11 +1206,19 @@ export function createCaseScene({
       return PackLibrary.aabbIntersectsWheelWellBlockedBody(aabbWorldToInches(aabb), pack.truck);
     }
 
+    function intersectsFrontOverhangCabVoid(aabb) {
+      const packId = StateStore.get('currentPackId');
+      const pack = packId ? PackLibrary.getById(packId) : null;
+      if (!pack || !pack.truck) return false;
+      if (typeof PackLibrary.aabbIntersectsFrontBonusBlockedBody !== 'function') return false;
+      return PackLibrary.aabbIntersectsFrontBonusBlockedBody(aabbWorldToInches(aabb), pack.truck);
+    }
+
     function checkCollision(instanceId, candidateWorldPos, ignoreIds) {
       const aabb = getAabbWorld(instanceId, candidateWorldPos);
       if (!aabb) return { collides: false, insideTruck: false };
       const insideTruck = isInsideTruck(aabb);
-      const blockedBody = intersectsWheelWellBlockedBody(aabb);
+      const blockedBody = intersectsWheelWellBlockedBody(aabb) || intersectsFrontOverhangCabVoid(aabb);
       if (blockedBody) return { collides: true, insideTruck, blockedBody: true };
 
       const ignoreSet =
@@ -970,6 +1234,55 @@ export function createCaseScene({
         const otherAabb = getAabbWorld(otherId);
         if (!otherAabb) continue;
         if (aabbIntersects(aabb, otherAabb)) return { collides: true, insideTruck };
+      }
+      return { collides: false, insideTruck };
+    }
+
+    function getBlockedAabbsWorld() {
+      const packId = StateStore.get('currentPackId');
+      const pack = packId ? PackLibrary.getById(packId) : null;
+      const truck = pack && pack.truck ? pack.truck : null;
+      if (!truck || !TrailerGeometry || typeof TrailerGeometry.zonesInchesToWorld !== 'function') return [];
+
+      const blockedInches = [];
+      if (typeof PackLibrary.getWheelWellsBlockedZones === 'function') {
+        blockedInches.push(...(PackLibrary.getWheelWellsBlockedZones(truck) || []));
+      }
+      if (typeof PackLibrary.getFrontBonusBlockedZones === 'function') {
+        blockedInches.push(...(PackLibrary.getFrontBonusBlockedZones(truck) || []));
+      }
+      return TrailerGeometry.zonesInchesToWorld(blockedInches);
+    }
+
+    /**
+     * Check the complete motion segment, not only its endpoint. This prevents a
+     * fast pointer event from moving a selected group from one clear side of a
+     * box or blocked truck body to the other clear side in a single frame.
+     */
+    function checkSweptCollision(instanceId, fromWorldPos, toWorldPos, ignoreIds) {
+      const startAabb = getAabbWorld(instanceId, fromWorldPos);
+      const endAabb = getAabbWorld(instanceId, toWorldPos);
+      if (!startAabb || !endAabb) return { collides: false, insideTruck: false };
+      const insideTruck = isInsideTruck(endAabb);
+      const ignoreSet = ignoreIds && typeof ignoreIds.has === 'function'
+        ? ignoreIds
+        : Array.isArray(ignoreIds)
+          ? new Set(ignoreIds)
+          : null;
+
+      for (const blockedAabb of getBlockedAabbsWorld()) {
+        if (getSweptAabbCollisionTime(startAabb, endAabb, blockedAabb) !== null) {
+          return { collides: true, insideTruck, blockedBody: true, swept: true };
+        }
+      }
+
+      for (const [otherId] of instances.entries()) {
+        if (otherId === instanceId) continue;
+        if (ignoreSet && ignoreSet.has(otherId)) continue;
+        const otherAabb = getAabbWorld(otherId);
+        if (otherAabb && getSweptAabbCollisionTime(startAabb, endAabb, otherAabb) !== null) {
+          return { collides: true, insideTruck, swept: true };
+        }
       }
       return { collides: false, insideTruck };
     }
@@ -1086,7 +1399,7 @@ export function createCaseScene({
       return truck && truck.shapeMode === 'wheelWells' ? 'wheel-well-top' : 'front-deck';
     }
 
-    function getSurfaceFollowingPreviewSurfaces(instanceId) {
+    function getSurfaceFollowingPreviewSurfaces(instanceId, ignoreIds) {
       const packId = StateStore.get('currentPackId');
       const pack = packId ? PackLibrary.getById(packId) : null;
       const truck = pack && pack.truck ? pack.truck : null;
@@ -1096,6 +1409,11 @@ export function createCaseScene({
           .map(inst => [inst.id, inst])
       );
       const surfaces = [];
+      const ignoreSet = ignoreIds && typeof ignoreIds.has === 'function'
+        ? ignoreIds
+        : Array.isArray(ignoreIds)
+          ? new Set(ignoreIds)
+          : null;
 
       if (truck &&
           TrailerGeometry &&
@@ -1140,6 +1458,7 @@ export function createCaseScene({
 
       for (const [otherId, otherGroup] of instances.entries()) {
         if (otherId === instanceId) continue;
+        if (ignoreSet && ignoreSet.has(otherId)) continue;
         if (!otherGroup || otherGroup.visible === false) continue;
         const otherInst = packInstances.get(otherId);
         const aabb = getAabbWorld(otherId);
@@ -1159,14 +1478,45 @@ export function createCaseScene({
       return surfaces;
     }
 
-    function getSurfaceFollowingPreview(instanceId, candidateWorldPos) {
+    function getSurfaceFollowingPreview(instanceId, candidateWorldPos, ignoreIds) {
       const group = instances.get(instanceId);
       if (!group || !group.userData.halfWorld || !candidateWorldPos) return null;
       return computeSurfaceFollowingPreviewY({
         halfWorld: group.userData.halfWorld,
         centerX: candidateWorldPos.x,
         centerZ: candidateWorldPos.z,
-        surfaces: getSurfaceFollowingPreviewSurfaces(instanceId),
+        surfaces: getSurfaceFollowingPreviewSurfaces(instanceId, ignoreIds),
+        minOverlapFraction: SURFACE_PREVIEW_DRAG_MIN_OVERLAP,
+      });
+    }
+
+    function getRigidGroupSurfaceFollowingPreview(
+      groupIds,
+      startMap,
+      deltaX,
+      deltaZ,
+      fromDeltaX,
+      fromDeltaZ
+    ) {
+      if (!Array.isArray(groupIds) || groupIds.length < 2 || !startMap ||
+          typeof startMap.get !== 'function') {
+        return null;
+      }
+      const ignoreSet = new Set(groupIds);
+      const members = [];
+      for (const id of groupIds) {
+        const group = instances.get(id);
+        const start = startMap.get(id);
+        if (!group || !group.userData.halfWorld || !start) return null;
+        members.push({ id, start, halfWorld: group.userData.halfWorld });
+      }
+      return computeRigidGroupSurfaceFollowingDelta({
+        members,
+        surfaces: getSurfaceFollowingPreviewSurfaces(null, ignoreSet),
+        deltaX,
+        deltaZ,
+        fromDeltaX,
+        fromDeltaZ,
         minOverlapFraction: SURFACE_PREVIEW_DRAG_MIN_OVERLAP,
       });
     }
@@ -1254,10 +1604,21 @@ export function createCaseScene({
     function applyOOGHighlights() {
       const prevOog = new Set(oogSet);
       oogSet.clear();
+      const packId = StateStore.get('currentPackId');
+      const pack = packId ? PackLibrary.getById(packId) : null;
+      const instanceById = new Map(
+        pack && Array.isArray(pack.cases)
+          ? pack.cases.filter(inst => inst && inst.id).map(inst => [inst.id, inst])
+          : []
+      );
       for (const [id, group] of instances.entries()) {
         if (!group || !group.userData.mesh) continue;
         // Skip hidden instances
         if (group.visible === false) continue;
+        // Staged cases intentionally live outside the truck in the staging area;
+        // do not mark them as out-of-gauge cargo.
+        const inst = instanceById.get(id);
+        if (inst && inst.placement === 'staged') continue;
         const aabb = getAabbWorld(id);
         if (!aabb) continue;
         const inside = isInsideTruck(aabb);
@@ -1308,11 +1669,13 @@ export function createCaseScene({
       getRaycastMeshes,
       getAabbWorld,
       checkCollision,
+      checkSweptCollision,
       isInsideTruck,
       applyOOGHighlights,
       settleY,
       snapToNearest,
       getSurfaceFollowingPreview,
+      getRigidGroupSurfaceFollowingPreview,
       refreshGizmo,
       updateGizmoTransform,
       setGizmoActive,
@@ -1367,6 +1730,8 @@ export function createInteractionManager({
     let dragStartPosWorld = null;
     let dragGroupIds = null;
     let dragGroupStartWorld = null; // Map<instanceId, THREE.Vector3>
+    let dragGroupAcceptedWorld = null; // Last rigid, collision-free preview pose.
+    let dragGroupPreviewBlocked = false;
     let surfaceFollowingDrag = false;
     let lastRaycastTime = 0;
     const CLICK_DRAG_THRESHOLD_PX = 3;
@@ -1393,9 +1758,9 @@ export function createInteractionManager({
       return true;
     }
 
-    function commitCasesWithManualRevalidation(packId, nextCases) {
+    function commitCasesWithManualRevalidation(packId, nextCases, options = {}) {
       if (typeof PackLibrary.updateCasesWithManualRevalidation === 'function') {
-        return PackLibrary.updateCasesWithManualRevalidation(packId, nextCases, CaseLibrary.getCases());
+        return PackLibrary.updateCasesWithManualRevalidation(packId, nextCases, CaseLibrary.getCases(), options);
       }
       return PackLibrary.update(packId, { cases: nextCases });
     }
@@ -1515,6 +1880,127 @@ export function createInteractionManager({
         return true;
       }
       return false;
+    }
+
+    function buildAtomicManualGroupCandidate(pack, groupIds) {
+      if (!pack || !pack.truck || !Array.isArray(groupIds) || groupIds.length < 2 ||
+          typeof PackLibrary.getTrailerUsableZones !== 'function' ||
+          typeof PackLibrary.isAabbContainedInAnyZone !== 'function') {
+        return null;
+      }
+
+      const zones = PackLibrary.getTrailerUsableZones(pack.truck);
+      const patchById = new Map();
+      let packedCount = 0;
+      let stagedCount = 0;
+
+      for (const id of groupIds) {
+        const inst = (pack.cases || []).find(item => item && item.id === id);
+        const caseData = inst ? CaseLibrary.getById(inst.caseId) : null;
+        const obj = CaseScene.getObject(id);
+        const dims = caseData ? getInstanceDimsInches(inst) : null;
+        if (!inst || !caseData || !obj || !dims) return null;
+
+        const position = SceneManager.vecWorldToInches(obj.position);
+        const aabb = makeInstanceAabbInches(position, dims);
+        if (!aabb) return null;
+        const placement = PackLibrary.isAabbContainedInAnyZone(aabb, zones) ? 'packed' : 'staged';
+        if (placement === 'packed') packedCount += 1;
+        else stagedCount += 1;
+        patchById.set(id, {
+          transform: { ...(inst.transform || {}), position },
+          placement,
+        });
+      }
+
+      return {
+        cases: applyInstancePatches(pack, patchById),
+        packedCount,
+        stagedCount,
+      };
+    }
+
+    function revertAtomicManualGroup(groupIds, startMap, message) {
+      revertGroupToStart(groupIds, startMap);
+      UIComponents.showToast(message, 'error');
+      resetDrag();
+    }
+
+    function tryCommitAtomicManualGroup(packId, pack, groupIds, startMap) {
+      if (!Array.isArray(groupIds) || groupIds.length < 2) return false;
+      if (typeof PackLibrary.revalidateManualPlacements !== 'function' ||
+          typeof PackLibrary.updateCasesWithManualRevalidation !== 'function') {
+        revertAtomicManualGroup(
+          groupIds,
+          startMap,
+          'Cannot validate this group placement. All selected cases were returned.'
+        );
+        return true;
+      }
+
+      const candidate = buildAtomicManualGroupCandidate(pack, groupIds);
+      if (!candidate) {
+        revertAtomicManualGroup(
+          groupIds,
+          startMap,
+          'Cannot validate every selected case. All selected cases were returned.'
+        );
+        return true;
+      }
+
+      const preflight = PackLibrary.revalidateManualPlacements(
+        { ...pack, cases: candidate.cases },
+        CaseLibrary.getCases(),
+        { repairDependents: true }
+      );
+      const atomicResult = validateAtomicManualGroupResult(candidate.cases, preflight, groupIds);
+      if (!atomicResult.ok || (Array.isArray(preflight && preflight.failedIds) && preflight.failedIds.length)) {
+        revertAtomicManualGroup(
+          groupIds,
+          startMap,
+          'Cannot place this selection safely. All selected cases were returned.'
+        );
+        return true;
+      }
+
+      const result = commitCasesWithManualRevalidation(packId, candidate.cases, { repairDependents: true });
+      if (!result) {
+        revertAtomicManualGroup(
+          groupIds,
+          startMap,
+          'Group placement failed. All selected cases were returned.'
+        );
+        return true;
+      }
+
+      let baseMessage;
+      if (candidate.packedCount === groupIds.length) {
+        baseMessage = `Placed ${caseCountText(groupIds.length)}.`;
+      } else if (candidate.stagedCount === groupIds.length) {
+        baseMessage = `Placed ${caseCountText(groupIds.length)} in staging.`;
+      } else {
+        baseMessage = `Placed ${caseCountText(groupIds.length)}: ${candidate.packedCount} in the truck and ${candidate.stagedCount} in staging.`;
+      }
+
+      const movedSet = new Set(groupIds);
+      const otherResettled = new Set([
+        ...(Array.isArray(result.adjustedIds) ? result.adjustedIds : []),
+        ...(Array.isArray(result.repairedIds) ? result.repairedIds : []),
+      ].filter(id => !movedSet.has(id)));
+      const otherStaged = new Set(
+        (Array.isArray(result.stagedIds) ? result.stagedIds : []).filter(id => !movedSet.has(id))
+      );
+      const tone = otherStaged.size
+        ? 'warning'
+        : otherResettled.size
+          ? 'info'
+          : candidate.packedCount
+            ? 'success'
+            : 'info';
+      UIComponents.showToast(formatManualGroupMoveMessage(result, groupIds, baseMessage), tone);
+      resetDrag();
+      CaseScene.applyOOGHighlights();
+      return true;
     }
 
     function applyInstancePatches(pack, patchById) {
@@ -2202,12 +2688,63 @@ export function createInteractionManager({
     }
 
     function canSurfaceFollowNormalDrag(instanceId, groupIds) {
-      if (!instanceId || !Array.isArray(groupIds) || groupIds.length !== 1 || groupIds[0] !== instanceId) {
+      if (!instanceId || !Array.isArray(groupIds) || !groupIds.length || !groupIds.includes(instanceId)) {
         return false;
       }
       const pack = PackLibrary.getById(StateStore.get('currentPackId'));
-      const inst = pack ? (pack.cases || []).find(i => i && i.id === instanceId) : null;
-      return Boolean(inst);
+      if (!pack) return false;
+      const packIds = new Set((pack.cases || []).filter(Boolean).map(inst => inst.id));
+      return groupIds.every(id => packIds.has(id));
+    }
+
+    function applyDragCandidates(groupIds, candidates, ignoreSet, options = {}) {
+      // Preserve the existing single-case preview path exactly. Single-case
+      // surface-following is allowed to show its candidate and resolve on drop.
+      if (groupIds.length === 1) {
+        const id = groupIds[0];
+        const obj = CaseScene.getObject(id);
+        const candidate = candidates.get(id);
+        if (!obj || !candidate) return false;
+        const check = CaseScene.checkCollision(id, candidate, ignoreSet);
+        obj.position.copy(candidate);
+        CaseScene.setCollision(id, check.collides);
+        return check.collides;
+      }
+
+      let blocked = false;
+      for (const id of groupIds) {
+        const obj = CaseScene.getObject(id);
+        const candidate = candidates.get(id);
+        if (!obj || !candidate) {
+          blocked = true;
+          break;
+        }
+        const accepted = dragGroupAcceptedWorld && dragGroupAcceptedWorld.get(id)
+          ? dragGroupAcceptedWorld.get(id)
+          : obj.position;
+        const check = options.sweep !== false && typeof CaseScene.checkSweptCollision === 'function'
+          ? CaseScene.checkSweptCollision(id, accepted, candidate, ignoreSet)
+          : CaseScene.checkCollision(id, candidate, ignoreSet);
+        if (check.collides) {
+          blocked = true;
+          break;
+        }
+      }
+
+      // Atomic live preview: either every selected case advances to the same
+      // rigid candidate delta or none of them moves from the last accepted pose.
+      if (!blocked) {
+        groupIds.forEach(id => {
+          const obj = CaseScene.getObject(id);
+          const candidate = candidates.get(id);
+          if (!obj || !candidate) return;
+          obj.position.copy(candidate);
+          if (dragGroupAcceptedWorld) dragGroupAcceptedWorld.set(id, candidate.clone());
+        });
+      }
+      dragGroupPreviewBlocked = blocked;
+      groupIds.forEach(id => CaseScene.setCollision(id, blocked));
+      return blocked;
     }
 
     function startDrag() {
@@ -2234,10 +2771,15 @@ export function createInteractionManager({
       const selection = getSelection();
       dragGroupIds = selection && selection.length ? selection.slice() : [draggingId];
       dragGroupStartWorld = new Map();
+      dragGroupAcceptedWorld = new Map();
       dragGroupIds.forEach(id => {
         const o = CaseScene.getObject(id);
-        if (o) dragGroupStartWorld.set(id, o.position.clone());
+        if (o) {
+          dragGroupStartWorld.set(id, o.position.clone());
+          dragGroupAcceptedWorld.set(id, o.position.clone());
+        }
       });
+      dragGroupPreviewBlocked = false;
       surfaceFollowingDrag = canSurfaceFollowNormalDrag(draggingId, dragGroupIds);
 
       dragPlane.set(new THREE.Vector3(0, 1, 0), -dragStartPosWorld.y);
@@ -2276,22 +2818,28 @@ export function createInteractionManager({
         const start = startMap.get(draggingId) || obj.position;
         const deltaY = nextY - start.y;
 
-        let anyCollides = false;
+        let groupDeltaY = deltaY;
+        if (groupIds.length > 1) {
+          groupIds.forEach(id => {
+            const o = CaseScene.getObject(id);
+            const s = startMap.get(id);
+            if (!o || !s) return;
+            const half = o.userData && o.userData.halfWorld ? o.userData.halfWorld.y : 0.01;
+            groupDeltaY = Math.max(groupDeltaY, half - s.y);
+          });
+        }
+        const candidates = new Map();
         groupIds.forEach(id => {
           const o = CaseScene.getObject(id);
           const s = startMap.get(id);
           if (!o || !s) return;
           const half = o.userData && o.userData.halfWorld ? o.userData.halfWorld.y : 0;
-          const candidate = new THREE.Vector3(s.x, Math.max(half || 0.01, s.y + deltaY), s.z);
-          const check = CaseScene.checkCollision(id, candidate, ignoreSet);
-          anyCollides = anyCollides || check.collides;
-          CaseScene.setCollision(id, check.collides);
-          o.position.copy(candidate);
+          const candidateY = groupIds.length > 1
+            ? s.y + groupDeltaY
+            : Math.max(half || 0.01, s.y + deltaY);
+          candidates.set(id, new THREE.Vector3(s.x, candidateY, s.z));
         });
-
-        if (!anyCollides) {
-          groupIds.forEach(id => CaseScene.setCollision(id, false));
-        }
+        const anyCollides = applyDragCandidates(groupIds, candidates, ignoreSet);
 
         // V2B release-outcome preview (single packed case only): highlight red
         // when the validated release would reject this spot outright. A spot
@@ -2343,13 +2891,37 @@ export function createInteractionManager({
       const deltaX = next.x - start.x;
       const deltaZ = next.z - start.z;
 
-      let anyCollides = false;
+      let rigidGroupDeltaY = 0;
+      if (groupIds.length > 1 && surfaceFollowingDrag &&
+          typeof CaseScene.getRigidGroupSurfaceFollowingPreview === 'function') {
+        const acceptedStart = startMap.get(draggingId);
+        const acceptedPosition = dragGroupAcceptedWorld && dragGroupAcceptedWorld.get(draggingId);
+        const fromDeltaX = acceptedStart && acceptedPosition ? acceptedPosition.x - acceptedStart.x : 0;
+        const fromDeltaZ = acceptedStart && acceptedPosition ? acceptedPosition.z - acceptedStart.z : 0;
+        const groupPreview = CaseScene.getRigidGroupSurfaceFollowingPreview(
+          groupIds,
+          startMap,
+          deltaX,
+          deltaZ,
+          fromDeltaX,
+          fromDeltaZ
+        );
+        if (groupPreview && groupPreview.ok && Number.isFinite(groupPreview.deltaY)) {
+          rigidGroupDeltaY = groupPreview.deltaY;
+        }
+      }
+
+      const candidates = new Map();
       groupIds.forEach(id => {
         const o = CaseScene.getObject(id);
         const s = startMap.get(id);
         if (!o || !s) return;
         const half = o.userData && o.userData.halfWorld ? o.userData.halfWorld.y : 0.01;
-        const candidate = new THREE.Vector3(s.x + deltaX, Math.max(half, s.y), s.z + deltaZ);
+        const candidate = new THREE.Vector3(
+          s.x + deltaX,
+          groupIds.length > 1 ? s.y + rigidGroupDeltaY : Math.max(half, s.y),
+          s.z + deltaZ
+        );
         if (surfaceFollowingDrag && id === draggingId &&
             typeof CaseScene.getSurfaceFollowingPreview === 'function') {
           const preview = CaseScene.getSurfaceFollowingPreview(id, candidate);
@@ -2357,15 +2929,14 @@ export function createInteractionManager({
             candidate.y = Math.max(half, preview.centerY);
           }
         }
-        const check = CaseScene.checkCollision(id, candidate, ignoreSet);
-        anyCollides = anyCollides || check.collides;
-        CaseScene.setCollision(id, check.collides);
-        o.position.copy(candidate);
+        candidates.set(id, candidate);
       });
-
-      if (!anyCollides) {
-        groupIds.forEach(id => CaseScene.setCollision(id, false));
-      }
+      applyDragCandidates(groupIds, candidates, ignoreSet, {
+        // Normal rigid-group movement already lifts onto the highest terrain
+        // needed by any selected footprint. Validate the rendered endpoint so
+        // ordinary box/well/deck tops do not become impassable side walls.
+        sweep: !(groupIds.length > 1 && surfaceFollowingDrag),
+      });
       CaseScene.updateGizmoTransform();
     }
 
@@ -2426,6 +2997,13 @@ export function createInteractionManager({
       const ignoreSet = new Set(groupIds);
       const startMap = dragGroupStartWorld || new Map([[instanceId, dragStartPosWorld]]);
 
+      if (groupIds.length > 1 && dragGroupPreviewBlocked) {
+        revertGroupToStart(groupIds, startMap);
+        UIComponents.showToast('Cannot place this selection here. All selected cases were returned.', 'error');
+        resetDrag();
+        return;
+      }
+
       // Snap to nearest box edge or truck wall before final placement
       const prefs = PreferencesManager.get();
       if (prefs.snapping && prefs.snapping.enabled) {
@@ -2455,7 +3033,11 @@ export function createInteractionManager({
         CaseScene.setCollision(id, check.collides);
       });
 
-      if (anyCollides) {
+      // A rigid group releases through the canonical atomic preflight below,
+      // which owns the production overlap tolerance. Do not let this raw scene
+      // check reject a near-flush group before that tolerant validator runs.
+      // True group overlaps are still rejected atomically and reverted.
+      if (anyCollides && groupIds.length === 1) {
         revertGroupToStart(groupIds, startMap);
         UIComponents.showToast('Cannot place here: collision detected', 'error');
         resetDrag();
@@ -2473,8 +3055,8 @@ export function createInteractionManager({
       // resolver so an Alt-drag raised position is honored when legal, corrected
       // to the nearest legal level when not, and never silently settled onto
       // cargo that cannot carry it. A single staged case gets one preflight
-      // chance to become packed below; multi-select and out-of-truck releases
-      // keep the legacy settle/staging path unchanged.
+      // chance to become packed below. Multi-select uses the atomic group
+      // preflight below; single out-of-truck releases keep the legacy path.
       const singleDraggedInst = groupIds.length === 1
         ? (pack.cases || []).find(i => i && i.id === instanceId)
         : null;
@@ -2537,8 +3119,11 @@ export function createInteractionManager({
         CaseScene.refreshGizmo();
         return;
       }
+      if (groupIds.length > 1 && tryCommitAtomicManualGroup(packId, pack, groupIds, startMap)) {
+        return;
+      }
 
-      // Gravity: settle selection bottom-up to preserve stacking.
+      // Legacy single-case gravity for out-of-truck/staged release handling.
       const sortable = groupIds
         .map(id => ({ id, obj: CaseScene.getObject(id) }))
         .filter(x => x.obj)
@@ -2632,6 +3217,8 @@ export function createInteractionManager({
       dragStartPosWorld = null;
       dragGroupIds = null;
       dragGroupStartWorld = null;
+      dragGroupAcceptedWorld = null;
+      dragGroupPreviewBlocked = false;
       surfaceFollowingDrag = false;
       pressed = null;
       domEl.style.cursor = hoveredId ? 'grab' : 'default';
@@ -2868,6 +3455,16 @@ export function createEditorScreen({
     }
 
     function applyAutoPackResultOption(optionId) {
+      // Applying swaps the whole load — a mutating path that must respect the
+      // single-operation lifecycle like every other editor mutation.
+      if (OperationLifecycle && typeof OperationLifecycle.isBusy === 'function' && OperationLifecycle.isBusy()) {
+        UIComponents.showToast(
+          'Wait for the current operation to finish before applying AutoPack results.',
+          'info',
+          { title: 'AutoPack Results' }
+        );
+        return;
+      }
       const results = getAutoPackResultsState();
       const pack = PackLibrary.getById(StateStore.get('currentPackId'));
       if (!results || !pack || results.packId !== pack.id) return;
@@ -2906,6 +3503,41 @@ export function createEditorScreen({
       stat.appendChild(labelEl);
       stat.appendChild(valueEl);
       return stat;
+    }
+
+    const AUTOPACK_PARTIAL_CAUSE_LABELS = {
+      fit: 'no safe fit for the remaining items',
+      safety: 'safety rules blocked the remaining items',
+      rules: 'cargo handling rules blocked the remaining items',
+      budget: 'time limit reached before every item was tried',
+    };
+
+    function formatAutoPackPartialReason(option) {
+      const causes = Array.isArray(option && option.partialCauses) ? option.partialCauses : [];
+      if (!causes.length) return '';
+      return `Partial — ${causes.map(cause => AUTOPACK_PARTIAL_CAUSE_LABELS[cause] || String(cause)).join('; ')}`;
+    }
+
+    function makeAutoPackResultDescription(option) {
+      if (!option || !option.description) return null;
+      const desc = document.createElement('div');
+      desc.className = 'tp3d-autopack-results__option-desc';
+      desc.textContent = option.description;
+      return desc;
+    }
+
+    function makeAutoPackResultChip(label, value) {
+      const chip = document.createElement('span');
+      chip.className = 'tp3d-autopack-results__stat-chip';
+      const labelEl = document.createElement('span');
+      labelEl.className = 'tp3d-autopack-results__stat-chip-label';
+      labelEl.textContent = label;
+      const valueEl = document.createElement('strong');
+      valueEl.className = 'tp3d-autopack-results__stat-chip-value';
+      valueEl.textContent = value;
+      chip.appendChild(labelEl);
+      chip.appendChild(valueEl);
+      return chip;
     }
 
     function clampAutoPackResultsPosition(host, panel, position) {
@@ -3042,6 +3674,14 @@ export function createEditorScreen({
       title.className = 'tp3d-autopack-results__title';
       title.textContent = hasAlternates ? 'AutoPack Results' : 'Best load selected';
       titleWrap.appendChild(title);
+      // Staleness must stay visible in every mode — the header renders in the
+      // carousel, compact, and minimized states alike, so the badge lives here.
+      if (stale) {
+        const staleBadge = document.createElement('span');
+        staleBadge.className = 'tp3d-autopack-results__stale-badge';
+        staleBadge.textContent = 'Outdated — rerun AutoPack';
+        titleWrap.appendChild(staleBadge);
+      }
       headerLeft.appendChild(titleWrap);
 
       const headerActions = document.createElement('div');
@@ -3108,12 +3748,28 @@ export function createEditorScreen({
         body.appendChild(nav);
       }
 
+      const metrics = document.createElement('div');
+      metrics.className = 'tp3d-autopack-results__metrics';
       const stats = document.createElement('div');
       stats.className = 'tp3d-autopack-results__stats';
       stats.appendChild(makeAutoPackResultStat('Packed', formatAutoPackResultNumber(viewedOption.packedCount)));
       stats.appendChild(makeAutoPackResultStat('Staged', formatAutoPackResultNumber(viewedOption.stagedCount)));
       stats.appendChild(makeAutoPackResultStat('Volume', formatAutoPackResultVolume(viewedOption.volumePercent)));
-      body.appendChild(stats);
+      metrics.appendChild(stats);
+      // Floor/Stacked stay visible but secondary: compact chips, not full tiles.
+      const statChips = document.createElement('div');
+      statChips.className = 'tp3d-autopack-results__stat-chips';
+      statChips.appendChild(makeAutoPackResultChip('Floor', formatAutoPackResultNumber(viewedOption.floorCount)));
+      statChips.appendChild(makeAutoPackResultChip('Stacked', formatAutoPackResultNumber(viewedOption.stackedCount)));
+      metrics.appendChild(statChips);
+      body.appendChild(metrics);
+
+      // Single-option mode has no option title row; the strategy description
+      // still explains what kind of load the user is looking at.
+      if (!hasAlternates) {
+        const compactDescription = makeAutoPackResultDescription(viewedOption);
+        if (compactDescription) body.appendChild(compactDescription);
+      }
 
       // Multiple results: name the viewed option, show its status, mark the
       // applied one, and keep Apply on the existing validated apply path.
@@ -3131,6 +3787,13 @@ export function createEditorScreen({
         const status = document.createElement('span');
         status.className = `tp3d-autopack-results__status tp3d-autopack-results__status--${viewedOption.status === 'complete' ? 'complete' : 'partial'}`;
         status.textContent = viewedOption.statusLabel || (viewedOption.status === 'complete' ? 'Complete' : 'Partial');
+        if (viewedOption.status !== 'complete') {
+          const partialReason = formatAutoPackPartialReason(viewedOption);
+          if (partialReason) {
+            status.title = partialReason;
+            status.setAttribute('aria-label', partialReason);
+          }
+        }
         labelRow.appendChild(status);
         if (isViewedCurrent) {
           const applied = document.createElement('span');
@@ -3139,6 +3802,8 @@ export function createEditorScreen({
           labelRow.appendChild(applied);
         }
         optionRow.appendChild(labelRow);
+        const optionDescription = makeAutoPackResultDescription(viewedOption);
+        if (optionDescription) optionRow.appendChild(optionDescription);
 
         const actions = document.createElement('div');
         actions.className = 'tp3d-autopack-results__carousel-actions';
@@ -3150,11 +3815,31 @@ export function createEditorScreen({
           apply.innerHTML = '<i class="fa-solid fa-check"></i> Applied';
         } else {
           apply.textContent = 'Apply this option';
+          // Disabled-but-not-applied only happens when stale: give the native
+          // disabled button a reachable explanation (hover tooltip + a11y label)
+          // since a disabled button never fires click, so it can never reach the
+          // toast in applyAutoPackResultOption. Deliberately reworded from the
+          // removed persistent panel text, not a duplicate of it.
+          if (stale) {
+            const staleReason = 'Outdated — rerun AutoPack to refresh this option.';
+            apply.title = staleReason;
+            apply.setAttribute('aria-label', staleReason);
+          }
         }
         apply.addEventListener('click', () => applyAutoPackResultOption(viewedOption.id));
         actions.appendChild(apply);
         optionRow.appendChild(actions);
         body.appendChild(optionRow);
+      }
+
+      // Dedupe transparency, single-option mode only: that is the case where a
+      // user genuinely wonders where the other options went. With alternates
+      // visible the carousel already tells the story, so the note stays quiet.
+      if (!hasAlternates && Number(results.attemptedSolutionCount) > options.length) {
+        const dedupeNote = document.createElement('div');
+        dedupeNote.className = 'tp3d-autopack-results__dedupe-note';
+        dedupeNote.textContent = 'Other strategies produced the same layout.';
+        body.appendChild(dedupeNote);
       }
 
       panel.appendChild(body);

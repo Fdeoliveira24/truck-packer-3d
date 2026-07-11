@@ -1643,6 +1643,41 @@ function buildWheelWellStackCandidates(orientation, packed, geometry, loadFrontF
     });
 }
 
+// Raised-layer poses at/above the wheel-well top plane whose footprint
+// OVERHANGS a narrow support layer (e.g. cartons on a stack-base row resting on
+// the well tops). buildStackCandidates only proposes footprints fully inside a
+// merged support rect, while the wheel-well support model legally accepts
+// >= MIN_SUPPORT_FRACTION combined support with the COM over the supported area
+// and at most MAX_WHEELWELL_OVERHANG_FRACTION per-side cantilever — so without
+// these anchors, legal stable poses over the wells are never generated and
+// fitting cargo stages while that space stays visibly empty. A rect narrower
+// than half the footprint on either axis can never reach the support fraction
+// and is skipped. Every candidate still runs the caller's full hard-rule
+// pipeline (containment, collision, combined support, COM, overhang, retention);
+// nothing here creates validity.
+function buildWheelWellOverhangStackCandidates(orientation, layerRects, geometry) {
+  const { l, w, h } = orientation;
+  const out = [];
+  for (const rect of layerRects || []) {
+    if (rect.yLevel < geometry.wellHeight - CONTACT_EPS) continue;
+    if (rect.yLevel + h > geometry.truckBox.max.y + CONTAINMENT_EPS_INCHES) continue;
+    const rectL = freeRectLength(rect);
+    const rectW = freeRectWidth(rect);
+    if (l <= rectL + FREE_RECT_EPS && w <= rectW + FREE_RECT_EPS) continue; // fully-contained poses come from buildStackCandidates
+    if (l > 2 * rectL + FREE_RECT_EPS || w > 2 * rectW + FREE_RECT_EPS) continue;
+    const xMins = uniqueSorted([rect.minX, rect.maxX - l, rect.minX + (rectL - l) / 2], (a, b) => a - b);
+    const zMins = uniqueSorted([rect.minZ, rect.maxZ - w, rect.minZ + (rectW - w) / 2], (a, b) => a - b);
+    for (const xMin of xMins) {
+      for (const zMin of zMins) {
+        const position = { x: xMin + l / 2, y: rect.yLevel + h / 2, z: zMin + w / 2 };
+        const dims = { l, w, h };
+        out.push({ position, dims, aabb: getAabb(position, dims), freeRect: rect });
+      }
+    }
+  }
+  return out;
+}
+
 function candidateHasForwardRetention(aabb, packed, zones, loadFrontFirst) {
   const zoneLimit = loadFrontFirst
     ? Math.max(...(zones || []).map(zone => zone.max.x))
@@ -1786,6 +1821,9 @@ function findStackPlacement(
     }
     if (wheelWell) {
       candidates.push(...buildWheelWellStackCandidates(orientation, packed, wheelWell, loadFrontFirst));
+      for (const yLevel of yLevels) {
+        candidates.push(...buildWheelWellOverhangStackCandidates(orientation, layerRectsFor(yLevel), wheelWell));
+      }
     }
 
     for (const candidate of candidates) {
@@ -2908,7 +2946,7 @@ function wallBottomsAt(packed, mainZone, minX, maxX, minZ, maxZ) {
   return uniqueSorted(bottoms, (a, b) => a - b);
 }
 
-function buildDeckRetentionWall(output, packed, itemsById, retentionContext, budget) {
+function buildDeckRetentionWall(output, packed, itemsById, retentionContext, budget, stackPhaseEnabled = true) {
   const geometry = retentionContext?.geometry;
   if (!geometry || !output.unpacked.length) return 0;
   const { stepX, deckY, deckZone, mainZone } = geometry;
@@ -2968,7 +3006,13 @@ function buildDeckRetentionWall(output, packed, itemsById, retentionContext, bud
             if (!isAabbContainedInZone(aabb, mainZone)) continue;
             if (collidesPacked(aabb, packed)) continue;
             const onFloor = Math.abs(aabb.min.y - mainZone.min.y) <= CONTACT_EPS;
-            if (!onFloor && !supportsCandidate(aabb, packed, item)) continue;
+            if (!onFloor) {
+              // floor-first (enableStackPhase:false): the retention wall may
+              // never stack cargo to reach the deck — only floor-level bases
+              // count, same "no stacking" contract as every other phase.
+              if (!stackPhaseEnabled) continue;
+              if (!supportsCandidate(aabb, packed, item)) continue;
+            }
             // The segment must progress the wall: span the deck level itself,
             // or be a base a remaining leftover could still span from.
             const spansDeck = aabb.max.y >= deckY - CONTACT_EPS && aabb.min.y <= deckY + CONTACT_EPS;
@@ -3695,30 +3739,35 @@ export function solveAutoPack(input = {}) {
       budget
     );
     stackCount += beforeBatch - stackQueue.length;
-    if (stackQueue.length && !budget.cleanupExpired()) {
-      const deckFill = placeFrontOverhangDeckFill(
-        stackQueue,
-        output,
-        packed,
-        retentionContext,
-        loadFrontFirst,
-        budget,
-        items
-      );
-      stackQueue = deckFill.remaining;
-      floorCount += deckFill.placed;
-    }
-    if (output.unpacked.length && !budget.cleanupExpired()) {
-      floorCount += placeFrontOverhangDeckFillFromUnpacked(
-        output,
-        packed,
-        itemsById,
-        retentionContext,
-        loadFrontFirst,
-        budget,
-        items
-      );
-    }
+  }
+  // Front Overhang deck-fill places cargo on raised FLOOR space (gated on
+  // rear retention), never on top of other cargo — unlike
+  // placeRepeatedStackBatches above, it must stay available even when
+  // stackPhaseEnabled is false (floor-first), so it is not nested under that
+  // gate.
+  if (stackQueue.length && !budget.cleanupExpired()) {
+    const deckFill = placeFrontOverhangDeckFill(
+      stackQueue,
+      output,
+      packed,
+      retentionContext,
+      loadFrontFirst,
+      budget,
+      items
+    );
+    stackQueue = deckFill.remaining;
+    floorCount += deckFill.placed;
+  }
+  if (output.unpacked.length && !budget.cleanupExpired()) {
+    floorCount += placeFrontOverhangDeckFillFromUnpacked(
+      output,
+      packed,
+      itemsById,
+      retentionContext,
+      loadFrontFirst,
+      budget,
+      items
+    );
   }
 
   for (let i = 0; i < stackQueue.length; i++) {
@@ -3816,7 +3865,7 @@ export function solveAutoPack(input = {}) {
   // the ordinary hard-rule pipeline, which still gates every deck pose on the
   // real barrier via candidateHasRearRetention.
   if (retentionContext?.geometry && input.enableDeckRetentionWall !== false && !budget.cleanupExpired()) {
-    floorCount += buildDeckRetentionWall(output, packed, itemsById, retentionContext, budget);
+    floorCount += buildDeckRetentionWall(output, packed, itemsById, retentionContext, budget, stackPhaseEnabled);
     if (output.unpacked.length && !budget.cleanupExpired()) {
       floorCount += placeFrontOverhangDeckFillFromUnpacked(
         output,

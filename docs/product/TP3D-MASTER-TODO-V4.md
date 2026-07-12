@@ -1,16 +1,16 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-07-12 — main is stable through AutoPack portfolio stabilization at `e83839b`; Max Capacity Phase A is audited and browser-verified on `feat/autopack-max-capacity-check`, awaiting commit, merge, and push. Phase B has not started.
+**Last updated:** 2026-07-12 — Max Capacity Phase A is complete, fast-forward merged, and pushed to `main` / `origin/main` through `6f32a6a`. Phase B durability is next and has not started.
 
 ## CURRENT STATUS SNAPSHOT — 2026-07-12
 
 | Area | Current status |
 |---|---|
-| Stable main | `main` / `origin/main` are stable through AutoPack portfolio stabilization merge `e83839b` (`merge: autopack portfolio stabilization`). This includes AutoPack Solution Portfolio Phases 1–3, Results clarity, multi-select placement safety, Wheel Wells packing-quality, staged-case OOG cleanup, and Graphify agent setup. |
-| Current active branch | `feat/autopack-max-capacity-check`. The broad Max Capacity attempt was rejected, saved to `/tmp/max-capacity-failed-pass.patch`, and restored. Current dirty files are Codex-owned Phase A files only. |
-| Current uncommitted work | Max Capacity Phase A implementation, tests, and closeout documentation are complete on the feature branch. The selected-option dedupe ownership fix and Option-1 Results starting-view fix are included. The eight approved dirty files are listed under Current Active Work below. |
-| Active phase | **Max Capacity Phase A — solver-only Results option.** Max Capacity appears as a manually viewable/applyable AutoPack Results option after Stack priority, relaxes handling/business rules during solving only, keeps hard physical validation unchanged, is excluded from automatic winner/default selection, and is not durable yet. |
-| Waiting for | Awaiting commit, merge, and push. The available signed-in browser evidence is sufficient for the Phase A scope; the observed manual move/delete durability failure is explicitly deferred to Phase B. |
-| Do not run now | Do not start Phase B durability, Undo history implementation, Delete repair implementation, Truck Change implementation, broad solver rewrites, legacy cleanup, Heavy-Low, Rear-Access, Force Fit, Exception Fit, billing/auth/security, broad CSS redesign, or unrelated refactors while Phase A is uncommitted. |
+| Stable main | Phase A was fast-forward merged and pushed through `6f32a6a`. Rebased implementation commit: `80919f8`; rebased documentation commit: `6f32a6a`. |
+| Current active branch | `feat/autopack-max-capacity-durability` is the next isolated branch. Phase B implementation has not started. |
+| Current uncommitted work | None. Phase A is committed, merged, and pushed. |
+| Completed phase | **Max Capacity Phase A — solver-only Results option.** Max Capacity appears as a manually viewable/applyable AutoPack Results option after Stack priority, relaxes handling/business rules during solving only, keeps hard physical validation unchanged, is excluded from automatic winner/default selection, and is intentionally not durable yet. |
+| Waiting for | Explicit approval to begin Phase B durability on its dedicated branch. |
+| Do not run now | Do not mix Phase B durability with Undo history, general Delete repair, Truck Change, broad solver rewrites, legacy cleanup, Heavy-Low, Rear-Access, Force Fit, Exception Fit, billing/auth/security, broad CSS redesign, or unrelated refactors. |
 
 ### Current integration gate — 2026-07-12
 
@@ -18,13 +18,13 @@
 2. ✅ Fresh Results visually open on Option 1, `Balanced (recommended)`, while `selectedId`, Applied badge, Apply, stale handling, and Prev/Next behavior remain unchanged.
 3. ✅ Focused/full automated validation complete: Results `23/23`; full suite `854` passed, `5` skipped, `0` failed; typecheck passed; lint passed with existing warnings only; syntax checks and `git diff --check` passed.
 4. ✅ Signed-in browser evidence recorded: Balanced opened on Option 1 and packed `236`; Max Capacity packed `297`, generated and applied successfully; persistent manual change made Results Outdated as expected.
-5. ⬜ Commit the approved Phase A implementation/test files.
-6. ⬜ Commit the approved documentation files, then fast-forward merge and push Phase A.
-7. ⬜ Phase B has not started; create its separate branch only after Phase A is merged and pushed.
+5. ✅ Rebased implementation/test commit `80919f8` and documentation commit `6f32a6a` onto current main with no conflicts.
+6. ✅ Fast-forward merged and pushed Phase A; `main` and `origin/main` matched at `6f32a6a` after the Phase A push.
+7. ⬜ Phase B has not started; its separate durability branch is the next work context.
 
 ### Current completed integration evidence — 2026-07-12
 
-- ✅ Main is stable through AutoPack portfolio stabilization at `e83839b`.
+- ✅ AutoPack portfolio stabilization baseline `e83839b` is preserved; Phase A extends main through integration SHA `6f32a6a`.
 - ✅ Multi-select manual placement safety is merged via `f56eca0` from source commit `8d0d7a2`.
 - ✅ Wheel Wells packing-quality is merged via `e0f398b` from source commit `f516d53`.
 - ✅ AutoPack Results clarity/compact panel polish is merged via `41d16d6` from source commit `315abe5`.
@@ -32,7 +32,8 @@
 - ✅ Graphify agent configuration is included at `5432e0c`.
 - ✅ AutoPack Solution Portfolio Phase 3 is implemented and merged: Stack priority is an intentional portfolio option; Constrained space first is Wheel-Wells-gated; duplicate recovery runs are prevented.
 - ✅ Broad failed Max Capacity pass was saved to `/tmp/max-capacity-failed-pass.patch` and fully restored before Phase A baby-step work resumed.
-- ✅ Max Capacity Phase A solver behavior, selected-option dedupe ownership, and Option-1 starting view are implemented and validated on the feature branch.
+- ✅ Max Capacity Phase A solver behavior, selected-option dedupe ownership, and Option-1 starting view are implemented, validated, fast-forward merged, and pushed.
+- ✅ Rebased Phase A commits: implementation/tests `80919f8`; documentation `6f32a6a`; Phase A main integration SHA `6f32a6a`.
 - ✅ Automated closeout evidence: Results `23/23`; full suite `854` passed, `5` skipped, `0` failed; typecheck passed; lint passed with existing warnings only; syntax checks and `git diff --check` passed.
 - ✅ Signed-in browser evidence: Balanced opened visually as Option 1 and packed `236`; Max Capacity packed `297`, generated successfully, and applied successfully; a persistent manual change correctly marked Results Outdated.
 - ⚠️ Confirmed Phase B durability limitation, not a Phase A solver failure: removing or moving a Max Capacity case can cause many remaining cases to move, repair, or stage into a strange partial layout because Phase A stores no durable relaxed-profile metadata. Phase A does not claim reload/manual-edit/delete durability.
@@ -43,23 +44,23 @@
 
 | Field | Value |
 |-------|-------|
-| Stable main commit | `e83839b` (`merge: autopack portfolio stabilization`) |
-| Current active branch | `feat/autopack-max-capacity-check` |
-| Active implementation | **Max Capacity Phase A** — solver-only Results option; not durable yet; no PackLibrary/app/normalizer/PDF/docs durability changes. |
-| Current allowed dirty files | `docs/product/PROJECT_TREE.md`, `docs/product/TP3D-MASTER-TODO-V4.md`, `src/packing-core/solution.js`, `src/screens/editor-screen.js`, `src/services/autopack-engine.js`, `src/services/autopack-solver.js`, `tests/audit/autopack-results-carousel.spec.mjs`, `tests/audit/security-and-invariants.spec.mjs`. |
-| Active blocker | No remaining Phase A code or browser blocker. Awaiting commit, fast-forward merge, and push. The confirmed missing-metadata durability limitation belongs to Phase B. |
-| Next planned phase | Phase B durable Max Capacity metadata using `packedProfile: "max-capacity"`, only after Phase A is committed and stable. |
-| Waiting for | Awaiting commit, merge, and push. |
-| Do not start simultaneously | Do not mix Phase A with durable `packedProfile`, PackLibrary validation profile changes, Undo history reset, Delete repair changes, Unpack/Truck Change changes, docs cleanup beyond this status refresh, CSS/UI redesign, PDF/export, billing/auth/security, or broad solver refactors. |
+| Phase A integration commit | `6f32a6a` (`docs(product): refresh project tree and max capacity status`), with implementation/tests at `80919f8`. |
+| Current active branch | `feat/autopack-max-capacity-durability` |
+| Active implementation | None. Phase B durability has not started. |
+| Current allowed dirty files | None; begin Phase B only under a separately approved implementation packet. |
+| Active blocker | Confirmed Phase B durability limitation: Phase A stores no per-instance relaxed profile, so manual move/delete/repair can dismantle Max Capacity relationships during canonical revalidation. |
+| Next planned phase | Phase B durable Max Capacity metadata using `packedProfile: "max-capacity"`, preserving unrelated marked placements and repairing/staging only physically affected dependents. |
+| Waiting for | Explicit Phase B implementation approval. |
+| Do not start simultaneously | Keep Phase B `packedProfile` / PackLibrary durability work separate from Undo history reset, general Delete repair, Unpack/Truck Change cleanup, CSS/UI redesign, PDF/export, billing/auth/security, and broad solver refactors. |
 
 *Update this block after each commit/merge. Do not hardcode the same status in multiple conflicting places.*
 
-> **Current source-of-truth note (2026-07-12):** `main` / `origin/main` are stable through `e83839b`. The old `feat/autopack-portfolio-stack-constrained` integration work has been merged. The active branch is `feat/autopack-max-capacity-check`, where Phase A is audited and awaiting commit/merge/push. Phase A is intentionally narrow and solver-only: it does not mutate saved rules, is never auto-selected, and does not claim reload/manual-edit/delete durability before Phase B.
+> **Current source-of-truth note (2026-07-12):** Max Capacity Phase A was fast-forward merged and pushed through `6f32a6a` (`80919f8` implementation/tests; `6f32a6a` documentation). Phase A is intentionally narrow and solver-only: it does not mutate saved rules, is never auto-selected, and does not claim reload/manual-edit/delete durability. Phase B is next on `feat/autopack-max-capacity-durability` and has not started.
 
 ## Active Debug Queue — AutoPack / Results / Editor Regressions
 
-### A. Max Capacity Phase A — audited, awaiting commit and merge
-- 🔄 **Phase A status:** Audited, browser evidence recorded, and awaiting commit, fast-forward merge, and push.
+### A. Max Capacity Phase A — merged and pushed evidence
+- ✅ **Phase A status:** Complete, fast-forward merged, and pushed (`80919f8` implementation/tests; `6f32a6a` documentation and Phase A main integration tip).
 - ✅ **Selected-option dedupe ownership:** `buildAutoPackResultsState()` keeps the selected solver option as the visible survivor of its duplicate physical-layout group; other duplicate groups retain first-survivor behavior.
 - ✅ **Phase A behavior target:** Max Capacity is a raw Results option after Stack priority; Wheel Wells Constrained remains after Max when distinct.
 - ✅ **Phase A safety target:** Max Capacity is excluded from automatic winner/default selection even if it packs more.
@@ -352,8 +353,8 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 5. ✅ **AutoPack Solution Portfolio Phase 1** — merged and pushed to `main` at `59737db`/recorded on `main` at `b13d0fd`; Compact fill is offered as a safe second option when distinct.
 6. ✅ **AutoPack Solution Portfolio Phase 2** — merged and pushed to `main` at `819de80`; Floor first (no stacking) is the third safe option after Balanced and Compact fill.
 7. ✅ **AutoPack Solution Portfolio Phase 3 / stabilization** — merged to `main` at `e83839b`; Stack priority is now an intentional portfolio option, Constrained space first is Wheel-Wells-gated, duplicate recovery runs are prevented, and Results clarity/dedupe fixes are included.
-8. 🔄 **Max Capacity Phase A** — audited on `feat/autopack-max-capacity-check`; selected-option dedupe ownership, Option-1 starting view, focused/full validation, and signed-in browser evidence are complete. Awaiting commit, fast-forward merge, and push.
-9. ⬜ **Max Capacity Phase B** — future durable `packedProfile: "max-capacity"` metadata and physical-only revalidation profile. Do not start until Phase A is committed.
+8. ✅ **Max Capacity Phase A** — fast-forward merged and pushed through `6f32a6a`; implementation/tests `80919f8`, documentation `6f32a6a`. Selected-option dedupe ownership, Option-1 starting view, validation, and browser evidence are complete.
+9. ⬜ **Max Capacity Phase B** — next on `feat/autopack-max-capacity-durability`; durable `packedProfile: "max-capacity"` metadata and physical-only revalidation profile. Not started.
 10. ⬜ **Undo/history reset branch** — future `fix/undo-history-reset`; reset history after workspace/load hydration and prevent cross-pack Undo confusion.
 11. ⬜ **Delete/repair UX cleanup** — future narrow branch for delete toast accuracy and delete guard consistency.
 12. ⬜ **Unpack/Truck Change stale Results cleanup** — future narrow branch to close stale Results and clear selection after Unpack.
@@ -440,7 +441,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 - 🚫 Heavy-Low Rear Priority, Rear-Access Heavy Load, tooltip/help copy, Settings/Resources docs, and Exception Fit / Force Fit Analysis were not added in Phase 3.
 
 ### Phase 4 — Max Capacity Phase A / B / C
-- 🔄 **Phase A audited, awaiting commit and merge:** `feat/autopack-max-capacity-check` adds Max Capacity as a solver-only Results option. It is manually viewable/applyable, excluded from automatic winner/default selection, and not durable yet.
+- ✅ **Phase A merged and pushed:** implementation/tests `80919f8`; documentation and Phase A main integration tip `6f32a6a`. Max Capacity is a solver-only Results option, manually viewable/applyable, excluded from automatic winner/default selection, and intentionally not durable yet.
 - ✅ **Phase A dedupe ownership:** the selected normal solver option owns its physical-layout dedupe group, so an identical Max Capacity option cannot steal visible selection.
 - ✅ **Phase A Results start:** fresh Results visually open at Option 1, `Balanced (recommended)`, while selected/apply/stale/navigation behavior remains unchanged.
 - ✅ **Phase A automated evidence:** Results `23/23`; full suite `854` passed, `5` skipped, `0` failed; typecheck, syntax checks, and `git diff --check` passed; lint passed with existing warnings only.
@@ -552,7 +553,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 ## Near-Term Execution Queue
 *Approved order. Do not combine items. Do not skip steps.*
 
-*Current 2026-07-12 execution note:* `main` / `origin/main` are stable through AutoPack portfolio stabilization at `e83839b`. The old `feat/autopack-portfolio-stack-constrained` branch has been merged. Current active branch is `feat/autopack-max-capacity-check`; Phase A implementation, selected-option dedupe ownership, Option-1 starting view, automated validation, and signed-in browser evidence are complete. Next work is commit, fast-forward merge, and push, followed by creation of the separate Phase B durability branch. Do not implement Phase B, Undo/history reset, Delete repair, or Unpack/Truck Change cleanup in the Phase A closeout.
+*Current 2026-07-12 execution note:* Max Capacity Phase A was fast-forward merged and pushed through `6f32a6a` (`80919f8` implementation/tests; `6f32a6a` documentation). The next isolated branch is `feat/autopack-max-capacity-durability`; Phase B has not started. Keep Phase B durability separate from Undo/history reset, general Delete repair, and Unpack/Truck Change cleanup.
 
 *Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified; 3B geometry epsilon unification merged (`33b362a`); 5A stacking-safety audit + runtime tests merged (`0aa58c3`); 3B/5A in-browser logic verification recorded (`819d3de`).*
 

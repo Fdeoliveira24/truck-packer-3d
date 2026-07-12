@@ -1,92 +1,167 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-07-10 — integration branch refreshed through AutoPack Results clarity (`41d16d6`) and local AutoPack Solution Portfolio Phase 3 implementation pending commit.
+**Last updated:** 2026-07-12 — main is stable through AutoPack portfolio stabilization at `e83839b`; Max Capacity Phase A is audited and browser-verified on `feat/autopack-max-capacity-check`, awaiting commit, merge, and push. Phase B has not started.
 
-## CURRENT STATUS SNAPSHOT — 2026-07-10
+## CURRENT STATUS SNAPSHOT — 2026-07-12
 
 | Area | Current status |
 |---|---|
-| Stable main | `main` / `origin/main` are stable through AutoPack Solution Portfolio Phase 2 at `819de80` (`feat(autopack): add floor-first as third portfolio option`). |
-| Current integration branch | `feat/autopack-portfolio-stack-constrained` is the active integration branch. Remote/current clean HEAD before local Phase 3 changes: `41d16d6`. |
-| Integration branch contents | Includes staged-case OOG highlight cleanup (`badfb6d`), AutoPack portfolio dedupe/stale-results fix (`08e5fa7`), Graphify agent configuration (`5432e0c`), multi-select placement safety merge (`f56eca0`, source `8d0d7a2`), Wheel Wells packing-quality merge (`e0f398b`, source `f516d53`), and AutoPack Results clarity/compact panel polish (`41d16d6`). |
-| Local uncommitted work | AutoPack Solution Portfolio Phase 3 is implemented locally but not yet committed. Expected modified files: `src/packing-core/solution.js` and `tests/audit/autopack-results-carousel.spec.mjs`. |
-| Active phase | Final review/commit for AutoPack Solution Portfolio Phase 3. Stack priority is now intended to be an intentional portfolio option; Constrained space first is Wheel-Wells-gated; duplicate recovery runs are prevented. |
-| Waiting for | Final Front Overhang browser smoke, Phase 3 commit hash, TODO follow-up with that hash, final integration smoke, then merge decision for `feat/autopack-portfolio-stack-constrained` into `main`. |
-| Do not run now | Broad all-truck solver audit, legacy solver cleanup, Heavy-Low, Rear-Access, Force Fit, Exception Fit, broad CSS redesign, billing/auth/security, or unrelated refactors. |
+| Stable main | `main` / `origin/main` are stable through AutoPack portfolio stabilization merge `e83839b` (`merge: autopack portfolio stabilization`). This includes AutoPack Solution Portfolio Phases 1–3, Results clarity, multi-select placement safety, Wheel Wells packing-quality, staged-case OOG cleanup, and Graphify agent setup. |
+| Current active branch | `feat/autopack-max-capacity-check`. The broad Max Capacity attempt was rejected, saved to `/tmp/max-capacity-failed-pass.patch`, and restored. Current dirty files are Codex-owned Phase A files only. |
+| Current uncommitted work | Max Capacity Phase A implementation, tests, and closeout documentation are complete on the feature branch. The selected-option dedupe ownership fix and Option-1 Results starting-view fix are included. The eight approved dirty files are listed under Current Active Work below. |
+| Active phase | **Max Capacity Phase A — solver-only Results option.** Max Capacity appears as a manually viewable/applyable AutoPack Results option after Stack priority, relaxes handling/business rules during solving only, keeps hard physical validation unchanged, is excluded from automatic winner/default selection, and is not durable yet. |
+| Waiting for | Awaiting commit, merge, and push. The available signed-in browser evidence is sufficient for the Phase A scope; the observed manual move/delete durability failure is explicitly deferred to Phase B. |
+| Do not run now | Do not start Phase B durability, Undo history implementation, Delete repair implementation, Truck Change implementation, broad solver rewrites, legacy cleanup, Heavy-Low, Rear-Access, Force Fit, Exception Fit, billing/auth/security, broad CSS redesign, or unrelated refactors while Phase A is uncommitted. |
 
-### Current integration gate — 2026-07-10
+### Current integration gate — 2026-07-12
 
-1. 🔄 Finish final Front Overhang browser smoke for the local AutoPack Solution Portfolio Phase 3 implementation.
-2. 🔄 Commit and push Phase 3 if smoke passes. Expected files: `src/packing-core/solution.js` and `tests/audit/autopack-results-carousel.spec.mjs`.
-3. 🔄 Update this TODO again with the final Phase 3 commit hash after commit.
-4. ⬜ Run final integration smoke across Standard, Wheel Wells, Front Overhang, Results panel, staged OOG highlighting, and multi-select/manual placement regression.
-5. ⬜ Merge `feat/autopack-portfolio-stack-constrained` into `main` only after smoke/review passes.
+1. ✅ Selected normal option owns its physical-layout dedupe group; Max Capacity cannot steal selection from an identical selected normal option.
+2. ✅ Fresh Results visually open on Option 1, `Balanced (recommended)`, while `selectedId`, Applied badge, Apply, stale handling, and Prev/Next behavior remain unchanged.
+3. ✅ Focused/full automated validation complete: Results `23/23`; full suite `854` passed, `5` skipped, `0` failed; typecheck passed; lint passed with existing warnings only; syntax checks and `git diff --check` passed.
+4. ✅ Signed-in browser evidence recorded: Balanced opened on Option 1 and packed `236`; Max Capacity packed `297`, generated and applied successfully; persistent manual change made Results Outdated as expected.
+5. ⬜ Commit the approved Phase A implementation/test files.
+6. ⬜ Commit the approved documentation files, then fast-forward merge and push Phase A.
+7. ⬜ Phase B has not started; create its separate branch only after Phase A is merged and pushed.
 
-### Current completed integration evidence — 2026-07-10
+### Current completed integration evidence — 2026-07-12
 
-- ✅ Multi-select manual placement safety is merged into the integration branch at `f56eca0` from source commit `8d0d7a2`.
-- ✅ Wheel Wells packing-quality is merged into the integration branch at `e0f398b` from source commit `f516d53`.
-- ✅ AutoPack Results clarity/compact panel polish is merged into the integration branch at `41d16d6`.
-- 🔄 AutoPack Solution Portfolio Phase 3 is implemented locally but not yet committed; final Front Overhang smoke is the remaining browser check.
-- ⬜ Final integration smoke and merge to `main` remain open.
+- ✅ Main is stable through AutoPack portfolio stabilization at `e83839b`.
+- ✅ Multi-select manual placement safety is merged via `f56eca0` from source commit `8d0d7a2`.
+- ✅ Wheel Wells packing-quality is merged via `e0f398b` from source commit `f516d53`.
+- ✅ AutoPack Results clarity/compact panel polish is merged via `41d16d6` from source commit `315abe5`.
+- ✅ AutoPack portfolio dedupe/stale Results fix is included at `08e5fa7`.
+- ✅ Graphify agent configuration is included at `5432e0c`.
+- ✅ AutoPack Solution Portfolio Phase 3 is implemented and merged: Stack priority is an intentional portfolio option; Constrained space first is Wheel-Wells-gated; duplicate recovery runs are prevented.
+- ✅ Broad failed Max Capacity pass was saved to `/tmp/max-capacity-failed-pass.patch` and fully restored before Phase A baby-step work resumed.
+- ✅ Max Capacity Phase A solver behavior, selected-option dedupe ownership, and Option-1 starting view are implemented and validated on the feature branch.
+- ✅ Automated closeout evidence: Results `23/23`; full suite `854` passed, `5` skipped, `0` failed; typecheck passed; lint passed with existing warnings only; syntax checks and `git diff --check` passed.
+- ✅ Signed-in browser evidence: Balanced opened visually as Option 1 and packed `236`; Max Capacity packed `297`, generated successfully, and applied successfully; a persistent manual change correctly marked Results Outdated.
+- ⚠️ Confirmed Phase B durability limitation, not a Phase A solver failure: removing or moving a Max Capacity case can cause many remaining cases to move, repair, or stage into a strange partial layout because Phase A stores no durable relaxed-profile metadata. Phase A does not claim reload/manual-edit/delete durability.
 
 ---
 
 ## CURRENT ACTIVE WORK
+
 | Field | Value |
 |-------|-------|
-| Stable main commit | `819de80` (AutoPack Solution Portfolio Phase 2 merged/pushed to `main`; Floor first is now the third safe portfolio option) |
-| Current integration base | `feat/autopack-portfolio-stack-constrained` at `5432e0c` (`chore: configure graphify for coding agents`) with earlier branch fixes `08e5fa7` and `badfb6d` included. |
-| Active implementation branches | `fix/multi-select-placement-safety` at `8d0d7a2` is committed/pushed and awaiting browser smoke/merge. `fix/wheel-wells-packing-quality` is active for the Wheel Wells packing-quality gap and currently has in-progress solver/test changes. |
-| Active phase | **Safety/quality stabilization before AutoPack Portfolio Phase 3.** Multi-select placement has a committed fix branch. Wheel Wells packing-quality remains active/open: safety primitives appear intact, but the visible gap/load-quality issue still needs focused before/after fixture proof and a reviewed fix. Phase 3 portfolio implementation is paused until these fixes are reviewed and merged. |
-| Next planned phase | Finish Wheel Wells packing-quality work; browser-smoke and merge `fix/multi-select-placement-safety`; audit AutoPack Results UX/product clarity; only then resume AutoPack Solution Portfolio Phase 3. |
-| Waiting for | Wheel Wells packing-quality final report and diff review; manual browser smoke and merge decision for `8d0d7a2`; AutoPack Results UX audit recommendations; clean branch status before each next task. |
-| Do not start simultaneously | Do not mix Wheel Wells AutoPack packing quality, multi-select manual placement, AutoPack Results UX, Portfolio Phase 3, Heavy-Low Rear Priority, Rear-Access Heavy Load, tooltip/help copy, Settings/Resources documentation, Exception Fit / Force Fit Analysis, app.js modularization, billing/auth/security work, legacy solver deletion, whole-project formatting, or unrelated UI/CSS work into the same commit. |
+| Stable main commit | `e83839b` (`merge: autopack portfolio stabilization`) |
+| Current active branch | `feat/autopack-max-capacity-check` |
+| Active implementation | **Max Capacity Phase A** — solver-only Results option; not durable yet; no PackLibrary/app/normalizer/PDF/docs durability changes. |
+| Current allowed dirty files | `docs/product/PROJECT_TREE.md`, `docs/product/TP3D-MASTER-TODO-V4.md`, `src/packing-core/solution.js`, `src/screens/editor-screen.js`, `src/services/autopack-engine.js`, `src/services/autopack-solver.js`, `tests/audit/autopack-results-carousel.spec.mjs`, `tests/audit/security-and-invariants.spec.mjs`. |
+| Active blocker | No remaining Phase A code or browser blocker. Awaiting commit, fast-forward merge, and push. The confirmed missing-metadata durability limitation belongs to Phase B. |
+| Next planned phase | Phase B durable Max Capacity metadata using `packedProfile: "max-capacity"`, only after Phase A is committed and stable. |
+| Waiting for | Awaiting commit, merge, and push. |
+| Do not start simultaneously | Do not mix Phase A with durable `packedProfile`, PackLibrary validation profile changes, Undo history reset, Delete repair changes, Unpack/Truck Change changes, docs cleanup beyond this status refresh, CSS/UI redesign, PDF/export, billing/auth/security, or broad solver refactors. |
 
-*Update this block after each merge. Do not hardcode the commit hash anywhere else in this file.*
+*Update this block after each commit/merge. Do not hardcode the same status in multiple conflicting places.*
 
-> **Current source-of-truth note (2026-07-10):** `main` / `origin/main` are stable through Organized Unpack and AutoPack Solution Portfolio Phase 2 at `819de80`. The integration branch `feat/autopack-portfolio-stack-constrained` contains branch-only stabilization commits through `5432e0c`: staged-case OOG highlight cleanup (`badfb6d`), AutoPack portfolio dedupe/stale-results fixes (`08e5fa7`), and Graphify agent configuration (`5432e0c`). Multi-select manual placement safety is implemented on `fix/multi-select-placement-safety` at `8d0d7a2`, but is not merged yet. Wheel Wells packing-quality is active on `fix/wheel-wells-packing-quality`; safety primitives appear intact, but the visible gap remains a product-quality problem until the fixture proves whether staged cargo can safely occupy that space and the fix is reviewed. Portfolio Phase 3 is paused until multi-select and Wheel Wells stabilization are reviewed and merged.
+> **Current source-of-truth note (2026-07-12):** `main` / `origin/main` are stable through `e83839b`. The old `feat/autopack-portfolio-stack-constrained` integration work has been merged. The active branch is `feat/autopack-max-capacity-check`, where Phase A is audited and awaiting commit/merge/push. Phase A is intentionally narrow and solver-only: it does not mutate saved rules, is never auto-selected, and does not claim reload/manual-edit/delete durability before Phase B.
 
-## Current Stabilization Branches — Evidence (2026-07-10)
+## Active Debug Queue — AutoPack / Results / Editor Regressions
+
+### A. Max Capacity Phase A — audited, awaiting commit and merge
+- 🔄 **Phase A status:** Audited, browser evidence recorded, and awaiting commit, fast-forward merge, and push.
+- ✅ **Selected-option dedupe ownership:** `buildAutoPackResultsState()` keeps the selected solver option as the visible survivor of its duplicate physical-layout group; other duplicate groups retain first-survivor behavior.
+- ✅ **Phase A behavior target:** Max Capacity is a raw Results option after Stack priority; Wheel Wells Constrained remains after Max when distinct.
+- ✅ **Phase A safety target:** Max Capacity is excluded from automatic winner/default selection even if it packs more.
+- ✅ **Phase A solver rule target:** Max relaxes no-top-load, stack count, support weight/crushing, lane/priority, case orientation, flipping, and instance orientation locks on cloned/effective solver items only.
+- ✅ **Hard rules preserved:** real dimensions, canonical 90-degree rotations, containment, no overlap, no floating/support validation, Wheel Wells blocked body/support/COM/cantilever, Front Overhang cab void and rear retention.
+- ✅ **Phase A Results start:** Fresh AutoPack Results visually start at Option 1, `Balanced (recommended)`, while `selectedId`, Applied badge, Apply, stale handling, and Prev/Next remain unchanged.
+- ✅ **Phase A validation:** Results `23/23`; full suite `854` passed, `5` skipped, `0` failed; typecheck passed; lint passed with existing warnings only; syntax checks and `git diff --check` passed.
+- ✅ **Phase A browser evidence:** Balanced opened on Option 1 and packed `236`; Max Capacity packed `297`, generated and applied successfully; persistent manual change marked Results Outdated.
+- ⚠️ **Durability boundary:** moving/removing Max Capacity cargo can dismantle many placements during canonical revalidation because Phase A has no durable relaxed profile. This is a confirmed Phase B limitation, not a Phase A solver failure.
+
+### B. Max Capacity Phase B — durable metadata, not started
+- ⬜ Add per-instance `packedProfile: "max-capacity"` only when a Max Capacity option is applied.
+- ⬜ Teach PackLibrary/revalidation paths to use physical-only handling relaxation for marked Max Capacity instances while preserving containment, overlap, support, Wheel Wells, and Front Overhang hard rules.
+- ⬜ Strip the marker when a marked case is manually moved/rotated/staged or when a normal AutoPack option/Unpack rebuilds the layout.
+- ⬜ Do not add pack-level flags; derive Max Capacity presence from marked instances.
+- ⬜ Add reload, import, duplicate, manual edit, truck change, and repair tests.
+- ⚠️ Applied Max Capacity layouts currently lose their relaxed-rule context during canonical revalidation because Phase A stores no durable profile metadata.
+- ⬜ Manual move/delete/repair must preserve unrelated marked placements and only repair or stage physically affected dependents.
+- ⬜ Deletion durability must remain a narrow Max Capacity profile/revalidation change, not a broad delete architecture rewrite.
+
+### C. Max Capacity Phase C — reporting note, not started
+- ⬜ Add a small Stats/PDF note only after Phase B is stable: `Max Capacity: handling rules relaxed for N cases.`
+- ⬜ No UI redesign, no modal, no legal/DOT/axle claims.
+
+### D. AutoPack Results starting-view bug
+- ✅ `renderAutoPackResultsPanel()` now falls back to `0` when `results.viewIndex` is missing/invalid, so every fresh AutoPack run visually opens on Option 1, `Balanced (recommended)`.
+- ✅ `selectedId`, Applied badge, Apply behavior, stale handling, and Prev/Next remain unchanged; only the fresh visual carousel page changed.
+- ✅ Results coverage proves a non-first option may remain selected/applied while a missing fresh `viewIndex` displays Balanced at index `0`.
+
+### E. Delete-one-box removes several boxes
+- 🔄 **General reconciliation concern:** the core delete/repair pipeline is mostly correct, but full-pack reconciliation can stage unrelated marginal placements after any delete.
+- ✅ Correct behavior: deleting a support box may stage or re-settle boxes physically dependent on it.
+- ⚠️ User-facing concern: unrelated borderline placements can be staged because `reconcilePlacementsForTruck()` checks the entire remaining pack, and the toast can incorrectly say support changed.
+- ⚠️ **Specific Max Capacity durability failure:** Phase A stores no `packedProfile`, so canonical revalidation forgets the relaxed handling context. Moving or deleting one Max Capacity case can therefore dismantle physically valid Max Capacity relationships and move/repair/stage many remaining cases. This is the confirmed Phase B metadata problem, not proof that Phase A generated an invalid physical layout.
+- ⬜ Small safe fix later: adjust toast copy from `because their support changed` to a more honest message such as `because they became invalid after the removal`.
+- ⬜ Structural cleanup later: add an internal busy guard to `deleteInstancesWithFeedback()` and optionally add the app-level `mutationBlockedWhileBusy()` call before `deleteSelected()` delegates.
+- ⬜ Larger scoped-reconciliation fix is deferred until lifecycle/history work is stable.
+
+### F. Undo granularity and history reset
+- ⚠️ Audit result: current history baseline can be the boot/empty state instead of the loaded workspace state because scoped data is loaded with `replace(..., { skipHistory: true })` without resetting history.
+- ⚠️ Result: after AutoPack/edit sequences, repeated Undo can appear to wipe the loaded pack back to an empty boot snapshot.
+- ⚠️ Shared architecture issue: undo/redo history snapshots the whole `packLibrary`, not per-pack; switching packs and undoing can silently revert another pack.
+- ⬜ Future branch: `fix/undo-history-reset`.
+- ⬜ Small safe plan later: add `resetHistory` support to `StateStore.replace()` and use it when loading scoped/workspace state.
+- ⬜ Add pack-aware undo/redo guard or per-pack history boundary so Undo cannot silently mutate a pack the user is not viewing.
+- ⬜ Consolidate selected visibility toggles so toggling N selected cases creates one history entry, not N entries.
+
+### G. AutoPack option spacing / quality
+- ✅ Audit result: no confirmed solver bug in current option scoring/gating/dedupe.
+- ✅ Balanced vs Compact fill can legitimately dedupe on homogeneous cargo.
+- ✅ Stack priority only diverges when floor placement fails and early stacking changes the outcome.
+- ✅ Floor first should always show `Stacked: 0`.
+- ✅ Constrained space first is correctly Wheel-Wells-gated.
+- ⚠️ Nuance: Max Capacity may pack more but not always look visually tighter because Phase A keeps Balanced-style layout-quality scoring while relaxing handling rules.
+- ⬜ Future documentation clarification: Wheel Wells floor/channel leftover pass exists; raised shelf/bridge leftover pass is the remaining future work.
+
+### H. Unpack / Truck Change regression paths
+- ✅ Audit result: core Unpack flow passed; it stages all packed cases in organized rows, packed count becomes zero, and one Undo restores the previous packed load for the same pack.
+- ✅ Audit result: core Truck Change flow passed; preview is pure, cancel restores committed state, confirm commits one PackLibrary update, and invalid cargo is staged/repacked through existing paths.
+- ⚠️ Shared concern: global undo/redo is not scoped per pack, so Unpack/Truck Change can expose the cross-pack history issue.
+- ⚠️ UX concern: AutoPack Results stays open with stale badges after Unpack or Truck Change instead of closing.
+- ⚠️ UX concern: Unpack does not explicitly clear selection, even though ids remain valid.
+- ⬜ Future small cleanup: close AutoPack Results after Unpack and confirmed Truck Change.
+- ⬜ Future small cleanup: clear `selectedInstanceIds` and scene selection after Unpack.
+
+## Current Stabilization Evidence — Merged Before Max Capacity
 
 ### Graphify / coding-agent setup — Branch evidence (`5432e0c`)
-- ✅ Commit `5432e0c`: `chore: configure graphify for coding agents` is pushed on `feat/autopack-portfolio-stack-constrained`.
+- ✅ Commit `5432e0c`: `chore: configure graphify for coding agents` is included in the stabilization merge.
 - ✅ Adds `.codex/hooks.json`, `.github/copilot-instructions.md`, `AGENTS.md`, and a `CLAUDE.md` Graphify note.
 - ✅ Purpose: make Codex/Copilot/agent sessions check or build the code graph before answering codebase questions where possible.
 - ✅ No product runtime, AutoPack solver, manual placement, billing/auth/security, or UI behavior was intentionally changed.
 
 ### Staged-case OOG highlight cleanup — Branch evidence (`badfb6d`)
-- ✅ Commit `badfb6d`: `fix(editor): avoid oog highlight on staged cases` is pushed on the integration branch.
+- ✅ Commit `badfb6d`: `fix(editor): avoid oog highlight on staged cases` is included in the stabilization merge.
 - ✅ Staged cases outside the truck are no longer incorrectly highlighted as out-of-gauge cargo.
 - ✅ This is an editor visual-state cleanup only; it does not change AutoPack solving or packing validation.
 
 ### AutoPack portfolio bug-fix batch — Branch evidence (`08e5fa7`)
-- ✅ Commit `08e5fa7`: `fix(autopack): dedupe layouts and clarify stale results` is pushed on `feat/autopack-portfolio-stack-constrained`.
+- ✅ Commit `08e5fa7`: `fix(autopack): dedupe layouts and clarify stale results` is included in the stabilization merge.
 - ✅ Layout dedupe now uses a layout signature that is invariant to interchangeable instance-id swaps, so physically identical options are not shown as separate portfolio choices.
 - ✅ Floor first now preserves its no-stacking contract in the Front Overhang deck-retention path.
-- ✅ Stale AutoPack Results Apply buttons now expose a title/aria-label explaining that the option is outdated and AutoPack must be rerun.
+- ✅ Stale AutoPack Results Apply buttons expose a title/aria-label explaining that the option is outdated and AutoPack must be rerun.
 - ✅ Validation reported before commit: full test suite green (`826` total, `821` pass, `0` fail, `5` skipped), targeted AutoPack results tests green, typecheck/lint acceptable with existing warnings.
-- 🚫 This commit intentionally did not implement Portfolio Phase 3.
 
-### Multi-select manual placement safety — Branch evidence (`8d0d7a2`)
-- 🔄 **Committed and pushed, awaiting manual browser smoke and merge.** Branch: `fix/multi-select-placement-safety`.
-- 🔄 Commit `8d0d7a2`: `fix(editor): make multi-select placement atomic and surface-aware`.
-- ✅ Multi-select normal drag now follows preview terrain as a rigid group using the same surface categories as single-case preview: truck floor, case tops, staged-case tops, Wheel Wells tops, Front Overhang deck, and staging floor.
+### Multi-select manual placement safety — Merged evidence (`f56eca0`, source `8d0d7a2`)
+- ✅ Source commit `8d0d7a2`: `fix(editor): make multi-select placement atomic and surface-aware` was merged through `f56eca0`.
+- ✅ Multi-select normal drag follows preview terrain as a rigid group using the same surface categories as single-case preview: truck floor, case tops, staged-case tops, Wheel Wells tops, Front Overhang deck, and staging floor.
 - ✅ Selected siblings are excluded from preview terrain so the group does not climb itself.
-- ✅ The required lift is computed across the selected footprints and applied uniformly to preserve relative offsets.
+- ✅ Required lift is computed across selected footprints and applied uniformly to preserve relative offsets.
 - ✅ Fast drags account for crossed cargo between pointer events instead of sweeping through obstacles at floor height.
 - ✅ Multi-select release remains atomic and routes through canonical revalidation with `repairDependents: true`.
-- ✅ Front Overhang cab void is now treated as a hard blocked body in editor/PackLibrary validation paths so cab-void poses cannot persist as staged cargo.
-- ✅ Validation reported by Codex: focused placement tests `51/51` passed; full suite `837` total, `832` pass, `0` fail, `5` skipped; typecheck passed; lint passed with zero errors and existing warnings; `git diff --check` passed.
-- 🔄 Browser smoke still required in the signed-in editor: separated group over cargo, fast drag across cargo, Wheel Wells blocked body/top, Front Overhang deck/cab void, invalid partial support revert, valid common-surface persistence, reload persistence, and single-case regression check.
-- 🚫 This branch did not touch AutoPack solver behavior, AutoPack Results UX, Portfolio Phase 3, billing/auth/security, or broad formatting.
+- ✅ Front Overhang cab void is treated as a hard blocked body in editor/PackLibrary validation paths so cab-void poses cannot persist.
+- ✅ Validation reported: focused placement tests `51/51` passed; full suite `837` total, `832` pass, `0` fail, `5` skipped; typecheck passed; lint passed with zero errors and existing warnings; `git diff --check` passed.
 
-### Wheel Wells packing-quality gap — Active branch status
-- 🔄 **Active branch:** `fix/wheel-wells-packing-quality`.
-- ⚠️ **Open quality bug.** Safety primitives appear intact, but visual/load-quality remains unacceptable when avoidable gaps around Wheel Wells appear to leave packable space unused.
-- ✅ Audit finding: safe-contact primitives from earlier Wheel Wells work are still present, including contact-vs-penetration distinction and blocked-body checks.
-- ⚠️ Product finding: passing safety tests does not prove the layout is tight or load-quality acceptable. A valid solver result can still fail product quality if staged boxes could safely fit in visible gaps.
-- ⬜ Required evidence before marking fixed: exact fixture, before/after packed and staged counts, proof whether the gap is safe floor/channel space, scoring/compaction/ranking issue, or true future bridge/spanning space.
-- 🚫 Do not enable Wheel Wells bridge/spanning by default unless a dedicated audit proves the gap is only bridge/spanning and the change is explicitly approved.
+### Wheel Wells packing-quality — Merged evidence (`e0f398b`, source `f516d53`)
+- ✅ Source commit `f516d53`: `fix(autopack): generate safe overhang stack poses above wheel wells` was merged through `e0f398b`.
+- ✅ Root cause: candidate generation was stricter than validation; raised overhang placements above wheel wells were legal but not proposed.
+- ✅ Added safe overhang stack candidate generation while preserving Wheel Wells blocked-body, support percentage, center-of-mass, and cantilever rules.
+- ✅ Fixture evidence reported: Balanced/Compact fill improved from `108/30 staged` to `132/6`; Stack aligned to `132`; Floor first unchanged; remaining staged were Upright Appliances.
+- ✅ No bridge/spanning was enabled.
+- ✅ Validation reported: targeted tests green, full suite green, typecheck/lint acceptable with existing warnings, browser smoke acceptable except favicon noise.
 
 ## AutoPack Core Engine Epic — Merged Evidence (2026-07-05, `5a530f0`)
 
@@ -263,12 +338,11 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 ### Known remaining issues / decisions
 1. ⚠️ **Operation lifecycle / UX concurrency gap** — AutoPack, Unpack, Truck Change, preview capture, and animation can still feel unsynchronized. Large loads may show “AutoPack starting…” with no visible progress for 10–20 seconds, Unpack can delay, Truck Change can open preview before explicit Update, and users have no clear stop/cancel behavior. Audit before implementation.
 2. ⚠️ **Large-load performance still has a synchronous solve/render wait** — the long animation path is skipped after `05f56f4`, but solving/building/rendering many cases can still block the main thread. The next fix should improve perceived responsiveness and operation messaging before deeper architecture like Web Workers.
-3. ✅ **Wheel-well manual movement blocked-body defect** — fixed earlier for single/manual blocked-body safety. Multi-select manual placement safety now has a separate committed branch (`8d0d7a2`) that adds rigid-group surface-following, atomic group validation, and Front Overhang cab-void blocked-body protection; it is awaiting manual browser smoke and merge.
+3. ✅ **Wheel-well manual movement blocked-body defect** — fixed earlier. Manual drag/drop, rotate/flip, keyboard nudge, inspector apply, and explicit add/drop now reject or stage wheel-well blocked-body penetration.
 4. 🔄 **Wheel-well support/stability foundation** — foundation is merged and validation is production-active, but bridge/build-up generation remains gated OFF unless `enableWheelWellBridge` is passed. Do not enable it until a separate Wheel-well production activation/order branch.
-5. ⚠️ **Wheel Wells packing-quality gap** — safety primitives are intact, but visible gaps around Wheel Wells may still waste usable space. This is a product-quality issue, not necessarily a blocked-body regression. Next fix must prove with the screenshot fixture whether a staged box can safely fit the visible gap; if yes, patch the smallest floor/channel/scoring/compaction/ranking issue without weakening contact-vs-penetration safety. If the gap is true bridge/spanning-only space, record that proof and keep bridge/spanning as a separate approved phase.
-6. ⬜ **Front Overhang wall-building strategy** — C2 blocks unsafe deck usage, but the solver does not intentionally build the retaining wall first and then fill the deck. The deck can remain unused until this strategy exists.
-7. ✅ **Manual placement surface-following + gizmo polish branch** — merged and pushed to `main` at `bbe6d44`, including vertical controls, validated drag release, X/Y/Z gizmo, pending pose, surface-following normal drag, staged limited gizmo, staged-to-packed transition, horizontal gizmo surface-following, orbit/F-key fixes, and staged X/Z-only polished gizmo. Independent audits returned PASS and signed-in browser smoke succeeded across all truck types. Non-blocking follow-up: F/Flip blocked toast copy says “Cannot rotate...” instead of “Cannot flip...”.
-8. ✅ **Organized Unpack** — merged and pushed to `main` at `f615174`. Unpack now groups staged cases by `caseId`, sorts larger footprint groups closest to the truck, preserves the existing shared staging layout helper, and keeps cases selectable/draggable/rotatable/AutoPackable after Unpack.
+5. ⬜ **Front Overhang wall-building strategy** — C2 blocks unsafe deck usage, but the solver does not intentionally build the retaining wall first and then fill the deck. The deck can remain unused until this strategy exists.
+6. ✅ **Manual placement surface-following + gizmo polish branch** — merged and pushed to `main` at `bbe6d44`, including vertical controls, validated drag release, X/Y/Z gizmo, pending pose, surface-following normal drag, staged limited gizmo, staged-to-packed transition, horizontal gizmo surface-following, orbit/F-key fixes, and staged X/Z-only polished gizmo. Independent audits returned PASS and signed-in browser smoke succeeded across all truck types. Non-blocking follow-up: F/Flip blocked toast copy says “Cannot rotate...” instead of “Cannot flip...”.
+7. ✅ **Organized Unpack** — merged and pushed to `main` at `f615174`. Unpack now groups staged cases by `caseId`, sorts larger footprint groups closest to the truck, preserves the existing shared staging layout helper, and keeps cases selectable/draggable/rotatable/AutoPackable after Unpack.
 
 ### Current AutoPack implementation order
 1. ✅ **Manual placement surface-following + gizmo polish** — merged and pushed to `main` at `bbe6d44`; signed-in browser smoke passed across Standard, Wheel Wells, and Front Overhang.
@@ -277,30 +351,30 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 4. ✅ **Organized Unpack polish** — merged and pushed to `main` at `f615174`; grouped staging rows by `caseId` are in place.
 5. ✅ **AutoPack Solution Portfolio Phase 1** — merged and pushed to `main` at `59737db`/recorded on `main` at `b13d0fd`; Compact fill is offered as a safe second option when distinct.
 6. ✅ **AutoPack Solution Portfolio Phase 2** — merged and pushed to `main` at `819de80`; Floor first (no stacking) is the third safe option after Balanced and Compact fill.
-7. 🔄 **Multi-select manual placement safety** — committed/pushed on `fix/multi-select-placement-safety` at `8d0d7a2`; awaiting signed-in browser smoke, review, merge back to `feat/autopack-portfolio-stack-constrained`, and later merge to `main`.
-8. 🔄 **Wheel Wells packing-quality gap** — active on `fix/wheel-wells-packing-quality`; prove whether the visible gap is safe usable floor/channel space or true future bridge/spanning space, then fix only the smallest confirmed cause.
-9. ⬜ **AutoPack Results UX/product clarity audit** — review option labels, stale state, comparison metrics, disabled Apply clarity, packed/staged/volume/stack/floor differences, and tests before adding more portfolio modes.
-10. ⏸️ **AutoPack Solution Portfolio Phase 3** — paused until items 7–9 are clean; goal remains Stack priority as intentional always-available safe option and Constrained first Wheel-well-gated with no duplicate recovery runs.
-11. ⬜ **Heavy-Low / Rear-Access safe operational strategy audit** — separate future audit after Phase 3. Good labels: Heavy-Low Rear Priority, Rear-Access Heavy Load, Unload-Friendly Heavy Load. Avoid axle/legal claims until those rules are actually modeled.
-12. ⬜ **Tooltip/help copy for AutoPack modes** — future UI/documentation polish after the portfolio list stabilizes; likely brief tooltips plus a Settings/Resources explanation.
-13. ⬜ **Exception Fit / Force Fit Analysis** — separate future workflow only. Must preserve physical containment/no-overlap and report any relaxed handling/business rules with explicit exception approval language. Do not mix into safe AutoPack portfolio.
-14. ⬜ **Formatting-only branch if `validate` is treated as a hard gate** — isolate existing formatting drift; do not auto-format feature branches.
-15. ⬜ **`app.js` modularization inventory** — start with M0 inventory, not extraction.
-16. ⬜ **Legacy solver trim audit** — only after item-prep extraction is stable and tests/callers prove dead solve code can be removed safely.
+7. ✅ **AutoPack Solution Portfolio Phase 3 / stabilization** — merged to `main` at `e83839b`; Stack priority is now an intentional portfolio option, Constrained space first is Wheel-Wells-gated, duplicate recovery runs are prevented, and Results clarity/dedupe fixes are included.
+8. 🔄 **Max Capacity Phase A** — audited on `feat/autopack-max-capacity-check`; selected-option dedupe ownership, Option-1 starting view, focused/full validation, and signed-in browser evidence are complete. Awaiting commit, fast-forward merge, and push.
+9. ⬜ **Max Capacity Phase B** — future durable `packedProfile: "max-capacity"` metadata and physical-only revalidation profile. Do not start until Phase A is committed.
+10. ⬜ **Undo/history reset branch** — future `fix/undo-history-reset`; reset history after workspace/load hydration and prevent cross-pack Undo confusion.
+11. ⬜ **Delete/repair UX cleanup** — future narrow branch for delete toast accuracy and delete guard consistency.
+12. ⬜ **Unpack/Truck Change stale Results cleanup** — future narrow branch to close stale Results and clear selection after Unpack.
+13. ⬜ **Heavy-Low / Rear-Access safe operational strategy audit** — separate future audit after Max Capacity Phase A/B. Avoid axle/legal claims until those rules are actually modeled.
+14. ⬜ **Tooltip/help copy for AutoPack modes** — future UI/documentation polish after the mode list stabilizes; likely brief tooltips plus a Settings/Resources explanation.
+15. ⬜ **Exception Fit / Force Fit Analysis** — separate future workflow only. Must preserve physical containment/no-overlap and report any relaxed handling/business rules with explicit exception approval language. Do not mix into safe AutoPack portfolio.
+16. ⬜ **Formatting-only branch if `validate` is treated as a hard gate** — isolate existing formatting drift; do not auto-format feature branches.
+17. ⬜ **`app.js` modularization inventory** — start with M0 inventory, not extraction.
+18. ⬜ **Legacy solver trim audit** — only after item-prep extraction is stable and tests/callers prove dead solve code can be removed safely.
 
 ### AutoPack / UI follow-up
 | Status | Item |
 |--------|------|
 | ✅ | **AutoPack Results panel UI enhancement** — completed and merged at `6effd9f`. Panel now uses a compact design-reference carousel/collapsed-card layout with previous/next controls, compact metrics, polished applied state, and a visible dot-grid drag affordance. |
-| 🔄 | **AutoPack Results stale/dedupe bug fix** — implemented on branch at `08e5fa7`; layout dedupe no longer treats swapped instance IDs as distinct layouts, Floor first respects no-stacking in Front Overhang retention-wall logic, and stale Apply controls expose explanatory title/aria-label. Awaiting integration/merge path to main. |
-| ⬜ | **AutoPack Results UX/product clarity audit** — before adding more options, audit option names, "why this option differs" copy, visible stale badges, packed/staged/volume/stack/floor metrics, and disabled Apply clarity. |
 
 
-## Organized Unpack Polish — In Progress Evidence (2026-07-07, `f615174`)
+## Organized Unpack Polish — Merged Evidence (2026-07-07, `f615174`)
 
 ### Status
 - ✅ Branch `polish/organized-unpack` was implemented, tested, merged, and pushed to `main`.
-- 🔄 Commit: `f615174`.
+- ✅ Commit: `f615174`.
 - ✅ Current Unpack path was audited before implementation.
 - ✅ UI trigger remains `editor-screen.js` `btnUnpack.click`, guarded by the existing OperationLifecycle path.
 - ✅ Orchestration remains `unpackAll()` with the existing double-rAF yield, staleness guard, and `PackLibrary.update()` commit path.
@@ -334,40 +408,46 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 - ✅ Record final merge/push evidence here.
 
 
-## AutoPack Solution Portfolio — Phase 1, Phase 2, Phase 3, and Stabilization Evidence (updated 2026-07-10)
+## AutoPack Solution Portfolio — Phase 1, Phase 2, Phase 3, and Stabilization Evidence (updated 2026-07-12)
 
 ### Phase 1 — Compact fill safe option
 - ✅ Branch `feat/autopack-solution-portfolio` implemented Compact fill as a safe second portfolio option.
 - ✅ Commit `59737db`: `feat(autopack): always offer compact-fill portfolio option`.
-- ✅ `runAdaptiveAutoPack()` now runs default first, then Compact fill with a bounded smaller budget.
+- ✅ `runAdaptiveAutoPack()` runs default first, then Compact fill with a bounded smaller budget.
 - ✅ Default remains first in `solutions[]`, so Balanced remains selected when counts tie.
-- ✅ Existing result dedupe removes Compact fill when it produces the same layout.
-- ✅ No Floor first, Stack-priority always-on, Rear-priority, Heavy-low, tooltip UI, Settings docs, or Force Fit behavior was added in Phase 1.
+- ✅ Existing result dedupe removes Compact fill when it produces the same physical layout.
 - ✅ Phase 1 was merged/pushed to `main` and recorded at `b13d0fd`.
+- 🚫 No Floor first, Stack-priority always-on, Rear-priority, Heavy-low, tooltip UI, Settings docs, or Force Fit behavior was added in Phase 1.
 
+### Phase 2 — Floor first safe option
 - ✅ Branch `feat/autopack-portfolio-floor-first` was implemented, tested, browser-smoked, merged, and pushed to `main`.
 - ✅ Commit `819de80`: `feat(autopack): add floor-first as third portfolio option`.
-- ✅ Option order is now `Balanced`, `Compact fill`, `Floor first`, then recovery options when applicable/distinct.
+- ✅ Option order became `Balanced`, `Compact fill`, `Floor first`, then recovery options when applicable/distinct.
 - ✅ Floor first uses the existing registered preset with `enableStackPhase: false`; it is a deliberate no-stacking layout style and may pack fewer cases.
-- ✅ Default remains selected on ties; Floor first should only auto-select if existing ranking says it packs strictly more cases.
-- ✅ Existing dedupe removes Floor first when it produces the same layout as another option.
-- ✅ Recovery logic and hard-rule validation are unchanged.
+- ✅ Existing dedupe removes Floor first when it produces the same physical layout as another option.
+- ✅ Recovery logic and hard-rule validation remained unchanged.
 - ✅ Validation reported: `820` tests total, `815` pass, `0` fail, `5` skipped; typecheck passed; lint passed with `0 errors` and existing warnings only; targeted AutoPack/portfolio tests passed.
 - ✅ Browser smoke reported Balanced, Compact fill, Floor first, and Stack priority options visible/working where distinct, applying options uses the existing safe apply path, and no console errors were observed.
 - 🚫 No rear-priority, heavy-low, stack-priority always-on, tooltip UI, Settings docs, or Force Fit behavior was added in Phase 2.
 
-
 ### Phase 3 — Stack priority / Constrained first portfolio cleanup
-- 🔄 Active integration branch: `feat/autopack-portfolio-stack-constrained`.
-- 🔄 Current integration branch contains stabilization commits through `5432e0c`, but no intentional Phase 3 portfolio implementation commit is present yet.
-- ✅ Branch-only bug fix `08e5fa7` corrected portfolio result dedupe and stale-result clarity without changing Phase 3 strategy generation.
-- 🟡 Current browser behavior can show `Stack priority` as an existing recovery option on partial/recoverable packs. That is not the same as Phase 3 being implemented.
-- ⏸️ Phase 3 is paused until the multi-select manual placement branch and Wheel Wells packing-quality fix are reviewed/merged.
-- ⬜ Phase 3 implementation goal: make Stack priority an intentional always-available safe portfolio option.
-- ⬜ Phase 3 implementation goal: add Constrained first only when Wheel-well geometry is present and the result is distinct.
-- ⬜ Phase 3 implementation goal: avoid duplicate strategy runs by not rerunning the same strategies again in recovery after they were already produced as portfolio options.
-- ⬜ Keep hard-rule validation, solver safety, apply path, dedupe, and Results panel UI unchanged.
-- 🚫 Do not add Heavy-Low Rear Priority, Rear-Access Heavy Load, tooltip/help copy, Settings/Resources docs, or Exception Fit / Force Fit Analysis in Phase 3.
+- ✅ Implemented and merged through the stabilization branch, then merged to `main` at `e83839b`.
+- ✅ Stack priority is now an intentional always-available safe portfolio option when distinct.
+- ✅ Constrained space first is Wheel-Wells-gated and appears only when Wheel-well geometry and a distinct result justify it.
+- ✅ Duplicate recovery runs are prevented so the same strategy is not rerun as both a portfolio option and recovery option.
+- ✅ Hard-rule validation, solver safety, apply path, dedupe, and Results panel UI behavior were preserved.
+- ✅ Stabilization includes staged-case OOG highlight cleanup (`badfb6d`), portfolio dedupe/stale Results fix (`08e5fa7`), Graphify setup (`5432e0c`), multi-select placement safety merge (`f56eca0` / source `8d0d7a2`), Wheel Wells packing-quality merge (`e0f398b` / source `f516d53`), and AutoPack Results clarity merge (`41d16d6` / source `315abe5`).
+- 🚫 Heavy-Low Rear Priority, Rear-Access Heavy Load, tooltip/help copy, Settings/Resources docs, and Exception Fit / Force Fit Analysis were not added in Phase 3.
+
+### Phase 4 — Max Capacity Phase A / B / C
+- 🔄 **Phase A audited, awaiting commit and merge:** `feat/autopack-max-capacity-check` adds Max Capacity as a solver-only Results option. It is manually viewable/applyable, excluded from automatic winner/default selection, and not durable yet.
+- ✅ **Phase A dedupe ownership:** the selected normal solver option owns its physical-layout dedupe group, so an identical Max Capacity option cannot steal visible selection.
+- ✅ **Phase A Results start:** fresh Results visually open at Option 1, `Balanced (recommended)`, while selected/apply/stale/navigation behavior remains unchanged.
+- ✅ **Phase A automated evidence:** Results `23/23`; full suite `854` passed, `5` skipped, `0` failed; typecheck, syntax checks, and `git diff --check` passed; lint passed with existing warnings only.
+- ✅ **Phase A browser evidence:** Balanced opened on Option 1 and packed `236`; Max Capacity packed `297`, generated and applied successfully; persistent manual change correctly marked Results Outdated.
+- ⚠️ **Confirmed Phase B durability limitation:** moving/removing Max Capacity cargo can dismantle many placements because canonical revalidation has no durable relaxed-profile context. This is not a Phase A solver failure, and Phase A does not claim reload/manual-edit/delete durability.
+- ⬜ **Phase B future:** add durable per-instance `packedProfile: "max-capacity"`, preserve unrelated marked placements during move/delete/repair, and repair/stage only physically affected dependents without a broad delete rewrite.
+- ⬜ **Phase C future:** add small Stats/PDF note after durability is stable; no legal/DOT/axle claims.
 
 ### Future portfolio notes
 - ⬜ Heavy-Low Rear Priority / Rear-Access Heavy Load / Unload-Friendly Heavy Load should be audited as a safe operational strategy later. Avoid labels like Axle Balanced, DOT Safe, Legally Balanced, or Weight-Compliant until those rules are actually modeled.
@@ -472,14 +552,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 ## Near-Term Execution Queue
 *Approved order. Do not combine items. Do not skip steps.*
 
-*Current 2026-07-10 execution note:* Organized Unpack and AutoPack Solution Portfolio Phases 1–2 are merged on `main` through `819de80`. The integration branch `feat/autopack-portfolio-stack-constrained` now includes stabilization commits through `5432e0c`, including Graphify setup and the `08e5fa7` portfolio dedupe/stale-results bug fix. Multi-select manual placement safety is implemented on `fix/multi-select-placement-safety` at `8d0d7a2` and must be browser-smoked, reviewed, merged back to the integration branch, and eventually merged to `main`. Wheel Wells packing quality is active on `fix/wheel-wells-packing-quality`. AutoPack Results UX/product clarity audit should follow. Portfolio Phase 3 should resume only after those stabilization items are clean.
-
-**Immediate next work before resuming Portfolio Phase 3:**
-1. 🔄 Finish and review `fix/wheel-wells-packing-quality` with before/after fixture evidence and no unrelated files.
-2. 🔄 Browser-smoke `fix/multi-select-placement-safety` (`8d0d7a2`) in the signed-in editor, then merge if the manual checks pass.
-3. ⬜ Run an AutoPack Results UX/product audit: option names, visible stale state, why-options-differ copy, packed/staged/volume/stack/floor metrics, and disabled Apply clarity.
-4. ⬜ Update this TODO after each merge with the final commit hash and validation evidence.
-5. ⬜ Resume Phase 3 only after the above branches are cleanly merged and no manual-placement/Wheel-Wells/Results changes are mixed into Phase 3.
+*Current 2026-07-12 execution note:* `main` / `origin/main` are stable through AutoPack portfolio stabilization at `e83839b`. The old `feat/autopack-portfolio-stack-constrained` branch has been merged. Current active branch is `feat/autopack-max-capacity-check`; Phase A implementation, selected-option dedupe ownership, Option-1 starting view, automated validation, and signed-in browser evidence are complete. Next work is commit, fast-forward merge, and push, followed by creation of the separate Phase B durability branch. Do not implement Phase B, Undo/history reset, Delete repair, or Unpack/Truck Change cleanup in the Phase A closeout.
 
 *Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified; 3B geometry epsilon unification merged (`33b362a`); 5A stacking-safety audit + runtime tests merged (`0aa58c3`); 3B/5A in-browser logic verification recorded (`819d3de`).*
 
@@ -594,7 +667,6 @@ A phase is only ✅ when ALL of the following are true:
 8. Code review confirms no unrelated files changed.
 9. Phase is committed, merged to main, and pushed.
 10. This TODO is updated with the new status.
-11. If the work is first completed on a feature branch, the TODO must clearly say `awaiting browser smoke`, `awaiting merge`, or `merged to main`; do not label branch-only commits as fully complete.
 
 **🔄 in-progress states must say exactly what remains:**
 - `🔄 Implemented, awaiting manual browser review`
@@ -1091,7 +1163,7 @@ Release-gate items block **public launch**, not isolated product development. Pr
 | ⬜ | **Wheel-well bridge/spanning strategy** | Future branch. The current Wheel Wells stack intentionally avoids faking support and does not force cartons into physically unsupported raised shelf gaps. Build true bridge/spanning only with an explicit product contract, real coplanar/support checks, browser fixtures, and tests across different carton sizes. |
 | ⬜ | **Front Overhang wall-building strategy** | C2 safety gate exists; solver still needs to intentionally build retaining wall then load the deck. |
 | ⬜ | **Manual vertical placement / snap-on-top** | User can choose a box, move it up/down, snap onto a valid support, and leave it if all hard rules pass. Requires editor interaction, support validation, collision feedback, and undo/redo. |
-| ⬜ | **Organized Unpack** | Unpack should generate grouped staging rows/blocks instead of scattered layout. |
+| ✅ | **Organized Unpack** | Merged and pushed to `main` at `f615174`. Unpack groups staged cases by `caseId`, sorts larger footprint groups closest to the truck, preserves the shared staging layout helper, and keeps cases selectable/draggable/rotatable/AutoPackable. Future cleanup: close stale AutoPack Results and clear selection after Unpack. |
 
 ### 5A — Near-Term Correctness Fixes
 | Status | Item |

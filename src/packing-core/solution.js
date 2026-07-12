@@ -19,6 +19,9 @@
  *   items that fit no floor position stage with an honest reason.
  * - `stack-priority`: an item that fails the floor is offered a safe supported
  *   stack immediately (favors vertical use over floor spread).
+ * - `max-capacity`: a physical-fit estimate that may relax handling rules but
+ *   still uses the same containment, collision, support, and blocked-body
+ *   validation pipeline. Phase A never auto-selects this option.
  * - `constrained-first`: constrained (narrower) zones are reserved and filled
  *   with best-fitting cargo before the open floor phases run.
  * Leftover recovery runs inside EVERY strategy (it is part of the pipeline,
@@ -59,6 +62,13 @@ export const PACKING_STRATEGIES = Object.freeze([
     label: 'Stack priority',
     description: 'Stacks earlier to use vertical space.',
     options: Object.freeze({ stackFallbackImmediate: true }),
+  }),
+  Object.freeze({
+    id: 'max-capacity',
+    strategy: 'max-capacity',
+    label: 'Max Capacity',
+    description: 'Physical-fit estimate; handling rules may be relaxed. Not a transport recommendation.',
+    options: Object.freeze({ maxCapacityMode: true }),
   }),
   Object.freeze({
     id: 'constrained-first',
@@ -138,7 +148,8 @@ export function runPackingStrategies(input, strategyIds = ['default'], solve = s
 // Rejection codes no alternate strategy can ever overcome: the item statically
 // cannot exist in this truck (or there is no usable space at all), or the
 // orientation policy excludes every fitting pose — identical under every
-// strategy. Recovery re-solves are pointless for loads staged ONLY for these.
+// normal recovery strategy. Max Capacity is a separate, non-recovery analysis.
+// Recovery re-solves are pointless for loads staged ONLY for these.
 const STATIC_REJECTION_CODES = new Set([
   REJECTION_CODES.NO_FIT_ANY_SURFACE,
   REJECTION_CODES.NO_USABLE_SPACE,
@@ -154,26 +165,29 @@ function recoveryCouldHelp(solution) {
 
 /**
  * Production AutoPack entry: run the default strategy, then an intentional
- * ordered portfolio of real alternatives. Stack-priority is always offered;
- * constrained-first is offered only when Wheel Wells geometry exists. If the
- * default legitimately could not place everything, any remaining recovery
- * strategies may run only when they were not already attempted as portfolio
- * options. Select the best practical result by highest packed count first,
- * with ties preferring the default strategy's layout-quality-ranked plan.
+ * ordered portfolio of real alternatives. Stack-priority and the Phase A
+ * Max Capacity physical-fit estimate are always offered; constrained-first is
+ * offered only when Wheel Wells geometry exists. Max Capacity is display-only
+ * for automatic ranking in Phase A: users may apply it explicitly, but it can
+ * never replace the best normal portfolio result by default. If the default
+ * legitimately could not place everything, any remaining recovery strategies
+ * may run only when they were not already attempted as portfolio options.
  *
- * Portfolio options run under half the primary budget (min 2 s) to keep each
- * secondary solve bounded. Deduplication in the engine removes an option
- * silently when it produces a physically identical layout.
+ * Normal portfolio options run under half the primary budget (min 2 s). Max
+ * Capacity runs exactly once under min(primary budget, 2 s), with no cleanup
+ * window. Deduplication in the engine removes an option silently when it
+ * produces a physically identical layout.
  *
  * Bounded on purpose:
  * - never retries when the primary miss was BUDGET-caused (more synchronous
  *   solving would burn more main-thread time for the same reason);
  * - never retries when every staged item is statically impossible;
- * - portfolio and recovery solves run under half the primary solve budget
+ * - normal portfolio and recovery solves run under half the primary solve budget
  *   (min 2s) so the worst-case interactive wait stays capped;
  * - `strategyRecovery: false` opts out of recovery AND portfolio entirely
  *   (diagnostics/tests).
- * Hard rules are untouched — every strategy runs the same validation pipeline.
+ * Physical validity is untouched — every strategy runs the same containment,
+ * collision, support, blocked-body, and retention validation pipeline.
  */
 export function runAdaptiveAutoPack(input, solve = solveAutoPack) {
   const primary = runPackingStrategies(input, ['default'], solve);
@@ -190,8 +204,9 @@ export function runAdaptiveAutoPack(input, solve = solveAutoPack) {
     : input;
 
   // Always offer compact-fill, floor-first, and stack-priority as intentional
-  // portfolio alternatives. constrained-first is meaningful only when actual
-  // Wheel Wells geometry exists, so Standard and Front Overhang never run it.
+  // normal portfolio alternatives. constrained-first is meaningful only when
+  // actual Wheel Wells geometry exists, so Standard and Front Overhang never
+  // run it.
   // compact-fill: densest local-waste-first packing without layout-quality
   // re-ranking. floor-first: single-layer no-stacking layout; may pack fewer
   // cases on loads where stacking is required, but is a deliberate style
@@ -202,9 +217,37 @@ export function runAdaptiveAutoPack(input, solve = solveAutoPack) {
   // plan as the auto-selected result.
   const hasWheelWellGeometry = Boolean(getWheelWellGeometry(input.truck || {}));
   const portfolioIds = ['compact-fill', 'floor-first', 'stack-priority'];
-  if (hasWheelWellGeometry) portfolioIds.push('constrained-first');
   const portfolio = runPackingStrategies(secondaryInput, portfolioIds, solve);
-  const attemptedStrategyIds = new Set(['default', ...portfolioIds]);
+
+  // Phase A: Max Capacity is a separate, manually selectable physical-fit
+  // estimate. Run it exactly once with a tighter main-thread budget and no
+  // cleanup window. It is recorded as already attempted so no future recovery
+  // list can rerun it, and excluded from automatic winner ranking below.
+  const maxCapacityBudgetMs = Number.isFinite(primaryBudget) && primaryBudget > 0
+    ? Math.min(primaryBudget, 2000)
+    : 2000;
+  const maxCapacity = runPackingStrategies({
+    ...input,
+    solveBudgetMs: maxCapacityBudgetMs,
+    cleanupBudgetMs: 0,
+  }, ['max-capacity'], solve);
+
+  // Keep the raw/call order honest: the Wheel Wells-only constrained option is
+  // evaluated after Max Capacity and displayed after it. It remains part of
+  // the normal automatically selectable portfolio.
+  const constrainedPortfolio = hasWheelWellGeometry
+    ? runPackingStrategies(secondaryInput, ['constrained-first'], solve)
+    : { solutions: [] };
+  const normalPortfolioSolutions = [
+    ...portfolio.solutions,
+    ...constrainedPortfolio.solutions,
+  ];
+  const attemptedStrategyIds = new Set([
+    'default',
+    ...portfolioIds,
+    'max-capacity',
+    ...(hasWheelWellGeometry ? ['constrained-first'] : []),
+  ]);
 
   const status = primarySolution.solveStatus || null;
   const complete = status
@@ -228,11 +271,25 @@ export function runAdaptiveAutoPack(input, solve = solveAutoPack) {
     }
   }
 
-  // Default first, then the ordered portfolio, then any remaining recovery
-  // solutions. Default wins all merit ties (index 0 in the sorted order).
-  const allSolutions = [...primary.solutions, ...portfolio.solutions, ...recoverySolutions];
-  const ranked = allSolutions.map((result, index) => ({ index, result }));
+  // Rank only the normal portfolio. Max Capacity may pack more only by relaxing
+  // handling rules, so Phase A must never auto-apply it.
+  const selectableSolutions = [
+    ...primary.solutions,
+    ...normalPortfolioSolutions,
+    ...recoverySolutions,
+  ];
+  const ranked = selectableSolutions.map((result, index) => ({ index, result }));
   const selected = [...ranked].sort(compareStrategyResults)[0].result;
+
+  // Raw Results order: Balanced, Compact, Floor, Stack, Max, then the optional
+  // Wheel Wells constrained strategy. Recovery results (if any) stay last.
+  const allSolutions = [
+    ...primary.solutions,
+    ...portfolio.solutions,
+    ...maxCapacity.solutions,
+    ...constrainedPortfolio.solutions,
+    ...recoverySolutions,
+  ];
   return {
     solutions: allSolutions,
     selected: selected.id,

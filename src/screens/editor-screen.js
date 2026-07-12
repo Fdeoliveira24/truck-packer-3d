@@ -3611,10 +3611,10 @@ export function createEditorScreen({
       // payload): collapse the panel to a small draggable chip separate from close.
       const minimized = results.minimized === true;
       // Carousel view index is UI-only view state (never persisted, never part of
-      // the result payload): default to the applied option and clamp into range so
-      // a stale index from a larger prior result set can never point out of bounds.
+      // the result payload): default fresh results to Option 1 and clamp into range
+      // so a stale index from a larger prior result set can never point out of bounds.
       const selectedIndex = Math.max(0, options.findIndex(option => option.id === results.selectedId));
-      const requestedIndex = Number.isFinite(Number(results.viewIndex)) ? Number(results.viewIndex) : selectedIndex;
+      const requestedIndex = Number.isFinite(Number(results.viewIndex)) ? Number(results.viewIndex) : 0;
       const viewIndex = hasAlternates
         ? Math.min(Math.max(0, requestedIndex), options.length - 1)
         : selectedIndex;

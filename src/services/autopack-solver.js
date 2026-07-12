@@ -403,6 +403,25 @@ function createStackCapacityCache(packed) {
   };
 }
 
+// Max Capacity Phase A is a solver-local physical-fit estimate. Relax only the
+// approved handling preferences/rules on a shallow clone so caller-owned case
+// and instance data stay untouched. Geometry, containment, collision, support,
+// Wheel Wells, and Front Overhang validation continue through the normal path.
+function applyMaxCapacityRuleProfile(item = {}) {
+  return {
+    ...item,
+    noStackOnTop: false,
+    stackable: true,
+    maxStackCount: 0,
+    weight: 0,
+    laneItem: false,
+    loadPriority: 0,
+    orientationLock: 'any',
+    canFlip: true,
+    orientationLocked: false,
+  };
+}
+
 function normalizeItem(item = {}, index = 0) {
   /** @type {any} */
   const source = { ...item, ...canonicalCargoForStorage(item) };
@@ -3464,7 +3483,10 @@ export function solveAutoPack(input = {}) {
   const output = makeEmptyOutput();
   if (!rawItems.length) return output;
 
-  const items = rawItems.map(normalizeItem);
+  const solverItems = input.maxCapacityMode === true
+    ? rawItems.map(applyMaxCapacityRuleProfile)
+    : rawItems;
+  const items = solverItems.map(normalizeItem);
   const loadFrontFirst = input.loadFrontFirst === true || input.loadDirection === 'front_to_rear';
   const floorZones = sortZonesForFloor(zones, loadFrontFirst);
   // Phase C: only a raised usable surface extending beyond the truck's main

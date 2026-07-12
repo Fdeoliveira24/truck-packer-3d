@@ -136,13 +136,13 @@ test('AUTOPACK-CAROUSEL apply keeps the validated path, marks Applied with a che
     'apply must keep clearing selection after swapping the load');
 });
 
-test('AUTOPACK-CAROUSEL view/minimize state is clamped; panel starts collapsed on each new run', async () => {
+test('AUTOPACK-CAROUSEL view/minimize state is clamped; fresh results start at Option 1', async () => {
   const { render } = await renderBlock();
 
   assert.match(render, /const selectedIndex = Math\.max\(0, options\.findIndex\(option => option\.id === results\.selectedId\)\);/,
-    'the default view index must be the applied option index');
-  assert.match(render, /Number\.isFinite\(Number\(results\.viewIndex\)\) \? Number\(results\.viewIndex\) : selectedIndex/,
-    'a missing/invalid view index must fall back to the applied option');
+    'the applied option index must remain available independently from the visual page');
+  assert.match(render, /Number\.isFinite\(Number\(results\.viewIndex\)\) \? Number\(results\.viewIndex\) : 0/,
+    'a missing/invalid view index must fall back to index 0 so fresh results open at Option 1');
   assert.match(render, /Math\.min\(Math\.max\(0, requestedIndex\), options\.length - 1\)/,
     'the view index must be clamped into range every render');
 
@@ -151,6 +151,37 @@ test('AUTOPACK-CAROUSEL view/minimize state is clamped; panel starts collapsed o
   // minimized: true is intentionally set in the initial payload so each new AutoPack
   // run starts with the panel collapsed (the user expands it with the chevron toggle).
   assert.match(engineSrc, /minimized: true/, 'result payload must set minimized:true so the panel starts collapsed on every new run');
+});
+
+test('AUTOPACK-CAROUSEL fresh view starts on Balanced when a non-first option is selected', async () => {
+  const { render } = await renderBlock();
+  const viewBlock = sliceFn(
+    render,
+    'const selectedIndex = Math.max(0, options.findIndex(option => option.id === results.selectedId));',
+    '\n\n      // Position + drag'
+  );
+  const resolveView = new Function(
+    'results',
+    'options',
+    'hasAlternates',
+    'currentOption',
+    `${viewBlock}\nreturn { selectedIndex, requestedIndex, viewIndex, viewedOption };`
+  );
+  const options = [
+    { id: 'default', label: 'Balanced (recommended)' },
+    { id: 'compact-fill', label: 'Compact fill' },
+    { id: 'stack-priority', label: 'Stack priority' },
+  ];
+  const view = resolveView(
+    { selectedId: 'stack-priority', options },
+    options,
+    true,
+    options[2]
+  );
+
+  assert.equal(view.selectedIndex, 2, 'the internally selected/applied option remains non-first');
+  assert.equal(view.viewIndex, 0, 'a fresh missing viewIndex starts the visual carousel at Option 1');
+  assert.equal(view.viewedOption.id, 'default', 'Option 1 is Balanced while selectedId remains unchanged');
 });
 
 test('AUTOPACK-CAROUSEL detail styling: bordered arrows, uppercase tiles, neutral status badge', async () => {
@@ -181,6 +212,26 @@ function makeAuditInstance(id, caseId, x, y, z) {
     transform: { position: { x, y, z }, rotation: { x: 0, y: 0, z: 0 } },
     orientedDims: { length: 24, width: 24, height: 24 },
   };
+}
+
+async function loadAutoPackResultsStateForAudit() {
+  const engineSrc = await fs.readFile(enginePath, 'utf8');
+  const stateBlock = sliceFn(
+    engineSrc,
+    'function buildAutoPackResultsState(',
+    '\n  function cancelAllTweens'
+  );
+  const createStateBuilder = new Function(
+    'buildAutoPackResultOption',
+    'buildAutoPackCaseRuleSignature',
+    'CaseLibrary',
+    `return (${stateBlock});`
+  );
+  return createStateBuilder(
+    solution => ({ ...solution.auditOption }),
+    () => 'case-rules-signature',
+    { getById: () => null }
+  );
 }
 
 test('AUTOPACK-CAROUSEL layout signature ignores interchangeable instance id permutation; strict signature does not', async () => {
@@ -250,6 +301,114 @@ test('AUTOPACK-CAROUSEL portfolio dedupe keys on the layout signature, not the s
     'the signature exposed for staleness detection must stay the strict, id-aware signature');
 });
 
+test('AUTOPACK-MAX-A participates in the existing physical-layout dedupe', async () => {
+  const [Solution, Engine] = await Promise.all([
+    import(solutionPath.href),
+    import(enginePath.href),
+  ]);
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
+  const identicalSolverResult = makeAdaptiveAuditResult('default', 1, true);
+  const portfolio = Solution.runAdaptiveAutoPack({ truck, solveBudgetMs: 4000 }, () => identicalSolverResult);
+
+  const maxCapacity = portfolio.solutions.find(solution => solution.id === 'max-capacity');
+  const balanced = portfolio.solutions.find(solution => solution.id === 'default');
+  assert.ok(maxCapacity && balanced, 'the raw portfolio contains both Balanced and Max Capacity attempts');
+
+  const asPack = solution => ({
+    truck,
+    cases: Array.from(solution.placements, ([id, position]) =>
+      makeAuditInstance(id, 'case-A', position.x, position.y, position.z)),
+  });
+  assert.equal(
+    Engine.buildAutoPackLayoutSignature(asPack(maxCapacity)),
+    Engine.buildAutoPackLayoutSignature(asPack(balanced)),
+    'a physically identical Max Capacity result has the same dedupe key as Balanced'
+  );
+
+  const engineSrc = await fs.readFile(enginePath, 'utf8');
+  const stateBlock = sliceFn(engineSrc, 'function buildAutoPackResultsState(', '\n  function cancelAllTweens');
+  assert.equal(stateBlock.includes('max-capacity'), false,
+    'the generic engine dedupe has no Max Capacity exception that could expose a fake duplicate');
+  assert.match(stateBlock, /layoutSignatureToId\.has\(option\.layoutSignature\)/,
+    'all options, including Max Capacity, collapse on an existing physical-layout signature');
+});
+
+test('AUTOPACK-MAX-A selected normal option owns its dedupe group without changing other first survivors', async () => {
+  const buildState = await loadAutoPackResultsStateForAudit();
+  const makeOption = (id, label, layoutSignature, signature) => ({
+    id,
+    label,
+    layoutSignature,
+    signature,
+  });
+  const makeSolution = auditOption => ({
+    id: auditOption.id,
+    placements: new Map(),
+    auditOption,
+  });
+
+  const balanced = makeSolution(makeOption(
+    'default',
+    'Balanced (recommended)',
+    'layout-balanced',
+    'strict-balanced'
+  ));
+  const maxCapacity = makeSolution(makeOption(
+    'max-capacity',
+    'Max Capacity',
+    'layout-shared',
+    'strict-max'
+  ));
+  const constrained = makeSolution(makeOption(
+    'constrained-first',
+    'Constrained space first',
+    'layout-shared',
+    'strict-constrained'
+  ));
+  const packingSolution = {
+    solutions: [balanced, maxCapacity, constrained],
+    selected: constrained.id,
+  };
+
+  const selectedNormalState = buildState({
+    packId: 'pack-selected-normal',
+    packData: { cases: [] },
+    packingSolution,
+    selectedSolution: constrained,
+    stagingMap: new Map(),
+  });
+  assert.deepEqual(
+    selectedNormalState.options.map(option => option.id),
+    ['default', 'constrained-first'],
+    'the selected normal option replaces the earlier identical Max survivor at the same visible slot'
+  );
+  assert.equal(selectedNormalState.options[1].label, 'Constrained space first',
+    'the surviving duplicate uses the selected normal label');
+  assert.equal(selectedNormalState.options.some(option => option.id === 'max-capacity'), false,
+    'identical Max Capacity dedupes away instead of stealing selection');
+  assert.equal(selectedNormalState.selectedId, 'constrained-first',
+    'Results selection stays owned by the normal solver winner');
+  assert.equal(selectedNormalState.currentSignature, 'strict-constrained',
+    'stale detection keeps the selected normal option strict signature');
+  assert.equal(selectedNormalState.attemptedSolutionCount, 3,
+    'dedupe still records every attempted raw solution');
+
+  const unrelatedSelectedState = buildState({
+    packId: 'pack-unrelated-selected',
+    packData: { cases: [] },
+    packingSolution: { ...packingSolution, selected: balanced.id },
+    selectedSolution: balanced,
+    stagingMap: new Map(),
+  });
+  assert.deepEqual(
+    unrelatedSelectedState.options.map(option => option.id),
+    ['default', 'max-capacity'],
+    'a duplicate group that does not contain the selected option keeps its existing first survivor'
+  );
+  assert.equal(unrelatedSelectedState.selectedId, 'default');
+  assert.equal(unrelatedSelectedState.currentSignature, 'strict-balanced');
+});
+
 test('AUTOPACK-CAROUSEL stale Apply button carries a reachable title and aria-label explanation', async () => {
   const { render } = await renderBlock();
   const optionBlock = sliceFn(render, 'const isViewedCurrent = viewedOption.id === results.selectedId;', 'panel.appendChild(body);');
@@ -302,6 +461,7 @@ test('AUTOPACK-CAROUSEL apply is rejected while another operation owns the edito
 });
 
 function adaptiveAuditStrategyId(input = {}) {
+  if (input.maxCapacityMode === true) return 'max-capacity';
   if (input.constrainedSpaceFirst === true) return 'constrained-first';
   if (input.stackFallbackImmediate === true) return 'stack-priority';
   if (input.enableStackPhase === false) return 'floor-first';
@@ -315,7 +475,8 @@ function makeAdaptiveAuditResult(strategyId, packedCount = 2, complete = true) {
     'compact-fill': 5,
     'floor-first': 10,
     'stack-priority': 15,
-    'constrained-first': 20,
+    'max-capacity': 20,
+    'constrained-first': 25,
   }[strategyId] || 0;
   const placements = new Map(Array.from({ length: packedCount }, (_, index) => [
     `item-${index}`,
@@ -344,13 +505,17 @@ function makeAdaptiveAuditResult(strategyId, packedCount = 2, complete = true) {
   };
 }
 
-function runAdaptiveAudit(Solution, truck, { complete = true, packedCounts = {} } = {}) {
+function runAdaptiveAudit(Solution, truck, {
+  complete = true,
+  packedCounts = {},
+  solveBudgetMs = 4000,
+} = {}) {
   const calls = [];
   const result = Solution.runAdaptiveAutoPack({
     truck,
     zones: [],
     items: [],
-    solveBudgetMs: 4000,
+    solveBudgetMs,
   }, input => {
     const id = adaptiveAuditStrategyId(input);
     calls.push({ id, input });
@@ -359,30 +524,43 @@ function runAdaptiveAudit(Solution, truck, { complete = true, packedCounts = {} 
   return { calls, result };
 }
 
-test('AUTOPACK-PHASE3 intentional portfolio order is mode-gated even when Balanced is complete', async () => {
+test('AUTOPACK-MAX-A raw Results order puts Max Capacity fifth and keeps Wheel Wells constrained sixth', async () => {
   const Solution = await import(solutionPath.href);
   const baseTruck = { length: 240, width: 96, height: 96 };
-  const baseOrder = ['default', 'compact-fill', 'floor-first', 'stack-priority'];
+  const baseOrder = ['default', 'compact-fill', 'floor-first', 'stack-priority', 'max-capacity'];
+  const baseRunOrder = ['default', 'compact-fill', 'floor-first', 'stack-priority', 'max-capacity'];
   const fixtures = [
-    { name: 'Standard', truck: { ...baseTruck, shapeMode: 'rect' }, expected: baseOrder },
-    { name: 'Front Overhang', truck: { ...baseTruck, shapeMode: 'frontBonus' }, expected: baseOrder },
+    {
+      name: 'Standard',
+      truck: { ...baseTruck, shapeMode: 'rect' },
+      expectedRun: baseRunOrder,
+      expectedDisplay: baseOrder,
+    },
+    {
+      name: 'Front Overhang',
+      truck: { ...baseTruck, shapeMode: 'frontBonus' },
+      expectedRun: baseRunOrder,
+      expectedDisplay: baseOrder,
+    },
     {
       name: 'Wheel Wells',
       truck: { ...baseTruck, shapeMode: 'wheelWells' },
-      expected: [...baseOrder, 'constrained-first'],
+      expectedRun: [...baseOrder, 'constrained-first'],
+      expectedDisplay: [...baseOrder, 'constrained-first'],
     },
     {
       name: 'degenerate Wheel Wells',
       truck: { ...baseTruck, shapeMode: 'wheelWells', shapeConfig: { wellHeight: 0 } },
-      expected: baseOrder,
+      expectedRun: baseRunOrder,
+      expectedDisplay: baseOrder,
     },
   ];
 
   for (const fixture of fixtures) {
     const { calls, result } = runAdaptiveAudit(Solution, fixture.truck, { complete: true });
-    assert.deepEqual(calls.map(call => call.id), fixture.expected,
-      `${fixture.name}: each intentional strategy runs once in product order`);
-    assert.deepEqual(result.solutions.map(solution => solution.id), fixture.expected,
+    assert.deepEqual(calls.map(call => call.id), fixture.expectedRun,
+      `${fixture.name}: every intentional strategy runs once`);
+    assert.deepEqual(result.solutions.map(solution => solution.id), fixture.expectedDisplay,
       `${fixture.name}: result order matches the intentional portfolio order`);
     assert.equal(result.selected, 'default', `${fixture.name}: Balanced wins packed-count ties`);
   }
@@ -391,15 +569,66 @@ test('AUTOPACK-PHASE3 intentional portfolio order is mode-gated even when Balanc
     'Floor first must continue to disable the stack phase');
 });
 
-test('AUTOPACK-PHASE3 partial Wheel Wells load does not rerun portfolio strategies as recovery', async () => {
+test('AUTOPACK-MAX-A preset metadata is exact and flows through the existing Results description path', async () => {
+  const Solution = await import(solutionPath.href);
+  const maxCapacity = Solution.getPackingStrategy('max-capacity');
+
+  assert.ok(maxCapacity, 'Max Capacity must be a registered packing strategy');
+  assert.equal(maxCapacity.label, 'Max Capacity');
+  assert.equal(
+    maxCapacity.description,
+    'Physical-fit estimate; handling rules may be relaxed. Not a transport recommendation.'
+  );
+  assert.deepEqual(maxCapacity.options, { maxCapacityMode: true },
+    'the preset must activate only the solver-local Max Capacity mode');
+
+  const engineSrc = await fs.readFile(enginePath, 'utf8');
+  const optionBlock = sliceFn(engineSrc, 'function buildAutoPackResultOption(', '\n  function buildAutoPackResultsState');
+  assert.match(optionBlock, /label: getSolutionLabel\(solution, index\),/,
+    'Max Capacity must use the existing generic preset-label path');
+  assert.match(optionBlock, /description: getSolutionDescription\(solution\),/,
+    'Max Capacity must use the existing generic preset-description path');
+});
+
+test('AUTOPACK-MAX-A uses one tight solve budget and no cleanup without changing normal budgets', async () => {
+  const Solution = await import(solutionPath.href);
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
+
+  const largeBudget = runAdaptiveAudit(Solution, truck, { solveBudgetMs: 6000 });
+  assert.equal(largeBudget.calls.filter(call => call.id === 'max-capacity').length, 1,
+    'Max Capacity runs exactly once');
+  const largeMax = largeBudget.calls.find(call => call.id === 'max-capacity').input;
+  assert.equal(largeMax.solveBudgetMs, 2000,
+    'Max Capacity caps a larger primary budget at 2000ms');
+  assert.equal(largeMax.cleanupBudgetMs, 0,
+    'Max Capacity has no cleanup window');
+  assert.equal(largeBudget.calls.find(call => call.id === 'default').input.solveBudgetMs, 6000,
+    'the primary budget is unchanged');
+  for (const id of ['compact-fill', 'floor-first', 'stack-priority']) {
+    const input = largeBudget.calls.find(call => call.id === id).input;
+    assert.equal(input.solveBudgetMs, 3000, `${id} keeps the existing secondary budget`);
+    assert.equal(input.cleanupBudgetMs, undefined, `${id} does not inherit Max Capacity cleanup settings`);
+  }
+
+  const smallBudget = runAdaptiveAudit(Solution, truck, { solveBudgetMs: 1200 });
+  const smallMax = smallBudget.calls.find(call => call.id === 'max-capacity').input;
+  assert.equal(smallMax.solveBudgetMs, 1200,
+    'Max Capacity uses the smaller positive primary budget instead of expanding it');
+  assert.equal(smallMax.cleanupBudgetMs, 0);
+  assert.equal(smallBudget.calls.find(call => call.id === 'compact-fill').input.solveBudgetMs, 2000,
+    'the pre-existing secondary minimum remains unchanged');
+});
+
+test('AUTOPACK-MAX-A partial Wheel Wells load never reruns Max as recovery and opt-out skips it', async () => {
   const Solution = await import(solutionPath.href);
   const truck = { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' };
-  const expected = ['default', 'compact-fill', 'floor-first', 'stack-priority', 'constrained-first'];
+  const expected = ['default', 'compact-fill', 'floor-first', 'stack-priority', 'max-capacity', 'constrained-first'];
   const { calls, result } = runAdaptiveAudit(Solution, truck, { complete: false });
 
   assert.deepEqual(calls.map(call => call.id), expected,
-    'a helpful partial result still runs every intentional option exactly once');
-  assert.deepEqual(result.solutions.map(solution => solution.id), expected,
+    'solver execution runs the normal portfolio, then exactly one separate Max Capacity solve');
+  const displayOrder = ['default', 'compact-fill', 'floor-first', 'stack-priority', 'max-capacity', 'constrained-first'];
+  assert.deepEqual(result.solutions.map(solution => solution.id), displayOrder,
     'no duplicate Stack priority or Constrained space first recovery result is appended');
   for (const id of expected) {
     assert.equal(calls.filter(call => call.id === id).length, 1, `${id} solver run occurs exactly once`);
@@ -413,7 +642,7 @@ test('AUTOPACK-PHASE3 partial Wheel Wells load does not rerun portfolio strategi
   });
   assert.deepEqual(optedOutCalls, ['default'], 'strategyRecovery:false still opts out of portfolio and recovery');
   assert.deepEqual(optedOut.solutions.map(solution => solution.id), ['default'],
-    'diagnostic opt-out still returns only Balanced');
+    'diagnostic opt-out returns only Balanced and skips Max Capacity');
 });
 
 test('AUTOPACK-CAROUSEL option descriptions come from the strategy presets and render in both panel modes', async () => {
@@ -487,7 +716,7 @@ test('AUTOPACK-CAROUSEL dedupe-collapsed results explain that other strategies p
   assert.match(css, /\.tp3d-autopack-results__stat-chip \{/, 'the secondary metric chips must have panel styling');
 });
 
-test('AUTOPACK-CAROUSEL Balanced stays selected on a packed-count tie; a truly better option still wins', async () => {
+test('AUTOPACK-CAROUSEL normal options keep packed-count ranking while Phase A Max Capacity never auto-selects', async () => {
   const Solution = await import(solutionPath.href);
   const makeResult = placementEntries => ({
     placements: new Map(placementEntries),
@@ -517,11 +746,27 @@ test('AUTOPACK-CAROUSEL Balanced stays selected on a packed-count tie; a truly b
 
   const standardTruck = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
   const adaptiveTie = runAdaptiveAudit(Solution, standardTruck).result;
-  assert.equal(adaptiveTie.selected, 'default', 'Balanced must also win ties across the full Phase 3 portfolio');
+  assert.equal(adaptiveTie.selected, 'default', 'Balanced must also win normal-portfolio ties');
 
   const adaptiveBetter = runAdaptiveAudit(Solution, standardTruck, {
     packedCounts: { default: 2, 'compact-fill': 2, 'floor-first': 1, 'stack-priority': 3 },
   }).result;
   assert.equal(adaptiveBetter.selected, 'stack-priority',
-    'an intentional Phase 3 option may be selected only when it truly packs more cases');
+    'a normal intentional option may be selected when it truly packs more cases');
+
+  const maxPacksMost = runAdaptiveAudit(Solution, standardTruck, {
+    packedCounts: {
+      default: 2,
+      'compact-fill': 2,
+      'floor-first': 1,
+      'stack-priority': 3,
+      'max-capacity': 99,
+    },
+  }).result;
+  assert.equal(maxPacksMost.solutions.find(solution => solution.id === 'max-capacity').placements.size, 99,
+    'the higher-capacity Max result remains available for manual navigation and Apply');
+  assert.equal(maxPacksMost.selected, 'stack-priority',
+    'Max Capacity is excluded from automatic winner selection even when it packs far more');
+  assert.equal(maxPacksMost.selectedSolution.id, 'stack-priority',
+    'the layout immediately applied by AutoPack remains the best normal portfolio result');
 });

@@ -520,26 +520,36 @@ export function createAutoPackEngine({
       .map((solution, index) => buildAutoPackResultOption(solution, index, packData, stagingMap));
     if (!rawOptions.length) return null;
 
+    const selectedRawId = String(
+      (selectedSolution && selectedSolution.id) ||
+      (packingSolution && packingSolution.selected) ||
+      rawOptions[0].id
+    );
+    const selectedRaw = rawOptions.find(option => option.id === selectedRawId) || rawOptions[0];
+
     // Dedupe by physical layout, not raw instance id: two strategies that place
     // the same {caseId, placement, position, rotation, orientedDims, rules} set
     // — just assigned to a different permutation of interchangeable instances —
-    // are the same option to the user, even though buildAutoPackResultSignature
-    // (used for staleness, not dedupe) would still tell them apart.
+    // are the same option to the user. The selected solver result owns its
+    // duplicate group so an earlier equivalent option cannot steal the applied
+    // id or strict staleness signature; every other group keeps its first option.
     const options = [];
     const layoutSignatureToId = new Map();
     rawOptions.forEach(option => {
-      if (layoutSignatureToId.has(option.layoutSignature)) return;
+      if (layoutSignatureToId.has(option.layoutSignature)) {
+        if (option.id !== selectedRaw.id) return;
+        const survivorIndex = options.findIndex(
+          survivor => survivor.layoutSignature === option.layoutSignature
+        );
+        if (survivorIndex >= 0) options[survivorIndex] = option;
+        layoutSignatureToId.set(option.layoutSignature, option.id);
+        return;
+      }
       layoutSignatureToId.set(option.layoutSignature, option.id);
       options.push(option);
     });
     if (!options.length) return null;
 
-    const selectedRawId = String(
-      (selectedSolution && selectedSolution.id) ||
-      (packingSolution && packingSolution.selected) ||
-      options[0].id
-    );
-    const selectedRaw = rawOptions.find(option => option.id === selectedRawId) || rawOptions[0];
     const selectedId = selectedRaw && layoutSignatureToId.has(selectedRaw.layoutSignature)
       ? layoutSignatureToId.get(selectedRaw.layoutSignature)
       : options[0].id;

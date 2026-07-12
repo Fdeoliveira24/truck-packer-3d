@@ -18657,6 +18657,410 @@ test('PACKING-CORE-P9 unknown strategy ids fail loudly and the registry stays ho
   assert.equal(Core.getPackingStrategy('nope'), null, 'unknown lookup returns null');
 });
 
+// ---------------------------------------------------------------------------
+// AUTOPACK-MAX-A: solver-only Max Capacity checkpoint. This profile may relax
+// handling rules on cloned solver inputs, but it must not alter the normal
+// solver path, caller-owned data, stored rules, or any physical hard rule.
+// Durability metadata is deliberately deferred to Phase B.
+// ---------------------------------------------------------------------------
+function maxAResultBytes(result) {
+  return JSON.stringify({
+    placements: [...result.placements],
+    rotations: [...result.rotations],
+    orientedDims: [...result.orientedDims],
+    retentionDependencies: [...result.retentionDependencies],
+    unpacked: result.unpacked,
+    warnings: result.warnings,
+    rejectionReasons: result.rejectionReasons,
+    solveStatus: result.solveStatus,
+    phaseStats: result.phaseStats,
+  });
+}
+
+function maxAPlaced(Solver, result, items) {
+  const itemById = new Map(items.map(item => [item.instanceId, item]));
+  return [...result.placements].map(([id, position]) => {
+    const dims = result.orientedDims.get(id);
+    return {
+      id,
+      item: itemById.get(id),
+      position,
+      rotation: result.rotations.get(id),
+      dims,
+      aabb: Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height }),
+    };
+  });
+}
+
+function maxAAssertPhysicalSafety({ Solver, PackLib, Oriented, result, truck, zones, items, label, fixedPlacements = [] }) {
+  const placed = maxAPlaced(Solver, result, items);
+  const wheelWell = Solver.getWheelWellGeometry(truck);
+  const cabVoid = truck.shapeMode === 'frontBonus' ? PackLib.getFrontBonusBlockedZones(truck) : [];
+
+  for (let i = 0; i < placed.length; i++) {
+    const placement = placed[i];
+    const sourceDims = placement.item.dims;
+    const expectedDims = Oriented.getOrientedDimsForRotation({
+      length: sourceDims.l,
+      width: sourceDims.w,
+      height: sourceDims.h,
+    }, placement.rotation);
+    assert.deepEqual(placement.dims, expectedDims, `${label}: ${placement.id} uses real oriented dimensions`);
+    for (const axis of ['x', 'y', 'z']) {
+      const quarterTurns = Number(placement.rotation?.[axis] || 0) / (Math.PI / 2);
+      assert.ok(Math.abs(quarterTurns - Math.round(quarterTurns)) <= 1e-9,
+        `${label}: ${placement.id} ${axis} rotation is a canonical 90-degree turn`);
+    }
+
+    assert.equal(testAabbInsidePhysicalTrailer(PackLib, placement.aabb, zones, truck), true,
+      `${label}: ${placement.id} remains contained in physical space`);
+    if (wheelWell) {
+      assert.equal(Solver.aabbIntersectsWheelWellBody(placement.aabb, wheelWell), false,
+        `${label}: ${placement.id} never penetrates a wheel-well body`);
+    }
+    for (const blocked of cabVoid) {
+      assert.equal(Solver.aabbsOverlap(placement.aabb, blocked), false,
+        `${label}: ${placement.id} never enters the Front Overhang cab void`);
+    }
+    for (let j = i + 1; j < placed.length; j++) {
+      assert.equal(Solver.aabbsOverlap(placement.aabb, placed[j].aabb), false,
+        `${label}: no overlap ${placement.id}/${placed[j].id}`);
+    }
+
+    if (!testAabbOnPhysicalFloor(PackLib, placement.aabb, zones, truck)) {
+      const supports = placed.filter(other =>
+        other !== placement &&
+        Math.abs(other.aabb.max.y - placement.aabb.min.y) <= 0.05 &&
+        Solver.computeXzOverlapArea(other.aabb, placement.aabb) > 0.05
+      );
+      assert.ok(PackLib.computeSupportFraction(placement.aabb, supports.map(other => other.aabb), 0.05) >= PackLib.MIN_SUPPORT_FRACTION,
+        `${label}: ${placement.id} has real cargo support and does not float`);
+      if (wheelWell) {
+        const physicalOnlyItem = item => ({
+          ...item,
+          noStackOnTop: false,
+          stackable: true,
+          maxStackCount: 0,
+          weight: 0,
+        });
+        const packedWithout = placed.filter(other => other !== placement).map(other => ({
+          instanceId: other.id,
+          aabb: other.aabb,
+          item: physicalOnlyItem(other.item),
+        }));
+        assert.equal(Solver.isWheelWellSupportedAndStable(
+          placement.aabb,
+          packedWithout,
+          wheelWell,
+          physicalOnlyItem(placement.item)
+        ), true, `${label}: ${placement.id} keeps Wheel Wells support, COM, and cantilever safety`);
+      }
+    }
+
+    if (truck.shapeMode === 'frontBonus') {
+      const accepted = [
+        ...fixedPlacements,
+        ...placed.filter(other => other !== placement).map(other => ({
+          instanceId: other.id,
+          aabb: other.aabb,
+          placement: 'packed',
+          valid: true,
+        })),
+      ];
+      assert.equal(
+        PackLib.evaluateFrontOverhangRearRetention(placement.aabb, accepted, truck, zones).retained,
+        true,
+        `${label}: ${placement.id} keeps required Front Overhang rear retention`
+      );
+    }
+  }
+}
+
+test('AUTOPACK-MAX-A absent and false flags are byte-identical in Standard, Wheel Wells, and Front Overhang', async () => {
+  const { Solver, PackLib } = await p5Modules();
+  const trucks = [
+    { label: 'Standard', truck: { length: 240, width: 96, height: 96, shapeMode: 'rect' } },
+    { label: 'Wheel Wells', truck: WW_SUPPORT_TRUCK },
+    { label: 'Front Overhang', truck: phcFrontOverhangTruck() },
+  ];
+  for (const { label, truck } of trucks) {
+    const zones = PackLib.getTrailerUsableZones(truck);
+    const items = Array.from({ length: 18 }, (_, index) => ({
+      instanceId: `${label}-${index}`,
+      caseId: 'parity-case',
+      dims: { l: 24, w: 18, h: 16 },
+      orientationLock: 'any',
+      canFlip: false,
+      weight: 30,
+      maxStackCount: 2,
+      laneItem: false,
+      loadPriority: index % 3 - 1,
+    }));
+    const input = { truck, zones, loadFrontFirst: true, items };
+    const absent = Solver.solveAutoPack(input);
+    const explicitlyFalse = Solver.solveAutoPack({ ...input, maxCapacityMode: false });
+    assert.equal(maxAResultBytes(explicitlyFalse), maxAResultBytes(absent),
+      `${label}: maxCapacityMode:false is byte-identical to the unchanged normal solver path`);
+  }
+});
+
+test('AUTOPACK-MAX-A clones its effective rule profile and Phase A adds no packedProfile metadata', async () => {
+  const { Solver, PackLib } = await p5Modules();
+  const Engine = await import(`${autoPackEnginePath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 48, width: 48, height: 24, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = ['a', 'b'].map((id, index) => ({
+    instanceId: id,
+    caseId: 'rules-case',
+    dims: { l: 48, w: 48, h: 12 },
+    orientationLock: 'upright',
+    canFlip: false,
+    orientationLocked: index === 0,
+    lockedRotation: { x: 0, y: 0, z: 0 },
+    noStackOnTop: true,
+    stackable: false,
+    maxStackCount: 1,
+    weight: 80,
+    laneItem: true,
+    loadPriority: 1,
+    transform: { rotation: { x: 0, y: 0, z: 0 } },
+  }));
+  const itemSnapshot = structuredClone(items);
+  const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, maxCapacityMode: true });
+  assert.equal(result.placements.size, 2, 'fixture exercises relaxed stacking before checking immutability');
+  assert.deepEqual(items, itemSnapshot, 'solver does not mutate caller-owned items or nested instance locks');
+
+  const cases = items.map(item => ({
+    id: item.instanceId,
+    caseId: item.caseId,
+    placement: 'staged',
+    transform: {
+      position: { x: 60, y: 6, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+    orientationLock: item.orientationLock,
+    canFlip: item.canFlip,
+    orientationLocked: item.orientationLocked,
+    lockedRotation: structuredClone(item.lockedRotation),
+    noStackOnTop: item.noStackOnTop,
+    stackable: item.stackable,
+    maxStackCount: item.maxStackCount,
+    weight: item.weight,
+    laneItem: item.laneItem,
+    loadPriority: item.loadPriority,
+  }));
+  const casesSnapshot = structuredClone(cases);
+  const nextCases = Engine.buildAutoPackNextCases(
+    cases,
+    result.placements,
+    result.rotations,
+    result.orientedDims,
+    new Map()
+  );
+  assert.deepEqual(cases, casesSnapshot, 'building nextCases does not mutate stored instances');
+  const handlingFields = [
+    'orientationLock', 'canFlip', 'orientationLocked', 'lockedRotation',
+    'noStackOnTop', 'stackable', 'maxStackCount', 'weight', 'laneItem', 'loadPriority',
+  ];
+  for (const next of nextCases) {
+    const before = casesSnapshot.find(inst => inst.id === next.id);
+    for (const field of handlingFields) {
+      assert.deepEqual(next[field], before[field], `${next.id}: saved ${field} remains unchanged`);
+    }
+    assert.equal(Object.prototype.hasOwnProperty.call(next, 'packedProfile'), false,
+      `${next.id}: Phase A writes no packedProfile durability metadata`);
+  }
+});
+
+test('AUTOPACK-MAX-A relaxes noStackOnTop and stackable:false only inside the Max solve', async () => {
+  const { Solver, PackLib } = await p5Modules();
+  const truck = { length: 48, width: 48, height: 24, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = ['a', 'b'].map(instanceId => ({
+    instanceId,
+    caseId: 'no-top',
+    dims: { l: 48, w: 48, h: 12 },
+    orientationLock: 'upright',
+    canFlip: false,
+    noStackOnTop: true,
+    stackable: false,
+    weight: 20,
+  }));
+  const normal = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const max = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, maxCapacityMode: true });
+  assert.equal(normal.placements.size, 1, 'normal solver preserves No top load');
+  assert.equal(max.placements.size, 2, 'Max may use the otherwise forbidden support surface');
+  assert.equal(max.phaseStats.stackCount, 1, 'the additional item is a real supported stack placement');
+});
+
+test('AUTOPACK-MAX-A relaxes maxStackCount as a direct-child cap', async () => {
+  const { Solver, PackLib } = await p5Modules();
+  const truck = { length: 48, width: 48, height: 12, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = [
+    { instanceId: 'base', caseId: 'base', dims: { l: 48, w: 48, h: 6 }, orientationLock: 'upright', canFlip: false, weight: 100, maxStackCount: 1 },
+    { instanceId: 'child-a', caseId: 'child', dims: { l: 24, w: 48, h: 6 }, orientationLock: 'upright', canFlip: false, weight: 20 },
+    { instanceId: 'child-b', caseId: 'child', dims: { l: 24, w: 48, h: 6 }, orientationLock: 'upright', canFlip: false, weight: 20 },
+  ];
+  const normal = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const max = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, maxCapacityMode: true });
+  assert.equal(normal.placements.size, 2, 'normal solver enforces one direct child');
+  assert.equal(max.placements.size, 3, 'Max permits both direct children');
+  const baseDims = max.orientedDims.get('base');
+  const baseAabb = Solver.getAabb(max.placements.get('base'), { l: baseDims.length, w: baseDims.width, h: baseDims.height });
+  const directChildren = ['child-a', 'child-b'].filter(id => {
+    const dims = max.orientedDims.get(id);
+    const aabb = Solver.getAabb(max.placements.get(id), { l: dims.length, w: dims.width, h: dims.height });
+    return Math.abs(aabb.min.y - baseAabb.max.y) <= 0.05 && Solver.computeXzOverlapArea(aabb, baseAabb) > 0.05;
+  });
+  assert.deepEqual(directChildren, ['child-a', 'child-b'], 'both relaxed children are genuinely supported by the capped base');
+});
+
+test('AUTOPACK-MAX-A relaxes child-vs-support weight without weakening support geometry', async () => {
+  const { Solver, PackLib } = await p5Modules();
+  const truck = { length: 48, width: 48, height: 12, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const items = [
+    { instanceId: 'light-base', caseId: 'base', dims: { l: 48, w: 48, h: 6 }, orientationLock: 'upright', canFlip: false, weight: 10 },
+    { instanceId: 'heavy-child', caseId: 'child', dims: { l: 24, w: 24, h: 6 }, orientationLock: 'upright', canFlip: false, weight: 100 },
+  ];
+  const normal = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
+  const max = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, maxCapacityMode: true });
+  assert.equal(normal.placements.size, 1, 'normal solver rejects a child heavier than its non-pallet support');
+  assert.equal(max.placements.size, 2, 'Max neutralizes the crushing/weight rule');
+  const placed = maxAPlaced(Solver, max, items);
+  const base = placed.find(item => item.id === 'light-base');
+  const child = placed.find(item => item.id === 'heavy-child');
+  assert.equal(Math.abs(child.aabb.min.y - base.aabb.max.y) <= 0.05, true, 'relaxed child still has exact vertical contact');
+  assert.ok(PackLib.computeSupportFraction(child.aabb, [base.aabb], 0.05) >= PackLib.MIN_SUPPORT_FRACTION,
+    'relaxed child still has the ordinary minimum footprint support');
+});
+
+test('AUTOPACK-MAX-A neutralizes lane and load-priority handling', async () => {
+  const { Solver, PackLib } = await p5Modules();
+  const laneTruck = { length: 120, width: 20, height: 20, shapeMode: 'rect' };
+  const laneZones = PackLib.getTrailerUsableZones(laneTruck);
+  const laneItems = [{
+    instanceId: 'lane', caseId: 'lane', dims: { l: 120, w: 10, h: 10 },
+    orientationLock: 'upright', canFlip: false, weight: 20, laneItem: true,
+  }];
+  const normalLane = Solver.solveAutoPack({ truck: laneTruck, zones: laneZones, loadFrontFirst: true, items: laneItems });
+  const maxLane = Solver.solveAutoPack({ truck: laneTruck, zones: laneZones, loadFrontFirst: true, items: laneItems, maxCapacityMode: true });
+  assert.equal(normalLane.phaseStats.laneCount, 1, 'normal solver honors the forced-lane classification');
+  assert.equal(maxLane.phaseStats.laneCount, 0, 'Max neutralizes lane handling and uses the ordinary floor path');
+
+  const priorityTruck = { length: 24, width: 24, height: 12, shapeMode: 'rect' };
+  const priorityZones = PackLib.getTrailerUsableZones(priorityTruck);
+  const priorityItems = [
+    { instanceId: 'a-low', caseId: 'same', dims: { l: 24, w: 24, h: 12 }, orientationLock: 'upright', canFlip: false, weight: 20, loadPriority: -1 },
+    { instanceId: 'z-high', caseId: 'same', dims: { l: 24, w: 24, h: 12 }, orientationLock: 'upright', canFlip: false, weight: 20, loadPriority: 1 },
+  ];
+  const normalPriority = Solver.solveAutoPack({ truck: priorityTruck, zones: priorityZones, loadFrontFirst: true, items: priorityItems });
+  const maxPriority = Solver.solveAutoPack({ truck: priorityTruck, zones: priorityZones, loadFrontFirst: true, items: priorityItems, maxCapacityMode: true });
+  assert.deepEqual([...normalPriority.placements.keys()], ['z-high'], 'normal solver loads the high-priority item first');
+  assert.deepEqual([...maxPriority.placements.keys()], ['a-low'], 'Max neutralizes priority and falls back to deterministic id order');
+});
+
+test('AUTOPACK-MAX-A relaxes case orientation policy and per-instance orientation locks', async () => {
+  const { Solver, PackLib } = await p5Modules();
+  const truck = { length: 12, width: 24, height: 48, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const fixtures = [
+    {
+      label: 'case policy',
+      item: { instanceId: 'case-policy', caseId: 'case', dims: { l: 48, w: 24, h: 12 }, orientationLock: 'upright', canFlip: false, weight: 20 },
+    },
+    {
+      label: 'instance lock',
+      item: {
+        instanceId: 'instance-lock', caseId: 'case', dims: { l: 48, w: 24, h: 12 },
+        orientationLock: 'any', canFlip: true, orientationLocked: true,
+        lockedRotation: { x: 0, y: 0, z: 0 }, weight: 20,
+      },
+    },
+  ];
+  for (const { label, item } of fixtures) {
+    const normal = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: [item] });
+    const max = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: [item], maxCapacityMode: true });
+    assert.equal(normal.placements.size, 0, `${label}: stored orientation cannot fit the narrow floor`);
+    assert.equal(max.placements.size, 1, `${label}: Max may choose a physically valid tipped orientation`);
+    assert.deepEqual(max.orientedDims.get(item.instanceId), { length: 12, width: 24, height: 48 },
+      `${label}: the fitting pose uses the real rotated dimensions`);
+    assert.equal(max.rotations.get(item.instanceId).z, Math.PI / 2, `${label}: the fitting pose is a canonical quarter turn`);
+  }
+});
+
+test('AUTOPACK-MAX-A preserves physical geometry, support, blocked bodies, stability, and retention in all truck modes', async () => {
+  const { Solver, PackLib } = await p5Modules();
+  const Oriented = await import(`${orientedDimsPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  const standardTruck = { length: 48, width: 48, height: 24, shapeMode: 'rect' };
+  const standardZones = PackLib.getTrailerUsableZones(standardTruck);
+  const standardItems = ['standard-a', 'standard-b'].map(instanceId => ({
+    instanceId, caseId: 'standard', dims: { l: 48, w: 48, h: 12 },
+    orientationLock: 'upright', canFlip: false, noStackOnTop: true, stackable: false, weight: 20,
+  }));
+  const standardResult = Solver.solveAutoPack({
+    truck: standardTruck, zones: standardZones, loadFrontFirst: true,
+    items: standardItems, maxCapacityMode: true,
+  });
+  assert.equal(standardResult.placements.size, 2, 'Standard fixture exercises a relaxed but supported stack');
+  maxAAssertPhysicalSafety({
+    Solver, PackLib, Oriented, result: standardResult,
+    truck: standardTruck, zones: standardZones, items: standardItems, label: 'Max/Standard',
+  });
+
+  const wheelTruck = WW_SUPPORT_TRUCK;
+  const wheelZones = PackLib.getTrailerUsableZones(wheelTruck);
+  const wheelItems = Array.from({ length: 70 }, (_, index) => ({
+    instanceId: `wheel-${index}`, caseId: 'wheel', dims: { l: 24, w: 18, h: 16 },
+    orientationLock: 'upright', canFlip: false, noStackOnTop: true, stackable: false,
+    maxStackCount: 1, weight: 30,
+  }));
+  const wheelResult = Solver.solveAutoPack({
+    truck: wheelTruck, zones: wheelZones, loadFrontFirst: true, items: wheelItems,
+    maxCapacityMode: true, enableWheelWellBridge: true,
+  });
+  assert.equal(wheelResult.placements.size, wheelItems.length, 'Wheel Wells fixture packs every relaxed item');
+  assert.ok(wheelResult.phaseStats.stackCount > 0, 'Wheel Wells fixture exercises non-floor support validation');
+  maxAAssertPhysicalSafety({
+    Solver, PackLib, Oriented, result: wheelResult,
+    truck: wheelTruck, zones: wheelZones, items: wheelItems, label: 'Max/Wheel Wells',
+  });
+  const wheelWell = Solver.getWheelWellGeometry(wheelTruck);
+  const bodyProbe = wwAabb(80, 0, -46, 100, 10, -38);
+  assert.equal(Solver.aabbIntersectsWheelWellBody(bodyProbe, wheelWell), true,
+    'Max does not alter the blocked-body predicate');
+  const halfCantilever = wwAabb(80, 18, -48, 100, 28, -24);
+  const halfSupport = Solver.computeWheelWellSupport(halfCantilever, [], wheelWell, { weight: 0 });
+  assert.ok(halfSupport.fraction >= PackLib.MIN_SUPPORT_FRACTION, 'cantilever probe reaches minimum raw support fraction');
+  assert.equal(Solver.isWheelWellSupportedAndStable(halfCantilever, [], wheelWell, { weight: 0 }), false,
+    'Max still rejects a half-channel cantilever whose COM/overhang is unsafe');
+
+  const frontTruck = phcFrontOverhangTruck();
+  const frontZones = PackLib.getTrailerUsableZones(frontTruck);
+  const retainingWall = {
+    instanceId: 'fixed-wall',
+    aabb: phc2Aabb(216, 240, 0, 48, -48, -30),
+  };
+  const frontItems = [{
+    instanceId: 'deck', caseId: 'deck', dims: { l: 24, w: 18, h: 16 },
+    orientationLock: 'upright', canFlip: false, noStackOnTop: true, stackable: false, weight: 30,
+  }];
+  const frontResult = Solver.solveAutoPack({
+    truck: frontTruck, zones: frontZones, loadFrontFirst: true, items: frontItems,
+    retentionPlacements: [retainingWall], maxCapacityMode: true,
+  });
+  assert.deepEqual(frontResult.retentionDependencies.get('deck'), ['fixed-wall'],
+    'Max deck cargo records its real rear-retention dependency');
+  maxAAssertPhysicalSafety({
+    Solver, PackLib, Oriented, result: frontResult,
+    truck: frontTruck, zones: frontZones, items: frontItems, label: 'Max/Front Overhang',
+    fixedPlacements: [retainingWall],
+  });
+});
+
 // ── Runtime hardening: post-boot rejection toast + missing-pack guard ────────
 
 test('HARDEN-P1A post-boot unhandledrejection handler shows toast for any non-abort rejection', async () => {

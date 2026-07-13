@@ -109,6 +109,138 @@ function aabbsOverlap(a, b, tolerance = 1e-9) {
     a.min.z < b.max.z - tolerance && a.max.z > b.min.z + tolerance;
 }
 
+test('EDITOR-VISUAL visual ownership has one deterministic priority and preserves hidden/drag opacity', async () => {
+  const { resolveCaseVisualState } = await loadEditorScreenModule();
+  const base = { accent: '#f59e0b', baseEdgeColor: 0x123456, hiddenOpacity: 0.2 };
+
+  assert.deepEqual(resolveCaseVisualState(base), {
+    owner: 'normal',
+    emissive: 0x000000,
+    edgeColor: 0x123456,
+    meshTransparent: false,
+    meshOpacity: 1,
+    depthWrite: true,
+    edgeOpacity: 0.95,
+  });
+  assert.equal(resolveCaseVisualState({ ...base, oog: true }).owner, 'oog');
+  assert.equal(resolveCaseVisualState({ ...base, oog: true }).edgeColor, 0xff0000);
+  assert.equal(resolveCaseVisualState({ ...base, selected: true, oog: true }).owner, 'selected',
+    'the existing selection-first OOG contract stays intact');
+  assert.equal(resolveCaseVisualState({ ...base, collision: true, selected: true, oog: true }).owner, 'collision');
+
+  const draggedSelected = resolveCaseVisualState({ ...base, selected: true, dragged: true });
+  assert.equal(draggedSelected.owner, 'selected');
+  assert.equal(draggedSelected.meshTransparent, true);
+  assert.equal(draggedSelected.meshOpacity, 0.72);
+
+  const hidden = resolveCaseVisualState({
+    ...base,
+    hidden: true,
+    collision: true,
+    selected: true,
+    oog: true,
+    dragged: true,
+  });
+  assert.equal(hidden.owner, 'hidden');
+  assert.equal(hidden.emissive, 0x000000);
+  assert.equal(hidden.edgeColor, 0x123456);
+  assert.equal(hidden.meshOpacity, 0.2);
+  assert.equal(hidden.depthWrite, false);
+});
+
+test('EDITOR-VISUAL OOG, collision, and selection transitions restore the exact owned style', async () => {
+  const { resolveCaseVisualState } = await loadEditorScreenModule();
+  const base = { accent: '#ff9f1c', baseEdgeColor: 0x224466 };
+
+  const oog = resolveCaseVisualState({ ...base, oog: true });
+  assert.equal(oog.emissive, 0xcc3300);
+  assert.equal(oog.edgeColor, 0xff0000);
+
+  const selectedInBounds = resolveCaseVisualState({ ...base, selected: true });
+  assert.equal(selectedInBounds.owner, 'selected');
+  assert.equal(selectedInBounds.emissive, '#ff9f1c');
+  assert.equal(selectedInBounds.edgeColor, 0x224466,
+    'a selected case returning in-bounds must lose its stale OOG edge');
+
+  const normalInBounds = resolveCaseVisualState(base);
+  assert.equal(normalInBounds.owner, 'normal');
+  assert.equal(normalInBounds.emissive, 0x000000);
+  assert.equal(normalInBounds.edgeColor, 0x224466,
+    'a non-selected case returning in-bounds must restore its base edge');
+
+  const collision = resolveCaseVisualState({ ...base, collision: true, selected: true });
+  assert.equal(collision.owner, 'collision');
+  assert.equal(collision.emissive, 0xff0000);
+  assert.deepEqual(resolveCaseVisualState({ ...base, selected: true }), selectedInBounds,
+    'ending a rejected collision preview restores selected styling');
+
+  for (let cycle = 0; cycle < 100; cycle += 1) {
+    resolveCaseVisualState({ ...base, collision: true, selected: true });
+    resolveCaseVisualState({ ...base, oog: true });
+    assert.deepEqual(resolveCaseVisualState(base), normalInBounds,
+      'repeated preview/revert cycles must not accumulate material or edge state');
+  }
+});
+
+test('EDITOR-VISUAL selection membership remains an external exact source of truth', async () => {
+  const { resolveCaseVisualState } = await loadEditorScreenModule();
+  const selectedInstanceIds = ['selected-a', 'selected-b'];
+  const ids = ['selected-a', 'selected-b', 'neighbor'];
+  const styles = new Map(ids.map(id => [id, resolveCaseVisualState({
+    selected: selectedInstanceIds.includes(id),
+  })]));
+
+  assert.equal(styles.get('selected-a').owner, 'selected');
+  assert.equal(styles.get('selected-b').owner, 'selected',
+    'moving one member does not implicitly clear the existing multi-selection');
+  assert.equal(styles.get('neighbor').owner, 'normal',
+    'an unrelated neighbor cannot inherit selection-like emissive');
+
+  const cleared = ids.map(id => resolveCaseVisualState({ selected: false }));
+  assert.ok(cleared.every(style => style.owner === 'normal'),
+    'clearing selectedInstanceIds removes every prior selection visual');
+  assert.deepEqual(selectedInstanceIds, ['selected-a', 'selected-b'],
+    'visual resolution never mutates the selection source array');
+});
+
+test('EDITOR-VISUAL scene lifecycle recomputes instead of conditionally restoring materials', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const sceneStart = src.indexOf('export function createCaseScene(');
+  const sceneEnd = src.indexOf('\nexport function createInteractionManager', sceneStart);
+  const sceneBlock = sceneStart >= 0 && sceneEnd > sceneStart ? src.slice(sceneStart, sceneEnd) : '';
+  assert.ok(sceneBlock, 'createCaseScene block must exist');
+
+  assert.match(sceneBlock, /const collisionIds = new Set\(\);[\s\S]*const oogSet = new Set\(\);/,
+    'collision and OOG ownership must be explicit scene state');
+  assert.match(sceneBlock, /function sync\(pack\)[\s\S]*collisionIds\.clear\(\);[\s\S]*recomputeVisualStates\(\);/,
+    'committed sync and dependent repair renders must clear preview collision ownership and recompute all cases');
+  assert.match(sceneBlock, /function applySelection\(ids\)[\s\S]*selectedIds = new Set\(ids \|\| \[\]\);[\s\S]*recomputeVisualStates\(\);/,
+    'selection visuals must exactly follow the supplied selectedInstanceIds');
+  assert.match(sceneBlock, /function applyOOGHighlights\(\)[\s\S]*oogSet\.clear\(\);[\s\S]*recomputeVisualStates\(\);/,
+    'OOG refresh must rebuild current ownership then recompute normal/selected/OOG edges deterministically');
+  assert.doesNotMatch(sceneBlock, /!oogSet\.has\(id\) && !selectedIds\.has\(id\)/,
+    'OOG cleanup must not skip a case merely because it was selected');
+  assert.match(sceneBlock, /function setCollision\(instanceId, isCollision\)[\s\S]*collisionIds\.delete\(instanceId\);[\s\S]*applyVisualState\(group\);/,
+    'ending a collision preview must recompute the case instead of forcing a default material');
+  assert.doesNotMatch(sceneBlock, /\.material\.clone\(|\.clone\(\).*material/,
+    'visual recompute must reuse the group-owned materials rather than clone per interaction');
+
+  const interactionStart = src.indexOf('export function createInteractionManager');
+  const interactionEnd = src.indexOf('\nexport function createEditorScreen', interactionStart);
+  const interactionBlock = interactionStart >= 0 && interactionEnd > interactionStart
+    ? src.slice(interactionStart, interactionEnd)
+    : '';
+  assert.match(interactionBlock, /function rejectMoveCollision[\s\S]*CaseScene\.setCollision\(instanceId, false\);/,
+    'rejected keyboard nudges must end their temporary collision visual');
+  assert.match(interactionBlock, /function rotateSelection[\s\S]*CaseScene\.applyOOGHighlights\(\);/,
+    'rotate and flip must refresh OOG/material ownership');
+  assert.match(interactionBlock, /function nudgeSelection[\s\S]*CaseScene\.applyOOGHighlights\(\);/,
+    'keyboard nudge must refresh OOG/material ownership');
+
+  assert.match(src, /StateStore\.set\(\{ selectedInstanceIds: ids \}, \{ skipHistory: true \}\);/,
+    'selectedInstanceIds remains the selection source of truth');
+});
+
 test('MANUAL-VERTICAL move up performs a stack reorder that ends fully supported', async () => {
   const caseData = makeVerticalCase({ id: 'case-vertical-up' });
   const { PackLibrary, packId } = await setupVerticalPack({
@@ -1161,9 +1293,9 @@ test('MANUAL-VERTICAL gizmo handles take raycast priority and attach to one live
     'detaching the gizmo must clear staged/packed mode');
   assert.match(refreshBlock, /detachGizmo\(\);/,
     'no selection, multi-select, or removed cases must detach the gizmo');
-  assert.match(src, /applyHover\(hoveredId\);\s*\n\s*refreshGizmo\(\);\s*\n\s*\}/,
+  assert.match(src, /function setSelected\(instanceIds\) \{\s*\n\s*applySelection\(instanceIds\);\s*\n\s*refreshGizmo\(\);\s*\n\s*\}/,
     'setSelected must refresh the gizmo on selection changes');
-  assert.match(src, /applyDragging\(draggedId\);\s*\n\s*refreshGizmo\(\);/,
+  assert.match(src, /recomputeVisualStates\(\);\s*\n\s*refreshGizmo\(\);/,
     'scene sync must refresh the gizmo after pack mutations');
 });
 

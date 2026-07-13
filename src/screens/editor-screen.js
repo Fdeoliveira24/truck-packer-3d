@@ -80,6 +80,50 @@ function buildNormalHandlingPack(pack, instanceIds) {
   };
 }
 
+/**
+ * Resolve the one visual owner for a case without mutating THREE materials.
+ * Selection intentionally outranks OOG to preserve the editor's existing
+ * selection-first contract; collision remains the highest visible warning.
+ */
+export function resolveCaseVisualState({
+  hidden = false,
+  collision = false,
+  selected = false,
+  oog = false,
+  dragged = false,
+  hovered = false,
+  accent = '#ff9f1c',
+  baseEdgeColor = 0x333333,
+  hiddenOpacity = 0.3,
+} = {}) {
+  const opacity = Math.min(1, Math.max(0, Number(hiddenOpacity) || 0));
+  let owner = 'normal';
+  if (hidden) owner = 'hidden';
+  else if (collision) owner = 'collision';
+  else if (selected) owner = 'selected';
+  else if (oog) owner = 'oog';
+  else if (dragged) owner = 'dragged';
+  else if (hovered) owner = 'hovered';
+
+  const emissiveByOwner = {
+    collision: 0xff0000,
+    selected: accent,
+    oog: 0xcc3300,
+    dragged: 0x111111,
+    hovered: 0x333333,
+  };
+
+  return {
+    owner,
+    emissive: emissiveByOwner[owner] ?? 0x000000,
+    edgeColor: owner === 'oog' ? 0xff0000 : baseEdgeColor,
+    meshTransparent: hidden || dragged,
+    meshOpacity: hidden ? opacity : (dragged ? 0.72 : 1),
+    depthWrite: !hidden,
+    edgeOpacity: hidden ? Math.max(0.25, opacity) : 0.95,
+  };
+}
+
 // Vertical-move outcome message: base sentence plus what revalidation did to
 // OTHER cases (re-settled / staged dependents), per the delete-path contract.
 function formatVerticalMoveMessage(result, movedId, baseMessage) {
@@ -667,6 +711,8 @@ export function createCaseScene({
     let hoveredId = null;
     let draggedId = null;
     let selectedIds = new Set();
+    const collisionIds = new Set();
+    const oogSet = new Set();
     let pendingPoseWatcher = null;
 
 
@@ -766,6 +812,8 @@ export function createCaseScene({
       hoveredId = null;
       draggedId = null;
       selectedIds = new Set();
+      collisionIds.clear();
+      oogSet.clear();
     }
 
     function sync(pack) {
@@ -776,6 +824,10 @@ export function createCaseScene({
         clear();
         return;
       }
+
+      // A pack sync reflects committed state. Preview collision ownership must
+      // never leak across a commit, repair, revert, or selection-only render.
+      collisionIds.clear();
 
       const keep = new Set();
       (pack.cases || []).forEach(inst => {
@@ -804,9 +856,7 @@ export function createCaseScene({
         instances.delete(id);
       });
 
-      applySelection(Array.from(selectedIds));
-      applyHover(hoveredId);
-      applyDragging(draggedId);
+      recomputeVisualStates();
       refreshGizmo();
       if (pendingPoseWatcher) pendingPoseWatcher();
     }
@@ -943,116 +993,81 @@ export function createCaseScene({
 
     function applyHidden(group, hidden) {
       if (!group || !group.userData.mesh) return;
+      group.userData.hidden = Boolean(hidden);
+    }
+
+    function applyVisualState(group) {
+      if (!group || !group.userData || !group.userData.mesh) return;
       const prefs = PreferencesManager.get();
       const mesh = group.userData.mesh;
       const lines = group.userData.lines;
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       const hiddenOpacity = Utils.clamp(Number(prefs.hiddenCaseOpacity) || 0.3, 0, 1);
-      if (hidden) {
-        mats.forEach(m => {
-          if (!m) return;
-          m.transparent = true;
-          m.opacity = hiddenOpacity;
-          m.depthWrite = false;
+      const id = group.userData.instanceId;
+      const state = resolveCaseVisualState({
+        hidden: group.userData.hidden === true,
+        collision: collisionIds.has(id),
+        selected: selectedIds.has(id),
+        oog: oogSet.has(id),
+        dragged: id === draggedId,
+        hovered: id === hoveredId,
+        accent: Utils.getCssVar('--accent-primary') || '#ff9f1c',
+        baseEdgeColor: Number.isFinite(group.userData.edgeColorOriginal)
+          ? group.userData.edgeColorOriginal
+          : 0x333333,
+        hiddenOpacity,
+      });
+
+      mats.forEach(m => {
+        if (!m) return;
+        if (m.transparent !== state.meshTransparent) {
+          m.transparent = state.meshTransparent;
           m.needsUpdate = true;
-        });
-        if (lines && lines.material) {
-          lines.material.transparent = true;
-          lines.material.opacity = Math.max(0.25, hiddenOpacity);
         }
-      } else {
-        mats.forEach(m => {
-          if (!m) return;
-          m.transparent = false;
-          m.opacity = 1;
-          m.depthWrite = true;
-          m.needsUpdate = true;
-        });
-        if (lines && lines.material) {
-          lines.material.transparent = true;
-          lines.material.opacity = 0.95;
+        m.opacity = state.meshOpacity;
+        m.depthWrite = state.depthWrite;
+        if (m.emissive) {
+          if (typeof state.emissive === 'string' && typeof m.emissive.set === 'function') {
+            m.emissive.set(state.emissive);
+          } else if (typeof m.emissive.setHex === 'function') {
+            m.emissive.setHex(state.emissive);
+          }
+        }
+      });
+      if (lines && lines.material) {
+        lines.material.transparent = true;
+        lines.material.opacity = state.edgeOpacity;
+        if (lines.material.color && typeof lines.material.color.setHex === 'function') {
+          lines.material.color.setHex(state.edgeColor);
         }
       }
     }
 
+    function recomputeVisualStates() {
+      instances.forEach(group => applyVisualState(group));
+    }
+
     function applySelection(ids) {
       selectedIds = new Set(ids || []);
-      instances.forEach(group => {
-        const mesh = group.userData.mesh;
-        if (!mesh || !mesh.material) return;
-        const isSelected = selectedIds.has(group.userData.instanceId);
-        const accent = Utils.getCssVar('--accent-primary') || '#ff9f1c';
-        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        mats.forEach(m => {
-          if (m && m.emissive && typeof m.emissive.set === 'function') {
-            m.emissive.set(isSelected ? accent : '#000000');
-          }
-        });
-      });
+      recomputeVisualStates();
     }
 
     function applyHover(instanceId) {
       hoveredId = instanceId || null;
-      instances.forEach(group => {
-        const mesh = group.userData.mesh;
-        if (!mesh || !mesh.material) return;
-        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        if (
-          group.userData.instanceId === hoveredId &&
-          !selectedIds.has(hoveredId) &&
-          group.userData.instanceId !== draggedId
-        ) {
-          mats.forEach(m => { if (m && m.emissive) m.emissive.setHex(0x333333); });
-        } else if (!selectedIds.has(group.userData.instanceId) && group.userData.instanceId !== draggedId) {
-          mats.forEach(m => { if (m && m.emissive) m.emissive.setHex(0x000000); });
-        }
-      });
+      recomputeVisualStates();
     }
 
     function applyDragging(instanceId) {
-      const prevDraggedId = draggedId;
       draggedId = instanceId || null;
-      instances.forEach(group => {
-        const mesh = group.userData.mesh;
-        if (!mesh || !mesh.material) return;
-        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        const gid = group.userData.instanceId;
-        if (gid === draggedId) {
-          mats.forEach(m => {
-            if (!m) return;
-            m.transparent = true;
-            m.opacity = 0.72;
-            m.needsUpdate = true;
-            if (m.emissive && typeof m.emissive.setHex === 'function') {
-              m.emissive.setHex(0x111111);
-            }
-          });
-        } else if (gid === prevDraggedId && prevDraggedId) {
-          // Reset previously dragged item
-          mats.forEach(m => {
-            if (!m) return;
-            m.transparent = false;
-            m.opacity = 1;
-            m.depthWrite = true;
-            m.needsUpdate = true;
-          });
-        }
-      });
+      recomputeVisualStates();
     }
 
     function setCollision(instanceId, isCollision) {
       const group = instances.get(instanceId);
       if (!group || !group.userData.mesh) return;
-      const mesh = group.userData.mesh;
-      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      if (isCollision) {
-        mats.forEach(m => { if (m && m.emissive) m.emissive.setHex(0xff0000); });
-      } else if (selectedIds.has(instanceId)) {
-        const accent = Utils.getCssVar('--accent-primary') || '#ff9f1c';
-        mats.forEach(m => { if (m && m.emissive) m.emissive.set(accent); });
-      } else {
-        mats.forEach(m => { if (m && m.emissive) m.emissive.setHex(0x000000); });
-      }
+      if (isCollision) collisionIds.add(instanceId);
+      else collisionIds.delete(instanceId);
+      applyVisualState(group);
     }
 
     function setHover(instanceId) {
@@ -1061,14 +1076,11 @@ export function createCaseScene({
 
     function setSelected(instanceIds) {
       applySelection(instanceIds);
-      applyHover(hoveredId);
       refreshGizmo();
     }
 
     function setDragging(instanceId) {
       applyDragging(instanceId);
-      applyHover(hoveredId);
-      applySelection(Array.from(selectedIds));
     }
 
     function getObject(instanceId) {
@@ -1735,9 +1747,7 @@ export function createCaseScene({
     }
 
     /** Highlight instances that are out-of-gauge (outside truck bounds). */
-    const oogSet = new Set();
     function applyOOGHighlights() {
-      const prevOog = new Set(oogSet);
       oogSet.clear();
       const packId = StateStore.get('currentPackId');
       const pack = packId ? PackLibrary.getById(packId) : null;
@@ -1748,8 +1758,9 @@ export function createCaseScene({
       );
       for (const [id, group] of instances.entries()) {
         if (!group || !group.userData.mesh) continue;
-        // Skip hidden instances
-        if (group.visible === false) continue;
+        // Hidden cargo owns no warning highlight, even though it remains
+        // translucent and raycastable in the scene.
+        if (group.userData.hidden === true) continue;
         // Staged cases intentionally live outside the truck in the staging area;
         // do not mark them as out-of-gauge cargo.
         const inst = instanceById.get(id);
@@ -1759,38 +1770,7 @@ export function createCaseScene({
         const inside = isInsideTruck(aabb);
         if (!inside) oogSet.add(id);
       }
-      // Remove highlight from previously OOG instances that are now OK
-      for (const id of prevOog) {
-        if (!oogSet.has(id) && !selectedIds.has(id)) {
-          const group = instances.get(id);
-          if (!group || !group.userData.mesh) continue;
-          const mesh = group.userData.mesh;
-          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-          mats.forEach(m => { if (m && m.emissive) m.emissive.setHex(0x000000); });
-          // Restore edge line color
-          const lines = group.userData.lines;
-          if (lines && lines.material) {
-            lines.material.color.set(group.userData.edgeColorOriginal || 0x333333);
-          }
-        }
-      }
-      // Apply red-orange tint to OOG instances
-      for (const id of oogSet) {
-        if (selectedIds.has(id)) continue; // selection takes priority
-        const group = instances.get(id);
-        if (!group || !group.userData.mesh) continue;
-        const mesh = group.userData.mesh;
-        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        mats.forEach(m => { if (m && m.emissive) m.emissive.setHex(0xcc3300); });
-        // Make edge lines red
-        const lines = group.userData.lines;
-        if (lines && lines.material) {
-          if (!group.userData.edgeColorOriginal) {
-            group.userData.edgeColorOriginal = lines.material.color.getHex();
-          }
-          lines.material.color.setHex(0xff0000);
-        }
-      }
+      recomputeVisualStates();
     }
 
     return {
@@ -1890,6 +1870,9 @@ export function createInteractionManager({
       CaseScene.setCollision(instanceId, check.collides);
       if (!check.collides) return false;
       UIComponents.showToast('Cannot place here: collision detected', 'error');
+      // Nudge candidates are rejected immediately rather than held as a live
+      // preview, so the temporary collision owner ends with this interaction.
+      CaseScene.setCollision(instanceId, false);
       return true;
     }
 
@@ -2229,6 +2212,7 @@ export function createInteractionManager({
       if (patchById.size) {
         commitCasesWithManualRevalidation(packId, applyInstancePatches(pack, patchById));
       }
+      CaseScene.applyOOGHighlights();
       if (rotatedCount) UIComponents.showToast(`Rotated ${rotatedCount} case(s)`, 'info');
       if (blockedCount) UIComponents.showToast('Cannot rotate here: collision or truck boundary detected', 'error');
       // The block here comes from the CASE orientation policy (upright / on-side),
@@ -2278,6 +2262,7 @@ export function createInteractionManager({
       if (patchById.size) {
         commitCasesWithManualRevalidation(packId, applyInstancePatches(pack, patchById));
       }
+      CaseScene.applyOOGHighlights();
     }
 
     /**
@@ -5724,6 +5709,7 @@ export function createEditorScreen({
         CaseScene.setCollision(inst.id, check.collides);
         if (check.collides) {
           UIComponents.showToast('Cannot place here: collision detected', 'error');
+          CaseScene.setCollision(inst.id, false);
           return;
         }
 
@@ -5757,6 +5743,7 @@ export function createEditorScreen({
           if (check.collides) {
             if (originalWorld) obj.position.copy(originalWorld);
             UIComponents.showToast('Cannot place here: collision detected', 'error');
+            CaseScene.setCollision(inst.id, false);
             return;
           }
           if (useLegacySettle) { finalPos = SceneManager.vecWorldToInches(obj.position); }
@@ -5781,6 +5768,7 @@ export function createEditorScreen({
           result ? formatVerticalMoveMessage(result, inst.id, baseMessage) : baseMessage,
           corrected ? 'info' : 'success'
         );
+        CaseScene.applyOOGHighlights();
       });
       transformCard.appendChild(savePos);
 

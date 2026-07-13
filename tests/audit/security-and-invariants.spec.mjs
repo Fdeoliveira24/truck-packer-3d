@@ -2616,12 +2616,17 @@ test('PLACEMENT-STATE-S2 AutoPack records placement from solver results', async 
 test('PLACEMENT-STATE-S2 unpackAll records "staged" placement for every case', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const start = src.indexOf('function unpackAll()');
-  const end = src.indexOf('\n    }', start);
+  const end = src.indexOf('\n    function renderInspectorNoPack', start);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
+  const helperStart = src.indexOf('export function buildOrganizedUnpackStagingCases(');
+  const helperEnd = src.indexOf('\nexport function createEditorScreen', helperStart);
+  const helperBlock = helperStart >= 0 && helperEnd > helperStart ? src.slice(helperStart, helperEnd) : '';
 
   assert.ok(block.length > 0, 'editor-screen must define unpackAll()');
-  assert.match(block, /placement:\s*'staged',/,
-    'unpackAll must mark every case as staged placement');
+  assert.match(block, /buildOrganizedUnpackStagingCases\(\{/,
+    'unpackAll must delegate the complete staged-pose construction to the organized helper');
+  assert.match(helperBlock, /placement:\s*'staged',/,
+    'the organized helper must mark every resolved case as staged placement');
 });
 
 test('UNPACK-CATEGORY-GROUPING staging order keeps case types contiguous and stable', async () => {
@@ -2671,16 +2676,8 @@ test('UNPACK-CATEGORY-GROUPING unpackAll allocates staging slots in grouped orde
 
   assert.match(block, /const stagingLayout = PackLibrary\.getStagingLayout\(livePack\.truck \|\| \{\}\);/,
     'unpackAll must derive category staging bands from the canonical staging layout');
-  assert.match(block, /const stagingGroups = groupInstancesForUnpackStaging\(/,
-    'unpackAll must build explicit category groups before placing cases');
-  assert.match(block, /for \(const group of stagingGroups\)[\s\S]*for \(const inst of group\.instances\)/,
-    'unpackAll must allocate safe staging positions one category group at a time');
-  assert.match(block, /const stagedPosition = \{[\s\S]*x: stagingLayout\.originX \+ item\.dims\.length \/ 2 \+ col \* cellLength,[\s\S]*y: item\.dims\.height \/ 2,[\s\S]*z: categoryOriginZ \+ item\.dims\.width \/ 2 \+ row \* cellWidth,[\s\S]*\};/,
-    'unpackAll must allocate each category from its current category-specific staging origin');
-  assert.match(block, /categoryOriginZ \+= rows \* cellWidth \+ categoryBandGap;/,
-    'unpackAll must advance the next category band after the previous category block');
-  assert.match(block, /const nextCases = \(livePack\.cases \|\| \[\]\)\.map\(inst => stagedById\.get\(inst\.id\) \|\| inst\)/,
-    'unpackAll must preserve the pack case array order while applying grouped staging poses by id');
+  assert.match(block, /buildOrganizedUnpackStagingCases\(\{[\s\S]*instances: livePack\.cases \|\| \[\][\s\S]*stagingLayout/,
+    'unpackAll must pass the current cases and canonical staging layout to the organized grouped helper');
 });
 
 test('PLACEMENT-STATE-S2 duplicateSelection records placement from staging fallback', async () => {
@@ -5057,8 +5054,8 @@ test('AUTO-PACK-A1-3 AutoPack validates support, containment, and staging separa
     'final validation must reject unsupported/floating placements');
   assert.match(src, /const finalValidation = validatePackedPlacements\(packed, zones, geometry\);[\s\S]*placements\.delete\(id\);[\s\S]*rotations\.delete\(id\);/,
     'placements rejected by final validation must be staged instead of persisted as packed');
-  assert.match(stagingBlock, /PackLibrary\.findSafeStagingPosition\(\{ truck \}, pose\.dims, acceptedAabbs\)/,
-    'staged/unpacked items must use the canonical staging helper, clearly separated from the trailer side');
+  assert.match(stagingBlock, /buildAutoPackStagingMap\(packItems, truck, PackLibrary\.findSafeStagingPosition\)/,
+    'staged/unpacked items must delegate to the canonical staging-map helper');
 });
 
 // ── S1: Canonical Staging Zone ────────────────────────────────────────────
@@ -5087,10 +5084,8 @@ test('STAGING-S1 unpackAll uses canonical staging layout bands instead of a hard
   assert.ok(block.length > 0, 'editor-screen must define unpackAll()');
   assert.match(block, /const stagingLayout = PackLibrary\.getStagingLayout\(livePack\.truck \|\| \{\}\);/,
     'unpackAll must derive grouped staging bands from the canonical staging layout helper');
-  assert.match(block, /const stagingGroups = groupInstancesForUnpackStaging\(/,
-    'unpackAll must keep category-aware staging groups instead of one global grid');
-  assert.match(block, /categoryOriginZ \+= rows \* cellWidth \+ categoryBandGap;/,
-    'unpackAll must advance each category band with canonical layout spacing');
+  assert.match(block, /buildOrganizedUnpackStagingCases\(\{/,
+    'unpackAll must keep category-aware staging through the organized helper');
   assert.doesNotMatch(block, /stageZStart|truckW|\bconst truckL\b|\blet truckL\b/,
     'unpackAll must not keep its own hardcoded staging offset');
 });
@@ -8328,7 +8323,7 @@ async function r1bImportBeam(name) {
   return c;
 }
 
-test('REPAIR-1B A: a staged unpacked item has an atomic pose resting on the staging floor', async () => {
+test('REPAIR-1B A: a staged unpacked item uses the deterministic identity pose on the staging floor', async () => {
   const mods = await r1bModules();
   const truth = await threeOrientedTruth();
   const truck = { length: 240, width: 96, height: 96 };
@@ -8338,8 +8333,8 @@ test('REPAIR-1B A: a staged unpacked item has an atomic pose resting on the stag
   assert.ok(staged.rotation && [staged.rotation.x, staged.rotation.y, staged.rotation.z].every(Number.isFinite), 'staged rotation is canonical');
   assert.ok(staged.orientedDims && staged.orientedDims.height > 0, 'staged orientedDims exists');
   r1bAssertAtomicFloor(mods, caseObj, staged, truth, 'onSide generic');
-  // onSide must not be staged upright.
-  assert.ok(staged.rotation.x !== 0 || staged.rotation.z !== 0, 'onSide item is not staged upright');
+  assert.deepEqual(staged.rotation, { x: 0, y: 0, z: 0 },
+    'visual staging uses identity even when the case packing policy is onSide');
 });
 
 test('REPAIR-1B B: Long Beam fixtures stage atomic and on the floor (corrected upright fixture, Repair 1C)', async () => {
@@ -8381,44 +8376,45 @@ test('REPAIR-1B C: Long Beam staging rests on the floor in Standard / Wheel Well
   }
 });
 
-test('REPAIR-1B D: orientation-policy staging matrix — pose, rotation, dims and THREE all agree', async () => {
+test('REPAIR-1B D: orientation-policy staging matrix always uses identity while pose, dims and THREE agree', async () => {
   const mods = await r1bModules();
   const truth = await threeOrientedTruth();
   const truck = { length: 240, width: 96, height: 96 };
   const H = Math.PI / 2;
   const base = { id: 'c', name: 'C', dimensions: { length: 30, width: 20, height: 10 }, shape: 'box', volume: 6000 };
   const policies = [
-    { orientationLock: 'any', canFlip: false, upright: true },
-    { orientationLock: 'any', canFlip: true, upright: true },   // first candidate is identity (upright)
-    { orientationLock: 'upright', canFlip: false, upright: true },
-    { orientationLock: 'upright', canFlip: true, upright: true },
-    { orientationLock: 'onSide', canFlip: false, upright: false },
-    { orientationLock: 'onSide', canFlip: true, upright: false },
+    { orientationLock: 'any', canFlip: false },
+    { orientationLock: 'any', canFlip: true },
+    { orientationLock: 'upright', canFlip: false },
+    { orientationLock: 'upright', canFlip: true },
+    { orientationLock: 'onSide', canFlip: false },
+    { orientationLock: 'onSide', canFlip: true },
   ];
   for (const p of policies) {
     const caseObj = { ...base, orientationLock: p.orientationLock, canFlip: p.canFlip };
     const staged = r1bComposeStaged(mods, caseObj, truck);
     r1bAssertAtomicFloor(mods, caseObj, staged, truth, `${p.orientationLock}+${p.canFlip}`);
-    const isUpright = staged.rotation.x === 0 && staged.rotation.z === 0;
-    assert.equal(isUpright, p.upright, `${p.orientationLock}+${p.canFlip}: staged orientation upright=${p.upright}`);
+    assert.deepEqual(staged.rotation, { x: 0, y: 0, z: 0 },
+      `${p.orientationLock}+${p.canFlip}: packing policy does not rotate visual staging`);
   }
-  // Valid exact instance lock (compound) — staged exactly as locked.
+  // Exact instance locks remain metadata for packing/manual placement and do not
+  // rotate cargo in the visual staging area.
   const locked = r1bComposeStaged(mods, { ...base, orientationLock: 'any', canFlip: true }, truck,
     { orientationLocked: true, lockedRotation: { x: H, y: 0, z: H } });
   r1bAssertAtomicFloor(mods, base, locked, truth, 'exact compound lock');
-  assert.deepEqual(
-    { l: locked.orientedDims.length, w: locked.orientedDims.width, h: locked.orientedDims.height },
-    { l: 10, w: 30, h: 20 }, 'compound exact lock stages as THREE-correct 10x30x20');
+  assert.deepEqual(locked.rotation, { x: 0, y: 0, z: 0 }, 'exact lock does not override identity staging');
+  assert.deepEqual(locked.orientedDims, base.dimensions, 'identity staging uses real base dimensions');
 });
 
-test('REPAIR-1B E: staged pose is deterministic from policy/lock, ignoring stale instance pose', async () => {
+test('REPAIR-1B E: staged pose is deterministic identity, ignoring policy, locks, and stale instance pose', async () => {
   const mods = await r1bModules();
   const truth = await threeOrientedTruth();
   const truck = { length: 240, width: 96, height: 96 };
   const caseObj = { id: 'c', name: 'C', dimensions: { length: 30, width: 20, height: 10 }, orientationLock: 'onSide', canFlip: false, shape: 'box', volume: 6000 };
 
   // (a) An unlocked instance carrying a stale orientedDims + an unlocked manual
-  // rotation must NOT leak into the staged pose — it comes from the case policy.
+  // rotation must NOT leak into the staged pose — it comes from the shared
+  // deterministic identity staging contract.
   const clean = r1bComposeStaged(mods, caseObj, truck);
   const withStale = r1bComposeStaged(mods, caseObj, truck, {
     orientedDims: { length: 99, width: 99, height: 99 },
@@ -8428,15 +8424,13 @@ test('REPAIR-1B E: staged pose is deterministic from policy/lock, ignoring stale
   assert.deepEqual(withStale.rotation, clean.rotation, 'unlocked manual rotation does not override policy staging');
   r1bAssertAtomicFloor(mods, caseObj, withStale, truth, 'stale-ignored');
 
-  // (b) A valid exact lock IS honored deterministically.
+  // (b) A valid exact lock stays as metadata but does not rotate visual staging.
   const H = Math.PI / 2;
   const lockedCase = { ...caseObj, orientationLock: 'any' };
   const locked = r1bComposeStaged(mods, lockedCase, truck, { orientationLocked: true, lockedRotation: { x: H, y: 0, z: 0 } });
-  const helper = mods.PackLib.getOrientedDimsForRotation(lockedCase.dimensions, { x: H, y: 0, z: 0 });
-  assert.deepEqual(
-    { l: locked.orientedDims.length, w: locked.orientedDims.width, h: locked.orientedDims.height },
-    { l: helper.length, w: helper.width, h: helper.height }, 'exact lock stages at the locked orientation');
-  r1bAssertAtomicFloor(mods, lockedCase, locked, truth, 'exact lock honored');
+  assert.deepEqual(locked.rotation, { x: 0, y: 0, z: 0 }, 'exact lock does not override staged identity');
+  assert.deepEqual(locked.orientedDims, lockedCase.dimensions, 'exact-lock item stages with identity dimensions');
+  r1bAssertAtomicFloor(mods, lockedCase, locked, truth, 'exact lock metadata preserved outside pose');
 });
 
 test('REPAIR-1B F: packed placements still rest on the floor and Stats use the same dims (no regression)', async () => {
@@ -8713,12 +8707,13 @@ test('REPAIR-1D 1+2+3: old onSide 144x8x8 beam — the former ~68in transient ga
   const caseObj = { id: 'c', name: 'OldBeam', dimensions: { length: 144, width: 8, height: 8 }, orientationLock: 'onSide', canFlip: false, shape: 'box', volume: 144 * 8 * 8, weight: 50 };
   const truck = { length: 240, width: 96, height: 96 };
   const { frames } = await runEnginePack({ caseObj, instances: [{ id: 'i', caseId: 'c', hidden: false, transform: { position: { x: 0, y: 4, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }], truck });
-  // onSide stages the beam standing 144in tall — the rendered object must already
-  // be rotated (sizeY=144) AND on the floor on every captured frame (was 68in float).
+  // Visual staging now ignores packing policy and uses deterministic identity,
+  // so this beam lies flat at its real base height on every captured frame.
   assertNoFloatFrames(frames, ['i'], 'onSide 144 beam');
   const rafFrames = frames.filter(f => f.label === 'raf');
   assert.ok(rafFrames.length >= 1, 'at least one staging frame was scheduled');
-  assert.ok(rafFrames.every(f => f.objs.i.sizeY === 144), 'the staged object is rotated (rendered 144in tall) on every staging frame — not lying flat at 8in');
+  assert.ok(rafFrames.every(f => f.objs.i.sizeY === 8),
+    'the staged object uses identity orientation (rendered 8in tall) on every staging frame');
 });
 
 test('REPAIR-1D 4: corrected upright Long Beams stay on the floor on every frame', async () => {
@@ -8731,15 +8726,15 @@ test('REPAIR-1D 4: corrected upright Long Beams stay on the floor on every frame
   }
 });
 
-test('REPAIR-1D 5: an exact compound orientation lock stages atomically on the floor', async () => {
+test('REPAIR-1D 5: an exact compound orientation lock keeps metadata but stages in identity on the floor', async () => {
   const H = Math.PI / 2;
   const caseObj = { id: 'c', name: 'Locked', dimensions: { length: 30, width: 20, height: 10 }, orientationLock: 'any', canFlip: true, shape: 'box', volume: 6000, weight: 40 };
   const truck = { length: 240, width: 96, height: 96 };
   const inst = { id: 'i', caseId: 'c', hidden: false, orientationLocked: true, lockedRotation: { x: H, y: 0, z: H }, transform: { position: { x: 0, y: 5, z: 0 }, rotation: { x: H, y: 0, z: H } } };
   const { frames } = await runEnginePack({ caseObj, instances: [inst], truck });
   assertNoFloatFrames(frames, ['i'], 'exact compound lock');
-  // Compound X+Z lock renders 10x30x20 → height 20 on every staging frame.
-  assert.ok(frames.filter(f => f.label === 'raf').every(f => f.objs.i.sizeY === 20), 'locked compound pose rendered 20in tall every frame');
+  assert.ok(frames.filter(f => f.label === 'raf').every(f => f.objs.i.sizeY === 10),
+    'exact-lock cargo uses the deterministic 10in identity staging height every frame');
 });
 
 test('REPAIR-1D 6+10: packed pose differs from staging pose — every frame on the floor; scene == StateStore', async () => {
@@ -9409,6 +9404,368 @@ test('RECON controller is single-flight, double-submit safe, and commits truck+c
   assert.equal(JSON.stringify(pack), before, 'controller preserves the caller snapshot');
 });
 
+test('RECON Truck Change stages identity poses with preview/commit, mode, profile, and repeat parity', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = {
+    id: 'beam', name: 'Beam', dimensions: { length: 30, width: 20, height: 10 },
+    orientationLock: 'onSide', canFlip: true, weight: 10,
+  };
+  const identity = { x: 0, y: 0, z: 0 };
+  const rotatedY = { x: 0, y: Math.PI / 2, z: 0 };
+  const rolledX = { x: Math.PI / 2, y: 0, z: 0 };
+  const make = (id, x, rotation, orientedDims, extra = {}) => ({
+    id, caseId: 'beam', placement: 'packed', hidden: false,
+    transform: { position: { x, y: orientedDims.height / 2, z: 0 }, rotation, scale: { x: 1, y: 1, z: 1 } },
+    orientedDims,
+    ...extra,
+  });
+  const survivor = make('survivor', 30, rotatedY, { length: 20, width: 30, height: 10 },
+    { packedProfile: 'max-capacity' });
+  const invalidYaw = make('invalid-yaw', 190, rotatedY, { length: 20, width: 30, height: 10 },
+    { packedProfile: 'max-capacity', orientationLocked: true, lockedRotation: rotatedY });
+  const invalidRoll = make('invalid-roll', 220, rolledX, { length: 30, width: 10, height: 20 });
+  const existingStaged = {
+    ...make('existing-stage', 20, identity, caseData.dimensions),
+    placement: 'staged',
+    transform: { position: { x: 20, y: 5, z: 130 }, rotation: identity, scale: { x: 1, y: 1, z: 1 } },
+  };
+  const pack = { id: 'truck-stage', truck: RECON_RECT, cases: [survivor, invalidYaw, invalidRoll, existingStaged] };
+  const nextTruck = { ...RECON_RECT, length: 120 };
+  const sourceSnapshot = JSON.stringify(pack);
+
+  const runPreview = () => {
+    const harness = makeTruckChangeHarness();
+    const previews = [];
+    const commits = [];
+    const controller = Controller.createTruckChangeController({
+      PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
+      CaseLibrary: { getCases: () => [caseData] },
+      UIComponents: harness.UIComponents,
+      documentRef: harness.documentRef,
+    });
+    assert.equal(controller.request({ pack, nextTruck, renderPreview: preview => previews.push(preview) }).status, 'preview');
+    return { harness, previews, commits };
+  };
+
+  const cancelled = runPreview();
+  const cancelledPose = JSON.stringify(cancelled.previews[0].pack.cases);
+  cancelled.harness.click(0, 'Cancel');
+  assert.equal(JSON.stringify(pack), sourceSnapshot, 'Cancel leaves every original packed transform unchanged');
+
+  const applied = runPreview();
+  assert.equal(JSON.stringify(applied.previews[0].pack.cases), cancelledPose,
+    'repeated identical Truck Change previews produce byte-equivalent poses');
+  const previewCases = applied.previews[0].pack.cases;
+  const stagedPreview = previewCases.filter(inst => ['invalid-yaw', 'invalid-roll'].includes(inst.id));
+  for (const inst of stagedPreview) {
+    assert.equal(inst.placement, 'staged', `${inst.id} is shown in staging`);
+    assert.deepEqual(inst.transform.rotation, identity, `${inst.id} drops its previous packed rotation`);
+    assert.deepEqual(inst.orientedDims, caseData.dimensions, `${inst.id} dimensions match identity rotation`);
+    assert.equal(inst.transform.position.y, caseData.dimensions.height / 2, `${inst.id} rests on staging ground`);
+    assert.equal(Object.prototype.hasOwnProperty.call(inst, 'packedProfile'), false, `${inst.id} loses packedProfile`);
+  }
+  assert.deepEqual(previewCases.find(inst => inst.id === 'survivor'), survivor,
+    'valid packed survivor remains byte-equivalent, including Max Capacity profile');
+  assert.deepEqual(previewCases.find(inst => inst.id === 'existing-stage'), existingStaged,
+    'safe existing deterministic staging remains unchanged');
+  assertCanonicalReconLayoutSafe(PackLib, previewCases, nextTruck, [caseData], 'Truck Change identity preview');
+
+  applied.harness.click(0, 'Move to staging');
+  assert.equal(applied.commits.length, 1);
+  assert.deepEqual(applied.commits[0].patch.cases, previewCases,
+    'Move-to-staging commit is byte-equivalent to its preview pose');
+  assert.equal(JSON.stringify(pack), sourceSnapshot, 'controller keeps its caller snapshot pure');
+
+  const transitions = [
+    [RECON_RECT, RECON_WW],
+    [RECON_WW, RECON_RECT],
+    [RECON_RECT, reconFB()],
+    [reconFB(), RECON_WW],
+    [RECON_WW, reconFB()],
+  ];
+  for (const [sourceTruck, targetTruck] of transitions) {
+    const direct = PackLib.stagePlacementIds(
+      { id: 'mode-parity', truck: sourceTruck, cases: [invalidYaw, invalidRoll] },
+      ['invalid-yaw', 'invalid-roll'], targetTruck, [caseData], { grouped: true }
+    );
+    assert.deepEqual(direct.failedIds, []);
+    for (const inst of direct.pack.cases) {
+      assert.deepEqual(inst.transform.rotation, identity, `${sourceTruck.shapeMode}→${targetTruck.shapeMode}: identity rotation`);
+      assert.deepEqual(inst.orientedDims, caseData.dimensions, `${sourceTruck.shapeMode}→${targetTruck.shapeMode}: identity dimensions`);
+      assert.equal(inst.transform.position.y, 5, `${sourceTruck.shapeMode}→${targetTruck.shapeMode}: grounded`);
+    }
+    assertCanonicalReconLayoutSafe(PackLib, direct.pack.cases, targetTruck, [caseData],
+      `${sourceTruck.shapeMode}→${targetTruck.shapeMode} staging`);
+  }
+
+  const unresolved = {
+    id: 'missing', caseId: 'missing-case', placement: 'packed', packedProfile: 'max-capacity',
+    transform: { position: { x: 200, y: 7, z: 0 }, rotation: rolledX, scale: { x: 1, y: 1, z: 1 } },
+    customMetadata: { keep: true },
+  };
+  const unresolvedResult = PackLib.stagePlacementIds(
+    { id: 'unresolved', truck: RECON_RECT, cases: [unresolved] }, ['missing'], nextTruck, [caseData]
+  );
+  assert.deepEqual(unresolvedResult.failedIds, ['missing']);
+  assert.deepEqual(unresolvedResult.pack.cases[0], unresolved,
+    'unresolved packed references keep safe metadata and receive no fabricated staging geometry');
+});
+
+test('RECON grouped staging preserves obstacles and builds deterministic case bands with aligned partial rows', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseLibrary = [
+    { id: 'A', name: 'Large', dimensions: { length: 30, width: 20, height: 10 } },
+    { id: 'B', name: 'Small', dimensions: { length: 20, width: 14, height: 12 } },
+  ];
+  const identity = { x: 0, y: 0, z: 0 };
+  const rotated = { x: 0, y: Math.PI / 2, z: 0 };
+  const make = (id, caseId, position, placement = 'packed') => ({
+    id, caseId, placement, hidden: false, packedProfile: 'max-capacity',
+    transform: { position, rotation: rotated, scale: { x: 1, y: 1, z: 1 } },
+    orientedDims: caseId === 'A'
+      ? { length: 20, width: 30, height: 10 }
+      : { length: 14, width: 20, height: 12 },
+    metadata: { preserved: id },
+  });
+  const survivor = {
+    ...make('survivor', 'A', { x: 60, y: 5, z: 0 }),
+    transform: { position: { x: 60, y: 5, z: 0 }, rotation: identity, scale: { x: 1, y: 1, z: 1 } },
+    orientedDims: { ...caseLibrary[0].dimensions },
+  };
+  const preservedStage = {
+    ...make('preserved-stage', 'A', { x: 15, y: 5, z: 70 }, 'staged'),
+    transform: { position: { x: 15, y: 5, z: 70 }, rotation: identity, scale: { x: 1, y: 1, z: 1 } },
+    orientedDims: { ...caseLibrary[0].dimensions },
+  };
+  delete preservedStage.packedProfile;
+  const unresolvedObstacle = {
+    id: 'unresolved-obstacle', caseId: 'missing', placement: 'staged', hidden: false,
+    transform: { position: { x: 100, y: 5, z: 140 }, rotation: identity, scale: { x: 1, y: 1, z: 1 } },
+    orientedDims: { length: 20, width: 20, height: 10 },
+    metadata: { preserve: true },
+  };
+  const targets = [
+    ...['a-5', 'a-2', 'a-4', 'a-1', 'a-3'].map((id, index) =>
+      make(id, 'A', { x: 180 + index * 2, y: 5, z: 0 })),
+    ...['b-3', 'b-1', 'b-2'].map((id, index) =>
+      make(id, 'B', { x: 200 + index * 2, y: 6, z: 20 })),
+  ];
+  const pack = {
+    id: 'grouped-stage',
+    truck: RECON_RECT,
+    cases: [survivor, preservedStage, unresolvedObstacle, ...targets],
+  };
+  const nextTruck = { ...RECON_RECT, length: 120, width: 80 };
+  const targetIds = targets.map(inst => inst.id);
+
+  const grouped = PackLib.stagePlacementIds(pack, targetIds, nextTruck, caseLibrary, { grouped: true });
+  const repeated = PackLib.stagePlacementIds(pack, [...targetIds].reverse(), nextTruck, caseLibrary, { grouped: true });
+  assert.deepEqual(grouped.failedIds, []);
+  assert.deepEqual(repeated.pack.cases, grouped.pack.cases,
+    'target input order cannot change the grouped staging plan');
+  assert.deepEqual(grouped.pack.cases.find(inst => inst.id === survivor.id), survivor,
+    'valid packed survivor is byte-equivalent');
+  assert.deepEqual(grouped.pack.cases.find(inst => inst.id === preservedStage.id), preservedStage,
+    'valid existing staged obstacle is byte-equivalent');
+  assert.deepEqual(grouped.pack.cases.find(inst => inst.id === unresolvedObstacle.id), unresolvedObstacle,
+    'unresolved obstacle with explicit geometry is preserved without fabricated data');
+
+  const stagedTargets = grouped.pack.cases.filter(inst => targetIds.includes(inst.id));
+  for (const inst of stagedTargets) {
+    const caseData = caseLibrary.find(candidate => candidate.id === inst.caseId);
+    assert.equal(inst.placement, 'staged');
+    assert.deepEqual(inst.transform.rotation, identity, `${inst.id} uses identity staging rotation`);
+    assert.deepEqual(inst.orientedDims, caseData.dimensions, `${inst.id} dimensions match its rendered identity pose`);
+    assert.equal(inst.transform.position.y, caseData.dimensions.height / 2, `${inst.id} rests on the staging floor`);
+    assert.equal(Object.prototype.hasOwnProperty.call(inst, 'packedProfile'), false, `${inst.id} drops packedProfile`);
+    assert.deepEqual(inst.metadata, { preserved: inst.id }, `${inst.id} retains unrelated metadata`);
+  }
+
+  const groupA = stagedTargets.filter(inst => inst.caseId === 'A')
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const rowBuckets = new Map();
+  for (const inst of groupA) {
+    const z = inst.transform.position.z;
+    if (!rowBuckets.has(z)) rowBuckets.set(z, []);
+    rowBuckets.get(z).push(inst.transform.position.x);
+  }
+  const rows = [...rowBuckets.entries()].sort((a, b) => a[0] - b[0]);
+  assert.equal(rows.length, 2, 'five identical cases wrap into two deterministic rows');
+  const firstRow = rows[0][1].sort((a, b) => a - b);
+  const partialRow = rows[1][1].sort((a, b) => a - b);
+  assert.equal(firstRow.length, 3);
+  assert.equal(partialRow.length, 2);
+  assert.equal(partialRow[0], firstRow[0], 'partial row restarts at the group X origin');
+  assert.deepEqual(firstRow.slice(1).map((x, index) => x - firstRow[index]), [42, 42],
+    'identical cases use one uniform X cell step');
+  assert.equal(partialRow[1] - partialRow[0], 42, 'partial row uses the same uniform X step');
+
+  const groupB = stagedTargets.filter(inst => inst.caseId === 'B');
+  const boundsFor = (instances, dims) => ({
+    minX: Math.min(...instances.map(inst => inst.transform.position.x - dims.length / 2)),
+    maxX: Math.max(...instances.map(inst => inst.transform.position.x + dims.length / 2)),
+    minZ: Math.min(...instances.map(inst => inst.transform.position.z - dims.width / 2)),
+    maxZ: Math.max(...instances.map(inst => inst.transform.position.z + dims.width / 2)),
+  });
+  const aBounds = boundsFor(groupA, caseLibrary[0].dimensions);
+  const bBounds = boundsFor(groupB, caseLibrary[1].dimensions);
+  const bandsSeparated = aBounds.maxX + 11.999 <= bBounds.minX || bBounds.maxX + 11.999 <= aBounds.minX ||
+    aBounds.maxZ + 11.999 <= bBounds.minZ || bBounds.maxZ + 11.999 <= aBounds.minZ;
+  assert.equal(bandsSeparated, true, 'different caseId groups reserve separate bands with the staging gap');
+
+  assertCanonicalReconLayoutSafe(
+    PackLib,
+    grouped.pack.cases.filter(inst => inst.id !== unresolvedObstacle.id),
+    nextTruck,
+    caseLibrary,
+    'Contract B grouped staging'
+  );
+  const unresolvedAabb = reconAabb(unresolvedObstacle.transform.position, unresolvedObstacle.orientedDims);
+  for (const inst of stagedTargets) {
+    const dims = caseLibrary.find(candidate => candidate.id === inst.caseId).dimensions;
+    const aabb = reconAabb(inst.transform.position, dims);
+    const overlaps = aabb.min.x < unresolvedAabb.max.x - 0.001 && aabb.max.x > unresolvedAabb.min.x + 0.001 &&
+      aabb.min.y < unresolvedAabb.max.y - 0.001 && aabb.max.y > unresolvedAabb.min.y + 0.001 &&
+      aabb.min.z < unresolvedAabb.max.z - 0.001 && aabb.max.z > unresolvedAabb.min.z + 0.001;
+    assert.equal(overlaps, false, `${inst.id} avoids the preserved unresolved obstacle`);
+  }
+
+  const defaultPlan = PackLib.stagePlacementIds(pack, targetIds, nextTruck, caseLibrary);
+  const explicitDefaultPlan = PackLib.stagePlacementIds(pack, targetIds, nextTruck, caseLibrary, { grouped: false });
+  assert.deepEqual(explicitDefaultPlan, defaultPlan,
+    'omitted options and explicit grouped:false retain the default caller behavior');
+});
+
+test('RECON Truck Change Contract B preserves semantic counts and commits its exact grouped preview', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseLibrary = [
+    { id: 'A', name: 'Large', dimensions: { length: 30, width: 20, height: 10 } },
+    { id: 'B', name: 'Small', dimensions: { length: 20, width: 14, height: 12 } },
+  ];
+  const identity = { x: 0, y: 0, z: 0 };
+  const make = (id, caseId, position, placement = 'packed') => ({
+    id, caseId, placement, hidden: false,
+    transform: { position, rotation: identity, scale: { x: 1, y: 1, z: 1 } },
+    orientedDims: { ...caseLibrary.find(candidate => candidate.id === caseId).dimensions },
+  });
+  const survivor = make('survivor', 'A', { x: 50, y: 5, z: 0 });
+  const safeStage = make('safe-stage', 'A', { x: 15, y: 5, z: 70 }, 'staged');
+  const unsafeStageA = { ...make('unsafe-stage-a', 'A', { x: 70, y: 40, z: 70 }, 'staged'), packedProfile: 'max-capacity' };
+  const unsafeStageB = { ...make('unsafe-stage-b', 'B', { x: 10000, y: 6, z: 10000 }, 'staged'), packedProfile: 'max-capacity' };
+  const invalidA = { ...make('invalid-a', 'A', { x: 190, y: 5, z: 0 }), packedProfile: 'max-capacity' };
+  const invalidB = { ...make('invalid-b', 'B', { x: 210, y: 6, z: 20 }), packedProfile: 'max-capacity' };
+  const pack = {
+    id: 'contract-b-controller', truck: RECON_RECT,
+    cases: [survivor, safeStage, unsafeStageA, unsafeStageB, invalidA, invalidB],
+  };
+  const sourceSnapshot = JSON.stringify(pack);
+  const nextTruck = { ...RECON_RECT, length: 120 };
+
+  const run = () => {
+    const harness = makeTruckChangeHarness();
+    const previews = [];
+    const commits = [];
+    const controller = Controller.createTruckChangeController({
+      PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
+      CaseLibrary: { getCases: () => caseLibrary },
+      UIComponents: harness.UIComponents,
+      documentRef: harness.documentRef,
+    });
+    const result = controller.request({ pack, nextTruck, renderPreview: preview => previews.push(preview) });
+    return { harness, previews, commits, result };
+  };
+
+  const cancelled = run();
+  assert.deepEqual(cancelled.result.reconciliation.summary, {
+    kept: 1, adjusted: 0, invalid: 2,
+    stagedUnchanged: 1, stagedAdjusted: 2, unresolved: 0, malformed: 0,
+  }, 'grouped layout does not merge or inflate reconciliation categories');
+  const summaryRows = cancelled.harness.modals[0].config.content.children[1].children.map(child => child.textContent);
+  assert.deepEqual(summaryRows, [
+    '1 kept in place',
+    '0 safely adjusted',
+    '2 no longer fit (shown in staging preview)',
+    '1 existing staged items unchanged',
+    '2 unsafe staged items corrected',
+  ], 'modal counts retain their original semantic meaning');
+  const cancelledPreview = cancelled.previews[0].pack.cases;
+  assert.deepEqual(cancelledPreview.find(inst => inst.id === survivor.id), survivor,
+    'valid packed survivor remains byte-equivalent in preview');
+  assert.deepEqual(cancelledPreview.find(inst => inst.id === safeStage.id), safeStage,
+    'valid existing staged cargo remains byte-equivalent in preview');
+  cancelled.harness.click(0, 'Cancel');
+  assert.equal(JSON.stringify(pack), sourceSnapshot, 'Cancel leaves the source cases byte-equivalent');
+
+  const applied = run();
+  assert.deepEqual(applied.previews[0].pack.cases, cancelledPreview,
+    'repeated identical Truck Change operations produce byte-equivalent grouped previews');
+  const groupedIds = ['unsafe-stage-a', 'unsafe-stage-b', 'invalid-a', 'invalid-b'];
+  for (const id of groupedIds) {
+    const inst = applied.previews[0].pack.cases.find(candidate => candidate.id === id);
+    const dims = caseLibrary.find(candidate => candidate.id === inst.caseId).dimensions;
+    assert.equal(inst.placement, 'staged');
+    assert.deepEqual(inst.transform.rotation, identity);
+    assert.deepEqual(inst.orientedDims, dims);
+    assert.equal(inst.transform.position.y, dims.height / 2);
+    assert.equal(Object.prototype.hasOwnProperty.call(inst, 'packedProfile'), false);
+  }
+  assertCanonicalReconLayoutSafe(PackLib, applied.previews[0].pack.cases, nextTruck, caseLibrary,
+    'Truck Change Contract B preview');
+  applied.harness.click(0, 'Move to staging');
+  assert.equal(applied.commits.length, 1, 'one confirmation creates one commit');
+  assert.deepEqual(applied.commits[0].patch.cases, applied.previews[0].pack.cases,
+    'Move to staging commits the exact already-rendered grouped plan');
+  assert.match(applied.harness.toasts.at(-1).message, /2 item\(s\) moved to staging/,
+    'toast uses only the two invalid IDs, not the four combined layout targets');
+});
+
+test('RECON Truck Change Apply commits the grouped stagedAdjusted preview without moving safe staging', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const safeStage = {
+    ...reconInst('safe-stage', 30, 8, 80),
+    placement: 'staged',
+    orientedDims: { ...RECON_DIMS },
+  };
+  const unsafeStage = {
+    ...reconInst('unsafe-stage', 70, 40, 80),
+    placement: 'staged',
+    packedProfile: 'max-capacity',
+  };
+  const pack = { id: 'staged-adjusted-apply', truck: RECON_RECT, cases: [safeStage, unsafeStage] };
+  const nextTruck = { ...RECON_RECT, width: 95 };
+  const harness = makeTruckChangeHarness();
+  const previews = [];
+  const commits = [];
+  const controller = Controller.createTruckChangeController({
+    PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
+    CaseLibrary: { getCases: () => RECON_CASE_LIB },
+    UIComponents: harness.UIComponents,
+    documentRef: harness.documentRef,
+  });
+
+  const result = controller.request({ pack, nextTruck, renderPreview: preview => previews.push(preview) });
+  assert.equal(result.status, 'preview');
+  assert.equal(result.reconciliation.summary.stagedUnchanged, 1);
+  assert.equal(result.reconciliation.summary.stagedAdjusted, 1);
+  assert.equal(result.reconciliation.summary.invalid, 0);
+  assert.deepEqual(previews[0].pack.cases.find(inst => inst.id === safeStage.id), safeStage,
+    'safe existing staged cargo is not included in the grouped correction plan');
+  const corrected = previews[0].pack.cases.find(inst => inst.id === unsafeStage.id);
+  assert.equal(corrected.placement, 'staged');
+  assert.deepEqual(corrected.transform.rotation, { x: 0, y: 0, z: 0 });
+  assert.deepEqual(corrected.orientedDims, RECON_DIMS);
+  assert.equal(corrected.transform.position.y, RECON_DIMS.height / 2);
+  assert.equal(Object.prototype.hasOwnProperty.call(corrected, 'packedProfile'), false);
+
+  harness.click(0, 'Apply change');
+  assert.equal(commits.length, 1);
+  assert.deepEqual(commits[0].patch.cases, previews[0].pack.cases,
+    'Apply change commits the exact grouped correction preview');
+});
+
 test('RECON adjusted-only preview shows exact counts and applies the proposed pose only after confirmation', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
@@ -9549,7 +9906,14 @@ test('RECON repack reports partial failure and requires a second explicit stagin
   const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
   const cubeLib = [{ id: 'cube', name: 'Cube', dimensions: { length: 20, width: 20, height: 20 }, weight: 10 }];
   const failedId = '5585711a-785a-4605-ba77-782525d00819';
-  const cube = (id, x) => ({ ...reconInst(id, x, 10, 0), caseId: 'cube' });
+  const packedRotation = { x: 0, y: Math.PI / 2, z: 0 };
+  const cube = (id, x) => ({
+    ...reconInst(id, x, 10, 0),
+    caseId: 'cube',
+    packedProfile: 'max-capacity',
+    orientedDims: { length: 20, width: 20, height: 20 },
+    transform: { ...reconInst(id, x, 10, 0).transform, rotation: packedRotation },
+  });
   const pack = { id: 'p', truck: RECON_RECT, cases: [cube('a', 100), cube(failedId, 140)] };
   const nextTruck = { length: 30, width: 20, height: 20, shapeMode: 'rect' };
   const harness = makeTruckChangeHarness();
@@ -9578,6 +9942,14 @@ test('RECON repack reports partial failure and requires a second explicit stagin
     'partial repack preview shows successfully repacked cargo as packed');
   assert.equal(previews[1].pack.cases.find(inst => inst.id === failedId).placement, 'staged',
     'partial repack preview never presents failed cargo as packed');
+  assert.deepEqual(previews[1].pack.cases.find(inst => inst.id === 'a').transform.rotation, packedRotation,
+    'successful repack retains its packed solver pose');
+  assert.equal(previews[1].pack.cases.find(inst => inst.id === 'a').packedProfile, 'max-capacity',
+    'successful physically valid Max Capacity survivor retains its profile');
+  assert.deepEqual(previews[1].pack.cases.find(inst => inst.id === failedId).transform.rotation, { x: 0, y: 0, z: 0 },
+    'remaining repack failure previews with deterministic staging rotation');
+  assert.equal(Object.prototype.hasOwnProperty.call(previews[1].pack.cases.find(inst => inst.id === failedId), 'packedProfile'), false,
+    'remaining repack failure loses its packed profile when staged');
   const secondContent = harness.modals[1].config.content;
   assert.match(secondContent.children[0].textContent, /Could not be repacked: 1 item\./);
   assert.equal(secondContent.children[1].children[0].textContent, '1 × Cube',
@@ -9597,6 +9969,12 @@ test('RECON repack reports partial failure and requires a second explicit stagin
   const committedCases = commits[0].patch.cases;
   assert.equal(committedCases.find(c => c.id === 'a').placement, 'packed');
   assert.equal(committedCases.find(c => c.id === failedId).placement, 'staged');
+  assert.deepEqual(committedCases.find(c => c.id === 'a').transform.rotation, packedRotation);
+  assert.deepEqual(committedCases.find(c => c.id === failedId).transform.rotation, { x: 0, y: 0, z: 0 });
+  assert.deepEqual(committedCases, previews[3].pack.cases,
+    'residual-failure confirmation commits the exact repack preview plan');
+  assert.match(harness.toasts.at(-1).message, /1 moved to staging/,
+    'residual-failure toast uses only the failedIds category');
   assertCanonicalReconLayoutSafe(PackLib, committedCases, nextTruck, cubeLib, 'partial repack');
 });
 
@@ -11836,8 +12214,8 @@ test('AUTO-PACK-A1-PERF-1 buildAutoPackNextCases is animation-independent and pr
   assert.deepEqual(nextCases[1].transform.rotation, rotatedStaged.rotation, 'staged rotation stays atomic with staging position');
   assert.deepEqual(nextCases[1].orientedDims, rotatedStaged.orientedDims, 'non-identity staged poses keep orientedDims');
   assert.equal(nextCases[2].placement, 'staged', 'identity staged items are also persisted as staged');
-  assert.equal(Object.prototype.hasOwnProperty.call(nextCases[2], 'orientedDims'), false,
-    'identity staged poses drop stale orientedDims');
+  assert.deepEqual(nextCases[2].orientedDims, identityStaged.orientedDims,
+    'identity staged poses persist dimensions matching the staging-map rotation');
   assert.equal(nextCases[3], sourceCases[3], 'hidden instances remain unchanged');
 });
 
@@ -11852,12 +12230,16 @@ test('AUTO-PACK-A0C staged unpacked items use an atomic pose (position+rotation+
 
   assert.doesNotMatch(stagingBlock, /item\.inst && item\.inst\.orientedDims/,
     'buildStagedPose must not read stale inst.orientedDims from a previous AutoPack run (RC-4 fix)');
-  assert.match(stagingBlock, /item\.orientations\[0\][\s\S]*length: Number\(ori\.l\)[\s\S]*width: Number\(ori\.w\)[\s\S]*height: Number\(ori\.h\)/,
-    'staging dims come from the generated AutoPack orientation, not raw case dimensions');
-  assert.match(stagingBlock, /rotation: \{ x: Number\(ori\.rotX\)[\s\S]*Number\(ori\.rotY\)[\s\S]*Number\(ori\.rotZ\)/,
-    'the staged pose persists the orientation rotation alongside its dims (atomic)');
-  // The staged item is persisted with the SAME orientation that produced its
-  // staging position — not reset to its prior/current rotation.
+  assert.doesNotMatch(stagingBlock, /item\.orientations\[0\]/,
+    'visual staging does not inherit solver orientation-policy candidates');
+  assert.match(stagingBlock, /item && item\.caseData && item\.caseData\.dimensions/,
+    'staging starts from the real case dimensions');
+  assert.match(stagingBlock, /rotation = \{ x: 0, y: 0, z: 0 \}/,
+    'staging uses the deterministic identity rotation');
+  assert.match(stagingBlock, /getOrientedDimsForRotation\(base, rotation\)/,
+    'staging dimensions are derived from the exact stored staging rotation');
+  // The staged item persists the same identity pose that produced its staging
+  // position, not its prior packed rotation.
   assert.match(persistBlock, /rot = staged\.rotation/,
     'unpacked staged items take the staging-orientation rotation, keeping the pose atomic');
   assert.match(persistBlock, /od = staged\.orientedDims/,
@@ -16966,7 +17348,7 @@ test('placement-safety-P0B applyTransform resets halfWorld to base dims when ori
 
 // ─── P0-C: staged/unpacked items do not inherit stale orientedDims ───────────
 
-test('placement-safety-P0C buildStagedPose derives an atomic pose from solver orientations, not stale inst.orientedDims', async () => {
+test('placement-safety-P0C buildStagedPose derives an atomic identity pose from real case dimensions', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
   const stagingStart = src.indexOf('export function buildStagedPose(item)');
   const stagingEnd = src.indexOf('\nexport function createAutoPackEngine', stagingStart);
@@ -16975,14 +17357,14 @@ test('placement-safety-P0C buildStagedPose derives an atomic pose from solver or
   assert.ok(stagingBlock.length > 0, 'buildStagedPose must be a module-scope exported helper');
   assert.doesNotMatch(stagingBlock, /item\.inst\.orientedDims/,
     'buildStagedPose must not read stale inst.orientedDims from a previous AutoPack run (RC-4)');
-  assert.match(stagingBlock, /item\.orientations\[0\]/,
-    'buildStagedPose must use the fresh first solver orientation candidate');
-  assert.match(stagingBlock, /rotation: \{ x: Number\(ori\.rotX\)/,
-    'the staged pose must carry the candidate ROTATION (atomic with its dims)');
-  assert.match(stagingBlock, /dims: \{ length: Number\(ori\.l\)/,
-    'the staged pose must carry the candidate DIMENSIONS derived from that rotation');
-  assert.match(stagingBlock, /item\.caseData\.dimensions/,
-    'buildStagedPose must fall back to base case dimensions with identity rotation');
+  assert.doesNotMatch(stagingBlock, /item\.orientations\[0\]/,
+    'buildStagedPose must not use packing-policy orientation candidates');
+  assert.match(stagingBlock, /item && item\.caseData && item\.caseData\.dimensions/,
+    'buildStagedPose must use real base case dimensions');
+  assert.match(stagingBlock, /rotation = \{ x: 0, y: 0, z: 0 \}/,
+    'the staged pose must carry deterministic identity rotation');
+  assert.match(stagingBlock, /getOrientedDimsForRotation\(base, rotation\)/,
+    'the staged pose dimensions must be derived from that identity rotation');
 });
 
 test('placement-safety-P0C nextCases applies an atomic staged pose (rotation + orientedDims agree with position)', async () => {
@@ -16997,12 +17379,10 @@ test('placement-safety-P0C nextCases applies an atomic staged pose (rotation + o
     'unpacked items read the full staged pose from the staging map');
   assert.match(persistBlock, /pos = staged\.position;[\s\S]*rot = staged\.rotation[\s\S]*od = staged\.orientedDims/,
     'unpacked items apply staging position, rotation and orientedDims together (atomic)');
-  // Packed items still take fresh solver dims; identity staged rotation drops the
-  // redundant orientedDims (base dims already match).
-  assert.match(persistBlock, /od && !isIdentityRotation/,
-    'a non-identity staged orientation keeps orientedDims so render height matches staging Y');
-  assert.match(persistBlock, /delete next\.orientedDims/,
-    'identity staged orientation drops orientedDims and falls back to base case dims');
+  // Packed items still take fresh solver dims; staged items persist identity
+  // orientedDims explicitly so preview, commit and scene bounds use one pose.
+  assert.match(persistBlock, /else if \(od\)[\s\S]*next\.orientedDims = od/,
+    'identity staged orientation persists matching orientedDims');
 });
 
 // ─── P1-A: orientation policy parity — manual rotate must respect caseData.orientationLock ──

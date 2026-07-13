@@ -69,9 +69,18 @@ export function createTruckChangeController({
   }
 
   function buildSafePreview(ctx, sourcePack, stagedIds, excludedIds = []) {
-    const ids = [...new Set(stagedIds || [])];
+    const ids = [...new Set([
+      ...(ctx.reconciliation?.stagedAdjusted || []),
+      ...(stagedIds || []),
+    ])];
     const staged = ids.length
-      ? PackLibrary.stagePlacementIds(sourcePack, ids, ctx.nextTruck, ctx.caseLibrary)
+      ? PackLibrary.stagePlacementIds(
+          sourcePack,
+          ids,
+          ctx.nextTruck,
+          ctx.caseLibrary,
+          { grouped: true }
+        )
       : { pack: sourcePack, stagedIds: [], failedIds: [] };
     const excluded = new Set([...(excludedIds || []), ...(staged.failedIds || [])]);
     return {
@@ -81,6 +90,7 @@ export function createTruckChangeController({
         cases: (staged.pack.cases || []).filter(inst => !excluded.has(inst.id)),
       },
       stagedIds: staged.stagedIds || [],
+      failedIds: staged.failedIds || [],
       excludedIds: [...excluded],
     };
   }
@@ -240,19 +250,13 @@ export function createTruckChangeController({
           label: 'Move remaining items to staging',
           variant: 'primary',
           onClick: guarded(ctx, () => {
-            const staged = PackLibrary.stagePlacementIds(
-              outcome.pack,
-              outcome.failedIds,
-              ctx.nextTruck,
-              ctx.caseLibrary
-            );
-            if (staged.failedIds.length) {
-              throw new Error(`Could not safely stage ${staged.failedIds.length} item(s). No changes were applied.`);
+            if (preview.failedIds.length) {
+              throw new Error(`Could not safely stage ${preview.failedIds.length} item(s). No changes were applied.`);
             }
             return commit(
               ctx,
-              staged.pack,
-              `Truck updated. ${outcome.repackedIds.length} repacked and ${staged.stagedIds.length} moved to staging.`
+              preview.pack,
+              `Truck updated. ${outcome.repackedIds.length} repacked and ${outcome.failedIds.length} moved to staging.`
             );
           }),
         },
@@ -283,28 +287,27 @@ export function createTruckChangeController({
       actions.push({
         label: 'Apply change',
         variant: 'primary',
-        onClick: guarded(ctx, () => commit(
-          ctx,
-          recon.nextPack,
-          recon.adjusted.length
-            ? `${ctx.successMessage}. ${recon.adjusted.length} item(s) safely adjusted.`
-            : ctx.successMessage
-        )),
+        onClick: guarded(ctx, () => {
+          if (preview.failedIds.length) {
+            throw new Error(`Could not safely stage ${preview.failedIds.length} item(s). No changes were applied.`);
+          }
+          return commit(
+            ctx,
+            preview.pack,
+            recon.adjusted.length
+              ? `${ctx.successMessage}. ${recon.adjusted.length} item(s) safely adjusted.`
+              : ctx.successMessage
+          );
+        }),
       });
     } else if (!blocked) {
       actions.push({
         label: 'Move to staging',
         onClick: guarded(ctx, () => {
-          const staged = PackLibrary.stagePlacementIds(
-            recon.nextPack,
-            recon.invalid,
-            ctx.nextTruck,
-            ctx.caseLibrary
-          );
-          if (staged.failedIds.length) {
-            throw new Error(`Could not safely stage ${staged.failedIds.length} item(s). No changes were applied.`);
+          if (preview.failedIds.length) {
+            throw new Error(`Could not safely stage ${preview.failedIds.length} item(s). No changes were applied.`);
           }
-          return commit(ctx, staged.pack, `Truck updated. ${staged.stagedIds.length} item(s) moved to staging.`);
+          return commit(ctx, preview.pack, `Truck updated. ${recon.invalid.length} item(s) moved to staging.`);
         }),
       });
       actions.push({
@@ -313,7 +316,11 @@ export function createTruckChangeController({
         onClick: guarded(ctx, () => {
           const outcome = PackLibrary.repackInvalidPlacements(recon, ctx.nextTruck, ctx.caseLibrary);
           if (!outcome.failedIds.length) {
-            return commit(ctx, outcome.pack, `Truck updated. ${outcome.repackedIds.length} item(s) repacked.`);
+            const finalPlan = buildSafePreview(ctx, outcome.pack, []);
+            if (finalPlan.failedIds.length) {
+              throw new Error(`Could not safely stage ${finalPlan.failedIds.length} item(s). No changes were applied.`);
+            }
+            return commit(ctx, finalPlan.pack, `Truck updated. ${outcome.repackedIds.length} item(s) repacked.`);
           }
           ctx.inFlight = false;
           ctx.suppressRestoreOnce = true;

@@ -545,6 +545,111 @@ export function groupInstancesForUnpackStaging(instances, getCaseById) {
   return groups;
 }
 
+const ORGANIZED_UNPACK_ROTATION = Object.freeze({ x: 0, y: 0, z: 0 });
+
+export function buildOrganizedUnpackStagingCases({
+  instances,
+  stagingLayout,
+  getCaseById,
+  getCanonicalInstanceEffectiveDims,
+}) {
+  const sourceInstances = Array.isArray(instances) ? instances : [];
+  const layout = stagingLayout && typeof stagingLayout === 'object' ? stagingLayout : {};
+  const gap = Number(layout.gap);
+  const truckLength = Number(layout.truckL);
+  const originX = Number(layout.originX);
+  const originZ = Number(layout.originZ);
+  const canBuildLayout = gap > 0 && truckLength > 0 &&
+    Number.isFinite(originX) && Number.isFinite(originZ) &&
+    typeof getCaseById === 'function' &&
+    typeof getCanonicalInstanceEffectiveDims === 'function';
+  if (!canBuildLayout) {
+    return {
+      cases: sourceInstances.map(withoutPackedProfile),
+      movedCount: 0,
+    };
+  }
+
+  const itemById = new Map();
+  for (const inst of sourceInstances) {
+    const caseData = inst ? getCaseById(inst.caseId) : null;
+    if (!inst || !caseData) continue;
+    const stagingSource = {
+      ...inst,
+      transform: {
+        ...(inst.transform || {}),
+        rotation: { ...ORGANIZED_UNPACK_ROTATION },
+      },
+    };
+    const canonical = getCanonicalInstanceEffectiveDims(stagingSource, caseData);
+    if (!canonical || !canonical.ok) continue;
+    itemById.set(inst.id, {
+      inst,
+      caseData,
+      dims: { ...canonical.dims },
+      rotation: { ...canonical.rotation },
+    });
+  }
+
+  const stagingGroups = groupInstancesForUnpackStaging(sourceInstances, getCaseById);
+  stagingGroups.sort((a, b) => {
+    const footprint = group => {
+      const item = group.instances.map(inst => itemById.get(inst.id)).find(Boolean);
+      return item ? item.dims.length * item.dims.width : 0;
+    };
+    return footprint(b) - footprint(a);
+  });
+
+  const stagedById = new Map();
+  const categoryBandGap = gap * 2;
+  let categoryOriginZ = originZ;
+  let movedCount = 0;
+  for (const group of stagingGroups) {
+    const payload = group.instances
+      .map(inst => itemById.get(inst.id))
+      .filter(Boolean)
+      .sort((a, b) =>
+        String((a.caseData && a.caseData.name) || a.inst.caseId)
+          .localeCompare(String((b.caseData && b.caseData.name) || b.inst.caseId)) ||
+        (b.dims.length * b.dims.width - a.dims.length * a.dims.width) ||
+        String(a.inst.id).localeCompare(String(b.inst.id))
+      );
+    if (!payload.length) continue;
+
+    const cellLength = Math.max(...payload.map(item => item.dims.length)) + gap;
+    const cellWidth = Math.max(...payload.map(item => item.dims.width)) + gap;
+    const cols = Math.max(1, Math.floor((truckLength + gap) / Math.max(1, cellLength)));
+    for (let index = 0; index < payload.length; index += 1) {
+      const item = payload[index];
+      const col = index % cols;
+      const row = Math.floor(index / cols);
+      const stagedPosition = {
+        x: originX + item.dims.length / 2 + col * cellLength,
+        y: item.dims.height / 2,
+        z: categoryOriginZ + item.dims.width / 2 + row * cellWidth,
+      };
+      movedCount += 1;
+      stagedById.set(item.inst.id, {
+        ...item.inst,
+        orientedDims: { ...item.dims },
+        transform: {
+          ...(item.inst.transform || {}),
+          position: stagedPosition,
+          rotation: { ...item.rotation },
+        },
+        placement: 'staged',
+      });
+    }
+    const rows = Math.ceil(payload.length / cols);
+    categoryOriginZ += rows * cellWidth + categoryBandGap;
+  }
+
+  return {
+    cases: sourceInstances.map(inst => withoutPackedProfile(stagedById.get(inst.id) || inst)),
+    movedCount,
+  };
+}
+
 export function createCaseScene({
   SceneManager,
   CaseLibrary,
@@ -4508,83 +4613,15 @@ export function createEditorScreen({
         const livePack = PackLibrary.getById(packId);
         if (!livePack) return;
 
-        const stagedById = new Map();
         const stagingLayout = PackLibrary.getStagingLayout(livePack.truck || {});
-        const categoryBandGap = stagingLayout.gap * 2;
-        let categoryOriginZ = stagingLayout.originZ;
-        let movedCount = 0;
-        const stagingGroups = groupInstancesForUnpackStaging(
-          livePack.cases || [],
-          caseId => CaseLibrary.getById(caseId)
-        );
-        // Sort groups: largest-footprint case type first so big cases land in
-        // the nearest staging rows (closest to the truck, easiest to grab).
-        stagingGroups.sort((a, b) => {
-          const groupFootprint = (group) => {
-            const inst = group.instances[0];
-            if (!inst) return 0;
-            const c = CaseLibrary.getById(inst.caseId);
-            const dims = (inst.orientedDims) || (c && c.dimensions) || {};
-            return (Number(dims.length) || 0) * (Number(dims.width) || 0);
-          };
-          return groupFootprint(b) - groupFootprint(a);
+        const organized = buildOrganizedUnpackStagingCases({
+          instances: livePack.cases || [],
+          stagingLayout,
+          getCaseById: caseId => CaseLibrary.getById(caseId),
+          getCanonicalInstanceEffectiveDims: PackLibrary.getCanonicalInstanceEffectiveDims,
         });
-        for (const group of stagingGroups) {
-          const payload = [];
-          for (const inst of group.instances) {
-            const c = CaseLibrary.getById(inst.caseId);
-            // Respect any oriented dimensions produced by AutoPack (prevents overlap when
-            // cases were rotated/flipped while packed). Never fabricate dimensions for an
-            // unresolved (dangling) item — leave it untouched rather than invent a cube.
-            const canonical = c && typeof PackLibrary.getCanonicalInstanceEffectiveDims === 'function'
-              ? PackLibrary.getCanonicalInstanceEffectiveDims(inst, c)
-              : null;
-            const od = inst && inst.orientedDims ? inst.orientedDims : null;
-            const baseDims = canonical && canonical.ok ? canonical.dims : (od || (c && c.dimensions) || null);
-            if (!baseDims) continue;
-            const dims = {
-              length: baseDims.length,
-              width: baseDims.width,
-              height: baseDims.height,
-            };
-            payload.push({ inst, caseData: c, dims });
-          }
-          payload.sort((a, b) =>
-            String((a.caseData && a.caseData.name) || a.inst.caseId)
-              .localeCompare(String((b.caseData && b.caseData.name) || b.inst.caseId)) ||
-            (b.dims.length * b.dims.width - a.dims.length * a.dims.width) ||
-            String(a.inst.id).localeCompare(String(b.inst.id))
-          );
-          if (!payload.length) continue;
-          const cellLength = Math.max(...payload.map(item => item.dims.length)) + stagingLayout.gap;
-          const cellWidth = Math.max(...payload.map(item => item.dims.width)) + stagingLayout.gap;
-          const cols = Math.max(1, Math.floor((stagingLayout.truckL + stagingLayout.gap) / Math.max(1, cellLength)));
-          payload.forEach((item, index) => {
-            const col = index % cols;
-            const row = Math.floor(index / cols);
-            const stagedPosition = {
-              x: stagingLayout.originX + item.dims.length / 2 + col * cellLength,
-              y: item.dims.height / 2,
-              z: categoryOriginZ + item.dims.width / 2 + row * cellWidth,
-            };
-            movedCount += 1;
-            stagedById.set(item.inst.id, {
-              ...item.inst,
-              orientedDims: { ...item.dims },
-              transform: {
-                ...item.inst.transform,
-                position: stagedPosition,
-              },
-              placement: 'staged',
-            });
-          });
-          const rows = Math.ceil(payload.length / cols);
-          categoryOriginZ += rows * cellWidth + categoryBandGap;
-        }
-        const nextCases = (livePack.cases || []).map(inst => stagedById.get(inst.id) || inst);
-        nextCases.forEach((inst, index) => {
-          nextCases[index] = withoutPackedProfile(inst);
-        });
+        const nextCases = organized.cases;
+        const movedCount = organized.movedCount;
         if (OperationLifecycle && !OperationLifecycle.isCurrent(opToken)) return;
         PackLibrary.update(packId, { cases: nextCases });
         UIComponents.showToast(`Moved ${movedCount} case${movedCount === 1 ? '' : 's'} to staging.`, 'info', { title: 'Unpack' });

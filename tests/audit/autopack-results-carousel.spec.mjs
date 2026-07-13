@@ -11,6 +11,7 @@ import fs from 'node:fs/promises';
 
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 const enginePath = new URL('../../src/services/autopack-engine.js', import.meta.url);
+const packLibraryPath = new URL('../../src/services/pack-library.js', import.meta.url);
 const solutionPath = new URL('../../src/packing-core/solution.js', import.meta.url);
 const stylesPath = new URL('../../styles/main.css', import.meta.url);
 
@@ -213,6 +214,235 @@ function makeAuditInstance(id, caseId, x, y, z) {
     orientedDims: { length: 24, width: 24, height: 24 },
   };
 }
+
+function makeAutoPackStagingItem(id, caseData, rotation = { x: 0, y: 0, z: 0 }) {
+  return {
+    inst: {
+      id,
+      caseId: caseData.id,
+      hidden: false,
+      placement: 'packed',
+      packedProfile: 'max-capacity',
+      transform: {
+        position: { x: 20, y: 10, z: 0 },
+        rotation,
+        scale: { x: 1, y: 1, z: 1 },
+      },
+      orientedDims: { length: 999, width: 998, height: 997 },
+    },
+    caseData,
+    orientations: [{
+      l: caseData.dimensions.height,
+      w: caseData.dimensions.length,
+      h: caseData.dimensions.width,
+      rotX: Math.PI / 2,
+      rotY: 0,
+      rotZ: Math.PI / 2,
+    }],
+  };
+}
+
+function autoPackStagedAabb(staged) {
+  const dims = staged.orientedDims;
+  const position = staged.position;
+  return {
+    min: {
+      x: position.x - dims.length / 2,
+      y: position.y - dims.height / 2,
+      z: position.z - dims.width / 2,
+    },
+    max: {
+      x: position.x + dims.length / 2,
+      y: position.y + dims.height / 2,
+      z: position.z + dims.width / 2,
+    },
+  };
+}
+
+function autoPackStagedAabbsOverlap(a, b, tolerance = 1e-9) {
+  return a.min.x < b.max.x - tolerance && a.max.x > b.min.x + tolerance &&
+    a.min.y < b.max.y - tolerance && a.max.y > b.min.y + tolerance &&
+    a.min.z < b.max.z - tolerance && a.max.z > b.min.z + tolerance;
+}
+
+test('AUTOPACK-STAGING identity pose ignores prior and candidate rotations', async () => {
+  const Engine = await import(`${enginePath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = {
+    id: 'staging-case',
+    name: 'Staging Case',
+    dimensions: { length: 30, width: 20, height: 10 },
+    orientationLock: 'onSide',
+    canFlip: true,
+  };
+  const identityPrior = makeAutoPackStagingItem('identity-prior', caseData);
+  const rotatedPrior = makeAutoPackStagingItem(
+    'rotated-prior',
+    caseData,
+    { x: 0, y: Math.PI / 2, z: 0 }
+  );
+
+  for (const item of [identityPrior, rotatedPrior]) {
+    const pose = Engine.buildStagedPose(item);
+    assert.deepEqual(pose.rotation, { x: 0, y: 0, z: 0 },
+      'AutoPack leftovers must use the Organized Unpack identity staging rotation');
+    assert.deepEqual(pose.dims, caseData.dimensions,
+      'staging dimensions must derive from the identity rotation and real case dimensions');
+    assert.notDeepEqual(pose.rotation, {
+      x: item.orientations[0].rotX,
+      y: item.orientations[0].rotY,
+      z: item.orientations[0].rotZ,
+    }, 'the solver/item-prep candidate rotation must not leak into staged rendering');
+  }
+
+  assert.equal(Engine.buildStagedPose({ caseData: null }), null,
+    'unresolved case references must not receive fabricated staging geometry');
+});
+
+test('AUTOPACK-STAGING rows are aligned, grounded, non-overlapping, deterministic, and truck-mode safe', async () => {
+  const [Engine, PackLibrary] = await Promise.all([
+    import(`${enginePath.href}?t=${Date.now()}-${Math.random()}`),
+    import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`),
+  ]);
+  const caseData = {
+    id: 'uniform-staging-case',
+    name: 'Uniform Staging Case',
+    dimensions: { length: 20, width: 10, height: 12 },
+    orientationLock: 'any',
+    canFlip: true,
+  };
+  const items = Array.from({ length: 7 }, (_, index) => makeAutoPackStagingItem(
+    `staged-${String(index).padStart(2, '0')}`,
+    caseData,
+    index % 2 ? { x: 0, y: Math.PI / 2, z: 0 } : { x: 0, y: 0, z: 0 }
+  ));
+  const trucks = [
+    { length: 84, width: 60, height: 60, shapeMode: 'rect' },
+    { length: 84, width: 60, height: 60, shapeMode: 'wheelWells' },
+    { length: 84, width: 60, height: 60, shapeMode: 'frontBonus' },
+  ];
+  const maps = trucks.map(truck => Engine.buildAutoPackStagingMap(
+    items,
+    truck,
+    PackLibrary.findSafeStagingPosition
+  ));
+  const serialize = map => JSON.stringify(Array.from(map.entries()));
+  assert.equal(serialize(maps[1]), serialize(maps[0]),
+    'Wheel Wells must use the same external staged-leftover pose as Standard');
+  assert.equal(serialize(maps[2]), serialize(maps[0]),
+    'Front Overhang must use the same external staged-leftover pose as Standard');
+  const repeated = Engine.buildAutoPackStagingMap(items, trucks[0], PackLibrary.findSafeStagingPosition);
+  assert.equal(serialize(repeated), serialize(maps[0]),
+    'repeating the same AutoPack staging input must produce byte-equivalent poses');
+
+  const staged = [...maps[0].values()];
+  assert.equal(staged.length, 7);
+  assert.equal(staged.every(pose => JSON.stringify(pose.rotation) === JSON.stringify({ x: 0, y: 0, z: 0 })), true,
+    'mixed prior/candidate rotations must stage uniformly');
+  assert.equal(staged.every(pose => JSON.stringify(pose.orientedDims) === JSON.stringify(caseData.dimensions)), true,
+    'every staged footprint must match the identity render pose');
+  assert.equal(staged.every(pose => pose.position.y - pose.orientedDims.height / 2 === 0), true,
+    'every staged case bottom must rest on the staging ground');
+  assert.equal(staged.every(pose => pose.position.z - pose.orientedDims.width / 2 > trucks[0].width / 2), true,
+    'every staged case must remain outside the truck width');
+
+  const rows = new Map();
+  for (const pose of staged) {
+    if (!rows.has(pose.position.z)) rows.set(pose.position.z, []);
+    rows.get(pose.position.z).push(pose.position.x);
+  }
+  assert.deepEqual([...rows.values()].map(xs => xs.sort((a, b) => a - b)), [
+    [10, 42, 74],
+    [10, 42, 74],
+    [10],
+  ], 'staged leftovers must use aligned uniform rows and a same-origin partial row');
+
+  const aabbs = staged.map(autoPackStagedAabb);
+  for (let left = 0; left < aabbs.length; left += 1) {
+    for (let right = left + 1; right < aabbs.length; right += 1) {
+      assert.equal(autoPackStagedAabbsOverlap(aabbs[left], aabbs[right]), false,
+        `staged AABBs ${left} and ${right} must not overlap`);
+    }
+  }
+});
+
+test('AUTOPACK-STAGING Results preview and Apply share poses while packed solver output stays exact', async () => {
+  const [Engine, EditorScreen] = await Promise.all([
+    import(`${enginePath.href}?t=${Date.now()}-${Math.random()}`),
+    import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`),
+  ]);
+  const packedPosition = { x: 80, y: 6, z: 0 };
+  const packedRotation = { x: 0, y: Math.PI / 2, z: 0 };
+  const packedDims = { length: 10, width: 20, height: 12 };
+  const stagedPose = {
+    position: { x: 10, y: 6, z: 42 },
+    rotation: { x: 0, y: 0, z: 0 },
+    orientedDims: { length: 20, width: 10, height: 12 },
+  };
+  const sourceCases = [
+    {
+      id: 'packed', caseId: 'case-a', hidden: false, placement: 'staged',
+      transform: { position: { x: 1, y: 1, z: 1 }, rotation: { x: 0, y: 0, z: 0 } },
+    },
+    {
+      id: 'staged', caseId: 'case-a', hidden: false, placement: 'packed', packedProfile: 'max-capacity',
+      transform: { position: { x: 2, y: 2, z: 2 }, rotation: { x: Math.PI / 2, y: 0, z: 0 } },
+      orientedDims: { length: 12, width: 20, height: 10 },
+    },
+    {
+      id: 'unresolved', caseId: 'missing', hidden: false, placement: 'packed', packedProfile: 'max-capacity',
+      transform: { position: { x: 3, y: 3, z: 3 }, rotation: { x: 0, y: Math.PI / 2, z: 0 } },
+      orientedDims: { length: 99, width: 98, height: 97 },
+    },
+  ];
+  const previewCases = Engine.buildAutoPackNextCases(
+    sourceCases,
+    new Map([['packed', packedPosition]]),
+    new Map([['packed', packedRotation]]),
+    new Map([['packed', packedDims]]),
+    new Map([['staged', stagedPose]])
+  );
+
+  assert.deepEqual(previewCases[0].transform.position, packedPosition,
+    'packed position must remain exact solver output');
+  assert.deepEqual(previewCases[0].transform.rotation, packedRotation,
+    'packed rotation must remain exact solver output');
+  assert.deepEqual(previewCases[0].orientedDims, packedDims,
+    'packed dimensions must remain exact solver output');
+  assert.deepEqual({
+    position: previewCases[1].transform.position,
+    rotation: previewCases[1].transform.rotation,
+    orientedDims: previewCases[1].orientedDims,
+  }, stagedPose, 'the Results staged pose must persist position, rotation, and dimensions atomically');
+
+  const normalApplied = EditorScreen.buildAppliedAutoPackCases(
+    { id: 'default', nextCases: previewCases },
+    value => structuredClone(value)
+  );
+  const maxApplied = EditorScreen.buildAppliedAutoPackCases(
+    { id: 'max-capacity', nextCases: previewCases },
+    value => structuredClone(value)
+  );
+  for (const applied of [normalApplied, maxApplied]) {
+    assert.deepEqual({
+      position: applied[1].transform.position,
+      rotation: applied[1].transform.rotation,
+      orientedDims: applied[1].orientedDims,
+    }, stagedPose, 'Apply must save the exact staged pose shown by Results');
+    assert.equal(Object.hasOwn(applied[1], 'packedProfile'), false,
+      'staged leftovers must never retain a Max Capacity profile');
+  }
+  assert.equal(maxApplied[0].packedProfile, 'max-capacity',
+    'a packed Max Capacity placement must retain the applied profile');
+  assert.equal(Object.hasOwn(normalApplied[0], 'packedProfile'), false,
+    'normal strategy packed placements must remain unmarked');
+
+  assert.deepEqual(previewCases[2].transform, sourceCases[2].transform,
+    'unresolved instances without a staging pose must keep their transform');
+  assert.deepEqual(previewCases[2].orientedDims, sourceCases[2].orientedDims,
+    'unresolved instances must not receive fabricated dimensions');
+  assert.equal(Object.hasOwn(previewCases[2], 'packedProfile'), false,
+    'unresolved staged output must still drop a stale Max Capacity marker');
+});
 
 async function loadAutoPackResultsStateForAudit() {
   const engineSrc = await fs.readFile(enginePath, 'utf8');

@@ -7,26 +7,44 @@ import { canonicalCargoForStorage } from '../core/cargo-canonical.js';
 // A1-R6 source contract pinned — update that spec on the validation branch.)
 import { getPackingStrategy, runAdaptiveAutoPack } from '../packing-core/solution.js';
 import { DEFAULT_SOLVE_BUDGET_MS } from '../packing-core/budget.js';
+import { getOrientedDimsForRotation } from '../core/oriented-dims.js';
 
 // The staged pose MUST be atomic: position, rotation and orientedDims all describe
-// the SAME deterministic valid orientation. The chosen orientation is the first
-// AutoPack orientation candidate (which already honors the instance lock, case
-// orientationLock and canFlip, and whose dims are derived from its rotation via the
-// shared THREE helper). Do NOT read stale orientedDims from a previous AutoPack run
-// (RC-4). Module-scope + exported so the contract is directly testable.
+// the SAME deterministic physical orientation. Staging is outside the truck and
+// uses the same identity-orientation rule as Organized Unpack; cargo orientation
+// policy continues to apply only when the solver places the item inside the truck.
+// Do NOT read solver candidates or stale prior orientedDims for staged leftovers.
 export function buildStagedPose(item) {
-  const ori = item && Array.isArray(item.orientations) ? item.orientations[0] : null;
-  if (ori && Number(ori.l) > 0 && Number(ori.w) > 0 && Number(ori.h) > 0) {
-    return {
-      dims: { length: Number(ori.l), width: Number(ori.w), height: Number(ori.h) },
-      rotation: { x: Number(ori.rotX) || 0, y: Number(ori.rotY) || 0, z: Number(ori.rotZ) || 0 },
-    };
+  const base = item && item.caseData && item.caseData.dimensions;
+  if (!base || !(Number(base.length) > 0) || !(Number(base.width) > 0) || !(Number(base.height) > 0)) {
+    return null;
   }
-  const base = (item && item.caseData && item.caseData.dimensions) || { length: 24, width: 24, height: 24 };
+  const rotation = { x: 0, y: 0, z: 0 };
+  const dims = getOrientedDimsForRotation(base, rotation);
+  if (!(dims.length > 0) || !(dims.width > 0) || !(dims.height > 0)) return null;
   return {
-    dims: { length: base.length, width: base.width, height: base.height },
-    rotation: { x: 0, y: 0, z: 0 },
+    dims: { length: dims.length, width: dims.width, height: dims.height },
+    rotation,
   };
+}
+
+export function buildAutoPackStagingMap(packItems, truck, findSafeStagingPosition) {
+  const acceptedAabbs = [];
+  const map = new Map();
+  if (typeof findSafeStagingPosition !== 'function') return map;
+  for (const item of Array.isArray(packItems) ? packItems : []) {
+    const pose = buildStagedPose(item);
+    if (!pose) continue;
+    const staged = findSafeStagingPosition({ truck }, pose.dims, acceptedAabbs);
+    if (!staged || !staged.position || !staged.aabb) continue;
+    map.set(item.inst.id, {
+      position: staged.position,
+      rotation: pose.rotation,
+      orientedDims: { length: pose.dims.length, width: pose.dims.width, height: pose.dims.height },
+    });
+    acceptedAabbs.push(staged.aabb);
+  }
+  return map;
 }
 
 const ANIMATION_BOUNDARY_EPS = 0.05;
@@ -403,21 +421,17 @@ export function buildAutoPackNextCases(
     };
     delete next.packedProfile;
 
-    const isIdentityRotation =
-      Number(rot && rot.x) === 0 && Number(rot && rot.y) === 0 && Number(rot && rot.z) === 0;
     if (isPacked) {
       if (od) {
         next.orientedDims = od;
       } else {
         delete next.orientedDims;
       }
-    } else if (od && !isIdentityRotation) {
-      // Non-identity staged orientation: keep orientedDims so the rendered
-      // height matches the staging Y.
+    } else if (od) {
+      // Staged items persist the dimensions derived from their deterministic
+      // staging rotation so Results preview, Apply and scene bounds share one pose.
       next.orientedDims = od;
     } else {
-      // Identity staged orientation: base case dims already match, so drop
-      // orientedDims and let applyTransform/normalizer use the base dimensions.
       delete next.orientedDims;
     }
     return next;
@@ -1083,21 +1097,7 @@ export function createAutoPackEngine({
   }
 
   function buildStagingMap(packItems, truck) {
-    const acceptedAabbs = [];
-    const map = new Map();
-    packItems.forEach((item) => {
-      const pose = buildStagedPose(item);
-      const staged = PackLibrary.findSafeStagingPosition({ truck }, pose.dims, acceptedAabbs);
-      // Persist the full pose so the staging position (computed from pose.dims) is
-      // applied together with the rotation/orientedDims that produced it.
-      map.set(item.inst.id, {
-        position: staged.position,
-        rotation: pose.rotation,
-        orientedDims: { length: pose.dims.length, width: pose.dims.width, height: pose.dims.height },
-      });
-      acceptedAabbs.push(staged.aabb);
-    });
-    return map;
+    return buildAutoPackStagingMap(packItems, truck, PackLibrary.findSafeStagingPosition);
   }
 
   async function animatePlacements(

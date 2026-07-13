@@ -575,6 +575,12 @@ function applyCanonicalInstancePose(inst, canonical) {
   return next;
 }
 
+function getDeterministicStagingCanonical(caseData) {
+  return getCanonicalInstanceEffectiveDims({
+    transform: { rotation: { x: 0, y: 0, z: 0 } },
+  }, caseData);
+}
+
 function makeAabb(position, dims) {
   return {
     min: {
@@ -1591,16 +1597,23 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
   };
 }
 
-export function stagePlacementIds(pack, ids, nextTruck, caseLibrary) {
+export function stagePlacementIds(pack, ids, nextTruck, caseLibrary, options = {}) {
   const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
   const targetSet = new Set(ids || []);
   const cases = (pack && pack.cases) || [];
+  const grouped = options.grouped === true;
   const accepted = [];
   for (const inst of cases) {
     if (!inst || targetSet.has(inst.id)) continue;
     const canonical = getCanonicalInstanceEffectiveDims(inst, caseMap.get(inst.caseId));
     const pos = normalizeTransformPosition(inst.transform && inst.transform.position);
-    if (canonical.ok && pos) accepted.push(makeAabb(pos, canonical.dims));
+    if (canonical.ok && pos) {
+      accepted.push(makeAabb(pos, canonical.dims));
+    } else if (grouped && pos && hasPositiveFiniteDims(inst.orientedDims)) {
+      // A preserved unresolved instance can still be a real obstacle when it
+      // carries explicit physical dimensions. Never invent fallback geometry.
+      accepted.push(makeAabb(pos, inst.orientedDims));
+    }
   }
   const targets = cases
     .map((inst, index) => ({ inst, index }))
@@ -1612,17 +1625,89 @@ export function stagePlacementIds(pack, ids, nextTruck, caseLibrary) {
   const stagedIds = [];
   const failedIds = [];
   const warnings = [];
-  for (const { inst } of targets) {
-    const canonical = getCanonicalInstanceEffectiveDims(inst, caseMap.get(inst.caseId));
-    if (!canonical.ok) {
-      failedIds.push(inst.id);
-      warnings.push(`Item ${inst.id} could not be staged: ${canonical.reason}.`);
-      continue;
+  if (grouped) {
+    const layout = getStagingLayout(nextTruck);
+    const groupsByCaseId = new Map();
+    for (const entry of targets) {
+      const canonical = getDeterministicStagingCanonical(caseMap.get(entry.inst.caseId));
+      if (!canonical.ok) {
+        failedIds.push(entry.inst.id);
+        warnings.push(`Item ${entry.inst.id} could not be staged: ${canonical.reason}.`);
+        continue;
+      }
+      const key = String(entry.inst.caseId || '');
+      if (!groupsByCaseId.has(key)) groupsByCaseId.set(key, { key, canonical, entries: [] });
+      groupsByCaseId.get(key).entries.push(entry);
     }
-    const staged = findSafeStagingPosition({ truck: nextTruck }, canonical.dims, accepted);
-    accepted.push(staged.aabb);
-    positioned.set(inst.id, { position: staged.position, canonical });
-    stagedIds.push(inst.id);
+
+    const groups = [...groupsByCaseId.values()].sort((a, b) =>
+      (b.canonical.dims.length * b.canonical.dims.width) -
+        (a.canonical.dims.length * a.canonical.dims.width) ||
+      a.key.localeCompare(b.key)
+    );
+    for (const group of groups) {
+      group.entries.sort((a, b) =>
+        String(a.inst.id || '').localeCompare(String(b.inst.id || '')) || a.index - b.index
+      );
+      const dims = group.canonical.dims;
+      const cellLength = dims.length + layout.gap;
+      const cellWidth = dims.width + layout.gap;
+      const cols = Math.max(1, Math.floor((layout.truckL + layout.gap) / Math.max(1, cellLength)));
+      const rows = Math.ceil(group.entries.length / cols);
+      const usedCols = Math.min(cols, group.entries.length);
+      const bandDims = {
+        length: usedCols * dims.length + Math.max(0, usedCols - 1) * layout.gap,
+        width: rows * dims.width + Math.max(0, rows - 1) * layout.gap,
+        height: dims.height,
+      };
+      // Reserve the whole caseId rectangle as one obstacle. If its nominal band
+      // is blocked, findSafeStagingPosition shifts the complete band instead of
+      // letting individual cases scatter into unrelated holes.
+      const band = findSafeStagingPosition({ truck: nextTruck }, bandDims, accepted);
+      if (!band || !band.aabb || !isAabbInStagingZone({ truck: nextTruck }, band.aabb)) {
+        for (const { inst } of group.entries) {
+          failedIds.push(inst.id);
+          warnings.push(`Item ${inst.id} could not be staged inside the staging work area.`);
+        }
+        continue;
+      }
+      accepted.push({
+        min: { ...band.aabb.min },
+        max: {
+          ...band.aabb.max,
+          x: band.aabb.max.x + layout.gap,
+          z: band.aabb.max.z + layout.gap,
+        },
+      });
+      for (let index = 0; index < group.entries.length; index += 1) {
+        const { inst } = group.entries[index];
+        const col = index % cols;
+        const row = Math.floor(index / cols);
+        const position = {
+          x: band.aabb.min.x + dims.length / 2 + col * cellLength,
+          y: dims.height / 2,
+          z: band.aabb.min.z + dims.width / 2 + row * cellWidth,
+        };
+        positioned.set(inst.id, { position, canonical: group.canonical });
+        stagedIds.push(inst.id);
+      }
+    }
+  } else {
+    for (const { inst } of targets) {
+      // Staging is a visual holding area, not a packed orientation decision. Use
+      // one deterministic identity pose so the placement AABB, rendered footprint,
+      // and stored rotation/dimensions cannot inherit a prior packed orientation.
+      const canonical = getDeterministicStagingCanonical(caseMap.get(inst.caseId));
+      if (!canonical.ok) {
+        failedIds.push(inst.id);
+        warnings.push(`Item ${inst.id} could not be staged: ${canonical.reason}.`);
+        continue;
+      }
+      const staged = findSafeStagingPosition({ truck: nextTruck }, canonical.dims, accepted);
+      accepted.push(staged.aabb);
+      positioned.set(inst.id, { position: staged.position, canonical });
+      stagedIds.push(inst.id);
+    }
   }
 
   const nextCases = cases.map(inst => {

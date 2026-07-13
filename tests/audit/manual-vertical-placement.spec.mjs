@@ -74,6 +74,41 @@ async function loadEditorScreenModule() {
   return import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
 }
 
+async function buildOrganizedUnpackLayout({ cases, instances, truck = RECT_TRUCK }) {
+  const EditorScreen = await loadEditorScreenModule();
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const casesById = new Map(cases.map(caseData => [caseData.id, caseData]));
+  return EditorScreen.buildOrganizedUnpackStagingCases({
+    instances,
+    stagingLayout: PackLibrary.getStagingLayout(truck),
+    getCaseById: caseId => casesById.get(caseId),
+    getCanonicalInstanceEffectiveDims: PackLibrary.getCanonicalInstanceEffectiveDims,
+  });
+}
+
+function stagedAabb(inst) {
+  const dims = inst.orientedDims;
+  const position = inst.transform.position;
+  return {
+    min: {
+      x: position.x - dims.length / 2,
+      y: position.y - dims.height / 2,
+      z: position.z - dims.width / 2,
+    },
+    max: {
+      x: position.x + dims.length / 2,
+      y: position.y + dims.height / 2,
+      z: position.z + dims.width / 2,
+    },
+  };
+}
+
+function aabbsOverlap(a, b, tolerance = 1e-9) {
+  return a.min.x < b.max.x - tolerance && a.max.x > b.min.x + tolerance &&
+    a.min.y < b.max.y - tolerance && a.max.y > b.min.y + tolerance &&
+    a.min.z < b.max.z - tolerance && a.max.z > b.min.z + tolerance;
+}
+
 test('MANUAL-VERTICAL move up performs a stack reorder that ends fully supported', async () => {
   const caseData = makeVerticalCase({ id: 'case-vertical-up' });
   const { PackLibrary, packId } = await setupVerticalPack({
@@ -1581,7 +1616,13 @@ test('MAX-CAPACITY-B manual commits clear only edited profiles while rejected pr
   const unpackStart = src.indexOf('async function unpackAll()');
   const unpackEnd = src.indexOf('\n\n    function renderInspectorNoPack()', unpackStart);
   assert.ok(unpackStart >= 0 && unpackEnd > unpackStart, 'Unpack block must exist');
-  assert.match(src.slice(unpackStart, unpackEnd), /const nextCases = \(livePack\.cases \|\| \[\]\)\.map\(inst => stagedById\.get\(inst\.id\) \|\| inst\);[\s\S]*nextCases\[index\] = withoutPackedProfile\(inst\);/,
+  assert.match(src.slice(unpackStart, unpackEnd), /const nextCases = organized\.cases;/,
+    'Unpack must commit the profile-cleared organized staging result');
+  const organizedStart = src.indexOf('export function buildOrganizedUnpackStagingCases({');
+  const organizedEnd = src.indexOf('\n\nexport function createCaseScene', organizedStart);
+  assert.ok(organizedStart >= 0 && organizedEnd > organizedStart,
+    'the organized staging helper must exist');
+  assert.match(src.slice(organizedStart, organizedEnd), /cases: sourceInstances\.map\(inst => withoutPackedProfile\(stagedById\.get\(inst\.id\) \|\| inst\)\),/,
     'Unpack must remove profiles from every instance, including unresolved items left in place');
 
   const finishStart = src.indexOf('function finishDrag()');
@@ -1591,4 +1632,181 @@ test('MAX-CAPACITY-B manual commits clear only edited profiles while rejected pr
     'rejected drag paths must revert before any persistent profile-clearing candidate is committed');
   assert.match(finishBlock, /withoutPackedProfile\(\{[\s\S]*placement: placementValue/,
     'successful legacy drag/stage commits must clear profiles for moved members');
+});
+
+test('ORGANIZED-UNPACK identical mixed-rotation cases form deterministic aligned rows', async () => {
+  const caseData = makeVerticalCase({
+    id: 'organized-identical',
+    name: 'Organized Identical',
+    dimensions: { length: 20, width: 10, height: 12 },
+  });
+  const rotations = [
+    { x: 0, y: 0, z: 0 },
+    { x: 0, y: Math.PI / 2, z: 0 },
+    { x: Math.PI / 2, y: 0, z: 0 },
+  ];
+  const instances = Array.from({ length: 7 }, (_, index) => makeVerticalInstance(
+    caseData.id,
+    `organized-${String(index).padStart(2, '0')}`,
+    { x: 10 + index, y: 6, z: index },
+    {
+      transform: {
+        position: { x: 10 + index, y: 6, z: index },
+        rotation: rotations[index % rotations.length],
+        scale: { x: 1, y: 1, z: 1 },
+      },
+      orientedDims: index % 2
+        ? { length: 10, width: 20, height: 12 }
+        : { length: 20, width: 10, height: 12 },
+      packedProfile: 'max-capacity',
+    }
+  ));
+
+  const first = await buildOrganizedUnpackLayout({
+    cases: [caseData],
+    instances,
+    truck: { ...RECT_TRUCK, length: 84 },
+  });
+  assert.equal(first.movedCount, 7, 'every resolved instance must move to organized staging');
+  assert.equal(first.cases.every(inst => inst.placement === 'staged'), true,
+    'every resolved case must be staged');
+  assert.equal(first.cases.every(inst => !Object.hasOwn(inst, 'packedProfile')), true,
+    'Unpack must remove every Max Capacity profile marker');
+  assert.equal(first.cases.every(inst => JSON.stringify(inst.transform.rotation) === JSON.stringify({ x: 0, y: 0, z: 0 })), true,
+    'mixed packed rotations must reset to one deterministic staging rotation');
+  assert.equal(first.cases.every(inst => JSON.stringify(inst.orientedDims) === JSON.stringify(caseData.dimensions)), true,
+    'staging dimensions must match the deterministic zero rotation');
+  assert.equal(first.cases.every(inst => inst.transform.position.y === caseData.dimensions.height / 2), true,
+    'every staged case must rest on the staging ground');
+
+  const rows = new Map();
+  for (const inst of first.cases) {
+    const z = inst.transform.position.z;
+    if (!rows.has(z)) rows.set(z, []);
+    rows.get(z).push(inst.transform.position.x);
+  }
+  const rowXs = [...rows.values()].map(values => values.sort((a, b) => a - b));
+  assert.deepEqual(rowXs[0], [10, 42, 74], 'the first row must use one uniform 32-inch column grid');
+  assert.deepEqual(rowXs[1], [10, 42, 74], 'every full row must align to the same X origin and grid');
+  assert.deepEqual(rowXs[2], [10], 'the partial final row must restart at the same X origin');
+
+  const aabbs = first.cases.map(stagedAabb);
+  for (let left = 0; left < aabbs.length; left += 1) {
+    for (let right = left + 1; right < aabbs.length; right += 1) {
+      assert.equal(aabbsOverlap(aabbs[left], aabbs[right]), false,
+        `staged AABBs ${left} and ${right} must not overlap`);
+    }
+  }
+
+  const repeated = await buildOrganizedUnpackLayout({
+    cases: [caseData],
+    instances: first.cases,
+    truck: { ...RECT_TRUCK, length: 84 },
+  });
+  const poses = cases => cases.map(inst => ({
+    id: inst.id,
+    placement: inst.placement,
+    position: inst.transform.position,
+    rotation: inst.transform.rotation,
+    orientedDims: inst.orientedDims,
+  }));
+  assert.equal(JSON.stringify(poses(repeated.cases)), JSON.stringify(poses(first.cases)),
+    'repeated Unpack must produce byte-equivalent staged poses');
+});
+
+test('ORGANIZED-UNPACK case groups stay separated, ordered, and truck-mode invariant', async () => {
+  const largeCase = makeVerticalCase({
+    id: 'organized-large',
+    name: 'Large Group',
+    dimensions: { length: 30, width: 20, height: 16 },
+  });
+  const smallCase = makeVerticalCase({
+    id: 'organized-small',
+    name: 'Small Group',
+    dimensions: { length: 10, width: 8, height: 6 },
+  });
+  const instances = [
+    makeVerticalInstance(smallCase.id, 'small-2', { x: 1, y: 3, z: 1 }),
+    makeVerticalInstance(largeCase.id, 'large-2', { x: 2, y: 8, z: 2 }, {
+      transform: {
+        position: { x: 2, y: 8, z: 2 },
+        rotation: { x: 0, y: Math.PI / 2, z: 0 },
+        scale: { x: 1, y: 1, z: 1 },
+      },
+    }),
+    makeVerticalInstance(smallCase.id, 'small-1', { x: 3, y: 3, z: 3 }),
+    makeVerticalInstance(largeCase.id, 'large-1', { x: 4, y: 8, z: 4 }),
+  ];
+  const cases = [largeCase, smallCase];
+  const trucks = [RECT_TRUCK, WHEEL_WELL_TRUCK, FRONT_OVERHANG_TRUCK];
+  const layouts = [];
+  for (const truck of trucks) {
+    layouts.push(await buildOrganizedUnpackLayout({ cases, instances, truck }));
+  }
+
+  const reference = JSON.stringify(layouts[0].cases.map(inst => ({
+    id: inst.id,
+    position: inst.transform.position,
+    rotation: inst.transform.rotation,
+    dims: inst.orientedDims,
+  })));
+  assert.equal(JSON.stringify(layouts[1].cases.map(inst => ({
+    id: inst.id,
+    position: inst.transform.position,
+    rotation: inst.transform.rotation,
+    dims: inst.orientedDims,
+  }))), reference, 'Wheel Wells must use the same safe organized staging result');
+  assert.equal(JSON.stringify(layouts[2].cases.map(inst => ({
+    id: inst.id,
+    position: inst.transform.position,
+    rotation: inst.transform.rotation,
+    dims: inst.orientedDims,
+  }))), reference, 'Front Overhang must use the same safe organized staging result');
+
+  const staged = layouts[0].cases;
+  const largeZ = staged.filter(inst => inst.caseId === largeCase.id).map(inst => stagedAabb(inst));
+  const smallZ = staged.filter(inst => inst.caseId === smallCase.id).map(inst => stagedAabb(inst));
+  assert.ok(Math.max(...largeZ.map(aabb => aabb.max.z)) < Math.min(...smallZ.map(aabb => aabb.min.z)),
+    'larger-footprint groups must stay closest to the truck with a clear band gap');
+  const aabbs = staged.map(stagedAabb);
+  for (let left = 0; left < aabbs.length; left += 1) {
+    for (let right = left + 1; right < aabbs.length; right += 1) {
+      assert.equal(aabbsOverlap(aabbs[left], aabbs[right]), false,
+        'separate organized groups must not overlap');
+    }
+  }
+});
+
+test('ORGANIZED-UNPACK unresolved references remain untouched without fabricated geometry', async () => {
+  const resolvedCase = makeVerticalCase({
+    id: 'organized-resolved',
+    dimensions: { length: 18, width: 12, height: 10 },
+  });
+  const unresolved = makeVerticalInstance('missing-case', 'unresolved', { x: 77, y: 13, z: -44 }, {
+    transform: {
+      position: { x: 77, y: 13, z: -44 },
+      rotation: { x: 0, y: Math.PI / 2, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+    orientedDims: { length: 99, width: 77, height: 26 },
+    packedProfile: 'max-capacity',
+  });
+  const resolved = makeVerticalInstance(resolvedCase.id, 'resolved', { x: 20, y: 5, z: 0 }, {
+    packedProfile: 'max-capacity',
+  });
+  const result = await buildOrganizedUnpackLayout({
+    cases: [resolvedCase],
+    instances: [unresolved, resolved],
+  });
+
+  assert.equal(result.movedCount, 1, 'only the resolved instance may receive a staged pose');
+  const unresolvedAfter = result.cases.find(inst => inst.id === unresolved.id);
+  assert.deepEqual(unresolvedAfter.transform, unresolved.transform,
+    'an unresolved instance must keep its exact transform');
+  assert.deepEqual(unresolvedAfter.orientedDims, unresolved.orientedDims,
+    'an unresolved instance must not receive fabricated or replacement dimensions');
+  assert.equal(unresolvedAfter.placement, unresolved.placement,
+    'an unresolved instance must keep its safe existing placement classification');
+  assert.equal(Object.hasOwn(unresolvedAfter, 'packedProfile'), false,
+    'Unpack must still remove the Max Capacity marker from unresolved instances');
 });

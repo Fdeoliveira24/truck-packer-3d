@@ -1,16 +1,16 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-07-12 — Max Capacity Phase B durability implementation and browser smoke are complete on `feat/autopack-max-capacity-durability`; closeout commits and main integration are in progress.
+**Last updated:** 2026-07-12 — Max Capacity Phase B durability is validated, fast-forward merged, and pushed to `main` through `3bed048`; `fix/unpack-staging-alignment` is next.
 
 ## CURRENT STATUS SNAPSHOT — 2026-07-12
 
 | Area | Current status |
 |---|---|
-| Stable main | Phase A remains merged and pushed through `6f32a6a`; Phase B is validated and awaiting its closeout commits / fast-forward integration. |
-| Current active branch | `feat/autopack-max-capacity-durability` — implementation complete; browser smoke PASS. |
-| Current uncommitted work | Phase B implementation/tests plus this closeout documentation update. |
+| Stable main | Max Capacity Phase B is fast-forward merged and pushed through integration tip `3bed048`. |
+| Current active branch | `main` during final evidence recording; create `fix/unpack-staging-alignment` next. |
+| Current uncommitted work | Final Phase B merge-evidence correction only. |
 | Completed phase | **Max Capacity Phase B — durable per-instance profile.** Applied Max Capacity layouts persist `packedProfile: "max-capacity"` per packed instance, without a pack-wide relaxed mode. |
-| Waiting for | Closeout commits, fast-forward merge, push, and final SHA evidence only. |
-| Do not run now | Do not start Phase C or any quality-audit branch until Phase B is committed, merged, pushed, and the next branch is created. |
+| Waiting for | Final merge-evidence commit/push and creation of the next empty branch only. |
+| Do not run now | Do not implement Phase C or the next quality branch during this closeout. |
 
 ### Current integration gate — 2026-07-12
 
@@ -22,6 +22,8 @@
 6. ✅ Fast-forward merged and pushed Phase A; `main` and `origin/main` matched at `6f32a6a` after the Phase A push.
 7. ✅ Phase B browser smoke PASS: Apply Max Capacity, reload, delete unrelated cargo, delete a real support, manual move/rotate, Unpack, and Truck Change; the old mass-collapse behavior did not recur.
 8. ✅ Final Phase B validation: full suite `873` passed, `5` skipped, `0` failed (`878` total); typecheck and syntax checks passed; lint reported `0` errors; `git diff --check` passed.
+9. ✅ Phase B implementation/tests committed at `37c4755`; evidence documentation committed at `3bed048`.
+10. ✅ Phase B fast-forward merged with no rebase or conflicts and pushed to `main` / `origin/main` at integration tip `3bed048`.
 
 ### Current completed integration evidence — 2026-07-12
 
@@ -38,6 +40,7 @@
 - ✅ Automated closeout evidence: Results `23/23`; full suite `854` passed, `5` skipped, `0` failed; typecheck passed; lint passed with existing warnings only; syntax checks and `git diff --check` passed.
 - ✅ Signed-in browser evidence: Balanced opened visually as Option 1 and packed `236`; Max Capacity packed `297`, generated successfully, and applied successfully; a persistent manual change correctly marked Results Outdated.
 - ✅ The confirmed Phase A durability limitation is fixed in Phase B: unrelated physically valid marked placements survive canonical revalidation; only physical dependents repair or stage.
+- ✅ Phase B implementation/tests `37c4755`; evidence documentation and pre-correction main integration tip `3bed048`.
 
 ---
 
@@ -46,17 +49,17 @@
 | Field | Value |
 |-------|-------|
 | Phase A integration commit | `6f32a6a` (`docs(product): refresh project tree and max capacity status`), with implementation/tests at `80919f8`. |
-| Current active branch | `feat/autopack-max-capacity-durability` |
-| Active implementation | Phase B implementation complete; closeout/integration only. |
-| Current allowed dirty files | Eight approved implementation/test files plus this TODO during closeout. |
+| Current active branch | `main` during final evidence recording; `fix/unpack-staging-alignment` is next. |
+| Active implementation | Phase B complete, merged, and pushed; no Phase C or quality-branch implementation started. |
+| Current allowed dirty files | This TODO only for the final merge-evidence correction. |
 | Active blocker | None in Phase B behavior. Pack JSON / pack-batch missing-or-stale `orientedDims` import repair is fixed and covered. |
 | Next planned phase | After Phase B integration, create `fix/unpack-staging-alignment`; do not implement it during this closeout. |
-| Waiting for | Phase B commits, fast-forward merge, push, and final SHA correction. |
+| Waiting for | Final evidence commit/push and creation of the next clean branch. |
 | Do not start simultaneously | Phase C remains not started. Keep the four quality follow-ups isolated on their proposed branches. |
 
 *Update this block after each commit/merge. Do not hardcode the same status in multiple conflicting places.*
 
-> **Current source-of-truth note (2026-07-12):** Max Capacity Phase B implementation and signed-in browser smoke are complete on `feat/autopack-max-capacity-durability`. The implementation, documentation, and final main integration SHAs will be recorded after the closeout commits and fast-forward merge; do not predict them.
+> **Current source-of-truth note (2026-07-12):** Max Capacity Phase B is complete, fast-forward merged, and pushed. Implementation/tests are at `37c4755`; evidence documentation and the pre-correction main integration tip are at `3bed048`. Phase C remains not started.
 
 ## Active Debug Queue — AutoPack / Results / Editor Regressions
 
@@ -81,7 +84,7 @@
 - ✅ Pack JSON and pack-batch import derive marked preliminary geometry from the actual canonical rotation, replacing missing or stale `orientedDims`; genuinely out-of-bounds cargo still stages and loses the marker.
 - ✅ Browser smoke PASS: Apply Max Capacity, reload, delete unrelated cargo, delete a true support, manual move/rotate, Unpack, and Truck Change; no old mass-collapse behavior.
 - ✅ Final validation: `878` tests total; `873` passed, `5` skipped, `0` failed; typecheck/syntax/diff checks passed; lint `0` errors.
-- 🔄 Closeout evidence pending: implementation commit, documentation commit, and final main integration SHA will be recorded after they exist.
+- ✅ Closeout evidence: implementation/tests `37c4755`; evidence documentation and pre-correction main integration tip `3bed048`; no rebase or merge conflict was required.
 
 ### C. Max Capacity Phase C — reporting note, not started
 - ⬜ Add a small Stats/PDF note only after Phase B is stable: `Max Capacity: handling rules relaxed for N cases.`
@@ -369,7 +372,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 6. ✅ **AutoPack Solution Portfolio Phase 2** — merged and pushed to `main` at `819de80`; Floor first (no stacking) is the third safe option after Balanced and Compact fill.
 7. ✅ **AutoPack Solution Portfolio Phase 3 / stabilization** — merged to `main` at `e83839b`; Stack priority is now an intentional portfolio option, Constrained space first is Wheel-Wells-gated, duplicate recovery runs are prevented, and Results clarity/dedupe fixes are included.
 8. ✅ **Max Capacity Phase A** — fast-forward merged and pushed through `6f32a6a`; implementation/tests `80919f8`, documentation `6f32a6a`. Selected-option dedupe ownership, Option-1 starting view, validation, and browser evidence are complete.
-9. ✅ **Max Capacity Phase B** — implementation/browser validation complete on `feat/autopack-max-capacity-durability`; durable per-instance profile, canonical repair, import geometry, delete/manual/Unpack/Truck Change behavior, and persistence coverage are complete. Closeout SHAs are recorded in the current status block after integration.
+9. ✅ **Max Capacity Phase B** — implementation/tests `37c4755`, evidence documentation and pre-correction main integration tip `3bed048`; durable per-instance profile, canonical repair, import geometry, delete/manual/Unpack/Truck Change behavior, persistence coverage, validation, browser smoke, merge, and push are complete.
 10. ⬜ **Undo/history reset branch** — future `fix/undo-history-reset`; reset history after workspace/load hydration and prevent cross-pack Undo confusion.
 11. ⬜ **Delete/repair UX cleanup** — future narrow branch for delete toast accuracy and delete guard consistency.
 12. ⬜ **Unpack/Truck Change stale Results cleanup** — future narrow branch to close stale Results and clear selection after Unpack.
@@ -464,6 +467,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 - ✅ **Phase B durability complete:** durable per-instance `packedProfile: "max-capacity"` preserves unrelated physically valid marked placements; only physical dependents repair or stage, without a pack-wide mode or broad delete rewrite.
 - ✅ **Phase B Pack import repair:** missing/stale `orientedDims` for marked canonical rotations are replaced from actual rotation geometry before preliminary Pack JSON / pack-batch validation.
 - ✅ **Phase B evidence:** browser smoke PASS; full suite `873` passed, `5` skipped, `0` failed (`878` total); typecheck/syntax/diff checks passed; lint `0` errors.
+- ✅ **Phase B integration:** implementation/tests `37c4755`; evidence documentation and pre-correction main integration tip `3bed048`; fast-forward merged and pushed without rebase or conflicts.
 - ⬜ **Phase C future:** add small Stats/PDF note after durability is stable; no legal/DOT/axle claims.
 
 ### Future portfolio notes
@@ -569,7 +573,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 ## Near-Term Execution Queue
 *Approved order. Do not combine items. Do not skip steps.*
 
-*Current 2026-07-12 execution note:* Max Capacity Phase B implementation and browser smoke are complete on `feat/autopack-max-capacity-durability`. Durable per-instance profile handling, canonical revalidation, and Pack JSON / pack-batch rotation-derived geometry repair are validated. Closeout SHAs are recorded in the live status block after integration; Phase C remains not started.
+*Current 2026-07-12 execution note:* Max Capacity Phase B is complete, validated, fast-forward merged, and pushed. Implementation/tests are at `37c4755`; evidence documentation and the pre-correction main integration tip are at `3bed048`. Create `fix/unpack-staging-alignment` next without implementing it; Phase C remains not started.
 
 *Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified; 3B geometry epsilon unification merged (`33b362a`); 5A stacking-safety audit + runtime tests merged (`0aa58c3`); 3B/5A in-browser logic verification recorded (`819d3de`).*
 

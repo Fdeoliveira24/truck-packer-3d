@@ -158,23 +158,48 @@ function getSignatureCaseFields(inst) {
   };
 }
 
-export function buildAutoPackResultSignature(pack) {
+function getStrictSignatureCaseFields(inst) {
+  const fields = getSignatureCaseFields(inst);
+  if (fields.placement === 'staged') {
+    delete fields.position;
+    delete fields.rotation;
+    delete fields.orientedDims;
+    return fields;
+  }
+  if (fields.placement === 'packed') {
+    fields.packedProfile = normalizeSignatureValue(inst && inst.packedProfile != null
+      ? inst.packedProfile
+      : null);
+  }
+  return fields;
+}
+
+export function buildAutoPackResultSignature(pack, packedProfileOverride) {
   const truck = normalizeSignatureValue((pack && pack.truck) || {});
   const cases = (Array.isArray(pack && pack.cases) ? pack.cases : [])
-    .map(inst => ({ id: inst && inst.id ? String(inst.id) : '', ...getSignatureCaseFields(inst) }))
+    .map(inst => {
+      const signatureInstance = inst && inst.placement === 'packed' && packedProfileOverride !== undefined
+        ? { ...inst, packedProfile: packedProfileOverride }
+        : inst;
+      return {
+        id: inst && inst.id ? String(inst.id) : '',
+        ...getStrictSignatureCaseFields(signatureInstance),
+      };
+    })
     .sort((a, b) => a.id.localeCompare(b.id));
   return stableSignature({ truck, cases });
 }
 
 /**
- * Dedupe-only layout signature: same fields as buildAutoPackResultSignature
- * except the raw instance id is never included or sorted on. Two solutions that
- * place the same physical set of {caseId, placement, position, rotation,
- * orientedDims, rules} — just assigned to a different permutation of
- * interchangeable instance ids — hash identically here, so the portfolio dedupe
- * (buildAutoPackResultsState) can collapse them into one option. Staleness
- * detection (isAutoPackResultsStale in editor-screen.js) must keep using the
- * strict, id-aware buildAutoPackResultSignature so a real edit is never missed.
+ * Dedupe-only layout signature: keeps the full physical pose for every instance,
+ * but never includes or sorts on the raw instance id. Two solutions that place
+ * the same physical set of {caseId, placement, position, rotation, orientedDims,
+ * rules} — just assigned to a different permutation of interchangeable instance
+ * ids — hash identically here, so the portfolio dedupe (buildAutoPackResultsState)
+ * can collapse them into one option. Staleness detection
+ * (isAutoPackResultsStale in editor-screen.js) uses the strict, id-aware
+ * buildAutoPackResultSignature, whose staged cases intentionally omit pose-only
+ * fields while preserving membership, identity, hidden state, and cargo rules.
  */
 export function buildAutoPackLayoutSignature(pack) {
   const truck = normalizeSignatureValue((pack && pack.truck) || {});
@@ -531,7 +556,7 @@ export function createAutoPackEngine({
       status: complete ? 'complete' : 'partial',
       statusLabel: complete ? 'Complete' : 'Partial',
       partialCauses,
-      signature: buildAutoPackResultSignature(optionPack),
+      signature: buildAutoPackResultSignature(optionPack, id === 'max-capacity' ? 'max-capacity' : null),
       layoutSignature: buildAutoPackLayoutSignature(optionPack),
       nextCases: cloneForAutoPackResults(nextCases),
     };

@@ -215,6 +215,206 @@ function makeAuditInstance(id, caseId, x, y, z) {
   };
 }
 
+function makeStalenessAuditPack() {
+  const packed = makeAuditInstance('packed-1', 'case-A', 30, 12, 0);
+  packed.packedProfile = 'max-capacity';
+  const staged = makeAuditInstance('staged-1', 'case-B', 20, 12, 80);
+  staged.placement = 'staged';
+  staged.packedProfile = 'max-capacity';
+  return {
+    id: 'staleness-pack',
+    truck: { length: 240, width: 96, height: 96, shapeMode: 'rect' },
+    cases: [packed, staged],
+  };
+}
+
+test('AUTOPACK-STALE staged position, rotation, dimensions, and profile metadata do not change the strict signature', async () => {
+  const Engine = await import(enginePath.href);
+  const pack = makeStalenessAuditPack();
+  const baseline = Engine.buildAutoPackResultSignature(pack);
+  const stagedOnlyPack = { ...pack, cases: [structuredClone(pack.cases[1])] };
+  const stagedFields = JSON.parse(Engine.buildAutoPackResultSignature(stagedOnlyPack)).cases[0];
+
+  assert.equal(stagedFields.id, 'staged-1');
+  assert.equal(stagedFields.caseId, 'case-B');
+  assert.equal(stagedFields.placement, 'staged');
+  assert.equal(stagedFields.hidden, false);
+  assert.equal('position' in stagedFields, false, 'staged position must be excluded');
+  assert.equal('rotation' in stagedFields, false, 'staged rotation must be excluded');
+  assert.equal('orientedDims' in stagedFields, false, 'staged dimensions must be excluded');
+  assert.equal('packedProfile' in stagedFields, false, 'staged profile metadata must be excluded');
+
+  const mutations = [
+    ['position', next => { next.cases[1].transform.position.x += 37; }],
+    ['rotation', next => { next.cases[1].transform.rotation.y = Math.PI / 2; }],
+    ['orientedDims', next => { next.cases[1].orientedDims = { length: 10, width: 24, height: 24 }; }],
+    ['packedProfile', next => { delete next.cases[1].packedProfile; }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const next = structuredClone(pack);
+    mutate(next);
+    assert.equal(Engine.buildAutoPackResultSignature(next), baseline,
+      `staged ${label}-only changes must keep Results current`);
+  }
+
+  const movedStaged = structuredClone(pack);
+  movedStaged.cases[1].transform.position.x += 37;
+  assert.notEqual(Engine.buildAutoPackLayoutSignature(movedStaged), Engine.buildAutoPackLayoutSignature(pack),
+    'the separate physical-layout dedupe signature must retain its existing staged-pose behavior');
+});
+
+test('AUTOPACK-STALE packed pose and packed Max Capacity profile remain protected', async () => {
+  const Engine = await import(enginePath.href);
+  const pack = makeStalenessAuditPack();
+  const baseline = Engine.buildAutoPackResultSignature(pack);
+  const packedFields = JSON.parse(baseline).cases.find(inst => inst.id === 'packed-1');
+
+  assert.deepEqual(packedFields.position, { x: 30, y: 12, z: 0 });
+  assert.deepEqual(packedFields.rotation, { x: 0, y: 0, z: 0 });
+  assert.deepEqual(packedFields.orientedDims, { length: 24, width: 24, height: 24 });
+  assert.equal(packedFields.packedProfile, 'max-capacity');
+
+  const mutations = [
+    ['position', next => { next.cases[0].transform.position.x += 1; }],
+    ['rotation', next => { next.cases[0].transform.rotation.y = Math.PI / 2; }],
+    ['orientedDims', next => { next.cases[0].orientedDims.length += 1; }],
+    ['packedProfile', next => { delete next.cases[0].packedProfile; }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const next = structuredClone(pack);
+    mutate(next);
+    assert.notEqual(Engine.buildAutoPackResultSignature(next), baseline,
+      `packed ${label} changes must invalidate Results`);
+  }
+
+  const optionPack = makeStalenessAuditPack();
+  delete optionPack.cases[0].packedProfile;
+  const appliedMax = structuredClone(optionPack);
+  appliedMax.cases[0].packedProfile = 'max-capacity';
+  delete appliedMax.cases[1].packedProfile;
+  assert.equal(
+    Engine.buildAutoPackResultSignature(optionPack, 'max-capacity'),
+    Engine.buildAutoPackResultSignature(appliedMax),
+    'a Max Capacity option signature must match its durable applied packed profile'
+  );
+
+  const engineSrc = await fs.readFile(enginePath, 'utf8');
+  const optionBlock = sliceFn(engineSrc, 'function buildAutoPackResultOption(', '\n  function buildAutoPackResultsState');
+  assert.match(optionBlock,
+    /signature: buildAutoPackResultSignature\(optionPack, id === 'max-capacity' \? 'max-capacity' : null\),/,
+    'option signatures must project the same packed profile that Apply persists');
+});
+
+test('AUTOPACK-STALE membership, quantity, identity, and hidden-state changes still invalidate', async () => {
+  const Engine = await import(enginePath.href);
+  const pack = makeStalenessAuditPack();
+  const baseline = Engine.buildAutoPackResultSignature(pack);
+  const mutations = [
+    ['staged to packed', next => { next.cases[1].placement = 'packed'; }],
+    ['packed to staged', next => { next.cases[0].placement = 'staged'; }],
+    ['added instance', next => { next.cases.push(makeAuditInstance('added-1', 'case-A', 70, 12, 0)); }],
+    ['deleted instance', next => { next.cases.splice(1, 1); }],
+    ['duplicated instance', next => {
+      const duplicate = structuredClone(next.cases[0]);
+      duplicate.id = 'packed-copy';
+      next.cases.push(duplicate);
+    }],
+    ['hidden state', next => { next.cases[1].hidden = true; }],
+    ['case identity', next => { next.cases[1].caseId = 'case-C'; }],
+  ];
+
+  for (const [label, mutate] of mutations) {
+    const next = structuredClone(pack);
+    mutate(next);
+    assert.notEqual(Engine.buildAutoPackResultSignature(next), baseline,
+      `${label} must invalidate Results`);
+  }
+});
+
+test('AUTOPACK-STALE truck, case definitions, and instance handling rules remain protected', async () => {
+  const Engine = await import(enginePath.href);
+  const pack = makeStalenessAuditPack();
+  const changedTruck = structuredClone(pack);
+  changedTruck.truck.length += 1;
+  assert.notEqual(Engine.buildAutoPackResultSignature(changedTruck), Engine.buildAutoPackResultSignature(pack),
+    'truck geometry changes must invalidate Results');
+
+  const changedInstanceRule = structuredClone(pack);
+  changedInstanceRule.cases[1].orientationLock = 'upright';
+  assert.notEqual(Engine.buildAutoPackResultSignature(changedInstanceRule), Engine.buildAutoPackResultSignature(pack),
+    'instance handling rules remain protected even when the instance is staged');
+
+  const caseData = {
+    id: 'case-A',
+    dimensions: { length: 24, width: 24, height: 24 },
+    weight: 10,
+    orientationLock: 'any',
+    maxStackCount: 3,
+  };
+  const caseRuleSignature = overrides => Engine.buildAutoPackCaseRuleSignature(
+    { cases: [makeAuditInstance('case-rule-inst', 'case-A', 10, 12, 0)] },
+    () => ({ ...caseData, ...overrides })
+  );
+  const baselineRules = caseRuleSignature({});
+  assert.notEqual(caseRuleSignature({ dimensions: { length: 25, width: 24, height: 24 } }), baselineRules,
+    'case dimension changes must invalidate Results');
+  assert.notEqual(caseRuleSignature({ weight: 11 }), baselineRules,
+    'case weight changes must invalidate Results');
+  assert.notEqual(caseRuleSignature({ maxStackCount: 2 }), baselineRules,
+    'case handling-rule changes must invalidate Results');
+});
+
+test('AUTOPACK-STALE production stale comparison stays current after staged-only movement', async () => {
+  const [Engine, editorSrc] = await Promise.all([
+    import(enginePath.href),
+    fs.readFile(editorScreenPath, 'utf8'),
+  ]);
+  const staleBlock = sliceFn(
+    editorSrc,
+    'function isAutoPackResultsStale(pack, results)',
+    '\n\n    function getCurrentAutoPackOption'
+  );
+  const casesById = new Map([
+    ['case-A', { id: 'case-A', dimensions: { length: 24, width: 24, height: 24 }, weight: 10 }],
+    ['case-B', { id: 'case-B', dimensions: { length: 24, width: 24, height: 24 }, weight: 10 }],
+  ]);
+  const isStale = new Function(
+    'getEffectiveTruck',
+    'buildAutoPackResultSignature',
+    'buildAutoPackCaseRuleSignature',
+    'CaseLibrary',
+    `return (${staleBlock});`
+  )(
+    pack => pack.truck,
+    Engine.buildAutoPackResultSignature,
+    Engine.buildAutoPackCaseRuleSignature,
+    { getById: id => casesById.get(id) || null }
+  );
+  const pack = makeStalenessAuditPack();
+  const results = {
+    packId: pack.id,
+    currentSignature: Engine.buildAutoPackResultSignature(pack),
+    caseRuleSignature: Engine.buildAutoPackCaseRuleSignature(pack, id => casesById.get(id) || null),
+  };
+
+  const movedStaged = structuredClone(pack);
+  movedStaged.cases[1].transform.position.x += 40;
+  movedStaged.cases[1].transform.rotation.y = Math.PI / 2;
+  movedStaged.cases[1].orientedDims = { length: 24, width: 12, height: 24 };
+  assert.equal(isStale(movedStaged, results), false,
+    'the production comparison must not show Outdated after staged-only pose edits');
+
+  const movedPacked = structuredClone(pack);
+  movedPacked.cases[0].transform.position.x += 1;
+  assert.equal(isStale(movedPacked, results), true,
+    'the production comparison must still show Outdated after a packed edit');
+
+  const stagedIntoTruck = structuredClone(pack);
+  stagedIntoTruck.cases[1].placement = 'packed';
+  assert.equal(isStale(stagedIntoTruck, results), true,
+    'the production comparison must show Outdated after staged-to-packed membership changes');
+});
+
 function makeAutoPackStagingItem(id, caseData, rotation = { x: 0, y: 0, z: 0 }) {
   return {
     inst: {
@@ -516,8 +716,8 @@ test('AUTOPACK-CAROUSEL portfolio dedupe keys on the layout signature, not the s
   const optionEnd = engineSrc.indexOf('\n  function buildAutoPackResultsState', optionStart);
   assert.ok(optionStart >= 0 && optionEnd > optionStart, 'buildAutoPackResultOption must exist');
   const optionBlock = engineSrc.slice(optionStart, optionEnd);
-  assert.match(optionBlock, /signature: buildAutoPackResultSignature\(optionPack\),/,
-    'each option must still carry the strict, id-aware signature');
+  assert.match(optionBlock, /signature: buildAutoPackResultSignature\(optionPack,/,
+    'each option must still carry the strict, id-aware, apply-profile-aware signature');
   assert.match(optionBlock, /layoutSignature: buildAutoPackLayoutSignature\(optionPack\),/,
     'each option must also carry the dedupe-only layout signature');
 

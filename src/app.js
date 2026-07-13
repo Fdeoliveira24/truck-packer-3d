@@ -418,6 +418,14 @@ function _applySharedBillingSnapshot(orgId, state, reason = 'cross-tab-shared') 
   _billingState.plan = state.plan || null;
   _billingState.status = state.status || null;
   applyBillingEntitlementFields(state, state.ok ? null : 'billing_unavailable');
+  // F1 (BUG-01 follow-up): canManageBilling is user-specific authority — the
+  // requesting user's role — not an organization-scoped fact. A snapshot
+  // written by another user (same-org A → B switch) or another tab must never
+  // grant it. Leave it unresolved so current-role resolution
+  // (resolveCanManageBillingForOrg / role fallbacks in Settings and
+  // getProRuleSet) derives it for the signed-in user; only a direct
+  // /billing-status fetch applies the server's per-user answer.
+  _billingState.canManageBilling = null;
   _billingState.orgId = state.orgId || orgId;
   _billingState.isPro = Boolean(state.isPro);
   _billingState.isActive = Boolean(state.isActive);

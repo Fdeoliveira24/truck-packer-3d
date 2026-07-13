@@ -20481,3 +20481,105 @@ test('BUG-07-B synthetic: the hide contract leaves no stale child markup', () =>
   assert.strictEqual(upgradeEl.innerHTML, '', 'stale prior-identity markup removed at the source');
   assert.strictEqual(upgradeWrap.hidden, true, 'card hidden');
 });
+
+// ─── F1: shared billing snapshots must stay user-neutral ─────────────────────
+// Organization-scoped entitlement facts may be shared across tabs/users of the
+// same org. User-specific billing-management authority (canManageBilling — the
+// REQUESTING user's role) must never be inherited from a snapshot another user
+// produced; it must resolve from the current user's role or a direct
+// /billing-status response.
+
+test('F1-A _applySharedBillingSnapshot never applies user-specific canManageBilling from a shared snapshot', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  const fnStart = src.indexOf('function _applySharedBillingSnapshot(');
+  assert.ok(fnStart >= 0, '_applySharedBillingSnapshot found');
+  let depth = 0, fnEnd = -1;
+  for (let i = fnStart; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') { depth--; if (depth === 0) { fnEnd = i + 1; break; } }
+  }
+  const fn = src.slice(fnStart, fnEnd);
+
+  const applyIdx = fn.indexOf('applyBillingEntitlementFields(state');
+  const neutralIdx = fn.indexOf('_billingState.canManageBilling = null');
+  assert.ok(applyIdx > 0, 'org-scoped entitlement fields still applied from the shared snapshot');
+  assert.ok(neutralIdx > applyIdx, 'canManageBilling reset to null AFTER entitlement fields are applied');
+
+  // The direct-fetch path (server truth for the CURRENT user JWT) must keep
+  // applying the per-user backend value — exactly two entitlement-apply call
+  // sites exist: the shared-snapshot applier (neutralized) and the fetch
+  // result path (authoritative).
+  const callSites = src.split('applyBillingEntitlementFields(').length - 1 - 1; // minus the definition
+  assert.strictEqual(callSites, 2, 'entitlement applier used only by shared applier + direct fetch path');
+});
+
+test('F1-B synthetic: owner-written snapshot cannot grant member owner UI; role resolves per current user', () => {
+  // Emulates _applySharedBillingSnapshot plus the sidebar/settings precedence:
+  // a backend boolean wins only when present; otherwise the CURRENT user's
+  // role decides.
+  const sharedSnapshotFromOwnerA = {
+    ok: true,
+    orgId: 'c2345678-0000-0000-0000-000000000002',
+    entitlementStatus: 'active',
+    workspaceCount: 2,
+    workspaceLimit: 3,
+    canManageBilling: true, // written while User A (owner) was signed in
+  };
+
+  const applyShared = (snapshot) => {
+    const state = {
+      entitlementStatus: snapshot.entitlementStatus || null,
+      workspaceCount: snapshot.workspaceCount != null ? snapshot.workspaceCount : null,
+      workspaceLimit: snapshot.workspaceLimit != null ? snapshot.workspaceLimit : null,
+      canManageBilling: typeof snapshot.canManageBilling === 'boolean' ? snapshot.canManageBilling : null,
+    };
+    state.canManageBilling = null; // F1: user-neutral shared apply
+    return state;
+  };
+
+  const resolveForUser = (state, currentUserRole) =>
+    typeof state.canManageBilling === 'boolean' ? state.canManageBilling : currentUserRole === 'owner';
+
+  const applied = applyShared(sharedSnapshotFromOwnerA);
+  assert.strictEqual(applied.entitlementStatus, 'active', 'org-scoped entitlement still shared');
+  assert.strictEqual(applied.workspaceCount, 2, 'org-scoped workspace count still shared');
+  assert.strictEqual(applied.canManageBilling, null, 'user-specific authority never inherited from the snapshot');
+
+  assert.strictEqual(resolveForUser(applied, 'member'), false, "member User B gets no owner billing UI from A's snapshot");
+  assert.strictEqual(resolveForUser(applied, 'owner'), true, 'owner User B still resolves owner controls via current role');
+});
+
+test('F1-C role fallbacks that replace the snapshot boolean exist in sidebar and Settings paths', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  // Sidebar: backend value only when boolean; otherwise current-role
+  // resolution; forced false while role hydration is in flight.
+  assert.match(src, /_backendCanManageBilling = s && typeof s\.canManageBilling === 'boolean' \? s\.canManageBilling : null/,
+    'sidebar reads the backend boolean only when present');
+  assert.match(src, /_backendCanManageBilling !== null \? _backendCanManageBilling : _roleResult\.canManageBilling/,
+    'sidebar falls back to current-user role resolution when the snapshot is user-neutral');
+
+  const settingsUrl = new URL('../../src/ui/overlays/settings-overlay.js', import.meta.url);
+  const settingsSrc = await fs.readFile(settingsUrl, 'utf8');
+  assert.match(settingsSrc, /typeof state\.canManageBilling === 'boolean' \? state\.canManageBilling : billingRole === 'owner'/,
+    'Settings Billing falls back to the current user role when canManageBilling is unresolved');
+});
+
+test('F1-D server-backed portal/checkout stay org-resolved and carry no client authority flag', async () => {
+  const svcSrc = await fs.readFile(billingServiceUrl, 'utf8');
+
+  assert.ok(!svcSrc.includes('canManageBilling'), 'billing service sends no client-side authority flag — owner checks stay server-side');
+
+  const portalIdx = svcSrc.indexOf('export async function createPortalSession()');
+  assert.ok(portalIdx >= 0, 'createPortalSession found');
+  const portalFn = svcSrc.slice(portalIdx, portalIdx + 900);
+  assert.match(portalFn, /resolveActiveOrganizationId\(\)/, 'portal resolves the current org context');
+  assert.match(portalFn, /if \(!organizationId\)/, 'portal fails closed without a resolved org');
+
+  const checkoutIdx = svcSrc.indexOf('export async function createCheckoutSession(');
+  assert.ok(checkoutIdx >= 0, 'createCheckoutSession found');
+  const checkoutFn = svcSrc.slice(checkoutIdx, checkoutIdx + 900);
+  assert.match(checkoutFn, /resolveActiveOrganizationId\(\)/, 'checkout resolves the current org context');
+  assert.match(checkoutFn, /if \(!orgId\)/, 'checkout fails closed without a resolved org');
+});

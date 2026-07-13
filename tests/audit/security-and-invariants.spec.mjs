@@ -9088,6 +9088,64 @@ const RECON_RECT = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
 const RECON_WW = { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' };
 const reconFB = (bonusHeight = 43.2, bonusLength = 48) => ({ length: 240, width: 96, height: 96, shapeMode: 'frontBonus', shapeConfig: { bonusLength, bonusHeight } });
 
+function buildLargeReconStagingRows(count, truck, caseData, options = {}) {
+  const dims = caseData.dimensions;
+  const gap = 12;
+  const originZ = Number(truck.width) / 2 + gap;
+  const cols = Math.max(1, Math.floor((Number(truck.length) + gap) / (dims.length + gap)));
+  const verticalOffset = Number(options.verticalOffset) || 0;
+  const prefix = options.prefix || 'large-stage';
+  return Array.from({ length: count }, (_, index) => {
+    const col = index % cols;
+    const row = Math.floor(index / cols);
+    const id = `${prefix}-${String(index).padStart(4, '0')}`;
+    return {
+      id,
+      caseId: caseData.id,
+      placement: 'staged',
+      hidden: false,
+      orientedDims: { ...dims },
+      transform: {
+        position: {
+          x: dims.length / 2 + col * (dims.length + gap),
+          y: dims.height / 2 + verticalOffset,
+          z: originZ + dims.width / 2 + row * (dims.width + gap),
+        },
+        rotation: { x: 0, y: 0, z: 0 },
+        scale: { x: 1, y: 1, z: 1 },
+      },
+      metadata: { sourceIndex: index },
+      ...(options.packedProfile ? { packedProfile: options.packedProfile } : {}),
+    };
+  });
+}
+
+function assertLargeReconStagingSafe(PackLib, instances, truck, caseLibrary, label) {
+  const caseMap = new Map(caseLibrary.map(caseData => [caseData.id, caseData]));
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const entries = instances.map(inst => {
+    const canonical = PackLib.getCanonicalInstanceEffectiveDims(inst, caseMap.get(inst.caseId));
+    assert.equal(canonical.ok, true, `${label}: ${inst.id} has canonical dimensions`);
+    const aabb = reconAabb(inst.transform.position, canonical.dims);
+    assert.equal(inst.placement, 'staged', `${label}: ${inst.id} remains staged`);
+    assert.ok(Math.abs(aabb.min.y) <= 0.05, `${label}: ${inst.id} rests on the staging ground`);
+    assert.equal(zones.some(zone => packImportAabbsOverlap(aabb, zone)), false,
+      `${label}: ${inst.id} does not intersect a usable truck volume`);
+    assert.equal(PackLib.aabbIntersectsWheelWellBlockedBody(aabb, truck), false,
+      `${label}: ${inst.id} clears Wheel Wells blocked bodies`);
+    assert.equal(PackLib.aabbIntersectsFrontBonusBlockedBody(aabb, truck), false,
+      `${label}: ${inst.id} clears Front Overhang blocked bodies`);
+    return { inst, aabb };
+  });
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      assert.equal(packImportAabbsOverlap(entries[i].aabb, entries[j].aabb), false,
+        `${label}: ${entries[i].inst.id}/${entries[j].inst.id} do not overlap`);
+    }
+  }
+  return entries;
+}
+
 test('RECON mode switches (Std↔WheelWells, Std↔FrontOverhang) keep valid items and report invalid ones safely', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   // Cartons across the floor. The centered row remains valid in Wheel Wells
@@ -9764,6 +9822,416 @@ test('RECON Truck Change Apply commits the grouped stagedAdjusted preview withou
   assert.equal(commits.length, 1);
   assert.deepEqual(commits[0].patch.cases, previews[0].pack.cases,
     'Apply change commits the exact grouped correction preview');
+});
+
+test('RECON Truck Change preserves 521 organized staged cases across modes and smaller presets', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = { id: 'bulk', name: 'Bulk carton', dimensions: { length: 20, width: 14, height: 12 } };
+  const caseLibrary = [caseData];
+  const standard = { length: 636, width: 102, height: 110, shapeMode: 'rect' };
+  const wheelWells = {
+    ...standard,
+    shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 34, wellWidth: 15, wellLength: 220, wellOffsetFromRear: 160 },
+  };
+  const frontOverhang = {
+    ...standard,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 76, bonusHeight: 44, bonusWidth: standard.width },
+  };
+  const boxTruck = { length: 300, width: 90, height: 96, shapeMode: 'rect' };
+  const sprinter = { length: 190, width: 70, height: 72, shapeMode: 'rect' };
+  const stagedCases = buildLargeReconStagingRows(521, standard, caseData);
+  const sourceSnapshot = JSON.stringify(stagedCases);
+  const workArea = PackLib.getStagingWorkAreaBounds(standard);
+  assert.ok(stagedCases.some(inst => reconAabb(inst.transform.position, caseData.dimensions).max.z > workArea.max.z),
+    'fixture contains organized rows beyond the compact preferred staging work area');
+  assertLargeReconStagingSafe(PackLib, stagedCases, standard, caseLibrary, '521-case source staging');
+
+  const transitions = [
+    ['Standard → Wheel Wells', standard, wheelWells],
+    ['Wheel Wells → Standard', wheelWells, standard],
+    ['Standard → Front Overhang', standard, frontOverhang],
+    ['53 ft → box truck', standard, boxTruck],
+    ['53 ft → Sprinter', standard, sprinter],
+  ];
+  for (const [label, sourceTruck, nextTruck] of transitions) {
+    const sourcePack = { id: `large-${label}`, truck: sourceTruck, cases: stagedCases };
+    const recon = PackLib.reconcilePlacementsForTruck(sourcePack, nextTruck, caseLibrary);
+    assert.deepEqual(recon.summary, {
+      kept: 0,
+      adjusted: 0,
+      invalid: 0,
+      stagedUnchanged: 521,
+      stagedAdjusted: 0,
+      unresolved: 0,
+      malformed: 0,
+    }, `${label}: every physically safe staged case keeps its semantic category`);
+    assert.deepEqual(recon.nextPack.cases, stagedCases,
+      `${label}: safe staged poses remain byte-equivalent`);
+    const repeated = PackLib.reconcilePlacementsForTruck(sourcePack, nextTruck, caseLibrary);
+    assert.deepEqual(repeated.nextPack.cases, recon.nextPack.cases,
+      `${label}: repeated reconciliation is deterministic`);
+  }
+
+  const boxCommit = PackLib.reconcilePlacementsForTruck(
+    { id: 'large-sequential-presets', truck: standard, cases: stagedCases },
+    boxTruck,
+    caseLibrary
+  );
+  const sprinterAfterBox = PackLib.reconcilePlacementsForTruck(
+    boxCommit.nextPack,
+    sprinter,
+    caseLibrary
+  );
+  assert.equal(sprinterAfterBox.summary.stagedUnchanged, 521,
+    '53 ft → box truck → Sprinter keeps the original organized staging corridor');
+  assert.equal(sprinterAfterBox.summary.stagedAdjusted, 0,
+    'a sequential preset shrink does not lose safe-row provenance');
+  assert.deepEqual(sprinterAfterBox.nextPack.cases, stagedCases,
+    'sequential preset changes keep every safe staged pose byte-equivalent');
+
+  const sequentialHarness = makeTruckChangeHarness();
+  const sequentialPreviews = [];
+  const sequentialCommits = [];
+  const sequentialController = Controller.createTruckChangeController({
+    PackLibrary: {
+      ...PackLib,
+      update: (id, patch) => {
+        sequentialCommits.push({ id, patch });
+        return { id, ...patch };
+      },
+    },
+    CaseLibrary: { getCases: () => caseLibrary },
+    UIComponents: sequentialHarness.UIComponents,
+    documentRef: sequentialHarness.documentRef,
+  });
+  sequentialController.request({
+    pack: boxCommit.nextPack,
+    nextTruck: sprinter,
+    renderPreview: preview => sequentialPreviews.push(preview),
+  });
+  const sequentialRows = sequentialHarness.modals[0].config.content.children[1].children
+    .map(child => child.textContent);
+  assert.deepEqual(sequentialRows, [
+    '0 kept in place',
+    '0 safely adjusted',
+    '0 no longer fit (shown in staging preview)',
+    '521 existing staged items unchanged',
+  ], 'sequential preset modal reports the exact unchanged semantic count');
+  sequentialHarness.click(0, 'Apply change');
+  assert.equal(sequentialCommits.length, 1);
+  assert.deepEqual(sequentialCommits[0].patch.cases, sequentialPreviews[0].pack.cases,
+    'sequential preset commit is byte-equivalent to its preview');
+  assert.deepEqual(sequentialCommits[0].patch.cases, stagedCases,
+    'sequential preset controller keeps every original pose');
+
+  const sourcePack = { id: 'large-controller', truck: standard, cases: stagedCases };
+  const runController = () => {
+    const harness = makeTruckChangeHarness();
+    const previews = [];
+    const commits = [];
+    const controller = Controller.createTruckChangeController({
+      PackLibrary: {
+        ...PackLib,
+        update: (id, patch) => {
+          commits.push({ id, patch });
+          return { id, ...patch };
+        },
+      },
+      CaseLibrary: { getCases: () => caseLibrary },
+      UIComponents: harness.UIComponents,
+      documentRef: harness.documentRef,
+    });
+    const result = controller.request({
+      pack: sourcePack,
+      nextTruck: wheelWells,
+      renderPreview: preview => previews.push(preview),
+    });
+    return { harness, previews, commits, result };
+  };
+
+  const cancelled = runController();
+  assert.equal(cancelled.result.status, 'preview');
+  assert.deepEqual(cancelled.previews[0].pack.cases, stagedCases,
+    '521-case preview preserves every safe staged pose');
+  const summaryRows = cancelled.harness.modals[0].config.content.children[1].children
+    .map(child => child.textContent);
+  assert.deepEqual(summaryRows, [
+    '0 kept in place',
+    '0 safely adjusted',
+    '0 no longer fit (shown in staging preview)',
+    '521 existing staged items unchanged',
+  ], 'modal counts remain truthful and do not invent unsafe staged corrections');
+  cancelled.harness.click(0, 'Cancel');
+  assert.equal(JSON.stringify(stagedCases), sourceSnapshot, 'Cancel is pure for the exact large-load regression');
+
+  const applied = runController();
+  assert.deepEqual(applied.previews[0].pack.cases, cancelled.previews[0].pack.cases,
+    'repeated 521-case previews are byte-equivalent');
+  applied.harness.click(0, 'Apply change');
+  assert.equal(applied.commits.length, 1, 'large staged-only Truck Change commits once');
+  assert.deepEqual(applied.commits[0].patch.cases, applied.previews[0].pack.cases,
+    'large staged-only commit is byte-equivalent to the rendered preview');
+  assert.equal(JSON.stringify(stagedCases), sourceSnapshot, 'controller never mutates the caller snapshot');
+});
+
+test('RECON grouped staging expands 521 genuine corrections beyond the preferred work area safely', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = { id: 'bulk', name: 'Bulk carton', dimensions: { length: 20, width: 14, height: 12 } };
+  const caseLibrary = [caseData];
+  const standard = { length: 636, width: 102, height: 110, shapeMode: 'rect' };
+  const wheelWells = {
+    ...standard,
+    shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 34, wellWidth: 15, wellLength: 220, wellOffsetFromRear: 160 },
+  };
+  const frontOverhang = {
+    ...standard,
+    shapeMode: 'frontBonus',
+    shapeConfig: { bonusLength: 76, bonusHeight: 44, bonusWidth: standard.width },
+  };
+  const floating = buildLargeReconStagingRows(521, standard, caseData, {
+    prefix: 'large-correction',
+    verticalOffset: 30,
+    packedProfile: 'max-capacity',
+  });
+  const recon = PackLib.reconcilePlacementsForTruck(
+    { id: 'large-corrections', truck: standard, cases: floating },
+    wheelWells,
+    caseLibrary
+  );
+  assert.equal(recon.summary.stagedUnchanged, 0);
+  assert.equal(recon.summary.stagedAdjusted, 521,
+    'all 521 floating staged cases are genuine corrections');
+  assert.deepEqual(recon.stagedAdjusted, floating.map(inst => inst.id));
+
+  const targetModes = [standard, wheelWells, frontOverhang];
+  let wheelPlan = null;
+  for (const nextTruck of targetModes) {
+    const grouped = PackLib.stagePlacementIds(
+      recon.nextPack,
+      recon.stagedAdjusted,
+      nextTruck,
+      caseLibrary,
+      { grouped: true }
+    );
+    assert.deepEqual(grouped.failedIds, [], `${nextTruck.shapeMode}: no fixed-depth staging failures`);
+    assert.equal(grouped.stagedIds.length, 521, `${nextTruck.shapeMode}: every correction is staged`);
+    const staged = grouped.pack.cases;
+    const entries = assertLargeReconStagingSafe(
+      PackLib,
+      staged,
+      nextTruck,
+      caseLibrary,
+      `521 grouped ${nextTruck.shapeMode}`
+    );
+    const maxZ = Math.max(...entries.map(entry => entry.aabb.max.z));
+    assert.ok(maxZ > PackLib.getStagingWorkAreaBounds(nextTruck).max.z,
+      `${nextTruck.shapeMode}: deterministic rows extend beyond the compact preferred work area`);
+    for (const inst of staged) {
+      assert.deepEqual(inst.transform.rotation, { x: 0, y: 0, z: 0 });
+      assert.deepEqual(inst.orientedDims, caseData.dimensions);
+      assert.equal(Object.prototype.hasOwnProperty.call(inst, 'packedProfile'), false);
+    }
+    if (nextTruck.shapeMode === 'wheelWells') wheelPlan = grouped;
+  }
+
+  const repeated = PackLib.stagePlacementIds(
+    recon.nextPack,
+    [...recon.stagedAdjusted].reverse(),
+    wheelWells,
+    caseLibrary,
+    { grouped: true }
+  );
+  assert.deepEqual(repeated.pack.cases, wheelPlan.pack.cases,
+    'reversed target input produces the same large grouped plan');
+  const rows = new Map();
+  for (const inst of wheelPlan.pack.cases) {
+    const z = inst.transform.position.z;
+    if (!rows.has(z)) rows.set(z, []);
+    rows.get(z).push(inst.transform.position.x);
+  }
+  const orderedRows = [...rows.values()].map(xs => xs.sort((a, b) => a - b));
+  assert.ok(orderedRows.length > 1, 'large group wraps into multiple rows');
+  assert.equal(orderedRows.at(-1)[0], orderedRows[0][0],
+    'the partial final row restarts at the first deterministic column');
+});
+
+test('RECON truck-width expansion repairs only the intersecting row without cascading into safe staging', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = { id: 'bulk', name: 'Bulk carton', dimensions: { length: 20, width: 14, height: 12 } };
+  const caseLibrary = [caseData];
+  const narrow = { length: 636, width: 70, height: 110, shapeMode: 'rect' };
+  const expanded = { ...narrow, width: 102 };
+  const stagedCases = buildLargeReconStagingRows(521, narrow, caseData, { prefix: 'width-expand' });
+  const expandedZones = PackLib.getTrailerUsableZones(expanded);
+  const originalIntersections = stagedCases.filter(inst => {
+    const aabb = reconAabb(inst.transform.position, caseData.dimensions);
+    return expandedZones.some(zone => packImportAabbsOverlap(aabb, zone));
+  });
+  assert.equal(originalIntersections.length, 20,
+    'only the first organized row intersects the wider proposed truck');
+
+  const recon = PackLib.reconcilePlacementsForTruck(
+    { id: 'width-expansion', truck: narrow, cases: stagedCases },
+    expanded,
+    caseLibrary
+  );
+  assert.equal(recon.summary.stagedAdjusted, 20,
+    'only the genuinely intersecting row enters stagedAdjusted');
+  assert.equal(recon.summary.stagedUnchanged, 501,
+    'later safe rows do not collide with provisional repairs');
+  assert.deepEqual(new Set(recon.stagedAdjusted), new Set(originalIntersections.map(inst => inst.id)));
+  for (const original of stagedCases.filter(inst => !recon.stagedAdjusted.includes(inst.id))) {
+    assert.deepEqual(recon.nextPack.cases.find(inst => inst.id === original.id), original,
+      `${original.id} remains byte-equivalent`);
+  }
+
+  const grouped = PackLib.stagePlacementIds(
+    recon.nextPack,
+    recon.stagedAdjusted,
+    expanded,
+    caseLibrary,
+    { grouped: true }
+  );
+  assert.deepEqual(grouped.failedIds, [], 'the genuine correction row receives a grouped staging band');
+  assert.equal(grouped.stagedIds.length, 20);
+  assertLargeReconStagingSafe(
+    PackLib,
+    grouped.pack.cases,
+    expanded,
+    caseLibrary,
+    'width-expansion grouped preview'
+  );
+});
+
+test('RECON preserve mode reserves safe staged poses before grounding a floating repair', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = { id: 'bulk', name: 'Bulk carton', dimensions: { length: 20, width: 14, height: 12 } };
+  const caseLibrary = [caseData];
+  const truck = { length: 240, width: 70, height: 96, shapeMode: 'rect' };
+  const safeCases = buildLargeReconStagingRows(30, truck, caseData, { prefix: 'preserve-safe' });
+  const floating = {
+    ...structuredClone(safeCases[0]),
+    id: 'preserve-floating-repair',
+    transform: {
+      ...structuredClone(safeCases[0].transform),
+      position: { ...safeCases[0].transform.position, y: 40 },
+    },
+  };
+  const recon = PackLib.reconcilePlacementsForTruck(
+    { id: 'preserve-order', truck, cases: [floating, ...safeCases] },
+    truck,
+    caseLibrary,
+    { preserveStagedPositions: true }
+  );
+
+  assert.deepEqual(recon.stagedAdjusted, [floating.id],
+    'the floating case is the only repair even when it appears first');
+  assert.equal(recon.summary.stagedUnchanged, safeCases.length);
+  for (const original of safeCases) {
+    assert.deepEqual(recon.nextPack.cases.find(inst => inst.id === original.id), original,
+      `${original.id} remains byte-equivalent in preserve mode`);
+  }
+  assertLargeReconStagingSafe(
+    PackLib,
+    recon.nextPack.cases,
+    truck,
+    caseLibrary,
+    'preserve-mode repair ordering'
+  );
+});
+
+test('RECON large staging adjusts only physical hazards, stale pose dimensions, and unsupported drift', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = { id: 'bulk', name: 'Bulk carton', dimensions: { length: 20, width: 14, height: 12 } };
+  const caseLibrary = [caseData];
+  const standard = { length: 636, width: 102, height: 110, shapeMode: 'rect' };
+  const wheelWells = {
+    ...standard,
+    shapeMode: 'wheelWells',
+    shapeConfig: { wellHeight: 34, wellWidth: 15, wellLength: 220, wellOffsetFromRear: 160 },
+  };
+  const safeCases = buildLargeReconStagingRows(80, standard, caseData, { prefix: 'safe-large' });
+  const lastSafeZ = Math.max(...safeCases.map(inst => inst.transform.position.z));
+  const makeHazard = (id, position, orientedDims = caseData.dimensions) => ({
+    id,
+    caseId: caseData.id,
+    placement: 'staged',
+    hidden: false,
+    packedProfile: 'max-capacity',
+    orientedDims: { ...orientedDims },
+    transform: {
+      position,
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+  });
+  const hazards = [
+    makeHazard('floating-hazard', { x: 10, y: 40, z: lastSafeZ + 50 }),
+    makeHazard('inside-truck-hazard', { x: 30, y: 6, z: 0 }),
+    makeHazard('partial-truck-hazard', { x: 60, y: 6, z: standard.width / 2 + 4 }),
+    makeHazard('overlap-hazard', { ...safeCases[0].transform.position }),
+    makeHazard('unsupported-drift-hazard', { x: 10000, y: 6, z: 10000 }),
+    makeHazard('stale-dims-hazard', { x: 10, y: 6, z: lastSafeZ + 100 },
+      { length: 21, width: 14, height: 12 }),
+  ];
+  const unresolved = {
+    id: 'unresolved-preserved',
+    caseId: 'missing-case',
+    placement: 'staged',
+    hidden: false,
+    orientedDims: { length: 10, width: 10, height: 10 },
+    transform: {
+      position: { x: 20, y: 5, z: lastSafeZ + 200 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+    metadata: { preserve: true },
+  };
+  const sourceCases = [...safeCases, ...hazards, unresolved];
+  const recon = PackLib.reconcilePlacementsForTruck(
+    { id: 'mixed-large-staging', truck: standard, cases: sourceCases },
+    wheelWells,
+    caseLibrary
+  );
+
+  assert.equal(recon.summary.stagedUnchanged, safeCases.length,
+    'every safe organized row remains in the unchanged category');
+  assert.equal(recon.summary.stagedAdjusted, hazards.length,
+    'only the explicit physical/data hazards enter stagedAdjusted');
+  assert.equal(recon.summary.unresolved, 1);
+  assert.deepEqual(new Set(recon.stagedAdjusted), new Set(hazards.map(inst => inst.id)));
+  for (const safe of safeCases) {
+    assert.deepEqual(recon.nextPack.cases.find(inst => inst.id === safe.id), safe,
+      `${safe.id} remains byte-equivalent`);
+  }
+  assert.deepEqual(recon.nextPack.cases.find(inst => inst.id === unresolved.id), unresolved,
+    'unresolved staging is preserved without fabricated geometry');
+
+  const corrected = PackLib.stagePlacementIds(
+    recon.nextPack,
+    recon.stagedAdjusted,
+    wheelWells,
+    caseLibrary,
+    { grouped: true }
+  );
+  assert.deepEqual(corrected.failedIds, []);
+  for (const safe of safeCases) {
+    assert.deepEqual(corrected.pack.cases.find(inst => inst.id === safe.id), safe,
+      `${safe.id} remains outside the grouped correction plan`);
+  }
+  assert.deepEqual(corrected.pack.cases.find(inst => inst.id === unresolved.id), unresolved,
+    'grouped correction keeps the unresolved obstacle byte-equivalent');
+  assertLargeReconStagingSafe(
+    PackLib,
+    corrected.pack.cases.filter(inst => inst.caseId === caseData.id),
+    wheelWells,
+    caseLibrary,
+    'mixed large correction'
+  );
 });
 
 test('RECON adjusted-only preview shows exact counts and applies the proposed pose only after confirmation', async () => {

@@ -15,6 +15,7 @@ import * as StateStore from '../core/state-store.js';
 import * as Utils from '../core/utils/index.js';
 import * as CoreNormalizer from '../core/normalizer.js';
 import * as CaseLibrary from './case-library.js';
+import { TrailerPresets } from '../data/trailer-presets.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
 import {
   normalizeRightAngle,
@@ -58,6 +59,11 @@ export { CONTAINMENT_EPS_INCHES, PLACEMENT_EPS, MIN_SUPPORT_FRACTION };
 // import them from pack-library (autopack-engine, editor-screen) keep working
 // while the single source of truth lives in core/oriented-dims.js.
 export { normalizeRightAngleRotation, getOrientedDimsForRotation };
+
+const MAX_PRESET_STAGING_LENGTH = Math.max(
+  1,
+  ...TrailerPresets.getAll().map(preset => Number(preset?.truck?.length) || 0)
+);
 
 function getDims(truck) {
   const t = truck && typeof truck === 'object' ? truck : {};
@@ -1011,6 +1017,45 @@ export function isAabbInStagingZone(pack, aabb, options = {}) {
 }
 
 /**
+ * Generated staging rows use the canonical X grid beside the trailer and may
+ * grow indefinitely away from it in +Z. Keep that deterministic corridor
+ * separate from the finite manual work floor so large organized inventories do
+ * not become invalid solely because they need more rows.
+ */
+function isAabbInGeneratedStagingCorridor(pack, aabb, options = {}) {
+  const values = [
+    aabb?.min?.x, aabb?.min?.y, aabb?.min?.z,
+    aabb?.max?.x, aabb?.max?.y, aabb?.max?.z,
+  ].map(Number);
+  if (!values.every(Number.isFinite)) return false;
+  const [minX, minY, minZ, maxX, maxY, maxZ] = values;
+  if (maxX <= minX || maxY <= minY || maxZ <= minZ) return false;
+
+  const layout = getStagingLayout(pack && pack.truck, options);
+  const aabbLength = maxX - minX;
+  // Keep generated rows from the largest curated trailer valid
+  // across sequential preset shrinks; the committed smaller truck otherwise
+  // loses the prior row-width provenance on the next change.
+  const corridorMaxX = layout.originX + Math.max(
+    MAX_PRESET_STAGING_LENGTH,
+    layout.truckL,
+    aabbLength
+  );
+  const EPS = 0.05;
+  return (
+    minX >= layout.originX - EPS &&
+    maxX <= corridorMaxX + EPS &&
+    minY >= -EPS &&
+    minZ >= layout.originZ - EPS
+  );
+}
+
+function isAabbInSupportedStagingArea(pack, aabb, options = {}) {
+  return isAabbInStagingZone(pack, aabb, options) ||
+    isAabbInGeneratedStagingCorridor(pack, aabb, options);
+}
+
+/**
  * Derive the "packed" | "staged" placement state for an instance from its
  * final AABB: inside the trailer's usable zones is "packed", anything
  * outside (including the staging zone) is "staged".
@@ -1518,38 +1563,65 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
   const stagingAccepted = [];
   const stagedUnchanged = [];
   const stagedAdjusted = [];
+  const stagedRepairs = [];
   const packedAabbs = accepted.map(entry => entry.aabb);
   const stagedOrder = [...stagedNodes].sort((a, b) => indexById.get(a.inst) - indexById.get(b.inst));
   for (const node of stagedOrder) {
     const current = node.curAabb;
-    const insideTruck = isAabbContainedInAnyZone(current, zones);
+    const insideTruck = overlapsAny(current, zones);
     const blockedBody = aabbIntersectsWheelWellBlockedBody(current, nextTruck) ||
       aabbIntersectsFrontBonusBlockedBody(current, nextTruck);
     const collidesStaged = overlapsAny(current, stagingAccepted);
     const collides = overlapsAny(current, [...packedAabbs, ...stagingAccepted]);
     const onFloor = Math.abs(current.min.y) <= RECON_TOL;
-    const reachable = isAabbInStagingZone({ truck: nextTruck }, current);
+    const storedPoseConsistent = node.inst.orientedDims == null || node.canonical.storedConsistent;
+    const reachable = isAabbInSupportedStagingArea({ truck: basePack.truck }, current) ||
+      isAabbInSupportedStagingArea({ truck: nextTruck }, current);
     if (preserveStagedPositions && !insideTruck && !blockedBody && !collidesStaged) {
-      const position = onFloor ? node.curPos : { ...node.curPos, y: node.dims.height / 2 };
-      const aabb = onFloor ? current : makeAabb(position, node.dims);
-      if (!overlapsAny(aabb, stagingAccepted)) {
-        stagingAccepted.push(aabb);
+      if (onFloor) {
+        stagingAccepted.push(current);
         stagedUnchanged.push(node.inst.id);
-        resultByInst.set(node.inst, { status: 'staged-unchanged', position, node });
+        resultByInst.set(node.inst, { status: 'staged-unchanged', position: node.curPos, node });
         continue;
       }
+      stagedRepairs.push({
+        node,
+        preferredPosition: { ...node.curPos, y: node.dims.height / 2 },
+      });
+      continue;
     }
-    if (!insideTruck && !blockedBody && !collides && onFloor && reachable) {
+    if (!insideTruck && !blockedBody && !collides && onFloor && storedPoseConsistent && reachable) {
       stagingAccepted.push(current);
       stagedUnchanged.push(node.inst.id);
       resultByInst.set(node.inst, { status: 'staged-unchanged', position: node.curPos, node });
       continue;
     }
-    const staged = findSafeStagingPosition(
-      { truck: nextTruck },
-      node.dims,
-      [...packedAabbs, ...stagingAccepted]
-    );
+    stagedRepairs.push({ node, preferredPosition: null });
+  }
+
+  // Reserve every byte-equivalent safe original before placing repairs. If an
+  // early unsafe row is relocated immediately, its provisional pose can occupy
+  // a later safe row and falsely cascade the whole inventory into corrections.
+  for (const repair of stagedRepairs) {
+    const { node, preferredPosition } = repair;
+    const acceptedForRepair = [...packedAabbs, ...stagingAccepted];
+    let staged = null;
+    if (preferredPosition) {
+      const preferredAabb = makeAabb(preferredPosition, node.dims);
+      const preferredInsideTruck = overlapsAny(preferredAabb, zones);
+      const preferredBlockedBody = aabbIntersectsWheelWellBlockedBody(preferredAabb, nextTruck) ||
+        aabbIntersectsFrontBonusBlockedBody(preferredAabb, nextTruck);
+      if (!preferredInsideTruck && !preferredBlockedBody && !overlapsAny(preferredAabb, acceptedForRepair)) {
+        staged = { position: preferredPosition, aabb: preferredAabb };
+      }
+    }
+    if (!staged) {
+      staged = findSafeStagingPosition(
+        { truck: nextTruck },
+        node.dims,
+        acceptedForRepair
+      );
+    }
     stagingAccepted.push(staged.aabb);
     stagedAdjusted.push(node.inst.id);
     resultByInst.set(node.inst, { status: 'staged-adjusted', position: staged.position, node });
@@ -1664,10 +1736,10 @@ export function stagePlacementIds(pack, ids, nextTruck, caseLibrary, options = {
       // is blocked, findSafeStagingPosition shifts the complete band instead of
       // letting individual cases scatter into unrelated holes.
       const band = findSafeStagingPosition({ truck: nextTruck }, bandDims, accepted);
-      if (!band || !band.aabb || !isAabbInStagingZone({ truck: nextTruck }, band.aabb)) {
+      if (!band || !band.aabb || !isAabbInSupportedStagingArea({ truck: nextTruck }, band.aabb)) {
         for (const { inst } of group.entries) {
           failedIds.push(inst.id);
-          warnings.push(`Item ${inst.id} could not be staged inside the staging work area.`);
+          warnings.push(`Item ${inst.id} could not be staged inside the supported staging area.`);
         }
         continue;
       }

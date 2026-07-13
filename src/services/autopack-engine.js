@@ -349,7 +349,14 @@ export function buildAutoPackNextCases(
   stagingMap
 ) {
   return (cases || []).map(inst => {
-    if (inst.hidden) { return inst; }
+    if (inst.hidden) {
+      if (inst.placement === 'staged' && inst.packedProfile !== undefined) {
+        const next = { ...inst };
+        delete next.packedProfile;
+        return next;
+      }
+      return inst;
+    }
     const isPacked = placements instanceof Map && placements.has(inst.id);
     const currentRotation =
       inst.transform && inst.transform.rotation
@@ -369,12 +376,20 @@ export function buildAutoPackNextCases(
       // the staging position, so the rendered item rests on the staging floor
       // instead of floating (Repair 1B).
       const staged = stagingMap instanceof Map ? stagingMap.get(inst.id) : null;
-      if (!staged || !staged.position) { return inst; }
+      if (!staged || !staged.position) {
+        const next = { ...inst };
+        delete next.packedProfile;
+        return next;
+      }
       pos = staged.position;
       rot = staged.rotation || currentRotation;
       od = staged.orientedDims || null;
     }
-    if (!pos) { return inst; }
+    if (!pos) {
+      const next = { ...inst };
+      delete next.packedProfile;
+      return next;
+    }
 
     const next = {
       ...inst,
@@ -386,6 +401,7 @@ export function buildAutoPackNextCases(
       hidden: false,
       placement: isPacked ? 'packed' : 'staged',
     };
+    delete next.packedProfile;
 
     const isIdentityRotation =
       Number(rot && rot.x) === 0 && Number(rot && rot.y) === 0 && Number(rot && rot.z) === 0;

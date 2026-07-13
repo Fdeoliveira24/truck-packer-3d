@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const importExportUrl = new URL('../../src/services/import-export.js', import.meta.url);
+const stateStoreUrl = new URL('../../src/core/state-store.js', import.meta.url);
 
 function installXlsxStub(rows) {
   globalThis.window = globalThis.window || {};
@@ -25,6 +26,61 @@ function installXlsxStub(rows) {
 async function loadImportExport() {
   return import(`${importExportUrl.href}?t=${Date.now()}-${Math.random()}`);
 }
+
+test('Max Capacity packedProfile survives generic pack, batch, app, and workspace JSON paths', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const ImportExport = await loadImportExport();
+  const caseData = {
+    id: 'case-max-profile',
+    name: 'Max Profile Case',
+    dimensions: { length: 10, width: 10, height: 10 },
+    weight: 10,
+    canFlip: true,
+    stackable: true,
+  };
+  const instance = {
+    id: 'instance-max-profile',
+    caseId: caseData.id,
+    transform: {
+      position: { x: 20, y: 5, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+    hidden: false,
+    groupId: null,
+    placement: 'packed',
+    packedProfile: 'max-capacity',
+  };
+  const pack = {
+    id: 'pack-max-profile',
+    title: 'Max Profile Pack',
+    truck: { length: 120, width: 60, height: 60, shapeMode: 'rect' },
+    cases: [instance],
+  };
+  StateStore.init({
+    caseLibrary: [caseData],
+    packLibrary: [pack],
+    folderLibrary: [],
+    preferences: {},
+  });
+
+  const packPayload = ImportExport.parsePackImportJSON(ImportExport.buildPackExportJSON(pack));
+  assert.equal(packPayload.pack.cases[0].packedProfile, 'max-capacity');
+
+  const batchPayload = ImportExport.parsePackBatchImportJSON(JSON.stringify({
+    exportType: 'pack-batch',
+    packs: [{ pack, bundledCases: [caseData] }],
+  }));
+  assert.equal(batchPayload[0].pack.cases[0].packedProfile, 'max-capacity');
+
+  const restoredApp = ImportExport.parseAppImportJSON(ImportExport.buildAppExportJSON());
+  assert.equal(restoredApp.packLibrary[0].cases[0].packedProfile, 'max-capacity');
+
+  const restoredWorkspace = ImportExport.parseWorkspaceImportJSON(
+    ImportExport.buildWorkspaceExportJSON('QA Workspace')
+  );
+  assert.equal(restoredWorkspace.packLibrary[0].cases[0].packedProfile, 'max-capacity');
+});
 
 test('parseAndValidateSpreadsheet deduplicates duplicate names in the same file', async () => {
   installXlsxStub([

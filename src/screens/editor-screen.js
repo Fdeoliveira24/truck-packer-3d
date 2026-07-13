@@ -50,6 +50,36 @@ function formatDeleteResultMessage(result, fallbackDeletedIds = []) {
   return message;
 }
 
+export function buildAppliedAutoPackCases(option, cloneCases = value => JSON.parse(JSON.stringify(value))) {
+  const isMaxCapacity = option && option.id === 'max-capacity';
+  const sourceCases = option && Array.isArray(option.nextCases) ? option.nextCases : [];
+  return cloneCases(sourceCases).map(inst => {
+    const next = { ...inst };
+    if (isMaxCapacity && next.placement === 'packed') {
+      next.packedProfile = 'max-capacity';
+    } else {
+      delete next.packedProfile;
+    }
+    return next;
+  });
+}
+
+function withoutPackedProfile(inst) {
+  const next = { ...inst };
+  delete next.packedProfile;
+  return next;
+}
+
+function buildNormalHandlingPack(pack, instanceIds) {
+  const targetIds = new Set(instanceIds || []);
+  return {
+    ...pack,
+    cases: (pack.cases || []).map(inst =>
+      targetIds.has(inst.id) ? withoutPackedProfile(inst) : inst
+    ),
+  };
+}
+
 // Vertical-move outcome message: base sentence plus what revalidation did to
 // OTHER cases (re-settled / staged dependents), per the delete-path contract.
 function formatVerticalMoveMessage(result, movedId, baseMessage) {
@@ -1799,11 +1829,11 @@ export function createInteractionManager({
     function buildStagedToPackedCandidateCases(pack, instanceId, desiredPosition) {
       return (pack.cases || []).map(item =>
         item.id === instanceId
-          ? {
+          ? withoutPackedProfile({
             ...item,
             transform: { ...(item.transform || {}), position: desiredPosition },
             placement: 'packed',
-          }
+          })
           : item
       );
     }
@@ -2006,7 +2036,7 @@ export function createInteractionManager({
     function applyInstancePatches(pack, patchById) {
       return (pack.cases || []).map(inst => {
         const patch = patchById.get(inst.id);
-        return patch ? { ...inst, ...patch } : inst;
+        return patch ? withoutPackedProfile({ ...inst, ...patch }) : inst;
       });
     }
 
@@ -2179,7 +2209,13 @@ export function createInteractionManager({
       if (!pack) { return; }
       const inst = (pack.cases || []).find(i => i && i.id === ids[0]);
       if (!inst) { return; }
-      const resolved = PackLibrary.findManualVerticalPlacement(pack, CaseLibrary.getCases(), inst.id, { mode });
+      const normalHandlingPack = buildNormalHandlingPack(pack, [inst.id]);
+      const resolved = PackLibrary.findManualVerticalPlacement(
+        normalHandlingPack,
+        CaseLibrary.getCases(),
+        inst.id,
+        { mode }
+      );
       if (!resolved.ok) {
         const infoCodes = new Set(['already-resting', 'no-level-above', 'no-level-below']);
         UIComponents.showToast(
@@ -2188,7 +2224,7 @@ export function createInteractionManager({
         );
         return;
       }
-      const nextCases = (pack.cases || []).map(item =>
+      const nextCases = (normalHandlingPack.cases || []).map(item =>
         item.id === inst.id
           ? { ...item, transform: { ...item.transform, position: resolved.position } }
           : item
@@ -2607,7 +2643,8 @@ export function createInteractionManager({
         cancelPendingPose();
         return true;
       }
-      const resolved = PackLibrary.findManualVerticalPlacement(pack, CaseLibrary.getCases(), instanceId, {
+      const normalHandlingPack = buildNormalHandlingPack(pack, [instanceId]);
+      const resolved = PackLibrary.findManualVerticalPlacement(normalHandlingPack, CaseLibrary.getCases(), instanceId, {
         mode: 'resolve',
         desiredPosition: SceneManager.vecWorldToInches(obj.position),
       });
@@ -2636,7 +2673,7 @@ export function createInteractionManager({
       obj.position.copy(SceneManager.vecInchesToWorld(resolved.position));
       CaseScene.setDragging(null);
       CaseScene.setCollision(instanceId, false);
-      const nextCases = (pack.cases || []).map(item =>
+      const nextCases = (normalHandlingPack.cases || []).map(item =>
         item.id === instanceId
           ? { ...item, transform: { ...item.transform, position: resolved.position }, placement: 'packed' }
           : item
@@ -3063,14 +3100,15 @@ export function createInteractionManager({
       if (singleDraggedInst && singleDraggedInst.placement !== 'staged' &&
           typeof PackLibrary.findManualVerticalPlacement === 'function' &&
           typeof PackLibrary.updateCasesWithManualRevalidation === 'function') {
-        const resolved = PackLibrary.findManualVerticalPlacement(pack, CaseLibrary.getCases(), instanceId, {
+        const normalHandlingPack = buildNormalHandlingPack(pack, [instanceId]);
+        const resolved = PackLibrary.findManualVerticalPlacement(normalHandlingPack, CaseLibrary.getCases(), instanceId, {
           mode: 'resolve',
           desiredPosition: SceneManager.vecWorldToInches(obj.position),
         });
         if (resolved.ok) {
           obj.position.copy(SceneManager.vecInchesToWorld(resolved.position));
           CaseScene.setCollision(instanceId, false);
-          const nextCases = (pack.cases || []).map(item =>
+          const nextCases = (normalHandlingPack.cases || []).map(item =>
             item.id === instanceId
               ? { ...item, transform: { ...(item.transform || {}), position: resolved.position }, placement: 'packed' }
               : item
@@ -3198,7 +3236,11 @@ export function createInteractionManager({
           const halfY = dims && Number.isFinite(Number(dims.height)) ? Number(dims.height) / 2 : pos.y;
           finalPos = { ...pos, y: Math.max(0, halfY) };
         }
-        return { ...inst, transform: { ...(inst.transform || {}), position: finalPos }, placement: placementValue };
+        return withoutPackedProfile({
+          ...inst,
+          transform: { ...(inst.transform || {}), position: finalPos },
+          placement: placementValue,
+        });
       });
       commitCasesWithManualRevalidation(packId, nextCases);
 
@@ -3476,7 +3518,7 @@ export function createEditorScreen({
       if (!option || !Array.isArray(option.nextCases)) return;
       if (option.id === results.selectedId) return;
 
-      PackLibrary.update(pack.id, { cases: cloneAutoPackCases(option.nextCases) });
+      PackLibrary.update(pack.id, { cases: buildAppliedAutoPackCases(option, cloneAutoPackCases) });
       StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
       CaseScene.setSelected([]);
       StateStore.set({
@@ -4540,6 +4582,9 @@ export function createEditorScreen({
           categoryOriginZ += rows * cellWidth + categoryBandGap;
         }
         const nextCases = (livePack.cases || []).map(inst => stagedById.get(inst.id) || inst);
+        nextCases.forEach((inst, index) => {
+          nextCases[index] = withoutPackedProfile(inst);
+        });
         if (OperationLifecycle && !OperationLifecycle.isCurrent(opToken)) return;
         PackLibrary.update(packId, { cases: nextCases });
         UIComponents.showToast(`Moved ${movedCount} case${movedCount === 1 ? '' : 's'} to staging.`, 'info', { title: 'Unpack' });
@@ -5650,8 +5695,9 @@ export function createEditorScreen({
         // legal level otherwise, and never silently settled onto a case that
         // cannot carry it. Out-of-truck moves keep the legacy settle+stage path.
         let resolved = null;
+        const normalHandlingPack = buildNormalHandlingPack(pack, [inst.id]);
         if (typeof PackLibrary.findManualVerticalPlacement === 'function') {
-          resolved = PackLibrary.findManualVerticalPlacement(pack, CaseLibrary.getCases(), inst.id, {
+          resolved = PackLibrary.findManualVerticalPlacement(normalHandlingPack, CaseLibrary.getCases(), inst.id, {
             mode: 'resolve',
             desiredPosition: nextPos,
           });
@@ -5679,7 +5725,7 @@ export function createEditorScreen({
           if (useLegacySettle) { finalPos = SceneManager.vecWorldToInches(obj.position); }
         }
         CaseScene.setCollision(inst.id, false);
-        const nextCases = (pack.cases || []).map(item =>
+        const nextCases = (normalHandlingPack.cases || []).map(item =>
           item.id === inst.id
             ? { ...item, transform: { ...item.transform, position: finalPos } }
             : item

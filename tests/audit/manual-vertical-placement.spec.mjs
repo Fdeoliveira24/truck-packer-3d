@@ -1554,3 +1554,41 @@ test('MANUAL-VERTICAL surface-following invalid releases hold scene-only pending
   assert.match(block, /if \(anyCollides && groupIds\.length === 1\) \{[\s\S]*revertGroupToStart\(groupIds, startMap\);[\s\S]*Cannot place here: collision detected/,
     'hard physical single-case collisions must still revert immediately');
 });
+
+test('MAX-CAPACITY-B manual commits clear only edited profiles while rejected previews stay persistent-state pure', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  assert.match(src, /function withoutPackedProfile\(inst\) \{\s*const next = \{ \.\.\.inst \};\s*delete next\.packedProfile;\s*return next;/,
+    'manual commits must have one explicit per-instance profile clearing helper');
+  assert.match(src, /function applyInstancePatches\(pack, patchById\) \{[\s\S]*withoutPackedProfile\(\{ \.\.\.inst, \.\.\.patch \}\) : inst;/,
+    'rotate, flip, nudge, and atomic group patches must clear only patched instance profiles');
+  assert.match(src, /function buildStagedToPackedCandidateCases\([\s\S]*withoutPackedProfile\(\{[\s\S]*placement: 'packed'/,
+    'staged-to-packed manual commits must return to normal handling');
+
+  for (const functionName of ['moveSelectionVertical', 'resolvePendingPose', 'finishDrag']) {
+    const start = src.indexOf(`function ${functionName}(`);
+    const end = src.indexOf('\n\n    function ', start + 1);
+    assert.ok(start >= 0 && end > start, `${functionName} block must exist`);
+    assert.match(src.slice(start, end), /buildNormalHandlingPack\(pack, \[/,
+      `${functionName} must validate the edited instance without its persisted Max profile`);
+  }
+
+  const inspectorStart = src.indexOf("savePos.addEventListener('click'");
+  const inspectorEnd = src.indexOf('// Vertical placement row:', inspectorStart);
+  assert.ok(inspectorStart >= 0 && inspectorEnd > inspectorStart, 'Inspector Apply Position block must exist');
+  assert.match(src.slice(inspectorStart, inspectorEnd), /buildNormalHandlingPack\(pack, \[inst\.id\]\)/,
+    'Inspector position commits must clear only the edited profile');
+
+  const unpackStart = src.indexOf('async function unpackAll()');
+  const unpackEnd = src.indexOf('\n\n    function renderInspectorNoPack()', unpackStart);
+  assert.ok(unpackStart >= 0 && unpackEnd > unpackStart, 'Unpack block must exist');
+  assert.match(src.slice(unpackStart, unpackEnd), /const nextCases = \(livePack\.cases \|\| \[\]\)\.map\(inst => stagedById\.get\(inst\.id\) \|\| inst\);[\s\S]*nextCases\[index\] = withoutPackedProfile\(inst\);/,
+    'Unpack must remove profiles from every instance, including unresolved items left in place');
+
+  const finishStart = src.indexOf('function finishDrag()');
+  const finishEnd = src.indexOf('\n\n    function resetDrag()', finishStart);
+  const finishBlock = src.slice(finishStart, finishEnd);
+  assert.match(finishBlock, /revertGroupToStart\(groupIds, startMap\);[\s\S]*return;/,
+    'rejected drag paths must revert before any persistent profile-clearing candidate is committed');
+  assert.match(finishBlock, /withoutPackedProfile\(\{[\s\S]*placement: placementValue/,
+    'successful legacy drag/stage commits must clear profiles for moved members');
+});

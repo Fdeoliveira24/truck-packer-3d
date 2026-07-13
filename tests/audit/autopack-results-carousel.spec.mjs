@@ -130,8 +130,8 @@ test('AUTOPACK-CAROUSEL apply keeps the validated path, marks Applied with a che
 
   const apply = sliceFn(src, 'function applyAutoPackResultOption(optionId)', 'function makeAutoPackResultStat(');
   assert.match(apply, /if \(isAutoPackResultsStale\(pack, results\)\)/, 'apply must keep the stale guard');
-  assert.match(apply, /PackLibrary\.update\(pack\.id, \{ cases: cloneAutoPackCases\(option\.nextCases\) \}\)/,
-    'apply must keep committing through PackLibrary.update');
+  assert.match(apply, /PackLibrary\.update\(pack\.id, \{ cases: buildAppliedAutoPackCases\(option, cloneAutoPackCases\) \}\)/,
+    'apply must commit the applied option through the profile-aware PackLibrary.update path');
   assert.match(apply, /StateStore\.set\(\{ selectedInstanceIds: \[\] \}/,
     'apply must keep clearing selection after swapping the load');
 });

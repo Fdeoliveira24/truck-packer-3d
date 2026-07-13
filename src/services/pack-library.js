@@ -790,11 +790,11 @@ function buildDuplicateAcceptedSupportEntries(pack, caseLibrary) {
     );
 
   for (const entry of entries) {
-    const candidate = { id: entry.id, caseData: entry.caseData };
+    const candidate = { id: entry.id, inst: entry.inst, caseData: entry.caseData };
     if (!aabbIsFullyValid(candidate, entry.aabb, accepted, zones, pack && pack.truck, RECON_TOL, wheelWell)) {
       continue;
     }
-    accepted.push({ id: entry.id, aabb: entry.aabb, caseData: entry.caseData });
+    accepted.push({ id: entry.id, inst: entry.inst, aabb: entry.aabb, caseData: entry.caseData });
   }
 
   return { accepted, zones, wheelWell };
@@ -810,11 +810,11 @@ function duplicatePackedGroupIsFullyValid(pack, records, caseLibrary) {
   );
 
   for (const record of ordered) {
-    const candidate = { id: record.inst?.id, caseData: record.caseData };
+    const candidate = { id: record.inst?.id, inst: record.inst, caseData: record.caseData };
     if (!aabbIsFullyValid(candidate, record.aabb, accepted, zones, pack && pack.truck, RECON_TOL, wheelWell)) {
       return false;
     }
-    accepted.push({ id: record.inst?.id, aabb: record.aabb, caseData: record.caseData });
+    accepted.push({ id: record.inst?.id, inst: record.inst, aabb: record.aabb, caseData: record.caseData });
   }
 
   return true;
@@ -926,6 +926,7 @@ export function buildSafeDuplicateInstances(pack, sourceInstances, caseLibrary =
     };
     next.hidden = false;
     next.placement = placementState;
+    if (placementState === 'staged') delete next.packedProfile;
     return next;
   });
 
@@ -1035,11 +1036,27 @@ function repairPackInstancePlacements(pack, caseLibrary) {
   const acceptedAabbs = [];
   const nextCases = (pack.cases || []).map(inst => {
     const next = Utils.deepClone(inst);
+    if (next.placement !== 'packed' || next.packedProfile !== 'max-capacity') {
+      delete next.packedProfile;
+    }
     const caseData = caseMap.get(next.caseId);
-    const dims = getInstanceEffectiveDims(next, caseData);
     next.transform = next.transform && typeof next.transform === 'object' ? next.transform : {};
+    const storedRotation = next.transform.rotation;
+    const hasCanonicalStoredRotation = Boolean(
+      storedRotation &&
+      typeof storedRotation === 'object' &&
+      ['x', 'y', 'z'].every(axis => {
+        const angle = Number(storedRotation[axis] ?? 0);
+        return Number.isFinite(angle) && Math.abs(Math.sin(angle * 2)) <= 1e-6;
+      })
+    );
     next.transform.rotation = normalizeTransformRotation(next.transform.rotation);
     next.transform.scale = normalizeTransformScale(next.transform.scale);
+    const canonical = next.packedProfile === 'max-capacity' && hasCanonicalStoredRotation
+      ? getCanonicalInstanceEffectiveDims(next, caseData)
+      : null;
+    if (canonical && canonical.ok) next.orientedDims = { ...canonical.dims };
+    const dims = canonical && canonical.ok ? canonical.dims : getInstanceEffectiveDims(next, caseData);
 
     const safeImported = getSafeImportedPlacement(pack, next, caseData, acceptedAabbs);
     if (safeImported) {
@@ -1052,6 +1069,7 @@ function repairPackInstancePlacements(pack, caseLibrary) {
     const staged = findSafeStagingPosition(pack, dims, acceptedAabbs);
     next.transform.position = staged.position;
     next.placement = 'staged';
+    delete next.packedProfile;
     acceptedAabbs.push(staged.aabb);
     return next;
   });
@@ -1082,6 +1100,39 @@ export const computeSupportFraction = validationComputeSupportFraction;
 
 const RECON_TOL = 0.05; // matches CONTAINMENT_EPS_INCHES
 
+function instanceUsesMaxCapacityProfile(inst) {
+  return Boolean(
+    inst &&
+    inst.placement === 'packed' &&
+    inst.packedProfile === 'max-capacity'
+  );
+}
+
+function maxCapacitySupportRelationship(candidate, support) {
+  return instanceUsesMaxCapacityProfile(candidate && candidate.inst) &&
+    instanceUsesMaxCapacityProfile(support && support.inst);
+}
+
+// Wheel Wells support validation uses the shared packing-core rule helpers.
+// Project only marked-to-marked cargo relationships into relaxed validation
+// records; never mutate the stored support instance or its source case rules.
+function projectMaxCapacitySupportRecords(candidate, accepted) {
+  if (!instanceUsesMaxCapacityProfile(candidate && candidate.inst)) return accepted || [];
+  return (accepted || []).map(support => {
+    if (!maxCapacitySupportRelationship(candidate, support)) return support;
+    return {
+      ...support,
+      caseData: {
+        ...(support.caseData || {}),
+        noStackOnTop: false,
+        stackable: true,
+        maxStackCount: 0,
+        isPallet: true,
+      },
+    };
+  });
+}
+
 function reconXzOverlapArea(a, b) {
   const ox = Math.max(0, Math.min(a.max.x, b.max.x) - Math.max(a.min.x, b.min.x));
   const oz = Math.max(0, Math.min(a.max.z, b.max.z) - Math.max(a.min.z, b.min.z));
@@ -1106,6 +1157,7 @@ function directChildCount(support, accepted, tol = RECON_TOL) {
 }
 
 function supportCanCarry(candidate, support, accepted) {
+  if (maxCapacitySupportRelationship(candidate, support)) return true;
   const rules = support.caseData || {};
   if (!rulesAllowStackOnTop(rules)) return false;
   // Manual pipeline floors the cap at its boundary (canonicalization already
@@ -1142,10 +1194,11 @@ function isAabbInsideTruckGeometry(aabb, zones, wheelWell) {
 }
 
 function aabbIsFullyValid(candidate, aabb, accepted, zones, truck, tol = RECON_TOL, wheelWell = null) {
+  const physicalSupportRecords = projectMaxCapacitySupportRecords(candidate, accepted);
   const physicallySupported = wheelWell
     ? isWheelWellSupportedAndStable(
       aabb,
-      accepted,
+      physicalSupportRecords,
       wheelWell,
       { weight: Number(candidate?.caseData?.weight) || 0 }
     )
@@ -1211,8 +1264,14 @@ function explainInvalidLevel(node, aabb, accepted, zones, truck, wheelWell, mode
       overlapsAny(aabb, (accepted || []).map(entry => entry.aabb))) {
     return manualVerticalFailure('blocked-collision');
   }
+  const physicalSupportRecords = projectMaxCapacitySupportRecords(node, accepted);
   const physicallySupported = wheelWell
-    ? isWheelWellSupportedAndStable(aabb, accepted, wheelWell, { weight: Number(node?.caseData?.weight) || 0 })
+    ? isWheelWellSupportedAndStable(
+      aabb,
+      physicalSupportRecords,
+      wheelWell,
+      { weight: Number(node?.caseData?.weight) || 0 }
+    )
     : aabbIsSupported(node, aabb, accepted, zones, RECON_TOL);
   if (!physicallySupported) return manualVerticalFailure('support-rules');
   if (!evaluateFrontOverhangRearRetention(aabb, accepted, truck, zones).retained) {
@@ -1406,7 +1465,8 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
 
   for (const node of order) {
     const { inst, dims, curPos, canonical } = node;
-    if (!canonical.orientationAllowed || !canonical.lockConsistent) {
+    if ((!canonical.orientationAllowed || !canonical.lockConsistent) &&
+        !instanceUsesMaxCapacityProfile(inst)) {
       invalid.push(inst.id);
       invalidReasons[inst.id] = canonical.orientationAllowed
         ? 'exact instance lock does not match the stored rotation'
@@ -1491,10 +1551,18 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
 
   const nextCases = allInstances.map(inst => {
     const r = resultByInst.get(inst);
-    if (!r) return inst; // unresolved/malformed are preserved and block confirmation
+    if (!r) {
+      if (inst && inst.placement === 'staged' && inst.packedProfile !== undefined) {
+        const next = Utils.deepClone(inst);
+        delete next.packedProfile;
+        return next;
+      }
+      return inst; // unresolved/malformed are preserved and block confirmation
+    }
     const next = applyCanonicalInstancePose(inst, r.node.canonical);
     next.transform.position = r.position;
     next.placement = r.status.startsWith('staged') ? 'staged' : 'packed';
+    if (next.placement === 'staged') delete next.packedProfile;
     return next;
   });
 
@@ -1559,10 +1627,18 @@ export function stagePlacementIds(pack, ids, nextTruck, caseLibrary) {
 
   const nextCases = cases.map(inst => {
     const staged = positioned.get(inst.id);
-    if (!staged) return inst;
+    if (!staged) {
+      if (inst && inst.placement === 'staged' && inst.packedProfile !== undefined) {
+        const next = Utils.deepClone(inst);
+        delete next.packedProfile;
+        return next;
+      }
+      return inst;
+    }
     const next = applyCanonicalInstancePose(inst, staged.canonical);
     next.transform.position = staged.position;
     next.placement = 'staged';
+    delete next.packedProfile;
     return next;
   });
   return {
@@ -1625,7 +1701,10 @@ function repairInvalidPlacementsLocally(reconResult, truck, caseLibrary) {
       const caseData = caseMap.get(entry.inst.caseId);
       const canonical = getCanonicalInstanceEffectiveDims(entry.inst, caseData);
       const position = normalizeTransformPosition(entry.inst.transform && entry.inst.transform.position);
-      if (!caseData || !canonical.ok || !canonical.orientationAllowed || !canonical.lockConsistent || !position) {
+      const relaxedHandling = instanceUsesMaxCapacityProfile(entry.inst);
+      if (!caseData || !canonical.ok ||
+          ((!canonical.orientationAllowed || !canonical.lockConsistent) && !relaxedHandling) ||
+          !position) {
         return null;
       }
       return {
@@ -1783,7 +1862,9 @@ export function repackInvalidPlacements(reconResult, nextTruck, caseLibrary) {
   for (const { inst } of targets) {
     const caseData = caseMap.get(inst.caseId);
     const canonical = getCanonicalInstanceEffectiveDims(inst, caseData);
-    if (!canonical.ok || !canonical.orientationAllowed || !canonical.lockConsistent) {
+    if (!canonical.ok ||
+        ((!canonical.orientationAllowed || !canonical.lockConsistent) &&
+          !instanceUsesMaxCapacityProfile(inst))) {
       failedIds.push(inst.id);
       warnings.push(`Item ${inst.id} could not be repacked: ${canonical.reason || 'hard orientation rule failed'}.`);
       continue;

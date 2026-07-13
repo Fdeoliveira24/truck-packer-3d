@@ -221,13 +221,21 @@ export function normalizeInstance(inst, caseMap) {
   const caseData = caseMap.get(caseId) || null;
   const halfY = caseData ? Math.max(1, (caseData.dimensions.height || 1) / 2) : 10;
   const orientationLocked = inst && inst.orientationLocked === true;
+  const placement =
+    inst && (inst.placement === 'packed' || inst.placement === 'staged') ? inst.placement : null;
+  const packedProfile =
+    placement === 'packed' && inst && inst.packedProfile === 'max-capacity'
+      ? 'max-capacity'
+      : null;
   const sourceLockedRotation =
     inst && inst.lockedRotation && typeof inst.lockedRotation === 'object' ? inst.lockedRotation : rot;
   const lockedRotation = orientationLocked ? normalizeRightAngleRotation(sourceLockedRotation) : null;
   // Effective right-angle rotation for dimension purposes: the locked rotation
   // when locked, otherwise the instance's own rotation (e.g. an AutoPack-applied
   // tip on an unlocked item).
-  const effectiveRotation = lockedRotation || normalizeRightAngleRotation(rot);
+  const effectiveRotation = packedProfile
+    ? normalizeRightAngleRotation(rot)
+    : (lockedRotation || normalizeRightAngleRotation(rot));
   const isIdentityRotation =
     effectiveRotation.x === 0 && effectiveRotation.y === 0 && effectiveRotation.z === 0;
   // orientedDims is the case's effective size under its ACTUAL rotation and must
@@ -251,9 +259,6 @@ export function normalizeInstance(inst, caseMap) {
   }
   const deliverySequenceRaw = Number(inst && inst.deliverySequence);
   const deliverySequence = Number.isFinite(deliverySequenceRaw) ? deliverySequenceRaw : null;
-  const placement =
-    inst && (inst.placement === 'packed' || inst.placement === 'staged') ? inst.placement : null;
-
   return {
     id: safeId(inst && inst.id),
     caseId,
@@ -281,6 +286,7 @@ export function normalizeInstance(inst, caseMap) {
     orientedDims,
     deliverySequence,
     placement,
+    ...(packedProfile ? { packedProfile } : {}),
   };
 }
 

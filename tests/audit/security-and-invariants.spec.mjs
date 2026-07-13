@@ -13660,7 +13660,7 @@ test('phase 3A Settings preserves Copy Link fallback and reports invite email st
 test('phase 3C1 app maps invite accept failures to persistent handoff copy', async () => {
   const src = await fs.readFile(appPath, 'utf8');
   const start = src.indexOf('const inviteHandoffNoticeId');
-  const end = src.indexOf('function clearSidebarBillingDomForUserSwitch', start);
+  const end = src.indexOf('if (!authListenerInstalled)', start);
   const inviteBlock = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(inviteBlock.length > 0, 'app invite handoff block must be present');
@@ -13691,7 +13691,7 @@ test('phase 3C1 app maps invite accept failures to persistent handoff copy', asy
 test('phase 3C1 invite handoff notice does not expose raw tokens or scope into billing', async () => {
   const src = await fs.readFile(appPath, 'utf8');
   const start = src.indexOf('const inviteHandoffNoticeId');
-  const end = src.indexOf('function clearSidebarBillingDomForUserSwitch', start);
+  const end = src.indexOf('if (!authListenerInstalled)', start);
   const inviteBlock = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(inviteBlock.length > 0, 'app invite handoff block must be present');
@@ -13815,7 +13815,7 @@ test('phase 3C1 SIGNED_OUT event clears invite handoff notice to prevent stale n
 test('phase 3C1 signed-in invite rejection clears notice state instead of setting persistent error notice', async () => {
   const src = await fs.readFile(appPath, 'utf8');
   const start = src.indexOf('async function tryAcceptPendingInvite(');
-  const end = src.indexOf('function clearSidebarBillingDomForUserSwitch(', start);
+  const end = src.indexOf('if (!authListenerInstalled)', start);
   const fnBody = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(fnBody.length > 0, 'tryAcceptPendingInvite must be extractable');
@@ -13850,7 +13850,7 @@ test('phase 3C1 signed-in invite rejection clears notice state instead of settin
 test('phase 3C1 invite rejection failure path does not log token or JWT values', async () => {
   const src = await fs.readFile(appPath, 'utf8');
   const start = src.indexOf('async function tryAcceptPendingInvite(');
-  const end = src.indexOf('function clearSidebarBillingDomForUserSwitch(', start);
+  const end = src.indexOf('if (!authListenerInstalled)', start);
   const fnBody = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(fnBody.length > 0, 'tryAcceptPendingInvite must be extractable');
@@ -15147,8 +15147,13 @@ test('phase 0.6C-3 orgContextResolved is set on active apply and reset on uncert
     'confirmed no-active clears must resolve, while uncertain clears must reset');
   assert.match(src, /lastAuthUserId = null;[\s\S]{0,120}orgContextResolved = false;/,
     'auth user change or signed-out cleanup must reset orgContextResolved');
-  assert.match(src, /lastAuthUserId = null; \/\/ Clear old user ID to prevent stale state leakage[\s\S]{0,120}orgContextResolved = false;/,
-    'cross-tab user switch cleanup must reset orgContextResolved');
+  const switchHelperStart = src.indexOf('function applyUserSwitchIsolation(');
+  assert.ok(switchHelperStart >= 0, 'centralized user-switch isolation helper must exist');
+  const switchHelperFn = src.slice(switchHelperStart, switchHelperStart + 2200);
+  assert.match(switchHelperFn, /lastAuthUserId = null;[\s\S]{0,120}orgContextResolved = false;/,
+    'cross-tab user switch cleanup (via applyUserSwitchIsolation) must reset orgContextResolved');
+  assert.match(src, /if \(isUserSwitch\) \{\s*[\r\n]+\s*applyUserSwitchIsolation\('SIGNED_IN_USER_SWITCH'\)/,
+    'auth listener cross-tab user switch must invoke the isolation helper');
 });
 
 test('phase 0.6C-3 AccountSwitcher loading state is gated by unresolved org context', async () => {
@@ -20027,7 +20032,7 @@ test('HARDEN-P1B hasMissingEditorPack and syncRecoverableErrorOverlay implement 
 // candidate while the new user's JWT is active but OrgContext is unresolved.
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('BUG-01-A renderAuthState clears org hint, in-memory context, billing state, and sets switch flag on confirmed user switch', async () => {
+test('BUG-01-A renderAuthState delegates confirmed user switches to the centralized isolation helper', async () => {
   const src = await fs.readFile(appPath, 'utf8');
 
   assert.match(src, /_isConfirmedUserSwitch/, '_isConfirmedUserSwitch variable present');
@@ -20046,12 +20051,8 @@ test('BUG-01-A renderAuthState clears org hint, in-memory context, billing state
   assert.ok(blockEnd > ifIdx, 'user-switch block body extracted');
   const block = src.slice(ifIdx, blockEnd);
 
-  assert.match(block, /writeLocalOrgId\(null\)/, 'localStorage key tp3d:active-org-id is cleared');
-  assert.match(block, /orgContext\.activeOrgId\s*=\s*null/, 'in-memory orgContext.activeOrgId nulled');
-  assert.match(block, /orgContext\.activeOrg\s*=\s*null/, 'in-memory orgContext.activeOrg nulled');
-  assert.match(block, /orgContext\.orgs\s*=\s*\[\]/, 'in-memory orgContext.orgs emptied');
-  assert.match(block, /clearBillingState\(\)/, 'clearBillingState() called to reset billing and bump epoch');
-  assert.match(block, /__TP3D_USER_SWITCH_PENDING\s*=\s*true/, 'user-switch pending flag set for billing service guard');
+  assert.match(block, /applyUserSwitchIsolation\(/, 'guard block delegates to applyUserSwitchIsolation (single contract; see BUG-01-I)');
+  assert.ok(!/writeLocalOrgId\(null\)/.test(block), 'no duplicated inline clear — the helper owns the contract');
 });
 
 test('BUG-01-A2 user-switch guard requires actual identity change, not same-user token refresh', async () => {
@@ -20066,17 +20067,27 @@ test('BUG-01-A2 user-switch guard requires actual identity change, not same-user
   assert.match(guardExpr, /lastAuthUserId !== String\(user\.id\)/, 'guard compares IDs as strings so same user never triggers clear');
 });
 
-test('BUG-01-A3 writeLocalOrgId(null) is placed BEFORE readLocalOrgId() inside renderAuthState', async () => {
+test('BUG-01-A3 isolation runs BEFORE readLocalOrgId() and BEFORE network-dependent work in renderAuthState', async () => {
   const src = await fs.readFile(appPath, 'utf8');
 
-  // The clear must precede the read so the new user never inherits the stale key.
+  // The clear must precede the org-hint read so the new user never inherits the
+  // stale key, and must precede await checkProfileStatus() so no network wait
+  // can interleave stale User A state with User B identity.
   const renderAuthStart = src.indexOf('async function renderAuthState(');
   assert.ok(renderAuthStart >= 0, 'renderAuthState function found');
 
-  const writeNullIdx = src.indexOf('writeLocalOrgId(null)', renderAuthStart);
-  const readIdx = src.indexOf('readLocalOrgId()', renderAuthStart);
-  assert.ok(writeNullIdx > 0 && readIdx > 0, 'both writeLocalOrgId(null) and readLocalOrgId() found in renderAuthState');
-  assert.ok(writeNullIdx < readIdx, 'writeLocalOrgId(null) appears before readLocalOrgId() in renderAuthState');
+  const isolationIdx = src.indexOf('applyUserSwitchIsolation(', renderAuthStart);
+  const profileIdx = src.indexOf('await checkProfileStatus()', renderAuthStart);
+  const readIdx = src.indexOf('const hintedOrgId = readLocalOrgId()', renderAuthStart);
+  assert.ok(isolationIdx > 0 && profileIdx > 0 && readIdx > 0, 'isolation call, profile await, and org-hint read found in renderAuthState');
+  assert.ok(isolationIdx < profileIdx, 'isolation precedes await checkProfileStatus() (no pre-clear network window)');
+  assert.ok(isolationIdx < readIdx, 'isolation precedes readLocalOrgId() — stale key cannot be inherited');
+
+  // The helper itself clears the hint via clearOrgContext({ clearLocalOrgHint: true }).
+  const helperStart = src.indexOf('function applyUserSwitchIsolation(');
+  assert.ok(helperStart >= 0, 'isolation helper found');
+  const helper = src.slice(helperStart, helperStart + 2200);
+  assert.match(helper, /clearLocalOrgHint:\s*true/, 'helper clears the tp3d:active-org-id hint');
 });
 
 test('BUG-01-B clearBillingState bumps _billingEpoch so any in-flight request from prior user epoch is discarded', async () => {
@@ -20229,4 +20240,244 @@ test('BUG-01-H cross-tab same-user refresh: guard is false when user IDs match',
   const guardLine = src.slice(guardIdx, guardIdx + 300);
   // Must not use isSameUser — must use raw ID comparison so cross-tab refresh with same user is safe
   assert.match(guardLine, /lastAuthUserId !== String\(user\.id\)/, 'raw ID comparison — same user cross-tab is not a switch');
+});
+
+// ─── BUG-01 (integration hardening): centralized user-switch isolation ───────
+// The read-only audit found three residual gaps after the original candidate:
+//  1) rehydrateAuthState erased lastAuthUserId evidence on a user mismatch
+//     without any cleanup, defeating both the auth listener's isUserSwitch
+//     detection and the renderAuthState guard (evidence destruction).
+//  2) The isolation logic lived in two separate cleanup contracts.
+//  3) BUG-07: sidebar billing markup was hidden without clearing innerHTML.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('BUG-01-I applyUserSwitchIsolation is the single authoritative isolation contract', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  const defCount = src.split('function applyUserSwitchIsolation(').length - 1;
+  assert.strictEqual(defCount, 1, 'exactly one definition of applyUserSwitchIsolation');
+
+  const fnStart = src.indexOf('function applyUserSwitchIsolation(');
+  const fn = src.slice(fnStart, fnStart + 2200);
+
+  // Flag first: nothing triggered synchronously by the clears below may promote
+  // the stale localStorage org hint.
+  const flagIdx = fn.indexOf('__TP3D_USER_SWITCH_PENDING = true');
+  const billingIdx = fn.indexOf('clearBillingState()');
+  assert.ok(flagIdx > 0, 'promotion-guard flag set inside the helper');
+  assert.ok(billingIdx > flagIdx, 'flag is set BEFORE clearBillingState()');
+
+  assert.match(fn, /clearBillingState\(\)/, 'billing state cleared (bumps billing epoch, fails gates closed)');
+  assert.match(fn, /clearOrgContext\(\{ clearLocalOrgHint: true, confirmedNoOrg: false \}\)/, 'org context + local org hint cleared');
+  assert.match(fn, /suspendAutoSave = true/, 'autosave suspended during app-state reset');
+  assert.match(fn, /resetAppStateToEmpty\(\)/, 'in-memory app state reset (durable per-user storage untouched)');
+  assert.match(fn, /resetAccountBundleCache\(/, 'account-bundle cache invalidated');
+  assert.match(fn, /clearSidebarBillingDomForUserSwitch\(\)/, 'sidebar billing DOM cleared');
+  assert.match(fn, /SettingsOverlay\.close\(\)/, 'settings overlay closed on identity transition');
+  assert.match(fn, /AccountOverlay\.close\(\)/, 'account overlay closed on identity transition');
+  assert.match(fn, /lastAuthUserId = null/, 'prior-user evidence cleared by the contract itself');
+  assert.match(fn, /orgContextResolved = false/, 'org context marked unresolved');
+});
+
+test('BUG-01-J auth listener, renderAuthState, and rehydrateAuthState all use the same helper (no second cleanup contract)', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  const defIdx = src.indexOf('function applyUserSwitchIsolation(');
+  assert.ok(defIdx >= 0, 'helper definition found');
+
+  let callCount = 0;
+  let from = 0;
+  for (;;) {
+    const idx = src.indexOf('applyUserSwitchIsolation(', from);
+    if (idx === -1) break;
+    from = idx + 1;
+    if (idx === defIdx + 'function '.length) continue; // skip the definition itself
+    callCount++;
+  }
+  assert.strictEqual(callCount, 3, 'exactly three call sites: listener, renderAuthState, rehydrateAuthState');
+
+  assert.ok(src.includes("applyUserSwitchIsolation('SIGNED_IN_USER_SWITCH')"), 'auth listener user-switch path uses the helper');
+  assert.ok(
+    src.includes("applyUserSwitchIsolation(isUserSwitch ? 'SIGNED_IN_USER_SWITCH' : 'render-auth-state-user-switch')"),
+    'renderAuthState guard uses the helper'
+  );
+  assert.ok(src.includes("applyUserSwitchIsolation('rehydrate-user-switch')"), 'rehydrateAuthState mismatch path uses the helper');
+
+  // The old inline listener cleanup must not exist as a second contract.
+  const listenerCallIdx = src.indexOf("applyUserSwitchIsolation('SIGNED_IN_USER_SWITCH')");
+  const listenerCtx = src.slice(Math.max(0, listenerCallIdx - 260), listenerCallIdx);
+  assert.match(listenerCtx, /if \(isUserSwitch\) \{/, 'listener call guarded by isUserSwitch');
+  assert.ok(!listenerCtx.includes('clearBillingState()'), 'listener no longer duplicates an inline billing clear');
+});
+
+test('BUG-01-K rehydrateAuthState never erases prior-user evidence without full isolation', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  const fnStart = src.indexOf('async function rehydrateAuthState(');
+  assert.ok(fnStart >= 0, 'rehydrateAuthState found');
+  const helperDefIdx = src.indexOf('function applyUserSwitchIsolation(');
+  const fnEnd = helperDefIdx > fnStart ? helperDefIdx : src.indexOf('async function renderAuthState(', fnStart);
+  const fn = src.slice(fnStart, fnEnd);
+
+  const mismatchIdx = fn.indexOf('String(lastAuthUserId) !== String(user.id)');
+  assert.ok(mismatchIdx >= 0, 'identity-mismatch check present in rehydrateAuthState');
+  const mismatchRegion = fn.slice(mismatchIdx, mismatchIdx + 700);
+  assert.match(mismatchRegion, /applyUserSwitchIsolation\('rehydrate-user-switch'\)/, 'mismatch invokes the full isolation contract');
+  assert.ok(!/lastAuthUserId = null/.test(mismatchRegion), 'no bare evidence erasure in the mismatch branch');
+});
+
+test('BUG-01-M synthetic: billing epoch bump discards delayed prior-user results, including rapid A→B→A', () => {
+  // Emulates the epoch contract: refreshBilling captures _epochAtStart before
+  // the fetch and discards the result when clearBillingState() (inside
+  // applyUserSwitchIsolation) bumped the epoch mid-flight.
+  let billingEpoch = 7;
+  const applyIsolation = () => { billingEpoch++; };
+
+  const epochAtStartA = billingEpoch;      // delayed User A request in flight
+  applyIsolation();                        // A → B
+  assert.strictEqual(billingEpoch === epochAtStartA, false, 'delayed A result discarded after A→B');
+
+  const epochAtStartB = billingEpoch;      // delayed User B request in flight
+  applyIsolation();                        // B → A (rapid return)
+  assert.strictEqual(billingEpoch === epochAtStartA, false, 'first-A-session result still rejected after A→B→A');
+  assert.strictEqual(billingEpoch === epochAtStartB, false, 'mid-transition B result rejected after B→A');
+
+  const epochAtStartA2 = billingEpoch;     // fresh request for the returned A session
+  assert.strictEqual(billingEpoch === epochAtStartA2, true, 'current-generation request applies normally');
+});
+
+test('BUG-01-N delayed prior-user account bundles remain rejected by auth epoch/user protections', async () => {
+  const supabaseClientUrl = new URL('../../src/core/supabase-client.js', import.meta.url);
+  const src = await fs.readFile(supabaseClientUrl, 'utf8');
+
+  // updateAuthState bumps the epoch whenever the user or token changes.
+  assert.match(src, /const userChanged = prevUserId !== newUserId/, 'user change detected in updateAuthState');
+  assert.match(src, /if \(userChanged \|\| tokenChanged\) \{\s*[\r\n]+\s*bumpAuthEpoch\(\)/, 'epoch bumped on user/token change');
+
+  // The bundle single-flight re-checks the epoch after every await and rejects
+  // cross-user results before building the bundle.
+  const epochChecks = src.split('_authEpoch !== startEpoch').length - 1;
+  assert.ok(epochChecks >= 3, `bundle re-checks epoch after awaits (found ${epochChecks})`);
+  assert.match(src, /User changed during fetch/, 'cross-user bundle result canceled');
+  assert.match(src, /_inflightAccount\.key === authKey && _inflightAccount\.epoch === startEpoch/, 'in-flight reuse requires same key AND same epoch');
+});
+
+test('BUG-01-O pending-flag lifecycle: one setter, terminal clears on sign-out, no-workspace, and org resolution', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const svcSrc = await fs.readFile(billingServiceUrl, 'utf8');
+
+  const setTrue = appSrc.split('__TP3D_USER_SWITCH_PENDING = true').length - 1;
+  assert.strictEqual(setTrue, 1, 'flag becomes true only inside applyUserSwitchIsolation');
+
+  const appClears = appSrc.split('__TP3D_USER_SWITCH_PENDING = false').length - 1;
+  assert.strictEqual(appClears, 2, 'app releases the flag in exactly two terminal paths');
+
+  // Terminal 1: sign-out cleanup.
+  const cleanupStart = appSrc.indexOf('function _executeSignedOutCleanup(');
+  assert.ok(cleanupStart >= 0, '_executeSignedOutCleanup found');
+  const cleanupFn = appSrc.slice(cleanupStart, cleanupStart + 3200);
+  assert.match(cleanupFn, /__TP3D_USER_SWITCH_PENDING = false/, 'sign-out releases the flag');
+
+  // Terminal 2: confirmed no-workspace state.
+  const clearOrgStart = appSrc.indexOf('function clearOrgContext(');
+  assert.ok(clearOrgStart >= 0, 'clearOrgContext found');
+  const clearOrgFn = appSrc.slice(clearOrgStart, clearOrgStart + 2600);
+  const noOrgIdx = clearOrgFn.indexOf('if (confirmedNoOrg) {');
+  assert.ok(noOrgIdx >= 0, 'confirmedNoOrg terminal branch found');
+  const noOrgRegion = clearOrgFn.slice(noOrgIdx, noOrgIdx + 700);
+  assert.match(noOrgRegion, /__TP3D_USER_SWITCH_PENDING = false/, 'confirmed no-workspace releases the flag');
+
+  // Terminal 3: successful OrgContext resolution (billing service; see BUG-01-C).
+  assert.match(svcSrc, /__TP3D_USER_SWITCH_PENDING\s*=\s*false/, 'billing service releases the flag when OrgContext resolves');
+
+  // No timer-based clearing inside the isolation contract.
+  const helperStart = appSrc.indexOf('function applyUserSwitchIsolation(');
+  const helperFn = appSrc.slice(helperStart, helperStart + 2200);
+  assert.ok(!/setTimeout|setInterval/.test(helperFn), 'no timers in the isolation contract');
+});
+
+test('BUG-01-P same-user refresh and same-user workspace switch never invoke isolation', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  // Workspace switch path must not isolate.
+  const setActiveStart = src.indexOf('async function setActiveOrgId(');
+  assert.ok(setActiveStart >= 0, 'setActiveOrgId found');
+  const setActiveRegion = src.slice(setActiveStart, setActiveStart + 4200);
+  assert.ok(!setActiveRegion.includes('applyUserSwitchIsolation'), 'workspace switch does not run user-switch isolation');
+
+  // Every isolation call site is guarded by an identity-difference condition.
+  const defIdx = src.indexOf('function applyUserSwitchIsolation(');
+  let from = 0, total = 0, guarded = 0;
+  for (;;) {
+    const idx = src.indexOf('applyUserSwitchIsolation(', from);
+    if (idx === -1) break;
+    from = idx + 1;
+    if (idx === defIdx + 'function '.length) continue;
+    total++;
+    const before = src.slice(Math.max(0, idx - 800), idx);
+    if (/if \(isUserSwitch\) \{|if \(_isConfirmedUserSwitch\) \{|String\(lastAuthUserId\) !== String\(user\.id\)/.test(before)) guarded++;
+  }
+  assert.strictEqual(total, 3, 'three isolation call sites');
+  assert.strictEqual(guarded, 3, 'every isolation call site requires a detected identity difference');
+
+  // Same-user guard semantics unchanged: raw string ID comparison.
+  const guardIdx = src.indexOf('const _isConfirmedUserSwitch =');
+  const guardLine = src.slice(guardIdx, guardIdx + 300);
+  assert.match(guardLine, /lastAuthUserId !== String\(user\.id\)/, 'same user (matching IDs) never triggers isolation');
+});
+
+// ─── BUG-07: sidebar billing DOM must be cleared at the source, not CSS-hidden ─
+
+test('BUG-07-A updateSidebarNotice clears stale markup on every hide path', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  const fnStart = src.indexOf('const updateSidebarNotice = (s) => {');
+  assert.ok(fnStart >= 0, 'updateSidebarNotice found');
+  const fnEnd = src.indexOf('_billingGateApplier = updateSidebarNotice', fnStart);
+  assert.ok(fnEnd > fnStart, 'updateSidebarNotice span resolved');
+  const fn = src.slice(fnStart, fnEnd);
+
+  // 5 hide paths + 1 rebuild-on-show path all wipe innerHTML.
+  const wipes = fn.split("upgradeEl.innerHTML = ''").length - 1;
+  assert.ok(wipes >= 6, `expected >= 6 innerHTML wipes (5 hide paths + rebuild), found ${wipes}`);
+
+  // Named hide branches each wipe before hiding.
+  for (const marker of [
+    "// Card wasn't visible — keep it hidden until we have resolved data.",
+    'if (!s.ok) {',
+    'if (isIncludedInPlan || (isEntitled && !isTrial)) {',
+    'if (!canManageBilling && !showInfoOnlyCard) {',
+    'if (!isTrial && !needsUpgrade) {',
+  ]) {
+    const idx = fn.indexOf(marker);
+    assert.ok(idx >= 0, `hide branch marker present: ${marker}`);
+    const region = fn.slice(idx, idx + 420);
+    assert.match(region, /upgradeEl\.innerHTML = ''/, `hide branch wipes markup: ${marker}`);
+    assert.match(region, /hidden = true/, `hide branch hides the card: ${marker}`);
+  }
+
+  // Payment banner hide path wipes its text too.
+  const payHideIdx = fn.indexOf('} else if (payBanner) {');
+  assert.ok(payHideIdx >= 0, 'payment banner hide branch present');
+  const payRegion = fn.slice(payHideIdx, payHideIdx + 260);
+  assert.match(payRegion, /payBanner\.textContent = ''/, 'payment banner text cleared on hide');
+
+  // The show path fully rebuilds markup from scratch.
+  const showIdx = fn.indexOf('upgradeWrap.hidden = false');
+  assert.ok(showIdx >= 0, 'show path present');
+  const showRegion = fn.slice(showIdx, showIdx + 700);
+  assert.match(showRegion, /upgradeEl\.innerHTML = ''/, 'show path rebuilds from empty');
+});
+
+test('BUG-07-B synthetic: the hide contract leaves no stale child markup', () => {
+  // Emulates the per-branch hide contract now used by updateSidebarNotice.
+  const upgradeEl = { innerHTML: '<div>User A — Trial ends in 3 days</div>', hidden: false };
+  const upgradeWrap = { hidden: false };
+
+  upgradeEl.innerHTML = '';
+  if (upgradeWrap) upgradeWrap.hidden = true;
+  else upgradeEl.hidden = true;
+
+  assert.strictEqual(upgradeEl.innerHTML, '', 'stale prior-identity markup removed at the source');
+  assert.strictEqual(upgradeWrap.hidden, true, 'card hidden');
 });

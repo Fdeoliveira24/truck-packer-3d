@@ -15,6 +15,8 @@ declare global {
     __TP3D_UI?: any;
     __TP3D_BILLING?: any;
     __TP3D_BILLING_TRACE_CURRENT_ID__?: any;
+    /** BUG-01: true while a cross-user identity transition is in progress; gates the billing localStorage-only org promotion. */
+    __TP3D_USER_SWITCH_PENDING?: boolean;
     __TP3D_DIAG__?: any;
     __TP3D_ORG_METRICS__?: any;
     __TP3D_BUILD_STAMP_LOGGED__?: any;

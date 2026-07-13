@@ -6336,6 +6336,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (clearLocalOrgHint || confirmedNoOrg) writeLocalOrgId(null);
       if (confirmedNoOrg) {
         orgRequiredStateReason = String(reason || '');
+        // BUG-01: confirmed no-workspace is a terminal state for the current
+        // identity — release the user-switch promotion guard so it cannot stay
+        // latched true for a user with zero active workspaces.
+        try { window.__TP3D_USER_SWITCH_PENDING = false; } catch (_) { /* ignore */ }
         suspendAutoSave = true;
         try {
           resetAppStateToEmpty();
@@ -7071,8 +7075,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
             // ignore
           }
           if (lastAuthUserId && String(lastAuthUserId) !== String(user.id)) {
-            lastAuthUserId = null;
-            orgContextResolved = false;
+            // BUG-01: a different authenticated identity surfaced mid-rehydrate.
+            // Apply the full isolation contract instead of silently erasing the
+            // prior-user evidence — a bare lastAuthUserId reset here used to
+            // defeat both the auth listener's isUserSwitch detection and the
+            // renderAuthState guard, leaving User A org/billing state live.
+            applyUserSwitchIsolation('rehydrate-user-switch');
           }
         }
 
@@ -7145,6 +7153,59 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return authRehydratePromise;
     }
 
+    /** Sidebar billing/upgrade DOM hygiene for identity transitions (BUG-01/BUG-07). */
+    function clearSidebarBillingDomForUserSwitch() {
+      try {
+        const upgradeEl = document.getElementById('tp3d-sidebar-upgrade');
+        const upgradeWrap = document.getElementById('upgradeCardWrap');
+        if (upgradeEl) upgradeEl.innerHTML = '';
+        if (upgradeWrap) upgradeWrap.hidden = true;
+        else if (upgradeEl) upgradeEl.hidden = true;
+      } catch {
+        // Best-effort DOM hygiene only; normal billing rendering will rebuild it.
+      }
+    }
+
+    /**
+     * BUG-01: the single authoritative cross-user isolation contract.
+     * Runs synchronously so no await can interleave User A state reads with
+     * User B identity. Every confirmed identity transition (auth listener,
+     * renderAuthState guard, rehydrateAuthState mismatch) must go through this
+     * helper — never erase lastAuthUserId evidence for a different user
+     * anywhere else.
+     */
+    function applyUserSwitchIsolation(reason) {
+      // Set the promotion guard before any clear below so nothing triggered
+      // synchronously by billing/org notifications can promote the stale
+      // localStorage org hint (read by resolveActiveOrganizationId in the
+      // billing service).
+      try { window.__TP3D_USER_SWITCH_PENDING = true; } catch (_) { /* ignore */ }
+      try { clearBillingState(); } catch (_) { /* ignore */ }
+      clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: false });
+      suspendAutoSave = true;
+      try {
+        resetAppStateToEmpty();
+      } finally {
+        suspendAutoSave = false;
+      }
+      try {
+        if (SupabaseClient.resetAccountBundleCache) {
+          SupabaseClient.resetAccountBundleCache(String(reason || 'user-switch'), { skipEpochBump: true });
+        }
+      } catch {
+        // ignore
+      }
+      clearSidebarBillingDomForUserSwitch();
+      try {
+        if (SettingsOverlay && typeof SettingsOverlay.close === 'function') SettingsOverlay.close();
+      } catch (_) { /* ignore */ }
+      try {
+        if (AccountOverlay && typeof AccountOverlay.close === 'function') AccountOverlay.close();
+      } catch (_) { /* ignore */ }
+      lastAuthUserId = null;
+      orgContextResolved = false;
+    }
+
     /**
      * @param {{ event?: string, user?: any, userInitiatedSignIn?: boolean, userInitiatedSignOut?: boolean, isSameUser?: boolean, isUserSwitch?: boolean, onRetry?: any }} [opts]
      */
@@ -7188,6 +7249,20 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       if (user) {
+        // BUG-01: On a confirmed identity change, apply the full isolation
+        // contract BEFORE any await or state read below. The auth stability
+        // gate's onConfirmed() is cancelled when SIGNED_IN for the new user
+        // arrives before the 2-second timer fires, so the gate's org clear
+        // never runs through that path — and checkProfileStatus() can hit the
+        // network, so the clear must come first. This keeps the org-hint read
+        // below, the billing service's org resolution, and feature gates unable
+        // to inherit the prior user's org or billing authority.
+        const _isConfirmedUserSwitch = isUserSwitch ||
+          Boolean(lastAuthUserId && user.id && lastAuthUserId !== String(user.id));
+        if (_isConfirmedUserSwitch) {
+          applyUserSwitchIsolation(isUserSwitch ? 'SIGNED_IN_USER_SWITCH' : 'render-auth-state-user-switch');
+        }
+
         const canProceed = await checkProfileStatus();
         if (!canProceed) return;
         AuthOverlay.hide();
@@ -7198,27 +7273,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const uid = user && user.id ? String(user.id) : 'anon';
         Storage.setStorageScope(uid);
 
-        // BUG-01: On a confirmed identity change, clear the prior user's org hint
-        // BEFORE reading it. The auth stability gate's onConfirmed() is cancelled
-        // when SIGNED_IN for the new user arrives before the 2-second timer fires,
-        // so writeLocalOrgId(null) never runs through that path. We must clear it
-        // here, synchronously, so neither readLocalOrgId() nor
-        // resolveActiveOrganizationId() can inherit the stale key.
-        const _isConfirmedUserSwitch = isUserSwitch ||
-          Boolean(lastAuthUserId && user.id && lastAuthUserId !== String(user.id));
-        if (_isConfirmedUserSwitch) {
-          writeLocalOrgId(null);
-          orgContext.activeOrgId = null;
-          orgContext.activeOrg = null;
-          orgContext.orgs = [];
-          try { clearBillingState(); } catch (_) { /* ignore */ }
-          try { window.__TP3D_USER_SWITCH_PENDING = true; } catch (_) { /* ignore */ }
-        }
-
         const hintedOrgId = readLocalOrgId();
         setWorkspaceStorageScope(hintedOrgId);
 
-        if (isUserSwitch || !hasLoadedScopedState) {
+        if (_isConfirmedUserSwitch || !hasLoadedScopedState) {
           applyWorkspaceScopedLocalState(hintedOrgId, {
             seedIfMissing: false,
             force: true,
@@ -7359,6 +7417,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
         // ignore
       }
       try { clearBillingState(); } catch (_) { /* ignore */ }
+      // BUG-01: sign-out is a terminal identity state — release the user-switch
+      // promotion guard so it cannot stay latched across the next sign-in.
+      try { window.__TP3D_USER_SWITCH_PENDING = false; } catch (_) { /* ignore */ }
 
       if (isSignedOutEvent && userInitiatedSignOut && canShowToast('auth-signed-out')) {
         UIComponents.showToast('Signed out', 'info', { title: 'Auth' });
@@ -7914,18 +7975,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
       }
 
-      function clearSidebarBillingDomForUserSwitch() {
-        try {
-          const upgradeEl = document.getElementById('tp3d-sidebar-upgrade');
-          const upgradeWrap = document.getElementById('upgradeCardWrap');
-          if (upgradeEl) upgradeEl.innerHTML = '';
-          if (upgradeWrap) upgradeWrap.hidden = true;
-          else if (upgradeEl) upgradeEl.hidden = true;
-        } catch {
-          // Best-effort DOM hygiene only; normal billing rendering will rebuild it.
-        }
-      }
-
       if (!authListenerInstalled) {
         authListenerInstalled = true;
         SupabaseClient.onAuthStateChange(async (event, session) => {
@@ -7979,26 +8028,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
           // Cross-tab user switches are handled via auth events (no page reload).
 
-          // If this is a user switch (different user signed in), clear stale state immediately
+          // If this is a user switch (different user signed in), isolate stale state immediately
           if (isUserSwitch) {
-            clearBillingState();
-            clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: false });
-            suspendAutoSave = true;
-            try {
-              resetAppStateToEmpty();
-            } finally {
-              suspendAutoSave = false;
-            }
-            try {
-              if (SupabaseClient.resetAccountBundleCache) {
-                SupabaseClient.resetAccountBundleCache('SIGNED_IN_USER_SWITCH', { skipEpochBump: true });
-              }
-            } catch {
-              // ignore
-            }
-            clearSidebarBillingDomForUserSwitch();
-            lastAuthUserId = null; // Clear old user ID to prevent stale state leakage
-            orgContextResolved = false;
+            applyUserSwitchIsolation('SIGNED_IN_USER_SWITCH');
           }
 
           // Rehydrate auth state for sign-in/session refresh events.
@@ -9030,6 +9062,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
             }
             payBanner.hidden = false;
           } else if (payBanner) {
+            // BUG-07: clear stale billing text at the source when hiding.
+            payBanner.textContent = '';
             payBanner.hidden = true;
           }
 
@@ -9047,12 +9081,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
               return;
             }
             // Card wasn't visible — keep it hidden until we have resolved data.
+            // BUG-07: also clear stale markup so no prior-identity content can
+            // survive in hidden DOM (hide-only retention was the root cause).
+            upgradeEl.innerHTML = '';
             if (upgradeWrap) upgradeWrap.hidden = true;
             else upgradeEl.hidden = true;
             return;
           }
           if (!s.ok) {
             // Billing fetch failed — hide the upgrade card (do not show stale Upgrade CTA).
+            upgradeEl.innerHTML = '';
             if (upgradeWrap) upgradeWrap.hidden = true;
             else upgradeEl.hidden = true;
             return;
@@ -9071,11 +9109,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
             isBillingUnavailable
           );
           if (isIncludedInPlan || (isEntitled && !isTrial)) {
+            upgradeEl.innerHTML = '';
             if (upgradeWrap) upgradeWrap.hidden = true;
             else upgradeEl.hidden = true;
             return;
           }
           if (!canManageBilling && !showInfoOnlyCard) {
+            upgradeEl.innerHTML = '';
             if (upgradeWrap) upgradeWrap.hidden = true;
             else upgradeEl.hidden = true;
             return;
@@ -9084,6 +9124,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             ? !isEntitled
             : (!s.isActive || !s.isPro);
           if (!isTrial && !needsUpgrade) {
+            upgradeEl.innerHTML = '';
             if (upgradeWrap) upgradeWrap.hidden = true;
             else upgradeEl.hidden = true;
             return;

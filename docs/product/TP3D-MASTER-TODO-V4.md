@@ -1,16 +1,16 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-07-12 — Max Capacity Phase A is complete, fast-forward merged, and pushed to `main` / `origin/main` through `6f32a6a`. Phase B durability is next and has not started.
+**Last updated:** 2026-07-12 — Max Capacity Phase B durability implementation and browser smoke are complete on `feat/autopack-max-capacity-durability`; closeout commits and main integration are in progress.
 
 ## CURRENT STATUS SNAPSHOT — 2026-07-12
 
 | Area | Current status |
 |---|---|
-| Stable main | Phase A was fast-forward merged and pushed through `6f32a6a`. Rebased implementation commit: `80919f8`; rebased documentation commit: `6f32a6a`. |
-| Current active branch | `feat/autopack-max-capacity-durability` is the next isolated branch. Phase B implementation has not started. |
-| Current uncommitted work | None. Phase A is committed, merged, and pushed. |
-| Completed phase | **Max Capacity Phase A — solver-only Results option.** Max Capacity appears as a manually viewable/applyable AutoPack Results option after Stack priority, relaxes handling/business rules during solving only, keeps hard physical validation unchanged, is excluded from automatic winner/default selection, and is intentionally not durable yet. |
-| Waiting for | Explicit approval to begin Phase B durability on its dedicated branch. |
-| Do not run now | Do not mix Phase B durability with Undo history, general Delete repair, Truck Change, broad solver rewrites, legacy cleanup, Heavy-Low, Rear-Access, Force Fit, Exception Fit, billing/auth/security, broad CSS redesign, or unrelated refactors. |
+| Stable main | Phase A remains merged and pushed through `6f32a6a`; Phase B is validated and awaiting its closeout commits / fast-forward integration. |
+| Current active branch | `feat/autopack-max-capacity-durability` — implementation complete; browser smoke PASS. |
+| Current uncommitted work | Phase B implementation/tests plus this closeout documentation update. |
+| Completed phase | **Max Capacity Phase B — durable per-instance profile.** Applied Max Capacity layouts persist `packedProfile: "max-capacity"` per packed instance, without a pack-wide relaxed mode. |
+| Waiting for | Closeout commits, fast-forward merge, push, and final SHA evidence only. |
+| Do not run now | Do not start Phase C or any quality-audit branch until Phase B is committed, merged, pushed, and the next branch is created. |
 
 ### Current integration gate — 2026-07-12
 
@@ -20,7 +20,8 @@
 4. ✅ Signed-in browser evidence recorded: Balanced opened on Option 1 and packed `236`; Max Capacity packed `297`, generated and applied successfully; persistent manual change made Results Outdated as expected.
 5. ✅ Rebased implementation/test commit `80919f8` and documentation commit `6f32a6a` onto current main with no conflicts.
 6. ✅ Fast-forward merged and pushed Phase A; `main` and `origin/main` matched at `6f32a6a` after the Phase A push.
-7. ⬜ Phase B has not started; its separate durability branch is the next work context.
+7. ✅ Phase B browser smoke PASS: Apply Max Capacity, reload, delete unrelated cargo, delete a real support, manual move/rotate, Unpack, and Truck Change; the old mass-collapse behavior did not recur.
+8. ✅ Final Phase B validation: full suite `873` passed, `5` skipped, `0` failed (`878` total); typecheck and syntax checks passed; lint reported `0` errors; `git diff --check` passed.
 
 ### Current completed integration evidence — 2026-07-12
 
@@ -36,7 +37,7 @@
 - ✅ Rebased Phase A commits: implementation/tests `80919f8`; documentation `6f32a6a`; Phase A main integration SHA `6f32a6a`.
 - ✅ Automated closeout evidence: Results `23/23`; full suite `854` passed, `5` skipped, `0` failed; typecheck passed; lint passed with existing warnings only; syntax checks and `git diff --check` passed.
 - ✅ Signed-in browser evidence: Balanced opened visually as Option 1 and packed `236`; Max Capacity packed `297`, generated successfully, and applied successfully; a persistent manual change correctly marked Results Outdated.
-- ⚠️ Confirmed Phase B durability limitation, not a Phase A solver failure: removing or moving a Max Capacity case can cause many remaining cases to move, repair, or stage into a strange partial layout because Phase A stores no durable relaxed-profile metadata. Phase A does not claim reload/manual-edit/delete durability.
+- ✅ The confirmed Phase A durability limitation is fixed in Phase B: unrelated physically valid marked placements survive canonical revalidation; only physical dependents repair or stage.
 
 ---
 
@@ -46,16 +47,16 @@
 |-------|-------|
 | Phase A integration commit | `6f32a6a` (`docs(product): refresh project tree and max capacity status`), with implementation/tests at `80919f8`. |
 | Current active branch | `feat/autopack-max-capacity-durability` |
-| Active implementation | None. Phase B durability has not started. |
-| Current allowed dirty files | None; begin Phase B only under a separately approved implementation packet. |
-| Active blocker | Confirmed Phase B durability limitation: Phase A stores no per-instance relaxed profile, so manual move/delete/repair can dismantle Max Capacity relationships during canonical revalidation. |
-| Next planned phase | Phase B durable Max Capacity metadata using `packedProfile: "max-capacity"`, preserving unrelated marked placements and repairing/staging only physically affected dependents. |
-| Waiting for | Explicit Phase B implementation approval. |
-| Do not start simultaneously | Keep Phase B `packedProfile` / PackLibrary durability work separate from Undo history reset, general Delete repair, Unpack/Truck Change cleanup, CSS/UI redesign, PDF/export, billing/auth/security, and broad solver refactors. |
+| Active implementation | Phase B implementation complete; closeout/integration only. |
+| Current allowed dirty files | Eight approved implementation/test files plus this TODO during closeout. |
+| Active blocker | None in Phase B behavior. Pack JSON / pack-batch missing-or-stale `orientedDims` import repair is fixed and covered. |
+| Next planned phase | After Phase B integration, create `fix/unpack-staging-alignment`; do not implement it during this closeout. |
+| Waiting for | Phase B commits, fast-forward merge, push, and final SHA correction. |
+| Do not start simultaneously | Phase C remains not started. Keep the four quality follow-ups isolated on their proposed branches. |
 
 *Update this block after each commit/merge. Do not hardcode the same status in multiple conflicting places.*
 
-> **Current source-of-truth note (2026-07-12):** Max Capacity Phase A was fast-forward merged and pushed through `6f32a6a` (`80919f8` implementation/tests; `6f32a6a` documentation). Phase A is intentionally narrow and solver-only: it does not mutate saved rules, is never auto-selected, and does not claim reload/manual-edit/delete durability. Phase B is next on `feat/autopack-max-capacity-durability` and has not started.
+> **Current source-of-truth note (2026-07-12):** Max Capacity Phase B implementation and signed-in browser smoke are complete on `feat/autopack-max-capacity-durability`. The implementation, documentation, and final main integration SHAs will be recorded after the closeout commits and fast-forward merge; do not predict them.
 
 ## Active Debug Queue — AutoPack / Results / Editor Regressions
 
@@ -71,19 +72,33 @@
 - ✅ **Phase A browser evidence:** Balanced opened on Option 1 and packed `236`; Max Capacity packed `297`, generated and applied successfully; persistent manual change marked Results Outdated.
 - ⚠️ **Durability boundary:** moving/removing Max Capacity cargo can dismantle many placements during canonical revalidation because Phase A has no durable relaxed profile. This is a confirmed Phase B limitation, not a Phase A solver failure.
 
-### B. Max Capacity Phase B — durable metadata, not started
-- ⬜ Add per-instance `packedProfile: "max-capacity"` only when a Max Capacity option is applied.
-- ⬜ Teach PackLibrary/revalidation paths to use physical-only handling relaxation for marked Max Capacity instances while preserving containment, overlap, support, Wheel Wells, and Front Overhang hard rules.
-- ⬜ Strip the marker when a marked case is manually moved/rotated/staged or when a normal AutoPack option/Unpack rebuilds the layout.
-- ⬜ Do not add pack-level flags; derive Max Capacity presence from marked instances.
-- ⬜ Add reload, import, duplicate, manual edit, truck change, and repair tests.
-- ⚠️ Applied Max Capacity layouts currently lose their relaxed-rule context during canonical revalidation because Phase A stores no durable profile metadata.
-- ⬜ Manual move/delete/repair must preserve unrelated marked placements and only repair or stage physically affected dependents.
-- ⬜ Deletion durability must remain a narrow Max Capacity profile/revalidation change, not a broad delete architecture rewrite.
+### B. Max Capacity Phase B — durable metadata, implementation complete
+- ✅ `packedProfile: "max-capacity"` is written only to packed instances when the surviving visible Max Capacity option is actually applied; no pack-wide relaxed mode exists.
+- ✅ PackLibrary consumes the profile per instance. Marked-to-marked cargo support may retain approved handling relaxations while containment, overlap, real support, Wheel Wells, and Front Overhang hard rules remain active.
+- ✅ Unrelated physically valid marked placements survive delete/revalidation unchanged; physical dependents repair locally or stage when no valid supported placement remains.
+- ✅ Staged instances, successfully manual-edited instances, normal-AutoPack rebuilt instances, and Unpacked instances lose the marker.
+- ✅ Reload, App/Workspace/Pack import/export, duplication, StateStore history/Undo/Redo, canonical repair, delete, and Truck Change durability are covered.
+- ✅ Pack JSON and pack-batch import derive marked preliminary geometry from the actual canonical rotation, replacing missing or stale `orientedDims`; genuinely out-of-bounds cargo still stages and loses the marker.
+- ✅ Browser smoke PASS: Apply Max Capacity, reload, delete unrelated cargo, delete a true support, manual move/rotate, Unpack, and Truck Change; no old mass-collapse behavior.
+- ✅ Final validation: `878` tests total; `873` passed, `5` skipped, `0` failed; typecheck/syntax/diff checks passed; lint `0` errors.
+- 🔄 Closeout evidence pending: implementation commit, documentation commit, and final main integration SHA will be recorded after they exist.
 
 ### C. Max Capacity Phase C — reporting note, not started
 - ⬜ Add a small Stats/PDF note only after Phase B is stable: `Max Capacity: handling rules relaxed for N cases.`
 - ⬜ No UI redesign, no modal, no legal/DOT/axle claims.
+
+### Confirmed future quality audit queue — not implemented
+1. ⬜ **Organized Unpack staging alignment** — proposed branch `fix/unpack-staging-alignment`.
+2. ⬜ **Stack Priority layer completion** — proposed branch `fix/stack-priority-layer-completion`.
+3. ⬜ **Wheel Wells riser utilization** — proposed branch `fix/wheelwells-riser-utilization`.
+4. ⬜ **Front Overhang proactive raised-deck planning** — proposed branch `feat/frontoverhang-proactive-deck-plan`.
+
+### Existing Front Overhang product contract
+- Once main-trailer cargo reaches the raised-deck step line, the raised deck may be used only after adequate rear retention/support has been built and validated.
+- Cargo must never float, bridge unsupported space, or remain without sufficient physical support under gravity and transport movement.
+- Leaving the deck empty merely because all cargo fits on the main floor is not the user-selected product strategy.
+- A distant optional preference such as **Raised Deck Utilization** may be considered later; no new UI feature is approved now.
+- The current solver's leftovers-only retaining-wall behavior does not fully satisfy the intended strategy. This is an existing product contract, not a new decision.
 
 ### D. AutoPack Results starting-view bug
 - ✅ `renderAutoPackResultsPanel()` now falls back to `0` when `results.viewIndex` is missing/invalid, so every fresh AutoPack run visually opens on Option 1, `Balanced (recommended)`.
@@ -94,7 +109,7 @@
 - 🔄 **General reconciliation concern:** the core delete/repair pipeline is mostly correct, but full-pack reconciliation can stage unrelated marginal placements after any delete.
 - ✅ Correct behavior: deleting a support box may stage or re-settle boxes physically dependent on it.
 - ⚠️ User-facing concern: unrelated borderline placements can be staged because `reconcilePlacementsForTruck()` checks the entire remaining pack, and the toast can incorrectly say support changed.
-- ⚠️ **Specific Max Capacity durability failure:** Phase A stores no `packedProfile`, so canonical revalidation forgets the relaxed handling context. Moving or deleting one Max Capacity case can therefore dismantle physically valid Max Capacity relationships and move/repair/stage many remaining cases. This is the confirmed Phase B metadata problem, not proof that Phase A generated an invalid physical layout.
+- ✅ **Specific Max Capacity durability failure fixed in Phase B:** canonical revalidation now retains the per-instance profile for unrelated physically valid marked placements; physical dependents alone repair or stage.
 - ⬜ Small safe fix later: adjust toast copy from `because their support changed` to a more honest message such as `because they became invalid after the removal`.
 - ⬜ Structural cleanup later: add an internal busy guard to `deleteInstancesWithFeedback()` and optionally add the app-level `mutationBlockedWhileBusy()` call before `deleteSelected()` delegates.
 - ⬜ Larger scoped-reconciliation fix is deferred until lifecycle/history work is stable.
@@ -354,7 +369,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 6. ✅ **AutoPack Solution Portfolio Phase 2** — merged and pushed to `main` at `819de80`; Floor first (no stacking) is the third safe option after Balanced and Compact fill.
 7. ✅ **AutoPack Solution Portfolio Phase 3 / stabilization** — merged to `main` at `e83839b`; Stack priority is now an intentional portfolio option, Constrained space first is Wheel-Wells-gated, duplicate recovery runs are prevented, and Results clarity/dedupe fixes are included.
 8. ✅ **Max Capacity Phase A** — fast-forward merged and pushed through `6f32a6a`; implementation/tests `80919f8`, documentation `6f32a6a`. Selected-option dedupe ownership, Option-1 starting view, validation, and browser evidence are complete.
-9. ⬜ **Max Capacity Phase B** — next on `feat/autopack-max-capacity-durability`; durable `packedProfile: "max-capacity"` metadata and physical-only revalidation profile. Not started.
+9. ✅ **Max Capacity Phase B** — implementation/browser validation complete on `feat/autopack-max-capacity-durability`; durable per-instance profile, canonical repair, import geometry, delete/manual/Unpack/Truck Change behavior, and persistence coverage are complete. Closeout SHAs are recorded in the current status block after integration.
 10. ⬜ **Undo/history reset branch** — future `fix/undo-history-reset`; reset history after workspace/load hydration and prevent cross-pack Undo confusion.
 11. ⬜ **Delete/repair UX cleanup** — future narrow branch for delete toast accuracy and delete guard consistency.
 12. ⬜ **Unpack/Truck Change stale Results cleanup** — future narrow branch to close stale Results and clear selection after Unpack.
@@ -446,8 +461,9 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 - ✅ **Phase A Results start:** fresh Results visually open at Option 1, `Balanced (recommended)`, while selected/apply/stale/navigation behavior remains unchanged.
 - ✅ **Phase A automated evidence:** Results `23/23`; full suite `854` passed, `5` skipped, `0` failed; typecheck, syntax checks, and `git diff --check` passed; lint passed with existing warnings only.
 - ✅ **Phase A browser evidence:** Balanced opened on Option 1 and packed `236`; Max Capacity packed `297`, generated and applied successfully; persistent manual change correctly marked Results Outdated.
-- ⚠️ **Confirmed Phase B durability limitation:** moving/removing Max Capacity cargo can dismantle many placements because canonical revalidation has no durable relaxed-profile context. This is not a Phase A solver failure, and Phase A does not claim reload/manual-edit/delete durability.
-- ⬜ **Phase B future:** add durable per-instance `packedProfile: "max-capacity"`, preserve unrelated marked placements during move/delete/repair, and repair/stage only physically affected dependents without a broad delete rewrite.
+- ✅ **Phase B durability complete:** durable per-instance `packedProfile: "max-capacity"` preserves unrelated physically valid marked placements; only physical dependents repair or stage, without a pack-wide mode or broad delete rewrite.
+- ✅ **Phase B Pack import repair:** missing/stale `orientedDims` for marked canonical rotations are replaced from actual rotation geometry before preliminary Pack JSON / pack-batch validation.
+- ✅ **Phase B evidence:** browser smoke PASS; full suite `873` passed, `5` skipped, `0` failed (`878` total); typecheck/syntax/diff checks passed; lint `0` errors.
 - ⬜ **Phase C future:** add small Stats/PDF note after durability is stable; no legal/DOT/axle claims.
 
 ### Future portfolio notes
@@ -461,7 +477,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 - Do not remove alternate yaw in Wheel Wells when it fills real usable floor space. Instead, keep it as an organized contiguous filler strip.
 - Do not treat Wheel Wells as only blockers. Their tops are raised support surfaces for cases that fit, and future bridge support should allow wider cases only when enough base support exists.
 - Manual editor movement must enforce the same Wheel-well blocked-body safety as solver validation. A case may touch, sit on top, or later bridge only when support/stability rules pass; it must never pass through the wheel-well body.
-- Do not treat Front Overhang as free floor. Deck loading requires rear retention; future strategy must build that retention first.
+- Do not treat Front Overhang as free floor. Once main-trailer cargo reaches the raised-deck step line, deck use requires adequate rear retention/support to be built and validated first. Cargo must never float, bridge unsupported space, or remain without sufficient physical support. Leaving the deck empty merely because all cargo fits on the main floor is not the selected strategy; the current leftovers-only retaining-wall behavior remains incomplete.
 - Large-load animation must not be required for the data model to reach its final packed state.
 - AutoPack, Unpack, and Truck Change are mutually disruptive operations. The UI may show active progress/spinners, but the code must prevent repeated operations, stale animations, premature truck-change reconciliation, and final-state dependence on animation completion.
 
@@ -553,7 +569,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 ## Near-Term Execution Queue
 *Approved order. Do not combine items. Do not skip steps.*
 
-*Current 2026-07-12 execution note:* Max Capacity Phase A was fast-forward merged and pushed through `6f32a6a` (`80919f8` implementation/tests; `6f32a6a` documentation). The next isolated branch is `feat/autopack-max-capacity-durability`; Phase B has not started. Keep Phase B durability separate from Undo/history reset, general Delete repair, and Unpack/Truck Change cleanup.
+*Current 2026-07-12 execution note:* Max Capacity Phase B implementation and browser smoke are complete on `feat/autopack-max-capacity-durability`. Durable per-instance profile handling, canonical revalidation, and Pack JSON / pack-batch rotation-derived geometry repair are validated. Closeout SHAs are recorded in the live status block after integration; Phase C remains not started.
 
 *Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified; 3B geometry epsilon unification merged (`33b362a`); 5A stacking-safety audit + runtime tests merged (`0aa58c3`); 3B/5A in-browser logic verification recorded (`819d3de`).*
 

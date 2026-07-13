@@ -1,15 +1,15 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-07-13 — AutoPack Results staged-only pose staleness is implementation-, browser-, and full-validation-green on `fix/autopack-staged-pose-staleness`; commit/merge/push remain.
+**Last updated:** 2026-07-13 — AutoPack Results staged-only pose staleness is implementation-, browser-, and full-validation-green, fast-forward merged, and pushed to `main`.
 
 ## CURRENT STATUS SNAPSHOT — 2026-07-12
 
 | Area | Current status |
 |---|---|
-| Stable main | Staging pose/grouped layout closeout is complete through final evidence tip `ac27c97`. |
-| Current active branch | `fix/autopack-staged-pose-staleness` from `main` at `ac27c97`. |
-| Current uncommitted work | AutoPack Results staged-only pose staleness signature fix, focused tests, and this narrow TODO update. |
+| Stable main | AutoPack Results staged-only pose staleness is integrated through feature/documentation tip `53d4404`; final merge evidence is being recorded separately. |
+| Current active branch | `main` after fast-forward integration of `fix/autopack-staged-pose-staleness`. |
+| Current uncommitted work | Final AutoPack Results staged-pose merge evidence only. |
 | Completed phase | **Max Capacity Phase B — durable per-instance profile.** Applied Max Capacity layouts persist `packedProfile: "max-capacity"` per packed instance, without a pack-wide relaxed mode. |
-| Waiting for | Commit, fast-forward merge, push, and final SHA evidence for the AutoPack Results staged-pose staleness packet. |
+| Waiting for | Final evidence commit/push, then creation of the empty visual-highlight cleanup branch. |
 | Do not run now | Do not implement selection/highlight cleanup, stale-panel closing, Phase C, or another quality branch in this packet. |
 
 ### Current integration gate — 2026-07-12
@@ -49,12 +49,12 @@
 | Field | Value |
 |-------|-------|
 | Phase A integration commit | `6f32a6a` (`docs(product): refresh project tree and max capacity status`), with implementation/tests at `80919f8`. |
-| Current active branch | `fix/autopack-staged-pose-staleness` from `main` at `ac27c97`. |
-| Active implementation | AutoPack Results strict signature ignores staged-only position, rotation, `orientedDims`, and staged `packedProfile` changes while preserving packed-layout and membership protection. |
-| Current allowed dirty files | `src/services/autopack-engine.js`, `tests/audit/autopack-results-carousel.spec.mjs`, and this TODO only. |
+| Current active branch | `main` after fast-forward integration of `fix/autopack-staged-pose-staleness`. |
+| Active implementation | Complete: AutoPack Results strict signature ignores staged-only position, rotation, `orientedDims`, and staged `packedProfile` changes while preserving packed-layout and membership protection. |
+| Current allowed dirty files | This TODO only for final merge evidence. |
 | Active blocker | None in Phase B behavior. Pack JSON / pack-batch missing-or-stale `orientedDims` import repair is fixed and covered. |
-| Next planned phase | Close out and integrate this packet; do not start selection/highlight work in this branch. |
-| Waiting for | Commit, fast-forward merge, push, and final SHA evidence. |
+| Next planned phase | Create `fix/editor-visual-highlight-cleanup` from clean updated `main`; do not implement it yet. |
+| Waiting for | Final evidence commit/push and empty next-branch creation. |
 | Do not start simultaneously | Selection/highlight cleanup and Phase C remain out of scope. |
 
 *Update this block after each commit/merge. Do not hardcode the same status in multiple conflicting places.*
@@ -115,6 +115,7 @@
 - ✅ **Results behavior preserved:** physical-layout dedupe, option order, selected-option ownership, fresh Balanced view, Apply behavior, stale copy, and Max Capacity exclusion from automatic selection remain unchanged. Max Capacity option signatures project the durable packed profile that Apply persists.
 - ✅ **Final automated validation:** focused AutoPack Results `31/31`; full suite `893` total with `888` passed, `5` skipped, and `0` failed; engine/test syntax, typecheck, and `git diff --check` passed; lint reported `0` errors with existing warnings only.
 - ✅ **Browser PASS:** staged position-only and rotation-only edits keep Results current; packed movement/rotation and staged↔packed membership changes mark Results Outdated; Balanced and Max Capacity behave correctly; no console errors.
+- ✅ **Integration evidence:** implementation/tests `637fdac`; browser/final-validation documentation `53d4404`; fast-forward merged with no rebase or conflicts and pushed to `main` / `origin/main`, which matched at feature integration tip `53d4404` before this final evidence-only update.
 
 ### E. Delete-one-box removes several boxes
 - 🔄 **General reconciliation concern:** the core delete/repair pipeline is mostly correct, but full-pack reconciliation can stage unrelated marginal placements after any delete.

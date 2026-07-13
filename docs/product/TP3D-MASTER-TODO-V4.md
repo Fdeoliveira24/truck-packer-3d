@@ -426,8 +426,8 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 - ✅ Push `main`.
 - ✅ Record final merge/push evidence here.
 
-### Staging alignment follow-up — implementation, validation, and browser smoke PASS; integration pending (2026-07-13)
-- ✅ Branch implementation complete on `fix/unpack-staging-alignment`, based on `main` at `4f11b6d`; awaiting commit, fast-forward merge, and push.
+### Staging alignment follow-up — implementation, validation, browser smoke, and integration complete (2026-07-13)
+- ✅ Branch `fix/unpack-staging-alignment`, based on `main` at `4f11b6d`, was committed, fast-forward merged without conflicts, and pushed. Implementation/tests are at `9138e34`; browser/final-validation documentation and the feature integration tip are at `dc25030`.
 - ✅ Root cause: Organized Unpack derived canonical dimensions but retained each case's prior packed rotation. Mixed rotations within one `caseId` group therefore produced different logical footprints, inflated shared cells, and uneven visual gaps; raw rotations could also differ from the normalized rotation used to derive dimensions.
 - ✅ Fix: every resolved Unpack case now resets to deterministic rotation `{ x: 0, y: 0, z: 0 }`, and `orientedDims` are derived through the existing canonical helper from that exact pose. The rendered base geometry, stored rotation, staging footprint, ground height, and row-cell dimensions therefore agree.
 - ✅ Grid behavior: identical cases use uniform cell dimensions and spacing; every row starts from the same X origin; partial rows restart on the same column grid; larger-footprint `caseId` groups remain closest to the truck; group bands remain separated.
@@ -449,7 +449,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 - ✅ Final automated validation: AutoPack Results `26/26`, manual/Organized Unpack `55/55`, security/invariants `779 passed, 5 skipped, 0 failed` (`784` total), and full suite `883 passed, 5 skipped, 0 failed` (`888` total). All seven syntax checks, typecheck, and diff checks passed; lint reported `0` errors with existing repository warnings only.
 - ✅ AutoPack browser retest PASS: partial-load leftovers use deterministic identity staging across Standard, Wheel Wells, and Front Overhang; preview/Apply poses remain stable, staged profiles remain correct, and no new console errors appeared.
 - ✅ Truck Change Contract B browser retest PASS: Standard, Wheel Wells, and Front Overhang transitions produced separate deterministic case-type bands; valid existing staged cargo stayed byte-equivalent; corrected/new cargo aligned cleanly; partial rows restarted at the first column; preview and confirmation did not jump; successful repacks stayed packed and only residual failures entered grouped staging; modal/toast counts remained believable; repeated operations were deterministic; no overlap, floating cargo, or new console errors appeared.
-- ⏳ Remaining closeout: commit the production/tests and documentation separately, fast-forward merge, push, record final SHA evidence if needed, and create the next empty audit branch.
+- ✅ Merge/push evidence: immediately after the feature push, `main` and `origin/main` matched at `dc25030`. This final evidence-only update completes the staging packet; the next empty branch is `audit/editor-selection-results-staleness`.
 
 
 ## AutoPack Solution Portfolio — Phase 1, Phase 2, Phase 3, and Stabilization Evidence (updated 2026-07-12)

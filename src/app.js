@@ -7197,6 +7197,24 @@ const TP3D_BUILD_STAMP = Object.freeze({
         // ── P0.9: Scope storage to this user and reload state ──────────
         const uid = user && user.id ? String(user.id) : 'anon';
         Storage.setStorageScope(uid);
+
+        // BUG-01: On a confirmed identity change, clear the prior user's org hint
+        // BEFORE reading it. The auth stability gate's onConfirmed() is cancelled
+        // when SIGNED_IN for the new user arrives before the 2-second timer fires,
+        // so writeLocalOrgId(null) never runs through that path. We must clear it
+        // here, synchronously, so neither readLocalOrgId() nor
+        // resolveActiveOrganizationId() can inherit the stale key.
+        const _isConfirmedUserSwitch = isUserSwitch ||
+          Boolean(lastAuthUserId && user.id && lastAuthUserId !== String(user.id));
+        if (_isConfirmedUserSwitch) {
+          writeLocalOrgId(null);
+          orgContext.activeOrgId = null;
+          orgContext.activeOrg = null;
+          orgContext.orgs = [];
+          try { clearBillingState(); } catch (_) { /* ignore */ }
+          try { window.__TP3D_USER_SWITCH_PENDING = true; } catch (_) { /* ignore */ }
+        }
+
         const hintedOrgId = readLocalOrgId();
         setWorkspaceStorageScope(hintedOrgId);
 

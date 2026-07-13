@@ -268,6 +268,9 @@ function resolveActiveOrganizationId() {
       rawContextOrgId = String(window.OrgContext.getActiveOrgId() || '').trim();
       contextOrgId = normalizeOrganizationId(rawContextOrgId);
       if (contextOrgId) {
+        // BUG-01: OrgContext resolved for the new user — clear the user-switch
+        // pending flag so the localStorage-only promotion path is re-enabled.
+        try { if (typeof window !== 'undefined') window.__TP3D_USER_SWITCH_PENDING = false; } catch { /* ignore */ }
         return { organizationId: contextOrgId, reason: null, orgIdCandidate: contextOrgId };
       }
     }
@@ -372,7 +375,13 @@ export async function fetchBillingStatus() {
     // Promote orgIdCandidate to organizationId when OrgContext hasn't resolved yet but
     // we have a validated UUID candidate AND a live user JWT.  The edge function enforces
     // org-membership server-side, so proceeding here is safe for 'localStorage-only'.
+    // BUG-01 guard: skip promotion when a user switch is in progress — the localStorage
+    // org ID may belong to the prior user and the new user's OrgContext has not resolved.
+    // The flag is set by renderAuthState() on confirmed identity change and self-clears
+    // in resolveActiveOrganizationId() once OrgContext returns the new user's org.
+    const _userSwitchPending = typeof window !== 'undefined' && Boolean(window.__TP3D_USER_SWITCH_PENDING);
     if (!organizationId &&
+        !_userSwitchPending &&
         resolution.reason === 'localStorage-only' &&
         resolution.orgIdCandidate &&
         _cachedSess && _cachedSess.access_token) {

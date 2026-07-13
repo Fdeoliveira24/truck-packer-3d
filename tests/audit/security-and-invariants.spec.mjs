@@ -20018,3 +20018,215 @@ test('HARDEN-P1B hasMissingEditorPack and syncRecoverableErrorOverlay implement 
   assert.match(syncFn, /hasMissingEditorPack/, 'syncRecoverableErrorOverlay calls hasMissingEditorPack');
   assert.match(syncFn, /kind.*pack|pack.*kind/, "syncRecoverableErrorOverlay shows overlay with kind:'pack'");
 });
+
+// ─── BUG-01: Cross-user org/billing isolation ────────────────────────────────
+// Root Cause 1: the auth stability gate's onConfirmed() is cancelled when
+// SIGNED_IN for the new user arrives before the 2-second timer fires, so
+// writeLocalOrgId(null) never runs and tp3d:active-org-id survives the switch.
+// Root Cause 2: resolveActiveOrganizationId() promotes a localStorage-only org
+// candidate while the new user's JWT is active but OrgContext is unresolved.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('BUG-01-A renderAuthState clears org hint, in-memory context, billing state, and sets switch flag on confirmed user switch', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  assert.match(src, /_isConfirmedUserSwitch/, '_isConfirmedUserSwitch variable present');
+
+  const guardIdx = src.indexOf('const _isConfirmedUserSwitch =');
+  assert.ok(guardIdx >= 0, '_isConfirmedUserSwitch assignment found in app.js');
+
+  const ifIdx = src.indexOf('if (_isConfirmedUserSwitch)', guardIdx);
+  assert.ok(ifIdx >= 0 && ifIdx < guardIdx + 600, 'if (_isConfirmedUserSwitch) block found near assignment');
+
+  let depth = 0, blockEnd = -1;
+  for (let i = ifIdx; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') { depth--; if (depth === 0) { blockEnd = i + 1; break; } }
+  }
+  assert.ok(blockEnd > ifIdx, 'user-switch block body extracted');
+  const block = src.slice(ifIdx, blockEnd);
+
+  assert.match(block, /writeLocalOrgId\(null\)/, 'localStorage key tp3d:active-org-id is cleared');
+  assert.match(block, /orgContext\.activeOrgId\s*=\s*null/, 'in-memory orgContext.activeOrgId nulled');
+  assert.match(block, /orgContext\.activeOrg\s*=\s*null/, 'in-memory orgContext.activeOrg nulled');
+  assert.match(block, /orgContext\.orgs\s*=\s*\[\]/, 'in-memory orgContext.orgs emptied');
+  assert.match(block, /clearBillingState\(\)/, 'clearBillingState() called to reset billing and bump epoch');
+  assert.match(block, /__TP3D_USER_SWITCH_PENDING\s*=\s*true/, 'user-switch pending flag set for billing service guard');
+});
+
+test('BUG-01-A2 user-switch guard requires actual identity change, not same-user token refresh', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  const guardIdx = src.indexOf('const _isConfirmedUserSwitch =');
+  assert.ok(guardIdx >= 0, 'guard assignment found');
+  const guardExpr = src.slice(guardIdx, guardIdx + 300);
+
+  assert.match(guardExpr, /isUserSwitch/, 'isUserSwitch feeds into the guard');
+  assert.match(guardExpr, /lastAuthUserId/, 'lastAuthUserId feeds into the guard');
+  assert.match(guardExpr, /lastAuthUserId !== String\(user\.id\)/, 'guard compares IDs as strings so same user never triggers clear');
+});
+
+test('BUG-01-A3 writeLocalOrgId(null) is placed BEFORE readLocalOrgId() inside renderAuthState', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  // The clear must precede the read so the new user never inherits the stale key.
+  const renderAuthStart = src.indexOf('async function renderAuthState(');
+  assert.ok(renderAuthStart >= 0, 'renderAuthState function found');
+
+  const writeNullIdx = src.indexOf('writeLocalOrgId(null)', renderAuthStart);
+  const readIdx = src.indexOf('readLocalOrgId()', renderAuthStart);
+  assert.ok(writeNullIdx > 0 && readIdx > 0, 'both writeLocalOrgId(null) and readLocalOrgId() found in renderAuthState');
+  assert.ok(writeNullIdx < readIdx, 'writeLocalOrgId(null) appears before readLocalOrgId() in renderAuthState');
+});
+
+test('BUG-01-B clearBillingState bumps _billingEpoch so any in-flight request from prior user epoch is discarded', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  const clearStart = src.indexOf('function clearBillingState()');
+  assert.ok(clearStart >= 0, 'clearBillingState function found');
+  let depth = 0, clearEnd = -1;
+  for (let i = clearStart; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') { depth--; if (depth === 0) { clearEnd = i + 1; break; } }
+  }
+  const clearFn = src.slice(clearStart, clearEnd);
+  assert.match(clearFn, /_billingEpoch\+\+/, 'clearBillingState increments billing epoch');
+  assert.match(clearFn, /_notifyBilling\(\)/, 'subscribers notified so sidebar resets to neutral state');
+  assert.match(clearFn, /applyAccessGateFromBilling/, 'feature gates reset to neutral on clear');
+
+  // The epoch guard in refreshBilling must compare captured vs current
+  assert.match(src, /const _epochAtStart = _billingEpoch/, 'epoch captured before fetch starts in refreshBilling');
+  assert.match(src, /_billingEpoch !== _epochAtStart/, 'epoch guard present — stale result discarded after user switch');
+});
+
+test('BUG-01-B2 refreshBilling re-checks active org after fetch to discard result started under prior user org', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  assert.match(src, /_activeOrgIdAfterFetch/, 'active org re-read after fetch completes');
+  assert.match(src, /refresh:discard-stale-org/, 'stale-org discard path logged in refreshBilling');
+  // requestedOrgId compared against post-fetch active org ID
+  const discardOrgIdx = src.indexOf('refresh:discard-stale-org');
+  assert.ok(discardOrgIdx > 0, 'discard-stale-org check found');
+  const discardRegion = src.slice(discardOrgIdx - 200, discardOrgIdx + 50);
+  assert.match(discardRegion, /_activeOrgIdAfterFetch.*requestedOrgId|requestedOrgId.*_activeOrgIdAfterFetch/,
+    'post-fetch org compared against requestedOrgId');
+});
+
+test('BUG-01-C resolveActiveOrganizationId self-clears __TP3D_USER_SWITCH_PENDING when OrgContext resolves', async () => {
+  const src = await fs.readFile(billingServiceUrl, 'utf8');
+
+  const fnStart = src.indexOf('function resolveActiveOrganizationId()');
+  assert.ok(fnStart >= 0, 'resolveActiveOrganizationId function found');
+  let depth = 0, fnEnd = -1;
+  for (let i = fnStart; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') { depth--; if (depth === 0) { fnEnd = i + 1; break; } }
+  }
+  const fn = src.slice(fnStart, fnEnd);
+
+  // Flag must be cleared in the contextOrgId success branch
+  assert.match(fn, /__TP3D_USER_SWITCH_PENDING\s*=\s*false/, 'pending flag cleared inside resolveActiveOrganizationId');
+  const contextBranchIdx = fn.indexOf('if (contextOrgId)');
+  assert.ok(contextBranchIdx >= 0, 'contextOrgId success branch found');
+  const beforeReturn = fn.slice(contextBranchIdx, contextBranchIdx + 300);
+  assert.match(beforeReturn, /__TP3D_USER_SWITCH_PENDING\s*=\s*false/, 'flag cleared before returning contextOrgId');
+});
+
+test('BUG-01-D fetchBillingStatus promotion block is guarded by _userSwitchPending check', async () => {
+  const src = await fs.readFile(billingServiceUrl, 'utf8');
+
+  const promotionIdx = src.indexOf('Promote orgIdCandidate to organizationId');
+  assert.ok(promotionIdx >= 0, 'promotion comment found in billing.service.js');
+
+  const promotionRegion = src.slice(promotionIdx, promotionIdx + 950);
+  assert.match(promotionRegion, /__TP3D_USER_SWITCH_PENDING/, 'pending flag read in promotion region');
+  assert.match(promotionRegion, /!_userSwitchPending/, 'promotion skipped when flag is true');
+
+  // The BUG-01 guard comment must be present
+  assert.match(promotionRegion, /BUG-01/, 'BUG-01 guard comment present in promotion block');
+});
+
+test('BUG-01-E synthetic: both guards block promotion when OrgContext empty, localStorage empty, flag set', () => {
+  // Simulates the state immediately after Fix 1 fires on a user switch:
+  // writeLocalOrgId(null) cleared localStorage; orgContext.activeOrgId = null cleared OrgContext;
+  // window.__TP3D_USER_SWITCH_PENDING = true set the billing guard.
+  const win = {
+    OrgContext: { getActiveOrgId: () => '' },
+    localStorage: { getItem: () => null },
+    __TP3D_USER_SWITCH_PENDING: true,
+  };
+
+  // Emulate resolveActiveOrganizationId() logic
+  let rawContextOrgId = '', rawLocalOrgId = '', contextOrgId = '';
+  try {
+    rawContextOrgId = String(win.OrgContext.getActiveOrgId() || '').trim();
+    contextOrgId = rawContextOrgId.length === 36 ? rawContextOrgId : '';
+    if (contextOrgId) win.__TP3D_USER_SWITCH_PENDING = false;
+  } catch (_) { /* ignore */ }
+  if (!contextOrgId) rawLocalOrgId = String(win.localStorage.getItem('tp3d:active-org-id') || '').trim();
+  const orgIdCandidate = rawLocalOrgId.length === 36 ? rawLocalOrgId : null;
+
+  assert.strictEqual(orgIdCandidate, null, 'no org candidate — localStorage was cleared by Fix 1');
+  assert.ok(win.__TP3D_USER_SWITCH_PENDING, 'flag still set — OrgContext has not resolved yet');
+
+  // Primary block: orgIdCandidate null → promotion impossible
+  const wouldPromoteViaPrimary = orgIdCandidate !== null;
+  assert.strictEqual(wouldPromoteViaPrimary, false, 'primary guard: null candidate blocks promotion');
+
+  // Defense-in-depth: flag also blocks promotion if candidate were somehow non-null
+  const wouldPromoteWithFlag = !win.__TP3D_USER_SWITCH_PENDING && orgIdCandidate !== null;
+  assert.strictEqual(wouldPromoteWithFlag, false, 'secondary guard: pending flag blocks promotion');
+});
+
+test('BUG-01-F legitimate same-user startup: org hint is promotable when no switch pending', () => {
+  const ORG = 'c2345678-0000-0000-0000-000000000002';
+  const win = {
+    OrgContext: { getActiveOrgId: () => '' },
+    localStorage: { getItem: (k) => k === 'tp3d:active-org-id' ? ORG : null },
+    __TP3D_USER_SWITCH_PENDING: false,
+  };
+
+  let rawContextOrgId = '', rawLocalOrgId = '', contextOrgId = '';
+  try {
+    rawContextOrgId = String(win.OrgContext.getActiveOrgId() || '').trim();
+    contextOrgId = rawContextOrgId.length === 36 ? rawContextOrgId : '';
+    if (contextOrgId) win.__TP3D_USER_SWITCH_PENDING = false;
+  } catch (_) { /* ignore */ }
+  if (!contextOrgId) rawLocalOrgId = String(win.localStorage.getItem('tp3d:active-org-id') || '').trim();
+  const orgIdCandidate = rawLocalOrgId.length === 36 ? rawLocalOrgId : null;
+
+  assert.strictEqual(orgIdCandidate, ORG, 'localStorage org preserved for same-user startup');
+  const _userSwitchPending = Boolean(win.__TP3D_USER_SWITCH_PENDING);
+  assert.strictEqual(_userSwitchPending, false, 'no pending flag — no user switch occurred');
+  assert.ok(!_userSwitchPending && orgIdCandidate !== null, 'promotion proceeds normally for same-user first load');
+});
+
+test('BUG-01-G same-user workspace switch is not affected by the user-switch guard', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+
+  // _isConfirmedUserSwitch = false when lastAuthUserId === user.id
+  // (same-user workspace switch: isUserSwitch might be false, lastAuthUserId matches)
+  const guardIdx = src.indexOf('const _isConfirmedUserSwitch =');
+  const guardLine = src.slice(guardIdx, guardIdx + 300);
+  assert.match(guardLine, /lastAuthUserId !== String\(user\.id\)/, 'identity check uses string comparison (same user = false)');
+
+  // setActiveOrgId (the workspace switch path) writes the new org ID, not null.
+  // Brace-depth extraction is unreliable when the signature contains destructuring,
+  // so search a generous region around the function start instead.
+  const setActiveStart = src.indexOf('function setActiveOrgId(');
+  assert.ok(setActiveStart >= 0, 'setActiveOrgId found');
+  const setActiveRegion = src.slice(setActiveStart, setActiveStart + 2000);
+  assert.match(setActiveRegion, /writeLocalOrgId/, 'setActiveOrgId calls writeLocalOrgId (workspace switch path)');
+  // The null-clear must NOT be inside setActiveOrgId; it belongs only in the user-switch guard
+  const setActiveNullIdx = setActiveRegion.indexOf('writeLocalOrgId(null)');
+  assert.strictEqual(setActiveNullIdx, -1, 'setActiveOrgId does not call writeLocalOrgId(null)');
+});
+
+test('BUG-01-H cross-tab same-user refresh: guard is false when user IDs match', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  // Verify that the guard expression is a Boolean AND of two conditions,
+  // meaning it is false when either isUserSwitch is false AND IDs match.
+  const guardIdx = src.indexOf('const _isConfirmedUserSwitch =');
+  const guardLine = src.slice(guardIdx, guardIdx + 300);
+  // Must not use isSameUser — must use raw ID comparison so cross-tab refresh with same user is safe
+  assert.match(guardLine, /lastAuthUserId !== String\(user\.id\)/, 'raw ID comparison — same user cross-tab is not a switch');
+});

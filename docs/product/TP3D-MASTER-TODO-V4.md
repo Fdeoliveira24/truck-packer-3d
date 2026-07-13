@@ -1,16 +1,16 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-07-12 — Max Capacity Phase B durability is validated, fast-forward merged, and pushed to `main` through `3bed048`; `fix/unpack-staging-alignment` is next.
+**Last updated:** 2026-07-12 — Organized Unpack staging alignment is implemented and focused-test green on `fix/unpack-staging-alignment`; browser smoke and full closeout remain pending.
 
 ## CURRENT STATUS SNAPSHOT — 2026-07-12
 
 | Area | Current status |
 |---|---|
-| Stable main | Max Capacity Phase B is fast-forward merged and pushed through integration tip `3bed048`. |
-| Current active branch | `main` during final evidence recording; create `fix/unpack-staging-alignment` next. |
-| Current uncommitted work | Final Phase B merge-evidence correction only. |
+| Stable main | Max Capacity Phase B is complete through final evidence tip `4f11b6d`. |
+| Current active branch | `fix/unpack-staging-alignment` from `main` at `4f11b6d`. |
+| Current uncommitted work | Organized Unpack staging alignment implementation, focused tests, and this narrow TODO update. |
 | Completed phase | **Max Capacity Phase B — durable per-instance profile.** Applied Max Capacity layouts persist `packedProfile: "max-capacity"` per packed instance, without a pack-wide relaxed mode. |
-| Waiting for | Final merge-evidence commit/push and creation of the next empty branch only. |
-| Do not run now | Do not implement Phase C or the next quality branch during this closeout. |
+| Waiting for | Organized Unpack browser smoke, then full-suite closeout, commit, merge, and push approval. |
+| Do not run now | Do not implement stale Results cleanup, selection clearing, Phase C, or another quality branch in this packet. |
 
 ### Current integration gate — 2026-07-12
 
@@ -49,12 +49,12 @@
 | Field | Value |
 |-------|-------|
 | Phase A integration commit | `6f32a6a` (`docs(product): refresh project tree and max capacity status`), with implementation/tests at `80919f8`. |
-| Current active branch | `main` during final evidence recording; `fix/unpack-staging-alignment` is next. |
-| Active implementation | Phase B complete, merged, and pushed; no Phase C or quality-branch implementation started. |
-| Current allowed dirty files | This TODO only for the final merge-evidence correction. |
+| Current active branch | `fix/unpack-staging-alignment` from `main` at `4f11b6d`. |
+| Active implementation | Organized Unpack staging alignment: deterministic zero staging rotation with canonical dimensions from that exact pose. |
+| Current allowed dirty files | `src/screens/editor-screen.js`, `tests/audit/manual-vertical-placement.spec.mjs`, and this TODO only. |
 | Active blocker | None in Phase B behavior. Pack JSON / pack-batch missing-or-stale `orientedDims` import repair is fixed and covered. |
-| Next planned phase | After Phase B integration, create `fix/unpack-staging-alignment`; do not implement it during this closeout. |
-| Waiting for | Final evidence commit/push and creation of the next clean branch. |
+| Next planned phase | Finish Organized Unpack browser smoke and full closeout without starting another quality item. |
+| Waiting for | Browser smoke, then full-suite validation and commit/merge/push approval. |
 | Do not start simultaneously | Phase C remains not started. Keep the four quality follow-ups isolated on their proposed branches. |
 
 *Update this block after each commit/merge. Do not hardcode the same status in multiple conflicting places.*
@@ -91,7 +91,7 @@
 - ⬜ No UI redesign, no modal, no legal/DOT/axle claims.
 
 ### Confirmed future quality audit queue — not implemented
-1. ⬜ **Organized Unpack staging alignment** — proposed branch `fix/unpack-staging-alignment`.
+1. 🔄 **Organized Unpack staging alignment** — implemented on `fix/unpack-staging-alignment`; focused `55/55` green, browser smoke pending.
 2. ⬜ **Stack Priority layer completion** — proposed branch `fix/stack-priority-layer-completion`.
 3. ⬜ **Wheel Wells riser utilization** — proposed branch `fix/wheelwells-riser-utilization`.
 4. ⬜ **Front Overhang proactive raised-deck planning** — proposed branch `feat/frontoverhang-proactive-deck-plan`.
@@ -426,6 +426,31 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 - ✅ Push `main`.
 - ✅ Record final merge/push evidence here.
 
+### Staging alignment follow-up — implementation, validation, and browser smoke PASS; integration pending (2026-07-13)
+- ✅ Branch implementation complete on `fix/unpack-staging-alignment`, based on `main` at `4f11b6d`; awaiting commit, fast-forward merge, and push.
+- ✅ Root cause: Organized Unpack derived canonical dimensions but retained each case's prior packed rotation. Mixed rotations within one `caseId` group therefore produced different logical footprints, inflated shared cells, and uneven visual gaps; raw rotations could also differ from the normalized rotation used to derive dimensions.
+- ✅ Fix: every resolved Unpack case now resets to deterministic rotation `{ x: 0, y: 0, z: 0 }`, and `orientedDims` are derived through the existing canonical helper from that exact pose. The rendered base geometry, stored rotation, staging footprint, ground height, and row-cell dimensions therefore agree.
+- ✅ Grid behavior: identical cases use uniform cell dimensions and spacing; every row starts from the same X origin; partial rows restart on the same column grid; larger-footprint `caseId` groups remain closest to the truck; group bands remain separated.
+- ✅ Unresolved case references remain untouched and receive no fabricated geometry. Unpack still removes `packedProfile: "max-capacity"` from every instance.
+- ✅ Organized Unpack browser smoke PASS: homogeneous alignment, repeated stability, ground contact, Standard/Wheel Wells/Front Overhang parity, interaction/AutoPack compatibility, console cleanliness, and Max Capacity marker removal were accepted.
+- ✅ Follow-up defect root cause: AutoPack built its staging map before solving from `buildStagedPose(item)`, which selected `item.orientations[0]`. That legacy item-prep candidate can be tipped by case orientation policy or an instance lock, so staged leftovers inherited candidate rotations even though staging should use a neutral display pose.
+- ✅ AutoPack fix: resolvable staged leftovers now use identity rotation `{ x: 0, y: 0, z: 0 }`; `orientedDims` are derived from real case dimensions and that exact rotation through the shared orientation helper, persisted with the staging position, and shared unchanged by the selected result, Results preview, and Apply. Packed solver positions, rotations, dimensions, counts, ranking, and profiles remain unchanged.
+- ✅ AutoPack safety: staged leftovers remain outside the truck, grounded, deterministic, and non-overlapping; candidate/prior rotations cannot leak into staging; unresolved references receive no fabricated pose; staged Max Capacity leftovers remain unmarked while packed Max Capacity cases retain their profile on Apply.
+- ✅ Truck Change defect root cause: `stagePlacementIds()` found safe staging positions with dimensions derived from each invalid case's previous packed `transform.rotation`, then `applyCanonicalInstancePose()` wrote that same packed rotation and its dimensions back to the staged case. Preview and commit therefore agreed with each other but both preserved tipped, rolled, or yawed packed poses.
+- ✅ Truck Change fix: only instances actually sent to staging now use deterministic rotation `{ x: 0, y: 0, z: 0 }`; `orientedDims`, staging AABBs, rendered footprints, and ground height derive from real case dimensions and that exact rotation. Valid packed survivors and successful repacks retain their byte-equivalent packed poses and Max Capacity profiles; staged cases lose `packedProfile`.
+- ✅ Truck Change parity: preview and committed **Move to staging** share `stagePlacementIds()` and are byte-equivalent. **Repack invalid** preserves successful packed poses, while only remaining failures pass through the same identity staging path. The rule is identical across Standard, Wheel Wells, and Front Overhang transitions; cancel remains persistence-pure and unresolved references receive no fabricated geometry.
+- ✅ Contract B approved and implemented: valid existing staged cargo remains byte-equivalent. Only newly invalid packed cases, unsafe existing staged cases already counted as corrected, and Repack-invalid residual failures opt into grouped Truck Change staging.
+- ✅ Contract B root cause/fix: Truck Change previously staged each target through incremental first-fit, so safe but visually scattered rows could result. The opt-in grouped planner now sorts case groups larger-footprint-first, sorts IDs deterministically, lays each group on a uniform grid whose partial rows restart at the group X origin, and reserves a gap-separated whole-group band.
+- ✅ Preserved obstacles: packed survivors, valid existing staged cargo, successful repacks, and unresolved preserved instances with explicit safe dimensions remain fixed obstacles. A blocked nominal band shifts as one unit; individual cases are not scattered into holes.
+- ✅ Contract B preview/commit parity: the controller combines only the layout targets, builds the grouped plan once, renders it, and commits that exact pack for **Move to staging**, **Apply change**, and residual failures after **Repack invalid**. Modal and toast counts still come from the original `invalid`, `stagedAdjusted`, `stagedUnchanged`, `repackedIds`, and `failedIds` categories rather than the combined layout list.
+- ✅ Shared staged-pose contract: Organized Unpack, AutoPack leftovers, and Truck Change staging now use identity rotation plus real dimensions derived from that rotation. Packing/manual orientation policy and exact locks still govern packed placement, but no longer determine visual staging orientation.
+- ✅ Superseded tests updated narrowly: Repair 1B/1D and P0C assertions now require deterministic identity staging with matching dimensions and ground contact; packed-orientation, containment, collision, support, and cargo-rule assertions remain intact.
+- ✅ Scope: production changes remain limited to `src/screens/editor-screen.js`, `src/services/autopack-engine.js`, `src/services/pack-library.js`, and `src/ui/truck-change-controller.js`; focused coverage is in the existing manual, Results, and security/invariant audit files. Solver, normalizer, geometry, app.js, CSS, and unrelated UI remain untouched.
+- ✅ Final automated validation: AutoPack Results `26/26`, manual/Organized Unpack `55/55`, security/invariants `779 passed, 5 skipped, 0 failed` (`784` total), and full suite `883 passed, 5 skipped, 0 failed` (`888` total). All seven syntax checks, typecheck, and diff checks passed; lint reported `0` errors with existing repository warnings only.
+- ✅ AutoPack browser retest PASS: partial-load leftovers use deterministic identity staging across Standard, Wheel Wells, and Front Overhang; preview/Apply poses remain stable, staged profiles remain correct, and no new console errors appeared.
+- ✅ Truck Change Contract B browser retest PASS: Standard, Wheel Wells, and Front Overhang transitions produced separate deterministic case-type bands; valid existing staged cargo stayed byte-equivalent; corrected/new cargo aligned cleanly; partial rows restarted at the first column; preview and confirmation did not jump; successful repacks stayed packed and only residual failures entered grouped staging; modal/toast counts remained believable; repeated operations were deterministic; no overlap, floating cargo, or new console errors appeared.
+- ⏳ Remaining closeout: commit the production/tests and documentation separately, fast-forward merge, push, record final SHA evidence if needed, and create the next empty audit branch.
+
 
 ## AutoPack Solution Portfolio — Phase 1, Phase 2, Phase 3, and Stabilization Evidence (updated 2026-07-12)
 
@@ -573,7 +598,7 @@ Do not delete `solveLegacyAutoPack()` yet. If/when trimming legacy solver code, 
 ## Near-Term Execution Queue
 *Approved order. Do not combine items. Do not skip steps.*
 
-*Current 2026-07-12 execution note:* Max Capacity Phase B is complete, validated, fast-forward merged, and pushed. Implementation/tests are at `37c4755`; evidence documentation and the pre-correction main integration tip are at `3bed048`. Create `fix/unpack-staging-alignment` next without implementing it; Phase C remains not started.
+*Current 2026-07-12 execution note:* Organized Unpack staging alignment is implemented and focused-test green on `fix/unpack-staging-alignment`. Browser smoke and the later full-suite closeout remain pending; Phase C and the other quality branches remain not started.
 
 *Completed 2026-06-14: G1.2C/G1.2D merged; A1.1B front-first merged and browser-verified; 3B geometry epsilon unification merged (`33b362a`); 5A stacking-safety audit + runtime tests merged (`0aa58c3`); 3B/5A in-browser logic verification recorded (`819d3de`).*
 

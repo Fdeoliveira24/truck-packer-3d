@@ -1,16 +1,16 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-07-12 — Organized Unpack staging alignment is implemented and focused-test green on `fix/unpack-staging-alignment`; browser smoke and full closeout remain pending.
+**Last updated:** 2026-07-13 — AutoPack Results staged-only pose staleness is implementation-, browser-, and full-validation-green on `fix/autopack-staged-pose-staleness`; commit/merge/push remain.
 
 ## CURRENT STATUS SNAPSHOT — 2026-07-12
 
 | Area | Current status |
 |---|---|
-| Stable main | Max Capacity Phase B is complete through final evidence tip `4f11b6d`. |
-| Current active branch | `fix/unpack-staging-alignment` from `main` at `4f11b6d`. |
-| Current uncommitted work | Organized Unpack staging alignment implementation, focused tests, and this narrow TODO update. |
+| Stable main | Staging pose/grouped layout closeout is complete through final evidence tip `ac27c97`. |
+| Current active branch | `fix/autopack-staged-pose-staleness` from `main` at `ac27c97`. |
+| Current uncommitted work | AutoPack Results staged-only pose staleness signature fix, focused tests, and this narrow TODO update. |
 | Completed phase | **Max Capacity Phase B — durable per-instance profile.** Applied Max Capacity layouts persist `packedProfile: "max-capacity"` per packed instance, without a pack-wide relaxed mode. |
-| Waiting for | Organized Unpack browser smoke, then full-suite closeout, commit, merge, and push approval. |
-| Do not run now | Do not implement stale Results cleanup, selection clearing, Phase C, or another quality branch in this packet. |
+| Waiting for | Commit, fast-forward merge, push, and final SHA evidence for the AutoPack Results staged-pose staleness packet. |
+| Do not run now | Do not implement selection/highlight cleanup, stale-panel closing, Phase C, or another quality branch in this packet. |
 
 ### Current integration gate — 2026-07-12
 
@@ -49,13 +49,13 @@
 | Field | Value |
 |-------|-------|
 | Phase A integration commit | `6f32a6a` (`docs(product): refresh project tree and max capacity status`), with implementation/tests at `80919f8`. |
-| Current active branch | `fix/unpack-staging-alignment` from `main` at `4f11b6d`. |
-| Active implementation | Organized Unpack staging alignment: deterministic zero staging rotation with canonical dimensions from that exact pose. |
-| Current allowed dirty files | `src/screens/editor-screen.js`, `tests/audit/manual-vertical-placement.spec.mjs`, and this TODO only. |
+| Current active branch | `fix/autopack-staged-pose-staleness` from `main` at `ac27c97`. |
+| Active implementation | AutoPack Results strict signature ignores staged-only position, rotation, `orientedDims`, and staged `packedProfile` changes while preserving packed-layout and membership protection. |
+| Current allowed dirty files | `src/services/autopack-engine.js`, `tests/audit/autopack-results-carousel.spec.mjs`, and this TODO only. |
 | Active blocker | None in Phase B behavior. Pack JSON / pack-batch missing-or-stale `orientedDims` import repair is fixed and covered. |
-| Next planned phase | Finish Organized Unpack browser smoke and full closeout without starting another quality item. |
-| Waiting for | Browser smoke, then full-suite validation and commit/merge/push approval. |
-| Do not start simultaneously | Phase C remains not started. Keep the four quality follow-ups isolated on their proposed branches. |
+| Next planned phase | Close out and integrate this packet; do not start selection/highlight work in this branch. |
+| Waiting for | Commit, fast-forward merge, push, and final SHA evidence. |
+| Do not start simultaneously | Selection/highlight cleanup and Phase C remain out of scope. |
 
 *Update this block after each commit/merge. Do not hardcode the same status in multiple conflicting places.*
 
@@ -107,6 +107,14 @@
 - ✅ `renderAutoPackResultsPanel()` now falls back to `0` when `results.viewIndex` is missing/invalid, so every fresh AutoPack run visually opens on Option 1, `Balanced (recommended)`.
 - ✅ `selectedId`, Applied badge, Apply behavior, stale handling, and Prev/Next remain unchanged; only the fresh visual carousel page changed.
 - ✅ Results coverage proves a non-first option may remain selected/applied while a missing fresh `viewIndex` displays Balanced at index `0`.
+
+### D.1 AutoPack Results staged-only pose staleness — implementation and browser PASS
+- ✅ **Confirmed root cause:** the strict Results signature reused the full physical-layout field projection, so staged `transform.position`, `transform.rotation`, and `orientedDims` changes incorrectly marked an unchanged packed load as outdated.
+- ✅ **Narrow fix:** staged instances keep `id`, `caseId`, `placement`, hidden state, and cargo/handling rules in the strict signature, but exclude position, rotation, `orientedDims`, and staged `packedProfile` metadata.
+- ✅ **Packed-layout protection preserved:** packed pose/dimensions/profile, packed↔staged membership, instance quantity/identity/hidden state, truck geometry, case dimensions/weight/rules, and instance handling rules still invalidate Results.
+- ✅ **Results behavior preserved:** physical-layout dedupe, option order, selected-option ownership, fresh Balanced view, Apply behavior, stale copy, and Max Capacity exclusion from automatic selection remain unchanged. Max Capacity option signatures project the durable packed profile that Apply persists.
+- ✅ **Final automated validation:** focused AutoPack Results `31/31`; full suite `893` total with `888` passed, `5` skipped, and `0` failed; engine/test syntax, typecheck, and `git diff --check` passed; lint reported `0` errors with existing warnings only.
+- ✅ **Browser PASS:** staged position-only and rotation-only edits keep Results current; packed movement/rotation and staged↔packed membership changes mark Results Outdated; Balanced and Max Capacity behave correctly; no console errors.
 
 ### E. Delete-one-box removes several boxes
 - 🔄 **General reconciliation concern:** the core delete/repair pipeline is mostly correct, but full-pack reconciliation can stage unrelated marginal placements after any delete.

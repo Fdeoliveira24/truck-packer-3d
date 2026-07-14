@@ -1,29 +1,29 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-07-13 — BUG-05 is closed as a stale or non-reproducible observation after authenticated test6 workspace-resolution verification; BUG-01 / BUG-07 still await their signed-in browser release matrix.
+**Last updated:** 2026-07-14 — BUG-01 and BUG-07 passed their automated and signed-in browser release gates; BUG-04 remains closed as a policy misdiagnosis; BUG-05 remains closed as a stale or non-reproducible observation. Max Capacity Phase C has not started.
 
-## CURRENT STATUS SNAPSHOT — 2026-07-12
+## CURRENT STATUS SNAPSHOT — 2026-07-14
 
 | Area | Current status |
 |---|---|
-| Stable main | AutoPack Results staged-only pose staleness is integrated through feature/documentation tip `53d4404`; final merge evidence is being recorded separately. |
-| Current active branch | `main` after fast-forward integration of `fix/autopack-staged-pose-staleness`. |
-| Current uncommitted work | Final AutoPack Results staged-pose merge evidence only. |
+| Auth/billing release packet | `fix/bug-01-user-switch-org-clear-integration` through implementation HEAD `b0d6fb21`, plus the reconciled BUG-05 documentation closeout. All runnable browser rows and all automated gates passed. |
+| Main baseline before this closeout | `main` and `origin/main` matched at `6c93acf`; this documentation is part of the same approved fast-forward integration packet. |
+| Browser release result | `19/25` live rows passed including Test 1; `6/25` were explicitly not run because a safe fixture or browser-control capability was unavailable. No live row failed and no console errors were observed. |
 | Completed phase | **Max Capacity Phase B — durable per-instance profile.** Applied Max Capacity layouts persist `packedProfile: "max-capacity"` per packed instance, without a pack-wide relaxed mode. |
-| Waiting for | Final evidence commit/push, then creation of the empty visual-highlight cleanup branch. |
-| Do not run now | Do not implement selection/highlight cleanup, stale-panel closing, Phase C, or another quality branch in this packet. |
+| Separate future work | `fix/multi-workspace-membership-resolution` and the three multi-workspace Stripe-hardening branches listed in the BUG closeout block. |
+| Next product phase | Max Capacity Phase C, only after the separately recorded Stripe-hardening decision. No Phase C branch or implementation exists. |
 
-### Current integration gate — 2026-07-12
+### Current auth/billing integration gate — 2026-07-14
 
-1. ✅ Selected normal option owns its physical-layout dedupe group; Max Capacity cannot steal selection from an identical selected normal option.
-2. ✅ Fresh Results visually open on Option 1, `Balanced (recommended)`, while `selectedId`, Applied badge, Apply, stale handling, and Prev/Next behavior remain unchanged.
-3. ✅ Focused/full automated validation complete: Results `23/23`; full suite `854` passed, `5` skipped, `0` failed; typecheck passed; lint passed with existing warnings only; syntax checks and `git diff --check` passed.
-4. ✅ Signed-in browser evidence recorded: Balanced opened on Option 1 and packed `236`; Max Capacity packed `297`, generated and applied successfully; persistent manual change made Results Outdated as expected.
-5. ✅ Rebased implementation/test commit `80919f8` and documentation commit `6f32a6a` onto current main with no conflicts.
-6. ✅ Fast-forward merged and pushed Phase A; `main` and `origin/main` matched at `6f32a6a` after the Phase A push.
-7. ✅ Phase B browser smoke PASS: Apply Max Capacity, reload, delete unrelated cargo, delete a real support, manual move/rotate, Unpack, and Truck Change; the old mass-collapse behavior did not recur.
-8. ✅ Final Phase B validation: full suite `873` passed, `5` skipped, `0` failed (`878` total); typecheck and syntax checks passed; lint reported `0` errors; `git diff --check` passed.
-9. ✅ Phase B implementation/tests committed at `37c4755`; evidence documentation committed at `3bed048`.
-10. ✅ Phase B fast-forward merged with no rebase or conflicts and pushed to `main` / `origin/main` at integration tip `3bed048`.
+1. ✅ BUG-01 is closed: confirmed cross-user isolation clears prior org/billing authority synchronously, rejects stale work, and obtains authoritative billing for the new identity.
+2. ✅ BUG-07 is closed: hidden billing/account DOM is emptied at the source, and Settings Billing/Members cannot retain the prior user after a confirmed identity change.
+3. ✅ Rehydrate/focus, normal auth-listener, rapid switch, sign-out-while-pending, cross-tab logout, and hidden-tab convergence paths passed live verification.
+4. ✅ Same-user reload and same-user workspace switching remain intact; test6 retains both active workspaces across reload and immediate post-sign-in switching.
+5. ✅ Before-integration validation: security/invariants `836` total (`831` passed, `5` skipped); manual `59/59`; AutoPack Results `31/31`; full suite `949` total (`944` passed, `5` skipped); typecheck/syntax/diff checks passed; lint reported `0` errors.
+6. ✅ Live matrix: Tests 1-13, 16, 20-21, and 23-25 passed; no tested transition leaked prior-user Packs, Cases, org authority, billing authority, or hidden DOM.
+7. ⬜ Live Tests 14-15 were not run because the disposable fixtures do not contain a verified shared active owner/member workspace; production data was not altered. User-neutral shared-snapshot authority is covered by runtime tests.
+8. ⬜ Live Tests 17-19 were not run because the selected browser surface has no safe request-failure/offline control; fail-closed and recovery behavior remains covered by automated runtime tests.
+9. ⬜ Live Test 22 was not run because browser-control policy does not permit storage inspection/manipulation; stale active-org hints remain covered by runtime BUG-01 D/E/F/P tests.
+10. ✅ BUG-04 and BUG-05 closeout decisions remain intact; Phase C and its branch remain absent.
 
 ### Current completed integration evidence — 2026-07-12
 
@@ -48,18 +48,17 @@
 
 | Field | Value |
 |-------|-------|
-| Phase A integration commit | `6f32a6a` (`docs(product): refresh project tree and max capacity status`), with implementation/tests at `80919f8`. |
-| Current active branch | `main` after fast-forward integration of `fix/autopack-staged-pose-staleness`. |
-| Active implementation | Complete: AutoPack Results strict signature ignores staged-only position, rotation, `orientedDims`, and staged `packedProfile` changes while preserving packed-layout and membership protection. |
-| Current allowed dirty files | This TODO only for final merge evidence. |
-| Active blocker | None in Phase B behavior. Pack JSON / pack-batch missing-or-stale `orientedDims` import repair is fixed and covered. |
-| Next planned phase | Create `fix/editor-visual-highlight-cleanup` from clean updated `main`; do not implement it yet. |
-| Waiting for | Final evidence commit/push and empty next-branch creation. |
-| Do not start simultaneously | Selection/highlight cleanup and Phase C remain out of scope. |
+| Integration branch | `fix/bug-01-user-switch-org-clear-integration`; final implementation HEAD before documentation reconciliation: `b0d6fb21`. |
+| Active implementation | Complete: cross-user org/billing isolation, authoritative post-switch billing, stale-result guards, cross-tab workspace refresh, and account-DOM cleanup. |
+| Current allowed dirty file during closeout | This TODO only. Source/tests were already committed and validated. |
+| Active blocker | None for BUG-01 or BUG-07. Six live matrix rows have explicit fixture/tooling gaps and matching runtime coverage; no runnable row failed. |
+| Separate follow-ups | `fix/multi-workspace-membership-resolution`, `fix/portal-org-strict-resolution`, `fix/checkout-race-guard-metadata`, and `fix/billing-status-unmapped-candidates`. |
+| Next planned product phase | Max Capacity Phase C after the separately recorded Stripe-hardening decision. |
+| Do not start simultaneously | Phase C, Stripe Edge Function hardening, and `getMyMembership` changes remain out of this release packet. |
 
 *Update this block after each commit/merge. Do not hardcode the same status in multiple conflicting places.*
 
-> **Current source-of-truth note (2026-07-12):** Max Capacity Phase B is complete, fast-forward merged, and pushed. Implementation/tests are at `37c4755`; evidence documentation and the pre-correction main integration tip are at `3bed048`. Phase C remains not started.
+> **Current source-of-truth note (2026-07-14):** Max Capacity Phase B remains complete. BUG-01 and BUG-07 passed their release gates on implementation HEAD `b0d6fb21`; BUG-04 and BUG-05 remain closed. Phase C is not started and no Phase C branch exists.
 
 ## Active Debug Queue — AutoPack / Results / Editor Regressions
 
@@ -768,21 +767,30 @@ Release-gate items block **public launch**, not isolated product development. Pr
 | 🔄 | Portal manual sign-off: User4 deep-link, User1 schedule-managed, test1 stale-sub | — |
 | ✅ | DB health checks Q1–Q6 all clean on production | 2026-05-08 live run |
 | ✅ | Webhook idempotency — duplicate event returns 200, no re-processing | Audit test |
-| 🔄 | **BUG-01** — implementation exists on `fix/bug-01-user-switch-org-clear-integration` at `9b53622777d8ce1828f0ad0b367a6a34ece8bf05`; automated validation is green, but the signed-in browser release matrix remains pending. Not merged or pushed. | Implementation pending browser verification |
+| ✅ | **BUG-01 — CLOSED — implemented, automated validated, signed-in browser verified.** Confirmed identity changes synchronously clear prior org/billing authority, require authoritative new-user billing, reject stale results, and recover AccountSwitcher state across tabs. | Implementation through `b0d6fb21`; automated + browser release matrix 2026-07-14 |
 | ⚠️ | **BUG-02** — `interval: "unknown"` for all Pro accounts; `currentPeriodEnd: null`. UI cannot show Monthly/Annual or renewal date. | QA report 2026-05-04 |
 | ⚠️ | **BUG-03** — `portalAvailable: false` for test2 and test4. Paying subscribers cannot open Stripe portal from within the app. | QA report 2026-05-04 |
 | ✅ | **BUG-04 — CLOSED as misdiagnosis.** test4's `workspaceCount: 7` is correct because archived workspaces count toward plan limits. Policy-changing commit `f530350` was reverted by `2031831`; no policy-changing code merged. | Authenticated audit + approved billing policy |
 | ✅ | **BUG-05 — CLOSED — stale or non-reproducible observation.** Authenticated test6 verification shows both active workspaces in the AccountSwitcher before and after a clean reload; no code, RLS, fixture, or data-integrity defect was found. | Authenticated audit 2026-07-13 |
 | ⚠️ | **BUG-06** — "Manage" billing navigates current tab to `billing.stripe.com` instead of opening a new tab. Destroys app session. | QA report 2026-05-04 |
-| 🔄 | **BUG-07** — implementation exists with BUG-01 on `fix/bug-01-user-switch-org-clear-integration` at `9b53622777d8ce1828f0ad0b367a6a34ece8bf05`; automated validation is green, but the signed-in browser release matrix remains pending. Not merged or pushed. | Implementation pending browser verification |
+| ✅ | **BUG-07 — CLOSED — stale billing/account DOM cleared and browser verified.** Hidden sidebar billing markup is emptied; Settings Billing/Members close on confirmed identity change; user-specific billing authority cannot transfer through a shared snapshot. | Implementation through `b0d6fb21`; automated + browser release matrix 2026-07-14 |
 | ⬜ | Replace `support@pxl360.com` placeholder with real support email throughout | — |
 
-#### Billing QA BUG closeout status — 2026-07-13
+#### Billing QA BUG closeout status — 2026-07-14
 
-##### BUG-01 / BUG-07 — implemented, browser release matrix pending
-- 🔄 The shared implementation branch exists at `fix/bug-01-user-switch-org-clear-integration` with current implementation HEAD `9b53622777d8ce1828f0ad0b367a6a34ece8bf05`.
-- ✅ Automated validation is green.
-- ⬜ The signed-in browser release matrix remains pending. Neither BUG-01 nor BUG-07 is complete, merged, or pushed.
+##### BUG-01 — ✅ CLOSED — implemented, automated validated, signed-in browser verified
+- ✅ Implementation chain: `8b70ea10` initial isolation; `0784df43` centralized isolation and BUG-07 cleanup; `9b536227` user-neutral shared billing snapshots; `1e29a466` billing-pump identity reset; `09c26e66` post-switch authoritative billing requirement; `c08527c0` post-sign-out requirement marker; `32a9e690` requirement transfer on confirmed auth; `2fd18dda` authoritative cooldown bypass; `b0d6fb21` delayed-bundle AccountSwitcher refresh.
+- ✅ Confirmed identity changes synchronously clear prior org context, the `tp3d:active-org-id` hint, prior billing authority, and account-sensitive UI before network-dependent work. Billing/account responses remain guarded by auth/billing generations and stale results cannot overwrite the final identity.
+- ✅ Rehydrate/focus and normal auth-listener paths passed. Rapid A→B→A, five alternating switches, sign-out while pending, cross-tab logout, and hidden-tab/different-timing convergence all settled on the final authoritative identity without a stuck pending flag or console errors.
+- ✅ Authoritative new-user billing was observed after identity transitions. The debug evidence remained bounded: seven billing-status requests across the retained diagnostic window, four direct authoritative-success clears, four billing generations, and authoritative in-flight dedupe rather than a request loop.
+- ✅ Same-user reload preserved the active workspace, workspace data, and billing. Same-user workspace switching did not invoke cross-user isolation; test6 retained both workspaces and could switch immediately after sign-in.
+- ✅ Automated release gate: security/invariants `836` total (`831` passed, `5` skipped, `0` failed); manual placement `59/59`; AutoPack Results `31/31`; full suite `949` total (`944` passed, `5` skipped, `0` failed); typecheck, syntax, and diff checks passed; lint reported `0` errors with existing warnings only.
+- ✅ Browser matrix result: `19/25` live rows passed including Test 1; no live row failed and no console errors were observed. Tests 14-15 were not run because there is no verified shared active owner/member disposable fixture. Tests 17-19 were not run because the selected browser surface has no safe request-failure/offline control. Test 22 was not run because browser-control policy prohibits storage inspection/manipulation. The corresponding shared-snapshot, fail-closed/recovery, and stale-hint paths remain covered by runtime tests.
+
+##### BUG-07 — ✅ CLOSED — stale billing/account DOM cleared and browser verified
+- ✅ The hidden sidebar upgrade/billing node is emptied (`innerHTML` and descendants), not merely hidden. Payment-banner text is also cleared, and the current user's show path rebuilds cleanly.
+- ✅ Settings Billing and Settings Members close during a confirmed identity change and do not retain or repopulate prior-user plan, role, member, workspace-count, or payment data.
+- ✅ Shared billing snapshots retain organization-level entitlement facts but do not transfer user-specific `canManageBilling`. Current-user role/direct billing truth remains authoritative. Live owner/member switching was not run because no verified same-workspace disposable owner/member fixture exists; the user-neutral snapshot contract and owner/member authority separation are directly covered by automated runtime tests.
 
 ##### BUG-04 — closed as a policy misdiagnosis
 - ✅ `workspaceCount: 7` was correct for test4. Archived workspaces count toward owner plan limits even though they do not appear in the active workspace switcher.
@@ -799,6 +807,7 @@ Release-gate items block **public launch**, not isolated product development. Pr
 ##### Separate latent follow-up — not causal for BUG-05
 - ⬜ **`getMyMembership` multi-workspace resolution:** its unscoped `.maybeSingle()` returns HTTP 406 / `PGRST116` for users with multiple memberships. Current account-bundle logic successfully reconstructs the active membership, so this is not causal for BUG-05.
 - ⬜ Track separately on future branch `fix/multi-workspace-membership-resolution`; do not mix it into the BUG-05 closeout.
+- ⬜ **Multi-workspace Stripe hardening remains future work:** `fix/portal-org-strict-resolution`, `fix/checkout-race-guard-metadata`, and `fix/billing-status-unmapped-candidates`. These tasks are recorded but not implemented or marked complete in this packet.
 - ✅ Phase boundary preserved: Max Capacity Phase B remains closed; Phase C has not started, and no Phase C branch exists.
 
 ### 1B — Auth & Session
@@ -810,12 +819,12 @@ Release-gate items block **public launch**, not isolated product development. Pr
 | ✅ | Canonical logout helper — no timed reload after `signOut()` | Commit `e0b5e05` |
 | ✅ | Logout-in-progress latch prevents auth snapshot resurrection during sign-out | Code |
 | ✅ | Auth snapshot fallback (8s TTL) prevents transient unknown state from wiping org context | Code |
-| ✅ | Cross-tab logout: Tab A sign-out causes Tab B to reach sign-in form (not spinner) | 2026-05-16 staging pass |
+| ✅ | Cross-tab logout: Tab A sign-out causes Tab B to reach sign-in form (not spinner) | 2026-07-14 release-matrix pass |
 | ✅ | Separate-profile cross-tab logout verified | 2026-05-14 two-profile pass |
-| ✅ | Same-tab different-user isolation verified | 2026-05-14 browser pass |
-| ✅ | Two-tab same-user workspace switch verified | 2026-05-13 browser pass |
+| ✅ | Same-tab different-user isolation verified | 2026-07-14 rapid/rehydrate/auth-listener browser matrix |
+| ✅ | Two-tab same-user workspace switch verified | 2026-07-14 test6 browser matrix |
 | ⬜ | `getAccountBundleSingleFlight({force:true})` returns session+user in both tabs (console/API proof) | — |
-| ⬜ | No console errors in normal flows (ignore debug mode + favicon noise) | — |
+| ✅ | No console errors in BUG-01 / BUG-07 release-matrix flows | 19 live rows, 2026-07-14 |
 
 ### 1C — Workspace Foundation
 | Status | Item | Evidence |

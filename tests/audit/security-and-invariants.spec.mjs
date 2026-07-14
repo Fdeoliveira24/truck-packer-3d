@@ -21854,3 +21854,126 @@ test('CHECKOUT-GUARD-5 checkout never write-repairs Stripe metadata or picks an 
   assert.ok(!/ownerWorkspaces\[0\]|oldestOwnerWorkspace/i.test(src),
     'checkout has no oldest/first workspace assignment');
 });
+
+// ── BILLING-UNMAPPED: billing-status must never guess an organization for a
+// Stripe subscription that lacks an explicit organization binding. A
+// metadata-less subscription previously mapped to the oldest owned workspace,
+// which could seed directOrgId/includedOrgIds and grant entitlement from an
+// unproven object. (Multi-workspace Stripe entitlement isolation audit,
+// Branch 3.)
+
+test('BILLING-UNMAPPED-1 metadata-less subscriptions are never assigned to the oldest owner workspace', async () => {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+
+  assert.ok(!src.includes('oldestOwnerWorkspaceId'),
+    'the oldest-owner-workspace guess must not exist anywhere — an archived oldest workspace could otherwise become the guessed direct workspace');
+
+  const mapIdx = src.indexOf('const mapSubscriptionToOwnerWorkspace');
+  assert.ok(mapIdx >= 0, 'mapSubscriptionToOwnerWorkspace present');
+  const mapEnd = src.indexOf('};', mapIdx);
+  const mapFn = src.slice(mapIdx, mapEnd);
+
+  assert.match(mapFn, /if \(orgIdFromMetadata\) \{\s*return ownerWorkspaceIdSet\.has\(orgIdFromMetadata\) \? orgIdFromMetadata : null;/,
+    'subscription metadata resolves only when it names one of the owner\'s workspaces — conflicting bindings fail closed');
+  assert.match(mapFn, /ownerBillingCustomerBySubscription\.get\(sid\)/,
+    'an explicit billing_customers mapping for the same subscription remains a valid binding source');
+  assert.match(mapFn, /return null;\s*$/,
+    'a candidate without an explicit organization binding resolves to null, never to a guessed workspace');
+});
+
+test('BILLING-UNMAPPED-2 unmapped candidates are excluded from entitlement and counted for diagnostics', async () => {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+
+  const pushDbIdx = src.indexOf('const pushMappedSubscriptionCandidate');
+  const pushDbEnd = src.indexOf('const subscriptionColumnsWithOrg', pushDbIdx);
+  assert.ok(pushDbIdx >= 0 && pushDbEnd > pushDbIdx, 'DB candidate push helper extractable');
+  const pushDb = src.slice(pushDbIdx, pushDbEnd);
+  assert.match(pushDb, /if \(!resolvedCandidateOrgId\) \{\s*ownerUnmappedCandidateCount \+= 1;\s*return;\s*\}/,
+    'unmapped DB candidates are excluded before any entitlement push');
+  assert.ok(pushDb.indexOf('ownerUnmappedCandidateCount += 1') < pushDb.indexOf('entitlementCandidates.push'),
+    'exclusion happens before the candidate reaches entitlement selection');
+
+  const pushStripeIdx = src.indexOf('const pushStripeSubscriptionCandidate');
+  const pushStripeEnd = src.indexOf('for (const stripeSubscriptionId of ownerStripeSubscriptionIds)', pushStripeIdx);
+  assert.ok(pushStripeIdx >= 0 && pushStripeEnd > pushStripeIdx, 'Stripe candidate push helper extractable');
+  const pushStripe = src.slice(pushStripeIdx, pushStripeEnd);
+  assert.match(pushStripe, /if \(!resolvedCandidateOrgId\) \{\s*ownerUnmappedCandidateCount \+= 1;\s*return;\s*\}/,
+    'unmapped live-Stripe candidates are excluded before any entitlement push');
+
+  assert.match(src, /ownerUnmappedCandidateCount,/,
+    'excluded-candidate count is exposed through the established debug payload');
+});
+
+test('BILLING-UNMAPPED-3 explicitly mapped owner coverage and archived counting policy preserved', async () => {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+
+  assert.match(src, /if \(directOrgId && resolvedWorkspaceLimit > 0\) includedOrgIds\.push\(directOrgId\);/,
+    'direct-organization-first includedOrgIds ordering retained');
+  assert.match(src, /for \(const workspace of ownerWorkspaces\) \{/,
+    'sibling owned workspaces still fill remaining plan slots');
+  assert.match(src, /entitlementStatus = "included_in_plan"/,
+    'included_in_plan owner coverage retained');
+  assert.match(src, /entitlementStatus = "workspace_limit_reached"/,
+    'workspace_limit_reached policy retained');
+  assert.match(src, /workspaceCount = ownerWorkspaces\.length;/,
+    'workspace counting (including archived, per approved policy) unchanged');
+});
+
+test('BILLING-UNMAPPED-4 legacy user-scoped fallback requires a single-org caller who is the billing owner', async () => {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+
+  const countIdx = src.indexOf('allowLegacyUserScopedFallback = Number(orgCountRes.count || 0) === 1');
+  assert.ok(countIdx >= 0, 'single-organization membership count gate retained');
+
+  const gateRe = /if \(allowLegacyUserScopedFallback && \(!billingOwnerUserId \|\| billingOwnerUserId !== userId\)\) \{\s*allowLegacyUserScopedFallback = false;\s*\}/;
+  assert.match(src, gateRe,
+    'a plain member\'s personal legacy subscription can never grant another owner\'s organization entitlement — unresolved ownership fails closed');
+
+  const gateIdx = src.search(gateRe);
+  const legacyAdoptIdx = src.indexOf('if (!subscription && resolvedOrgId && allowLegacyUserScopedFallback)');
+  assert.ok(gateIdx >= 0 && legacyAdoptIdx > gateIdx,
+    'owner gate runs before any legacy user-scoped subscription adoption');
+  assert.ok(countIdx < gateIdx, 'membership count is computed before the owner gate tightens it');
+});
+
+test('BILLING-UNMAPPED-5 duplicate active mappings are surfaced, not silently resolved', async () => {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+
+  assert.match(src, /duplicateActiveMappings: duplicateActiveCount > 1,/,
+    'response exposes an unambiguous repair signal when multiple active mappings exist');
+  assert.match(src, /duplicate active subscriptions detected/,
+    'server-side duplicate warning retained');
+});
+
+test('BILLING-UNMAPPED-6 interval and currentPeriodEnd resolve from the directly mapped subscription first', async () => {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+
+  assert.match(src, /if \(storedInterval === "month" \|\| storedInterval === "year"\) \{\s*interval = storedInterval;/,
+    'interval comes from the requested organization\'s own subscription first');
+  assert.match(src, /if \(interval === "unknown" && ownerLevelInterval\) \{\s*interval = ownerLevelInterval;/,
+    'owner-level interval applies only when the direct subscription leaves it unknown');
+  assert.match(src, /if \(!currentPeriodEnd && ownerEntitlementCandidate\.current_period_end\)/,
+    'owner-level currentPeriodEnd applies only when the direct subscription leaves it empty');
+});
+
+test('BILLING-UNMAPPED-7 explicit projections still resolve: org-scoped lookup and metadata-checked known subscription', async () => {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+
+  assert.match(src, /\.from\("subscriptions"\)\s*\.select\(selectColumns\)\s*\.eq\("organization_id", resolvedOrgId\)/,
+    'webhook-written org-scoped projections remain the primary requested-org source');
+  assert.match(src, /if \(!orgIdFromMetadata \|\| orgIdFromMetadata === resolvedOrgId\)/,
+    'the billing_customers-mapped known subscription is adopted only when its metadata does not contradict the requested organization');
+});
+
+test('BILLING-UNMAPPED-8 billing-status returns sanitized errors only', async () => {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+
+  assert.ok(!src.includes('String(billingCustomerRes.error?.message'),
+    'billing_customers lookup failures no longer echo raw database error text');
+  assert.ok(!/details: code \?\? message/.test(src),
+    'subscription lookup failures no longer fall back to raw error messages');
+  assert.match(src, /return json\(req, 500, \{ error: "Billing status failed" \}\);/,
+    'the fatal handler returns a fixed sanitized error string');
+  assert.match(src, /console\.error\("billing-status fatal:", e\);/,
+    'raw error stays in server logs');
+});

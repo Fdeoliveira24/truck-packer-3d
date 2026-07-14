@@ -441,6 +441,7 @@ Deno.serve(async (req) => {
     let ownerWorkspaces: OwnerWorkspace[] = [];
     let ownerEntitlementCandidate: EntitlementCandidate | null = null;
     let ownerEntitlementCandidateCount = 0;
+    let ownerUnmappedCandidateCount = 0;
     let ownerHasStripeCustomerForPortal = false;
     let ownerMetadataInterval: "month" | "year" | null = null;
     let ownerMetadataCurrentPeriodEnd: string | null = null;
@@ -556,6 +557,14 @@ Deno.serve(async (req) => {
         }
       }
 
+      // Legacy user-scoped fallback is owner-gated: a plain member's personal
+      // legacy subscription must never grant another owner's organization
+      // entitlement. Single-org membership (counted above) AND resolved billing
+      // ownership are both required; unresolved ownership fails closed.
+      if (allowLegacyUserScopedFallback && (!billingOwnerUserId || billingOwnerUserId !== userId)) {
+        allowLegacyUserScopedFallback = false;
+      }
+
       if (billingOwnerUserId) {
         const ownerMembershipsRes = await admin
           .from("organization_members")
@@ -635,10 +644,9 @@ Deno.serve(async (req) => {
         });
       }
       if (billingCustomerRes.error) {
-        return json(req, 500, {
-          error: "billing_customers lookup failed",
-          details: String(billingCustomerRes.error?.message || "unknown"),
-        });
+        // Raw database error text stays in server logs only.
+        console.error("billing-status billing_customers lookup error:", billingCustomerRes.error);
+        return json(req, 500, { error: "billing_customers lookup failed" });
       }
     }
 
@@ -706,13 +714,13 @@ Deno.serve(async (req) => {
       dbStatus = subscription ? String(subscription.status || "") : "";
     } catch (e) {
       const code = (e as any)?.code;
-      const message = (e as Error)?.message ?? String(e);
 
       if (code === "42P01") {
         console.warn("subscriptions table missing; returning minimal payload");
       } else {
+        // Raw database error text stays in server logs only (codes are safe).
         console.error("billing-status query error:", e);
-        return json(req, 500, { error: "Subscription lookup failed", details: code ?? message });
+        return json(req, 500, { error: "Subscription lookup failed", details: code ?? "query_failed" });
       }
     }
 
@@ -930,7 +938,6 @@ Deno.serve(async (req) => {
       try {
         const ownerBillingCustomerByOrg = new Map<string, Record<string, unknown>>();
         const ownerBillingCustomerBySubscription = new Map<string, Record<string, unknown>>();
-        const oldestOwnerWorkspaceId = ownerWorkspaces[0]?.id || "";
         const recordOwnerPaymentMetadata = (row: Record<string, unknown>) => {
           const stripeCustomerId = String(row?.stripe_customer_id || "").trim();
           if (stripeCustomerId) ownerHasStripeCustomerForPortal = true;
@@ -964,7 +971,12 @@ Deno.serve(async (req) => {
               return billingOrgId;
             }
           }
-          return oldestOwnerWorkspaceId || null;
+          // No guessed assignment: a subscription without an explicit
+          // organization binding (validated metadata or a billing_customers
+          // mapping for the same subscription) must not be attached to the
+          // oldest/first owned workspace. Unmapped candidates are excluded
+          // from entitlement selection entirely.
+          return null;
         };
 
         const ownerSubscriptionCandidates: EntitlementCandidate[] = [];
@@ -975,7 +987,10 @@ Deno.serve(async (req) => {
             row?.stripe_subscription_id ?? null,
             rawOrgId,
           );
-          if (!resolvedCandidateOrgId) return;
+          if (!resolvedCandidateOrgId) {
+            ownerUnmappedCandidateCount += 1;
+            return;
+          }
           const candidate: EntitlementCandidate = {
             organization_id: resolvedCandidateOrgId,
             status: String(row?.status || "none"),
@@ -1296,7 +1311,10 @@ Deno.serve(async (req) => {
               const orgIdFromMetadata = metadataOrgId(s?.metadata ?? null);
               if (orgIdFromMetadata && !ownerWorkspaceIdSet.has(orgIdFromMetadata)) return;
               const resolvedCandidateOrgId = mapSubscriptionToOwnerWorkspace(s?.id ?? null, orgIdFromMetadata);
-              if (!resolvedCandidateOrgId) return;
+              if (!resolvedCandidateOrgId) {
+                ownerUnmappedCandidateCount += 1;
+                return;
+              }
               const intervalRaw = s?.items?.data?.[0]?.price?.recurring?.interval ?? null;
               const candidate: EntitlementCandidate = {
                 organization_id: resolvedCandidateOrgId,
@@ -1773,6 +1791,10 @@ Deno.serve(async (req) => {
       paymentGraceUntil,
       paymentGraceRemainingDays,
       action: paymentAction,
+      // Repair signal: more than one active mapping was seen for the resolved
+      // scope. Selection stays deterministic, but duplicates are surfaced
+      // instead of silently resolved.
+      duplicateActiveMappings: duplicateActiveCount > 1,
     };
     if (responseDebugEnabled) {
       responsePayload.debug = {
@@ -1791,6 +1813,7 @@ Deno.serve(async (req) => {
         ownerEntitlementStatus: ownerEntitlementCandidate?.status ?? null,
         ownerEntitlementPriceId: ownerEntitlementCandidate?.price_id ?? null,
         ownerEntitlementCandidateCount,
+        ownerUnmappedCandidateCount,
         ownerSubscriptionRequiredReason,
         includedOrgIds,
         ownerWorkspaceCount: ownerWorkspaces.length,
@@ -1798,7 +1821,8 @@ Deno.serve(async (req) => {
     }
     return json(req, 200, responsePayload);
   } catch (e) {
+    // Raw Stripe/database error text stays in server logs only.
     console.error("billing-status fatal:", e);
-    return json(req, 500, { error: String(e?.message ?? e) });
+    return json(req, 500, { error: "Billing status failed" });
   }
 });

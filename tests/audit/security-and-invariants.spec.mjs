@@ -86,6 +86,7 @@ const importAppDialogPath = new URL('../../src/ui/overlays/import-app-dialog.js'
 const importPackDialogPath = new URL('../../src/ui/overlays/import-pack-dialog.js', import.meta.url);
 const billingStatusPath = new URL('../../supabase/functions/billing-status/index.ts', import.meta.url);
 const stripeCheckoutPath = new URL('../../supabase/functions/stripe-create-checkout-session/index.ts', import.meta.url);
+const stripePortalPath = new URL('../../supabase/functions/stripe-create-portal-session/index.ts', import.meta.url);
 const orgInvitePath = new URL('../../supabase/functions/org-invite/index.ts', import.meta.url);
 const orgInviteRevokePath = new URL('../../supabase/functions/org-invite-revoke/index.ts', import.meta.url);
 const orgInviteAcceptPath = new URL('../../supabase/functions/org-invite-accept/index.ts', import.meta.url);
@@ -21677,4 +21678,106 @@ test('F1-D server-backed portal/checkout stay org-resolved and carry no client a
   const checkoutFn = svcSrc.slice(checkoutIdx, checkoutIdx + 900);
   assert.match(checkoutFn, /resolveActiveOrganizationId\(\)/, 'checkout resolves the current org context');
   assert.match(checkoutFn, /if \(!orgId\)/, 'checkout fails closed without a resolved org');
+});
+
+// ── PORTAL-ORG: stripe-create-portal-session resolves billing strictly through
+// the requested organization. One user-level Stripe customer can hold
+// subscriptions for several organizations, so any user-scoped or
+// customer-scoped fallback can bind Workspace A's portal to Workspace B's
+// subscription. (Multi-workspace Stripe entitlement isolation audit, Branch 1.)
+
+test('PORTAL-ORG-1 portal never falls back to the user-level shared Stripe customer', async () => {
+  const src = await fs.readFile(stripePortalPath, 'utf8');
+
+  assert.ok(!src.includes('.from("stripe_customers")'),
+    'portal must not read the user-scoped stripe_customers mapping — a shared customer exposes sibling workspaces');
+  assert.match(src, /no_billing_mapping_for_organization/,
+    'portal fails closed with a structured error when the organization has no explicit billing mapping');
+
+  const guardIdx = src.indexOf('no_billing_mapping_for_organization');
+  const sessionIdx = src.indexOf('stripe.billingPortal.sessions.create');
+  assert.ok(guardIdx >= 0 && sessionIdx > guardIdx,
+    'the fail-closed mapping guard must run before any portal session is created');
+});
+
+test('PORTAL-ORG-2 portal subscription preselection is organization-scoped only', async () => {
+  const src = await fs.readFile(stripePortalPath, 'utf8');
+
+  assert.ok(!src.includes('.eq("stripe_customer_id"'),
+    'portal must not look up subscriptions by stripe_customer_id — the newest sub on a shared customer can belong to another organization');
+
+  // Every remaining subscriptions lookup must filter on the requested organization.
+  const subQueryRe = /\.from\("subscriptions"\)[\s\S]{0,400}?\.maybeSingle\(\)/g;
+  const subQueries = src.match(subQueryRe) || [];
+  assert.ok(subQueries.length >= 1, 'portal keeps at least one org-scoped subscription lookup');
+  for (const block of subQueries) {
+    assert.match(block, /\.eq\("organization_id", organizationId\)/,
+      'every portal subscriptions lookup must be scoped to the requested organization');
+  }
+});
+
+test('PORTAL-ORG-3 portal resolution order: billing_customers then org-scoped projection, preselect retained', async () => {
+  const src = await fs.readFile(stripePortalPath, 'utf8');
+
+  const billingCustomersIdx = src.indexOf('.from("billing_customers")');
+  const scopedSubsIdx = src.indexOf('.from("subscriptions")');
+  const guardIdx = src.indexOf('no_billing_mapping_for_organization');
+  assert.ok(billingCustomersIdx >= 0, 'billing_customers org mapping is the primary source');
+  assert.ok(scopedSubsIdx > billingCustomersIdx, 'org-scoped subscription projection is the secondary source');
+  assert.ok(guardIdx > scopedSubsIdx, 'fail-closed guard runs only after both explicit org sources');
+
+  const billingBlock = src.slice(billingCustomersIdx, billingCustomersIdx + 300);
+  assert.match(billingBlock, /\.eq\("organization_id", organizationId\)/,
+    'billing_customers lookup is keyed to the requested organization');
+
+  assert.match(src, /flow_data/, 'explicit org subscription preselection (flow_data) is retained');
+  assert.match(src, /subscription_update/, 'preselect still targets the update-subscription portal flow');
+  assert.match(src, /billing", "portal_return/, 'portal return URL behavior unchanged');
+});
+
+test('PORTAL-ORG-4 stale/schedule preselect falls back to a plain portal on the org-mapped customer only', async () => {
+  const src = await fs.readFile(stripePortalPath, 'utf8');
+
+  assert.match(src, /isMissingPortalSubscriptionError/, 'stale-subscription fallback retained');
+  assert.match(src, /isScheduleManagedPortalSubscriptionError/, 'schedule-managed fallback retained');
+  assert.match(src, /const fallbackPayload[\s\S]{0,120}customer: stripeCustomerId/,
+    'plain-portal fallback reuses the org-resolved customer');
+
+  // After the fail-closed guard, stripeCustomerId must never be reassigned from
+  // a non-organization source (guard is the last assignment gate).
+  const guardIdx = src.indexOf('no_billing_mapping_for_organization');
+  const afterGuard = src.slice(guardIdx);
+  assert.ok(!/stripeCustomerId\s*=\s*String\(/.test(afterGuard),
+    'no customer reassignment after the org-mapping guard');
+});
+
+test('PORTAL-ORG-5 portal keeps owner-only authorization scoped to the requested organization', async () => {
+  const src = await fs.readFile(stripePortalPath, 'utf8');
+
+  const memberIdx = src.indexOf('.from("organization_members")');
+  assert.ok(memberIdx >= 0, 'membership lookup present');
+  const memberBlock = src.slice(memberIdx, memberIdx + 400);
+  assert.match(memberBlock, /\.eq\("organization_id", organizationId\)/, 'membership check uses the requested organization');
+  assert.match(memberBlock, /\.eq\("user_id", user\.id\)/, 'membership check uses the authenticated caller');
+  assert.match(src, /if \(role !== "owner"\)/, 'non-owners are rejected');
+  assert.match(src, /status: 403/, 'owner rejection stays a 403');
+
+  const memberCheckIdx = src.indexOf('if (role !== "owner")');
+  const firstBillingReadIdx = src.indexOf('.from("billing_customers")');
+  assert.ok(memberCheckIdx >= 0 && firstBillingReadIdx > memberCheckIdx,
+    'authorization runs before any billing resolution');
+});
+
+test('PORTAL-ORG-6 portal catch handler returns sanitized error text only', async () => {
+  const src = await fs.readFile(stripePortalPath, 'utf8');
+
+  const catchIdx = src.lastIndexOf('} catch (e) {');
+  assert.ok(catchIdx >= 0, 'top-level catch present');
+  const catchBlock = src.slice(catchIdx);
+  assert.ok(!/json\(\{ error: message/.test(catchBlock),
+    'catch must not echo the raw error message to the browser');
+  assert.match(catchBlock, /console\.error\("stripe-create-portal-session error:", e\)/,
+    'raw error stays in server logs');
+  assert.match(catchBlock, /json\(\{ error: "Portal session failed" \}/,
+    'browser receives a fixed sanitized error string');
 });

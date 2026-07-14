@@ -122,15 +122,15 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Org-strict guard: one user-level Stripe customer can hold subscriptions
+    // for several organizations, so the portal must never fall back to the
+    // caller's shared customer. Without an explicit billing mapping for the
+    // requested organization, fail closed.
     if (!stripeCustomerId) {
-      const { data: existing, error: mapErr } = await sb
-        .from("stripe_customers")
-        .select("stripe_customer_id")
-        .eq("user_id", user.id)
-        .maybeSingle();
-      if (mapErr) throw mapErr;
-      if (!existing?.stripe_customer_id) return json({ error: "No Stripe customer for user" }, { status: 400, origin });
-      stripeCustomerId = String(existing.stripe_customer_id);
+      console.warn("billing:portal:no-org-billing-mapping", {
+        organization_id: organizationId,
+      });
+      return json({ error: "no_billing_mapping_for_organization" }, { status: 409, origin });
     }
 
     // --- Step 2: if subscription id still missing, try subscriptions table by org ---
@@ -149,21 +149,10 @@ Deno.serve(async (req) => {
       }
     }
 
-    // --- Step 3: last fallback — by customer id ---
-    if (!stripeSubscriptionId && stripeCustomerId) {
-      const subByCust = await sb
-        .from("subscriptions")
-        .select("stripe_subscription_id, status")
-        .eq("stripe_customer_id", stripeCustomerId)
-        .in("status", ["active", "trialing", "past_due", "unpaid"])
-        .order("updated_at", { ascending: false, nullsFirst: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (!subByCust.error && subByCust.data?.stripe_subscription_id) {
-        stripeSubscriptionId = String(subByCust.data.stripe_subscription_id);
-      }
-    }
+    // No by-customer preselection fallback: a stripe_customer_id-only lookup can
+    // select a sibling organization's subscription on the shared customer. When
+    // the requested organization has no subscription mapping, open a plain
+    // portal session on its explicitly mapped customer instead.
 
     const return_url = new URL(origin);
     return_url.pathname = "/index.html";
@@ -242,8 +231,9 @@ Deno.serve(async (req) => {
 
     return json({ url: session.url }, { status: 200, origin });
   } catch (e) {
+    // Raw Stripe/database error text stays in server logs only.
+    console.error("stripe-create-portal-session error:", e);
     const status = (e as any).status ?? 500;
-    const message = (e as Error).message ?? "Server error";
-    return json({ error: message }, { status, origin });
+    return json({ error: "Portal session failed" }, { status, origin });
   }
 });

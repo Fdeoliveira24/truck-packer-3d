@@ -6797,12 +6797,10 @@ export function createSettingsOverlay({
               const isSelf = Boolean(currentUserId && currentUserId === userId);
               const isOwnerMember = role === 'owner';
               const isAdminMember = role === 'admin';
-              const isLastOwner = isOwnerMember && ownersCount <= 1;
               const isBusy = orgMemberActions.has(userId);
 
-              let canEditRole = canManage && !isBusy;
+              let canEditRole = canManage && !isBusy && !isOwnerMember;
               if (!canManageAdmins && (isOwnerMember || isAdminMember)) canEditRole = false;
-              if (isSelf && isLastOwner) canEditRole = false;
 
               let canRemove = canManage && !isBusy;
               if (isSelf) canRemove = false;
@@ -6851,67 +6849,69 @@ export function createSettingsOverlay({
               const actions = doc.createElement('div');
               actions.className = 'tp3d-org-member-actions';
 
-              const roleSelect = doc.createElement('select');
-              roleSelect.className = 'select tp3d-org-member-role-select';
-              roleSelect.setAttribute('aria-label', `Role for ${memberName}`);
-              const roles = ['owner', 'admin', 'member'];
-              roles.forEach(r => {
-                const opt = doc.createElement('option');
-                opt.value = r;
-                opt.textContent = getRoleLabel(r);
-                if (r === 'owner' && !isOwner) opt.disabled = true;
-                // Admins cannot promote to or manage admin role — only owners can.
-                if (r === 'admin' && !isOwner) opt.disabled = true;
-                roleSelect.appendChild(opt);
-              });
-              if (!roles.includes(role)) {
-                const opt = doc.createElement('option');
-                opt.value = role;
-                opt.textContent = getRoleLabel(role);
-                roleSelect.appendChild(opt);
-              }
-              roleSelect.value = role;
-              roleSelect.disabled = Boolean(membersDisabledReason || !canEditRole);
-              roleSelect.addEventListener('change', async ev => {
-                const target = ev.target instanceof HTMLSelectElement ? ev.target : null;
-                const nextRole = target ? String(target.value) : role;
-                if (nextRole === role) return;
+              if (isOwnerMember) {
+                const ownershipHint = doc.createElement('span');
+                ownershipHint.className = 'muted tp3d-members-inline-helper';
+                ownershipHint.textContent = 'Use Transfer Ownership';
+                actions.appendChild(ownershipHint);
+              } else {
+                const roleSelect = doc.createElement('select');
+                roleSelect.className = 'select tp3d-org-member-role-select';
+                roleSelect.setAttribute('aria-label', `Role for ${memberName}`);
+                const roles = ['admin', 'member'];
+                roles.forEach(r => {
+                  const opt = doc.createElement('option');
+                  opt.value = r;
+                  opt.textContent = getRoleLabel(r);
+                  // Admins cannot promote to or manage admin role — only owners can.
+                  if (r === 'admin' && !isOwner) opt.disabled = true;
+                  roleSelect.appendChild(opt);
+                });
+                if (!roles.includes(role)) {
+                  const opt = doc.createElement('option');
+                  opt.value = role;
+                  opt.textContent = getRoleLabel(role);
+                  roleSelect.appendChild(opt);
+                }
                 roleSelect.value = role;
-                if (nextRole === 'owner' && !isOwner) {
-                  UIComponents.showToast('Only owners can promote members to owner.', 'warning');
-                  return;
-                }
-                if (nextRole === 'admin' && !isOwner) {
-                  UIComponents.showToast('Only owners can promote members to admin.', 'warning');
-                  return;
-                }
-                if (membersDisabledReason || !canEditRole) {
-                  return;
-                }
-                if (isSensitiveRoleChange(role, nextRole)) {
-                  let confirmed = false;
-                  try {
-                    confirmed = await UIComponents.confirm({
-                      title: 'Change member role',
-                      message: buildRoleChangeConfirmMessage(member, role, nextRole),
-                      okLabel: 'Change Role',
-                      cancelLabel: 'Cancel',
-                      danger: role === 'owner' || nextRole === 'owner',
-                    });
-                  } catch {
-                    confirmed = false;
-                  }
-                  if (!confirmed) {
-                    roleSelect.value = role;
+                roleSelect.disabled = Boolean(membersDisabledReason || !canEditRole);
+                roleSelect.addEventListener('change', async ev => {
+                  const target = ev.target instanceof HTMLSelectElement ? ev.target : null;
+                  const nextRole = target ? String(target.value) : role;
+                  if (nextRole === role) return;
+                  roleSelect.value = role;
+                  if (nextRole === 'admin' && !isOwner) {
+                    UIComponents.showToast('Only owners can promote members to admin.', 'warning');
                     return;
                   }
-                }
-                roleSelect.value = nextRole;
-                updateMemberRole(orgId, member, nextRole, currentUserId).catch(() => {
-                  roleSelect.value = role;
+                  if (membersDisabledReason || !canEditRole) {
+                    return;
+                  }
+                  if (isSensitiveRoleChange(role, nextRole)) {
+                    let confirmed = false;
+                    try {
+                      confirmed = await UIComponents.confirm({
+                        title: 'Change member role',
+                        message: buildRoleChangeConfirmMessage(member, role, nextRole),
+                        okLabel: 'Change Role',
+                        cancelLabel: 'Cancel',
+                        danger: role === 'owner' || nextRole === 'owner',
+                      });
+                    } catch {
+                      confirmed = false;
+                    }
+                    if (!confirmed) {
+                      roleSelect.value = role;
+                      return;
+                    }
+                  }
+                  roleSelect.value = nextRole;
+                  updateMemberRole(orgId, member, nextRole, currentUserId).catch(() => {
+                    roleSelect.value = role;
+                  });
                 });
-              });
-              actions.appendChild(roleSelect);
+                actions.appendChild(roleSelect);
+              }
 
               const removeBtn = doc.createElement('button');
               removeBtn.type = 'button';

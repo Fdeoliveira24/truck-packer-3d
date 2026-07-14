@@ -91,6 +91,7 @@ const stripePortalPath = new URL('../../supabase/functions/stripe-create-portal-
 const orgInvitePath = new URL('../../supabase/functions/org-invite/index.ts', import.meta.url);
 const orgInviteRevokePath = new URL('../../supabase/functions/org-invite-revoke/index.ts', import.meta.url);
 const orgInviteAcceptPath = new URL('../../supabase/functions/org-invite-accept/index.ts', import.meta.url);
+const orgMemberRoleUpdatePath = new URL('../../supabase/functions/org-member-role-update/index.ts', import.meta.url);
 const orgMemberRemovePath = new URL('../../supabase/functions/org-member-remove/index.ts', import.meta.url);
 const orgTransferOwnershipPath = new URL('../../supabase/functions/org-transfer-ownership/index.ts', import.meta.url);
 const orgLeaveWorkspacePath = new URL('../../supabase/functions/org-leave-workspace/index.ts', import.meta.url);
@@ -13419,6 +13420,135 @@ test('phase 3C2 signed-out cleanup calls setPhase form and show on non-user-init
     '_executeSignedOutCleanup must not replace the form path with checking');
 });
 
+async function executeOrgMemberRoleUpdate(options = {}) {
+  const source = await fs.readFile(orgMemberRoleUpdatePath, 'utf8');
+  const executableSource = source.replace(/^import[^\n]*\n/gm, '');
+  const actorId = options.actorId || '11111111-1111-4111-8111-111111111111';
+  const targetUserId = options.targetUserId || '22222222-2222-4222-8222-222222222222';
+  const organizationId = options.organizationId || 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const calls = {
+    serviceClient: 0,
+    organizationReads: 0,
+    membershipReads: 0,
+    updates: [],
+    logs: [],
+  };
+  let handler = null;
+
+  function createQuery(table) {
+    let operation = 'select';
+    let updatePayload = null;
+    const filters = [];
+    const query = {
+      select() {
+        return query;
+      },
+      update(payload) {
+        operation = 'update';
+        updatePayload = payload;
+        return query;
+      },
+      eq(field, value) {
+        filters.push([String(field), value]);
+        return query;
+      },
+      async maybeSingle() {
+        const filterValue = field => {
+          const match = filters.find(([candidate]) => candidate === field);
+          return match ? match[1] : undefined;
+        };
+
+        if (table === 'organizations') {
+          calls.organizationReads += 1;
+          if (options.failure === 'organization') {
+            return { data: null, error: { message: 'relation organizations leaked detail' } };
+          }
+          if (options.organizationMissing) return { data: null, error: null };
+          return {
+            data: { owner_id: options.canonicalOwnerId || actorId },
+            error: null,
+          };
+        }
+
+        if (table !== 'organization_members') {
+          throw new Error(`Unexpected table ${table}`);
+        }
+
+        const requestedUserId = String(filterValue('user_id') || '');
+        if (operation === 'update') {
+          calls.updates.push({ payload: updatePayload, filters: [...filters] });
+          if (options.failure === 'update') {
+            return { data: null, error: { message: 'update organization_members leaked detail' } };
+          }
+          if (options.updateReturnsNull) return { data: null, error: null };
+          return {
+            data: {
+              id: '44444444-4444-4444-8444-444444444444',
+              organization_id: organizationId,
+              user_id: targetUserId,
+              role: String(updatePayload?.role || ''),
+              joined_at: null,
+            },
+            error: null,
+          };
+        }
+
+        calls.membershipReads += 1;
+        if (requestedUserId === actorId) {
+          if (options.failure === 'actor') {
+            return { data: null, error: { message: 'actor organization_members leaked detail' } };
+          }
+          return options.actorMissing
+            ? { data: null, error: null }
+            : { data: { role: options.actorRole || 'owner' }, error: null };
+        }
+        if (requestedUserId === targetUserId) {
+          if (options.failure === 'target') {
+            return { data: null, error: { message: 'target organization_members leaked detail' } };
+          }
+          return options.targetMissing
+            ? { data: null, error: null }
+            : { data: { role: options.targetRole || 'member' }, error: null };
+        }
+        return { data: null, error: null };
+      },
+    };
+    return query;
+  }
+
+  const sandbox = {
+    Deno: {
+      serve(fn) {
+        handler = fn;
+      },
+    },
+    getAllowedOrigin: () => 'https://app.test',
+    handleCors: () => null,
+    json: (body, init = {}) => ({ status: Number(init.status || 200), body }),
+    requireUser: async () => ({ ok: true, user: { id: actorId } }),
+    serviceClient: () => {
+      calls.serviceClient += 1;
+      return { from: table => createQuery(table) };
+    },
+    console: {
+      error: (...args) => calls.logs.push(args),
+    },
+  };
+
+  vm.runInNewContext(stripTypeScriptTypes(executableSource, { mode: 'strip' }), sandbox);
+  assert.equal(typeof handler, 'function', 'production Edge Function handler must be captured');
+
+  const response = await handler({
+    method: 'POST',
+    json: async () => ({
+      org_id: options.payloadOrgId ?? organizationId,
+      user_id: options.payloadUserId ?? targetUserId,
+      role: options.nextRole || 'member',
+    }),
+  });
+  return { response, calls, actorId, targetUserId, organizationId };
+}
+
 // ── Organization invite authorization invariants ─────────────────────────────
 
 test('org-invite rejects admin actors creating admin invites while preserving owner/admin role targets', async () => {
@@ -13480,6 +13610,215 @@ test('org-invite-accept remains idempotent for the same invited user after email
     'idempotent accepted-token response must run after accepted role validation');
   assert.match(src, /inviteStatus === "accepted"[\s\S]*already_accepted:\s*true[\s\S]*organization_id: invite\.organization_id/,
     'same invited user should still get an idempotent already_accepted response');
+});
+
+test('owner authority function runtime rejects member/admin promotion to owner before any database work', async () => {
+  for (const targetRole of ['member', 'admin']) {
+    const { response, calls } = await executeOrgMemberRoleUpdate({
+      actorRole: 'owner',
+      targetRole,
+      nextRole: 'owner',
+    });
+    assert.equal(response.status, 409);
+    assert.equal(response.body.error, 'ownership_change_requires_transfer');
+    assert.equal(calls.serviceClient, 0, `${targetRole} -> owner must reject before database access`);
+    assert.equal(calls.updates.length, 0, `${targetRole} -> owner must not update a membership`);
+  }
+});
+
+test('owner authority function runtime rejects owner demotion and canonical owner mutation', async () => {
+  for (const nextRole of ['admin', 'member']) {
+    const existingOwner = await executeOrgMemberRoleUpdate({
+      actorRole: 'owner',
+      targetRole: 'owner',
+      nextRole,
+    });
+    assert.equal(existingOwner.response.status, 409);
+    assert.equal(existingOwner.response.body.error, 'ownership_change_requires_transfer');
+    assert.equal(existingOwner.calls.updates.length, 0, `owner -> ${nextRole} must not update`);
+  }
+
+  const canonicalOwner = await executeOrgMemberRoleUpdate({
+    actorRole: 'owner',
+    targetRole: 'member',
+    nextRole: 'admin',
+    canonicalOwnerId: '22222222-2222-4222-8222-222222222222',
+  });
+  assert.equal(canonicalOwner.response.status, 409);
+  assert.equal(canonicalOwner.response.body.error, 'ownership_change_requires_transfer');
+  assert.equal(canonicalOwner.calls.updates.length, 0,
+    'canonical organizations.owner_id must not be changed even if its membership role is already inconsistent');
+});
+
+test('owner authority function runtime preserves owner-managed member/admin transitions and no-op', async () => {
+  const promotion = await executeOrgMemberRoleUpdate({
+    actorRole: 'owner',
+    targetRole: 'member',
+    nextRole: 'admin',
+  });
+  assert.equal(promotion.response.status, 200);
+  assert.equal(promotion.response.body.member.role, 'admin');
+  assert.equal(promotion.calls.updates.length, 1);
+  assert.deepEqual(
+    promotion.calls.updates[0].filters.map(([field, value]) => [field, String(value)]),
+    [
+      ['organization_id', promotion.organizationId],
+      ['user_id', promotion.targetUserId],
+      ['role', 'member'],
+    ],
+    'role update must be organization/user/current-role scoped against concurrent ownership changes',
+  );
+
+  const demotion = await executeOrgMemberRoleUpdate({
+    actorRole: 'owner',
+    targetRole: 'admin',
+    nextRole: 'member',
+  });
+  assert.equal(demotion.response.status, 200);
+  assert.equal(demotion.response.body.member.role, 'member');
+  assert.equal(demotion.calls.updates.length, 1);
+
+  const noOp = await executeOrgMemberRoleUpdate({
+    actorRole: 'owner',
+    targetRole: 'member',
+    nextRole: 'member',
+  });
+  assert.equal(noOp.response.status, 200);
+  assert.equal(noOp.response.body.ok, true);
+  assert.equal(noOp.response.body.role, 'member');
+  assert.equal(noOp.calls.updates.length, 0, 'same-role requests must not issue an update');
+});
+
+test('owner authority function runtime preserves admin/member authorization policy', async () => {
+  const adminPromotes = await executeOrgMemberRoleUpdate({
+    actorRole: 'admin',
+    targetRole: 'member',
+    nextRole: 'admin',
+  });
+  assert.equal(adminPromotes.response.status, 403);
+  assert.equal(adminPromotes.calls.updates.length, 0);
+
+  const adminEditsAdmin = await executeOrgMemberRoleUpdate({
+    actorRole: 'admin',
+    targetRole: 'admin',
+    nextRole: 'member',
+  });
+  assert.equal(adminEditsAdmin.response.status, 403);
+  assert.equal(adminEditsAdmin.calls.updates.length, 0);
+
+  const memberActor = await executeOrgMemberRoleUpdate({
+    actorRole: 'member',
+    targetRole: 'member',
+    nextRole: 'member',
+  });
+  assert.equal(memberActor.response.status, 403);
+  assert.equal(memberActor.calls.updates.length, 0);
+});
+
+test('owner authority function runtime validates UUIDs and never reports null-update success', async () => {
+  for (const invalidIds of [
+    { payloadOrgId: 'not-a-uuid' },
+    { payloadUserId: 'not-a-uuid' },
+  ]) {
+    const invalid = await executeOrgMemberRoleUpdate({ ...invalidIds, nextRole: 'member' });
+    assert.equal(invalid.response.status, 400);
+    assert.equal(invalid.calls.serviceClient, 0, 'malformed IDs must reject before database access');
+  }
+
+  const missingTarget = await executeOrgMemberRoleUpdate({ targetMissing: true, nextRole: 'member' });
+  assert.equal(missingTarget.response.status, 404);
+  assert.equal(missingTarget.calls.updates.length, 0);
+
+  const disappeared = await executeOrgMemberRoleUpdate({
+    targetRole: 'member',
+    nextRole: 'admin',
+    updateReturnsNull: true,
+  });
+  assert.equal(disappeared.response.status, 409);
+  assert.equal(disappeared.response.body.error, 'member_role_update_failed');
+  assert.equal(disappeared.calls.updates.length, 1);
+});
+
+test('owner authority function runtime sanitizes membership organization and update failures', async () => {
+  for (const failure of ['actor', 'target', 'organization', 'update']) {
+    const result = await executeOrgMemberRoleUpdate({
+      actorRole: 'owner',
+      targetRole: 'member',
+      nextRole: 'admin',
+      failure,
+    });
+    assert.equal(result.response.status, 500, `${failure} failure must return 500`);
+    assert.equal(result.response.body.error, 'member_role_update_failed');
+    assert.doesNotMatch(JSON.stringify(result.response.body), /organization_members|organizations|relation|leaked detail/i,
+      `${failure} failure must not expose database details`);
+  }
+});
+
+test('owner authority source contract leaves transfer as the only ownership mutation path', async () => {
+  const roleUpdate = await fs.readFile(orgMemberRoleUpdatePath, 'utf8');
+  const transfer = await fs.readFile(orgTransferOwnershipPath, 'utf8');
+
+  assert.match(roleUpdate, /const UUID_RE = \/\^\[0-9a-f\]/,
+    'generic role endpoint must use established UUID validation');
+  assert.match(roleUpdate, /nextRole === "owner"[\s\S]*OWNERSHIP_TRANSFER_REQUIRED[\s\S]*status: 409/,
+    'owner promotion must use the structured transfer-required error');
+  assert.match(roleUpdate, /targetRole === "owner"[\s\S]*OWNERSHIP_TRANSFER_REQUIRED[\s\S]*status: 409/,
+    'existing owner memberships must be immutable through the generic endpoint');
+  assert.match(roleUpdate, /\.from\("organizations"\)[\s\S]*\.select\("owner_id"\)[\s\S]*organization\.owner_id[\s\S]*targetUserId/,
+    'canonical organizations.owner_id must be protected even when membership data is inconsistent');
+  assert.match(roleUpdate, /\.eq\("role", targetRole\)[\s\S]*\.select\("id, organization_id, user_id, role, joined_at"\)/,
+    'updates must fail closed if the current membership role changes concurrently');
+  assert.doesNotMatch(roleUpdate, /ownerCount|Cannot demote the last owner/,
+    'generic endpoint must not retain last-owner counting or its race');
+  assert.doesNotMatch(roleUpdate, /tp3d_transfer_workspace_ownership|billing_customers|subscriptions|stripe/i,
+    'generic endpoint must neither duplicate nor bypass transfer/billing responsibilities');
+  assert.match(transfer, /resolveWorkspaceTransferBillingGuard\(sb, orgId\)[\s\S]*\.rpc\("tp3d_transfer_workspace_ownership"/,
+    'dedicated transfer endpoint must retain its billing guard and canonical RPC');
+});
+
+test('owner authority UI source contract exposes only member/admin generic role changes', async () => {
+  const settings = await fs.readFile(settingsOverlayPath, 'utf8');
+  const roleControlsStart = settings.indexOf("if (isOwnerMember) {");
+  const roleControlsEnd = settings.indexOf("const removeBtn = doc.createElement('button');", roleControlsStart);
+  const roleControls = roleControlsStart >= 0 && roleControlsEnd > roleControlsStart
+    ? settings.slice(roleControlsStart, roleControlsEnd)
+    : '';
+
+  assert.ok(roleControls, 'member role controls must be extractable');
+  assert.match(roleControls, /ownershipHint\.textContent = 'Use Transfer Ownership'/,
+    'owner rows must direct users to the dedicated transfer workflow');
+  assert.match(roleControls, /const roles = \['admin', 'member'\]/,
+    'generic role dropdown must expose only admin and member');
+  assert.doesNotMatch(roleControls, /const roles = \[[^\]]*'owner'/,
+    'owner must not remain a generic role option');
+  assert.match(settings, /if \(isPrimaryOwner\)[\s\S]*Transfer Ownership[\s\S]*showTransferOwnershipModal/,
+    'the existing primary-owner transfer workflow must remain available');
+});
+
+test('owner authority client production-helper runtime maps transfer-required code to clear copy', async () => {
+  const src = await fs.readFile(billingServiceUrl, 'utf8');
+  const start = src.indexOf('const OWNERSHIP_CHANGE_REQUIRES_TRANSFER_MESSAGE');
+  const end = src.indexOf('const WORKSPACE_ACTIVE_BILLING_TRANSFER_MESSAGE', start);
+  assert.ok(start >= 0 && end > start, 'production role-update error mapper must be extractable');
+
+  const sandbox = {
+    resolveFnError: (_res, data, fallback) => data?.error || fallback,
+  };
+  vm.runInNewContext(
+    `${src.slice(start, end)}\nglobalThis.__resolveOrgMemberRoleUpdateError = resolveOrgMemberRoleUpdateError;`,
+    sandbox,
+  );
+  const resolveRoleError = sandbox.__resolveOrgMemberRoleUpdateError;
+
+  assert.equal(
+    resolveRoleError({}, { error: 'ownership_change_requires_transfer' }),
+    'Ownership changes must use Transfer Ownership.',
+  );
+  assert.equal(
+    resolveRoleError({}, { error: 'Only owners/admins can update roles.' }),
+    'Only owners/admins can update roles.',
+    'non-ownership role errors must retain their existing behavior',
+  );
 });
 
 test('settings members confirms sensitive role changes and restores dropdown value on cancel', async () => {

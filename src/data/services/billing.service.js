@@ -201,6 +201,23 @@ function resolveFnError(res, data, fallback) {
   return fallback;
 }
 
+const OWNERSHIP_CHANGE_REQUIRES_TRANSFER_MESSAGE =
+  'Ownership changes must use Transfer Ownership.';
+
+/**
+ * Map generic role-update errors without exposing structured server codes.
+ * @param {Response} res
+ * @param {any} data
+ * @returns {string}
+ */
+function resolveOrgMemberRoleUpdateError(res, data) {
+  const code = data && typeof data.error === 'string' ? data.error.trim() : '';
+  if (code === 'ownership_change_requires_transfer') {
+    return OWNERSHIP_CHANGE_REQUIRES_TRANSFER_MESSAGE;
+  }
+  return resolveFnError(res, data, 'Role update failed');
+}
+
 const WORKSPACE_ACTIVE_BILLING_TRANSFER_MESSAGE =
   'This workspace has active billing. Cancel the subscription in Billing before transferring ownership, or contact support to move billing to the new owner.';
 const WORKSPACE_BILLING_UNAVAILABLE_TRANSFER_MESSAGE =
@@ -723,7 +740,7 @@ export async function updateOrgMemberRole(orgId, userId, role) {
     });
     const data = await readJsonSafe(res);
     if (!res.ok) {
-      return { ok: false, error: resolveFnError(res, data, 'Role update failed') };
+      return { ok: false, error: resolveOrgMemberRoleUpdateError(res, data) };
     }
     return { ok: true, member: data && data.member ? data.member : null };
   } catch (err) {

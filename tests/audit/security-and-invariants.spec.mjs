@@ -15731,6 +15731,36 @@ test('phase 0.6D Batch C billing service exports transferOwnership wrapper', asy
     'existing transfer errors must retain their current fallback behavior');
 });
 
+test('billing safety transfer client production-helper runtime maps structured guards to sanitized copy', async () => {
+  const src = await fs.readFile(billingServiceUrl, 'utf8');
+  const start = src.indexOf('const WORKSPACE_ACTIVE_BILLING_TRANSFER_MESSAGE');
+  const end = src.indexOf('const ORG_UUID_RE', start);
+  assert.ok(start >= 0 && end > start, 'production transfer error mapper must be extractable');
+
+  const sandbox = {
+    resolveFnError: (_res, data, fallback) => data?.error || fallback,
+  };
+  vm.runInNewContext(
+    `${src.slice(start, end)}\nglobalThis.__resolveTransferOwnershipError = resolveTransferOwnershipError;`,
+    sandbox,
+  );
+  const resolveTransferError = sandbox.__resolveTransferOwnershipError;
+
+  assert.equal(
+    resolveTransferError({}, { error: 'workspace_has_active_billing' }),
+    'This workspace has active billing. Cancel the subscription in Billing before transferring ownership, or contact support to move billing to the new owner.',
+  );
+  assert.equal(
+    resolveTransferError({}, { error: 'workspace_billing_state_unavailable' }),
+    'Billing status could not be verified. Try again before transferring ownership.',
+  );
+  assert.equal(
+    resolveTransferError({}, { error: 'Only the current workspace owner can transfer ownership.' }),
+    'Only the current workspace owner can transfer ownership.',
+    'existing structured transfer errors must retain their current behavior',
+  );
+});
+
 test('phase 0.6D Batch C app exposes handleOwnershipTransferred without signout or reload', async () => {
   const src = await fs.readFile(appPath, 'utf8');
   const start = src.indexOf('function handleOwnershipTransferred(orgId, options = {})');

@@ -160,6 +160,7 @@ let _billingAuthoritativeRefreshGeneration = 0;
 let _billingAuthoritativeRefreshRequired = null;
 /** @type {null|{generation:number,userId:string,orgId:string,epoch:number}} */
 let _billingAuthoritativeRefreshInFlight = null;
+let _billingRequireAuthoritativeOnNextSignIn = false;
 let _authRevocationCheckTimer = null;
 let _authRevocationCheckInFlight = false;
 let _authRevocationCheckLastAt = 0;
@@ -186,6 +187,19 @@ function requireBillingAuthoritativeRefreshForUserSwitch(userId = null) {
     attemptedAt: 0,
   };
   _billingAuthoritativeRefreshInFlight = null;
+}
+
+function markBillingAuthoritativeRefreshForNextSignIn() {
+  _billingRequireAuthoritativeOnNextSignIn = true;
+}
+
+function transferBillingAuthoritativeRefreshForSignIn(userId = null) {
+  const normalizedUserId = userId ? String(userId) : '';
+  if (!_billingRequireAuthoritativeOnNextSignIn || !normalizedUserId) return false;
+  try { window.__TP3D_USER_SWITCH_PENDING = true; } catch (_) { /* ignore */ }
+  requireBillingAuthoritativeRefreshForUserSwitch(normalizedUserId);
+  _billingRequireAuthoritativeOnNextSignIn = false;
+  return true;
 }
 
 function clearBillingAuthoritativeRefreshRequirement(token = null) {
@@ -7576,6 +7590,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
     /** Extracted destructive signed-out actions so the auth gate timer can call them. */
     function _executeSignedOutCleanup({ event, treatAsSignedOut, userInitiatedSignOut, onRetry }) {
       const isSignedOutEvent = event === 'SIGNED_OUT';
+      const hadAuthenticatedSession = Boolean(
+        lastAuthUserId ||
+        (lastAuthEventSnapshot && lastAuthEventSnapshot.status === 'signed_in' && lastAuthEventSnapshot.userId)
+      );
       try { document.body.setAttribute('data-auth', 'signed_out'); } catch { /* ignore */ }
       stopVisibleAuthRevocationCheck();
       lastAuthEventSnapshot = { status: 'signed_out', userId: null, hasToken: false, session: null, ts: Date.now() };
@@ -7620,6 +7638,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
       try { clearBillingState(); } catch (_) { /* ignore */ }
       clearBillingAuthoritativeRefreshRequirement();
+      if (userInitiatedSignOut && hadAuthenticatedSession) {
+        markBillingAuthoritativeRefreshForNextSignIn();
+      }
       // BUG-01: sign-out is a terminal identity state — release the user-switch
       // promotion guard so it cannot stay latched across the next sign-in.
       try { window.__TP3D_USER_SWITCH_PENDING = false; } catch (_) { /* ignore */ }
@@ -8234,6 +8255,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // If this is a user switch (different user signed in), isolate stale state immediately
           if (isUserSwitch) {
             applyUserSwitchIsolation('SIGNED_IN_USER_SWITCH');
+          }
+          if (isSignedInEvent && newUserId) {
+            transferBillingAuthoritativeRefreshForSignIn(newUserId);
           }
 
           // Rehydrate auth state for sign-in/session refresh events.

@@ -5882,6 +5882,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
     const _billingPumpLastByReason = new Map();
     let _billingPumpLastRunAtMs = 0;
 
+    function resetBillingPumpForUserSwitch() {
+      clearTimeout(_billingPumpTimer);
+      _billingPumpTimer = null;
+      _billingPumpTries = 0;
+      _billingPumpEverRan = false;
+      _billingPumpLastByReason.clear();
+      _billingPumpLastRunAtMs = 0;
+      _lastBillingKey = '';
+      _lastBillingKeyAt = 0;
+    }
+
     function maybeScheduleBillingRefresh(reason) {
       // ── Auth gate: never pump billing without a proven or usable session ──
       const _proven = typeof SupabaseClient.isAuthProven === 'function' && SupabaseClient.isAuthProven();
@@ -7188,6 +7199,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       // localStorage org hint (read by resolveActiveOrganizationId in the
       // billing service).
       try { window.__TP3D_USER_SWITCH_PENDING = true; } catch (_) { /* ignore */ }
+      try { resetBillingPumpForUserSwitch(); } catch (_) { /* ignore */ }
       try { clearBillingState(); } catch (_) { /* ignore */ }
       clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: false });
       suspendAutoSave = true;

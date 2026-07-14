@@ -20251,6 +20251,242 @@ test('BUG-01-H cross-tab same-user refresh: guard is false when user IDs match',
 //  3) BUG-07: sidebar billing markup was hidden without clearing innerHTML.
 // ─────────────────────────────────────────────────────────────────────────────
 
+async function createBillingPumpRuntimeHarness() {
+  const src = await fs.readFile(appPath, 'utf8');
+  const pumpStart = src.indexOf('const BILLING_PUMP_RETRY_MS = 200;');
+  const pumpEnd = src.indexOf('function handleOrgAccessLoss(', pumpStart);
+  assert.ok(pumpStart >= 0 && pumpEnd > pumpStart, 'production billing-pump block is extractable');
+  const pumpSource = src.slice(pumpStart, pumpEnd);
+
+  const context = {
+    __now: 100000,
+    __activeOrgId: 'org-a',
+    __billingState: {
+      ok: false,
+      loading: false,
+      pending: false,
+      error: null,
+      orgId: null,
+      lastFetchedAt: 0,
+    },
+    __calls: [],
+    __logs: [],
+    __clearedTimers: [],
+    __failNext: false,
+  };
+  context.Date = class FakeDate extends Date {
+    static now() { return context.__now; }
+  };
+  context.SupabaseClient = { isAuthProven: () => true };
+  context.getAuthTruthSnapshot = () => ({ status: 'signed_in', session: null });
+  context.getActiveOrgIdNow = () => context.__activeOrgId;
+  context.normalizeOrgIdForBilling = value => String(value || '').trim();
+  context.billingDebugLog = (...args) => context.__logs.push(args);
+  context.clearTimeout = timer => {
+    if (timer !== null && typeof timer !== 'undefined') context.__clearedTimers.push(timer);
+  };
+  context.setTimeout = (_fn, _delay) => ({ id: context.__clearedTimers.length + 1 });
+  context._readShareableBillingResult = () => null;
+  context._applySharedBillingSnapshot = () => false;
+  context._getSharedBillingFreshness = () => 0;
+  context._readSharedBillingResult = () => null;
+  context._BILLING_SHARED_FRESH_MS = 90000;
+  context.refreshBilling = options => {
+    context.__calls.push({ ...options, orgId: context.__activeOrgId, at: context.__now });
+    if (context.__failNext) {
+      context.__failNext = false;
+      Object.assign(context.__billingState, {
+        ok: false,
+        loading: false,
+        pending: false,
+        error: { message: 'billing unavailable' },
+        orgId: context.__activeOrgId,
+        lastFetchedAt: context.__now,
+      });
+    } else {
+      Object.assign(context.__billingState, {
+        ok: true,
+        loading: false,
+        pending: false,
+        error: null,
+        orgId: context.__activeOrgId,
+        lastFetchedAt: context.__now,
+      });
+    }
+    return Promise.resolve({ ...context.__billingState });
+  };
+  context.window = {
+    __TP3D_BILLING: {
+      getBillingState: () => context.__billingState,
+    },
+  };
+
+  vm.createContext(context);
+  vm.runInContext(`
+    let _lastBillingKey = '';
+    let _lastBillingKeyAt = 0;
+    ${pumpSource}
+    globalThis.__pump = {
+      run: reason => maybeScheduleBillingRefresh(reason),
+      reset: () => resetBillingPumpForUserSwitch(),
+      setOrg: orgId => { globalThis.__activeOrgId = orgId; },
+      advance: ms => { globalThis.__now += ms; },
+      failNext: () => { globalThis.__failNext = true; },
+      seedOwnedState: () => {
+        _billingPumpTimer = { id: 'prior-user-retry' };
+        _billingPumpTries = 4;
+        _billingPumpEverRan = true;
+        _billingPumpLastByReason.set('org-context', globalThis.__now);
+        _billingPumpLastRunAtMs = globalThis.__now;
+        _lastBillingKey = 'prior-user|pump:org-context|1';
+        _lastBillingKeyAt = globalThis.__now;
+      },
+      snapshot: () => ({
+        timer: _billingPumpTimer,
+        tries: _billingPumpTries,
+        everRan: _billingPumpEverRan,
+        reasons: Array.from(_billingPumpLastByReason.entries()),
+        lastRunAtMs: _billingPumpLastRunAtMs,
+        lastBillingKey: _lastBillingKey,
+        lastBillingKeyAt: _lastBillingKeyAt,
+      }),
+    };
+  `, context);
+
+  return {
+    pump: context.__pump,
+    calls: context.__calls,
+    logs: context.__logs,
+    clearedTimers: context.__clearedTimers,
+    billingState: context.__billingState,
+  };
+}
+
+test('BUG-01-Q cross-user isolation resets every prior-user billing-pump and burst owner', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const resetStart = src.indexOf('function resetBillingPumpForUserSwitch()');
+  const resetEnd = src.indexOf('function maybeScheduleBillingRefresh(', resetStart);
+  const resetFn = resetStart >= 0 && resetEnd > resetStart ? src.slice(resetStart, resetEnd) : '';
+
+  assert.ok(resetFn, 'cross-user billing-pump reset helper exists');
+  assert.match(resetFn, /clearTimeout\(_billingPumpTimer\)/, 'prior-user org-ready retry timer is cancelled');
+  assert.match(resetFn, /_billingPumpTimer = null/, 'retry timer ownership is released');
+  assert.match(resetFn, /_billingPumpTries = 0/, 'retry count is reset');
+  assert.match(resetFn, /_billingPumpEverRan = false/, 'new identity receives first-run force behavior');
+  assert.match(resetFn, /_billingPumpLastByReason\.clear\(\)/, 'soft cooldown owners are cleared');
+  assert.match(resetFn, /_billingPumpLastRunAtMs = 0/, 'global hard cooldown owner is cleared');
+  assert.match(resetFn, /_lastBillingKey = ''/, '300ms request-burst owner key is cleared');
+  assert.match(resetFn, /_lastBillingKeyAt = 0/, '300ms request-burst timestamp is cleared');
+  assert.doesNotMatch(resetFn, /setTimeout|setInterval|_clearSharedBillingResult|localStorage/, 'reset adds no polling and preserves durable org snapshots');
+
+  const helperStart = src.indexOf('function applyUserSwitchIsolation(');
+  const helperEnd = src.indexOf('async function renderAuthState(', helperStart);
+  const helperFn = src.slice(helperStart, helperEnd);
+  const flagIdx = helperFn.indexOf('__TP3D_USER_SWITCH_PENDING = true');
+  const resetIdx = helperFn.indexOf('resetBillingPumpForUserSwitch()');
+  const clearIdx = helperFn.indexOf('clearBillingState()');
+  assert.ok(flagIdx >= 0 && resetIdx > flagIdx && clearIdx > resetIdx,
+    'promotion guard, pump reset, and epoch-bumping billing clear run synchronously in that order');
+});
+
+test('BUG-01-R production pump runtime lets User B run once despite User A hard cooldown', async () => {
+  const { pump, calls, clearedTimers } = await createBillingPumpRuntimeHarness();
+
+  pump.run('render-auth-state');
+  assert.strictEqual(calls.length, 1, 'User A establishes a recent hard cooldown');
+  assert.strictEqual(calls[0].force, true, 'first User A pump is authoritative');
+
+  pump.advance(100);
+  pump.run('org-context');
+  assert.strictEqual(calls.length, 1, 'same-user request still honors the global hard cooldown');
+
+  pump.seedOwnedState();
+  pump.reset();
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(pump.snapshot())), {
+    timer: null,
+    tries: 0,
+    everRan: false,
+    reasons: [],
+    lastRunAtMs: 0,
+    lastBillingKey: '',
+    lastBillingKeyAt: 0,
+  }, 'confirmed identity switch releases every pump/cooldown/burst owner');
+  assert.strictEqual(clearedTimers.some(timer => timer && timer.id === 'prior-user-retry'), true,
+    'prior-user retry timer is cancelled');
+
+  pump.setOrg('org-b');
+  pump.advance(100);
+  pump.run('render-auth-state');
+  assert.strictEqual(calls.length, 2, 'User B billing runs immediately instead of inheriting User A cooldown');
+  assert.deepStrictEqual(calls[1], {
+    force: true,
+    reason: 'pump:render-auth-state',
+    orgId: 'org-b',
+    at: 100200,
+  }, 'User B gets one authoritative current-org refresh');
+
+  pump.advance(100);
+  pump.run('org-context');
+  assert.strictEqual(calls.length, 2, 'nearby User B triggers do not create a repeated fetch loop');
+});
+
+test('BUG-01-S same-user workspace switching keeps existing pump throttling', async () => {
+  const { pump, calls } = await createBillingPumpRuntimeHarness();
+
+  pump.run('render-auth-state');
+  pump.advance(100);
+  pump.run('tab-visible');
+  assert.strictEqual(calls.length, 1, 'same-user visibility refresh remains hard-cooled');
+
+  pump.setOrg('org-b');
+  pump.run('org-changed');
+  assert.strictEqual(calls.length, 2, 'same-user workspace change keeps its existing forced refresh path');
+  assert.strictEqual(calls[1].orgId, 'org-b', 'workspace refresh belongs to the newly selected org');
+
+  pump.advance(100);
+  pump.run('org-context');
+  assert.strictEqual(calls.length, 2, 'post-switch duplicate remains throttled');
+
+  const src = await fs.readFile(appPath, 'utf8');
+  const setActiveStart = src.indexOf('async function setActiveOrgId(');
+  const setActiveEnd = src.indexOf('const OrgContext = {', setActiveStart);
+  const setActiveFn = src.slice(setActiveStart, setActiveEnd);
+  assert.doesNotMatch(setActiveFn, /resetBillingPumpForUserSwitch/, 'normal workspace switching never resets cross-user ownership');
+});
+
+test('BUG-01-T rapid A→B→A and failure recovery remain generation-safe and bounded', async () => {
+  const rapid = await createBillingPumpRuntimeHarness();
+  rapid.pump.run('render-auth-state');
+  rapid.pump.advance(100);
+  rapid.pump.reset();
+  rapid.pump.setOrg('org-b');
+  rapid.pump.run('render-auth-state');
+  rapid.pump.advance(100);
+  rapid.pump.reset();
+  rapid.pump.setOrg('org-a');
+  rapid.pump.run('render-auth-state');
+
+  assert.deepStrictEqual(rapid.calls.map(call => call.orgId), ['org-a', 'org-b', 'org-a'],
+    'each confirmed identity generation receives its own immediate refresh');
+  assert.deepStrictEqual(rapid.calls.map(call => call.force), [true, true, true],
+    'each new identity generation is authoritative');
+  rapid.pump.advance(100);
+  rapid.pump.run('org-context');
+  assert.strictEqual(rapid.calls.length, 3, 'rapid switching does not create a fourth duplicate request');
+
+  const recovery = await createBillingPumpRuntimeHarness();
+  recovery.pump.failNext();
+  recovery.pump.run('render-auth-state');
+  assert.strictEqual(recovery.billingState.ok, false, 'billing failure remains fail-closed');
+  assert.ok(recovery.billingState.error, 'billing failure remains visible for recovery');
+  recovery.pump.advance(100);
+  recovery.pump.run('org-context');
+  assert.strictEqual(recovery.calls.length, 1, 'ordinary duplicate does not poll after failure');
+  recovery.pump.run('manual');
+  assert.strictEqual(recovery.calls.length, 2, 'existing explicit recovery path bypasses cooldown once');
+  assert.strictEqual(recovery.billingState.ok, true, 'explicit recovery can restore authoritative billing');
+});
+
 test('BUG-01-I applyUserSwitchIsolation is the single authoritative isolation contract', async () => {
   const src = await fs.readFile(appPath, 'utf8');
 

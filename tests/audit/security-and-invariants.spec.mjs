@@ -21381,6 +21381,146 @@ test('BUG-01-P same-user refresh and same-user workspace switch never invoke iso
   assert.match(guardLine, /lastAuthUserId !== String\(user\.id\)/, 'same user (matching IDs) never triggers isolation');
 });
 
+async function createOrgContextApplyRuntimeHarness() {
+  const src = await fs.readFile(appPath, 'utf8');
+  const resolverStart = src.indexOf('function resolveOrgContextFromBundle(bundle)');
+  const applyStart = src.indexOf('async function applyOrgContextFromBundle(');
+  const applyEnd = src.indexOf('async function refreshOrgContext(', applyStart);
+  assert.ok(resolverStart >= 0 && applyStart > resolverStart && applyEnd > applyStart,
+    'production org-context resolver/apply functions are extractable');
+
+  const resolverSource = src.slice(resolverStart, src.indexOf('// ── Workspace-ready event replay buffer', resolverStart));
+  const applySource = src.slice(applyStart, applyEnd);
+  const context = {
+    __accountSwitcherRefreshes: 0,
+    __orgRequiredCalls: [],
+    __renderCalls: [],
+    __billingReasons: [],
+    __writtenOrgIds: [],
+    __workspaceApplies: [],
+    __workspaceResets: [],
+    __accessGateCalls: 0,
+    console: { info() { }, warn() { }, error() { } },
+    document: { hidden: false },
+    window: {},
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    let orgContext = {
+      activeOrgId: null,
+      activeOrg: null,
+      orgs: [],
+      role: null,
+      updatedAt: 0,
+    };
+    let orgContextResolved = false;
+    let orgContextQueued = false;
+    let lastOrgPersistAt = 0;
+    let lastOrgIdNotified = null;
+    let lastOrgChangeAt = 0;
+    let _orgBundleFetchInflightForOrg = null;
+    const ORG_PERSIST_COOLDOWN_MS = 5000;
+    const ORG_CONTEXT_DEDUP_MS = 500;
+    const orgContextMetrics = {
+      orgChangedQueuedWhileHidden: 0,
+      orgChangedIgnoredSameId: 0,
+      orgChangedEmitted: 0,
+    };
+    const SupabaseClient = {};
+    const AccountSwitcher = {
+      refresh: () => { globalThis.__accountSwitcherRefreshes += 1; },
+    };
+    const readLocalOrgId = () => null;
+    const writeLocalOrgId = orgId => { globalThis.__writtenOrgIds.push(orgId); };
+    const applyWorkspaceScopedLocalState = orgId => { globalThis.__workspaceApplies.push(orgId); };
+    const resetWorkspaceScopedUiState = orgId => { globalThis.__workspaceResets.push(orgId); };
+    const applyOrgRequiredUi = value => { globalThis.__orgRequiredCalls.push(value); };
+    const queueOrgScopedRender = reason => { globalThis.__renderCalls.push(reason); };
+    const maybeScheduleBillingRefresh = reason => { globalThis.__billingReasons.push(reason); };
+    const applyAccessGateFromBilling = () => { globalThis.__accessGateCalls += 1; };
+    const getBillingState = () => ({ ok: false });
+    const getAuthTruthSnapshot = () => ({ status: 'signed_in', isSignedIn: true });
+    const isTp3dDebugEnabled = () => false;
+    const dispatchOrgContextChanged = () => { };
+    const clearOrgContext = ({ confirmedNoOrg = false } = {}) => {
+      orgContext = { activeOrgId: null, activeOrg: null, orgs: [], role: null, updatedAt: Date.now() };
+      orgContextResolved = Boolean(confirmedNoOrg);
+    };
+    ${resolverSource}
+    ${applySource}
+    globalThis.__applyOrgContextFromBundle = applyOrgContextFromBundle;
+    globalThis.__orgContextSnapshot = () => ({
+      orgContext: JSON.parse(JSON.stringify(orgContext)),
+      orgContextResolved,
+      accountSwitcherRefreshes: globalThis.__accountSwitcherRefreshes,
+    });
+  `, context);
+
+  return {
+    apply: (bundle, options) => context.__applyOrgContextFromBundle(bundle, options),
+    snapshot: () => context.__orgContextSnapshot(),
+    calls: context,
+  };
+}
+
+test('BUG-01-AL runtime: delayed cross-tab active bundle apply clears the stale Loading switcher state', async () => {
+  const runtime = await createOrgContextApplyRuntimeHarness();
+  const org = { id: 'org-test1', name: 'test1 Workspace', role: 'owner' };
+
+  const appliedOrgId = await runtime.apply({
+    session: { access_token: 'redacted' },
+    user: { id: 'user-test1' },
+    profile: null,
+    membership: { organization_id: org.id, role: 'owner' },
+    orgs: [org],
+    activeOrgId: org.id,
+    partial: false,
+  }, { reason: 'workspace-ready:self-heal', forceEmit: true });
+
+  const state = runtime.snapshot();
+  assert.strictEqual(appliedOrgId, org.id, 'the replacement test1 bundle becomes active');
+  assert.strictEqual(state.orgContextResolved, true, 'org context reaches a terminal resolved state');
+  assert.strictEqual(state.orgContext.activeOrgId, org.id, 'the final active workspace belongs to test1');
+  assert.strictEqual(state.orgContext.activeOrg.name, org.name, 'the switcher has the resolved workspace label');
+  assert.strictEqual(state.accountSwitcherRefreshes, 1,
+    'the state owner refreshes the mounted switcher after the delayed active apply');
+  assert.deepStrictEqual(Array.from(runtime.calls.__orgRequiredCalls), [true],
+    'the active-workspace UI is enabled before the final switcher refresh');
+});
+
+test('BUG-01-AM runtime: partial bundle stays conservative and a later full bundle performs one final switcher refresh', async () => {
+  const runtime = await createOrgContextApplyRuntimeHarness();
+  const partialResult = await runtime.apply({
+    session: { access_token: 'redacted' },
+    user: { id: 'user-test1' },
+    orgs: [],
+    activeOrgId: null,
+    partial: true,
+  }, { reason: 'SIGNED_OUT|storage|SIGNED_IN', forceEmit: true });
+
+  assert.strictEqual(partialResult, null, 'an uncertain bundle does not fabricate a workspace');
+  assert.strictEqual(runtime.snapshot().orgContextResolved, false, 'partial bundle leaves resolution conservative');
+  assert.strictEqual(runtime.snapshot().accountSwitcherRefreshes, 0,
+    'partial bundle cannot replace Loading with an unproven workspace');
+
+  const org = { id: 'org-test1', name: 'test1 Workspace', role: 'owner' };
+  await runtime.apply({
+    session: { access_token: 'redacted' },
+    user: { id: 'user-test1' },
+    profile: null,
+    membership: { organization_id: org.id, role: 'owner' },
+    orgs: [org],
+    activeOrgId: org.id,
+    partial: false,
+  }, { reason: 'org-queued', forceEmit: false });
+
+  const recovered = runtime.snapshot();
+  assert.strictEqual(recovered.orgContextResolved, true, 'the replacement full bundle terminates loading');
+  assert.strictEqual(recovered.orgContext.activeOrgId, org.id, 'the replacement belongs to the current identity');
+  assert.strictEqual(recovered.accountSwitcherRefreshes, 1,
+    'recovery produces exactly one final switcher refresh, not a loop');
+});
+
 // ─── BUG-07: sidebar billing DOM must be cleared at the source, not CSS-hidden ─
 
 test('BUG-07-A updateSidebarNotice clears stale markup on every hide path', async () => {

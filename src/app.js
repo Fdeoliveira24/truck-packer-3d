@@ -7066,6 +7066,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       applyOrgRequiredUi(true);
+      // The active-org apply can finish after renderAuthState already rendered
+      // the switcher in its unresolved "Loading…" state (notably after a
+      // cross-tab identity change). Refresh the switcher from the state owner
+      // so delayed bundle recovery cannot leave that label stale.
+      try {
+        if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {
+          AccountSwitcher.refresh();
+        }
+      } catch {
+        // Best-effort UI sync; org context remains authoritative.
+      }
       if (changed || forceEmit) {
         queueOrgScopedRender(reason);
       }

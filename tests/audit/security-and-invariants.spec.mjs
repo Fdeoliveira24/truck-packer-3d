@@ -20253,6 +20253,11 @@ test('BUG-01-H cross-tab same-user refresh: guard is false when user IDs match',
 
 async function createBillingPumpRuntimeHarness() {
   const src = await fs.readFile(appPath, 'utf8');
+  const authoritativeStart = src.indexOf('let _billingAuthoritativeRefreshGeneration = 0;');
+  const authoritativeEnd = src.indexOf('function normalizeBillingEntitlementStatus(', authoritativeStart);
+  assert.ok(authoritativeStart >= 0 && authoritativeEnd > authoritativeStart,
+    'production authoritative-refresh state block is extractable');
+  const authoritativeSource = src.slice(authoritativeStart, authoritativeEnd);
   const pumpStart = src.indexOf('const BILLING_PUMP_RETRY_MS = 200;');
   const pumpEnd = src.indexOf('function handleOrgAccessLoss(', pumpStart);
   assert.ok(pumpStart >= 0 && pumpEnd > pumpStart, 'production billing-pump block is extractable');
@@ -20261,6 +20266,7 @@ async function createBillingPumpRuntimeHarness() {
   const context = {
     __now: 100000,
     __activeOrgId: 'org-a',
+    __userId: 'user-a',
     __billingState: {
       ok: false,
       loading: false,
@@ -20273,12 +20279,15 @@ async function createBillingPumpRuntimeHarness() {
     __logs: [],
     __clearedTimers: [],
     __failNext: false,
+    __shared: null,
+    __sharedFreshAt: 0,
+    __sharedApplyCount: 0,
   };
   context.Date = class FakeDate extends Date {
     static now() { return context.__now; }
   };
   context.SupabaseClient = { isAuthProven: () => true };
-  context.getAuthTruthSnapshot = () => ({ status: 'signed_in', session: null });
+  context.getAuthTruthSnapshot = () => ({ status: 'signed_in', userId: context.__userId, session: null });
   context.getActiveOrgIdNow = () => context.__activeOrgId;
   context.normalizeOrgIdForBilling = value => String(value || '').trim();
   context.billingDebugLog = (...args) => context.__logs.push(args);
@@ -20286,13 +20295,23 @@ async function createBillingPumpRuntimeHarness() {
     if (timer !== null && typeof timer !== 'undefined') context.__clearedTimers.push(timer);
   };
   context.setTimeout = (_fn, _delay) => ({ id: context.__clearedTimers.length + 1 });
-  context._readShareableBillingResult = () => null;
-  context._applySharedBillingSnapshot = () => false;
-  context._getSharedBillingFreshness = () => 0;
-  context._readSharedBillingResult = () => null;
+  context._readShareableBillingResult = () => context.__shared;
+  context._applySharedBillingSnapshot = (_orgId, shared) => {
+    if (!shared) return false;
+    context.__sharedApplyCount += 1;
+    Object.assign(context.__billingState, shared);
+    return true;
+  };
+  context._shouldApplySharedBillingSnapshotForOrg = () => true;
+  context._getSharedBillingFreshness = () => context.__sharedFreshAt;
+  context._readSharedBillingResult = () => context.__shared;
   context._BILLING_SHARED_FRESH_MS = 90000;
   context.refreshBilling = options => {
     context.__calls.push({ ...options, orgId: context.__activeOrgId, at: context.__now });
+    const authoritativeRefresh = options && options.authoritativeRefresh ? options.authoritativeRefresh : null;
+    if (authoritativeRefresh && !context.__authoritative.begin(authoritativeRefresh)) {
+      return Promise.resolve({ ...context.__billingState });
+    }
     if (context.__failNext) {
       context.__failNext = false;
       Object.assign(context.__billingState, {
@@ -20303,6 +20322,7 @@ async function createBillingPumpRuntimeHarness() {
         orgId: context.__activeOrgId,
         lastFetchedAt: context.__now,
       });
+      context.__authoritative.preserve(authoritativeRefresh);
     } else {
       Object.assign(context.__billingState, {
         ok: true,
@@ -20312,10 +20332,16 @@ async function createBillingPumpRuntimeHarness() {
         orgId: context.__activeOrgId,
         lastFetchedAt: context.__now,
       });
+      if (authoritativeRefresh) {
+        context.window.__TP3D_USER_SWITCH_PENDING = false;
+        context.__authoritative.complete(authoritativeRefresh);
+      }
     }
+    context.__authoritative.finish(authoritativeRefresh);
     return Promise.resolve({ ...context.__billingState });
   };
   context.window = {
+    __TP3D_USER_SWITCH_PENDING: false,
     __TP3D_BILLING: {
       getBillingState: () => context.__billingState,
     },
@@ -20323,13 +20349,43 @@ async function createBillingPumpRuntimeHarness() {
 
   vm.createContext(context);
   vm.runInContext(`
+    let _billingEpoch = 1;
+    let _authTruthSnapshotAccessor = () => ({ userId: globalThis.__userId });
+    const _billingState = globalThis.__billingState;
     let _lastBillingKey = '';
     let _lastBillingKeyAt = 0;
+    ${authoritativeSource}
     ${pumpSource}
+    globalThis.__authoritative = {
+      begin: token => beginBillingAuthoritativeRefreshAttempt(token),
+      complete: token => clearBillingAuthoritativeRefreshRequirement(token),
+      finish: token => finishBillingAuthoritativeRefreshAttempt(token),
+      preserve: token => preserveUserSwitchPendingForBillingFailure(token),
+      isCurrent: token => isCurrentBillingAuthoritativeRefreshToken(token, token && token.orgId),
+      snapshot: () => _billingAuthoritativeRefreshRequired
+        ? { ..._billingAuthoritativeRefreshRequired }
+        : null,
+    };
     globalThis.__pump = {
       run: reason => maybeScheduleBillingRefresh(reason),
       reset: () => resetBillingPumpForUserSwitch(),
       setOrg: orgId => { globalThis.__activeOrgId = orgId; },
+      switchIdentity: (userId, orgId) => {
+        globalThis.__userId = userId;
+        globalThis.__activeOrgId = orgId;
+        globalThis.window.__TP3D_USER_SWITCH_PENDING = true;
+        resetBillingPumpForUserSwitch();
+        _billingEpoch += 1;
+        requireBillingAuthoritativeRefreshForUserSwitch(userId);
+      },
+      setShared: (shared, freshAt = globalThis.__now) => {
+        globalThis.__shared = shared;
+        globalThis.__sharedFreshAt = freshAt;
+      },
+      getAuthoritativeToken: () => getBillingAuthoritativeRefreshToken(globalThis.__activeOrgId),
+      beginAuthoritative: token => beginBillingAuthoritativeRefreshAttempt(token),
+      completeAuthoritative: token => clearBillingAuthoritativeRefreshRequirement(token),
+      isAuthoritativeCurrent: token => isCurrentBillingAuthoritativeRefreshToken(token, token && token.orgId),
       advance: ms => { globalThis.__now += ms; },
       failNext: () => { globalThis.__failNext = true; },
       seedOwnedState: () => {
@@ -20349,6 +20405,11 @@ async function createBillingPumpRuntimeHarness() {
         lastRunAtMs: _billingPumpLastRunAtMs,
         lastBillingKey: _lastBillingKey,
         lastBillingKeyAt: _lastBillingKeyAt,
+        authoritativeRequired: _billingAuthoritativeRefreshRequired
+          ? { ..._billingAuthoritativeRefreshRequired }
+          : null,
+        pending: Boolean(globalThis.window.__TP3D_USER_SWITCH_PENDING),
+        sharedApplyCount: globalThis.__sharedApplyCount,
       }),
     };
   `, context);
@@ -20385,8 +20446,9 @@ test('BUG-01-Q cross-user isolation resets every prior-user billing-pump and bur
   const flagIdx = helperFn.indexOf('__TP3D_USER_SWITCH_PENDING = true');
   const resetIdx = helperFn.indexOf('resetBillingPumpForUserSwitch()');
   const clearIdx = helperFn.indexOf('clearBillingState()');
-  assert.ok(flagIdx >= 0 && resetIdx > flagIdx && clearIdx > resetIdx,
-    'promotion guard, pump reset, and epoch-bumping billing clear run synchronously in that order');
+  const requireIdx = helperFn.indexOf('requireBillingAuthoritativeRefreshForUserSwitch(');
+  assert.ok(flagIdx >= 0 && resetIdx > flagIdx && clearIdx > resetIdx && requireIdx > clearIdx,
+    'promotion guard, pump reset, epoch-bumping billing clear, and authoritative requirement run synchronously in that order');
 });
 
 test('BUG-01-R production pump runtime lets User B run once despite User A hard cooldown', async () => {
@@ -20410,6 +20472,9 @@ test('BUG-01-R production pump runtime lets User B run once despite User A hard 
     lastRunAtMs: 0,
     lastBillingKey: '',
     lastBillingKeyAt: 0,
+    authoritativeRequired: null,
+    pending: false,
+    sharedApplyCount: 0,
   }, 'confirmed identity switch releases every pump/cooldown/burst owner');
   assert.strictEqual(clearedTimers.some(timer => timer && timer.id === 'prior-user-retry'), true,
     'prior-user retry timer is cancelled');
@@ -20485,6 +20550,188 @@ test('BUG-01-T rapid A→B→A and failure recovery remain generation-safe and b
   recovery.pump.run('manual');
   assert.strictEqual(recovery.calls.length, 2, 'existing explicit recovery path bypasses cooldown once');
   assert.strictEqual(recovery.billingState.ok, true, 'explicit recovery can restore authoritative billing');
+});
+
+test('BUG-01-U source contract owns one post-switch authoritative billing resolution', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const stateStart = src.indexOf('let _billingAuthoritativeRefreshGeneration = 0;');
+  const stateEnd = src.indexOf('function normalizeBillingEntitlementStatus(', stateStart);
+  const stateBlock = src.slice(stateStart, stateEnd);
+  assert.ok(stateBlock, 'authoritative refresh state block exists');
+  assert.match(stateBlock, /_billingAuthoritativeRefreshRequired = null/, 'requirement has explicit state');
+  assert.match(stateBlock, /generation:[\s\S]*userId:[\s\S]*epoch:[\s\S]*attemptedAt:/,
+    'requirement owns transition generation, user, billing epoch, and bounded-attempt timestamp');
+  assert.match(stateBlock, /token\.generation === _billingAuthoritativeRefreshRequired\.generation/,
+    'completion requires the current transition generation');
+  assert.match(stateBlock, /token\.epoch === _billingEpoch/, 'completion requires the current billing epoch');
+  assert.match(stateBlock, /token\.userId === currentUserId/, 'completion requires the current authenticated user');
+
+  const refreshStart = src.indexOf('async function refreshBilling(');
+  const refreshEnd = src.indexOf('/** @param {object} billingSnapshot', refreshStart);
+  const refreshFn = src.slice(refreshStart, refreshEnd);
+  assert.match(refreshFn, /authoritativeRefresh = null/, 'refresh accepts a transition-owned authoritative token');
+  assert.match(refreshFn, /if \(currentAuthoritativeRefresh\) force = true/,
+    'authoritative requirement forces the direct path');
+  assert.match(refreshFn, /!currentAuthoritativeRefresh && _lastBillingKey === billingKey/,
+    'prior burst state cannot suppress the required direct request');
+  assert.match(refreshFn, /requestedOrgId && !currentAuthoritativeRefresh[\s\S]*_tryAcquireBillingLock/,
+    'shared cross-tab ownership cannot replace the required current-user request');
+  assert.match(refreshFn, /resultUserId !== currentAuthoritativeRefresh\.userId/,
+    'response identity must match the transition owner');
+  assert.match(refreshFn, /_billingState\.ok && currentAuthoritativeRefresh[\s\S]*clearBillingAuthoritativeRefreshRequirement/,
+    'only an applied successful direct response completes the requirement');
+  assert.match(refreshFn, /preserveUserSwitchPendingForBillingFailure\(currentAuthoritativeRefresh\)/,
+    'failure preserves conservative pending ownership');
+
+  const clearOrgStart = src.indexOf('function clearOrgContext(');
+  const clearOrgEnd = src.indexOf('let orgScopedRenderTimer', clearOrgStart);
+  assert.match(src.slice(clearOrgStart, clearOrgEnd),
+    /if \(confirmedNoOrg\) \{[\s\S]*clearBillingAuthoritativeRefreshRequirement\(\)/,
+    'confirmed no-workspace is an authoritative terminal clear');
+  const signedOutStart = src.indexOf('function _executeSignedOutCleanup(');
+  const signedOutEnd = src.indexOf('function installAuthListener(', signedOutStart);
+  assert.match(src.slice(signedOutStart, signedOutEnd),
+    /clearBillingState\(\)[\s\S]*clearBillingAuthoritativeRefreshRequirement\(\)/,
+    'sign-out is an authoritative terminal clear');
+
+  const proStart = src.indexOf('function getProRuleSet(');
+  const proEnd = src.indexOf('function normalizeCheckoutInterval(', proStart);
+  const proFn = src.slice(proStart, proEnd);
+  assert.match(proFn, /authoritativeRefreshRequired = isBillingAuthoritativeRefreshRequired\(\)/,
+    'Pro gate reads the explicit requirement rather than the UI pending flag');
+  assert.match(proFn, /!authoritativeRefreshRequired && s\.ok && isEntitlementAllowed/,
+    'provisional shared entitlement remains fail-closed');
+});
+
+test('BUG-01-V production pump runtime treats a fresh shared Pro snapshot as provisional after a user switch', async () => {
+  const { pump, calls, billingState } = await createBillingPumpRuntimeHarness();
+  Object.assign(billingState, {
+    ok: true,
+    loading: false,
+    pending: false,
+    error: null,
+    orgId: 'org-a',
+    lastFetchedAt: 99950,
+  });
+  pump.switchIdentity('user-b', 'org-b');
+  pump.setShared({
+    ok: true,
+    loading: false,
+    pending: false,
+    error: null,
+    orgId: 'org-b',
+    plan: 'Pro',
+    entitlementStatus: 'active',
+    canManageBilling: null,
+    lastFetchedAt: 99990,
+  }, 99990);
+
+  pump.run('org-context');
+  assert.strictEqual(pump.snapshot().sharedApplyCount, 1, 'shared org-level fields may apply provisionally');
+  assert.strictEqual(calls.length, 1, 'shared freshness cannot suppress the direct current-user request');
+  assert.strictEqual(calls[0].force, true, 'the post-switch request is authoritative');
+  assert.strictEqual(calls[0].authoritativeRefresh.userId, 'user-b', 'request belongs to the new identity');
+  assert.strictEqual(calls[0].authoritativeRefresh.orgId, 'org-b', 'request belongs to the resolved current org');
+  assert.strictEqual(pump.snapshot().authoritativeRequired, null, 'successful direct result completes the requirement');
+  assert.strictEqual(pump.snapshot().pending, false, 'normal successful resolution releases user-switch pending');
+
+  pump.advance(100);
+  pump.run('org-context');
+  assert.strictEqual(calls.length, 1, 'nearby pump triggers do not create a repeated direct-fetch loop');
+});
+
+test('BUG-01-W production pump runtime keeps same-user local/shared freshness shortcuts', async () => {
+  const localFresh = await createBillingPumpRuntimeHarness();
+  Object.assign(localFresh.billingState, {
+    ok: true,
+    loading: false,
+    pending: false,
+    error: null,
+    orgId: 'org-a',
+    lastFetchedAt: 99990,
+  });
+  localFresh.pump.run('org-context');
+  assert.strictEqual(localFresh.calls.length, 0, 'same-user local freshness still returns without a direct request');
+
+  const sharedFresh = await createBillingPumpRuntimeHarness();
+  sharedFresh.pump.setShared({
+    ok: true,
+    loading: false,
+    pending: false,
+    error: null,
+    orgId: 'org-a',
+    lastFetchedAt: 99990,
+  }, 99990);
+  sharedFresh.pump.run('org-context');
+  assert.strictEqual(sharedFresh.calls.length, 0, 'same-user shared freshness still returns without a direct request');
+  assert.strictEqual(sharedFresh.pump.snapshot().sharedApplyCount, 1, 'same-user shared state remains reusable');
+});
+
+test('BUG-01-X production pump runtime forces both Pro→expired and expired→Pro transition directions', async () => {
+  const proToExpired = await createBillingPumpRuntimeHarness();
+  proToExpired.pump.switchIdentity('expired-user', 'expired-org');
+  proToExpired.pump.run('render-auth-state');
+  assert.strictEqual(proToExpired.calls.length, 1, 'Pro→expired transition performs one direct request');
+  assert.strictEqual(proToExpired.calls[0].force, true, 'Pro→expired request is forced');
+
+  const expiredToPro = await createBillingPumpRuntimeHarness();
+  expiredToPro.pump.switchIdentity('pro-user', 'pro-org');
+  expiredToPro.pump.setShared({
+    ok: true,
+    loading: false,
+    pending: false,
+    error: null,
+    orgId: 'pro-org',
+    plan: 'Pro',
+    entitlementStatus: 'active',
+    canManageBilling: null,
+    lastFetchedAt: 99990,
+  }, 99990);
+  expiredToPro.pump.run('render-auth-state');
+  assert.strictEqual(expiredToPro.calls.length, 1, 'expired→Pro transition performs one direct request despite shared Pro state');
+  assert.strictEqual(expiredToPro.calls[0].force, true, 'expired→Pro request is forced');
+});
+
+test('BUG-01-Y production token runtime rejects late A/B owners in rapid A→B→A', async () => {
+  const { pump } = await createBillingPumpRuntimeHarness();
+  pump.switchIdentity('user-b', 'org-b');
+  const tokenB = pump.getAuthoritativeToken();
+  assert.strictEqual(pump.beginAuthoritative(tokenB), true, 'B begins its owned authoritative attempt');
+
+  pump.switchIdentity('user-a', 'org-a');
+  const finalTokenA = pump.getAuthoritativeToken();
+  assert.strictEqual(pump.isAuthoritativeCurrent(tokenB), false, 'late B token is no longer current');
+  assert.strictEqual(pump.completeAuthoritative(tokenB), false, 'late B cannot clear final A requirement');
+  assert.strictEqual(pump.snapshot().authoritativeRequired.generation, finalTokenA.generation,
+    'final A transition retains its own requirement');
+  assert.strictEqual(pump.completeAuthoritative(finalTokenA), true, 'only final A can complete its requirement');
+  assert.strictEqual(pump.snapshot().authoritativeRequired, null, 'final A completion clears the requirement');
+});
+
+test('BUG-01-Z production pump runtime keeps authoritative failure fail-closed with bounded recovery', async () => {
+  const { pump, calls, billingState } = await createBillingPumpRuntimeHarness();
+  pump.switchIdentity('user-b', 'org-b');
+  pump.failNext();
+  pump.run('render-auth-state');
+  assert.strictEqual(calls.length, 1, 'one initial direct attempt runs');
+  assert.strictEqual(billingState.ok, false, 'failed result remains fail-closed');
+  assert.ok(billingState.error, 'failure remains visible');
+  assert.ok(pump.snapshot().authoritativeRequired, 'failure does not satisfy the requirement');
+  assert.strictEqual(pump.snapshot().pending, true, 'failure restores conservative user-switch pending');
+
+  pump.advance(100);
+  pump.run('org-context');
+  assert.strictEqual(calls.length, 1, 'ordinary immediate triggers are hard-cooled after the failed attempt');
+
+  pump.run('manual');
+  assert.strictEqual(calls.length, 2, 'explicit recovery performs one later authoritative retry');
+  assert.strictEqual(billingState.ok, true, 'recovery restores authoritative billing');
+  assert.strictEqual(pump.snapshot().authoritativeRequired, null, 'successful retry clears the requirement');
+  assert.strictEqual(pump.snapshot().pending, false, 'successful retry releases pending');
+
+  pump.advance(100);
+  pump.run('org-context');
+  assert.strictEqual(calls.length, 2, 'successful recovery does not start a direct-fetch loop');
 });
 
 test('BUG-01-I applyUserSwitchIsolation is the single authoritative isolation contract', async () => {
@@ -20598,12 +20845,19 @@ test('BUG-01-N delayed prior-user account bundles remain rejected by auth epoch/
   assert.match(src, /_inflightAccount\.key === authKey && _inflightAccount\.epoch === startEpoch/, 'in-flight reuse requires same key AND same epoch');
 });
 
-test('BUG-01-O pending-flag lifecycle: one setter, terminal clears on sign-out, no-workspace, and org resolution', async () => {
+test('BUG-01-O pending-flag lifecycle: transition/failure setters and terminal clears remain explicit', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
   const svcSrc = await fs.readFile(billingServiceUrl, 'utf8');
 
   const setTrue = appSrc.split('__TP3D_USER_SWITCH_PENDING = true').length - 1;
-  assert.strictEqual(setTrue, 1, 'flag becomes true only inside applyUserSwitchIsolation');
+  assert.strictEqual(setTrue, 2,
+    'flag becomes true only for initial cross-user isolation and current-token authoritative failure preservation');
+
+  const preserveStart = appSrc.indexOf('function preserveUserSwitchPendingForBillingFailure(');
+  const preserveEnd = appSrc.indexOf('function isBillingAuthoritativeRefreshRequired(', preserveStart);
+  const preserveFn = appSrc.slice(preserveStart, preserveEnd);
+  assert.match(preserveFn, /isCurrentBillingAuthoritativeRefreshToken\(token/,
+    'failure may re-latch pending only for the current transition token');
 
   const appClears = appSrc.split('__TP3D_USER_SWITCH_PENDING = false').length - 1;
   assert.strictEqual(appClears, 2, 'app releases the flag in exactly two terminal paths');

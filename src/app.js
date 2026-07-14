@@ -155,6 +155,11 @@ let _lastBillingKey = '';
 let _lastBillingKeyAt = 0;
 let _billingTraceSeq = 0;
 let _billingEpoch = 0; // incremented on sign-out; late refresh results are ignored when epoch changes
+let _billingAuthoritativeRefreshGeneration = 0;
+/** @type {null|{generation:number,userId:string|null,epoch:number,attemptedAt:number}} */
+let _billingAuthoritativeRefreshRequired = null;
+/** @type {null|{generation:number,userId:string,orgId:string,epoch:number}} */
+let _billingAuthoritativeRefreshInFlight = null;
 let _authRevocationCheckTimer = null;
 let _authRevocationCheckInFlight = false;
 let _authRevocationCheckLastAt = 0;
@@ -166,6 +171,102 @@ let _billingGateApplier = null;
 let _orgAccessLossHandler = null;
 const _orgAccessLossLastAt = new Map();
 const ORG_ACCESS_LOSS_COOLDOWN_MS = 30000;
+
+function getCurrentBillingAuthUserId() {
+  const truth = typeof _authTruthSnapshotAccessor === 'function' ? _authTruthSnapshotAccessor() : null;
+  return truth && truth.userId ? String(truth.userId) : '';
+}
+
+function requireBillingAuthoritativeRefreshForUserSwitch(userId = null) {
+  _billingAuthoritativeRefreshGeneration += 1;
+  _billingAuthoritativeRefreshRequired = {
+    generation: _billingAuthoritativeRefreshGeneration,
+    userId: userId ? String(userId) : null,
+    epoch: _billingEpoch,
+    attemptedAt: 0,
+  };
+  _billingAuthoritativeRefreshInFlight = null;
+}
+
+function clearBillingAuthoritativeRefreshRequirement(token = null) {
+  if (
+    token &&
+    (!_billingAuthoritativeRefreshRequired ||
+      token.generation !== _billingAuthoritativeRefreshRequired.generation ||
+      token.epoch !== _billingAuthoritativeRefreshRequired.epoch)
+  ) {
+    return false;
+  }
+  _billingAuthoritativeRefreshRequired = null;
+  _billingAuthoritativeRefreshInFlight = null;
+  return true;
+}
+
+function getBillingAuthoritativeRefreshToken(orgId) {
+  const requirement = _billingAuthoritativeRefreshRequired;
+  const currentUserId = getCurrentBillingAuthUserId();
+  const normalizedOrgId = normalizeOrgIdForBilling(orgId || '');
+  if (!requirement || requirement.epoch !== _billingEpoch || !currentUserId || !normalizedOrgId) return null;
+  if (requirement.userId && requirement.userId !== currentUserId) return null;
+  if (!requirement.userId) requirement.userId = currentUserId;
+  return {
+    generation: requirement.generation,
+    userId: currentUserId,
+    orgId: normalizedOrgId,
+    epoch: requirement.epoch,
+    attemptedAt: requirement.attemptedAt,
+  };
+}
+
+function isCurrentBillingAuthoritativeRefreshToken(token, orgId = null) {
+  if (!token || !_billingAuthoritativeRefreshRequired) return false;
+  const currentUserId = getCurrentBillingAuthUserId();
+  const expectedOrgId = normalizeOrgIdForBilling(orgId || token.orgId || '');
+  return Boolean(
+    currentUserId &&
+    token.generation === _billingAuthoritativeRefreshRequired.generation &&
+    token.epoch === _billingAuthoritativeRefreshRequired.epoch &&
+    token.epoch === _billingEpoch &&
+    token.userId === currentUserId &&
+    (!expectedOrgId || token.orgId === expectedOrgId)
+  );
+}
+
+function isBillingAuthoritativeRefreshInFlight(token) {
+  return Boolean(
+    token &&
+    _billingAuthoritativeRefreshInFlight &&
+    token.generation === _billingAuthoritativeRefreshInFlight.generation &&
+    token.epoch === _billingAuthoritativeRefreshInFlight.epoch
+  );
+}
+
+function beginBillingAuthoritativeRefreshAttempt(token) {
+  if (!isCurrentBillingAuthoritativeRefreshToken(token, token && token.orgId)) return false;
+  _billingAuthoritativeRefreshRequired.attemptedAt = Date.now();
+  _billingAuthoritativeRefreshInFlight = token;
+  return true;
+}
+
+function finishBillingAuthoritativeRefreshAttempt(token) {
+  if (
+    token &&
+    _billingAuthoritativeRefreshInFlight &&
+    token.generation === _billingAuthoritativeRefreshInFlight.generation &&
+    token.epoch === _billingAuthoritativeRefreshInFlight.epoch
+  ) {
+    _billingAuthoritativeRefreshInFlight = null;
+  }
+}
+
+function preserveUserSwitchPendingForBillingFailure(token) {
+  if (!isCurrentBillingAuthoritativeRefreshToken(token, token && token.orgId)) return;
+  try { window.__TP3D_USER_SWITCH_PENDING = true; } catch (_) { /* ignore */ }
+}
+
+function isBillingAuthoritativeRefreshRequired() {
+  return Boolean(_billingAuthoritativeRefreshRequired);
+}
 
 function normalizeBillingEntitlementStatus(value) {
   const raw = String(value || '').trim().toLowerCase();
@@ -1040,11 +1141,15 @@ async function ensureWorkspaceReadyForUI({ timeoutMs = 2500, pollMs = 80, forceF
   }
 }
 
-async function refreshBilling({ force = false, reason = 'manual' } = {}) {
+async function refreshBilling({ force = false, reason = 'manual', authoritativeRefresh = null } = {}) {
   const requestedOrgId = getActiveOrgIdForBilling();
+  const currentAuthoritativeRefresh = isCurrentBillingAuthoritativeRefreshToken(authoritativeRefresh, requestedOrgId)
+    ? authoritativeRefresh
+    : getBillingAuthoritativeRefreshToken(requestedOrgId);
+  if (currentAuthoritativeRefresh) force = true;
   const now = Date.now();
   const billingKey = `${requestedOrgId || ''}|${String(reason || 'manual')}|${force ? '1' : '0'}`;
-  if (_lastBillingKey === billingKey && (now - _lastBillingKeyAt) < 300) {
+  if (!currentAuthoritativeRefresh && _lastBillingKey === billingKey && (now - _lastBillingKeyAt) < 300) {
     billingDebugLog('refresh:skip-burst', {
       reason,
       force,
@@ -1072,6 +1177,7 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
     return force ? _waitForQueuedBillingRefresh() : getBillingState();
   }
   if (
+    !currentAuthoritativeRefresh &&
     force &&
     requestedOrgId &&
     _billingState.orgId &&
@@ -1153,10 +1259,10 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
 
   // ── Cross-tab lock: only one tab may fetch at a time per org ──
   let _acquiredCrossTabLock = false;
-  if (requestedOrgId) {
+  if (requestedOrgId && !currentAuthoritativeRefresh) {
     _acquiredCrossTabLock = _tryAcquireBillingLock(requestedOrgId, reason);
   }
-  if (requestedOrgId && !_acquiredCrossTabLock) {
+  if (requestedOrgId && !currentAuthoritativeRefresh && !_acquiredCrossTabLock) {
     // Another tab is fetching — check if shared result is available
     const shared = _readShareableBillingResult(requestedOrgId, 'cross-tab-locked:' + reason);
     if (shared) {
@@ -1169,6 +1275,18 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       }, 1200);
     }
     return getBillingState();
+  }
+
+  if (currentAuthoritativeRefresh) {
+    if (isBillingAuthoritativeRefreshInFlight(currentAuthoritativeRefresh)) {
+      billingDebugLog('refresh:skip-authoritative-inflight', {
+        reason,
+        requestedOrgId: requestedOrgId || null,
+        generation: currentAuthoritativeRefresh.generation,
+      });
+      return getBillingState();
+    }
+    if (!beginBillingAuthoritativeRefreshAttempt(currentAuthoritativeRefresh)) return getBillingState();
   }
 
   try {
@@ -1293,6 +1411,18 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       return getBillingState();
     }
 
+    if (
+      currentAuthoritativeRefresh &&
+      !isCurrentBillingAuthoritativeRefreshToken(currentAuthoritativeRefresh, requestedOrgId)
+    ) {
+      billingDebugLog('refresh:discard-authoritative-owner', {
+        reason,
+        requestedOrgId: requestedOrgId || null,
+        generation: currentAuthoritativeRefresh.generation,
+      });
+      return getBillingState();
+    }
+
     const resultOrgId = normalizeOrgIdForBilling(result && result.orgId ? result.orgId : '');
     const resultDataOrgId = normalizeOrgIdForBilling(result && result.data && result.data.orgId ? result.data.orgId : '');
     if (
@@ -1330,8 +1460,31 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       _billingState.error = null;
       _notifyBilling();
       applyAccessGateFromBilling(getBillingState(), { reason: 'stale-result:' + reason, activeOrgId: requestedOrgId || null });
+      preserveUserSwitchPendingForBillingFailure(currentAuthoritativeRefresh);
       scheduleBillingPendingRetry(requestedOrgId, 'result-org-mismatch:' + reason);
       return getBillingState();
+    }
+
+    const resultUserId = result && result.data && result.data.userId ? String(result.data.userId) : '';
+    if (
+      currentAuthoritativeRefresh &&
+      result &&
+      result.ok &&
+      resultUserId !== currentAuthoritativeRefresh.userId
+    ) {
+      billingDebugLog('refresh:discard-authoritative-user-mismatch', {
+        reason,
+        requestedOrgId: requestedOrgId || null,
+        generation: currentAuthoritativeRefresh.generation,
+      });
+      result = {
+        ok: false,
+        pending: false,
+        status: null,
+        data: null,
+        error: { message: 'Billing response identity mismatch', status: null },
+        orgId: requestedOrgId || null,
+      };
     }
 
     if (!(result && result.pending)) {
@@ -1357,6 +1510,7 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       _billingState.error = null;
       _notifyBilling();
       applyAccessGateFromBilling(getBillingState(), { reason: 'pending:' + reason, activeOrgId: requestedOrgId || null });
+      preserveUserSwitchPendingForBillingFailure(currentAuthoritativeRefresh);
       scheduleBillingPendingRetry(requestedOrgId, reason);
       return getBillingState();
     }
@@ -1473,6 +1627,12 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
       _billingState.error = result && result.error ? result.error : { message: 'Unknown error', status: null };
     }
 
+    if (_billingState.ok && currentAuthoritativeRefresh) {
+      clearBillingAuthoritativeRefreshRequirement(currentAuthoritativeRefresh);
+    } else {
+      preserveUserSwitchPendingForBillingFailure(currentAuthoritativeRefresh);
+    }
+
     _notifyBilling();
     applyAccessGateFromBilling(getBillingState(), { reason: 'refreshed:' + reason, activeOrgId: requestedOrgId || null });
 
@@ -1529,6 +1689,7 @@ async function refreshBilling({ force = false, reason = 'manual' } = {}) {
     }
     return getBillingState();
   } finally {
+    finishBillingAuthoritativeRefreshAttempt(currentAuthoritativeRefresh);
     if (requestedOrgId && _acquiredCrossTabLock) {
       _releaseBillingLock(requestedOrgId, reason);
     }
@@ -1562,6 +1723,7 @@ function canUseProFeatures(billingSnapshot) {
  */
 function getProRuleSet(billingSnapshot, userRole) {
   const s = billingSnapshot || getBillingState();
+  const authoritativeRefreshRequired = isBillingAuthoritativeRefreshRequired();
   const rawRole = String(userRole != null ? userRole : '').toLowerCase();
   const entitlementStatus = normalizeBillingEntitlementStatus(s.entitlementStatus);
   const isOwner = typeof s.canManageBilling === 'boolean' ? s.canManageBilling : rawRole === 'owner';
@@ -1574,14 +1736,14 @@ function getProRuleSet(billingSnapshot, userRole) {
     : Boolean(s.ok && !s.isActive && s.status === 'trial_expired');
   const isPaymentProblem = Boolean(s.ok && s.paymentProblem);
   const canUseProFeature = entitlementStatus
-    ? Boolean(s.ok && isEntitlementAllowed(entitlementStatus))
-    : Boolean(s.ok && s.isPro && s.isActive); // trial OR paid Pro
+    ? Boolean(!authoritativeRefreshRequired && s.ok && isEntitlementAllowed(entitlementStatus))
+    : Boolean(!authoritativeRefreshRequired && s.ok && s.isPro && s.isActive); // trial OR paid Pro
   const isProActive = entitlementStatus
-    ? Boolean(s.ok && (entitlementStatus === 'active' || entitlementStatus === 'included_in_plan'))
-    : Boolean(s.ok && s.isPro && s.isActive && !isTrial);
+    ? Boolean(!authoritativeRefreshRequired && s.ok && (entitlementStatus === 'active' || entitlementStatus === 'included_in_plan'))
+    : Boolean(!authoritativeRefreshRequired && s.ok && s.isPro && s.isActive && !isTrial);
   const isWorkspaceLimitReached = entitlementStatus === 'workspace_limit_reached';
   const isOwnerSubRequired = entitlementStatus === 'owner_subscription_required';
-  const isBillingUnavailable = entitlementStatus === 'billing_unavailable' || !s.ok;
+  const isBillingUnavailable = authoritativeRefreshRequired || entitlementStatus === 'billing_unavailable' || !s.ok;
 
   let blockReason = '';
   let uxMessage = '';
@@ -5939,6 +6101,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
         && typeof window.__TP3D_BILLING.getBillingState === 'function')
         ? window.__TP3D_BILLING.getBillingState() : null;
       const snapOrgId = normalizeOrgIdForBilling(snap && snap.orgId ? snap.orgId : '');
+      const authoritativeRefresh = getBillingAuthoritativeRefreshToken(activeOrgId);
+      const authoritativeRefreshRequired = Boolean(authoritativeRefresh);
+      if (authoritativeRefreshRequired && isBillingAuthoritativeRefreshInFlight(authoritativeRefresh)) {
+        billingDebugLog('[BillingPump] skip:authoritative-inflight', {
+          reason,
+          orgId: activeOrgId,
+          generation: authoritativeRefresh.generation,
+        });
+        return;
+      }
       let billingOrgMismatch = Boolean(snapOrgId && snapOrgId !== activeOrgId);
       const billingOrgMismatchAtStart = billingOrgMismatch;
       if (billingOrgMismatch) {
@@ -5949,7 +6121,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
           billingOrgMismatch = Boolean(nextSnapOrgId && nextSnapOrgId !== activeOrgId);
         }
       }
-      const reasonIsForce = _BILLING_PUMP_FORCE_REASONS.has(reason) || billingOrgMismatchAtStart || billingOrgMismatch;
+      const reasonIsForce = _BILLING_PUMP_FORCE_REASONS.has(reason) ||
+        billingOrgMismatchAtStart ||
+        billingOrgMismatch ||
+        Boolean(authoritativeRefreshRequired && !authoritativeRefresh.attemptedAt);
 
       // ── Hard cooldown: absolute minimum time between any pump runs ──
       if (!reasonIsForce && _billingPumpLastRunAtMs && (now - _billingPumpLastRunAtMs) < BILLING_PUMP_HARD_COOLDOWN_MS) {
@@ -5968,6 +6143,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         String(snap.orgId) === String(activeOrgId) &&
         snap.lastFetchedAt &&
         (now - snap.lastFetchedAt) < BILLING_PUMP_FRESH_MS &&
+        !authoritativeRefreshRequired &&
         !reasonIsForce
       ) {
         billingDebugLog('[BillingPump] skip:fresh', {
@@ -5979,7 +6155,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       // ── Cross-tab shared freshness: skip if another tab recently fetched ──
-      if (!reasonIsForce && activeOrgId) {
+      if (!reasonIsForce && !authoritativeRefreshRequired && activeOrgId) {
         const sharedFreshAt = _getSharedBillingFreshness(activeOrgId);
         if (sharedFreshAt && (now - sharedFreshAt) < _BILLING_SHARED_FRESH_MS) {
           const shared = _readShareableBillingResult(activeOrgId, 'pump:' + reason);
@@ -6023,12 +6199,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
       _billingPumpLastByReason.set(reason, now);
 
       // ── Decide force: only org-changed, manual, or first-ever pump ──
-      const shouldForce = reasonIsForce || !_billingPumpEverRan;
+      const shouldForce = authoritativeRefreshRequired || reasonIsForce || !_billingPumpEverRan;
       _billingPumpEverRan = true;
 
       _billingPumpLastRunAtMs = now;
       billingDebugLog('[BillingPump] run', { reason, orgId: activeOrgId, force: shouldForce });
-      refreshBilling({ force: shouldForce, reason: 'pump:' + reason }).catch(() => { });
+      refreshBilling({
+        force: shouldForce,
+        reason: 'pump:' + reason,
+        ...(authoritativeRefresh ? { authoritativeRefresh } : {}),
+      }).catch(() => { });
     }
 
     function handleOrgAccessLoss(orgId, meta = {}) {
@@ -6355,6 +6535,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (clearLocalOrgHint || confirmedNoOrg) writeLocalOrgId(null);
       if (confirmedNoOrg) {
         orgRequiredStateReason = String(reason || '');
+        clearBillingAuthoritativeRefreshRequirement();
         // BUG-01: confirmed no-workspace is a terminal state for the current
         // identity — release the user-switch promotion guard so it cannot stay
         // latched true for a user with zero active workspaces.
@@ -7201,6 +7382,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       try { window.__TP3D_USER_SWITCH_PENDING = true; } catch (_) { /* ignore */ }
       try { resetBillingPumpForUserSwitch(); } catch (_) { /* ignore */ }
       try { clearBillingState(); } catch (_) { /* ignore */ }
+      try { requireBillingAuthoritativeRefreshForUserSwitch(getSignedInUserIdStrict()); } catch (_) { /* ignore */ }
       clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: false });
       suspendAutoSave = true;
       try {
@@ -7437,6 +7619,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         // ignore
       }
       try { clearBillingState(); } catch (_) { /* ignore */ }
+      clearBillingAuthoritativeRefreshRequirement();
       // BUG-01: sign-out is a terminal identity state — release the user-switch
       // promotion guard so it cannot stay latched across the next sign-in.
       try { window.__TP3D_USER_SWITCH_PENDING = false; } catch (_) { /* ignore */ }

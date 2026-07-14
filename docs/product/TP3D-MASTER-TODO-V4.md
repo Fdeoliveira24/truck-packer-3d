@@ -1,5 +1,5 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-07-13 — AutoPack Results staged-only pose staleness is implementation-, browser-, and full-validation-green, fast-forward merged, and pushed to `main`.
+**Last updated:** 2026-07-13 — BUG-05 is closed as a stale or non-reproducible observation after authenticated test6 workspace-resolution verification; BUG-01 / BUG-07 still await their signed-in browser release matrix.
 
 ## CURRENT STATUS SNAPSHOT — 2026-07-12
 
@@ -768,14 +768,38 @@ Release-gate items block **public launch**, not isolated product development. Pr
 | 🔄 | Portal manual sign-off: User4 deep-link, User1 schedule-managed, test1 stale-sub | — |
 | ✅ | DB health checks Q1–Q6 all clean on production | 2026-05-08 live run |
 | ✅ | Webhook idempotency — duplicate event returns 200, no re-processing | Audit test |
-| ⚠️ | **BUG-01** — Cross-user billing state contamination (~5s window) on in-tab sign-in without page reload. `tp3d:active-org-id` keeps prior user's org during contamination window; feature gates run with wrong entitlement. Silent — no console error. | QA report 2026-05-04 |
+| 🔄 | **BUG-01** — implementation exists on `fix/bug-01-user-switch-org-clear-integration` at `9b53622777d8ce1828f0ad0b367a6a34ece8bf05`; automated validation is green, but the signed-in browser release matrix remains pending. Not merged or pushed. | Implementation pending browser verification |
 | ⚠️ | **BUG-02** — `interval: "unknown"` for all Pro accounts; `currentPeriodEnd: null`. UI cannot show Monthly/Annual or renewal date. | QA report 2026-05-04 |
 | ⚠️ | **BUG-03** — `portalAvailable: false` for test2 and test4. Paying subscribers cannot open Stripe portal from within the app. | QA report 2026-05-04 |
-| ⚠️ | **BUG-04** — `workspaceCount: 7` inflated for test4 due to orphaned `org_member` rows. Workspace limit enforcement is wrong for that account. | QA report 2026-05-04 |
-| ⚠️ | **BUG-05** — test6's second workspace absent from UI switcher despite valid billing-status. Membership row passes billing-status auth but fails another query. | QA report 2026-05-04 |
+| ✅ | **BUG-04 — CLOSED as misdiagnosis.** test4's `workspaceCount: 7` is correct because archived workspaces count toward plan limits. Policy-changing commit `f530350` was reverted by `2031831`; no policy-changing code merged. | Authenticated audit + approved billing policy |
+| ✅ | **BUG-05 — CLOSED — stale or non-reproducible observation.** Authenticated test6 verification shows both active workspaces in the AccountSwitcher before and after a clean reload; no code, RLS, fixture, or data-integrity defect was found. | Authenticated audit 2026-07-13 |
 | ⚠️ | **BUG-06** — "Manage" billing navigates current tab to `billing.stripe.com` instead of opening a new tab. Destroys app session. | QA report 2026-05-04 |
-| ⚠️ | **BUG-07** — Sidebar upgrade element retains stale cross-user billing content after sign-in. Hidden visually (`display:none` on parent), but innerHTML is wrong. Any parent-wrapper regression would expose it. | QA report 2026-05-04 |
+| 🔄 | **BUG-07** — implementation exists with BUG-01 on `fix/bug-01-user-switch-org-clear-integration` at `9b53622777d8ce1828f0ad0b367a6a34ece8bf05`; automated validation is green, but the signed-in browser release matrix remains pending. Not merged or pushed. | Implementation pending browser verification |
 | ⬜ | Replace `support@pxl360.com` placeholder with real support email throughout | — |
+
+#### Billing QA BUG closeout status — 2026-07-13
+
+##### BUG-01 / BUG-07 — implemented, browser release matrix pending
+- 🔄 The shared implementation branch exists at `fix/bug-01-user-switch-org-clear-integration` with current implementation HEAD `9b53622777d8ce1828f0ad0b367a6a34ece8bf05`.
+- ✅ Automated validation is green.
+- ⬜ The signed-in browser release matrix remains pending. Neither BUG-01 nor BUG-07 is complete, merged, or pushed.
+
+##### BUG-04 — closed as a policy misdiagnosis
+- ✅ `workspaceCount: 7` was correct for test4. Archived workspaces count toward owner plan limits even though they do not appear in the active workspace switcher.
+- ✅ Policy-changing commit `f530350` was reverted by `2031831`; no policy-changing code merged.
+
+##### BUG-05 — ✅ CLOSED — stale or non-reproducible observation
+- ✅ test6 currently has two active workspaces and two valid owner membership rows; neither workspace is archived.
+- ✅ `get_user_organizations` returned both workspaces. The fallback `organization_members` query also returned both workspaces, with no RLS failure.
+- ✅ The authoritative organization fetch resolves two organizations. The non-partial account bundle retains both organizations, and `orgContext` retains both organizations.
+- ✅ AccountSwitcher displays active `test6 Workspace` and switchable `wspace-test6`; both remain present after a clean reload.
+- ✅ `/billing-status` reports `workspaceCount: 2`. Billing entitlement does not filter the workspace switcher.
+- ✅ No client-code, RLS, fixture, or data-integrity defect was found. The authenticated audit changed no product/source/test files and no database rows.
+
+##### Separate latent follow-up — not causal for BUG-05
+- ⬜ **`getMyMembership` multi-workspace resolution:** its unscoped `.maybeSingle()` returns HTTP 406 / `PGRST116` for users with multiple memberships. Current account-bundle logic successfully reconstructs the active membership, so this is not causal for BUG-05.
+- ⬜ Track separately on future branch `fix/multi-workspace-membership-resolution`; do not mix it into the BUG-05 closeout.
+- ✅ Phase boundary preserved: Max Capacity Phase B remains closed; Phase C has not started, and no Phase C branch exists.
 
 ### 1B — Auth & Session
 | Status | Item | Evidence |

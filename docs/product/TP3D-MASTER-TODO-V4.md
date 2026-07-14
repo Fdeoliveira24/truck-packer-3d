@@ -1,16 +1,17 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-07-14 — BUG-01 and BUG-07 passed their automated and signed-in browser release gates; BUG-04 remains closed as a policy misdiagnosis; BUG-05 remains closed as a stale or non-reproducible observation. Max Capacity Phase C has not started.
+**Last updated:** 2026-07-14 — BUG-01 and BUG-07 passed their automated and signed-in browser release gates; BUG-04 remains closed as a policy misdiagnosis; BUG-05 remains closed as a stale or non-reproducible observation. Multi-workspace Stripe hardening is merged, pushed, deployed, and sandbox-validated with explicit fixture gaps. Max Capacity Phase C has not started.
 
 ## CURRENT STATUS SNAPSHOT — 2026-07-14
 
 | Area | Current status |
 |---|---|
-| Auth/billing release packet | `fix/bug-01-user-switch-org-clear-integration` through implementation HEAD `b0d6fb21`, plus the reconciled BUG-05 documentation closeout. All runnable browser rows and all automated gates passed. |
-| Main baseline before this closeout | `main` and `origin/main` matched at `6c93acf`; this documentation is part of the same approved fast-forward integration packet. |
+| Auth/billing release packet | BUG-01/BUG-07 through `b0d6fb21`, followed by the independently reviewed multi-workspace Stripe hardening stack through `959d306`. All runnable browser/API rows and automated gates passed; unavailable fixtures are recorded below. |
+| Main baseline before this closeout | `main` and `origin/main` matched at `959d306` after the three hardening branches were sequentially fast-forward merged and pushed. |
 | Browser release result | `19/25` live rows passed including Test 1; `6/25` were explicitly not run because a safe fixture or browser-control capability was unavailable. No live row failed and no console errors were observed. |
+| Stripe hardening result | Portal organization-strict resolution, checkout metadata race guarding, and billing-status unmapped-candidate rejection are deployed to Supabase project `yduzbvijzwczjapanxbd`; current mapped/unmapped/authorization and entitlement fixtures passed without cross-workspace money-object selection. |
 | Completed phase | **Max Capacity Phase B — durable per-instance profile.** Applied Max Capacity layouts persist `packedProfile: "max-capacity"` per packed instance, without a pack-wide relaxed mode. |
-| Separate future work | `fix/multi-workspace-membership-resolution` and the three multi-workspace Stripe-hardening branches listed in the BUG closeout block. |
-| Next product phase | Max Capacity Phase C, only after the separately recorded Stripe-hardening decision. No Phase C branch or implementation exists. |
+| Separate future work | `fix/multi-workspace-membership-resolution`; ownership-transfer billing policy; F12 direct-paid sibling reporting; additional database uniqueness constraints/composite indexes; missing exact Stripe sandbox fixtures. |
+| Next product phase | Max Capacity Phase C after this documentation closeout. No Phase C branch or implementation exists. |
 
 ### Current auth/billing integration gate — 2026-07-14
 
@@ -24,6 +25,7 @@
 8. ⬜ Live Tests 17-19 were not run because the selected browser surface has no safe request-failure/offline control; fail-closed and recovery behavior remains covered by automated runtime tests.
 9. ⬜ Live Test 22 was not run because browser-control policy does not permit storage inspection/manipulation; stale active-org hints remain covered by runtime BUG-01 D/E/F/P tests.
 10. ✅ BUG-04 and BUG-05 closeout decisions remain intact; Phase C and its branch remain absent.
+11. ✅ The three multi-workspace Stripe hardening branches were independently reviewed, validated, sequentially merged/pushed, deployed one function at a time, and exercised against every safe available Stripe test-mode fixture. No tested row failed; the exact unavailable fixtures remain documented rather than inferred as runtime proof.
 
 ### Current completed integration evidence — 2026-07-12
 
@@ -48,17 +50,17 @@
 
 | Field | Value |
 |-------|-------|
-| Integration branch | `fix/bug-01-user-switch-org-clear-integration`; final implementation HEAD before documentation reconciliation: `b0d6fb21`. |
-| Active implementation | Complete: cross-user org/billing isolation, authoritative post-switch billing, stale-result guards, cross-tab workspace refresh, and account-DOM cleanup. |
-| Current allowed dirty file during closeout | This TODO only. Source/tests were already committed and validated. |
-| Active blocker | None for BUG-01 or BUG-07. Six live matrix rows have explicit fixture/tooling gaps and matching runtime coverage; no runnable row failed. |
-| Separate follow-ups | `fix/multi-workspace-membership-resolution`, `fix/portal-org-strict-resolution`, `fix/checkout-race-guard-metadata`, and `fix/billing-status-unmapped-candidates`. |
-| Next planned product phase | Max Capacity Phase C after the separately recorded Stripe-hardening decision. |
-| Do not start simultaneously | Phase C, Stripe Edge Function hardening, and `getMyMembership` changes remain out of this release packet. |
+| Integration branch | `main`; multi-workspace Stripe hardening is integrated through `959d306` before this documentation-only closeout. |
+| Active implementation | Complete: portal organization-strict resolution, checkout metadata race guarding, and billing-status unmapped-candidate rejection. |
+| Current allowed dirty file during closeout | This TODO only. Edge Function source/tests were already committed, validated, merged, pushed, and deployed. |
+| Active blocker | None in the tested hardening paths. Exact same-customer sibling, stale-subscription, metadata-less, duplicate-mapping, and active-member fixtures remain unavailable and are not claimed as live passes. |
+| Separate follow-ups | `fix/multi-workspace-membership-resolution`; ownership-transfer billing policy; F12 direct-paid sibling reporting; additional database uniqueness constraints/composite indexes; missing exact Stripe sandbox fixtures. |
+| Next planned product phase | Max Capacity Phase C after this documentation commit is pushed. |
+| Do not start simultaneously | Phase C, `getMyMembership`, ownership-transfer policy, F12 reporting, and database constraint work remain separate future tasks. |
 
 *Update this block after each commit/merge. Do not hardcode the same status in multiple conflicting places.*
 
-> **Current source-of-truth note (2026-07-14):** Max Capacity Phase B remains complete. BUG-01 and BUG-07 passed their release gates on implementation HEAD `b0d6fb21`; BUG-04 and BUG-05 remain closed. Phase C is not started and no Phase C branch exists.
+> **Current source-of-truth note (2026-07-14):** Max Capacity Phase B remains complete. BUG-01 and BUG-07 passed their release gates on implementation HEAD `b0d6fb21`; BUG-04 and BUG-05 remain closed. Multi-workspace Stripe hardening is integrated and deployed through `959d306`. Phase C is not started and no Phase C branch exists.
 
 ## Active Debug Queue — AutoPack / Results / Editor Regressions
 
@@ -764,7 +766,7 @@ Release-gate items block **public launch**, not isolated product development. Pr
 | ✅ | `billing_customers` uniqueness + index guardrails applied | Migration + DB verify |
 | ✅ | Checkout idempotency key includes `organizationId` | Commit `f5cc8cd` + test 272/272 |
 | ✅ | Portal "Manage" never returns 500 (schedule-managed + stale sub fallbacks) | Code complete |
-| 🔄 | Portal manual sign-off: User4 deep-link, User1 schedule-managed, test1 stale-sub | — |
+| 🔄 | Portal manual sign-off: current mapped deep-link, unmapped-org, non-owner, and foreign-org paths passed after organization-strict deployment; exact same-customer sibling and stale mapped-subscription fixtures remain unavailable | `7455bdb`; sandbox 2026-07-14 |
 | ✅ | DB health checks Q1–Q6 all clean on production | 2026-05-08 live run |
 | ✅ | Webhook idempotency — duplicate event returns 200, no re-processing | Audit test |
 | ✅ | **BUG-01 — CLOSED — implemented, automated validated, signed-in browser verified.** Confirmed identity changes synchronously clear prior org/billing authority, require authoritative new-user billing, reject stale results, and recover AccountSwitcher state across tabs. | Implementation through `b0d6fb21`; automated + browser release matrix 2026-07-14 |
@@ -807,8 +809,21 @@ Release-gate items block **public launch**, not isolated product development. Pr
 ##### Separate latent follow-up — not causal for BUG-05
 - ⬜ **`getMyMembership` multi-workspace resolution:** its unscoped `.maybeSingle()` returns HTTP 406 / `PGRST116` for users with multiple memberships. Current account-bundle logic successfully reconstructs the active membership, so this is not causal for BUG-05.
 - ⬜ Track separately on future branch `fix/multi-workspace-membership-resolution`; do not mix it into the BUG-05 closeout.
-- ⬜ **Multi-workspace Stripe hardening remains future work:** `fix/portal-org-strict-resolution`, `fix/checkout-race-guard-metadata`, and `fix/billing-status-unmapped-candidates`. These tasks are recorded but not implemented or marked complete in this packet.
+- ✅ **Multi-workspace Stripe hardening is complete:** `fix/portal-org-strict-resolution`, `fix/checkout-race-guard-metadata`, and `fix/billing-status-unmapped-candidates` were independently reviewed, sequentially merged/pushed, deployed, and exercised against the available Stripe test-mode fixtures. Exact unavailable fixtures remain recorded below.
 - ✅ Phase boundary preserved: Max Capacity Phase B remains closed; Phase C has not started, and no Phase C branch exists.
+
+##### Multi-workspace Stripe hardening — ✅ merged, pushed, and deployed; sandbox PASS WITH FIXTURE GAPS (2026-07-14)
+- ✅ **Portal organization-strict resolution:** branch `fix/portal-org-strict-resolution`, implementation/rebased commit and merge tip `7455bdb`. `stripe-create-portal-session` deployed successfully. Customer resolution is now limited to the requested organization's `billing_customers` row or organization-scoped subscription projection. User-only `stripe_customers`, customer-only subscription lookup, and newest/oldest/first sibling-subscription fallbacks were removed. A plain portal fallback is allowed only for the customer explicitly resolved through the requested organization. Available sandbox checks passed: mapped portal flow opened the correct Stripe test-mode subscription flow; unmapped organization returned HTTP 409 `no_billing_mapping_for_organization`; non-owner and foreign-organization callers returned 403; tested errors exposed no raw Stripe/PostgREST detail.
+- ✅ **Checkout metadata race guard:** branch `fix/checkout-race-guard-metadata`, original commit `f8b90b0`, rebased implementation/merge tip `aa8cd45`. `stripe-create-checkout-session` deployed successfully. Explicit organization metadata/mapping remains the multi-workspace duplicate blocker; a metadata-less active subscription cannot block or redirect a multi-workspace owner. The existing legacy compatibility path remains available only behind the strict exactly-one-valid-organization owner gate. Price allow-listing, organization-scoped idempotency, Checkout Session metadata, and `subscription_data` organization metadata remain intact. Available sandbox checks passed: the mapped active organization resolved to its own Stripe test portal flow, invalid price returned 400, and a non-owner returned 403.
+- ✅ **Billing-status unmapped candidates:** branch `fix/billing-status-unmapped-candidates`, original commit `a4cbe34`, rebased implementation/final pre-documentation main tip `959d306`. `billing-status` deployed successfully. The oldest-owner-workspace guess is removed; unmapped candidates are excluded before direct/included entitlement selection; a member's personal legacy subscription cannot grant another owner's organization; mapped owner-plan `included_in_plan` and `workspace_limit_reached` behavior remains intact. Available API/browser checks covered active direct, included sibling, over-limit, trial-expired, owner-subscription-required, and archived/billing-unavailable states across the disposable accounts; selected interval/direct identity stayed tied to the explicitly mapped subscription; no cross-workspace contamination or raw error detail was observed.
+- ✅ **Schema/data-quality evidence:** deployed `public.subscriptions.organization_id` exists exactly once as nullable `uuid`. Read-only checks found `0` active/trialing subscriptions without organization mapping, `0` duplicate `billing_customers.stripe_subscription_id` groups, `0` organizations with multiple active subscription projections, and `0` observed cross-source organization conflicts. No repair or data mutation was performed.
+- ✅ **Final automated evidence on integrated main:** security/invariants `855` total (`850` passed, `5` skipped, `0` failed); full suite `968` total (`963` passed, `5` skipped, `0` failed); Edge Function/test syntax, typecheck, and diff checks passed; lint reported `0` errors with existing warnings only. The added audit coverage is source-pattern/static evidence and is not represented as runtime integration proof.
+- ⬜ **Exact sandbox fixtures not available:** portal same-customer sibling with its own mapping and stale mapped subscription; checkout sibling-only active, shared metadata-less multi-org, proven single-workspace metadata-less legacy, and a successful new checkout metadata inspection (not created because it would write a production projection); billing-status exact four-workspace monthly/annual/expired/unmapped owner, metadata-less Stripe subscription, duplicate active mapping, missing local projection, and active non-owner member. No unavailable row is marked passed.
+- ⬜ **Ownership-transfer billing policy remains open and untouched.**
+- ⬜ **F12 direct-paid sibling reporting remains open and untouched.** Organization-specific direct payment identity must remain distinct from inherited owner-plan coverage.
+- ⬜ **Additional database uniqueness constraints/composite indexes remain open.** Runtime diagnostics identify ambiguous active mappings, but this packet intentionally added no migration or constraint and does not prevent future duplicate rows at the database layer.
+- ⬜ **`getMyMembership` multi-workspace resolution remains a separate future fix.**
+- ⬜ **Max Capacity Phase C remains not started.**
 
 ### 1B — Auth & Session
 | Status | Item | Evidence |
@@ -950,10 +965,10 @@ Release-gate items block **public launch**, not isolated product development. Pr
 | Status | Item |
 |--------|------|
 | 🟡 | **Composite DB indexes missing for common billing queries.** Current `subscriptions` table has only single-column indexes. Portal and billing-status queries filter on `(organization_id, status, updated_at)` and `(stripe_customer_id, status, updated_at)`. Add composite indexes before scale. |
-| 🟡 | **Multi-workspace billing fallbacks need hardening.** Owner-account entitlement can fall back to the oldest owner workspace when no mapping is found (`billing-status/index.ts`). Portal lookup can fall back by customer without an org filter (`stripe-create-portal-session/index.ts`). Both paths need integration tests and explicit guards before paid scale. |
-| ⬜ | Integration test: portal preselection always targets the correct workspace subscription for a multi-workspace owner |
-| ⬜ | Integration test: owner-account entitlement fallback does not bleed entitlement across workspaces |
-| ⬜ | Make Edge Function error responses less raw — checkout and portal currently return raw exception messages to the client; sanitize to safe user-facing copy |
+| ✅ | **Multi-workspace Stripe fallbacks hardened.** Portal resolution is organization-strict; checkout duplicate protection requires explicit organization identity for multi-workspace owners; billing-status no longer assigns an unmapped subscription to the oldest owner workspace. Owner-plan sibling coverage remains intentionally separate from direct Stripe money-object identity. | `7455bdb`, `aa8cd45`, `959d306`; deployed and available-fixture sandbox checks 2026-07-14 |
+| 🟡 | Integration test: portal preselection always targets the correct workspace subscription for a multi-workspace owner — current mapped/unmapped/authorization sandbox paths pass, but the exact same-customer sibling and stale-subscription fixtures remain unavailable |
+| 🟡 | Integration test: owner-account entitlement fallback does not bleed entitlement across workspaces — current direct/included/over-limit/trial/archived API matrix passes; exact metadata-less, duplicate-mapping, and four-workspace fixtures remain unavailable |
+| ✅ | Portal/checkout hardening returns safe structured failures for reviewed paths rather than raw Stripe/PostgREST exception detail; broader Edge Function error-sanitization audit remains future security work |
 | ⬜ | Content Security Policy headers on all pages |
 | ⬜ | CORS policy: allow only your domain(s) to call Edge Functions |
 | ⬜ | Input sanitization: all user text fields escaped before rendering |

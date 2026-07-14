@@ -21781,3 +21781,76 @@ test('PORTAL-ORG-6 portal catch handler returns sanitized error text only', asyn
   assert.match(catchBlock, /json\(\{ error: "Portal session failed" \}/,
     'browser receives a fixed sanitized error string');
 });
+
+// ── CHECKOUT-GUARD: the stripe-create-checkout-session live race guard is
+// organization-scoped. One user-level Stripe customer can hold subscriptions
+// for several organizations, so a metadata-less subscription must not block
+// checkout for (or redirect to the portal of) another workspace.
+// (Multi-workspace Stripe entitlement isolation audit, Branch 2.)
+
+test('CHECKOUT-GUARD-1 Stripe race guard gates metadata-less blocking to the single-org legacy case', async () => {
+  const src = await fs.readFile(stripeCheckoutPath, 'utf8');
+
+  assert.match(src,
+    /hasBlockingStripeSubscription\(\s*stripe,\s*stripeCustomerId,\s*organizationId,\s*allowLegacyUserScopedFallback,?\s*\)/,
+    'race guard must pass the strict single-org legacy gate');
+  assert.ok(
+    !/hasBlockingStripeSubscription\(\s*stripe,\s*stripeCustomerId,\s*organizationId,\s*true\s*,?\s*\)/.test(src),
+    'race guard must not hardcode allowMissingOrgMetadata=true — that lets an unmapped subscription block every workspace of a multi-workspace owner');
+});
+
+test('CHECKOUT-GUARD-2 blocking match requires explicit metadata binding to the requested organization', async () => {
+  const src = await fs.readFile(stripeCheckoutPath, 'utf8');
+  const fnIdx = src.indexOf('async function hasBlockingStripeSubscription(');
+  assert.ok(fnIdx >= 0, 'hasBlockingStripeSubscription present');
+  const fnEnd = src.indexOf('\n}', fnIdx);
+  const fn = src.slice(fnIdx, fnEnd);
+
+  assert.match(fn, /if \(metadataOrgId\) return metadataOrgId === organizationId;/,
+    'a subscription explicitly bound to organization B never blocks checkout for organization A');
+  assert.match(fn, /return allowMissingOrgMetadata;/,
+    'metadata-less subscriptions block only when the caller passed the gated flag');
+  assert.match(fn, /STRIPE_BLOCKING_STATUSES\.has\(status\)/,
+    'only active-ish statuses can block — duplicate protection for mapped subscriptions retained');
+});
+
+test('CHECKOUT-GUARD-3 single-org legacy gate: exact membership count of one, ambiguity fails safe', async () => {
+  const src = await fs.readFile(stripeCheckoutPath, 'utf8');
+  const gateIdx = src.indexOf('let allowLegacyUserScopedFallback = false;');
+  assert.ok(gateIdx >= 0, 'legacy gate defaults to closed');
+  const gateBlock = src.slice(gateIdx, gateIdx + 500);
+  assert.match(gateBlock, /\.from\("organization_members"\)/, 'gate reads caller memberships');
+  assert.match(gateBlock, /count: "exact", head: true/, 'gate uses an exact membership count');
+  assert.match(gateBlock, /\.eq\("user_id", user\.id\)/, 'gate counts the authenticated caller only');
+  assert.match(gateBlock, /if \(!orgCountRes\.error\)/, 'a failed count keeps the gate closed — ambiguity fails safe');
+  assert.match(gateBlock, /=== 1/, 'gate opens only when the caller belongs to exactly one organization');
+
+  const ownerIdx = src.indexOf('if (memberRole !== "owner")');
+  assert.ok(ownerIdx >= 0 && ownerIdx < gateIdx,
+    'owner-only authorization for the requested organization runs before the legacy gate');
+});
+
+test('CHECKOUT-GUARD-4 checkout metadata, price allow-list, idempotency, and owner auth unchanged', async () => {
+  const src = await fs.readFile(stripeCheckoutPath, 'utf8');
+  assert.match(src, /assertAllowedPrice\(price_id\)/, 'price allow-list retained');
+  assert.match(src, /idempotencyKey: checkoutIdempotencyKey\(user\.id, organizationId, price_id\)/,
+    'idempotency key still scoped user+organization+price');
+  assert.match(src,
+    /metadata: \{\s*supabase_user_id: user\.id,\s*price_id,\s*\.\.\.\(organizationId \? \{ organization_id: organizationId \} : \{\}\),?\s*\}/,
+    'Checkout Session metadata carries the authoritative organization id');
+  assert.match(src,
+    /subscription_data: \{\s*metadata: \{\s*supabase_user_id: user\.id,\s*\.\.\.\(organizationId \? \{ organization_id: organizationId \} : \{\}\),?\s*\},?\s*\}/,
+    'subscription_data metadata carries the authoritative organization id');
+  assert.match(src, /Only the org owner can manage billing for this organization/,
+    'non-owners stay rejected');
+});
+
+test('CHECKOUT-GUARD-5 checkout never write-repairs Stripe metadata or picks an arbitrary organization', async () => {
+  const src = await fs.readFile(stripeCheckoutPath, 'utf8');
+  assert.ok(!src.includes('stripe.subscriptions.update'),
+    'checkout must not silently write organization metadata onto ambiguous Stripe subscriptions');
+  assert.ok(!src.includes('stripe.customers.update'),
+    'checkout must not rewrite customer metadata to repair mappings');
+  assert.ok(!/ownerWorkspaces\[0\]|oldestOwnerWorkspace/i.test(src),
+    'checkout has no oldest/first workspace assignment');
+});

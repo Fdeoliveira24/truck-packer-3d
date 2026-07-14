@@ -333,12 +333,19 @@ Deno.serve(async (req) => {
     }
 
     // Race guard: DB projection can lag webhooks. Query Stripe directly before creating checkout.
+    // Metadata-less subscriptions on the shared user-level customer may block
+    // checkout only under the strict legacy gate: the caller is the approved
+    // owner of the requested organization (checked above) AND belongs to
+    // exactly one organization, so the requested organization is the only one
+    // the subscription can belong to. Multi-workspace owners must never have
+    // another workspace's (or an unmapped) subscription block this checkout or
+    // redirect it to that subscription's portal.
     if (stripeCustomerId) {
       const blockingSubId = await hasBlockingStripeSubscription(
         stripe,
         stripeCustomerId,
         organizationId,
-        true,
+        allowLegacyUserScopedFallback,
       );
       if (blockingSubId) {
         if (debug) {

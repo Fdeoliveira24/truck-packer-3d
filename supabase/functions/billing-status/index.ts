@@ -234,6 +234,60 @@ function activeRowCount(rows: any[]): number {
   return rows.filter((r) => String(r?.status || "") === "active").length;
 }
 
+type RequestedDirectBindingResolution = {
+  subscriptionId: string | null;
+  activeCount: number;
+  ambiguous: boolean;
+  conflict: boolean;
+};
+
+function resolveRequestedDirectBinding(
+  rows: EntitlementCandidate[],
+  requestedOrgId: string | null,
+  knownConflict = false,
+  knownAmbiguity = false,
+): RequestedDirectBindingResolution {
+  if (!requestedOrgId) {
+    const ambiguous = knownConflict || knownAmbiguity;
+    return { subscriptionId: null, activeCount: 0, ambiguous, conflict: knownConflict };
+  }
+
+  const organizationsBySubscription = new Map<string, Set<string>>();
+  let unresolvedRequestedCandidates = 0;
+
+  rows.forEach((row) => {
+    if (row.source !== "subscription" || !isUsableEntitlementCandidate(row)) return;
+    const organizationId = normalizeOrgId(row.organization_id);
+    if (!organizationId) return;
+    const subscriptionId = String(row.stripe_subscription_id || "").trim();
+    if (!subscriptionId) {
+      if (organizationId === requestedOrgId) unresolvedRequestedCandidates += 1;
+      return;
+    }
+    const organizations = organizationsBySubscription.get(subscriptionId) || new Set<string>();
+    organizations.add(organizationId);
+    organizationsBySubscription.set(subscriptionId, organizations);
+  });
+
+  const requestedSubscriptionIds = Array.from(organizationsBySubscription.entries())
+    .filter(([, organizationIds]) => organizationIds.has(requestedOrgId))
+    .map(([subscriptionId]) => subscriptionId);
+  const conflictingIdentity = requestedSubscriptionIds.some(
+    subscriptionId => (organizationsBySubscription.get(subscriptionId)?.size || 0) > 1,
+  );
+  const conflict = knownConflict || conflictingIdentity;
+  const ambiguous = knownAmbiguity || conflict || requestedSubscriptionIds.length > 1 || unresolvedRequestedCandidates > 0;
+
+  return {
+    subscriptionId: ambiguous || requestedSubscriptionIds.length !== 1
+      ? null
+      : requestedSubscriptionIds[0],
+    activeCount: requestedSubscriptionIds.length + unresolvedRequestedCandidates,
+    ambiguous,
+    conflict,
+  };
+}
+
 function statusPriority(status: unknown): number {
   const normalized = String(status || "");
   return Object.prototype.hasOwnProperty.call(SUBSCRIPTION_STATUS_PRIORITY, normalized)
@@ -442,6 +496,7 @@ Deno.serve(async (req) => {
     let ownerEntitlementCandidate: EntitlementCandidate | null = null;
     let ownerEntitlementCandidateCount = 0;
     let ownerUnmappedCandidateCount = 0;
+    const ownerEntitlementCandidates: EntitlementCandidate[] = [];
     let ownerHasStripeCustomerForPortal = false;
     let ownerMetadataInterval: "month" | "year" | null = null;
     let ownerMetadataCurrentPeriodEnd: string | null = null;
@@ -654,6 +709,26 @@ Deno.serve(async (req) => {
     let subscription: Record<string, unknown> | null = null;
     let dbStatus = "";
     let duplicateActiveCount = 0;
+    const requestedDirectBindingCandidates: EntitlementCandidate[] = [];
+    let requestedDirectBindingConflict = false;
+    let requestedDirectBindingAmbiguous = false;
+    const recordRequestedDirectBindingCandidate = (
+      row: Record<string, unknown>,
+      organizationId: string,
+    ) => {
+      requestedDirectBindingCandidates.push({
+        organization_id: organizationId,
+        status: String(row?.status || "none"),
+        price_id: row?.price_id ? String(row.price_id) : "",
+        current_period_end: row?.current_period_end ? String(row.current_period_end) : null,
+        trial_end: row?.trial_end ? String(row.trial_end) : null,
+        created_at: row?.created_at ? String(row.created_at) : null,
+        stripe_subscription_id: row?.stripe_subscription_id ? String(row.stripe_subscription_id) : null,
+        stripe_customer_id: row?.stripe_customer_id ? String(row.stripe_customer_id) : null,
+        interval: normalizeInterval(row?.interval ?? null),
+        source: "subscription",
+      });
+    };
     try {
       const selectColumns =
         "status, price_id, current_period_end, trial_end, cancel_at_period_end, cancel_at, interval, stripe_subscription_id, stripe_customer_id, created_at";
@@ -670,6 +745,11 @@ Deno.serve(async (req) => {
           }
         } else {
           const scopedList = Array.isArray(scoped.data) ? scoped.data : [];
+          scopedList.forEach(row => {
+            recordRequestedDirectBindingCandidate(row as Record<string, unknown>, resolvedOrgId);
+          });
+          const scopedUsableCount = requestedDirectBindingCandidates.filter(isUsableEntitlementCandidate).length;
+          requestedDirectBindingAmbiguous = scopedUsableCount > 1;
           duplicateActiveCount = Math.max(duplicateActiveCount, activeRowCount(scopedList));
           subscription = scopedList.length ? pickBestSubscription(scopedList) : null;
         }
@@ -773,7 +853,10 @@ Deno.serve(async (req) => {
               ? new Date(Number((stripeSub as any).created) * 1000).toISOString()
               : null,
           };
+          recordRequestedDirectBindingCandidate(subscription, resolvedOrgId);
           dbStatus = subscription ? String((subscription as any).status || "") : "";
+        } else {
+          requestedDirectBindingConflict = true;
         }
       } catch (stripeKnownSubErr) {
         if (isBillingStatusStripeTimeout(stripeKnownSubErr)) {
@@ -832,7 +915,7 @@ Deno.serve(async (req) => {
                   return;
                 }
               }
-              mapped.push({
+              const mappedSubscription = {
                 user_id: mappedUserId,
                 organization_id: orgIdFromMetadata || (resolvedOrgId && allowLegacyUserScopedFallback ? resolvedOrgId : null),
                 status: s?.status ?? null,
@@ -856,7 +939,11 @@ Deno.serve(async (req) => {
                 created_at: s?.created
                   ? new Date(Number(s.created) * 1000).toISOString()
                   : null,
-              });
+              };
+              mapped.push(mappedSubscription);
+              if (resolvedOrgId && orgIdFromMetadata === resolvedOrgId) {
+                recordRequestedDirectBindingCandidate(mappedSubscription, resolvedOrgId);
+              }
             });
           }
 
@@ -934,7 +1021,7 @@ Deno.serve(async (req) => {
     if (resolvedOrgId && billingOwnerUserId && ownerWorkspaces.length) {
       const ownerWorkspaceIds = ownerWorkspaces.map(row => row.id).filter(Boolean);
       const ownerWorkspaceIdSet = new Set(ownerWorkspaceIds);
-      const entitlementCandidates: EntitlementCandidate[] = [];
+      const entitlementCandidates = ownerEntitlementCandidates;
       try {
         const ownerBillingCustomerByOrg = new Map<string, Record<string, unknown>>();
         const ownerBillingCustomerBySubscription = new Map<string, Record<string, unknown>>();
@@ -1394,7 +1481,14 @@ Deno.serve(async (req) => {
         ownerEntitlementCandidateCount = entitlementCandidates.length;
         ownerEntitlementCandidate = pickBestEntitlementCandidate(entitlementCandidates);
         const ownerEntitlementOrgId = normalizeOrgId(ownerEntitlementCandidate?.organization_id ?? null);
+        const preliminaryRequestedDirectBinding = resolveRequestedDirectBinding(
+          [...requestedDirectBindingCandidates, ...ownerEntitlementCandidates],
+          resolvedOrgId,
+          requestedDirectBindingConflict,
+          requestedDirectBindingAmbiguous,
+        );
         if (
+          !preliminaryRequestedDirectBinding.ambiguous &&
           ownerEntitlementCandidate &&
           String(ownerEntitlementCandidate.status || "") === "active" &&
           ownerEntitlementOrgId &&
@@ -1423,6 +1517,31 @@ Deno.serve(async (req) => {
       }
     } else if (resolvedOrgId) {
       entitlementResolutionFailed = true;
+    }
+
+    const requestedDirectBinding = resolveRequestedDirectBinding(
+      [...requestedDirectBindingCandidates, ...ownerEntitlementCandidates],
+      resolvedOrgId,
+      requestedDirectBindingConflict,
+      requestedDirectBindingAmbiguous,
+    );
+    const selectedSubscriptionId = String(subscription?.stripe_subscription_id || "").trim();
+    const selectedSubscriptionStatus = String(subscription?.status || "none");
+    const selectedSubscriptionPeriodEnd = subscription?.current_period_end
+      ? String(subscription.current_period_end)
+      : null;
+    const requestedOrgIsDirect = Boolean(
+      requestedDirectBinding.subscriptionId &&
+      selectedSubscriptionId === requestedDirectBinding.subscriptionId &&
+      (
+        selectedSubscriptionStatus === "active" ||
+        selectedSubscriptionStatus === "trialing" ||
+        paymentGraceActive(selectedSubscriptionStatus, selectedSubscriptionPeriodEnd)
+      ),
+    );
+    const duplicateActiveMappings = duplicateActiveCount > 1 || requestedDirectBinding.ambiguous;
+    if (requestedDirectBinding.ambiguous) {
+      subscription = null;
     }
 
     // Normalize into a flat, stable contract
@@ -1636,12 +1755,12 @@ Deno.serve(async (req) => {
       }
     }
 
-    const cancelAtPeriodEnd = Boolean(
+    let cancelAtPeriodEnd = Boolean(
       subscription?.cancel_at_period_end ??
       billingCustomer?.cancel_at_period_end ??
       false,
     );
-    const cancelAt = subscription?.cancel_at
+    let cancelAt = subscription?.cancel_at
       ? String(subscription.cancel_at)
       : null;
     let portalAvailable = Boolean(
@@ -1669,7 +1788,6 @@ Deno.serve(async (req) => {
         String(ownerEntitlementCandidate.status || ""),
         String(ownerEntitlementCandidate.price_id || ""),
       );
-      workspaceLimit = resolvedWorkspaceLimit;
       includedOrgIds = [];
       const directOrgId = normalizeOrgId(ownerEntitlementCandidate.organization_id) || "";
       if (directOrgId && resolvedWorkspaceLimit > 0) includedOrgIds.push(directOrgId);
@@ -1678,6 +1796,49 @@ Deno.serve(async (req) => {
         if (!workspace.id || workspace.id === directOrgId) continue;
         includedOrgIds.push(workspace.id);
       }
+    }
+
+    if (requestedDirectBinding.ambiguous) {
+      entitlementStatus = "owner_subscription_required";
+      ownerSubscriptionRequiredReason = requestedDirectBinding.conflict
+        ? "conflicting_requested_org_direct_subscription"
+        : "ambiguous_requested_org_direct_subscription";
+      workspaceIncluded = false;
+      workspaceLimit = parsePositiveIntEnv("TP3D_PRO_WORKSPACE_LIMIT", 3);
+      subStatus = "none";
+      isTrial = false;
+      isActive = false;
+      plan = "free";
+      interval = "unknown";
+      trialEndsAt = null;
+      currentPeriodEnd = null;
+      cancelAtPeriodEnd = false;
+      cancelAt = null;
+      paymentProblem = false;
+      paymentGraceUntil = null;
+      paymentGraceRemainingDays = null;
+      paymentAction = null;
+    } else if (requestedOrgIsDirect && directActive) {
+      entitlementStatus = "active";
+      workspaceIncluded = true;
+      workspaceLimit = workspaceLimitForEntitlement("active", priceId);
+      isActive = true;
+      plan = "pro";
+      if (!ownerEntitlementCandidate) includedOrgIds = resolvedOrgId ? [resolvedOrgId] : [];
+    } else if (requestedOrgIsDirect && directTrialing) {
+      entitlementStatus = "trialing";
+      workspaceIncluded = true;
+      workspaceLimit = workspaceLimitForEntitlement("trialing", priceId);
+      isActive = true;
+      plan = "pro";
+      if (!ownerEntitlementCandidate) includedOrgIds = resolvedOrgId ? [resolvedOrgId] : [];
+    } else if (ownerEntitlementCandidate && resolvedOrgId && billingOwnerUserId) {
+      const resolvedWorkspaceLimit = workspaceLimitForEntitlement(
+        String(ownerEntitlementCandidate.status || ""),
+        String(ownerEntitlementCandidate.price_id || ""),
+      );
+      workspaceLimit = resolvedWorkspaceLimit;
+      const directOrgId = normalizeOrgId(ownerEntitlementCandidate.organization_id) || "";
       workspaceIncluded = includedOrgIds.includes(resolvedOrgId);
       if (!workspaceIncluded) {
         entitlementStatus = "workspace_limit_reached";
@@ -1733,6 +1894,7 @@ Deno.serve(async (req) => {
 
     if (
       ownerEntitlementCandidate &&
+      !requestedOrgIsDirect &&
       (entitlementStatus === "active" ||
         entitlementStatus === "trialing" ||
         entitlementStatus === "included_in_plan" ||
@@ -1791,10 +1953,10 @@ Deno.serve(async (req) => {
       paymentGraceUntil,
       paymentGraceRemainingDays,
       action: paymentAction,
-      // Repair signal: more than one active mapping was seen for the resolved
-      // scope. Selection stays deterministic, but duplicates are surfaced
-      // instead of silently resolved.
-      duplicateActiveMappings: duplicateActiveCount > 1,
+      // Repair signal: more than one usable direct mapping was seen for the
+      // requested organization, or explicit organization bindings conflict.
+      // Ambiguous direct billing fails closed instead of selecting a row.
+      duplicateActiveMappings,
     };
     if (responseDebugEnabled) {
       responsePayload.debug = {
@@ -1803,6 +1965,9 @@ Deno.serve(async (req) => {
         billingCustomerTrialEndsAt,
         usedServiceRole,
         duplicateActiveCount,
+        requestedDirectActiveCount: requestedDirectBinding.activeCount,
+        requestedDirectAmbiguous: requestedDirectBinding.ambiguous,
+        requestedDirectBindingConflict: requestedDirectBinding.conflict,
         entitlementStatus,
         billingOwnerUserId,
         workspaceIncluded,

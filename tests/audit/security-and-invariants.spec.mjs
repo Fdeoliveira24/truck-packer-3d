@@ -22361,6 +22361,333 @@ test('CHECKOUT-GUARD-5 checkout never write-repairs Stripe metadata or picks an 
     'checkout has no oldest/first workspace assignment');
 });
 
+async function createBillingStatusDirectIdentityRuntime(options = {}) {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+  const executableSource = src.replace(/^import .*;\s*$/gm, '');
+  let handler = null;
+
+  const ownerUserId = '11111111-1111-4111-8111-111111111111';
+  const defaultOrganizations = [
+    { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', owner_id: ownerUserId, created_at: '2025-01-01T00:00:00.000Z', archived_at: null },
+    { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2', owner_id: ownerUserId, created_at: '2025-02-01T00:00:00.000Z', archived_at: null },
+  ];
+  const organizations = (options.organizations || defaultOrganizations).map(row => ({ ...row }));
+  const memberships = organizations.map(row => ({ organization_id: row.id, user_id: ownerUserId, role: 'owner' }));
+  const subscriptions = (options.subscriptions || []).map(row => ({
+    user_id: ownerUserId,
+    stripe_customer_id: 'cus_owner',
+    created_at: '2025-03-01T00:00:00.000Z',
+    cancel_at_period_end: false,
+    cancel_at: null,
+    trial_end: null,
+    ...row,
+  }));
+  const billingCustomers = (options.billingCustomers || subscriptions.map(row => ({
+    organization_id: row.organization_id,
+    stripe_customer_id: row.stripe_customer_id,
+    stripe_subscription_id: row.stripe_subscription_id,
+    status: row.status,
+    plan_name: row.status === 'canceled' ? 'free' : 'pro',
+    billing_interval: row.interval,
+    current_period_end: row.current_period_end,
+    cancel_at_period_end: row.cancel_at_period_end,
+    trial_ends_at: row.trial_end,
+    created_at: row.created_at,
+  }))).map(row => ({ ...row }));
+  const tables = {
+    organizations,
+    organization_members: memberships,
+    subscriptions,
+    billing_customers: billingCustomers,
+    stripe_customers: [{ user_id: ownerUserId, stripe_customer_id: 'cus_owner' }],
+    profiles: [],
+  };
+  const calls = { updates: [], upserts: [], logs: [] };
+
+  const createQuery = (table) => {
+    const filters = [];
+    const orders = [];
+    let rowLimit = null;
+    let selectOptions = null;
+    let updatePayload = null;
+    let upsertPayload = null;
+
+    const query = {
+      select(_columns, opts = null) { selectOptions = opts; return query; },
+      eq(column, value) { filters.push(row => String(row?.[column] ?? '') === String(value ?? '')); return query; },
+      in(column, values) {
+        const allowed = new Set((values || []).map(value => String(value)));
+        filters.push(row => allowed.has(String(row?.[column] ?? '')));
+        return query;
+      },
+      order(column, { ascending = true } = {}) { orders.push({ column, ascending }); return query; },
+      limit(value) { rowLimit = Number(value); return query; },
+      update(payload) { updatePayload = { ...payload }; return query; },
+      upsert(payload) { upsertPayload = { ...payload }; return query; },
+      async maybeSingle() {
+        const result = execute();
+        if (result.data.length > 1) {
+          return { data: null, error: { code: 'PGRST116', message: 'multiple rows' } };
+        }
+        return { data: result.data[0] || null, error: null };
+      },
+      then(resolve, reject) { return Promise.resolve(execute()).then(resolve, reject); },
+    };
+
+    const execute = () => {
+      let rows = (tables[table] || []).filter(row => filters.every(filter => filter(row)));
+      for (const { column, ascending } of orders) {
+        rows = [...rows].sort((a, b) => {
+          const left = String(a?.[column] ?? '');
+          const right = String(b?.[column] ?? '');
+          return (left.localeCompare(right)) * (ascending ? 1 : -1);
+        });
+      }
+      if (Number.isFinite(rowLimit)) rows = rows.slice(0, rowLimit);
+      if (updatePayload) {
+        rows.forEach(row => Object.assign(row, updatePayload));
+        calls.updates.push({ table, rows: rows.map(row => ({ ...row })), payload: updatePayload });
+      }
+      if (upsertPayload) calls.upserts.push({ table, payload: upsertPayload });
+      if (selectOptions?.head && selectOptions?.count === 'exact') {
+        return { data: null, count: rows.length, error: null };
+      }
+      return { data: rows.map(row => ({ ...row })), error: null };
+    };
+    return query;
+  };
+
+  const admin = { from: table => createQuery(table) };
+  const env = new Map([
+    ['URL', 'https://runtime.supabase.co'],
+    ['SUPABASE_ANON_KEY', 'anon-key'],
+    ['SUPABASE_SERVICE_ROLE_KEY', 'service-key'],
+    ['STRIPE_SECRET_KEY', ''],
+    ['STRIPE_PRICE_PRO_MONTHLY', 'price_pro_month'],
+    ['STRIPE_PRICE_PRO_YEARLY', 'price_pro_year'],
+    ['STRIPE_PRICE_BUSINESS_MONTHLY', 'price_business_month'],
+    ['STRIPE_PRICE_BUSINESS_YEARLY', 'price_business_year'],
+    ['TP3D_PRO_WORKSPACE_LIMIT', '3'],
+    ['TP3D_BUSINESS_WORKSPACE_LIMIT', '10'],
+    ['TP3D_TRIAL_WORKSPACE_LIMIT', '1'],
+    ['TP3D_DEBUG', '1'],
+  ]);
+  const sandbox = {
+    URL, Request, Response, Headers, Date, Map, Set, Promise,
+    setTimeout, clearTimeout,
+    Deno: {
+      env: { get: key => env.get(key) || '' },
+      serve(fn) { handler = fn; },
+    },
+    corsHeaders: () => ({}),
+    handleCors: () => null,
+    createClient: (_url, key) => key === 'anon-key'
+      ? { auth: { getUser: async () => ({ data: { user: { id: ownerUserId } }, error: null }) } }
+      : admin,
+    stripeClient: () => { throw new Error('Stripe must not be called by the DB-only runtime fixture'); },
+    console: {
+      log: (...args) => calls.logs.push(['log', ...args]),
+      warn: (...args) => calls.logs.push(['warn', ...args]),
+      error: (...args) => calls.logs.push(['error', ...args]),
+    },
+  };
+  vm.runInNewContext(stripTypeScriptTypes(executableSource, { mode: 'strip' }), sandbox);
+  assert.equal(typeof handler, 'function', 'billing-status production handler captured');
+
+  const request = async (organizationId) => {
+    const req = new Request(
+      `https://runtime.test/billing-status?tp3dDebug=1&organization_id=${encodeURIComponent(organizationId)}`,
+      { method: 'GET', headers: { 'x-user-jwt': 'redacted-runtime-token' } },
+    );
+    const response = await handler(req);
+    return { status: response.status, body: await response.json() };
+  };
+  return { request, calls, organizations, ownerUserId };
+}
+
+async function loadRequestedDirectBindingRuntime() {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+  const paymentStart = src.indexOf('function paymentGraceActive(');
+  const paymentEnd = src.indexOf('function statusPriority(', paymentStart);
+  const uuidStart = src.indexOf('const UUID_RE =');
+  const uuidEnd = src.indexOf('function normalizeSupabaseUrl(', uuidStart);
+  assert.ok(paymentStart >= 0 && paymentEnd > paymentStart, 'direct-binding production helper span found');
+  assert.ok(uuidStart >= 0 && uuidEnd > uuidStart, 'organization normalizer span found');
+  const executable = `${src.slice(paymentStart, paymentEnd)}\n${src.slice(uuidStart, uuidEnd)}\n` +
+    'globalThis.__resolveRequestedDirectBinding = resolveRequestedDirectBinding;';
+  const sandbox = { Date, Map, Set };
+  vm.runInNewContext(stripTypeScriptTypes(executable, { mode: 'strip' }), sandbox);
+  return sandbox.__resolveRequestedDirectBinding;
+}
+
+// ── F12: requested workspaces with their own explicit subscription must be
+// classified from that subscription before owner-wide sibling coverage.
+
+test('F12 production runtime: active direct siblings retain their own interval, period, price-derived limit, and newest-slot access', async () => {
+  const organizations = [
+    { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', owner_id: '11111111-1111-4111-8111-111111111111', created_at: '2025-01-01T00:00:00.000Z', archived_at: null },
+    { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2', owner_id: '11111111-1111-4111-8111-111111111111', created_at: '2025-02-01T00:00:00.000Z', archived_at: null },
+    { id: 'cccccccc-cccc-4ccc-8ccc-ccccccccccc3', owner_id: '11111111-1111-4111-8111-111111111111', created_at: '2025-03-01T00:00:00.000Z', archived_at: null },
+    { id: 'dddddddd-dddd-4ddd-8ddd-ddddddddddd4', owner_id: '11111111-1111-4111-8111-111111111111', created_at: '2025-04-01T00:00:00.000Z', archived_at: null },
+  ];
+  const subscriptions = [
+    {
+      organization_id: organizations[0].id, status: 'active', price_id: 'price_pro_month', interval: 'month',
+      stripe_subscription_id: 'sub_a_month', current_period_end: '2026-12-01T00:00:00.000Z',
+    },
+    {
+      organization_id: organizations[1].id, status: 'active', price_id: 'price_pro_year', interval: 'year',
+      stripe_subscription_id: 'sub_archived_sibling', current_period_end: '2027-12-01T00:00:00.000Z',
+    },
+    {
+      organization_id: organizations[3].id, status: 'active', price_id: 'price_business_year', interval: 'year',
+      stripe_subscription_id: 'sub_d_year', current_period_end: '2026-09-15T00:00:00.000Z',
+    },
+  ];
+  organizations[1].archived_at = '2026-01-01T00:00:00.000Z';
+  const runtime = await createBillingStatusDirectIdentityRuntime({ organizations, subscriptions });
+  const a = await runtime.request(organizations[0].id);
+  const d = await runtime.request(organizations[3].id);
+
+  assert.equal(a.status, 200);
+  assert.equal(a.body.entitlementStatus, 'active');
+  assert.equal(a.body.interval, 'month');
+  assert.equal(a.body.currentPeriodEnd, '2026-12-01T00:00:00.000Z');
+  assert.equal(a.body.workspaceLimit, 3, 'A uses its own Pro price limit');
+  assert.equal(d.body.entitlementStatus, 'active', 'newest direct-paid workspace is never demoted by A oldest-first slots');
+  assert.notEqual(d.body.entitlementStatus, 'workspace_limit_reached');
+  assert.equal(d.body.interval, 'year');
+  assert.equal(d.body.currentPeriodEnd, '2026-09-15T00:00:00.000Z');
+  assert.equal(d.body.workspaceLimit, 10, 'D uses its own Business price limit');
+  assert.equal(d.body.debug.ownerEntitlementOrgId, organizations[1].id,
+    'the archived sibling is the owner-wide diagnostic winner but cannot override D direct identity');
+});
+
+test('F12 production runtime: direct trial, unknown active price, and zero-amount coupon data remain direct', async () => {
+  const orgA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const orgB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2';
+  const trialEnd = '2026-11-20T00:00:00.000Z';
+  const trialRuntime = await createBillingStatusDirectIdentityRuntime({ subscriptions: [
+    { organization_id: orgA, status: 'active', price_id: 'price_pro_month', interval: 'month', stripe_subscription_id: 'sub_a', current_period_end: '2026-10-01T00:00:00.000Z' },
+    { organization_id: orgB, status: 'trialing', price_id: 'price_unrecognized', interval: 'year', stripe_subscription_id: 'sub_b_trial', current_period_end: trialEnd, trial_end: trialEnd },
+  ] });
+  const trial = await trialRuntime.request(orgB);
+  assert.equal(trial.body.entitlementStatus, 'trialing');
+  assert.equal(trial.body.interval, 'year');
+  assert.equal(trial.body.trialEndsAt, trialEnd);
+  assert.equal(trial.body.workspaceLimit, 1);
+
+  const couponRuntime = await createBillingStatusDirectIdentityRuntime({ subscriptions: [{
+    organization_id: orgA,
+    status: 'active',
+    price_id: 'price_unknown_paid',
+    interval: 'month',
+    stripe_subscription_id: 'sub_coupon_free',
+    current_period_end: '2026-08-10T00:00:00.000Z',
+    amount_paid: 0,
+    coupon: { percent_off: 100 },
+  }] });
+  const coupon = await couponRuntime.request(orgA);
+  assert.equal(coupon.body.entitlementStatus, 'active');
+  assert.equal(coupon.body.isPro, true);
+  assert.equal(coupon.body.workspaceLimit, 3, 'unknown explicitly mapped active price keeps existing paid fallback');
+});
+
+test('F12 production runtime: canceled requested workspaces keep sibling included/over-limit behavior', async () => {
+  const owner = '11111111-1111-4111-8111-111111111111';
+  const organizations = ['a', 'b', 'c', 'd'].map((suffix, index) => ({
+    id: `${suffix.repeat(8)}-${suffix.repeat(4)}-4${suffix.repeat(3)}-8${suffix.repeat(3)}-${suffix.repeat(11)}${index + 1}`,
+    owner_id: owner,
+    created_at: `2025-0${index + 1}-01T00:00:00.000Z`,
+    archived_at: null,
+  }));
+  const subscriptions = [
+    { organization_id: organizations[0].id, status: 'active', price_id: 'price_pro_month', interval: 'month', stripe_subscription_id: 'sub_owner', current_period_end: '2026-12-01T00:00:00.000Z' },
+    { organization_id: organizations[1].id, status: 'canceled', price_id: 'price_pro_month', interval: 'month', stripe_subscription_id: 'sub_b_ended', current_period_end: '2025-01-01T00:00:00.000Z' },
+    { organization_id: organizations[3].id, status: 'canceled', price_id: 'price_pro_month', interval: 'month', stripe_subscription_id: 'sub_d_ended', current_period_end: '2025-01-01T00:00:00.000Z' },
+  ];
+  const runtime = await createBillingStatusDirectIdentityRuntime({ organizations, subscriptions });
+  const included = await runtime.request(organizations[1].id);
+  const overLimit = await runtime.request(organizations[3].id);
+  assert.equal(included.body.entitlementStatus, 'included_in_plan');
+  assert.equal(included.body.workspaceIncluded, true);
+  assert.equal(overLimit.body.entitlementStatus, 'workspace_limit_reached');
+  assert.equal(overLimit.body.workspaceIncluded, false);
+});
+
+test('F12 production runtime: duplicate direct rows fail closed without exposing an arbitrary winner', async () => {
+  const orgA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const runtime = await createBillingStatusDirectIdentityRuntime({
+    subscriptions: [
+      { organization_id: orgA, status: 'active', price_id: 'price_pro_month', interval: 'month', stripe_subscription_id: 'sub_duplicate_1', current_period_end: '2026-09-01T00:00:00.000Z' },
+      { organization_id: orgA, status: 'trialing', price_id: 'price_business_year', interval: 'year', stripe_subscription_id: 'sub_duplicate_2', current_period_end: '2026-12-01T00:00:00.000Z', trial_end: '2026-12-01T00:00:00.000Z' },
+    ],
+    billingCustomers: [{
+      organization_id: orgA,
+      stripe_customer_id: 'cus_owner',
+      stripe_subscription_id: 'sub_duplicate_1',
+      status: 'active',
+      plan_name: 'pro',
+      billing_interval: 'month',
+      current_period_end: '2026-09-01T00:00:00.000Z',
+      cancel_at_period_end: false,
+      trial_ends_at: null,
+      created_at: '2025-03-01T00:00:00.000Z',
+    }],
+  });
+  const result = await runtime.request(orgA);
+  assert.equal(result.body.entitlementStatus, 'owner_subscription_required');
+  assert.equal(result.body.isActive, false);
+  assert.equal(result.body.duplicateActiveMappings, true);
+  assert.equal(result.body.interval, 'unknown');
+  assert.equal(result.body.currentPeriodEnd, null);
+});
+
+test('F12 function runtime: conflicting local and Stripe organization bindings fail direct resolution closed', async () => {
+  const resolve = await loadRequestedDirectBindingRuntime();
+  const orgA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const orgB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2';
+  const base = {
+    status: 'active', price_id: 'price_pro_month', current_period_end: '2026-12-01T00:00:00.000Z',
+    trial_end: null, created_at: null, stripe_subscription_id: 'sub_conflict', stripe_customer_id: 'cus_owner',
+    interval: 'month', source: 'subscription',
+  };
+  const resolution = resolve([
+    { ...base, organization_id: orgA },
+    { ...base, organization_id: orgB },
+  ], orgA, false, false);
+  assert.equal(resolution.ambiguous, true);
+  assert.equal(resolution.conflict, true);
+  assert.equal(resolution.subscriptionId, null);
+});
+
+test('F12 source contract: direct-first ownership guards owner overrides and preserves diagnostic includedOrgIds', async () => {
+  const src = await fs.readFile(billingStatusPath, 'utf8');
+  const ambiguousIdx = src.indexOf('if (requestedDirectBinding.ambiguous)');
+  const directIdx = src.indexOf('else if (requestedOrgIsDirect && directActive)', ambiguousIdx);
+  const ownerIdx = src.indexOf('else if (ownerEntitlementCandidate && resolvedOrgId && billingOwnerUserId)', directIdx);
+  assert.ok(ambiguousIdx >= 0 && directIdx > ambiguousIdx && ownerIdx > directIdx,
+    'ambiguous/direct requested-org classification precedes owner-wide coverage');
+  assert.match(src, /ownerEntitlementCandidate &&\s*!requestedOrgIsDirect &&/,
+    'owner interval/period fallback is disabled on the requested direct path');
+  assert.match(src, /if \(directOrgId && resolvedWorkspaceLimit > 0\) includedOrgIds\.push\(directOrgId\);/,
+    'owner-plan includedOrgIds remains a diagnostics-only owner coverage list');
+  assert.match(src, /if \(!ownerEntitlementCandidate\) includedOrgIds = resolvedOrgId \? \[resolvedOrgId\] : \[\];/,
+    'direct-only diagnostics fall back to the requested org only when no owner coverage candidate exists');
+});
+
+test('F12 production runtime: archived requested workspace guard remains billing-unavailable', async () => {
+  const orgA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const runtime = await createBillingStatusDirectIdentityRuntime({
+    organizations: [{ id: orgA, owner_id: '11111111-1111-4111-8111-111111111111', created_at: '2025-01-01T00:00:00.000Z', archived_at: '2026-01-01T00:00:00.000Z' }],
+    subscriptions: [{ organization_id: orgA, status: 'active', price_id: 'price_pro_month', interval: 'month', stripe_subscription_id: 'sub_archived', current_period_end: '2026-12-01T00:00:00.000Z' }],
+  });
+  const result = await runtime.request(orgA);
+  assert.equal(result.body.archived, true);
+  assert.equal(result.body.entitlementStatus, 'billing_unavailable');
+  assert.equal(result.body.isActive, false);
+});
+
 // ── BILLING-UNMAPPED: billing-status must never guess an organization for a
 // Stripe subscription that lacks an explicit organization binding. A
 // metadata-less subscription previously mapped to the oldest owned workspace,
@@ -22445,8 +22772,10 @@ test('BILLING-UNMAPPED-4 legacy user-scoped fallback requires a single-org calle
 test('BILLING-UNMAPPED-5 duplicate active mappings are surfaced, not silently resolved', async () => {
   const src = await fs.readFile(billingStatusPath, 'utf8');
 
-  assert.match(src, /duplicateActiveMappings: duplicateActiveCount > 1,/,
-    'response exposes an unambiguous repair signal when multiple active mappings exist');
+  assert.match(src, /const duplicateActiveMappings = duplicateActiveCount > 1 \|\| requestedDirectBinding\.ambiguous;/,
+    'response exposes a repair signal for duplicate rows and requested-org binding ambiguity');
+  assert.match(src, /duplicateActiveMappings,/,
+    'computed repair signal is returned without selecting an ambiguous direct mapping');
   assert.match(src, /duplicate active subscriptions detected/,
     'server-side duplicate warning retained');
 });
@@ -22456,8 +22785,10 @@ test('BILLING-UNMAPPED-6 interval and currentPeriodEnd resolve from the directly
 
   assert.match(src, /if \(storedInterval === "month" \|\| storedInterval === "year"\) \{\s*interval = storedInterval;/,
     'interval comes from the requested organization\'s own subscription first');
+  assert.match(src, /ownerEntitlementCandidate &&\s*!requestedOrgIsDirect &&/,
+    'owner-level metadata block is skipped completely for a direct requested workspace');
   assert.match(src, /if \(interval === "unknown" && ownerLevelInterval\) \{\s*interval = ownerLevelInterval;/,
-    'owner-level interval applies only when the direct subscription leaves it unknown');
+    'owner-level interval fallback remains available for sibling coverage only');
   assert.match(src, /if \(!currentPeriodEnd && ownerEntitlementCandidate\.current_period_end\)/,
     'owner-level currentPeriodEnd applies only when the direct subscription leaves it empty');
 });

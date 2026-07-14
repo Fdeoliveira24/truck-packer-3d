@@ -20370,6 +20370,11 @@ async function createBillingPumpRuntimeHarness() {
       run: reason => maybeScheduleBillingRefresh(reason),
       reset: () => resetBillingPumpForUserSwitch(),
       setOrg: orgId => { globalThis.__activeOrgId = orgId; },
+      setIdentityWithoutRequirement: (userId, orgId) => {
+        globalThis.__userId = userId;
+        globalThis.__activeOrgId = orgId;
+      },
+      advanceEpochWithoutRequirement: () => { _billingEpoch += 1; },
       switchIdentity: (userId, orgId) => {
         globalThis.__userId = userId;
         globalThis.__activeOrgId = orgId;
@@ -20426,6 +20431,7 @@ async function createBillingPumpRuntimeHarness() {
       beginAuthoritative: token => beginBillingAuthoritativeRefreshAttempt(token),
       completeAuthoritative: token => clearBillingAuthoritativeRefreshRequirement(token),
       isAuthoritativeCurrent: token => isCurrentBillingAuthoritativeRefreshToken(token, token && token.orgId),
+      isAuthoritativeCurrentForOrg: (token, orgId) => isCurrentBillingAuthoritativeRefreshToken(token, orgId),
       advance: ms => { globalThis.__now += ms; },
       failNext: () => { globalThis.__failNext = true; },
       seedOwnedState: () => {
@@ -21051,6 +21057,146 @@ test('BUG-01-AG transferred requirement survives provisional shared state and cl
   assert.strictEqual(runtime.pump.snapshot().authoritativeRequired, null,
     'matching successful direct truth is the terminal that clears the requirement');
   assert.strictEqual(runtime.pump.snapshot().pending, false, 'successful terminal releases pending');
+});
+
+test('BUG-01-AH source contract bypasses only the per-reason cooldown for a new authoritative attempt', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const pumpStart = src.indexOf('function maybeScheduleBillingRefresh(');
+  const pumpEnd = src.indexOf('function handleOrgAccessLoss(', pumpStart);
+  const pumpFn = src.slice(pumpStart, pumpEnd);
+
+  assert.match(pumpFn,
+    /const authoritativeRefresh = getBillingAuthoritativeRefreshToken\(activeOrgId\)/,
+    'the scheduler resolves a current-user/current-org/current-epoch token before cooldown checks');
+  assert.match(pumpFn,
+    /authoritativeRefreshRequired && isBillingAuthoritativeRefreshInFlight\(authoritativeRefresh\)[\s\S]*return;/,
+    'a matching in-flight generation exits before any second request can start');
+  assert.match(pumpFn,
+    /const authoritativeRefreshMustStart = Boolean\([\s\S]*authoritativeRefreshRequired && !authoritativeRefresh\.attemptedAt/,
+    'only a new unattempted authoritative generation owns the immediate scheduler bypass');
+  assert.match(pumpFn,
+    /if \(!authoritativeRefreshMustStart && \(now - lastAt\) < BILLING_PUMP_COOLDOWN_MS\)/,
+    'ordinary and already-attempted work retains the per-reason cooldown');
+  assert.match(pumpFn,
+    /refreshBilling\(\{[\s\S]*force: shouldForce,[\s\S]*authoritativeRefresh/,
+    'the bypass reaches refreshBilling with force and the owned authoritative token');
+});
+
+test('BUG-01-AI production pump runtime lets a new authoritative generation bypass prior cooldown once', async () => {
+  const runtime = await createBillingPumpRuntimeHarness();
+  runtime.pump.seedOwnedState();
+  runtime.pump.signOut({ authenticated: true });
+  runtime.pump.authEvent('SIGNED_IN', 'final-user-a', 'org-a');
+
+  runtime.pump.run('org-context');
+  assert.strictEqual(runtime.calls.length, 1,
+    'final A starts one direct request despite prior org-context cooldown history');
+  assert.strictEqual(runtime.calls[0].force, true, 'the cooldown bypass is forced');
+  assert.strictEqual(runtime.calls[0].authoritativeRefresh.userId, 'final-user-a',
+    'the request belongs to the final authenticated user');
+  assert.strictEqual(runtime.calls[0].authoritativeRefresh.orgId, 'org-a',
+    'the request belongs to the final active organization');
+  assert.strictEqual(runtime.pump.snapshot().authoritativeRequired, null,
+    'matching direct success clears the final requirement');
+  assert.strictEqual(runtime.pump.snapshot().pending, false,
+    'matching direct success releases fail-closed pending state');
+  assert.ok(runtime.logs.some(args => args[0] === '[BillingPump] bypass:authoritative-cooldown'),
+    'the production scheduler records the narrow authoritative bypass');
+
+  runtime.pump.advance(100);
+  runtime.pump.run('org-context');
+  assert.strictEqual(runtime.calls.length, 1,
+    'after success, ordinary cooldown behavior prevents a duplicate loop');
+
+  const ordinary = await createBillingPumpRuntimeHarness();
+  ordinary.pump.seedOwnedState();
+  ordinary.pump.run('org-context');
+  assert.strictEqual(ordinary.calls.length, 0,
+    'without an authoritative requirement the same five-second cooldown is unchanged');
+});
+
+test('BUG-01-AJ stale ownership and matching in-flight work cannot use the cooldown bypass', async () => {
+  const staleUser = await createBillingPumpRuntimeHarness();
+  staleUser.pump.seedOwnedState();
+  staleUser.pump.signOut({ authenticated: true });
+  staleUser.pump.authEvent('SIGNED_IN', 'user-b', 'org-b');
+  staleUser.pump.setIdentityWithoutRequirement('user-a', 'org-a');
+  staleUser.pump.run('org-context');
+  assert.strictEqual(staleUser.calls.length, 0, 'a stale-user requirement cannot bypass cooldown');
+
+  const staleEpoch = await createBillingPumpRuntimeHarness();
+  staleEpoch.pump.seedOwnedState();
+  staleEpoch.pump.signOut({ authenticated: true });
+  staleEpoch.pump.authEvent('SIGNED_IN', 'user-b', 'org-b');
+  staleEpoch.pump.advanceEpochWithoutRequirement();
+  staleEpoch.pump.run('org-context');
+  assert.strictEqual(staleEpoch.calls.length, 0, 'a stale-epoch requirement cannot bypass cooldown');
+
+  const staleOrg = await createBillingPumpRuntimeHarness();
+  staleOrg.pump.signOut({ authenticated: true });
+  staleOrg.pump.authEvent('SIGNED_IN', 'user-b', 'org-b');
+  const tokenB = staleOrg.pump.getAuthoritativeToken();
+  staleOrg.pump.setOrg('org-a');
+  assert.strictEqual(staleOrg.pump.isAuthoritativeCurrentForOrg(tokenB, 'org-a'), false,
+    'a token captured for the previous organization is no longer current');
+
+  const inFlight = await createBillingPumpRuntimeHarness();
+  inFlight.pump.seedOwnedState();
+  inFlight.pump.signOut({ authenticated: true });
+  inFlight.pump.authEvent('SIGNED_IN', 'user-b', 'org-b');
+  const ownedToken = inFlight.pump.getAuthoritativeToken();
+  assert.strictEqual(inFlight.pump.beginAuthoritative(ownedToken), true,
+    'the matching generation begins one authoritative attempt');
+  inFlight.pump.run('org-context');
+  assert.strictEqual(inFlight.calls.length, 0,
+    'a matching authoritative request already in flight cannot duplicate');
+});
+
+test('BUG-01-AK rapid alternating identities bypass inherited cooldown without a request loop', async () => {
+  const rapid = await createBillingPumpRuntimeHarness();
+  rapid.pump.seedOwnedState();
+  for (const [userId, orgId] of [
+    ['user-a', 'org-a'],
+    ['user-b', 'org-b'],
+    ['user-a', 'org-a'],
+    ['user-b', 'org-b'],
+    ['user-a', 'org-a'],
+  ]) {
+    rapid.pump.signOut({ authenticated: true });
+    rapid.pump.authEvent('SIGNED_IN', userId, orgId);
+    rapid.pump.run('org-context');
+  }
+
+  assert.deepStrictEqual(rapid.calls.map(call => call.orgId),
+    ['org-a', 'org-b', 'org-a', 'org-b', 'org-a'],
+    'every confirmed generation gets one owned request and the final identity wins');
+  assert.strictEqual(rapid.calls.filter(call => call.orgId === 'org-a').length, 3,
+    'the final A generation is not suppressed by prior A/B cooldown history');
+  assert.strictEqual(rapid.pump.snapshot().authoritativeRequired, null,
+    'the final matching direct result clears its requirement');
+  assert.strictEqual(rapid.pump.snapshot().pending, false, 'five switches do not leave pending stuck');
+  rapid.pump.advance(100);
+  rapid.pump.run('org-context');
+  assert.strictEqual(rapid.calls.length, 5, 'post-success callbacks do not create a request loop');
+
+  const shared = await createBillingPumpRuntimeHarness();
+  shared.pump.seedOwnedState();
+  shared.pump.signOut({ authenticated: true });
+  shared.pump.authEvent('SIGNED_IN', 'user-b', 'org-b');
+  shared.pump.setShared({
+    ok: true,
+    loading: false,
+    pending: false,
+    error: null,
+    orgId: 'org-b',
+    plan: 'Pro',
+    entitlementStatus: 'active',
+    canManageBilling: null,
+    lastFetchedAt: 99990,
+  }, 99990);
+  shared.pump.run('org-context');
+  assert.strictEqual(shared.calls.length, 1,
+    'shared-fresh state cannot suppress the authoritative cooldown bypass');
 });
 
 test('BUG-01-I applyUserSwitchIsolation is the single authoritative isolation contract', async () => {

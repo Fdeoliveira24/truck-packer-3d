@@ -6192,6 +6192,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
         });
         return;
       }
+      const authoritativeRefreshMustStart = Boolean(
+        authoritativeRefreshRequired && !authoritativeRefresh.attemptedAt
+      );
       let billingOrgMismatch = Boolean(snapOrgId && snapOrgId !== activeOrgId);
       const billingOrgMismatchAtStart = billingOrgMismatch;
       if (billingOrgMismatch) {
@@ -6205,7 +6208,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const reasonIsForce = _BILLING_PUMP_FORCE_REASONS.has(reason) ||
         billingOrgMismatchAtStart ||
         billingOrgMismatch ||
-        Boolean(authoritativeRefreshRequired && !authoritativeRefresh.attemptedAt);
+        authoritativeRefreshMustStart;
 
       // ── Hard cooldown: absolute minimum time between any pump runs ──
       if (!reasonIsForce && _billingPumpLastRunAtMs && (now - _billingPumpLastRunAtMs) < BILLING_PUMP_HARD_COOLDOWN_MS) {
@@ -6272,9 +6275,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
       // ── Per-reason cooldown (selected reasons only) ──
       if (_BILLING_PUMP_COOLDOWN_REASONS.has(reason)) {
         const lastAt = _billingPumpLastByReason.get(reason) || 0;
-        if ((now - lastAt) < BILLING_PUMP_COOLDOWN_MS) {
+        if (!authoritativeRefreshMustStart && (now - lastAt) < BILLING_PUMP_COOLDOWN_MS) {
           billingDebugLog('[BillingPump] skip:cooldown', { reason, ageMs: now - lastAt });
           return;
+        }
+        if (authoritativeRefreshMustStart && (now - lastAt) < BILLING_PUMP_COOLDOWN_MS) {
+          billingDebugLog('[BillingPump] bypass:authoritative-cooldown', {
+            reason,
+            orgId: activeOrgId,
+            generation: authoritativeRefresh.generation,
+            ageMs: now - lastAt,
+          });
         }
       }
       _billingPumpLastByReason.set(reason, now);

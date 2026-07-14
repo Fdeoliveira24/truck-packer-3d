@@ -73,11 +73,20 @@ function evaluateWorkspaceTransferBillingState(
   if (!billingCustomer) return { ok: true };
 
   const billingStatus = normalizeBillingStatus(billingCustomer.status);
+  const billingCustomerId = normalizeStripeSubscriptionId(
+    billingCustomer.stripe_customer_id,
+  );
   const billingSubscriptionId = normalizeStripeSubscriptionId(
     billingCustomer.stripe_subscription_id,
   );
 
   if (!billingSubscriptionId) {
+    // Repeat-owner workspaces are intentionally seeded with an empty
+    // billing_customers placeholder. With no Stripe customer, subscription, or
+    // non-canceled subscription projection, this is proven setup data rather
+    // than an unresolved money object.
+    if (!billingStatus && !billingCustomerId) return { ok: true };
+
     // No-card/internal trials are not Stripe money objects. Other live or
     // unsupported billing statuses remain blocking even without a usable ID.
     if (SAFE_NO_SUBSCRIPTION_BILLING_STATUSES.has(billingStatus)) return { ok: true };
@@ -113,7 +122,7 @@ async function resolveWorkspaceTransferBillingGuard(
 ): Promise<TransferBillingGuardResult> {
   const billingCustomersRes = await sb
     .from("billing_customers")
-    .select("status, stripe_subscription_id")
+    .select("status, stripe_customer_id, stripe_subscription_id")
     .eq("organization_id", organizationId);
   if (billingCustomersRes.error) {
     console.error("org-transfer-ownership billing_customers lookup failed", billingCustomersRes.error);

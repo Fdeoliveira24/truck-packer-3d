@@ -15612,9 +15612,9 @@ test('billing safety transfer predicate production-helper runtime blocks live an
   );
   assert.equal(conflictingCustomers.ok, false, 'ambiguous organization billing rows must fail closed');
   assert.equal(
-    evaluate([{ status: '', stripe_subscription_id: null }], []).ok,
+    evaluate([{ status: '', stripe_customer_id: 'cus_unresolved', stripe_subscription_id: null }], []).ok,
     false,
-    'an existing billing row with missing status must fail closed rather than act like no row',
+    'a status-less row with Stripe identity must fail closed',
   );
 });
 
@@ -15631,6 +15631,11 @@ test('billing safety transfer predicate production-helper runtime allows only pr
   const evaluate = sandbox.__evaluateWorkspaceTransferBillingState;
 
   assert.equal(evaluate([], []).ok, true, 'no organization billing rows must remain transferable');
+  assert.equal(
+    evaluate([{ status: null, stripe_customer_id: null, stripe_subscription_id: null }], []).ok,
+    true,
+    'the source-defined empty repeat-workspace placeholder must remain transferable',
+  );
   assert.equal(
     evaluate([{ status: 'trialing', stripe_subscription_id: null }], []).ok,
     true,
@@ -15663,6 +15668,8 @@ test('billing safety transfer Edge flow source-contract is organization-scoped f
   assert.ok(guardCalls[1].index < rpcCall, 'final billing check must immediately precede transfer RPC');
   assert.match(src, /\.from\("billing_customers"\)[\s\S]*\.eq\("organization_id", organizationId\)/,
     'billing customer lookup must be requested-organization scoped');
+  assert.match(src, /\.select\("status, stripe_customer_id, stripe_subscription_id"\)/,
+    'placeholder resolution must verify that no Stripe customer or subscription identity exists');
   assert.match(src, /\.from\("subscriptions"\)[\s\S]*\.eq\("organization_id", organizationId\)/,
     'subscription lookup must be requested-organization scoped');
   assert.doesNotMatch(src, /\.from\("stripe_customers"\)|included_in_plan|workspace_limit_reached/,

@@ -15637,6 +15637,11 @@ test('billing safety transfer predicate production-helper runtime allows only pr
     'an internal no-card trial without a Stripe subscription object must remain transferable',
   );
   assert.equal(
+    evaluate([{ status: 'trial_expired', stripe_subscription_id: null }], []).ok,
+    true,
+    'an ended internal trial without a Stripe subscription object must remain transferable',
+  );
+  assert.equal(
     evaluate(
       [{ status: 'canceled', stripe_subscription_id: 'sub_ended' }],
       [{ status: 'canceled', stripe_subscription_id: 'sub_ended' }],

@@ -13,6 +13,7 @@ const BLOCKING_TRANSFER_BILLING_STATUSES = new Set([
 ]);
 const SAFE_NO_SUBSCRIPTION_BILLING_STATUSES = new Set([
   "trialing",
+  "trial_expired",
   "canceled",
 ]);
 

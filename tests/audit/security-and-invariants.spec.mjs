@@ -20390,8 +20390,33 @@ async function createBillingPumpRuntimeHarness() {
           globalThis.__userId = userId;
           globalThis.__activeOrgId = orgId;
         }
-        if (event !== 'SIGNED_IN') return false;
-        return transferBillingAuthoritativeRefreshForSignIn(userId);
+        return transferPendingPostSignoutBillingRequirementForAuthenticatedUser({
+          userId,
+          source: 'auth-listener',
+          authEvent: event,
+        });
+      },
+      renderAuthenticated: (event, userId = '', orgId = '') => {
+        if (userId) {
+          globalThis.__userId = userId;
+          globalThis.__activeOrgId = orgId;
+        }
+        return transferPendingPostSignoutBillingRequirementForAuthenticatedUser({
+          userId,
+          source: 'render-auth-state',
+          authEvent: event,
+        });
+      },
+      rehydrateAuthenticated: (reason, userId = '', orgId = '') => {
+        if (userId) {
+          globalThis.__userId = userId;
+          globalThis.__activeOrgId = orgId;
+        }
+        return transferPendingPostSignoutBillingRequirementForAuthenticatedUser({
+          userId,
+          source: 'rehydrate-auth-state',
+          authEvent: reason,
+        });
       },
       setShared: (shared, freshAt = globalThis.__now) => {
         globalThis.__shared = shared;
@@ -20603,12 +20628,12 @@ test('BUG-01-U source contract owns one post-switch authoritative billing resolu
   const clearOrgStart = src.indexOf('function clearOrgContext(');
   const clearOrgEnd = src.indexOf('let orgScopedRenderTimer', clearOrgStart);
   assert.match(src.slice(clearOrgStart, clearOrgEnd),
-    /if \(confirmedNoOrg\) \{[\s\S]*clearBillingAuthoritativeRefreshRequirement\(\)/,
+    /if \(confirmedNoOrg\) \{[\s\S]*clearBillingAuthoritativeRefreshRequirement\(null, 'confirmed-no-workspace'\)/,
     'confirmed no-workspace is an authoritative terminal clear');
   const signedOutStart = src.indexOf('function _executeSignedOutCleanup(');
   const signedOutEnd = src.indexOf('function installAuthListener(', signedOutStart);
   assert.match(src.slice(signedOutStart, signedOutEnd),
-    /clearBillingState\(\)[\s\S]*clearBillingAuthoritativeRefreshRequirement\(\)/,
+    /clearBillingState\(\)[\s\S]*clearBillingAuthoritativeRefreshRequirement\(null, 'signed-out-cleanup'\)/,
     'sign-out is an authoritative terminal clear');
 
   const proStart = src.indexOf('function getProRuleSet(');
@@ -20751,7 +20776,7 @@ test('BUG-01-Z production pump runtime keeps authoritative failure fail-closed w
   assert.strictEqual(calls.length, 2, 'successful recovery does not start a direct-fetch loop');
 });
 
-test('BUG-01-AA source contract hands explicit sign-out to the next authenticated session only', async () => {
+test('BUG-01-AA source contract transfers explicit sign-out at every confirmed authenticated boundary', async () => {
   const src = await fs.readFile(appPath, 'utf8');
   const stateStart = src.indexOf('let _billingAuthoritativeRefreshGeneration = 0;');
   const stateEnd = src.indexOf('function normalizeBillingEntitlementStatus(', stateStart);
@@ -20761,7 +20786,9 @@ test('BUG-01-AA source contract hands explicit sign-out to the next authenticate
   assert.strictEqual(markerDeclaration.trim(), 'let _billingRequireAuthoritativeOnNextSignIn = false;',
     'next-session marker is a plain in-memory boolean');
 
-  const transferStart = stateBlock.indexOf('function transferBillingAuthoritativeRefreshForSignIn(');
+  const transferStart = stateBlock.indexOf(
+    'function transferPendingPostSignoutBillingRequirementForAuthenticatedUser('
+  );
   const transferEnd = stateBlock.indexOf('function clearBillingAuthoritativeRefreshRequirement(', transferStart);
   const transferFn = stateBlock.slice(transferStart, transferEnd);
   assert.doesNotMatch(transferFn, /localStorage|sessionStorage|entitlement|Stripe/,
@@ -20770,7 +20797,7 @@ test('BUG-01-AA source contract hands explicit sign-out to the next authenticate
   const requireIdx = transferFn.indexOf('requireBillingAuthoritativeRefreshForUserSwitch(normalizedUserId)');
   const consumeIdx = transferFn.indexOf('_billingRequireAuthoritativeOnNextSignIn = false');
   assert.ok(pendingIdx >= 0 && requireIdx > pendingIdx && consumeIdx > requireIdx,
-    'valid sign-in binds the current user/epoch requirement before consuming the marker');
+    'confirmed auth binds the current user/epoch requirement before consuming the marker');
 
   const cleanupStart = src.indexOf('function _executeSignedOutCleanup(');
   const cleanupEnd = src.indexOf('const PROFILE_CHECK_TTL_MS', cleanupStart);
@@ -20778,7 +20805,7 @@ test('BUG-01-AA source contract hands explicit sign-out to the next authenticate
   assert.match(cleanupFn, /const hadAuthenticatedSession = Boolean\(/,
     'cleanup records whether real authenticated authority is being cleared');
   assert.match(cleanupFn,
-    /clearBillingState\(\)[\s\S]*clearBillingAuthoritativeRefreshRequirement\(\)[\s\S]*if \(userInitiatedSignOut && hadAuthenticatedSession\) \{[\s\S]*markBillingAuthoritativeRefreshForNextSignIn\(\)/,
+    /clearBillingState\(\)[\s\S]*clearBillingAuthoritativeRefreshRequirement\(null, 'signed-out-cleanup'\)[\s\S]*if \(userInitiatedSignOut && hadAuthenticatedSession\) \{[\s\S]*markBillingAuthoritativeRefreshForNextSignIn\(\)/,
     'explicit authenticated sign-out clears current billing authority before setting the non-sensitive marker');
   assert.match(cleanupFn, /clearOrgContext\([\s\S]*clearBillingState\(\)/,
     'organization authority is cleared before the marker can be transferred');
@@ -20787,14 +20814,28 @@ test('BUG-01-AA source contract hands explicit sign-out to the next authenticate
   const listenerEnd = src.indexOf('if (!authUiBound)', listenerStart);
   const listenerFn = src.slice(listenerStart, listenerEnd);
   assert.match(listenerFn,
-    /if \(isSignedInEvent && newUserId\) \{[\s\S]*transferBillingAuthoritativeRefreshForSignIn\(newUserId\)/,
-    'only a valid SIGNED_IN event transfers the marker');
-  assert.doesNotMatch(listenerFn,
-    /isTokenRefreshEvent[^\n]*transferBillingAuthoritativeRefreshForSignIn|isInitialSessionEvent[^\n]*transferBillingAuthoritativeRefreshForSignIn|isUserUpdatedEvent[^\n]*transferBillingAuthoritativeRefreshForSignIn/,
-    'token refresh, initial session, and user update do not create a post-sign-out session requirement');
+    /if \(newUserId && session && session\.access_token\) \{[\s\S]*transferPendingPostSignoutBillingRequirementForAuthenticatedUser\(\{[\s\S]*source: 'auth-listener'/,
+    'any listener event with a valid authenticated session may transfer the marker');
+
+  const renderStart = src.indexOf('async function renderAuthState(');
+  const renderEnd = src.indexOf('function _executeSignedOutCleanup(', renderStart);
+  assert.match(src.slice(renderStart, renderEnd),
+    /transferPendingPostSignoutBillingRequirementForAuthenticatedUser\(\{[\s\S]*source: 'render-auth-state'/,
+    'renderAuthState shares the confirmed-auth transfer helper');
+  const rehydrateStart = src.indexOf('async function rehydrateAuthState(');
+  const rehydrateEnd = src.indexOf('function clearSidebarBillingDomForUserSwitch(', rehydrateStart);
+  assert.match(src.slice(rehydrateStart, rehydrateEnd),
+    /transferPendingPostSignoutBillingRequirementForAuthenticatedUser\(\{[\s\S]*source: 'rehydrate-auth-state'/,
+    'rehydrateAuthState shares the confirmed-auth transfer helper');
+
+  const helperOccurrences = src.split(
+    'transferPendingPostSignoutBillingRequirementForAuthenticatedUser('
+  ).length - 1;
+  assert.strictEqual(helperOccurrences, 4,
+    'one helper definition plus exactly three confirmed-auth call sites own transfer');
 });
 
-test('BUG-01-AB production runtime preserves the marker until valid SIGNED_IN and completes once', async () => {
+test('BUG-01-AB production runtime transfers on any first confirmed authenticated listener event', async () => {
   const { pump, calls } = await createBillingPumpRuntimeHarness();
   pump.signOut({ authenticated: true });
   assert.deepStrictEqual(JSON.parse(JSON.stringify(pump.snapshot().authoritativeRequired)), null,
@@ -20803,14 +20844,10 @@ test('BUG-01-AB production runtime preserves the marker until valid SIGNED_IN an
   assert.strictEqual(pump.snapshot().pending, false, 'signed-out terminal releases pending');
 
   assert.strictEqual(pump.authEvent('SIGNED_IN', '', ''), false, 'failed sign-in cannot consume the marker');
-  assert.strictEqual(pump.authEvent('TOKEN_REFRESHED', 'user-a', 'org-a'), false,
-    'token refresh does not consume the marker');
-  assert.strictEqual(pump.authEvent('INITIAL_SESSION', 'user-a', 'org-a'), false,
-    'initial session does not consume the marker');
-  assert.strictEqual(pump.snapshot().requireOnNextSignIn, true, 'marker survives non-terminal auth events');
+  assert.strictEqual(pump.snapshot().requireOnNextSignIn, true, 'failed sign-in leaves the marker available');
 
-  assert.strictEqual(pump.authEvent('SIGNED_IN', 'user-b', 'org-b'), true,
-    'next valid sign-in transfers the marker');
+  assert.strictEqual(pump.authEvent('TOKEN_REFRESHED', 'user-b', 'org-b'), true,
+    'first valid authenticated observation transfers regardless of literal event name');
   assert.strictEqual(pump.snapshot().requireOnNextSignIn, false, 'successful transfer consumes the marker');
   assert.strictEqual(pump.snapshot().authoritativeRequired.userId, 'user-b',
     'requirement belongs to the new authenticated user');
@@ -20823,6 +20860,18 @@ test('BUG-01-AB production runtime preserves the marker until valid SIGNED_IN an
   pump.advance(100);
   pump.run('org-context');
   assert.strictEqual(calls.length, 1, 'successful completion does not create a request loop');
+
+  for (const event of ['INITIAL_SESSION', 'TOKEN_REFRESHED', 'USER_UPDATED']) {
+    const runtime = await createBillingPumpRuntimeHarness();
+    runtime.pump.signOut({ authenticated: true });
+    assert.strictEqual(runtime.pump.authEvent(event, 'user-b', 'org-b'), true,
+      `${event} transfers when it is the first confirmed authenticated observation`);
+    const generation = runtime.pump.snapshot().authoritativeRequired.generation;
+    assert.strictEqual(runtime.pump.authEvent('SIGNED_IN', 'user-b', 'org-b'), false,
+      `${event} consumes the marker exactly once`);
+    assert.strictEqual(runtime.pump.snapshot().authoritativeRequired.generation, generation,
+      `${event} does not create a duplicate authoritative generation`);
+  }
 });
 
 test('BUG-01-AC production runtime forces all sign-out/sign-in directions despite fresh state', async () => {
@@ -20934,6 +20983,74 @@ test('BUG-01-AE production runtime rejects intermediate post-sign-out owners and
   assert.strictEqual(recovery.calls.length, 2, 'explicit recovery performs one later retry');
   assert.strictEqual(recovery.pump.snapshot().authoritativeRequired, null, 'successful retry clears the requirement');
   assert.strictEqual(recovery.pump.snapshot().pending, false, 'successful retry releases pending');
+});
+
+test('BUG-01-AF production runtime makes listener, render, and rehydrate transfer idempotent', async () => {
+  for (const firstPath of ['listener', 'render', 'rehydrate']) {
+    const runtime = await createBillingPumpRuntimeHarness();
+    runtime.pump.signOut({ authenticated: true });
+    const transferred = firstPath === 'listener'
+      ? runtime.pump.authEvent('INITIAL_SESSION', 'user-b', 'org-b')
+      : firstPath === 'render'
+        ? runtime.pump.renderAuthenticated('INITIAL_SESSION', 'user-b', 'org-b')
+        : runtime.pump.rehydrateAuthenticated('INITIAL_SESSION', 'user-b', 'org-b');
+    assert.strictEqual(transferred, true, `${firstPath} may own the first confirmed-auth transfer`);
+    const generation = runtime.pump.snapshot().authoritativeRequired.generation;
+
+    assert.strictEqual(runtime.pump.authEvent('SIGNED_IN', 'user-b', 'org-b'), false,
+      'later listener observation is idempotent');
+    assert.strictEqual(runtime.pump.renderAuthenticated('SIGNED_IN', 'user-b', 'org-b'), false,
+      'later render observation is idempotent');
+    assert.strictEqual(runtime.pump.rehydrateAuthenticated('SIGNED_IN', 'user-b', 'org-b'), false,
+      'later rehydrate observation is idempotent');
+    assert.strictEqual(runtime.pump.snapshot().authoritativeRequired.generation, generation,
+      'multiple confirmed-auth paths retain the single transferred generation');
+
+    runtime.pump.run('render-auth-state');
+    assert.strictEqual(runtime.calls.length, 1, 'all paths converge on one direct request');
+    runtime.pump.advance(100);
+    runtime.pump.run('org-context');
+    assert.strictEqual(runtime.calls.length, 1, 'post-success observations do not create a request loop');
+  }
+});
+
+test('BUG-01-AG transferred requirement survives provisional shared state and clears only at a terminal', async () => {
+  const runtime = await createBillingPumpRuntimeHarness();
+  Object.assign(runtime.billingState, {
+    ok: true,
+    loading: false,
+    pending: false,
+    error: null,
+    orgId: 'org-a',
+    lastFetchedAt: 99990,
+  });
+  runtime.pump.signOut({ authenticated: true });
+  runtime.pump.renderAuthenticated('SIGNED_IN', 'user-b', 'org-b');
+  const generation = runtime.pump.snapshot().authoritativeRequired.generation;
+  runtime.pump.setShared({
+    ok: true,
+    loading: false,
+    pending: false,
+    error: null,
+    orgId: 'org-b',
+    plan: 'Pro',
+    entitlementStatus: 'active',
+    canManageBilling: null,
+    lastFetchedAt: 99990,
+  }, 99990);
+  runtime.pump.failNext();
+  runtime.pump.run('org-context');
+  assert.strictEqual(runtime.pump.snapshot().sharedApplyCount, 1,
+    'shared organization fields may still apply provisionally');
+  assert.strictEqual(runtime.pump.snapshot().authoritativeRequired.generation, generation,
+    'shared state plus a failed direct attempt cannot clear the transferred requirement');
+  assert.strictEqual(runtime.pump.snapshot().pending, true, 'failed authoritative truth remains fail-closed');
+
+  runtime.pump.run('manual');
+  assert.strictEqual(runtime.calls.length, 2, 'explicit recovery performs one later direct attempt');
+  assert.strictEqual(runtime.pump.snapshot().authoritativeRequired, null,
+    'matching successful direct truth is the terminal that clears the requirement');
+  assert.strictEqual(runtime.pump.snapshot().pending, false, 'successful terminal releases pending');
 });
 
 test('BUG-01-I applyUserSwitchIsolation is the single authoritative isolation contract', async () => {

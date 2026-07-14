@@ -173,6 +173,33 @@ let _orgAccessLossHandler = null;
 const _orgAccessLossLastAt = new Map();
 const ORG_ACCESS_LOSS_COOLDOWN_MS = 30000;
 
+function abbreviateBillingLifecycleId(value) {
+  const normalized = value ? String(value) : '';
+  return normalized ? normalized.slice(-6) : null;
+}
+
+function getBillingAuthoritativeLifecycleDebugState() {
+  const requirement = _billingAuthoritativeRefreshRequired;
+  return {
+    nextSignInMarker: _billingRequireAuthoritativeOnNextSignIn,
+    generation: requirement ? requirement.generation : null,
+    requirementUserIdTail: requirement ? abbreviateBillingLifecycleId(requirement.userId) : null,
+    requirementEpoch: requirement ? requirement.epoch : null,
+    billingEpoch: _billingEpoch,
+    inFlightGeneration: _billingAuthoritativeRefreshInFlight
+      ? _billingAuthoritativeRefreshInFlight.generation
+      : null,
+  };
+}
+
+function billingAuthLifecycleDebugLog(step, details = {}) {
+  const payload = {
+    ...details,
+    ...getBillingAuthoritativeLifecycleDebugState(),
+  };
+  billingDebugLog(`billing:auth-lifecycle:${step}`, JSON.stringify(payload));
+}
+
 function getCurrentBillingAuthUserId() {
   const truth = typeof _authTruthSnapshotAccessor === 'function' ? _authTruthSnapshotAccessor() : null;
   return truth && truth.userId ? String(truth.userId) : '';
@@ -187,30 +214,66 @@ function requireBillingAuthoritativeRefreshForUserSwitch(userId = null) {
     attemptedAt: 0,
   };
   _billingAuthoritativeRefreshInFlight = null;
+  billingAuthLifecycleDebugLog('requirement-created', {
+    userIdTail: abbreviateBillingLifecycleId(userId),
+  });
 }
 
 function markBillingAuthoritativeRefreshForNextSignIn() {
   _billingRequireAuthoritativeOnNextSignIn = true;
+  billingAuthLifecycleDebugLog('next-sign-in-marker-set');
 }
 
-function transferBillingAuthoritativeRefreshForSignIn(userId = null) {
+function transferPendingPostSignoutBillingRequirementForAuthenticatedUser({
+  userId = null,
+  source = 'unknown',
+  authEvent = null,
+} = {}) {
   const normalizedUserId = userId ? String(userId) : '';
-  if (!_billingRequireAuthoritativeOnNextSignIn || !normalizedUserId) return false;
+  billingAuthLifecycleDebugLog('transfer-enter', {
+    source,
+    authEvent,
+    userIdTail: abbreviateBillingLifecycleId(normalizedUserId),
+  });
+  if (!_billingRequireAuthoritativeOnNextSignIn || !normalizedUserId) {
+    billingAuthLifecycleDebugLog('transfer-skip', {
+      source,
+      authEvent,
+      userIdTail: abbreviateBillingLifecycleId(normalizedUserId),
+      reason: !_billingRequireAuthoritativeOnNextSignIn ? 'marker-false' : 'missing-user',
+    });
+    return false;
+  }
   try { window.__TP3D_USER_SWITCH_PENDING = true; } catch (_) { /* ignore */ }
   requireBillingAuthoritativeRefreshForUserSwitch(normalizedUserId);
   _billingRequireAuthoritativeOnNextSignIn = false;
+  billingAuthLifecycleDebugLog('transfer-complete', {
+    source,
+    authEvent,
+    userIdTail: abbreviateBillingLifecycleId(normalizedUserId),
+  });
   return true;
 }
 
-function clearBillingAuthoritativeRefreshRequirement(token = null) {
+function clearBillingAuthoritativeRefreshRequirement(token = null, reason = 'unspecified') {
   if (
     token &&
     (!_billingAuthoritativeRefreshRequired ||
       token.generation !== _billingAuthoritativeRefreshRequired.generation ||
       token.epoch !== _billingAuthoritativeRefreshRequired.epoch)
   ) {
+    billingAuthLifecycleDebugLog('requirement-clear-rejected', {
+      reason,
+      tokenGeneration: token && token.generation ? token.generation : null,
+      tokenEpoch: token && Number.isFinite(token.epoch) ? token.epoch : null,
+    });
     return false;
   }
+  billingAuthLifecycleDebugLog('requirement-clear', {
+    reason,
+    tokenGeneration: token && token.generation ? token.generation : null,
+    tokenEpoch: token && Number.isFinite(token.epoch) ? token.epoch : null,
+  });
   _billingAuthoritativeRefreshRequired = null;
   _billingAuthoritativeRefreshInFlight = null;
   return true;
@@ -1642,7 +1705,7 @@ async function refreshBilling({ force = false, reason = 'manual', authoritativeR
     }
 
     if (_billingState.ok && currentAuthoritativeRefresh) {
-      clearBillingAuthoritativeRefreshRequirement(currentAuthoritativeRefresh);
+      clearBillingAuthoritativeRefreshRequirement(currentAuthoritativeRefresh, 'matching-direct-success');
     } else {
       preserveUserSwitchPendingForBillingFailure(currentAuthoritativeRefresh);
     }
@@ -6070,6 +6133,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
     }
 
     function maybeScheduleBillingRefresh(reason) {
+      billingAuthLifecycleDebugLog('billing-pump-enter', {
+        reason,
+        authUserIdTail: abbreviateBillingLifecycleId(getCurrentBillingAuthUserId()),
+      });
       // ── Auth gate: never pump billing without a proven or usable session ──
       const _proven = typeof SupabaseClient.isAuthProven === 'function' && SupabaseClient.isAuthProven();
       if (!_proven) {
@@ -6549,7 +6616,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (clearLocalOrgHint || confirmedNoOrg) writeLocalOrgId(null);
       if (confirmedNoOrg) {
         orgRequiredStateReason = String(reason || '');
-        clearBillingAuthoritativeRefreshRequirement();
+        clearBillingAuthoritativeRefreshRequirement(null, 'confirmed-no-workspace');
         // BUG-01: confirmed no-workspace is a terminal state for the current
         // identity — release the user-switch promotion guard so it cannot stay
         // latched true for a user with zero active workspaces.
@@ -7248,6 +7315,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       sessionHint = null,
       skipCooldown = false,
     } = {}) {
+      billingAuthLifecycleDebugLog('rehydrate-enter', {
+        reason,
+        sessionUserIdTail: abbreviateBillingLifecycleId(
+          sessionHint && sessionHint.user ? sessionHint.user.id : null,
+        ),
+      });
       // Single-flight rehydrate to avoid overlapping session/user reads.
       if (authRehydratePromise) return authRehydratePromise;
       try {
@@ -7283,6 +7356,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
         // Clear stale auth-block state when a valid user resolves.
         if (user && user.id) {
+          billingAuthLifecycleDebugLog('rehydrate-authenticated-user', {
+            reason,
+            userIdTail: abbreviateBillingLifecycleId(user.id),
+          });
           try {
             clearAuthBlocked();
           } catch {
@@ -7296,6 +7373,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
             // renderAuthState guard, leaving User A org/billing state live.
             applyUserSwitchIsolation('rehydrate-user-switch');
           }
+          transferPendingPostSignoutBillingRequirementForAuthenticatedUser({
+            userId: user.id,
+            source: 'rehydrate-auth-state',
+            authEvent: reason || null,
+          });
         }
 
         if (forceBundle && SupabaseClient.getAccountBundleSingleFlight) {
@@ -7439,6 +7521,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const isInitialSessionEvent = event === 'INITIAL_SESSION';
       const treatAsSignedOut = isSignedOutEvent || (isInitialSessionEvent && !user);
       const authTruth = getAuthTruthSnapshot();
+      billingAuthLifecycleDebugLog('render-enter', {
+        event: event || null,
+        authStatus: authTruth && authTruth.status ? authTruth.status : null,
+        incomingUserIdTail: abbreviateBillingLifecycleId(user && user.id),
+        authUserIdTail: abbreviateBillingLifecycleId(authTruth && authTruth.userId),
+        previousUserPresent: Boolean(lastAuthUserId),
+      });
 
       if (!user && authTruth.isSignedIn && authTruth.user) {
         user = authTruth.user;
@@ -7478,6 +7567,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (_isConfirmedUserSwitch) {
           applyUserSwitchIsolation(isUserSwitch ? 'SIGNED_IN_USER_SWITCH' : 'render-auth-state-user-switch');
         }
+        transferPendingPostSignoutBillingRequirementForAuthenticatedUser({
+          userId: user.id,
+          source: 'render-auth-state',
+          authEvent: event || null,
+        });
 
         const canProceed = await checkProfileStatus();
         if (!canProceed) return;
@@ -7594,6 +7688,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
         lastAuthUserId ||
         (lastAuthEventSnapshot && lastAuthEventSnapshot.status === 'signed_in' && lastAuthEventSnapshot.userId)
       );
+      billingAuthLifecycleDebugLog('signed-out-cleanup-enter', {
+        event: event || null,
+        userInitiatedSignOut: Boolean(userInitiatedSignOut),
+        hadAuthenticatedSession,
+        previousUserIdTail: abbreviateBillingLifecycleId(lastAuthUserId),
+      });
       try { document.body.setAttribute('data-auth', 'signed_out'); } catch { /* ignore */ }
       stopVisibleAuthRevocationCheck();
       lastAuthEventSnapshot = { status: 'signed_out', userId: null, hasToken: false, session: null, ts: Date.now() };
@@ -7637,10 +7737,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
         // ignore
       }
       try { clearBillingState(); } catch (_) { /* ignore */ }
-      clearBillingAuthoritativeRefreshRequirement();
+      clearBillingAuthoritativeRefreshRequirement(null, 'signed-out-cleanup');
       if (userInitiatedSignOut && hadAuthenticatedSession) {
         markBillingAuthoritativeRefreshForNextSignIn();
       }
+      billingAuthLifecycleDebugLog('signed-out-cleanup-authority-cleared', {
+        markerSet: _billingRequireAuthoritativeOnNextSignIn,
+      });
       // BUG-01: sign-out is a terminal identity state — release the user-switch
       // promotion guard so it cannot stay latched across the next sign-in.
       try { window.__TP3D_USER_SWITCH_PENDING = false; } catch (_) { /* ignore */ }
@@ -8219,6 +8322,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const userFromSession = session && session.user ? session.user : null;
           const newUserId = userFromSession && userFromSession.id ? String(userFromSession.id) : null;
           const previousUserId = lastAuthUserId ? String(lastAuthUserId) : null;
+          billingAuthLifecycleDebugLog('auth-callback-enter', {
+            event: event || null,
+            authStatus: session && session.access_token ? 'signed_in' : 'signed_out',
+            userIdTail: abbreviateBillingLifecycleId(newUserId),
+            previousUserIdTail: abbreviateBillingLifecycleId(previousUserId),
+            previousUserPresent: Boolean(previousUserId),
+          });
 
           // P0.7 – Snapshot the *real* auth event so getCurrentAuthSnapshot() can
           // fall back to it during the brief window where getAuthState() returns
@@ -8256,9 +8366,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
           if (isUserSwitch) {
             applyUserSwitchIsolation('SIGNED_IN_USER_SWITCH');
           }
-          if (isSignedInEvent && newUserId) {
-            transferBillingAuthoritativeRefreshForSignIn(newUserId);
+          if (newUserId && session && session.access_token) {
+            transferPendingPostSignoutBillingRequirementForAuthenticatedUser({
+              userId: newUserId,
+              source: 'auth-listener',
+              authEvent: event || null,
+            });
           }
+          billingAuthLifecycleDebugLog('auth-callback-after-transfer', {
+            event: event || null,
+            userIdTail: abbreviateBillingLifecycleId(newUserId),
+          });
 
           // Rehydrate auth state for sign-in/session refresh events.
           // FIX: Force rehydration for user switches to ensure fresh data

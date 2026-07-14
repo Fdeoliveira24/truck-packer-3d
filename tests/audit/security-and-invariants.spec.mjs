@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import vm from 'node:vm';
+import { stripTypeScriptTypes } from 'node:module';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
@@ -15553,17 +15554,122 @@ test('phase 0.6D Batch C Edge Function requires authenticated POST and validates
     'transfer Edge Function must reject target equal to actor');
 });
 
-test('phase 0.6D Batch C Edge Function uses RPC and avoids direct table mutation', async () => {
+test('phase 0.6D Batch C Edge Function authorizes transfer and avoids direct table mutation', async () => {
   const src = await fs.readFile(orgTransferOwnershipPath, 'utf8');
 
   assert.match(src, /serviceClient\(\)/,
     'transfer Edge Function must use service client');
   assert.match(src, /\.rpc\("tp3d_transfer_workspace_ownership"/,
     'transfer Edge Function must call the transfer RPC');
-  assert.doesNotMatch(src, /\.from\(["']organizations["']\)|\.from\(["']organization_members["']\)/,
-    'transfer Edge Function must not query or mutate org tables directly');
+  assert.match(src, /\.from\("organizations"\)[\s\S]*\.select\("id, owner_id"\)[\s\S]*\.eq\("id", orgId\)[\s\S]*\.maybeSingle\(\)/,
+    'transfer Edge Function must authoritatively verify requested workspace ownership');
+  assert.match(src, /\.from\("organization_members"\)[\s\S]*\.eq\("organization_id", orgId\)[\s\S]*\.eq\("user_id", newOwnerId\)[\s\S]*\.maybeSingle\(\)/,
+    'transfer Edge Function must verify the target belongs to the requested workspace');
   assert.doesNotMatch(src, /\.(insert|update|upsert|delete)\(/,
     'transfer Edge Function must not directly mutate tables outside RPC');
+});
+
+test('billing safety transfer predicate production-helper runtime blocks live and unresolved organization billing', async () => {
+  const src = await fs.readFile(orgTransferOwnershipPath, 'utf8');
+  const start = src.indexOf('const BLOCKING_TRANSFER_BILLING_STATUSES');
+  const end = src.indexOf('async function resolveWorkspaceTransferBillingGuard', start);
+  assert.ok(start >= 0 && end > start, 'production billing predicate must be extractable');
+
+  const sandbox = {};
+  const predicateSource = stripTypeScriptTypes(src.slice(start, end), { mode: 'strip' });
+  vm.runInNewContext(
+    `${predicateSource}\nglobalThis.__evaluateWorkspaceTransferBillingState = evaluateWorkspaceTransferBillingState;`,
+    sandbox,
+  );
+  const evaluate = sandbox.__evaluateWorkspaceTransferBillingState;
+  assert.equal(typeof evaluate, 'function', 'production billing predicate must execute in the test sandbox');
+
+  for (const status of ['active', 'trialing', 'past_due', 'unpaid', 'incomplete', 'incomplete_expired', 'paused']) {
+    const result = evaluate([], [{ status, stripe_subscription_id: `sub_${status}` }]);
+    assert.equal(result.ok, false, `${status} subscription must block transfer`);
+    assert.equal(result.code, 'workspace_has_active_billing');
+  }
+
+  for (const status of ['', 'unexpected_status']) {
+    const result = evaluate([], [{ status, stripe_subscription_id: 'sub_unresolved' }]);
+    assert.equal(result.ok, false, 'missing or unsupported subscription status must fail closed');
+    assert.equal(result.code, 'workspace_has_active_billing');
+  }
+
+  const unresolvedCustomer = evaluate(
+    [{ status: 'canceled', stripe_subscription_id: 'sub_missing_projection' }],
+    [],
+  );
+  assert.equal(unresolvedCustomer.ok, false, 'an uncorroborated subscription ID must fail closed');
+  assert.equal(unresolvedCustomer.code, 'workspace_has_active_billing');
+
+  const conflictingCustomers = evaluate(
+    [
+      { status: 'canceled', stripe_subscription_id: null },
+      { status: 'canceled', stripe_subscription_id: null },
+    ],
+    [],
+  );
+  assert.equal(conflictingCustomers.ok, false, 'ambiguous organization billing rows must fail closed');
+  assert.equal(
+    evaluate([{ status: '', stripe_subscription_id: null }], []).ok,
+    false,
+    'an existing billing row with missing status must fail closed rather than act like no row',
+  );
+});
+
+test('billing safety transfer predicate production-helper runtime allows only proven non-money states', async () => {
+  const src = await fs.readFile(orgTransferOwnershipPath, 'utf8');
+  const start = src.indexOf('const BLOCKING_TRANSFER_BILLING_STATUSES');
+  const end = src.indexOf('async function resolveWorkspaceTransferBillingGuard', start);
+  const sandbox = {};
+  vm.runInNewContext(
+    `${stripTypeScriptTypes(src.slice(start, end), { mode: 'strip' })}\n` +
+      'globalThis.__evaluateWorkspaceTransferBillingState = evaluateWorkspaceTransferBillingState;',
+    sandbox,
+  );
+  const evaluate = sandbox.__evaluateWorkspaceTransferBillingState;
+
+  assert.equal(evaluate([], []).ok, true, 'no organization billing rows must remain transferable');
+  assert.equal(
+    evaluate([{ status: 'trialing', stripe_subscription_id: null }], []).ok,
+    true,
+    'an internal no-card trial without a Stripe subscription object must remain transferable',
+  );
+  assert.equal(
+    evaluate(
+      [{ status: 'canceled', stripe_subscription_id: 'sub_ended' }],
+      [{ status: 'canceled', stripe_subscription_id: 'sub_ended' }],
+    ).ok,
+    true,
+    'matching organization-scoped canceled projections must remain transferable',
+  );
+});
+
+test('billing safety transfer Edge flow source-contract is organization-scoped fail-closed and checks twice', async () => {
+  const src = await fs.readFile(orgTransferOwnershipPath, 'utf8');
+  const guardCalls = [...src.matchAll(/resolveWorkspaceTransferBillingGuard\(sb, orgId\)/g)];
+  const targetLookup = src.indexOf('.from("organization_members")');
+  const rpcCall = src.indexOf('.rpc("tp3d_transfer_workspace_ownership"');
+
+  assert.equal(guardCalls.length, 2, 'billing must be checked after owner authorization and again before RPC');
+  assert.ok(guardCalls[0].index < targetLookup, 'initial billing check must precede target validation');
+  assert.ok(guardCalls[1].index > targetLookup, 'final billing check must follow target validation');
+  assert.ok(guardCalls[1].index < rpcCall, 'final billing check must immediately precede transfer RPC');
+  assert.match(src, /\.from\("billing_customers"\)[\s\S]*\.eq\("organization_id", organizationId\)/,
+    'billing customer lookup must be requested-organization scoped');
+  assert.match(src, /\.from\("subscriptions"\)[\s\S]*\.eq\("organization_id", organizationId\)/,
+    'subscription lookup must be requested-organization scoped');
+  assert.doesNotMatch(src, /\.from\("stripe_customers"\)|included_in_plan|workspace_limit_reached/,
+    'guard must not use user-wide Stripe customers or sibling entitlement states');
+  assert.match(src, /workspace_has_active_billing[\s\S]*status = guard\.code === "workspace_has_active_billing" \? 409 : 503/,
+    'active billing must return the structured code with HTTP 409');
+  assert.match(src, /billing_customers lookup failed[\s\S]*code: "workspace_billing_state_unavailable"/,
+    'billing customer query failure must fail closed with a sanitized code');
+  assert.match(src, /subscriptions lookup failed[\s\S]*code: "workspace_billing_state_unavailable"/,
+    'subscription query failure must fail closed with a sanitized code');
+  assert.doesNotMatch(src, /json\(\{ error: (?:billingCustomersRes|subscriptionsRes|guard\.reason)/,
+    'database details and internal guard reasons must never enter the response');
 });
 
 test('phase 0.6D Batch C Edge Function maps transfer sentinel errors', async () => {
@@ -15599,8 +15705,18 @@ test('phase 0.6D Batch C billing service exports transferOwnership wrapper', asy
     'billing service must export transferOwnership');
   assert.match(src, /postFn\('\/org-transfer-ownership'[\s\S]*organization_id: orgId[\s\S]*new_owner_id: newOwnerId/,
     'transferOwnership must POST organization_id and new_owner_id to Edge Function');
-  assert.match(src, /resolveFnError\(res, data, 'Transfer ownership failed'\)/,
-    'transferOwnership must preserve server error messages');
+  assert.match(src, /resolveTransferOwnershipError\(res, data\)/,
+    'transferOwnership must map structured transfer errors');
+  assert.match(src, /code === 'workspace_has_active_billing'/,
+    'transferOwnership must recognize the active-billing structured error code');
+  assert.match(src, /This workspace has active billing\. Cancel the subscription in Billing before transferring ownership, or contact support to move billing to the new owner\./,
+    'active billing rejection must use the approved user-facing copy');
+  assert.match(src, /code === 'workspace_billing_state_unavailable'/,
+    'transferOwnership must recognize the unavailable-billing structured error code');
+  assert.match(src, /Billing status could not be verified\. Try again before transferring ownership\./,
+    'billing lookup uncertainty must use sanitized fail-closed copy');
+  assert.match(src, /return resolveFnError\(res, data, 'Transfer ownership failed'\)/,
+    'existing transfer errors must retain their current fallback behavior');
 });
 
 test('phase 0.6D Batch C app exposes handleOwnershipTransferred without signout or reload', async () => {
@@ -15673,7 +15789,6 @@ test('phase 0.6D Batch C transfer implementation avoids forbidden scope', async 
   const settingsTransferFlow = settingsStart >= 0 && settingsEnd > settingsStart ? settingsSrc.slice(settingsStart, settingsEnd) : '';
   const sources = [
     ['transfer migration', await fs.readFile(transferOwnershipMigrationPath, 'utf8')],
-    ['transfer edge', await fs.readFile(orgTransferOwnershipPath, 'utf8')],
     ['billing wrapper', billingWrapper],
     ['app ownership handler', appHandler],
     ['settings transfer flow', settingsTransferFlow],
@@ -15685,6 +15800,16 @@ test('phase 0.6D Batch C transfer implementation avoids forbidden scope', async 
     assert.doesNotMatch(src, /org-invite|archiveWorkspace|restoreWorkspace|purge-deleted|deletePack|deleteCase|storage\.from|router\.|location\.reload|signOut/i,
       `${label} must not touch invites, archive/restore, purge, packs/cases, storage, router, reload, or signOut`);
   }
+
+  const transferEdge = await fs.readFile(orgTransferOwnershipPath, 'utf8');
+  assert.match(transferEdge, /\.from\("billing_customers"\)/,
+    'transfer Edge guard may inspect the requested organization billing projection');
+  assert.match(transferEdge, /\.from\("subscriptions"\)/,
+    'transfer Edge guard may inspect the requested organization subscription projection');
+  assert.doesNotMatch(transferEdge, /stripe_customers|checkout|portal|webhook|billing-status|Stripe\./i,
+    'transfer Edge guard must not use user-wide Stripe identity or other billing functions');
+  assert.doesNotMatch(transferEdge, /org-invite|archiveWorkspace|restoreWorkspace|purge-deleted|deletePack|deleteCase|storage\.from|router\.|location\.reload|signOut/i,
+    'transfer Edge guard must not broaden into unrelated product behavior');
 });
 
 test('phase 0.6D Batch B archived workspace RPC exists without changing active RPC', async () => {

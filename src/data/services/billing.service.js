@@ -201,6 +201,28 @@ function resolveFnError(res, data, fallback) {
   return fallback;
 }
 
+const WORKSPACE_ACTIVE_BILLING_TRANSFER_MESSAGE =
+  'This workspace has active billing. Cancel the subscription in Billing before transferring ownership, or contact support to move billing to the new owner.';
+const WORKSPACE_BILLING_UNAVAILABLE_TRANSFER_MESSAGE =
+  'Billing status could not be verified. Try again before transferring ownership.';
+
+/**
+ * Map structured transfer guard errors without exposing server internals.
+ * @param {Response} res
+ * @param {any} data
+ * @returns {string}
+ */
+function resolveTransferOwnershipError(res, data) {
+  const code = data && typeof data.error === 'string' ? data.error.trim() : '';
+  if (code === 'workspace_has_active_billing') {
+    return WORKSPACE_ACTIVE_BILLING_TRANSFER_MESSAGE;
+  }
+  if (code === 'workspace_billing_state_unavailable') {
+    return WORKSPACE_BILLING_UNAVAILABLE_TRANSFER_MESSAGE;
+  }
+  return resolveFnError(res, data, 'Transfer ownership failed');
+}
+
 const ORG_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const BILLING_INTERVAL_VALUES = new Set(['month', 'year']);
 
@@ -749,7 +771,7 @@ export async function transferOwnership(orgId, newOwnerId) {
     });
     const data = await readJsonSafe(res);
     if (!res.ok) {
-      return { ok: false, error: resolveFnError(res, data, 'Transfer ownership failed') };
+      return { ok: false, error: resolveTransferOwnershipError(res, data) };
     }
     return {
       ok: true,

@@ -9,6 +9,8 @@
     "test": "node --test tests/audit/*.spec.mjs",
     "test:stress": "TP3D_STRESS=1 node --test --test-name-pattern \"PHASE-E1|PHASE-E2A|PHASE-E2B|AUTO-PACK-A1-PERF-1\" tests/audit/security-and-invariants.spec.mjs",
     "test:all": "TP3D_STRESS=1 node --test tests/audit/*.spec.mjs",
+    "billing:fixtures:plan": "node scripts/billing-fixtures/cli.mjs plan",
+    "billing:fixtures:verify-safety": "node scripts/billing-fixtures/cli.mjs verify-safety",
     "stress:ui": "node tests/stress.spec.js",
     "lint:js": "eslint \"src/**/*.js\" \"index.html\" --report-unused-disable-directives",
     "lint:css": "stylelint \"styles/**/*.css\"",

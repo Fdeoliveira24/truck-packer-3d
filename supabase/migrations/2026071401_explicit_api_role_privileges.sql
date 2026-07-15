@@ -49,14 +49,26 @@ grant select, insert, update
 on table public.webhook_events
 to service_role;
 
-grant usage, select
-on sequence public.billing_customers_id_seq
-to service_role;
+do $$
+begin
+  if to_regclass('public.billing_customers_id_seq') is not null then
+    execute 'grant usage, select on sequence public.billing_customers_id_seq to service_role';
+  end if;
+end
+$$;
 
-grant usage, select
-on sequence public.subscriptions_id_seq
-to service_role;
+do $$
+begin
+  if to_regclass('public.subscriptions_id_seq') is not null then
+    execute 'grant usage, select on sequence public.subscriptions_id_seq to service_role';
+  end if;
+end
+$$;
 
-grant usage, select
-on sequence public.webhook_events_id_seq
-to service_role;
+do $$
+begin
+  if to_regclass('public.webhook_events_id_seq') is not null then
+    execute 'grant usage, select on sequence public.webhook_events_id_seq to service_role';
+  end if;
+end
+$$;

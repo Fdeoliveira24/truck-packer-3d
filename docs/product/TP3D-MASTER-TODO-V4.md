@@ -1,20 +1,21 @@
 # Truck Packer 3D — Master TODO V4
-**Last updated:** 2026-07-14 — BUG-01 and BUG-07 passed their automated and signed-in browser release gates; BUG-04 remains closed as a policy misdiagnosis; BUG-05 remains closed as a stale or non-reproducible observation. Multi-workspace Stripe hardening, the paid-workspace ownership-transfer guard, generic member-role ownership invariants, and F12 direct-paid workspace identity are merged, pushed, deployed, and verified against all available safe dev fixtures. The no-write billing fixture safety foundation is merged and pushed at `3586daa`; durable fixtures do not exist yet, and Max Capacity Phase C remains blocked and not started.
+**Last updated:** 2026-07-15 — BUG-01 and BUG-07 passed their automated and signed-in browser release gates; BUG-04 remains closed as a policy misdiagnosis; BUG-05 remains closed as a stale or non-reproducible observation. Multi-workspace Stripe hardening, the paid-workspace ownership-transfer guard, generic member-role ownership invariants, and F12 direct-paid workspace identity are merged, pushed, deployed, and verified against all available safe dev fixtures. Explicit Supabase Data API grants are merged and pushed through `2837cc7`, passed a clean local 25-migration reset, and are applied to dev; local billing fixture Stage B may resume, while Max Capacity Phase C remains blocked and not started.
 
-## CURRENT STATUS SNAPSHOT — 2026-07-14
+## CURRENT STATUS SNAPSHOT — 2026-07-15
 
 | Area | Current status |
 |---|---|
 | Auth/billing release packet | BUG-01/BUG-07 through `b0d6fb21`, multi-workspace Stripe hardening through `959d306`, the paid-workspace ownership-transfer guard through `2c047a2`, generic member-role ownership invariants at `91ffb51`, and F12 direct-paid workspace identity at `26ea600`. All runnable browser/API rows and automated gates passed; unavailable fixtures are recorded below. |
 | Billing fixture safety foundation | ✅ Complete and pushed at `3586daa`. `billing:fixtures:plan` and `billing:fixtures:verify-safety` provide no-write validation, immutable in-memory manifests, masked diagnostics, and explicit refusal outside an allowlisted `dev` Supabase project / optional Stripe test key. No external fixture integration or write command exists yet. |
-| Current main before TODO evidence | `main` and `origin/main` matched at `3586daa` after the fixture safety foundation was fast-forward merged and pushed. |
+| Supabase Data API grants | ✅ Explicit minimum table grants and schema-portable conditional sequence grants are merged/pushed through `2837cc7`; clean local reset and dev application passed. Dev's UUID `billing_customers.id` / absent sequence remains supported without altering either schema. |
+| Current main before TODO evidence | `main` and `origin/main` matched at `2837cc7` after the explicit-grant migration was fast-forward merged and pushed. |
 | Browser release result | `19/25` live rows passed including Test 1; `6/25` were explicitly not run because a safe fixture or browser-control capability was unavailable. No live row failed and no console errors were observed. |
 | Stripe hardening result | Portal organization-strict resolution, checkout metadata race guarding, billing-status unmapped-candidate rejection, the paid-workspace ownership-transfer guard, the owner-role invariant, and F12 direct-paid identity are deployed to Supabase project `yduzbvijzwczjapanxbd`; available organization-scoped fixtures passed without cross-workspace money-object selection, owner drift, or unintended mutation. `billing-status` version 72 is active. |
 | Completed phase | **Max Capacity Phase B — durable per-instance profile.** Applied Max Capacity layouts persist `packedProfile: "max-capacity"` per packed instance, without a pack-wide relaxed mode. |
 | Separate future work | `fix/multi-workspace-membership-resolution`; future Stripe customer/subscription transfer architecture; durable billing fixture implementation; plan/price catalog and unknown-price diagnostics; entitlement grant sources; coupons, additional tiers, complimentary/lifetime grants; database constraints/reconciliation; missing exact Stripe sandbox fixtures. |
-| Next approved work | Local database fixture feasibility/implementation. F12 sandbox gaps remain open until durable fixtures exist. Max Capacity Phase C is blocked, has not started, and has no branch or implementation. |
+| Next approved work | Billing fixture Stage B may resume on `test/billing-local-db-fixtures`. F12 sandbox gaps remain open until durable fixtures exist. Max Capacity Phase C is blocked, has not started, and has no branch or implementation. |
 
-### Current auth/billing integration gate — 2026-07-14
+### Current auth/billing integration gate — 2026-07-15
 
 1. ✅ BUG-01 is closed: confirmed cross-user isolation clears prior org/billing authority synchronously, rejects stale work, and obtains authoritative billing for the new identity.
 2. ✅ BUG-07 is closed: hidden billing/account DOM is emptied at the source, and Settings Billing/Members cannot retain the prior user after a confirmed identity change.
@@ -31,6 +32,7 @@
 13. ✅ Generic member-role updates are restricted to `member ↔ admin`. Owner promotion/demotion and any update targeting the canonical or role-based owner return `ownership_change_requires_transfer`; the dedicated guarded transfer flow remains the sole ownership mutation path.
 14. ✅ F12 direct-paid identity is merged, pushed, and deployed: an explicitly and unambiguously mapped requested workspace is classified from its own subscription before owner-plan coverage; ambiguous direct mappings fail closed, while unpaid sibling coverage remains unchanged.
 15. ✅ The billing fixture safety foundation is merged and pushed at `3586daa`: it is deliberately no-write/no-network, refuses non-`dev`, malformed/unallowlisted/known-production Supabase projects and non-test Stripe keys, binds immutable manifests to environment/project/run identity, masks diagnostics, and leaves every F12 external sandbox gap open until later durable fixture branches.
+16. ✅ Explicit Supabase Data API grants are merged/pushed through `2837cc7` and applied to dev. The clean local `42501` root cause was missing explicit API-role table/sequence privileges; the migration now conditionally grants only approved sequences that exist, so local bigint IDs and dev's UUID `billing_customers.id` both remain unchanged. Local fixture Stage B may resume; Phase C remains blocked.
 
 ### Current completed integration evidence — 2026-07-12
 
@@ -55,17 +57,17 @@
 
 | Field | Value |
 |-------|-------|
-| Integration branch | `main`; the no-write billing fixture safety foundation is integrated and pushed at `3586daa`. |
-| Active implementation | Complete: local safety validation, no-write planning, immutable fixture manifests, masked output, refusal tests, and operator documentation. No database/Stripe client or write-capable command exists. |
-| Current allowed dirty file during closeout | This TODO only. The eight foundation files were already committed, validated, fast-forward merged, and pushed. |
+| Integration branch | `main`; explicit Supabase Data API grants are integrated and pushed through `2837cc7`. |
+| Active implementation | Complete: explicit minimum API-role table grants plus conditional `to_regclass()`/dynamic sequence grants; clean local reset and dev verification passed. No fixture, pricing, Stripe, or Phase C behavior changed. |
+| Current allowed dirty file during closeout | This TODO only. The migration was already committed, validated, fast-forward merged, pushed, and applied to dev. |
 | Active blocker | Durable fixtures are not implemented. Exact F12 multi-direct, trialing-sibling, coupon, over-limit-sibling, duplicate, and conflicting-metadata sandbox fixtures remain unavailable and are not claimed as live passes. |
 | Separate follow-ups | `fix/multi-workspace-membership-resolution`; future Stripe customer/subscription transfer architecture; durable billing fixture implementation; plan/price catalog and unknown-price diagnostics; entitlement grant sources; coupons, additional tiers, complimentary/lifetime grants; database constraints/reconciliation; missing exact Stripe sandbox fixtures. |
-| Next approved branch | `test/billing-local-db-fixtures` for local database fixture feasibility/implementation, subject to an independent write-safety review. |
+| Next approved branch | `test/billing-local-db-fixtures`; local billing fixture Stage B may resume under its existing independent write-safety gate. |
 | Do not start simultaneously | Phase C remains blocked and not started. `getMyMembership`, Stripe sandbox fixture creation, future Stripe customer/subscription transfer architecture, pricing/grant work, CI integration gates, and database constraint/reconciliation work remain separate future tasks. |
 
 *Update this block after each commit/merge. Do not hardcode the same status in multiple conflicting places.*
 
-> **Current source-of-truth note (2026-07-14):** Max Capacity Phase B remains complete. BUG-01 and BUG-07 passed their release gates on implementation HEAD `b0d6fb21`; BUG-04 and BUG-05 remain closed. Multi-workspace Stripe hardening is integrated through `959d306`; the ownership-transfer billing guard is integrated through `2c047a2` and deployed as `org-transfer-ownership` version 10; owner-role invariant hardening is integrated at `91ffb51` and deployed as `org-member-role-update` version 20; F12 direct-paid identity is integrated at `26ea600` and deployed as `billing-status` version 72. The no-write fixture safety foundation is integrated at `3586daa`; it created no database row, Stripe object, migration, or deployment. Durable fixture implementation is next, while Phase C remains blocked/not started and no Phase C branch exists.
+> **Current source-of-truth note (2026-07-15):** Max Capacity Phase B remains complete. BUG-01 and BUG-07 passed their release gates on implementation HEAD `b0d6fb21`; BUG-04 and BUG-05 remain closed. Multi-workspace Stripe hardening is integrated through `959d306`; the ownership-transfer billing guard is integrated through `2c047a2` and deployed as `org-transfer-ownership` version 10; owner-role invariant hardening is integrated at `91ffb51` and deployed as `org-member-role-update` version 20; F12 direct-paid identity is integrated at `26ea600` and deployed as `billing-status` version 72. The no-write fixture safety foundation is integrated at `3586daa`; explicit Supabase API grants are integrated through `2837cc7` and applied to dev without changing schema types, cargo ACLs, policies, or functions. Local fixture Stage B may resume, while Phase C remains blocked/not started and no Phase C branch exists.
 
 ## Active Debug Queue — AutoPack / Results / Editor Regressions
 
@@ -889,6 +891,14 @@ Release-gate items block **public launch**, not isolated product development. Pr
 - ✅ **Mutation/deployment proof:** the tooling imports no Supabase or Stripe client and contains no network/write primitive. No Supabase row, auth user, Stripe object, migration, Edge Function, environment secret, or deployed service was created, changed, or deleted.
 - ⬜ **Next branch:** `test/billing-local-db-fixtures` for local database fixture feasibility/implementation, independently reviewed before any write-capable module is added. Later branches remain `test/billing-dev-function-smoke`, `test/billing-stripe-sandbox-fixtures`, and `ci/billing-integration-gates`.
 - ⬜ **Gates still open:** the exact F12 external sandbox scenarios remain gaps until durable fixtures exist. Max Capacity Phase C remains blocked/not started and has no branch or implementation.
+
+##### Explicit Supabase Data API privileges — ✅ merged, pushed, local/dev PASS (2026-07-15)
+- ✅ **Root cause:** the clean local stack returned SQLSTATE `42501` because current Data API paths relied on privileges that existed implicitly in the legacy dev schema but were not declared by repository migrations. This was a table/sequence privilege gap, not an RLS, policy, function, Stripe, pricing, or fixture-data defect.
+- ✅ **Migration:** `2026071401_explicit_api_role_privileges.sql` was introduced at `f38a0fb` and made schema-portable at `2837cc7`. It declares only the approved minimum table privileges and uses `to_regclass()` plus dynamic `EXECUTE` for `subscriptions_id_seq`, `billing_customers_id_seq`, and `webhook_events_id_seq`; each sequence grant runs only when that exact sequence exists.
+- ✅ **Clean local proof:** a zero-state reset applied all `25` migrations. All `33/33` required table grants were present; all three local bigint-backed sequences granted `USAGE, SELECT` only to `service_role`; `anon` and `authenticated` received no sequence privileges; service-role inserts and `billing-status`, `org-member-role-update`, and reversible `org-transfer-ownership` smokes passed. The `16`-policy digest remained unchanged.
+- ✅ **Automated proof:** fixture safety `20/20`; security/invariants `875` total (`870` passed, `5` skipped, `0` failed); full suite `1008` total (`1003` passed, `5` skipped, `0` failed); typecheck and diff checks passed; lint reported `0` errors with existing warnings only. Database lint reported no errors and two existing unused-variable warnings in `tp3d_transfer_workspace_ownership`.
+- ✅ **Dev proof:** migration `2026071401_explicit_api_role_privileges` applied successfully to `cargo-planner-3d-dev` (`yduzbvijzwczjapanxbd`). Dev retained UUID `billing_customers.id` with no `billing_customers_id_seq`, while its existing bigint `subscriptions_id_seq` and `webhook_events_id_seq` received the approved privileges. All `33/33` table grants were present; cases/packs ACL, policy, and public-function fingerprints remained unchanged; all three authenticated Edge smokes returned HTTP `200`, and the ownership fixture was restored exactly.
+- ⬜ **Separate schema drift:** dev's UUID/bigint and other legacy schema differences were not altered or normalized by this work. Local billing fixture Stage B may resume under its existing safety gate; Max Capacity Phase C remains blocked and not started.
 
 ### 1B — Auth & Session
 | Status | Item | Evidence |

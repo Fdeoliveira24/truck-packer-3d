@@ -1,6 +1,6 @@
 # Billing Fixture Safety Foundation
 
-This document defines the no-write foundation for future durable billing fixtures. The current branch plans and validates fixture intent only. It does not connect to Supabase or Stripe, create users, create billing objects, change database rows, or provide cleanup commands.
+This document defines the no-write foundation for future durable billing fixtures. The current fixture-safety foundation is complete and plans and validates fixture intent only. It does not connect to Supabase or Stripe, create users, create billing objects, change database rows, or provide cleanup commands.
 
 ## Why durable fixtures are needed
 
@@ -98,4 +98,4 @@ Each later layer remains separate and must preserve these refusal rules:
 3. `test/billing-stripe-sandbox-fixtures`
 4. `ci/billing-integration-gates`
 
-The next branch is local database fixture feasibility/implementation. It must be reviewed independently before any write-capable module is added. Stripe sandbox creation, cleanup/reset behavior, CI secrets, catalog/tier/grant work, and production data remain out of scope.
+Local billing fixture Stage B (`test/billing-local-db-fixtures`) is unblocked but incomplete. It must be reviewed independently before any write-capable module is added. External Supabase and Stripe fixture integration remains missing; no write-capable fixture command exists. Stripe sandbox creation, cleanup/reset behavior, CI secrets, catalog/tier/grant work, and production data remain out of scope.

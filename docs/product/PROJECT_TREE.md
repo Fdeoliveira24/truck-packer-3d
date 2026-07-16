@@ -1,6 +1,6 @@
 # File Tree: Truck Packer 3D
 
-**Generated:** 7/11/2026, 10:41:03 PM
+**Generated:** 7/15/2026, 8:41:44 PM
 **Root Path:** `/Users/franciscooliveira/Dropbox/360Virtual Tour Solutions/Projects/Truck Packer 3D`
 
 ```
@@ -8,7 +8,6 @@
 │   └── ⚙️ hooks.json
 ├── 📁 .github
 │   └── 📝 copilot-instructions.md
-├── 📁 .playwright-cli
 ├── 📁 Production
 │   ├── 📁 src
 │   │   ├── 📁 data
@@ -43,6 +42,9 @@
 │   │   ├── 📁 2026-03-old-todos
 │   │   │   ├── 📝 TP3D-MASTER-TODO-V2.md
 │   │   │   └── 📝 TP3D-MASTER-TODO-V3.md
+│   │   ├── 📁 master-todos
+│   │   │   └── 📝 TP3D-MASTER-TODO-V4.md
+│   │   ├── 📝 DOCUMENTATION-INVENTORY-2026-07.md
 │   │   └── 📝 README.md
 │   ├── 📁 audits
 │   │   ├── 📝 ARCHITECTURE_DIAGRAM.md
@@ -67,6 +69,7 @@
 │   │   ├── 📝 settings-tab-desync-audit.md
 │   │   └── 📝 ui-rearrangement-audit.md
 │   ├── 📁 dev
+│   │   ├── 📝 billing-fixtures.md
 │   │   ├── 📝 billing-status-curl.md
 │   │   ├── 📝 billing-status-setup.md
 │   │   ├── 📝 local-supabase-setup.md
@@ -125,7 +128,7 @@
 │   │   ├── 📝 PROJECT_TREE.md
 │   │   ├── 📝 SETTINGS-VISUAL-SYSTEM-CONTRACT.md
 │   │   ├── 📝 SETTINGS-WORKSPACE-GENERAL-UI-PLAN.md
-│   │   ├── 📝 TP3D-MASTER-TODO-V4.md
+│   │   ├── 📝 TP3D-MASTER-TODO-V5.md
 │   │   ├── 📄 TP3D_Clean_Feature_Tracker.xlsx
 │   │   ├── 📝 autopack-logic-v2.md
 │   │   ├── 📝 truckpacker-blackbox-audit-2026-05-24.md
@@ -153,6 +156,12 @@
 │   └── 📝 README.md
 ├── 📁 media
 │   └── 🖼️ autopack-loading-truck-480w.gif
+├── 📁 scripts
+│   └── 📁 billing-fixtures
+│       ├── 📄 cli.mjs
+│       ├── 📄 manifest.mjs
+│       ├── 📄 mask.mjs
+│       └── 📄 safety.mjs
 ├── 📁 src
 │   ├── 📁 auth
 │   │   ├── 📄 permissions.js
@@ -348,15 +357,18 @@
 │   │   ├── 📄 2026050802_transfer_ownership_live_schema_fix.sql
 │   │   ├── 📄 2026050803_restore_workspace.sql
 │   │   ├── 📄 2026050804_account_purge_status.sql
-│   │   └── 📄 2026061301_guard_profile_deletion_fields.sql
+│   │   ├── 📄 2026061301_guard_profile_deletion_fields.sql
+│   │   └── 📄 2026071401_explicit_api_role_privileges.sql
 │   ├── 📁 snippets
 │   ├── ⚙️ .gitignore
 │   └── ⚙️ config.toml
 ├── 📁 tests
 │   ├── 📁 audit
 │   │   ├── 📄 autopack-results-carousel.spec.mjs
+│   │   ├── 📄 billing-fixture-safety.spec.mjs
 │   │   ├── 📄 import-export.spec.mjs
 │   │   ├── 📄 manual-vertical-placement.spec.mjs
+│   │   ├── 📄 max-capacity-durability.spec.mjs
 │   │   └── 📄 security-and-invariants.spec.mjs
 │   └── 📄 stress.spec.js
 ├── 📁 tools

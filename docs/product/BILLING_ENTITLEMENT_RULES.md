@@ -1,6 +1,10 @@
 # Truck Packer 3D — Billing Entitlement Rules
-Last updated: 2026-05-03
+Last updated: 2026-07-16 (implementation clarification; core model unchanged)
 Status: Approved internal checkpoint
+
+> **July 2026 implementation clarification**
+>
+> The core owner-account entitlement model remains approved. References below to the “first entitlement migration pass” are historical, and guidance that would preserve unsafe stale or cross-workspace fallbacks is superseded. Billing and portal requests resolve one requested organization; unambiguous directly paid requested-workspace identity is evaluated before sibling coverage; ambiguous billing identity fails closed. Ownership changes use the dedicated transfer path, and generic member-role updates cannot create or demote owners. [Master TODO V5](./TP3D-MASTER-TODO-V5.md) controls current operational status.
 
 This document defines the billing model Truck Packer 3D must follow going forward.
 It is the product and engineering rule sheet for billing, workspace access, feature gates, and UI behavior.

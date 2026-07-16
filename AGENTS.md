@@ -161,18 +161,9 @@ Do not remove auth/billing guards casually.
 
 ---
 
-## 8. Current release priorities
+## 8. Current Operational Status
 
-In order:
-1. finish workspace switching correctness and live verification
-2. implement billing entitlement backend truth for owner-account billing with workspace limits
-3. update frontend gates to use normalized entitlement
-4. update Settings Billing copy/UI to match entitlement truth
-5. finish runtime safety/error states
-6. then move to invitations, AutoPack correctness, and product expansion
-7. then do larger modularization work
-
-Do not jump ahead into cleanup/refactor while P0 behavior is unfinished.
+Read `docs/product/TP3D-MASTER-TODO-V5.md` for the current active task, approved branch, blockers, execution queue, and last verified repository state. Confirm git state before editing. Do not duplicate mutable project status in agent instruction files.
 
 ---
 
@@ -331,29 +322,9 @@ Primary product concepts:
 
 ## 2. Current source of truth
 
-Read and follow:
+Read `docs/product/TP3D-MASTER-TODO-V5.md` for the current active task, approved branch, blockers, execution queue, and last verified repository state. Confirm git state before editing. Do not duplicate mutable project status in agent instruction files.
 
-- `docs/product/TP3D-MASTER-TODO-V5.md`
-- `docs/product/BILLING_ENTITLEMENT_RULES.md`
-
-If older notes conflict with those documents, the newer docs win.
-
-Current stable source:
-
-- `main` / `origin/main`: `f28129a58030cb3351a0cbdec83f6daf3c5109c2`
-
-Latest local AutoPack candidate stack, unless already merged separately:
-
-- E1 stack/layer quality: `b1be932`
-- E2A floor/lane/filler quality: `ee566add`
-- E2B Wheel Wells channel block + contiguous filler stack-follow: `fa4f9c7`
-- Large-load snap performance safety: `05f56f4`
-- Operation lifecycle UX base: `1519140`
-- Pending amendment target: direct editor mutation guards and pending-truck config rendering before merge
-
-Current active work is AutoPack quality, performance, and operation lifecycle. Billing/auth/workspace/Supabase remain high-risk P0 areas, but they are not the active phase unless the user explicitly changes scope.
-
-Do not start Wheel Wells bridge support, Front Overhang wall-building, manual vertical placement, organized Unpack, Web Worker/chunking, or InstancedMesh/LOD until the current AutoPack quality/performance/operation lifecycle stack is validated and merged.
+Use `docs/product/BILLING_ENTITLEMENT_RULES.md` and `docs/engineering/autopack-engine-contract.md` for permanent domain behavior within their defined scopes.
 
 ---
 
@@ -369,8 +340,7 @@ Do not start Wheel Wells bridge support, Front Overhang wall-building, manual ve
 8. **Treat auth, billing, org switching, cross-tab state, and storage scope as P0 risk.**
 9. **Do not break owner-only money actions.** Owners only for checkout, portal, plan changes, payment fixes.
 10. **Do not remove existing safety guards** unless a proven bug requires replacement.
-11. **Do not make broad AutoPack solver changes while the operation lifecycle stack is still unmerged.**
-12. **Do not hide data/state bugs with UI polish.** Fix the lifecycle or source-of-truth issue first.
+11. **Do not hide data/state bugs with UI polish.** Fix the lifecycle or source-of-truth issue first.
 
 ---
 
@@ -396,20 +366,14 @@ When touching UI:
 
 ---
 
-## 5. Current AutoPack phase cautions
-
-E1/E2A/E2B and the large-load snap fix are useful progress, but do not merge an operation lifecycle branch unless direct editor mutations are also guarded.
-
-Important current facts:
+## 5. AutoPack Permanent Safety Reminders
 
 - Large-load snap threshold is `> 300` packed placements.
 - Large-load snap is a performance safety foundation, not a final solver performance solution.
 - The solver can still block the main thread on 800–1200+ cases.
 - Web Worker/chunking and InstancedMesh/LOD are later architecture phases.
-- Current Wheel Wells behavior: wheel-well shelves support cases that fit the shelf; wider cases need a future explicit bridge/support contract.
-- Current Front Overhang behavior: C2 safely requires rear retention before loading the raised deck; a future strategy must build the retaining wall first.
-
-Do not implement Wheel Wells bridge/spanning support or Front Overhang wall-building until the lifecycle stack is merged.
+- Wheel Wells safety baseline: wheel-well shelves support cases that fit the shelf; wider cases require an explicit bridge/support contract and V5 approval.
+- Front Overhang safety baseline: C2 requires rear retention before loading the raised deck; any wall-building strategy must preserve that contract and receive V5 approval.
 
 ---
 
@@ -519,20 +483,9 @@ Do not remove auth/billing guards casually.
 
 ---
 
-## 11. Current release priorities
+## 11. Current Operational Status
 
-Current priority order:
-
-1. Validate and amend operation lifecycle UX/concurrency control.
-2. Merge the AutoPack quality/performance/operation lifecycle stack only after direct editor mutations are guarded.
-3. Wheel-well bridge/spanning support.
-4. Front Overhang wall-building strategy.
-5. Manual vertical placement / snap-on-top.
-6. Organized Unpack layout.
-7. Larger architecture work such as Web Worker/chunking and InstancedMesh/LOD.
-8. Return to billing/workspace/Supabase work only when explicitly scoped by the user.
-
-Do not jump ahead into cleanup/refactor while active behavior is unfinished.
+Read `docs/product/TP3D-MASTER-TODO-V5.md` for the current active task, approved branch, blockers, execution queue, and last verified repository state. Confirm git state before editing. Do not duplicate mutable project status in agent instruction files.
 
 ---
 
@@ -594,7 +547,7 @@ When changing behavior, prefer editing the owner layer:
 - Auth/session bug → `supabase-client.js`
 - State bug → state-store or normalizer
 - AutoPack/Unpack/Truck Change lifecycle bug → operation-lifecycle, editor-screen, autopack-engine, truck-change-controller, and app wiring only
-- Solver geometry/packing-quality bug → autopack-solver/autopack-engine only after operation lifecycle work is validated and merged
+- Solver geometry/packing-quality bug → autopack-solver/autopack-engine only when V5 explicitly scopes or approves that work
 
 ---
 
@@ -629,7 +582,7 @@ For billing/workspace changes, manual checks should usually include:
 - Settings Billing tab
 - Settings Members tab if org scoping was touched
 
-For current AutoPack operation lifecycle work, manual checks should usually include:
+When V5 explicitly scopes AutoPack operation lifecycle work, manual checks should usually include:
 
 - AutoPack 1200 shows controlled working state and does not allow conflicting operations
 - Unpack 1200 shows controlled working state and does not allow conflicting operations

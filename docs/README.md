@@ -10,4 +10,11 @@ Start with [`product/TP3D-MASTER-TODO-V5.md`](product/TP3D-MASTER-TODO-V5.md) fo
 - `audits/`: completed audit reports and release-gate evidence.
 - `archive/`: historical notes retained for context only; do not use archived files as implementation source of truth.
 
-If documents conflict, prefer current files in `product/`, then `dev/`, then `audits/`. Treat `review/` as pending confirmation and `archive/` as historical context.
+Authority is defined by document purpose, not folder location alone:
+
+- [Master TODO V5](product/TP3D-MASTER-TODO-V5.md) controls current operational status, blockers, and the approved execution queue.
+- Named domain contracts control behavior within their defined scope.
+- `AGENTS.md`, `CLAUDE.md`, and scoped agent guides control working rules.
+- Plans and runbooks describe proposed work or operational procedures; they do not override V5 or domain contracts.
+- Audits and review documents are evidence and findings, not live behavioral contracts.
+- Archive documents are historical and cannot authorize current work.

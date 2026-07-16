@@ -9,17 +9,7 @@ for Claude Code, but it also works for any coding agent.
 
 ## Current project source of truth
 
-- Product TODO source: `docs/product/TP3D-MASTER-TODO-V5.md`.
-- Current stable `main` / `origin/main`: `f28129a58030cb3351a0cbdec83f6daf3c5109c2`.
-- Latest local AutoPack candidate stack, unless already merged separately:
-  - E1 stack/layer quality: `b1be932`
-  - E2A floor/lane/filler quality: `ee566add`
-  - E2B Wheel Wells channel block + contiguous filler stack-follow: `fa4f9c7`
-  - Large-load snap performance safety: `05f56f4`
-  - Operation lifecycle UX base: `1519140`
-  - Pending amendment target: direct editor mutation guards and pending-truck config rendering before merge
-- Current active work is AutoPack quality/performance/operation lifecycle. Billing/auth/workspace/Supabase remain high-risk P0 areas, but they are not the active phase unless the user explicitly changes scope.
-- Do not start Wheel Wells bridge support, Front Overhang wall-building, manual vertical placement, organized Unpack, Web Worker/chunking, or InstancedMesh/LOD until the current AutoPack quality/performance/operation lifecycle stack is validated and merged.
+Read `docs/product/TP3D-MASTER-TODO-V5.md` for the current active task, approved branch, blockers, execution queue, and last verified repository state. Confirm git state before editing. Do not duplicate mutable project status in agent instruction files.
 
 ---
 
@@ -74,7 +64,7 @@ For small phase work:
 - If a file is dirty but unrelated, report it and leave it alone.
 - Do not spend context budget proving facts already shown by terminal output in the current task.
 
-For current AutoPack operation lifecycle work, the default scope is:
+When V5 explicitly scopes AutoPack operation lifecycle work, the default file scope is:
 
 - `src/core/operation-lifecycle.js`
 - `src/services/autopack-engine.js`
@@ -391,17 +381,16 @@ When changing behavior, prefer editing the “owner” layer:
 - Auth/session bug → `supabase-client.js`
 - State bug → state-store or normalizer
 - AutoPack/Unpack/Truck Change lifecycle bug → operation-lifecycle, editor-screen, autopack-engine, truck-change-controller, and app wiring only
-- Solver geometry/packing-quality bug → autopack-solver/autopack-engine only after operation lifecycle work is validated and merged
+- Solver geometry/packing-quality bug → autopack-solver/autopack-engine only when V5 explicitly scopes or approves that work
 
 ---
 
-## Current AutoPack phase cautions
+## AutoPack Permanent Safety Reminders
 
-- E1/E2A/E2B and the large-load snap fix are useful progress, but do not merge an operation lifecycle branch unless direct editor mutations are also guarded.
 - InteractionManager and global shortcuts must respect the operation lifecycle lock. Drag, rotate, nudge, delete, duplicate, paste, and add-case actions cannot mutate while AutoPack, Unpack, Truck Change, or preview capture is active.
 - The large-load snap fix (`> 300` packed placements) is a performance safety foundation, not a final solver performance solution. The solver can still block the main thread on 800–1200+ cases. Web Worker/chunking and InstancedMesh/LOD are later architecture phases.
-- Do not implement Wheel Wells bridge/spanning support until the lifecycle stack is merged. Current behavior: wheel-well shelves support cases that fit the shelf; wider cases need a future explicit bridge/support contract.
-- Do not implement Front Overhang wall-building until the lifecycle stack is merged. Current behavior: C2 safely requires rear retention before loading the raised deck; a future strategy must build the retaining wall first.
+- Wheel Wells safety baseline: wheel-well shelves support cases that fit the shelf; wider cases require an explicit bridge/support contract and V5 approval.
+- Front Overhang safety baseline: C2 requires rear retention before loading the raised deck; any wall-building strategy must preserve that contract and receive V5 approval.
 
 ---
 

@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-15
 
-**Operational baseline:** `main` / `origin/main` at `f28129a58030cb3351a0cbdec83f6daf3c5109c2`
+**Last verified repository state:** `main` / `origin/main` at `6291e683d453ba955e52e8e46f746d701037a0de`
 
 ## 1. Document Contract
 
@@ -23,9 +23,9 @@
 
 This table is the single mutable status snapshot in V5.
 
-| Area | Status at the operational baseline |
+| Area | Status at the last verified repository state |
 |---|---|
-| Repository | `main` and `origin/main` match at `f28129a58030cb3351a0cbdec83f6daf3c5109c2`. |
+| Repository | Last verified with `main` and `origin/main` matching at `6291e683d453ba955e52e8e46f746d701037a0de`. Confirm the current git state before editing. |
 | Supabase Data API grants | Complete, merged, pushed, and applied to development. |
 | Clean local database | All 25 migrations reset successfully. |
 | Edge smoke | Local and development `billing-status`, `org-member-role-update`, `org-transfer-ownership`, and ownership restoration passed. |
@@ -217,7 +217,7 @@ The following ideas should wait:
 ## 13. Known Gaps That Are Not Current Blockers
 
 - Development retains legacy cases/packs, policy/function, and billing ID differences. The current grants work deliberately preserved them; audit later in a separate packet.
-- `docs/product/PROJECT_TREE.md` is a generated 2026-07-11 snapshot and will list pre-V5 paths until its generator is deliberately rerun.
+- `docs/product/PROJECT_TREE.md` is a generated point-in-time snapshot dated 2026-07-15 and carries no active authority.
 - Older audit, review, and archive documents contain duplicated or obsolete implementation context. They remain evidence, not active authority, pending the narrow cleanup batches in the documentation inventory.
 - Deferred AutoPack and platform architecture may improve quality or scale later, but it does not block the current billing reliability queue.
 

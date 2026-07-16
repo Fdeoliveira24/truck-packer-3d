@@ -1,5 +1,6 @@
 import { getAllowedOrigin, handleCors, json } from "../_shared/cors.ts";
 import { requireUser, serviceClient } from "../_shared/auth.ts";
+import { workspaceLimitForRestoreCandidate } from "../_shared/billing-catalog.ts";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -24,24 +25,6 @@ function parseTimestamp(value: string | null | undefined): number {
   if (!value) return 0;
   const ts = new Date(value).getTime();
   return Number.isFinite(ts) ? ts : 0;
-}
-
-function parseWorkspaceLimit(raw: string | undefined, fallback: number): number {
-  const value = Number.parseInt(String(raw || ""), 10);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-function workspaceLimitForCandidate(candidate: Candidate | null): number {
-  if (!candidate) return 0;
-  const priceId = String(candidate.price_id || "").toLowerCase();
-  const planName = String(candidate.plan_name || "").toLowerCase();
-  const status = String(candidate.status || "").toLowerCase();
-  const trialLimit = parseWorkspaceLimit(Deno.env.get("TP3D_TRIAL_WORKSPACE_LIMIT"), 1);
-  const proLimit = parseWorkspaceLimit(Deno.env.get("TP3D_PRO_WORKSPACE_LIMIT"), 3);
-  const businessLimit = parseWorkspaceLimit(Deno.env.get("TP3D_BUSINESS_WORKSPACE_LIMIT"), 10);
-  if (status === "trialing") return trialLimit;
-  if (priceId.includes("business") || planName.includes("business")) return businessLimit;
-  return proLimit;
 }
 
 function isCandidateUsable(candidate: Candidate): boolean {
@@ -150,7 +133,13 @@ async function verifyRestoreFitsWorkspaceLimit(
   }
 
   const bestCandidate = pickBestCandidate(candidates);
-  const workspaceLimit = workspaceLimitForCandidate(bestCandidate);
+  const workspaceLimit = bestCandidate
+    ? workspaceLimitForRestoreCandidate(
+      bestCandidate.price_id,
+      bestCandidate.plan_name,
+      bestCandidate.status,
+    )
+    : 0;
   if (!bestCandidate || workspaceLimit <= 0) {
     return { ok: false, message: RESTORE_LIMIT_ERROR };
   }

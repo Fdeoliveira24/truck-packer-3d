@@ -2,6 +2,12 @@
 import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { stripeClient } from "../_shared/stripe.ts";
+import {
+  normalizeBillingInterval,
+  resolveConfiguredPriceInterval,
+  workspaceLimitForEntitlement,
+  workspaceLimitForTier,
+} from "../_shared/billing-catalog.ts";
 
 const SUBSCRIPTION_STATUS_PRIORITY: Record<string, number> = {
   active: 6,
@@ -128,35 +134,6 @@ async function withStripeBillingStatusTimeout<T>(operation: string, promise: Pro
   } finally {
     if (typeof timeoutId === "number") clearTimeout(timeoutId);
   }
-}
-
-function parsePositiveIntEnv(name: string, fallback: number): number {
-  const raw = String(Deno.env.get(name) || "").trim();
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function getBusinessPriceIds(): string[] {
-  return uniq([
-    String(Deno.env.get("STRIPE_PRICE_BUSINESS_MONTHLY") || "").trim(),
-    String(Deno.env.get("STRIPE_PRICE_BUSINESS_YEARLY") || "").trim(),
-  ]);
-}
-
-function workspaceLimitForEntitlement(status: string, priceId: string): number {
-  if (status === "trialing") {
-    return parsePositiveIntEnv("TP3D_TRIAL_WORKSPACE_LIMIT", 1);
-  }
-  const businessPriceIds = getBusinessPriceIds();
-  if (businessPriceIds.length && priceId && businessPriceIds.includes(priceId)) {
-    return parsePositiveIntEnv("TP3D_BUSINESS_WORKSPACE_LIMIT", 10);
-  }
-  return parsePositiveIntEnv("TP3D_PRO_WORKSPACE_LIMIT", 3);
-}
-
-function normalizeInterval(value: unknown): "month" | "year" | null {
-  const raw = String(value || "").trim();
-  return raw === "month" || raw === "year" ? raw : null;
 }
 
 function normalizePaymentStatus(value: unknown): string | null {
@@ -725,7 +702,7 @@ Deno.serve(async (req) => {
         created_at: row?.created_at ? String(row.created_at) : null,
         stripe_subscription_id: row?.stripe_subscription_id ? String(row.stripe_subscription_id) : null,
         stripe_customer_id: row?.stripe_customer_id ? String(row.stripe_customer_id) : null,
-        interval: normalizeInterval(row?.interval ?? null),
+        interval: normalizeBillingInterval(row?.interval ?? null),
         source: "subscription",
       });
     };
@@ -1035,7 +1012,7 @@ Deno.serve(async (req) => {
             return;
           }
 
-          const rowInterval = normalizeInterval(row?.interval ?? row?.billing_interval ?? null);
+          const rowInterval = normalizeBillingInterval(row?.interval ?? row?.billing_interval ?? null);
           if (!ownerMetadataInterval && rowInterval) {
             ownerMetadataInterval = rowInterval;
           }
@@ -1087,7 +1064,7 @@ Deno.serve(async (req) => {
             created_at: row?.created_at ? String(row.created_at) : null,
             stripe_subscription_id: row?.stripe_subscription_id ? String(row.stripe_subscription_id) : null,
             stripe_customer_id: row?.stripe_customer_id ? String(row.stripe_customer_id) : null,
-            interval: normalizeInterval(row?.interval ?? null),
+            interval: normalizeBillingInterval(row?.interval ?? null),
             source: "subscription",
           };
           ownerSubscriptionCandidates.push(candidate);
@@ -1192,7 +1169,7 @@ Deno.serve(async (req) => {
               created_at: row?.created_at ? String(row.created_at) : null,
               stripe_subscription_id: row?.stripe_subscription_id ? String(row.stripe_subscription_id) : null,
               stripe_customer_id: row?.stripe_customer_id ? String(row.stripe_customer_id) : null,
-              interval: normalizeInterval(row?.interval ?? null),
+              interval: normalizeBillingInterval(row?.interval ?? null),
               source: "subscription",
             };
             ownerSubscriptionCandidates.push(candidate);
@@ -1235,7 +1212,7 @@ Deno.serve(async (req) => {
             created_at: row?.created_at ? String(row.created_at) : null,
             stripe_subscription_id: row?.stripe_subscription_id ? String(row.stripe_subscription_id) : null,
             stripe_customer_id: row?.stripe_customer_id ? String(row.stripe_customer_id) : null,
-            interval: normalizeInterval(row?.billing_interval ?? null),
+            interval: normalizeBillingInterval(row?.billing_interval ?? null),
             source: "billing_customer",
           });
         });
@@ -1418,7 +1395,7 @@ Deno.serve(async (req) => {
                   : null,
                 stripe_subscription_id: s?.id ? String(s.id) : null,
                 stripe_customer_id: s?.customer ? String(s.customer) : null,
-                interval: normalizeInterval(intervalRaw),
+                interval: normalizeBillingInterval(intervalRaw),
                 source: "subscription",
               };
               entitlementCandidates.push(candidate);
@@ -1549,9 +1526,8 @@ Deno.serve(async (req) => {
     let isTrial = subStatus === "trialing";
     let isActive = subStatus === "active" || isTrial;
 
-    const proMonthly = Deno.env.get("STRIPE_PRICE_PRO_MONTHLY") || "";
-    const proYearly = Deno.env.get("STRIPE_PRICE_PRO_YEARLY") || "";
     const priceId = subscription ? String(subscription.price_id ?? "") : "";
+    const configuredPriceInterval = resolveConfiguredPriceInterval(priceId);
 
     let plan: "free" | "pro" = "free";
     if (isActive) plan = "pro";
@@ -1565,10 +1541,8 @@ Deno.serve(async (req) => {
       interval = storedInterval;
     } else if (billingCustomerInterval === "month" || billingCustomerInterval === "year") {
       interval = billingCustomerInterval;
-    } else if (priceId && priceId === proMonthly) {
-      interval = "month";
-    } else if (priceId && priceId === proYearly) {
-      interval = "year";
+    } else if (configuredPriceInterval) {
+      interval = configuredPriceInterval;
     } else if (subscription?.stripe_subscription_id && Deno.env.get("STRIPE_SECRET_KEY")) {
       try {
         const stripe = stripeClient();
@@ -1804,7 +1778,7 @@ Deno.serve(async (req) => {
         ? "conflicting_requested_org_direct_subscription"
         : "ambiguous_requested_org_direct_subscription";
       workspaceIncluded = false;
-      workspaceLimit = parsePositiveIntEnv("TP3D_PRO_WORKSPACE_LIMIT", 3);
+      workspaceLimit = workspaceLimitForTier("pro");
       subStatus = "none";
       isTrial = false;
       isActive = false;
@@ -1872,7 +1846,7 @@ Deno.serve(async (req) => {
     } else if (directTrialExpired) {
       entitlementStatus = "trial_expired";
       workspaceIncluded = false;
-      workspaceLimit = parsePositiveIntEnv("TP3D_TRIAL_WORKSPACE_LIMIT", 1);
+      workspaceLimit = workspaceLimitForTier("trial");
       isActive = false;
       plan = "free";
     } else if (resolvedOrgId && billingOwnerUserId) {
@@ -1881,7 +1855,7 @@ Deno.serve(async (req) => {
         ? "no_usable_owner_entitlement_candidate"
         : "no_valid_owner_workspaces";
       workspaceIncluded = false;
-      workspaceLimit = workspaceLimit ?? parsePositiveIntEnv("TP3D_PRO_WORKSPACE_LIMIT", 3);
+      workspaceLimit = workspaceLimit ?? workspaceLimitForTier("pro");
       isActive = false;
       plan = "free";
     } else {
@@ -1904,7 +1878,7 @@ Deno.serve(async (req) => {
       if ((!subStatus || subStatus === "none") && candidatePaymentStatus && candidatePaymentStatus !== "none") {
         subStatus = candidatePaymentStatus;
       }
-      const candidateInterval = normalizeInterval(ownerEntitlementCandidate.interval ?? null);
+      const candidateInterval = normalizeBillingInterval(ownerEntitlementCandidate.interval ?? null);
       const ownerLevelInterval = candidateInterval || ownerMetadataInterval;
       if (interval === "unknown" && ownerLevelInterval) {
         interval = ownerLevelInterval;

@@ -2,16 +2,19 @@ import { getAllowedOrigin, json } from "../_shared/cors.ts";
 import { requireUser, serviceClient } from "../_shared/auth.ts";
 import {
   stripeClient,
-  assertAllowedPrice,
   assertStripeEnv,
   buildReturnUrls,
   isMissingPortalSubscriptionError,
   isScheduleManagedPortalSubscriptionError,
 } from "../_shared/stripe.ts";
+import {
+  assertAllowedCheckoutPrice,
+  normalizeCheckoutInterval,
+  resolveCheckoutPrice,
+} from "../_shared/billing-catalog.ts";
 
 const STRIPE_BLOCKING_STATUSES = new Set(["active", "trialing", "past_due", "unpaid"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const BILLING_INTERVALS = new Set(["month", "year"]);
 
 function utcMinuteBucket(date = new Date()): string {
   const y = date.getUTCFullYear();
@@ -120,18 +123,6 @@ function normalizeOrganizationId(value: unknown): string | null {
   return UUID_RE.test(raw) ? raw : null;
 }
 
-function normalizeInterval(value: unknown): "month" | "year" | null {
-  const raw = String(value ?? "").trim().toLowerCase();
-  if (!raw) return null;
-  return BILLING_INTERVALS.has(raw) ? (raw as "month" | "year") : null;
-}
-
-function priceIdFromInterval(interval: "month" | "year"): string {
-  const monthly = String(Deno.env.get("STRIPE_PRICE_PRO_MONTHLY") || "").trim();
-  const yearly = String(Deno.env.get("STRIPE_PRICE_PRO_YEARLY") || "").trim();
-  return interval === "year" ? yearly : monthly;
-}
-
 function readOrganizationIdFromMetadata(metadata: unknown): string | null {
   const source = metadata && typeof metadata === "object" ? metadata as Record<string, unknown> : null;
   if (!source) return null;
@@ -175,7 +166,7 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
     const hasInterval = typeof body.interval !== "undefined" && body.interval !== null && String(body.interval).trim() !== "";
-    const interval = normalizeInterval(hasInterval ? body.interval : "month");
+    const interval = normalizeCheckoutInterval(hasInterval ? body.interval : "month");
     if (!interval) {
       return json({ error: "interval must be either 'month' or 'year'" }, { status: 400, origin });
     }
@@ -183,13 +174,13 @@ Deno.serve(async (req) => {
     let price_id = "";
     if (legacyPriceId && !hasInterval) {
       price_id = legacyPriceId;
-      assertAllowedPrice(price_id);
+      assertAllowedCheckoutPrice(price_id);
     } else {
-      price_id = priceIdFromInterval(interval);
+      price_id = resolveCheckoutPrice("pro", interval);
       if (!price_id) {
         return json({ error: `Price not configured for interval: ${interval}` }, { status: 400, origin });
       }
-      assertAllowedPrice(price_id);
+      assertAllowedCheckoutPrice(price_id);
     }
     const organizationId = normalizeOrganizationId(body.organization_id ?? body.org_id ?? null);
     if (!organizationId) return json({ error: "organization_id must be a UUID" }, { status: 400, origin });

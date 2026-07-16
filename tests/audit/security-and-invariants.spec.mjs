@@ -22506,7 +22506,11 @@ async function createBillingStatusDirectIdentityRuntime(options = {}) {
     { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2', owner_id: ownerUserId, created_at: '2025-02-01T00:00:00.000Z', archived_at: null },
   ];
   const organizations = (options.organizations || defaultOrganizations).map(row => ({ ...row }));
-  const memberships = organizations.map(row => ({ organization_id: row.id, user_id: ownerUserId, role: 'owner' }));
+  const memberships = (options.memberships || organizations.map(row => ({
+    organization_id: row.id,
+    user_id: ownerUserId,
+    role: 'owner',
+  }))).map(row => ({ ...row }));
   const subscriptions = (options.subscriptions || []).map(row => ({
     user_id: ownerUserId,
     stripe_customer_id: 'cus_owner',
@@ -22534,9 +22538,9 @@ async function createBillingStatusDirectIdentityRuntime(options = {}) {
     subscriptions,
     billing_customers: billingCustomers,
     stripe_customers: [{ user_id: ownerUserId, stripe_customer_id: 'cus_owner' }],
-    profiles: [],
+    profiles: (options.profiles || []).map(row => ({ ...row })),
   };
-  const calls = { updates: [], upserts: [], logs: [] };
+  const calls = { updates: [], upserts: [], logs: [], queries: [], auth: [], stripe: 0 };
 
   const createQuery = (table) => {
     const filters = [];
@@ -22591,7 +22595,12 @@ async function createBillingStatusDirectIdentityRuntime(options = {}) {
     return query;
   };
 
-  const admin = { from: table => createQuery(table) };
+  const admin = {
+    from(table) {
+      calls.queries.push(table);
+      return createQuery(table);
+    },
+  };
   const env = new Map([
     ['URL', 'https://runtime.supabase.co'],
     ['SUPABASE_ANON_KEY', 'anon-key'],
@@ -22624,9 +22633,21 @@ async function createBillingStatusDirectIdentityRuntime(options = {}) {
     corsHeaders: () => ({}),
     handleCors: () => null,
     createClient: (_url, key) => key === 'anon-key'
-      ? { auth: { getUser: async () => ({ data: { user: { id: ownerUserId } }, error: null }) } }
+      ? { auth: { getUser: async (jwt) => {
+        calls.auth.push(jwt);
+        if (jwt === 'invalid-runtime-token') {
+          return { data: { user: null }, error: { message: 'invalid token' } };
+        }
+        return {
+          data: { user: { id: options.authenticatedUserId || ownerUserId } },
+          error: null,
+        };
+      } } }
       : admin,
-    stripeClient: () => { throw new Error('Stripe must not be called by the DB-only runtime fixture'); },
+    stripeClient: () => {
+      calls.stripe += 1;
+      throw new Error('Stripe must not be called by the DB-only runtime fixture');
+    },
     console: {
       log: (...args) => calls.logs.push(['log', ...args]),
       warn: (...args) => calls.logs.push(['warn', ...args]),
@@ -22636,16 +22657,108 @@ async function createBillingStatusDirectIdentityRuntime(options = {}) {
   vm.runInNewContext(stripTypeScriptTypes(executableSource, { mode: 'strip' }), sandbox);
   assert.equal(typeof handler, 'function', 'billing-status production handler captured');
 
-  const request = async (organizationId) => {
+  const invoke = async ({ query = '', jwt = 'redacted-runtime-token', includeJwt = true } = {}) => {
+    const headers = includeJwt ? { 'x-user-jwt': jwt } : {};
     const req = new Request(
-      `https://runtime.test/billing-status?tp3dDebug=1&organization_id=${encodeURIComponent(organizationId)}`,
-      { method: 'GET', headers: { 'x-user-jwt': 'redacted-runtime-token' } },
+      `https://runtime.test/billing-status?tp3dDebug=1${query ? `&${query}` : ''}`,
+      { method: 'GET', headers },
     );
     const response = await handler(req);
     return { status: response.status, body: await response.json() };
   };
-  return { request, calls, organizations, ownerUserId };
+  const request = organizationId => invoke({
+    query: `organization_id=${encodeURIComponent(organizationId)}`,
+  });
+  return { request, invoke, calls, organizations, ownerUserId };
 }
+
+test('billing-status runtime: omitted and explicit-empty organization IDs preserve profile fallback', async () => {
+  const profileOrgId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const createRuntime = () => createBillingStatusDirectIdentityRuntime({
+    profiles: [{
+      id: '11111111-1111-4111-8111-111111111111',
+      current_organization_id: profileOrgId,
+    }],
+  });
+
+  const omittedRuntime = await createRuntime();
+  const omitted = await omittedRuntime.invoke();
+  assert.equal(omitted.status, 200);
+  assert.equal(omitted.body.orgId, profileOrgId);
+  assert.equal(omittedRuntime.calls.queries[0], 'profiles');
+
+  const emptyRuntime = await createRuntime();
+  const empty = await emptyRuntime.invoke({ query: 'organization_id=' });
+  assert.equal(empty.status, 200);
+  assert.equal(empty.body.orgId, profileOrgId);
+  assert.equal(emptyRuntime.calls.queries[0], 'profiles');
+});
+
+test('billing-status runtime: a valid requested organization wins without profile fallback and keeps authorization', async () => {
+  const requestedOrgId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const otherOrgId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2';
+  const authorizedRuntime = await createBillingStatusDirectIdentityRuntime({
+    profiles: [{
+      id: '11111111-1111-4111-8111-111111111111',
+      current_organization_id: otherOrgId,
+    }],
+  });
+  const authorized = await authorizedRuntime.request(requestedOrgId);
+  assert.equal(authorized.status, 200);
+  assert.equal(authorized.body.orgId, requestedOrgId);
+  assert.equal(authorizedRuntime.calls.queries.includes('profiles'), false);
+
+  const unrelatedRuntime = await createBillingStatusDirectIdentityRuntime({
+    authenticatedUserId: '22222222-2222-4222-8222-222222222222',
+  });
+  const unrelated = await unrelatedRuntime.request(requestedOrgId);
+  assert.equal(unrelated.status, 403);
+  assert.equal(unrelated.body.error, 'Not authorized for this organization billing status');
+});
+
+test('billing-status runtime: malformed organization parameters return sanitized 400 before profile, billing, or Stripe work', async () => {
+  const profileOrgId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const malformedQueries = [
+    ['organization_id=not-a-uuid', 'not-a-uuid'],
+    ['organization_id=%20not-a-uuid%20', 'not-a-uuid'],
+    ['organization_id=%5Bobject%20Object%5D', '[object Object]'],
+    ['org_id=malformed-alias', 'malformed-alias'],
+    [`organization_id=${profileOrgId}&org_id=malformed-alias`, 'malformed-alias'],
+  ];
+
+  for (const [query, rawInput] of malformedQueries) {
+    const runtime = await createBillingStatusDirectIdentityRuntime({
+      profiles: [{
+        id: '11111111-1111-4111-8111-111111111111',
+        current_organization_id: profileOrgId,
+      }],
+    });
+    const result = await runtime.invoke({ query });
+    const serialized = JSON.stringify(result.body);
+    assert.equal(result.status, 400, query);
+    assert.deepEqual(result.body, { error: 'organization_id must be a UUID', orgId: null });
+    assert.deepEqual(runtime.calls.queries, [], `${query} must not query profile or billing tables`);
+    assert.equal(runtime.calls.stripe, 0, `${query} must not initialize Stripe`);
+    assert.doesNotMatch(serialized, new RegExp(rawInput.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
+    assert.doesNotMatch(serialized, /sql|postgrest|stack|jwt|service[-_ ]?role|stripe|secret/i);
+  }
+});
+
+test('billing-status runtime: malformed organization validation does not replace missing or invalid JWT errors', async () => {
+  const runtime = await createBillingStatusDirectIdentityRuntime();
+  const missing = await runtime.invoke({ query: 'organization_id=not-a-uuid', includeJwt: false });
+  assert.equal(missing.status, 401);
+  assert.equal(missing.body.error, 'Missing authorization');
+
+  const invalid = await runtime.invoke({
+    query: 'organization_id=not-a-uuid',
+    jwt: 'invalid-runtime-token',
+  });
+  assert.equal(invalid.status, 401);
+  assert.equal(invalid.body.error, 'Invalid or expired token');
+  assert.deepEqual(runtime.calls.queries, []);
+  assert.equal(runtime.calls.stripe, 0);
+});
 
 async function loadRequestedDirectBindingRuntime() {
   const src = await fs.readFile(billingStatusPath, 'utf8');

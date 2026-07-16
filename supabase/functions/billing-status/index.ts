@@ -400,16 +400,20 @@ Deno.serve(async (req) => {
 
     const requestUrl = new URL(req.url);
     const responseDebugEnabled = backendDebugEnabled && requestUrl.searchParams.get("tp3dDebug") === "1";
-    const requestedOrgRaw =
-      requestUrl.searchParams.get("organization_id") ||
-      requestUrl.searchParams.get("org_id") ||
-      "";
+    const requestedOrganizationParam = requestUrl.searchParams.has("organization_id")
+      ? requestUrl.searchParams.get("organization_id")
+      : null;
+    const requestedAliasParam = requestUrl.searchParams.has("org_id")
+      ? requestUrl.searchParams.get("org_id")
+      : null;
+    const requestedOrganizationRaw = String(requestedOrganizationParam ?? "").trim();
+    const requestedAliasRaw = String(requestedAliasParam ?? "").trim();
+    const requestedOrgRaw = requestedOrganizationRaw || requestedAliasRaw;
     const requestedOrgId = normalizeOrgId(requestedOrgRaw);
-    const hadInvalidOrgParam = Boolean(String(requestedOrgRaw || "").trim()) && !requestedOrgId;
+    const hadInvalidOrgParam =
+      (Boolean(requestedOrganizationRaw) && !normalizeOrgId(requestedOrganizationRaw)) ||
+      (Boolean(requestedAliasRaw) && !normalizeOrgId(requestedAliasRaw));
     let resolvedOrgId: string | null = requestedOrgId;
-    if (!requestedOrgId && String(requestedOrgRaw || "").trim() && debug) {
-      console.warn("billing-status: ignoring non-UUID organization_id", { organization_id: requestedOrgRaw });
-    }
 
     // 1) Resolve Supabase URL and anon key for auth lookup
     const rawUrl = Deno.env.get("URL") || "";
@@ -455,6 +459,10 @@ Deno.serve(async (req) => {
     const userId = auth.user.id;
     if (!userId) {
       return json(req, 401, { error: "Missing user id" });
+    }
+
+    if (hadInvalidOrgParam) {
+      return json(req, 400, { error: "organization_id must be a UUID", orgId: null });
     }
 
     const uuidLike = /^[0-9a-fA-F-]{36}$/;
@@ -507,10 +515,6 @@ Deno.serve(async (req) => {
         resolvedOrgId = normalizeOrgId(profileOrgRes.data?.current_organization_id ?? null);
       }
     }
-    if (hadInvalidOrgParam && !resolvedOrgId) {
-      return json(req, 400, { error: "organization_id must be a UUID", orgId: null });
-    }
-
     if (resolvedOrgId) {
       const { data: memberships, error: membershipsErr } = await admin
         .from("organization_members")

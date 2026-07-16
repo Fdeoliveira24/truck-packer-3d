@@ -14,7 +14,7 @@ The billing safety work has runtime coverage for direct subscriptions, owner-pla
 | Extracted production-helper runtime | Production billing/ownership predicates and client error mappers execute directly. | The exact helper runs outside its full Edge Function. |
 | Synthetic runtime | Billing-pump, cross-user isolation, and shared-snapshot models exercise race and authority invariants. | Models behavior without executing a complete external service flow. |
 | Source-contract/static | Function ordering, organization scoping, sanitization, and forbidden fallback checks inspect source structure. | Useful invariant evidence; not runtime or integration proof. |
-| Manual browser/sandbox | Authenticated browser and safe deployed-function checks are recorded in the master TODO. | Limited to fixtures already present; unavailable rows are never marked passed. |
+| Manual browser/sandbox | Authenticated browser and safe deployed-function checks are summarized in [Master TODO V5](../product/TP3D-MASTER-TODO-V5.md), with detailed historical evidence retained in its archive links. | Limited to fixtures already present; unavailable rows are never marked passed. |
 | External Supabase integration | Missing. | No durable local/dev database fixture creator or verifier exists yet. |
 | External Stripe integration | Missing. | No repeatable Stripe test-mode customer/subscription fixture layer exists yet. |
 

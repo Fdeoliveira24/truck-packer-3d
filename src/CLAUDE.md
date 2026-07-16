@@ -9,8 +9,8 @@ for Claude Code, but it also works for any coding agent.
 
 ## Current project source of truth
 
-- Product TODO source: `docs/product/TP3D-MASTER-TODO-V4.md`.
-- Current stable `main` / `origin/main`: `e9c86c0`.
+- Product TODO source: `docs/product/TP3D-MASTER-TODO-V5.md`.
+- Current stable `main` / `origin/main`: `f28129a58030cb3351a0cbdec83f6daf3c5109c2`.
 - Latest local AutoPack candidate stack, unless already merged separately:
   - E1 stack/layer quality: `b1be932`
   - E2A floor/lane/filler quality: `ee566add`

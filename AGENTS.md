@@ -40,7 +40,7 @@ That means:
 - frontend gates must use normalized entitlement, not raw per-workspace payment rows only
 
 Read and follow:
-- `docs/product/TP3D-MASTER-TODO-V3.md`
+- `docs/product/TP3D-MASTER-TODO-V5.md`
 - `docs/product/BILLING_ENTITLEMENT_RULES.md`
 
 If older notes conflict with those documents, the newer docs win.
@@ -333,14 +333,14 @@ Primary product concepts:
 
 Read and follow:
 
-- `docs/product/TP3D-MASTER-TODO-V4.md`
+- `docs/product/TP3D-MASTER-TODO-V5.md`
 - `docs/product/BILLING_ENTITLEMENT_RULES.md`
 
 If older notes conflict with those documents, the newer docs win.
 
 Current stable source:
 
-- `main` / `origin/main`: `e9c86c0`
+- `main` / `origin/main`: `f28129a58030cb3351a0cbdec83f6daf3c5109c2`
 
 Latest local AutoPack candidate stack, unless already merged separately:
 

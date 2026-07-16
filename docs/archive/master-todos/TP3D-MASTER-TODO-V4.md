@@ -1,3 +1,9 @@
+> This document is archived historical evidence.
+>
+> The active operational source of truth is:
+>
+> `docs/product/TP3D-MASTER-TODO-V5.md`
+
 # Truck Packer 3D — Master TODO V4
 **Last updated:** 2026-07-15 — BUG-01 and BUG-07 passed their automated and signed-in browser release gates; BUG-04 remains closed as a policy misdiagnosis; BUG-05 remains closed as a stale or non-reproducible observation. Multi-workspace Stripe hardening, the paid-workspace ownership-transfer guard, generic member-role ownership invariants, and F12 direct-paid workspace identity are merged, pushed, deployed, and verified against all available safe dev fixtures. Explicit Supabase Data API grants are merged and pushed through `2837cc7`, passed a clean local 25-migration reset, and are applied to dev; local billing fixture Stage B may resume, while Max Capacity Phase C remains blocked and not started.
 

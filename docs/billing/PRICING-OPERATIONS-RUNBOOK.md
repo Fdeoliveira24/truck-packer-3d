@@ -4,7 +4,7 @@
 
 This is operational documentation for the current implementation. It is not a pricing decision, approval to modify Stripe, or a replacement for [Billing Entitlement Rules](../product/BILLING_ENTITLEMENT_RULES.md). Commercial pricing is not final.
 
-The procedures below describe how the repository behaves at the time of writing. The behavior-preserving server catalog is implemented; it centralizes current Price recognition, checkout resolution, and workspace limits without changing commercial terms or entitlement results.
+The procedures below describe how the repository behaves at the time of writing. The server catalog separates active checkout Prices, recognition-only legacy Prices, and unknown Prices while preserving current commercial terms and valid paid entitlement results.
 
 ## 2. Current Pricing Architecture
 
@@ -52,21 +52,23 @@ Use variable names only in documentation and reports. Never print secret values 
 | Webhook verification | `STRIPE_WEBHOOK_SECRET` |
 | Pro checkout and interval recognition | `STRIPE_PRICE_PRO_MONTHLY`, `STRIPE_PRICE_PRO_YEARLY` |
 | Business limit recognition in billing-status | `STRIPE_PRICE_BUSINESS_MONTHLY`, `STRIPE_PRICE_BUSINESS_YEARLY` |
+| Pro legacy recognition only | `STRIPE_PRICE_PRO_MONTHLY_LEGACY`, `STRIPE_PRICE_PRO_YEARLY_LEGACY` |
+| Business legacy recognition only | `STRIPE_PRICE_BUSINESS_MONTHLY_LEGACY`, `STRIPE_PRICE_BUSINESS_YEARLY_LEGACY` |
 | Workspace limits | `TP3D_TRIAL_WORKSPACE_LIMIT`, `TP3D_PRO_WORKSPACE_LIMIT`, `TP3D_BUSINESS_WORKSPACE_LIMIT` |
 | Optional portal configuration | `STRIPE_PORTAL_CONFIGURATION_ID` |
 | Supabase service access | `SUPABASE_URL`/`URL`, `SUPABASE_ANON_KEY`/`ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`/`SERVICE_ROLE_KEY` |
 
-The current `.env.example` lists safe placeholders for the Pro and Business Price variables, all three workspace-limit variables, and optional portal configuration. Deployed environment values remain configuration; the shared catalog is the implementation source of truth for interpreting them.
+The current `.env.example` lists safe placeholders for active Pro/Business Price variables, optional comma-separated legacy-recognition lists, all three workspace-limit variables, and optional portal configuration. Active Pro variables enable checkout; legacy variables only preserve recognition for existing subscribers. Deployed values remain configuration, and the shared catalog is the implementation source of truth for interpreting them.
 
 ## 3. Current Source Map
 
 | Concern | Current file/function | Environment variable | Authority | Changes customer money behavior? | Deployment required? | Current risk |
 |---|---|---|---|---|---|---|
-| Catalog configuration and narrow resolvers | `supabase/functions/_shared/billing-catalog.ts` → `getBillingCatalog()` and resolver helpers | Pro and Business monthly/yearly Price variables; three limit variables | Shared server configuration | Indirectly; callers control checkout and entitlement | Secret-only change: configuration refresh; catalog-code change: deploy its three importers | P0; one shared source now owns current configuration |
+| Catalog configuration and narrow resolvers | `supabase/functions/_shared/billing-catalog.ts` → `getBillingCatalog()` and resolver helpers | Active and legacy Pro/Business Price variables; three limit variables | Shared server configuration | Indirectly; callers control checkout and entitlement | Secret-only change: configuration refresh; catalog-code change: deploy its three importers | P0; active checkout and recognition-only legacy sets are separate |
 | Checkout allow-list | `supabase/functions/_shared/billing-catalog.ts` → `allowedCheckoutPriceIds()` and `assertAllowedCheckoutPrice()` | Pro monthly/yearly Price variables | Server allow-list | Yes: controls which Price may be purchased | Secret-only change: configuration refresh; catalog-code change: deploy checkout | High; configured Pro monthly/yearly only |
 | Interval-to-Price mapping | `supabase/functions/_shared/billing-catalog.ts` → `resolveCheckoutPrice()`; consumed by `stripe-create-checkout-session` | Pro monthly/yearly Price variables | Server checkout | Yes | Secret-only change: configuration refresh; code change: deploy checkout | High; only `month` and `year` exist |
-| Billing-status Price recognition | `supabase/functions/_shared/billing-catalog.ts` → interval and entitlement limit resolvers; consumed by `billing-status` | Pro and Business Price variables; three limit variables | App entitlement truth | Indirectly; changes access/limits, not Stripe amount | Secret-only change: configuration refresh; code change: deploy billing-status | P0; exact Business IDs and conservative unknown-active fallback remain |
-| Restore workspace-limit logic | `supabase/functions/_shared/billing-catalog.ts` → `workspaceLimitForRestoreCandidate()`; consumed by `org-restore-workspace` | Three limit variables and configured Price IDs | Restore authorization | No charge change; yes entitlement capacity | Secret-only change: configuration refresh; code change: deploy restore | P0; broader Business Price/plan-name matching is intentionally preserved |
+| Billing-status Price recognition | `supabase/functions/_shared/billing-catalog.ts` → recognition and entitlement-limit resolvers; consumed by `billing-status` | Active and legacy Pro/Business Price variables; three limit variables | App entitlement truth | Indirectly; changes access/limits, not Stripe amount | Secret-only change: configuration refresh; code change: deploy billing-status | P0; unknown usable Prices retain conservative fallback and emit `unknownPriceId` |
+| Restore workspace-limit logic | `supabase/functions/_shared/billing-catalog.ts` → `workspaceLimitForRestoreCandidate()`; consumed by `org-restore-workspace` | Three limit variables plus active and legacy Price IDs | Restore authorization | No charge change; yes entitlement capacity | Secret-only change: configuration refresh; code change: deploy restore | P0; explicit legacy tier wins while broader Business Price/plan-name matching remains |
 | Webhook projection | `supabase/functions/stripe-webhook/index.ts` → `upsertSubscription()` | Stripe and webhook secrets | Stripe-to-database projection | Reflects billed state; does not choose checkout amount | Deploy webhook only when webhook/shared code changes | P0; `plan_name` is currently written as `pro` |
 | Frontend plan options | `src/app.js` → `getCheckoutPlanOptions()` | None | Display only | No | Static frontend deployment | Medium; hardcoded copy can disagree with Stripe |
 | Frontend plan picker | `src/app.js` → `pickCheckoutInterval()` | None | Display and interval selection | No direct authority | Static frontend deployment | Medium; duplicated yearly copy currently disagrees |
@@ -76,7 +78,7 @@ The current `.env.example` lists safe placeholders for the Pro and Business Pric
 | Test/live handling | `supabase/functions/_shared/stripe.ts`, `supabase/functions/stripe-webhook/index.ts` event storage, and deployment secrets | Stripe secret, Price IDs, webhook secret | Deployment configuration | Yes | No code deploy for secret-only correction; affected functions must be revalidated | P0; no explicit application mode marker enforces separation |
 | Portal configuration | `supabase/functions/stripe-create-checkout-session/index.ts` and `supabase/functions/stripe-create-portal-session/index.ts` → `getPortalConfigurationId()` | `STRIPE_PORTAL_CONFIGURATION_ID` | Stripe portal behavior | Can affect plan-management choices | Secret-only change: configuration refresh; code change: deploy checkout and/or portal | High; requested organization must remain explicit |
 
-The catalog removes duplicated server reads and default-limit interpretation from its three consumers. Caller-specific behavior remains explicit: billing-status uses exact configured Business IDs, restore preserves its broader Business matching, and checkout accepts only configured Pro monthly/yearly IDs. Frontend price copy remains separate from Stripe and from the server catalog.
+The catalog removes duplicated server reads and default-limit interpretation from its three consumers. Caller-specific behavior remains explicit: billing-status recognizes active and legacy tier IDs, restore also preserves its broader Business matcher, and checkout accepts only active configured Pro monthly/yearly IDs. Frontend price copy remains separate from Stripe and from the server catalog.
 
 ## 4. Current Known Pricing Constraints
 
@@ -85,8 +87,10 @@ The catalog removes duplicated server reads and default-limit interpretation fro
 - Business Price variables may be recognized for workspace limits by billing-status, and restore also recognizes Business through Price/plan-name text. Business is not in the checkout allow-list.
 - Frontend displayed prices are hardcoded, duplicated, non-authoritative, and currently inconsistent for the yearly total.
 - Checkout, billing-status interval normalization, and webhook projection support only `month` and `year`.
-- An unknown, explicitly mapped active Price retains the current conservative paid fallback: it is treated as Pro for workspace-limit purposes unless it exactly matches a configured Business Price. Interval can remain `unknown` unless stored projection or Stripe lookup resolves it.
-- The response has no `unknownPriceId` field.
+- A usable, explicitly mapped active, trialing, or payment-grace Price that is unknown to the catalog retains the conservative Pro/base-paid fallback. Interval and period data still come from the selected subscription when valid.
+- `billing-status` returns `unknownPriceId: true` only when the usable direct or owner entitlement candidate has a non-empty unrecognized Price. Known active and legacy Prices, inactive records, archived workspaces, and ambiguous identities return `false`.
+- The diagnostic exposes no raw Price ID. Server warnings use reason `billing:unknown-price-fallback` with masked Price and organization references.
+- Legacy Price variables are recognition-only. They preserve the mapped tier and workspace limit for existing subscribers and are never added to checkout.
 - Checkout explicitly sets `allow_promotion_codes: false`. No coupon or promotion-code product feature is implemented or approved.
 - No lifetime or complimentary entitlement feature is implemented.
 - No supported existing-subscriber migration tool exists.
@@ -105,7 +109,7 @@ The catalog removes duplicated server reads and default-limit interpretation fro
 | F. Add a recurring tier | Create Product/Prices only after product approval | New catalog/allow-list/limits/projection contract required | Checkout, billing-status, restore, webhook, portal review | New tier UI and copy | Multiple Edge functions plus static frontend | Maybe; audit first | Full new-tier matrix | Cannot safely roll back after customers subscribe without a support plan | Future work |
 | G. Add another interval | Create Price with the approved interval | Extend interval types and every normalization/projection consumer | Checkout, billing-status, webhook; restore review | Add interval selection/copy | Affected Edge functions and static frontend | Maybe | New interval end-to-end | Existing sessions/subscriptions may outlive rollback | Future work |
 | H. Stop new checkout for a tier | Deactivate/archive the current purchasable Price(s); do not delete Product/subscriptions | Optional user-facing unavailable copy; do not remove legacy entitlement recognition | Checkout behavior observed; entitlement functions should remain unchanged | Optional truthful unavailable state | Stripe action; static deploy only if copy changes | No | Checkout rejected, old entitlement/portal preserved | In-flight sessions may still require review | Yes as an incident action |
-| I. Keep old subscribers grandfathered | Keep existing subscriptions on original Price | Preserve recognition and test old Price paths | billing-status, webhook, portal, restore | No automatic price promise | Deploy only if recognition code changes | No | Old subscriber access plus new checkout | Current source lacks an explicit legacy catalog; verification is mandatory | Safe default; commercial terms undecided |
+| I. Keep old subscribers grandfathered | Keep existing subscriptions on original Price | Add the old ID to its matching legacy-recognition variable before replacing the active Price | billing-status, webhook, portal, restore | No automatic price promise | Deploy catalog importers when code changes; refresh configuration when lists change | No | Old subscriber access plus new checkout rejection for the legacy ID | Recognition is explicit; verification remains mandatory | Safe default; commercial terms undecided |
 | J. Move existing subscribers | Stripe subscription update after full approval | Dedicated migration tooling, evidence, recovery, and audit record | Webhook, billing-status, portal, restore | Communication/support UI as approved | Dedicated controlled release | Possibly | Rehearsal and per-subscription verification | Charges, prorations, and invoices may be irreversible | Required | Future work |
 | K. Coupons or promotions | Create approved coupon/promotion objects | Checkout and entitlement policy design; current checkout disables promotion codes | Checkout, webhook, billing-status review | Coupon disclosure and terms | Affected Edge/static deploy | Maybe | Discount, renewal, cancellation, invoice tests | Redeemed discounts and invoices may not be fully reversible | Required | Future work |
 | L. Lifetime or complimentary access | No current safe Stripe action | New entitlement model and source of truth required | Billing-status, gates, workspace limits, restore, admin controls | New truthful status/copy | Broad approved implementation | Likely | Full entitlement/security matrix | High risk of permanent access or revocation errors | Required | Future work |
@@ -118,35 +122,37 @@ Use this procedure for monthly, yearly, or both. A new Stripe Price is immutable
 2. In the correct Stripe account's **test mode**, create the new recurring Price for the existing approved Product. Do not modify live mode yet.
 3. Keep the old Price and existing subscriptions intact. Do not migrate subscribers.
 4. Record masked old/new Price references in [Pricing Change Log](./PRICING-CHANGE-LOG.md).
-5. Configure the new test Price ID in `STRIPE_PRICE_PRO_MONTHLY`, `STRIPE_PRICE_PRO_YEARLY`, or both for the intended non-production Supabase project.
-6. Update repository code/config only where required. A secret-only Price replacement does not require changing catalog source because the catalog reads the variables lazily. Frontend display copy is a separate change.
-7. Run source/runtime tests, local database integration, typecheck, lint, and full repository tests.
-8. Run deployed-development function checks against the intended project.
-9. Complete a real Stripe test-mode checkout for each changed interval and confirm the Checkout Session uses the masked new Price reference.
-10. Confirm webhook signature verification, idempotency, organization binding, Price ID, interval, status, and period projection.
-11. Confirm `billing-status` returns the requested workspace's direct identity, correct interval/period, entitlement, and workspace limit.
-12. Open the organization-scoped portal and confirm it targets the correct customer/subscription and configured portal behavior.
-13. Archive and restore a safe fixture workspace to verify the same limit is used by restore logic.
-14. Verify F12 direct-paid identity for directly paid siblings.
-15. Verify included sibling coverage and over-limit behavior without relying on `includedOrgIds` as direct identity.
-16. Verify active direct billing still blocks ownership transfer and that role/owner protections remain intact.
-17. Update both frontend display-copy locations separately and prove they match the Stripe amount and approved wording.
-18. Rehearse rollback in test mode: restore the previous configured Price reference and verify old checkout, billing-status, webhook, portal, and restore behavior.
-19. Repeat the evidence process in live mode only after test-mode sign-off, with the live Stripe account, live Price, live webhook secret, and intended production Supabase project independently confirmed.
-20. Only after validation may the old Price be deactivated/archived for **new purchases**. Do not delete the Product, Price, subscriptions, or customers.
-21. Do not migrate existing subscribers automatically.
+5. Before replacing an active variable, add the old Price ID to the matching `*_LEGACY` recognition list for its tier and interval. Legacy lists are comma-separated and never checkout-enabled.
+6. Configure the new test Price ID in `STRIPE_PRICE_PRO_MONTHLY`, `STRIPE_PRICE_PRO_YEARLY`, or both for the intended non-production Supabase project.
+7. Update repository code/config only where required. A secret-only Price replacement does not require changing catalog source because the catalog reads the variables lazily. Frontend display copy is a separate change.
+8. Run source/runtime tests, local database integration, typecheck, lint, and full repository tests.
+9. Run deployed-development function checks against the intended project.
+10. Complete a real Stripe test-mode checkout for each changed interval and confirm the Checkout Session uses the masked new Price reference.
+11. Confirm webhook signature verification, idempotency, organization binding, Price ID, interval, status, and period projection.
+12. Confirm `billing-status` returns the requested workspace's direct identity, correct interval/period, entitlement, workspace limit, and `unknownPriceId: false` for both the new active Price and recognized old Price.
+13. Confirm direct attempts to checkout with the old legacy Price return the established invalid-Price response.
+14. Open the organization-scoped portal and confirm it targets the correct customer/subscription and configured portal behavior.
+15. Archive and restore a safe fixture workspace to verify the same recognized tier limit is used by restore logic.
+16. Verify F12 direct-paid identity for directly paid siblings.
+17. Verify included sibling coverage and over-limit behavior without relying on `includedOrgIds` as direct identity.
+18. Verify active direct billing still blocks ownership transfer and that role/owner protections remain intact.
+19. Update both frontend display-copy locations separately and prove they match the Stripe amount and approved wording.
+20. Rehearse rollback in test mode: restore the previous configured Price reference and verify old checkout, billing-status, webhook, portal, and restore behavior.
+21. Repeat the evidence process in live mode only after test-mode sign-off, with the live Stripe account, live Price, live webhook secret, and intended production Supabase project independently confirmed.
+22. Only after validation may the old Price be deactivated/archived for **new purchases**. Do not delete the Product, Price, subscriptions, or customers.
+23. Do not migrate existing subscribers automatically.
 
-### Current limitation
+### Current legacy and unknown Price contract
 
-The centralized catalog represents only the currently configured Price IDs. It does not contain legacy or retired Price arrays, replacement effective dates, or an unknown-Price diagnostic contract. Replacing a Pro Price environment variable removes the old ID from explicit Pro interval recognition, although stored webhook interval and the current unknown-active-Price Pro fallback may preserve access. Business recognition remains sensitive because billing-status uses exact configured IDs while restore also preserves broader Price/plan-name matching. Inventory and test every existing Price before a live replacement; do not claim legacy support merely because the old Stripe subscription still exists.
+The catalog now represents current active checkout Prices separately from optional recognition-only legacy lists. A recognized legacy Price maps to its current Pro or Business tier and limit, but checkout never accepts it. A usable, explicitly mapped unknown Price retains conservative Pro/base-paid access and reports `unknownPriceId: true`; it is never promoted to Business without a recognized Business ID. Unknown inactive records do not grant access, and ambiguous or conflicting identity still fails closed.
 
-Auditing and implementing explicit unknown or replaced Price handling is the next approved billing task.
+The catalog does not model replacement effective dates, commercial grandfathering promises, or test/live binding. Inventory and test every existing Price before a live replacement. Do not infer commercial terms from technical legacy recognition.
 
 ## 7. Grandfathering Policy — Current Safe Default
 
 - Existing Stripe subscriptions stay on their original Price unless an explicitly approved migration changes them.
 - Changing an environment Price ID does not modify existing Stripe subscriptions.
-- Old Prices must remain supported by application recognition before configuration changes retire their explicit recognition. The current catalog has no legacy-recognition entries, so any replacement requires a separate approved handling decision and proof.
+- Old Prices must be added to the matching recognition-only legacy list before active configuration stops recognizing them. This preserves existing-subscriber entitlement without enabling new checkout.
 - Do not delete an old Product or Price. Do not deactivate an old Price for new purchases until existing-subscriber billing-status, webhook, portal, and restore behavior has been proved.
 - Subscription migration is a separate, higher-risk operation.
 
@@ -186,7 +192,7 @@ Do not perform subscriber migration manually as an incidental part of a Price re
 - Verify the webhook endpoint and signing secret for the same Stripe mode as the Price.
 - Record `livemode` evidence from webhook events, but do not treat that field alone as a complete guard.
 
-The current catalog has no test/live mode marker and no legacy recognition set. A future mode contract may bind environment, Stripe mode, active Price set, and any approved legacy recognition set explicitly; that is a recommendation, not current behavior.
+The current catalog has no test/live mode marker. Legacy recognition lists are environment-specific and must be verified against the same Stripe account and mode as the active Price set. A future mode contract may bind these values explicitly; that is a recommendation, not current behavior.
 
 ## 10. Validation Matrix
 
@@ -320,17 +326,19 @@ Operational priority and approval come from [Master TODO V5](../product/TP3D-MAS
 
 ## 16. Catalog Implementation Status
 
-The behavior-preserving catalog is implemented and validated. Its production change surface is one shared catalog plus three consumers: billing-status, checkout, and restore. Webhook, portal, shared Stripe helpers, frontend pricing, response contracts, migrations, commercial values, and subscriber Prices were not changed.
+Unknown and replaced Price handling is implemented and validated. One shared catalog now exposes active-checkout IDs, recognition-only legacy IDs, tier resolution, known/legacy checks, and conservative unknown fallback. Its three importers remain billing-status, checkout, and restore. Webhook and portal remain catalog-independent, shared Stripe helpers are unchanged, and no frontend pricing, migration, commercial value, or subscriber Price changed.
 
-The validated behavior remains:
+The validated behavior is:
 
-- Pro monthly/yearly are the only checkout-enabled recurring paths;
-- Business Prices are recognition-only and checkout-disabled;
+- current configured Pro monthly/yearly Prices are the only checkout-enabled recurring paths;
+- configured Business and all legacy Prices are recognition-only and checkout-disabled;
+- recognized legacy Pro/Business Prices retain their current tier and workspace limit;
+- usable explicitly mapped unknown Prices retain paid Pro/base fallback and return `unknownPriceId: true` without exposing the Price ID;
+- inactive unknown records do not grant access, while ambiguity and archived-workspace rules remain fail closed;
 - workspace-limit defaults remain Trial `1`, Pro `3`, and Business `10` when configuration is absent or invalid;
-- unknown explicitly mapped active Prices retain the existing paid Pro/base fallback;
-- billing-status exact Business recognition and restore's broader Business recognition remain separate;
-- no legacy Price arrays, unknown-Price diagnostics, or test/live mode rules were added.
+- restore recognizes explicit legacy tiers before preserving its broader Business matcher;
+- webhook continues storing Stripe Price truth, and portal remains organization-scoped without Price recognition.
 
-Local Stage B remained 39/39 green. Focused catalog/fixture/security validation passed 908 with 5 existing skips, and the full repository suite passed 1,021 with 5 existing skips. Development deployment was limited to billing-status, checkout, and restore; known direct, included sibling, unknown active Price fallback, Pro monthly/yearly checkout creation, Business/unknown checkout rejection, restore, and sanitized authentication error checks passed. No payment was completed.
+Local Stage B passed 39/39 with zero residual rows. Catalog tests passed 13/13, security/invariants passed 881 with 5 existing skips, fixture safety and typecheck passed, lint had 0 errors, database lint retained only two existing warnings, and the full repository suite passed 1,027 with 5 existing skips. Development deployment was limited to billing-status, checkout, and restore; known direct and included-sibling results were unchanged, the existing-subscriber configured checkout path returned the expected portal flow, and unknown/retired-like checkout IDs retained the sanitized 400 response. Unknown active behavior was proved through the real local Edge/database fixture. No payment was completed.
 
-The next approved billing task is explicit unknown or replaced Price handling. That task must decide diagnostics and legacy/replacement behavior without inferring commercial policy from current fallback behavior.
+The next approved billing task is deployed development-function smoke fixtures. It must remain development-only, masked, exact-cleanup-owned, and separate from Stripe test-mode fixture work.

@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-16
 
-**Last verified repository state:** behavior-preserving billing catalog and catalog-aware pricing operations documentation merged and pushed on matching `main`/`origin/main` at `ad5856f57c9863c8b9a723f4d5005d85711ff584`
+**Last verified repository state:** unknown/replaced Price handling completed, validated, deployed to development, merged, and pushed on matching `main`/`origin/main`
 
 ## 1. Document Contract
 
@@ -25,7 +25,7 @@ This table is the single mutable status snapshot in V5.
 
 | Area | Status at the last verified repository state |
 |---|---|
-| Repository | The behavior-preserving billing catalog and catalog-aware pricing runbook were merged and pushed on matching `main`/`origin/main` at `ad5856f57c9863c8b9a723f4d5005d85711ff584`. Confirm the current git state before editing. |
+| Repository | Unknown/replaced Price handling is complete, validated, deployed to development, merged, and pushed on matching `main`/`origin/main`. Confirm the current git state before editing. |
 | Supabase Data API grants | Complete, merged, pushed, and applied to development. |
 | Workspace/membership write boundary | Complete, merged, pushed, and applied to development. Workspace creation is transactional and server-controlled; authenticated membership access is SELECT-only. |
 | Clean local database | All 27 migrations reset successfully. |
@@ -35,8 +35,8 @@ This table is the single mutable status snapshot in V5.
 | Direct-paid F12 identity | Complete and deployed. Requested-workspace direct identity precedes sibling owner-plan coverage. |
 | Pricing | Not commercially finalized. |
 | Normalized billing catalog | Complete, behavior-preserving, validated locally and in development, merged, and pushed. |
-| Pricing operations runbook | Complete and updated for the implemented catalog. It records current implementation, safe change procedures, reduced deployment scope, rollback limits, and unresolved commercial decisions without changing behavior. |
-| Unknown or replaced price handling | Not yet audited or implemented. |
+| Pricing operations runbook | Complete and updated for active checkout Prices, recognition-only legacy Prices, unknown fallback diagnostics, safe replacement, deployment scope, rollback limits, and unresolved commercial decisions. |
+| Unknown or replaced Price handling | Complete. Usable explicitly mapped unknown Prices preserve conservative paid fallback with a masked diagnostic; recognized legacy Prices preserve tier/limit but remain checkout-disabled. Local and development validation passed. |
 | Max Capacity Phase C | Blocked and not started. |
 | Development schema drift | Legacy cases/packs, policies/functions, and billing ID differences remain a separate, non-blocking future audit. |
 
@@ -55,29 +55,28 @@ This table is the single mutable status snapshot in V5.
 
 | Field | Current value |
 |---|---|
-| Task | Audit and implement unknown or replaced Price handling. |
-| Branch | `fix/billing-unknown-replaced-price-handling` |
-| Outcome | Define explicit, testable handling and diagnostics for active subscriptions whose Price is unknown or has been replaced, while preserving approved paid access and avoiding invented legacy or commercial policy. |
+| Task | Add deployed development-function smoke fixtures. |
+| Branch | `test/billing-deployed-development-fixtures` (create from updated `main` at task start) |
+| Outcome | Add durable, masked, exact-cleanup-owned development fixtures for billing combinations that cannot be proved by source/runtime and localhost layers alone. |
 | Blocker state | Unblocked. |
-| Scope boundary | Start from the catalog's current behavior and audit real configured/replaced Price states before changing semantics. No commercial Price decision, subscriber migration, frontend pricing redesign, broad billing schema change, or Phase C work. |
-| Closeout | Record an explicit unknown/replaced-Price contract, implement only the approved behavior, and prove direct, sibling, restore, checkout, webhook/portal compatibility, local fixtures, and development behavior. |
+| Scope boundary | Development Supabase only; production-refusing, manifest/exact-ID cleanup, no customer data, no live Stripe, no commercial policy, no Phase C work. Keep Stripe test-mode fixtures as the following separate queue item. |
+| Closeout | Prove exact cleanup and the approved deployed-function matrix, then update V5 without promoting Stripe test-mode or billing-gate reassessment early. |
 
 Only this row is active. The following section is an approved sequence, not simultaneous work.
 
 ## 5. Next Approved Execution Queue
 
-1. Audit and implement unknown or replaced Price handling.
-2. Add deployed development-function smoke fixtures.
-3. Add Stripe test-mode fixtures.
-4. Reassess remaining billing reliability gates.
-5. Resume Max Capacity Phase C only after billing reliability is closed.
+1. Add deployed development-function smoke fixtures.
+2. Add Stripe test-mode fixtures.
+3. Reassess remaining billing reliability gates.
+4. Resume Max Capacity Phase C only after billing reliability is closed.
 
 Queue order is approval order. Start one branch at a time and record its active branch, outcome, and blocker state in Section 4.
 
 ## 6. Current Blockers
 
 - Billing reliability cannot close until the remaining queue gates are implemented, evidenced, and explicitly reassessed.
-- Commercial pricing is not final; unknown/replaced-Price handling and later fixture work must not invent future commercial terms.
+- Commercial pricing is not final; later fixture work must not invent future commercial terms.
 - Exact external billing combinations remain unavailable until durable development and Stripe test-mode fixtures exist.
 - Max Capacity Phase C is blocked by the billing reliability closeout gate. It has no approved active branch and must not start early.
 
@@ -85,6 +84,7 @@ Queue order is approval order. Start one branch at a time and record its active 
 
 | Milestone | Concise result | Evidence |
 |---|---|---|
+| Unknown/replaced Price handling | Active checkout and recognition-only legacy Price sets are separate. Known legacy Prices preserve tier/limit without new checkout; usable explicitly mapped unknown Prices retain conservative fallback and emit a masked `unknownPriceId` diagnostic. Local Stage B stayed 39/39 with zero residuals; repository gates and limited development deployment/smoke passed. | [Pricing Operations Runbook](../billing/PRICING-OPERATIONS-RUNBOOK.md), `supabase/functions/_shared/billing-catalog.ts`, `supabase/functions/billing-status/index.ts` |
 | Behavior-preserving billing catalog | One lazy, pure shared server catalog now owns configured Pro/Business Price IDs, interval resolution, checkout eligibility, and Trial/Pro/Business workspace limits. Billing-status exact Business matching, restore's broader Business matching, Pro-only checkout, and unknown-active paid fallback remain unchanged; local Stage B, repository gates, and limited development deployment/smoke passed. | [Pricing Operations Runbook](../billing/PRICING-OPERATIONS-RUNBOOK.md), `supabase/functions/_shared/billing-catalog.ts` |
 | Pricing operations runbook | Current catalog authority, caller-specific recognition rules, safe change procedures, environment risks, validation/deployment matrices, rollback limits, grandfathering default, emergency checkout stop, and unresolved commercial decisions are documented without changing runtime or Stripe state. | [Pricing Operations Runbook](../billing/PRICING-OPERATIONS-RUNBOOK.md), [Pricing Change Log](../billing/PRICING-CHANGE-LOG.md) |
 | Local billing fixture Stage B | A localhost-only harness now runs the real local billing/ownership Edge paths, ownership RPC, authenticated RLS, and raw constraint probes. Clean 27-migration reset, 39/39 local checks, exact-ID cleanup, and repository gates passed without remote Supabase or Stripe access. | [Local fixture operator guide](../dev/local-billing-fixtures.md), [shared fixture boundary](../dev/billing-fixtures.md) |
@@ -148,7 +148,7 @@ Queue order is approval order. Start one branch at a time and record its active 
 
 The current reliability phase establishes repeatable proof for organization-scoped billing behavior before product expansion resumes.
 
-The phase closes only when the remaining reliability queue items 1–4 have either passed or received an explicit, evidenced disposition. Local fixtures, the behavior-preserving catalog, and the catalog-aware pricing runbook are complete. Closure still requires defined unknown/replaced-Price behavior, deployed-development smoke fixtures, Stripe test-mode fixtures, and a final gate reassessment.
+The phase closes only when the remaining reliability queue items 1–3 have either passed or received an explicit, evidenced disposition. Local fixtures, the catalog/runbook, and unknown/replaced-Price behavior are complete. Closure still requires deployed-development smoke fixtures, Stripe test-mode fixtures, and a final gate reassessment.
 
 The foundation must preserve [Billing Entitlement Rules](./BILLING_ENTITLEMENT_RULES.md), [Billing Fixture Safety](../dev/billing-fixtures.md), direct-first F12 identity, fail-closed ambiguity, owner-only money actions, and production-data refusal. It does not authorize a broad billing schema migration or any next-generation billing design in Section 12.
 

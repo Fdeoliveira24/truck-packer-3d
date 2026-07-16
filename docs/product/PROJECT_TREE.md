@@ -1,6 +1,6 @@
 # File Tree: Truck Packer 3D
 
-**Generated:** 7/16/2026, 5:02:27 PM
+**Generated:** 7/16/2026, 5:40:35 PM
 **Root Path:** `/Users/franciscooliveira/Dropbox/360Virtual Tour Solutions/Projects/Truck Packer 3D`
 
 ```
@@ -288,6 +288,7 @@
 │   └── 📄 main.css
 ├── 📁 supabase
 │   ├── 📁 functions
+│   │   ├── ⚙️ .env.example
 │   │   ├── 📁 _shared
 │   │   │   ├── 📄 auth.ts
 │   │   │   ├── 📄 billing-catalog.ts

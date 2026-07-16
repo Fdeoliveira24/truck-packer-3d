@@ -22601,11 +22601,19 @@ async function createBillingStatusDirectIdentityRuntime(options = {}) {
     ['STRIPE_PRICE_PRO_YEARLY', 'price_pro_year'],
     ['STRIPE_PRICE_BUSINESS_MONTHLY', 'price_business_month'],
     ['STRIPE_PRICE_BUSINESS_YEARLY', 'price_business_year'],
+    ['STRIPE_PRICE_PRO_MONTHLY_LEGACY', 'price_pro_legacy_month'],
+    ['STRIPE_PRICE_PRO_YEARLY_LEGACY', 'price_pro_legacy_year'],
+    ['STRIPE_PRICE_BUSINESS_MONTHLY_LEGACY', 'price_business_legacy_month'],
+    ['STRIPE_PRICE_BUSINESS_YEARLY_LEGACY', 'price_business_legacy_year'],
     ['TP3D_PRO_WORKSPACE_LIMIT', '3'],
     ['TP3D_BUSINESS_WORKSPACE_LIMIT', '10'],
     ['TP3D_TRIAL_WORKSPACE_LIMIT', '1'],
     ['TP3D_DEBUG', '1'],
   ]);
+  for (const [name, value] of Object.entries(options.env || {})) {
+    if (typeof value === 'undefined') env.delete(name);
+    else env.set(name, String(value));
+  }
   const sandbox = {
     URL, Request, Response, Headers, Date, Map, Set, Promise,
     setTimeout, clearTimeout,
@@ -22688,11 +22696,13 @@ test('F12 production runtime: active direct siblings retain their own interval, 
   assert.equal(a.body.interval, 'month');
   assert.equal(a.body.currentPeriodEnd, '2026-12-01T00:00:00.000Z');
   assert.equal(a.body.workspaceLimit, 3, 'A uses its own Pro price limit');
+  assert.equal(a.body.unknownPriceId, false);
   assert.equal(d.body.entitlementStatus, 'active', 'newest direct-paid workspace is never demoted by A oldest-first slots');
   assert.notEqual(d.body.entitlementStatus, 'workspace_limit_reached');
   assert.equal(d.body.interval, 'year');
   assert.equal(d.body.currentPeriodEnd, '2026-09-15T00:00:00.000Z');
   assert.equal(d.body.workspaceLimit, 10, 'D uses its own Business price limit');
+  assert.equal(d.body.unknownPriceId, false);
   assert.equal(d.body.debug.ownerEntitlementOrgId, organizations[1].id,
     'the archived sibling is the owner-wide diagnostic winner but cannot override D direct identity');
 });
@@ -22710,6 +22720,16 @@ test('F12 production runtime: direct trial, unknown active price, and zero-amoun
   assert.equal(trial.body.interval, 'year');
   assert.equal(trial.body.trialEndsAt, trialEnd);
   assert.equal(trial.body.workspaceLimit, 1);
+  assert.equal(trial.body.unknownPriceId, true);
+  assert.doesNotMatch(JSON.stringify(trial.body), /price_unrecognized/,
+    'the raw unknown Price is not exposed in the response or debug payload');
+  const trialWarning = trialRuntime.calls.logs.find(entry =>
+    entry[0] === 'warn' && entry[1] === 'billing:unknown-price-fallback');
+  assert.ok(trialWarning, 'unknown direct Price emits the stable server reason code');
+  assert.doesNotMatch(JSON.stringify(trialWarning), /price_unrecognized/,
+    'unknown Price warning masks the full Stripe object ID');
+  assert.doesNotMatch(JSON.stringify(trialWarning), new RegExp(orgB),
+    'unknown Price warning masks the full organization ID');
 
   const couponRuntime = await createBillingStatusDirectIdentityRuntime({ subscriptions: [{
     organization_id: orgA,
@@ -22725,6 +22745,105 @@ test('F12 production runtime: direct trial, unknown active price, and zero-amoun
   assert.equal(coupon.body.entitlementStatus, 'active');
   assert.equal(coupon.body.isPro, true);
   assert.equal(coupon.body.workspaceLimit, 3, 'unknown explicitly mapped active price keeps existing paid fallback');
+  assert.equal(coupon.body.unknownPriceId, true);
+  assert.doesNotMatch(JSON.stringify(coupon.body), /price_unknown_paid/);
+});
+
+test('F12 production runtime: recognized legacy Pro and Business Prices keep tier limits but are not unknown', async () => {
+  const orgA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const orgB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2';
+  const runtime = await createBillingStatusDirectIdentityRuntime({ subscriptions: [
+    {
+      organization_id: orgA, status: 'active', price_id: 'price_pro_legacy_month', interval: null,
+      stripe_subscription_id: 'sub_legacy_pro', current_period_end: '2026-10-01T00:00:00.000Z',
+    },
+    {
+      organization_id: orgB, status: 'active', price_id: 'price_business_legacy_year', interval: 'year',
+      stripe_subscription_id: 'sub_legacy_business', current_period_end: '2026-11-01T00:00:00.000Z',
+    },
+  ] });
+  const pro = await runtime.request(orgA);
+  const business = await runtime.request(orgB);
+
+  assert.equal(pro.body.entitlementStatus, 'active');
+  assert.equal(pro.body.workspaceLimit, 3);
+  assert.equal(pro.body.interval, 'month', 'legacy Pro interval can be recognized from its catalog list');
+  assert.equal(pro.body.unknownPriceId, false);
+  assert.equal(business.body.entitlementStatus, 'active');
+  assert.equal(business.body.workspaceLimit, 10);
+  assert.equal(business.body.interval, 'year');
+  assert.equal(business.body.unknownPriceId, false);
+  assert.equal(runtime.calls.logs.some(entry => entry[1] === 'billing:unknown-price-fallback'), false);
+});
+
+test('F12 production runtime: unknown Price in approved payment grace keeps paid fallback and reports the catalog gap', async () => {
+  const orgA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const runtime = await createBillingStatusDirectIdentityRuntime({ subscriptions: [{
+    organization_id: orgA,
+    status: 'past_due',
+    price_id: 'price_unknown_payment_grace',
+    interval: 'month',
+    stripe_subscription_id: 'sub_unknown_payment_grace',
+    current_period_end: '2099-12-01T00:00:00.000Z',
+  }] });
+  const result = await runtime.request(orgA);
+
+  assert.equal(result.body.entitlementStatus, 'active');
+  assert.equal(result.body.paymentProblem, true);
+  assert.equal(result.body.isPro, true);
+  assert.equal(result.body.workspaceLimit, 3);
+  assert.equal(result.body.unknownPriceId, true);
+  assert.doesNotMatch(JSON.stringify(result.body), /price_unknown_payment_grace/);
+});
+
+test('F12 production runtime: unknown canceled Price grants no access and emits no unknown diagnostic', async () => {
+  const orgA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const runtime = await createBillingStatusDirectIdentityRuntime({ subscriptions: [{
+    organization_id: orgA,
+    status: 'canceled',
+    price_id: 'price_unknown_canceled',
+    interval: 'month',
+    stripe_subscription_id: 'sub_unknown_canceled',
+    current_period_end: '2025-01-01T00:00:00.000Z',
+  }] });
+  const result = await runtime.request(orgA);
+  assert.equal(result.body.entitlementStatus, 'owner_subscription_required');
+  assert.equal(result.body.workspaceIncluded, false);
+  assert.equal(result.body.isPro, false);
+  assert.equal(result.body.unknownPriceId, false);
+  assert.equal(runtime.calls.logs.some(entry => entry[1] === 'billing:unknown-price-fallback'), false);
+});
+
+test('F12 production runtime: unknown owner candidate preserves sibling coverage and reports the catalog gap', async () => {
+  const owner = '11111111-1111-4111-8111-111111111111';
+  const organizations = ['a', 'b', 'c', 'd'].map((suffix, index) => ({
+    id: `${suffix.repeat(8)}-${suffix.repeat(4)}-4${suffix.repeat(3)}-8${suffix.repeat(3)}-${suffix.repeat(11)}${index + 1}`,
+    owner_id: owner,
+    created_at: `2025-0${index + 1}-01T00:00:00.000Z`,
+    archived_at: null,
+  }));
+  const unknownPrice = 'price_unknown_owner_candidate';
+  const runtime = await createBillingStatusDirectIdentityRuntime({ organizations, subscriptions: [{
+    organization_id: organizations[0].id,
+    status: 'active',
+    price_id: unknownPrice,
+    interval: 'month',
+    stripe_subscription_id: 'sub_unknown_owner',
+    current_period_end: '2026-12-01T00:00:00.000Z',
+  }] });
+
+  const included = await runtime.request(organizations[1].id);
+  const overLimit = await runtime.request(organizations[3].id);
+  assert.equal(included.body.entitlementStatus, 'included_in_plan');
+  assert.equal(included.body.workspaceLimit, 3);
+  assert.equal(included.body.workspaceIncluded, true);
+  assert.equal(included.body.unknownPriceId, true);
+  assert.equal(overLimit.body.entitlementStatus, 'workspace_limit_reached');
+  assert.equal(overLimit.body.workspaceLimit, 3);
+  assert.equal(overLimit.body.workspaceIncluded, false);
+  assert.equal(overLimit.body.unknownPriceId, true);
+  assert.doesNotMatch(JSON.stringify(included.body), new RegExp(unknownPrice));
+  assert.doesNotMatch(JSON.stringify(overLimit.body), new RegExp(unknownPrice));
 });
 
 test('F12 production runtime: canceled requested workspaces keep sibling included/over-limit behavior', async () => {
@@ -22745,15 +22864,17 @@ test('F12 production runtime: canceled requested workspaces keep sibling include
   const overLimit = await runtime.request(organizations[3].id);
   assert.equal(included.body.entitlementStatus, 'included_in_plan');
   assert.equal(included.body.workspaceIncluded, true);
+  assert.equal(included.body.unknownPriceId, false);
   assert.equal(overLimit.body.entitlementStatus, 'workspace_limit_reached');
   assert.equal(overLimit.body.workspaceIncluded, false);
+  assert.equal(overLimit.body.unknownPriceId, false);
 });
 
 test('F12 production runtime: duplicate direct rows fail closed without exposing an arbitrary winner', async () => {
   const orgA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
   const runtime = await createBillingStatusDirectIdentityRuntime({
     subscriptions: [
-      { organization_id: orgA, status: 'active', price_id: 'price_pro_month', interval: 'month', stripe_subscription_id: 'sub_duplicate_1', current_period_end: '2026-09-01T00:00:00.000Z' },
+      { organization_id: orgA, status: 'active', price_id: 'price_unknown_duplicate', interval: 'month', stripe_subscription_id: 'sub_duplicate_1', current_period_end: '2026-09-01T00:00:00.000Z' },
       { organization_id: orgA, status: 'trialing', price_id: 'price_business_year', interval: 'year', stripe_subscription_id: 'sub_duplicate_2', current_period_end: '2026-12-01T00:00:00.000Z', trial_end: '2026-12-01T00:00:00.000Z' },
     ],
     billingCustomers: [{
@@ -22775,6 +22896,8 @@ test('F12 production runtime: duplicate direct rows fail closed without exposing
   assert.equal(result.body.duplicateActiveMappings, true);
   assert.equal(result.body.interval, 'unknown');
   assert.equal(result.body.currentPeriodEnd, null);
+  assert.equal(result.body.unknownPriceId, false, 'ambiguous identity fails closed before unknown Price diagnostics');
+  assert.doesNotMatch(JSON.stringify(result.body), /price_unknown_duplicate/);
 });
 
 test('F12 function runtime: conflicting local and Stripe organization bindings fail direct resolution closed', async () => {
@@ -22820,6 +22943,7 @@ test('F12 production runtime: archived requested workspace guard remains billing
   assert.equal(result.body.archived, true);
   assert.equal(result.body.entitlementStatus, 'billing_unavailable');
   assert.equal(result.body.isActive, false);
+  assert.equal(result.body.unknownPriceId, false);
 });
 
 // ── BILLING-UNMAPPED: billing-status must never guess an organization for a

@@ -245,7 +245,7 @@ if (!availability.available) {
         assert.equal(response.body?.workspaceIncluded, true);
         assert.equal(response.body?.interval, 'year');
         assert.equal(response.body?.workspaceLimit, baseWorkspaceLimit);
-        assert.equal(Object.hasOwn(response.body, 'unknownPriceId'), false);
+        assert.equal(response.body?.unknownPriceId, true);
       });
 
       const duplicate = await run.signupUser('b2-duplicate-active');

@@ -9,6 +9,8 @@ const catalogPath = new URL('../../supabase/functions/_shared/billing-catalog.ts
 const billingStatusPath = new URL('../../supabase/functions/billing-status/index.ts', import.meta.url);
 const restorePath = new URL('../../supabase/functions/org-restore-workspace/index.ts', import.meta.url);
 const checkoutPath = new URL('../../supabase/functions/stripe-create-checkout-session/index.ts', import.meta.url);
+const portalPath = new URL('../../supabase/functions/stripe-create-portal-session/index.ts', import.meta.url);
+const webhookPath = new URL('../../supabase/functions/stripe-webhook/index.ts', import.meta.url);
 const stripeSharedPath = new URL('../../supabase/functions/_shared/stripe.ts', import.meta.url);
 
 const DEFAULT_ENV = {
@@ -16,6 +18,10 @@ const DEFAULT_ENV = {
   STRIPE_PRICE_PRO_YEARLY: 'price_pro_year',
   STRIPE_PRICE_BUSINESS_MONTHLY: 'price_business_month',
   STRIPE_PRICE_BUSINESS_YEARLY: 'price_business_year',
+  STRIPE_PRICE_PRO_MONTHLY_LEGACY: 'price_pro_legacy_month, price_pro_legacy_month_2',
+  STRIPE_PRICE_PRO_YEARLY_LEGACY: 'price_pro_legacy_year',
+  STRIPE_PRICE_BUSINESS_MONTHLY_LEGACY: 'price_business_legacy_month',
+  STRIPE_PRICE_BUSINESS_YEARLY_LEGACY: 'price_business_legacy_year',
   TP3D_TRIAL_WORKSPACE_LIMIT: '1',
   TP3D_PRO_WORKSPACE_LIMIT: '3',
   TP3D_BUSINESS_WORKSPACE_LIMIT: '10',
@@ -28,6 +34,10 @@ async function loadCatalog(overrides = {}) {
     'getBillingCatalog',
     'workspaceLimitForTier',
     'configuredBusinessPriceIds',
+    'resolveRecognizedTierByPriceId',
+    'isKnownPriceId',
+    'isLegacyPriceId',
+    'isCheckoutEnabledPriceId',
     'workspaceLimitForPrice',
     'workspaceLimitForEntitlement',
     'workspaceLimitForRestoreCandidate',
@@ -69,6 +79,11 @@ test('BILLING-CATALOG-1 configured Pro and Business prices keep their current wo
     'price_business_month',
     'price_business_year',
   ]);
+  assert.equal(catalog.isKnownPriceId('price_pro_month'), true);
+  assert.equal(catalog.isKnownPriceId('price_pro_year'), true);
+  assert.equal(catalog.isKnownPriceId('price_business_month'), true);
+  assert.equal(catalog.isKnownPriceId('price_business_year'), true);
+  assert.equal(catalog.isLegacyPriceId('price_business_month'), false);
 });
 
 test('BILLING-CATALOG-2 unknown active prices keep the Pro/base-paid fallback and trial keeps its limit', async () => {
@@ -76,6 +91,8 @@ test('BILLING-CATALOG-2 unknown active prices keep the Pro/base-paid fallback an
   assert.equal(catalog.workspaceLimitForPrice('price_unknown_active'), 3);
   assert.equal(catalog.workspaceLimitForEntitlement('active', 'price_unknown_active'), 3);
   assert.equal(catalog.workspaceLimitForEntitlement('trialing', 'price_unknown_active'), 1);
+  assert.equal(catalog.isKnownPriceId('price_unknown_active'), false);
+  assert.equal(catalog.resolveRecognizedTierByPriceId('price_unknown_active'), null);
 });
 
 test('BILLING-CATALOG-3 empty price variables are ignored and environment reads stay lazy', async () => {
@@ -113,7 +130,11 @@ test('BILLING-CATALOG-5 checkout allow-list contains only configured Pro prices'
   assert.doesNotThrow(() => catalog.assertAllowedCheckoutPrice('price_pro_month'));
   assert.doesNotThrow(() => catalog.assertAllowedCheckoutPrice('price_pro_year'));
   assert.throws(() => catalog.assertAllowedCheckoutPrice('price_business_month'));
+  assert.throws(() => catalog.assertAllowedCheckoutPrice('price_pro_legacy_month'));
+  assert.throws(() => catalog.assertAllowedCheckoutPrice('price_business_legacy_year'));
   assert.throws(() => catalog.assertAllowedCheckoutPrice('price_unknown'));
+  assert.equal(catalog.isCheckoutEnabledPriceId('price_pro_month'), true);
+  assert.equal(catalog.isCheckoutEnabledPriceId('price_pro_legacy_month'), false);
 });
 
 test('BILLING-CATALOG-6 invalid workspace-limit environment values retain current defaults', async () => {
@@ -158,9 +179,34 @@ test('BILLING-CATALOG-9 restore resolver preserves its broader Business detectio
   assert.equal(catalog.workspaceLimitForRestoreCandidate('legacy_business_price', 'pro', 'active'), 10);
   assert.equal(catalog.workspaceLimitForRestoreCandidate('legacy_price', 'Business Legacy', 'active'), 10);
   assert.equal(catalog.workspaceLimitForRestoreCandidate('legacy_business_price', 'business', 'trialing'), 1);
+  assert.equal(catalog.workspaceLimitForRestoreCandidate('price_pro_legacy_year', 'business', 'active'), 3,
+    'explicit legacy Pro recognition wins over broader plan-name drift');
+  assert.equal(catalog.workspaceLimitForRestoreCandidate('price_business_legacy_month', 'pro', 'active'), 10);
+  assert.equal(catalog.workspaceLimitForRestoreCandidate('price_unknown_plain', 'pro', 'active'), 3);
 });
 
-test('BILLING-CATALOG-10 consumers own no direct catalog environment reads and response shape stays unchanged', async () => {
+test('BILLING-CATALOG-10 legacy recognition is tiered, interval-aware, lazy, and separate from checkout', async () => {
+  const catalog = await loadCatalog();
+  assert.equal(catalog.resolveRecognizedTierByPriceId('price_pro_legacy_month'), 'pro');
+  assert.equal(catalog.resolveRecognizedTierByPriceId('price_business_legacy_year'), 'business');
+  assert.equal(catalog.workspaceLimitForPrice('price_pro_legacy_year'), 3);
+  assert.equal(catalog.workspaceLimitForPrice('price_business_legacy_month'), 10);
+  assert.equal(catalog.resolveConfiguredPriceInterval('price_pro_legacy_month_2'), 'month');
+  assert.equal(catalog.resolveConfiguredPriceInterval('price_pro_legacy_year'), 'year');
+  assert.equal(catalog.isLegacyPriceId('price_pro_legacy_month'), true);
+  assert.equal(catalog.isLegacyPriceId('price_business_legacy_year'), true);
+
+  catalog.setEnv('STRIPE_PRICE_BUSINESS_MONTHLY_LEGACY', 'price_pro_month');
+  assert.equal(catalog.resolveRecognizedTierByPriceId('price_pro_month'), 'pro',
+    'a recognition-only legacy list cannot steal a current Price from its active tier');
+  assert.equal(catalog.isLegacyPriceId('price_pro_month'), false);
+
+  catalog.setEnv('STRIPE_PRICE_PRO_MONTHLY_LEGACY', ' price_late_legacy,price_late_legacy ');
+  assert.equal(catalog.isKnownPriceId('price_late_legacy'), true, 'legacy environment reads stay lazy');
+  assert.equal(catalog.isCheckoutEnabledPriceId('price_late_legacy'), false);
+});
+
+test('BILLING-CATALOG-11 consumers own no direct catalog environment reads and billing adds only the safe diagnostic', async () => {
   const [catalogSource, billingSource, restoreSource, checkoutSource] = await Promise.all([
     fs.readFile(catalogPath, 'utf8'),
     fs.readFile(billingStatusPath, 'utf8'),
@@ -172,6 +218,10 @@ test('BILLING-CATALOG-10 consumers own no direct catalog environment reads and r
     'STRIPE_PRICE_PRO_YEARLY',
     'STRIPE_PRICE_BUSINESS_MONTHLY',
     'STRIPE_PRICE_BUSINESS_YEARLY',
+    'STRIPE_PRICE_PRO_MONTHLY_LEGACY',
+    'STRIPE_PRICE_PRO_YEARLY_LEGACY',
+    'STRIPE_PRICE_BUSINESS_MONTHLY_LEGACY',
+    'STRIPE_PRICE_BUSINESS_YEARLY_LEGACY',
     'TP3D_TRIAL_WORKSPACE_LIMIT',
     'TP3D_PRO_WORKSPACE_LIMIT',
     'TP3D_BUSINESS_WORKSPACE_LIMIT',
@@ -183,14 +233,30 @@ test('BILLING-CATALOG-10 consumers own no direct catalog environment reads and r
     assert.doesNotMatch(restoreSource, directRead, `restore must not read ${name} directly`);
     assert.doesNotMatch(checkoutSource, directRead, `checkout must not read ${name} directly`);
   }
-  assert.doesNotMatch(billingSource, /unknownPriceId/);
+  assert.match(billingSource, /unknownPriceId/);
+  assert.match(billingSource, /billing:unknown-price-fallback/);
   assert.match(checkoutSource, /Price not configured for interval: \$\{interval\}/,
     'missing configured checkout Price response is unchanged');
   assert.match(checkoutSource, /assertAllowedCheckoutPrice\(price_id\)/,
     'invalid checkout Price still passes through an explicit allow-list guard');
 });
 
-test('BILLING-CATALOG-11 shared Stripe helpers remain byte-for-byte unchanged', async () => {
+test('BILLING-CATALOG-12 webhook stores Stripe Price truth and portal remains catalog-independent', async () => {
+  const [webhookSource, portalSource] = await Promise.all([
+    fs.readFile(webhookPath, 'utf8'),
+    fs.readFile(portalPath, 'utf8'),
+  ]);
+  assert.match(webhookSource, /price_id: priceId/,
+    'webhook projection stores the Stripe Price without a catalog entitlement decision');
+  assert.doesNotMatch(webhookSource, /billing-catalog|isKnownPriceId|resolveRecognizedTierByPriceId/,
+    'webhook does not reject or promote unknown Prices');
+  assert.doesNotMatch(portalSource, /billing-catalog|isKnownPriceId|resolveRecognizedTierByPriceId/,
+    'portal does not require Price recognition');
+  assert.match(portalSource, /organization_id", organizationId/,
+    'portal remains explicitly organization-scoped');
+});
+
+test('BILLING-CATALOG-13 shared Stripe helpers remain byte-for-byte unchanged', async () => {
   const source = await fs.readFile(stripeSharedPath);
   assert.equal(
     createHash('sha256').update(source).digest('hex'),

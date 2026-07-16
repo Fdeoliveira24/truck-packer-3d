@@ -55,6 +55,7 @@ build/
 *.temp
 .cache/
 .npm-cache/
+.tp3d-fixtures/
 
 # Secrets — never commit
 .env

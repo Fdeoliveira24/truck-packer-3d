@@ -86,6 +86,7 @@ const helpModalPath = new URL('../../src/ui/overlays/help-modal.js', import.meta
 const importAppDialogPath = new URL('../../src/ui/overlays/import-app-dialog.js', import.meta.url);
 const importPackDialogPath = new URL('../../src/ui/overlays/import-pack-dialog.js', import.meta.url);
 const billingStatusPath = new URL('../../supabase/functions/billing-status/index.ts', import.meta.url);
+const billingCatalogPath = new URL('../../supabase/functions/_shared/billing-catalog.ts', import.meta.url);
 const stripeCheckoutPath = new URL('../../supabase/functions/stripe-create-checkout-session/index.ts', import.meta.url);
 const stripePortalPath = new URL('../../supabase/functions/stripe-create-portal-session/index.ts', import.meta.url);
 const orgInvitePath = new URL('../../supabase/functions/org-invite/index.ts', import.meta.url);
@@ -22470,7 +22471,7 @@ test('CHECKOUT-GUARD-3 single-org legacy gate: exact membership count of one, am
 
 test('CHECKOUT-GUARD-4 checkout metadata, price allow-list, idempotency, and owner auth unchanged', async () => {
   const src = await fs.readFile(stripeCheckoutPath, 'utf8');
-  assert.match(src, /assertAllowedPrice\(price_id\)/, 'price allow-list retained');
+  assert.match(src, /assertAllowedCheckoutPrice\(price_id\)/, 'catalog-backed price allow-list retained');
   assert.match(src, /idempotencyKey: checkoutIdempotencyKey\(user\.id, organizationId, price_id\)/,
     'idempotency key still scoped user+organization+price');
   assert.match(src,
@@ -22495,7 +22496,8 @@ test('CHECKOUT-GUARD-5 checkout never write-repairs Stripe metadata or picks an 
 
 async function createBillingStatusDirectIdentityRuntime(options = {}) {
   const src = await fs.readFile(billingStatusPath, 'utf8');
-  const executableSource = src.replace(/^import .*;\s*$/gm, '');
+  const catalogSrc = await fs.readFile(billingCatalogPath, 'utf8');
+  const executableSource = `${catalogSrc.replace(/^export\s+/gm, '')}\n${src.replace(/^import[\s\S]*?;\s*$/gm, '')}`;
   let handler = null;
 
   const ownerUserId = '11111111-1111-4111-8111-111111111111';

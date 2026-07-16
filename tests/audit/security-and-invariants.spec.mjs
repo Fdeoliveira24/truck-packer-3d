@@ -91,6 +91,7 @@ const stripePortalPath = new URL('../../supabase/functions/stripe-create-portal-
 const orgInvitePath = new URL('../../supabase/functions/org-invite/index.ts', import.meta.url);
 const orgInviteRevokePath = new URL('../../supabase/functions/org-invite-revoke/index.ts', import.meta.url);
 const orgInviteAcceptPath = new URL('../../supabase/functions/org-invite-accept/index.ts', import.meta.url);
+const orgCreateWorkspacePath = new URL('../../supabase/functions/org-create-workspace/index.ts', import.meta.url);
 const orgMemberRoleUpdatePath = new URL('../../supabase/functions/org-member-role-update/index.ts', import.meta.url);
 const orgMemberRemovePath = new URL('../../supabase/functions/org-member-remove/index.ts', import.meta.url);
 const orgTransferOwnershipPath = new URL('../../supabase/functions/org-transfer-ownership/index.ts', import.meta.url);
@@ -140,6 +141,14 @@ const accountPurgeStatusMigrationPath = new URL(
 );
 const guardProfileDeletionFieldsMigrationPath = new URL(
   '../../supabase/migrations/2026061301_guard_profile_deletion_fields.sql',
+  import.meta.url
+);
+const createWorkspaceMigrationPath = new URL(
+  '../../supabase/migrations/20260716061516_server_controlled_workspace_creation.sql',
+  import.meta.url
+);
+const restrictMembershipMutationMigrationPath = new URL(
+  '../../supabase/migrations/20260716061518_restrict_direct_membership_mutations.sql',
   import.meta.url
 );
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
@@ -15753,6 +15762,129 @@ test('signup auto-org trigger avoids restricted-search-path uuid calls and keeps
     'billing seed should tolerate legacy billing_customers tables with user_id columns');
   assert.match(src, /execute[\s\S]*insert into public\.billing_customers[\s\S]*user_id[\s\S]*using new\.organization_id, new\.user_id/,
     'billing seed should populate legacy user_id when that column exists');
+});
+
+// ── Server-controlled workspace creation and membership mutation boundary ──
+
+test('workspace creation RPC is one locked service-role-only transaction', async () => {
+  const src = await fs.readFile(createWorkspaceMigrationPath, 'utf8');
+
+  assert.match(src, /create or replace function public\.tp3d_create_workspace\(\s*p_actor_id uuid,\s*p_name text\s*\)/i,
+    'migration must create the dedicated workspace RPC');
+  assert.match(src, /security definer[\s\S]*set search_path = ''/i,
+    'workspace RPC must use a locked empty search_path');
+  assert.match(src, /insert into public\.organizations[\s\S]*owner_id[\s\S]*p_actor_id/i,
+    'workspace RPC must bind organizations.owner_id to the authenticated actor supplied by the Edge Function');
+  const memberInserts = src.match(/insert into public\.organization_members/gi) || [];
+  assert.equal(memberInserts.length, 1,
+    'workspace RPC must insert exactly one canonical owner membership and fire the existing trial trigger once');
+  assert.match(src, /'owner'::public\.org_member_role/,
+    'workspace RPC must create only the owner role');
+  assert.match(src, /update public\.profiles[\s\S]*current_organization_id = v_org_id[\s\S]*where id = p_actor_id/i,
+    'workspace RPC must atomically select the new workspace for the actor');
+  assert.match(src, /TP3D_CREATE_PROFILE_MISSING/,
+    'missing profile state must abort the transaction instead of leaving a partial workspace');
+  assert.doesNotMatch(src, /billing_customers|subscriptions|stripe/i,
+    'workspace RPC must preserve trial behavior through the existing membership trigger without changing billing tables');
+  assert.match(src, /revoke execute on function public\.tp3d_create_workspace\(uuid, text\) from public/i,
+    'workspace RPC must revoke default PUBLIC execute');
+  assert.match(src, /revoke execute on function public\.tp3d_create_workspace\(uuid, text\) from anon/i,
+    'workspace RPC must reject anon execution');
+  assert.match(src, /revoke execute on function public\.tp3d_create_workspace\(uuid, text\) from authenticated/i,
+    'workspace RPC must reject browser-authenticated execution');
+  assert.match(src, /grant execute on function public\.tp3d_create_workspace\(uuid, text\) to service_role/i,
+    'workspace RPC must be executable only through trusted server code');
+});
+
+test('workspace creation RPC validates and normalizes names without accepting caller ownership', async () => {
+  const src = await fs.readFile(createWorkspaceMigrationPath, 'utf8');
+
+  assert.match(src, /p_name is null or p_name ~ '\[\[:cntrl:\]\]'/,
+    'RPC must reject null and control-character names');
+  assert.match(src, /regexp_replace\(pg_catalog\.btrim\(p_name\), '\[\[:space:\]\]\+', ' ', 'g'\)/,
+    'RPC must normalize surrounding and repeated whitespace');
+  assert.match(src, /char_length\(v_name\) < 1 or pg_catalog\.char_length\(v_name\) > 120/,
+    'RPC must enforce the workspace name length contract');
+  assert.doesNotMatch(src, /p_owner|p_role|p_billing|p_stripe|p_members/i,
+    'RPC must not accept caller-controlled owner, role, billing, Stripe, or member inputs');
+});
+
+test('workspace creation Edge Function authenticates, validates, and calls only the transaction RPC', async () => {
+  const src = await fs.readFile(orgCreateWorkspacePath, 'utf8');
+
+  assert.match(src, /if \(req\.method !== "POST"\)/,
+    'workspace creation must require POST');
+  assert.match(src, /requireUser\(req\)/,
+    'workspace creation must authenticate the caller');
+  assert.match(src, /normalizeWorkspaceName\(\(body as Record<string, unknown>\)\.name\)/,
+    'workspace creation must accept and normalize only the name input');
+  assert.match(src, /\.rpc\("tp3d_create_workspace", \{[\s\S]*p_actor_id: auth\.user\.id,[\s\S]*p_name: name/,
+    'Edge Function must derive ownership from the verified user and call the transaction RPC');
+  assert.doesNotMatch(src, /\.from\(|\.(?:insert|update|upsert|delete)\(/,
+    'Edge Function must not split the transaction into direct table writes');
+  assert.doesNotMatch(src, /body[^\n]*(?:owner|role|billing|stripe|members)/i,
+    'Edge Function must not consume caller-supplied authority or billing fields');
+  assert.match(src, /Each accepted request creates one distinct workspace/,
+    'duplicate/retry behavior must be explicit rather than name-deduplicating unrelated workspaces');
+  assert.doesNotMatch(src, /json\(\{ error: (?:error|e)|json\(\{ error: .*\.message/,
+    'database and PostgREST error details must not be returned to the browser');
+});
+
+test('workspace creation client preserves the public contract without direct organization membership writes', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const start = src.indexOf('export async function createOrganization({ name })');
+  const end = src.indexOf('/**\n * Request account deletion', start);
+  const createFn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(createFn, 'createOrganization must remain exported for the existing app caller');
+  assert.match(createFn, /invokeAuthenticatedEdgeFunction\('org-create-workspace', \{[\s\S]*name: normalizedName/,
+    'client workspace creation must use the dedicated Edge Function');
+  assert.match(createFn, /return \{ org, membership \};/,
+    'client must preserve the existing org and membership result contract');
+  assert.doesNotMatch(createFn, /\.from\(|owner_id|role:|slug:/,
+    'client must not send or directly mutate owner, role, slug, organization, or membership data');
+  assert.doesNotMatch(src, /\.from\(['"]organization_members['"]\)\s*\.(?:insert|update|delete)\(/,
+    'browser Supabase client must expose no direct membership mutation');
+});
+
+test('legacy SupabaseClient membership helpers delegate to approved Edge paths', async () => {
+  const src = await fs.readFile(supabasePath, 'utf8');
+  const updateStart = src.indexOf('export async function updateOrganizationMemberRole');
+  const removeStart = src.indexOf('export async function removeOrganizationMember', updateStart);
+  const helperStart = src.indexOf('async function getEdgeFunctionErrorMessage', removeStart);
+  const updateFn = updateStart >= 0 && removeStart > updateStart ? src.slice(updateStart, removeStart) : '';
+  const removeFn = removeStart >= 0 && helperStart > removeStart ? src.slice(removeStart, helperStart) : '';
+
+  assert.match(updateFn, /invokeAuthenticatedEdgeFunction\('org-member-role-update'/,
+    'legacy role helper must use the guarded role Edge Function');
+  assert.match(removeFn, /invokeAuthenticatedEdgeFunction\('org-member-remove'/,
+    'legacy removal helper must use the guarded removal Edge Function');
+  assert.doesNotMatch(updateFn + removeFn, /\.from\(|\.(?:insert|update|delete)\(/,
+    'legacy helpers must not retain direct membership writes');
+});
+
+test('membership privilege migration keeps authenticated SELECT and revokes all direct DML', async () => {
+  const src = await fs.readFile(restrictMembershipMutationMigrationPath, 'utf8');
+
+  assert.match(src, /revoke insert, update, delete[\s\S]*on table public\.organization_members[\s\S]*from authenticated/i,
+    'authenticated membership INSERT, UPDATE, and DELETE must be revoked at the table boundary');
+  assert.match(src, /grant select[\s\S]*on table public\.organization_members[\s\S]*to authenticated/i,
+    'authorized users must retain RLS-filtered membership reads');
+  assert.match(src, /grant select, insert, update, delete[\s\S]*on table public\.organization_members[\s\S]*to service_role/i,
+    'approved server paths must retain membership mutation privileges');
+  assert.doesNotMatch(src, /billing_customers|subscriptions|stripe|policy|create policy|drop policy/i,
+    'membership privilege migration must not alter billing or rewrite RLS policies');
+});
+
+test('workspace creation config uses the established app-level JWT validation pattern', async () => {
+  const src = await fs.readFile(supabaseConfigPath, 'utf8');
+  const start = src.indexOf('[functions.org-create-workspace]');
+  const end = src.indexOf('[functions.', start + 1);
+  const block = start >= 0 ? src.slice(start, end > start ? end : undefined) : '';
+
+  assert.ok(block, 'config must register org-create-workspace');
+  assert.match(block, /verify_jwt\s*=\s*false/,
+    'org-create-workspace must use the existing requireUser/x-user-jwt validation pattern');
 });
 
 // ── Phase 0.6D-pre 4B-orphan: retire legacy purge-deleted-users ───────────────

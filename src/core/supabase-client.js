@@ -2941,31 +2941,22 @@ export async function getOrganizationMembers(orgId) {
 
 /**
  * Update a member role within an organization.
- * Only owners/admins can update roles (enforced by RLS).
+ * Only owners/admins can update roles (enforced by the Edge Function).
  * @param {string} orgId
  * @param {string} userId
  * @param {string} role
  * @returns {Promise<Object|null>}
  */
 export async function updateOrganizationMemberRole(orgId, userId, role) {
-  const client = requireClient();
-  const clientSessionOk = await ensureClientSession();
-  if (!clientSessionOk) throw new Error('Not authenticated');
-  await requireUserId();
   const org = String(orgId || '').trim();
   const user = String(userId || '').trim();
   if (!org || !user) return null;
-
-  const { data, error } = await client
-    .from('organization_members')
-    .update({ role })
-    .eq('organization_id', org)
-    .eq('user_id', user)
-    .select('id, organization_id, user_id, role, joined_at')
-    .maybeSingle();
-
-  if (error) throw error;
-  return data || null;
+  const data = await invokeAuthenticatedEdgeFunction('org-member-role-update', {
+    org_id: org,
+    user_id: user,
+    role,
+  });
+  return data && data.member ? data.member : null;
 }
 
 /**
@@ -2975,16 +2966,13 @@ export async function updateOrganizationMemberRole(orgId, userId, role) {
  * @returns {Promise<boolean>}
  */
 export async function removeOrganizationMember(orgId, userId) {
-  const client = requireClient();
-  const clientSessionOk = await ensureClientSession();
-  if (!clientSessionOk) throw new Error('Not authenticated');
-  await requireUserId();
   const org = String(orgId || '').trim();
   const user = String(userId || '').trim();
   if (!org || !user) return false;
-
-  const { error } = await client.from('organization_members').delete().eq('organization_id', org).eq('user_id', user);
-  if (error) throw error;
+  await invokeAuthenticatedEdgeFunction('org-member-remove', {
+    org_id: org,
+    user_id: user,
+  });
   return true;
 }
 

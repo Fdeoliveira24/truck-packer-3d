@@ -1,6 +1,6 @@
 # File Tree: Truck Packer 3D
 
-**Generated:** 7/15/2026, 8:41:44 PM
+**Generated:** 7/16/2026, 1:40:58 AM
 **Root Path:** `/Users/franciscooliveira/Dropbox/360Virtual Tour Solutions/Projects/Truck Packer 3D`
 
 ```
@@ -125,6 +125,7 @@
 │   │   │   ├── 🖼️ truckpacker-scale-payload-panel-2026-05-24.png
 │   │   │   └── 🖼️ truckpacker-weight-view-range-scale-2026-05-24.png
 │   │   ├── 📝 BILLING_ENTITLEMENT_RULES.md
+│   │   ├── 📝 PRODUCT-STRATEGY-DEBRIEF-2026-07.md
 │   │   ├── 📝 PROJECT_TREE.md
 │   │   ├── 📝 SETTINGS-VISUAL-SYSTEM-CONTRACT.md
 │   │   ├── 📝 SETTINGS-WORKSPACE-GENERAL-UI-PLAN.md

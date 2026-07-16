@@ -1,8 +1,8 @@
 # Truck Packer 3D — Master TODO V5
 
-**Last updated:** 2026-07-15
+**Last updated:** 2026-07-16
 
-**Last verified repository state:** `main` / `origin/main` at `6291e683d453ba955e52e8e46f746d701037a0de`
+**Last verified repository state:** `main` / `origin/main` at `c6201f654b559075928878fe96d11e094e0cb2f0`
 
 ## 1. Document Contract
 
@@ -25,7 +25,7 @@ This table is the single mutable status snapshot in V5.
 
 | Area | Status at the last verified repository state |
 |---|---|
-| Repository | Last verified with `main` and `origin/main` matching at `6291e683d453ba955e52e8e46f746d701037a0de`. Confirm the current git state before editing. |
+| Repository | Last verified with `main` and `origin/main` matching at `c6201f654b559075928878fe96d11e094e0cb2f0`. Confirm the current git state before editing. |
 | Supabase Data API grants | Complete, merged, pushed, and applied to development. |
 | Clean local database | All 25 migrations reset successfully. |
 | Edge smoke | Local and development `billing-status`, `org-member-role-update`, `org-transfer-ownership`, and ownership restoration passed. |
@@ -44,6 +44,7 @@ This table is the single mutable status snapshot in V5.
 - This document is the only active operational plan and status source.
 - [Billing Entitlement Rules](./BILLING_ENTITLEMENT_RULES.md) remains authoritative for billing and workspace product semantics.
 - [AutoPack Engine Contract](../engineering/autopack-engine-contract.md) remains authoritative for packing geometry, physical safety, and editor mutation behavior.
+- [July 2026 Product Strategy Debrief](./PRODUCT-STRATEGY-DEBRIEF-2026-07.md) preserves broad direction, open decisions, and deferred candidates as a supporting reference; it does not approve implementation or create active work.
 - `AGENTS.md`, `CLAUDE.md`, and `src/CLAUDE.md` define agent working constraints and must point here for operational status.
 - Dedicated development, audit, and archive documents provide evidence; they do not create or approve active work.
 - If an older plan or status report conflicts with V5, V5 wins. Domain contracts still win within their stated scope.
@@ -204,6 +205,26 @@ The decisions in Section 11 are prerequisites. Each accepted candidate needs a s
 - Pack/Case business identifiers should wait for a dedicated product/data audit.
 - Existing development schema drift requires a separate evidence-first audit, not opportunistic normalization.
 
+### Visual Quality and Rendering Performance
+
+- Premium space/cargo representation, lighting, camera, cutaway, label, and export-quality work belongs in an isolated visual contract that cannot alter packing geometry.
+- Instancing, shared resources, label atlases, quality profiles, and fixed-load performance targets require a separate evidence-based implementation packet.
+
+### Server Persistence and Public API
+
+- Server persistence, schema versioning, offline/sync behavior, and conflict recovery must be defined before a supported public API.
+- External schemas, keys, permissions, rate limits, jobs, webhooks, usage, audit records, and viewer tokens remain future candidates.
+
+### Business Identifiers
+
+- Case, Pack, and instance business identifiers remain separate from internal UUIDs and physical packing signatures.
+- Exact fields, uniqueness, number formats, import/search behavior, and migration policy require a dedicated product/data decision.
+
+### Deployment and Hosting
+
+- Cloudflare Pages, branch previews, staging, production-from-main, and rollback policy remain future candidates; automatic deployment is not asserted as current behavior.
+- AWS remains deferred until a specific heavy server workload requires it.
+
 ### Platform and Operations
 
 The following ideas should wait:
@@ -214,10 +235,17 @@ The following ideas should wait:
 - Account purge job tracking.
 - Expanded observability, reconciliation jobs, and operational dashboards without an approved incident/operations contract.
 
+### Release Readiness and Product Decisions
+
+- Accessibility, official browser/device support, asset rights and upload safety, backup/recovery, customer support, and production security require focused release-readiness work before broad public release.
+- Final product naming, brand structure, legal seller identity, and customer-facing billing identity remain open product decisions.
+
+The supporting [July 2026 Product Strategy Debrief](./PRODUCT-STRATEGY-DEBRIEF-2026-07.md) contains the deduplicated context for these deferred areas. It is not a parallel roadmap and does not promote them into the approved queue.
+
 ## 13. Known Gaps That Are Not Current Blockers
 
 - Development retains legacy cases/packs, policy/function, and billing ID differences. The current grants work deliberately preserved them; audit later in a separate packet.
-- `docs/product/PROJECT_TREE.md` is a generated point-in-time snapshot dated 2026-07-15 and carries no active authority.
+- `docs/product/PROJECT_TREE.md` is a generated point-in-time snapshot dated 2026-07-16 and carries no active authority.
 - Older audit, review, and archive documents contain duplicated or obsolete implementation context. They remain evidence, not active authority, pending the narrow cleanup batches in the documentation inventory.
 - Deferred AutoPack and platform architecture may improve quality or scale later, but it does not block the current billing reliability queue.
 
@@ -226,6 +254,7 @@ The following ideas should wait:
 | Subject | Reference |
 |---|---|
 | Operational status and approved queue | This V5 document |
+| Broad product direction, open decisions, and deferred candidates | [July 2026 Product Strategy Debrief](./PRODUCT-STRATEGY-DEBRIEF-2026-07.md) |
 | Billing/workspace product semantics | [Billing Entitlement Rules](./BILLING_ENTITLEMENT_RULES.md) |
 | Billing fixture boundaries and commands | [Billing Fixture Safety Foundation](../dev/billing-fixtures.md) |
 | Owner-account billing audit baseline | [P0 Owner-Only Billing Audit](../audits/P0_OWNER_ONLY_BILLING_AUDIT.md) |

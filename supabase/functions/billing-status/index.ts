@@ -3,6 +3,7 @@ import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { stripeClient } from "../_shared/stripe.ts";
 import {
+  isKnownPriceId,
   normalizeBillingInterval,
   resolveConfiguredPriceInterval,
   workspaceLimitForEntitlement,
@@ -70,6 +71,13 @@ function isBillingStatusStripeTimeout(error: unknown): boolean {
     String((error as { name?: string } | null)?.name || "") === "BillingStatusStripeTimeoutError";
 }
 
+function maskBillingReference(value: unknown): string | null {
+  const normalized = String(value || "").trim();
+  if (!normalized) return null;
+  if (normalized.length <= 10) return `[masked:${normalized.length}]`;
+  return `${normalized.slice(0, 6)}…${normalized.slice(-4)}`;
+}
+
 function billingUnavailablePayload({
   userId,
   orgId,
@@ -90,6 +98,7 @@ function billingUnavailablePayload({
     workspaceIncluded: false,
     workspaceCount: null,
     workspaceLimit: null,
+    unknownPriceId: false,
     canManageBilling,
     plan: "free",
     status: "none",
@@ -570,6 +579,7 @@ Deno.serve(async (req) => {
             workspaceIncluded: false,
             workspaceCount: null,
             workspaceLimit: null,
+            unknownPriceId: false,
             canManageBilling: false,
             plan: "free",
             status: "none",
@@ -1903,6 +1913,42 @@ Deno.serve(async (req) => {
       }
     }
 
+    let diagnosticPriceId = "";
+    let diagnosticOrganizationId: string | null = null;
+    let diagnosticSource: "direct" | "owner" | null = null;
+    const entitlementUsesUsableCandidate =
+      entitlementStatus === "active" ||
+      entitlementStatus === "trialing" ||
+      entitlementStatus === "included_in_plan" ||
+      entitlementStatus === "workspace_limit_reached";
+    if (
+      !requestedDirectBinding.ambiguous &&
+      requestedOrgIsDirect &&
+      (entitlementStatus === "active" || entitlementStatus === "trialing")
+    ) {
+      diagnosticPriceId = priceId.trim();
+      diagnosticOrganizationId = resolvedOrgId;
+      diagnosticSource = "direct";
+    } else if (
+      !requestedDirectBinding.ambiguous &&
+      ownerEntitlementCandidate &&
+      entitlementUsesUsableCandidate
+    ) {
+      diagnosticPriceId = String(ownerEntitlementCandidate.price_id || "").trim();
+      diagnosticOrganizationId = normalizeOrgId(ownerEntitlementCandidate.organization_id ?? null);
+      diagnosticSource = "owner";
+    }
+    const unknownPriceId = Boolean(
+      diagnosticPriceId && !isKnownPriceId(diagnosticPriceId),
+    );
+    if (unknownPriceId) {
+      console.warn("billing:unknown-price-fallback", {
+        priceRef: maskBillingReference(diagnosticPriceId),
+        organizationRef: maskBillingReference(diagnosticOrganizationId),
+        source: diagnosticSource,
+      });
+    }
+
     const responsePayload: Record<string, unknown> = {
       ok: true,
       userId,
@@ -1912,6 +1958,7 @@ Deno.serve(async (req) => {
       workspaceIncluded,
       workspaceCount,
       workspaceLimit,
+      unknownPriceId,
       canManageBilling,
       plan,
       status: subStatus,
@@ -1950,7 +1997,11 @@ Deno.serve(async (req) => {
         ownerEntitlementSource: ownerEntitlementCandidate?.source ?? null,
         ownerEntitlementOrgId: ownerEntitlementCandidate?.organization_id ?? null,
         ownerEntitlementStatus: ownerEntitlementCandidate?.status ?? null,
-        ownerEntitlementPriceId: ownerEntitlementCandidate?.price_id ?? null,
+        ownerEntitlementPriceId: ownerEntitlementCandidate?.price_id
+          ? isKnownPriceId(ownerEntitlementCandidate.price_id)
+            ? ownerEntitlementCandidate.price_id
+            : maskBillingReference(ownerEntitlementCandidate.price_id)
+          : null,
         ownerEntitlementCandidateCount,
         ownerUnmappedCandidateCount,
         ownerSubscriptionRequiredReason,

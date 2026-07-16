@@ -7,10 +7,13 @@ type BillingTier = {
   workspaceLimit: number;
   checkoutEnabled: boolean;
   prices: Record<BillingInterval, string>;
+  legacyPrices: Record<BillingInterval, string[]>;
 };
 
 export type BillingCatalog = {
   tiers: Record<BillingTierId, BillingTier>;
+  activeCheckoutPriceIds: string[];
+  legacyRecognitionPriceIds: string[];
 };
 
 const DEFAULT_WORKSPACE_LIMITS: Record<BillingTierId, number> = {
@@ -32,47 +35,76 @@ function uniqueNonEmpty(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
+function commaSeparatedEnv(name: string): string[] {
+  return uniqueNonEmpty(env(name).split(",").map((value) => value.trim()));
+}
+
 export function getBillingCatalog(): BillingCatalog {
-  return {
-    tiers: {
-      trial: {
-        id: "trial",
-        name: "Trial",
-        workspaceLimit: positiveIntegerEnv(
-          "TP3D_TRIAL_WORKSPACE_LIMIT",
-          DEFAULT_WORKSPACE_LIMITS.trial,
-        ),
-        checkoutEnabled: false,
-        prices: { month: "", year: "" },
+  const tiers: Record<BillingTierId, BillingTier> = {
+    trial: {
+      id: "trial",
+      name: "Trial",
+      workspaceLimit: positiveIntegerEnv(
+        "TP3D_TRIAL_WORKSPACE_LIMIT",
+        DEFAULT_WORKSPACE_LIMITS.trial,
+      ),
+      checkoutEnabled: false,
+      prices: { month: "", year: "" },
+      legacyPrices: { month: [], year: [] },
+    },
+    pro: {
+      id: "pro",
+      name: "Pro",
+      workspaceLimit: positiveIntegerEnv(
+        "TP3D_PRO_WORKSPACE_LIMIT",
+        DEFAULT_WORKSPACE_LIMITS.pro,
+      ),
+      checkoutEnabled: true,
+      prices: {
+        month: env("STRIPE_PRICE_PRO_MONTHLY"),
+        year: env("STRIPE_PRICE_PRO_YEARLY"),
       },
-      pro: {
-        id: "pro",
-        name: "Pro",
-        workspaceLimit: positiveIntegerEnv(
-          "TP3D_PRO_WORKSPACE_LIMIT",
-          DEFAULT_WORKSPACE_LIMITS.pro,
-        ),
-        checkoutEnabled: true,
-        prices: {
-          month: env("STRIPE_PRICE_PRO_MONTHLY"),
-          year: env("STRIPE_PRICE_PRO_YEARLY"),
-        },
+      legacyPrices: {
+        month: commaSeparatedEnv("STRIPE_PRICE_PRO_MONTHLY_LEGACY"),
+        year: commaSeparatedEnv("STRIPE_PRICE_PRO_YEARLY_LEGACY"),
       },
-      business: {
-        id: "business",
-        name: "Business",
-        workspaceLimit: positiveIntegerEnv(
-          "TP3D_BUSINESS_WORKSPACE_LIMIT",
-          DEFAULT_WORKSPACE_LIMITS.business,
-        ),
-        checkoutEnabled: false,
-        prices: {
-          month: env("STRIPE_PRICE_BUSINESS_MONTHLY"),
-          year: env("STRIPE_PRICE_BUSINESS_YEARLY"),
-        },
+    },
+    business: {
+      id: "business",
+      name: "Business",
+      workspaceLimit: positiveIntegerEnv(
+        "TP3D_BUSINESS_WORKSPACE_LIMIT",
+        DEFAULT_WORKSPACE_LIMITS.business,
+      ),
+      checkoutEnabled: false,
+      prices: {
+        month: env("STRIPE_PRICE_BUSINESS_MONTHLY"),
+        year: env("STRIPE_PRICE_BUSINESS_YEARLY"),
+      },
+      legacyPrices: {
+        month: commaSeparatedEnv("STRIPE_PRICE_BUSINESS_MONTHLY_LEGACY"),
+        year: commaSeparatedEnv("STRIPE_PRICE_BUSINESS_YEARLY_LEGACY"),
       },
     },
   };
+
+  const activeCheckoutPriceIds = tiers.pro.checkoutEnabled
+    ? uniqueNonEmpty([tiers.pro.prices.month, tiers.pro.prices.year])
+    : [];
+  const currentConfiguredPriceIds = uniqueNonEmpty([
+    tiers.pro.prices.month,
+    tiers.pro.prices.year,
+    tiers.business.prices.month,
+    tiers.business.prices.year,
+  ]);
+  const legacyRecognitionPriceIds = uniqueNonEmpty([
+    ...tiers.pro.legacyPrices.month,
+    ...tiers.pro.legacyPrices.year,
+    ...tiers.business.legacyPrices.month,
+    ...tiers.business.legacyPrices.year,
+  ]).filter((priceId) => !currentConfiguredPriceIds.includes(priceId));
+
+  return { tiers, activeCheckoutPriceIds, legacyRecognitionPriceIds };
 }
 
 export function workspaceLimitForTier(tierId: BillingTierId): number {
@@ -84,19 +116,45 @@ export function configuredBusinessPriceIds(): string[] {
   return uniqueNonEmpty([business.prices.month, business.prices.year]);
 }
 
+export function resolveRecognizedTierByPriceId(priceId: unknown): BillingTierId | null {
+  const normalizedPriceId = String(priceId || "").trim();
+  if (!normalizedPriceId) return null;
+  const catalog = getBillingCatalog();
+
+  // Current configuration remains authoritative over recognition-only lists.
+  // Preserve the existing Business precedence if both current tier variables
+  // accidentally contain the same Price.
+  if (Object.values(catalog.tiers.business.prices).includes(normalizedPriceId)) return "business";
+  if (Object.values(catalog.tiers.pro.prices).includes(normalizedPriceId)) return "pro";
+  if (catalog.tiers.business.legacyPrices.month.includes(normalizedPriceId) ||
+      catalog.tiers.business.legacyPrices.year.includes(normalizedPriceId)) return "business";
+  if (catalog.tiers.pro.legacyPrices.month.includes(normalizedPriceId) ||
+      catalog.tiers.pro.legacyPrices.year.includes(normalizedPriceId)) return "pro";
+  return null;
+}
+
+export function isKnownPriceId(priceId: unknown): boolean {
+  return resolveRecognizedTierByPriceId(priceId) !== null;
+}
+
+export function isCheckoutEnabledPriceId(priceId: unknown): boolean {
+  const normalizedPriceId = String(priceId || "").trim();
+  return Boolean(normalizedPriceId && getBillingCatalog().activeCheckoutPriceIds.includes(normalizedPriceId));
+}
+
+export function isLegacyPriceId(priceId: unknown): boolean {
+  const normalizedPriceId = String(priceId || "").trim();
+  if (!normalizedPriceId || isCheckoutEnabledPriceId(normalizedPriceId)) return false;
+  return getBillingCatalog().legacyRecognitionPriceIds.includes(normalizedPriceId);
+}
+
 export function workspaceLimitForPrice(
   priceId: unknown,
   fallbackTier: BillingTierId = "pro",
 ): number {
   const catalog = getBillingCatalog();
-  const normalizedPriceId = String(priceId || "").trim();
-  const businessPriceIds = uniqueNonEmpty([
-    catalog.tiers.business.prices.month,
-    catalog.tiers.business.prices.year,
-  ]);
-  if (normalizedPriceId && businessPriceIds.includes(normalizedPriceId)) {
-    return catalog.tiers.business.workspaceLimit;
-  }
+  const recognizedTier = resolveRecognizedTierByPriceId(priceId);
+  if (recognizedTier) return catalog.tiers[recognizedTier].workspaceLimit;
   return catalog.tiers[fallbackTier].workspaceLimit;
 }
 
@@ -116,6 +174,9 @@ export function workspaceLimitForRestoreCandidate(
   if (normalizedStatus === "trialing") {
     return workspaceLimitForTier("trial");
   }
+
+  const recognizedTier = resolveRecognizedTierByPriceId(priceId);
+  if (recognizedTier) return workspaceLimitForTier(recognizedTier);
 
   const normalizedPriceId = String(priceId || "").toLowerCase();
   const normalizedPlanName = String(planName || "").toLowerCase();
@@ -141,13 +202,13 @@ export function resolveConfiguredPriceInterval(priceId: unknown): BillingInterva
   const pro = getBillingCatalog().tiers.pro;
   if (normalizedPriceId === pro.prices.month) return "month";
   if (normalizedPriceId === pro.prices.year) return "year";
+  if (pro.legacyPrices.month.includes(normalizedPriceId)) return "month";
+  if (pro.legacyPrices.year.includes(normalizedPriceId)) return "year";
   return null;
 }
 
 export function allowedCheckoutPriceIds(): string[] {
-  const pro = getBillingCatalog().tiers.pro;
-  if (!pro.checkoutEnabled) return [];
-  return uniqueNonEmpty([pro.prices.month, pro.prices.year]);
+  return getBillingCatalog().activeCheckoutPriceIds;
 }
 
 export function resolveCheckoutPrice(
@@ -160,7 +221,7 @@ export function resolveCheckoutPrice(
 }
 
 export function assertAllowedCheckoutPrice(priceId: string): void {
-  if (allowedCheckoutPriceIds().includes(priceId)) return;
+  if (isCheckoutEnabledPriceId(priceId)) return;
   const error = new Error("Invalid price_id");
   (error as { status?: number }).status = 400;
   throw error;

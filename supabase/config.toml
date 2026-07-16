@@ -424,6 +424,9 @@ verify_jwt = false
 [functions.org-invite-accept]
 verify_jwt = false
 
+[functions.org-create-workspace]
+verify_jwt = false
+
 [functions.org-member-role-update]
 verify_jwt = false
 

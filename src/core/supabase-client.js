@@ -2988,6 +2988,43 @@ export async function removeOrganizationMember(orgId, userId) {
   return true;
 }
 
+async function getEdgeFunctionErrorMessage(error, fallback) {
+  const response = error && error.context;
+  if (response && typeof response.clone === 'function') {
+    try {
+      const payload = await response.clone().json();
+      if (payload && typeof payload.error === 'string' && payload.error.trim()) {
+        return payload.error.trim();
+      }
+    } catch {
+      // Use the sanitized fallback below.
+    }
+  }
+  return fallback;
+}
+
+async function invokeAuthenticatedEdgeFunction(functionName, body) {
+  const client = requireClient();
+  const clientSessionOk = await ensureClientSession();
+  const session = getSession();
+  const token = session && session.access_token ? String(session.access_token) : '';
+  if (!clientSessionOk || !token) throw new Error('Not authenticated');
+  if (!client.functions || typeof client.functions.invoke !== 'function') {
+    throw new Error('Server operation unavailable.');
+  }
+
+  const { data, error } = await client.functions.invoke(functionName, {
+    body: body && typeof body === 'object' ? body : {},
+    headers: { 'x-user-jwt': token },
+  });
+
+  if (error) {
+    throw new Error(await getEdgeFunctionErrorMessage(error, 'Server operation failed.'));
+  }
+  if (!data || data.ok !== true) throw new Error('Server operation failed.');
+  return data;
+}
+
 // ============================================================================
 // SECTION: ORGANIZATION INVITES
 // ============================================================================
@@ -3206,50 +3243,23 @@ export async function uploadOrgLogo(orgId, file) {
 
 /**
  * Create a new organization + owner membership.
- * @param {{ name: string, slug?: string }} params
+ * @param {{ name: string }} params
  * @returns {Promise<{ org: object, membership: object }>}
  */
-export async function createOrganization({ name, slug }) {
-  const client = requireClient();
-  await ensureClientSession();
-  const userId = await getAuthedUserId();
-  if (!userId) throw new Error('Not authenticated');
-
-  // Generate slug from name if not provided
-  const orgSlug = slug
-    ? String(slug).trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
-    : String(name).trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') + '-' + Date.now().toString(36);
-
-  // Create organization
-  const { data: org, error: orgErr } = await client
-    .from('organizations')
-    .insert({
-      name: String(name).trim(),
-      slug: orgSlug,
-      owner_id: userId,
-    })
-    .select()
-    .single();
-
-  if (orgErr) throw orgErr;
-
-  // Create owner membership
-  const { data: membership, error: memErr } = await client
-    .from('organization_members')
-    .insert({
-      organization_id: org.id,
-      user_id: userId,
-      role: 'owner',
-    })
-    .select()
-    .single();
-
-  if (memErr) {
-    // Rollback org if membership fails
-    try { await client.from('organizations').delete().eq('id', org.id); } catch (_) { /* ignore */ }
-    throw memErr;
+export async function createOrganization({ name }) {
+  const normalizedName = String(name || '').trim().replace(/\s+/g, ' ');
+  if (!normalizedName || normalizedName.length > 120) {
+    throw new Error('Enter a workspace name between 1 and 120 characters.');
   }
 
+  const data = await invokeAuthenticatedEdgeFunction('org-create-workspace', {
+    name: normalizedName,
+  });
+  const org = data && data.organization ? data.organization : null;
+  const membership = data && data.membership ? data.membership : null;
+  if (!org || !org.id || !membership || membership.organization_id !== org.id) {
+    throw new Error('Failed to create workspace.');
+  }
   return { org, membership };
 }
 

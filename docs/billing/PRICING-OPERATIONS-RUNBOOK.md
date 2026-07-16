@@ -4,7 +4,7 @@
 
 This is operational documentation for the current implementation. It is not a pricing decision, approval to modify Stripe, or a replacement for [Billing Entitlement Rules](../product/BILLING_ENTITLEMENT_RULES.md). Commercial pricing is not final.
 
-The procedures below describe how the repository behaves at the time of writing. Future catalog behavior is labeled as future work. This runbook must be reviewed and updated after the behavior-preserving billing catalog is implemented.
+The procedures below describe how the repository behaves at the time of writing. The behavior-preserving server catalog is implemented; it centralizes current Price recognition, checkout resolution, and workspace limits without changing commercial terms or entitlement results.
 
 ## 2. Current Pricing Architecture
 
@@ -56,26 +56,27 @@ Use variable names only in documentation and reports. Never print secret values 
 | Optional portal configuration | `STRIPE_PORTAL_CONFIGURATION_ID` |
 | Supabase service access | `SUPABASE_URL`/`URL`, `SUPABASE_ANON_KEY`/`ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`/`SERVICE_ROLE_KEY` |
 
-The current `.env.example` lists the Pro Price variables and optional portal configuration, but not the Business Price or workspace-limit variables. Source code remains the current implementation truth until the catalog centralizes configuration.
+The current `.env.example` lists safe placeholders for the Pro and Business Price variables, all three workspace-limit variables, and optional portal configuration. Deployed environment values remain configuration; the shared catalog is the implementation source of truth for interpreting them.
 
 ## 3. Current Source Map
 
 | Concern | Current file/function | Environment variable | Authority | Changes customer money behavior? | Deployment required? | Current risk |
 |---|---|---|---|---|---|---|
-| Checkout allow-list | `supabase/functions/_shared/stripe.ts` → `assertAllowedPrice()` | Pro monthly/yearly Price variables | Server allow-list | Yes: controls which Price may be purchased | Secret-only change: configuration refresh; shared-code change: redeploy all importers | High; only two IDs are accepted |
-| Interval-to-Price mapping | `supabase/functions/stripe-create-checkout-session/index.ts` → `priceIdFromInterval()` | Pro monthly/yearly Price variables | Server checkout | Yes | Secret-only change: configuration refresh; code change: deploy checkout | High; only `month` and `year` exist |
-| Billing-status Price recognition | `supabase/functions/billing-status/index.ts` → interval normalization and `workspaceLimitForEntitlement()` | Pro and Business Price variables; three limit variables | App entitlement truth | Indirectly; changes access/limits, not Stripe amount | Secret-only change: configuration refresh; code change: deploy billing-status | P0; wrong mapping can grant or deny access |
-| Restore workspace-limit logic | `supabase/functions/org-restore-workspace/index.ts` → `workspaceLimitForCandidate()` | Three limit variables | Restore authorization | No charge change; yes entitlement capacity | Secret-only change: configuration refresh; code change: deploy restore | P0; logic is duplicated and Business uses string heuristics |
+| Catalog configuration and narrow resolvers | `supabase/functions/_shared/billing-catalog.ts` → `getBillingCatalog()` and resolver helpers | Pro and Business monthly/yearly Price variables; three limit variables | Shared server configuration | Indirectly; callers control checkout and entitlement | Secret-only change: configuration refresh; catalog-code change: deploy its three importers | P0; one shared source now owns current configuration |
+| Checkout allow-list | `supabase/functions/_shared/billing-catalog.ts` → `allowedCheckoutPriceIds()` and `assertAllowedCheckoutPrice()` | Pro monthly/yearly Price variables | Server allow-list | Yes: controls which Price may be purchased | Secret-only change: configuration refresh; catalog-code change: deploy checkout | High; configured Pro monthly/yearly only |
+| Interval-to-Price mapping | `supabase/functions/_shared/billing-catalog.ts` → `resolveCheckoutPrice()`; consumed by `stripe-create-checkout-session` | Pro monthly/yearly Price variables | Server checkout | Yes | Secret-only change: configuration refresh; code change: deploy checkout | High; only `month` and `year` exist |
+| Billing-status Price recognition | `supabase/functions/_shared/billing-catalog.ts` → interval and entitlement limit resolvers; consumed by `billing-status` | Pro and Business Price variables; three limit variables | App entitlement truth | Indirectly; changes access/limits, not Stripe amount | Secret-only change: configuration refresh; code change: deploy billing-status | P0; exact Business IDs and conservative unknown-active fallback remain |
+| Restore workspace-limit logic | `supabase/functions/_shared/billing-catalog.ts` → `workspaceLimitForRestoreCandidate()`; consumed by `org-restore-workspace` | Three limit variables and configured Price IDs | Restore authorization | No charge change; yes entitlement capacity | Secret-only change: configuration refresh; code change: deploy restore | P0; broader Business Price/plan-name matching is intentionally preserved |
 | Webhook projection | `supabase/functions/stripe-webhook/index.ts` → `upsertSubscription()` | Stripe and webhook secrets | Stripe-to-database projection | Reflects billed state; does not choose checkout amount | Deploy webhook only when webhook/shared code changes | P0; `plan_name` is currently written as `pro` |
 | Frontend plan options | `src/app.js` → `getCheckoutPlanOptions()` | None | Display only | No | Static frontend deployment | Medium; hardcoded copy can disagree with Stripe |
 | Frontend plan picker | `src/app.js` → `pickCheckoutInterval()` | None | Display and interval selection | No direct authority | Static frontend deployment | Medium; duplicated yearly copy currently disagrees |
 | Settings Billing CTA | `src/ui/overlays/settings-overlay.js` | None | Display and action routing | No direct authority | Static frontend deployment | Medium; must stay aligned with server truth |
-| Workspace limits | `supabase/functions/billing-status/index.ts` and `supabase/functions/org-restore-workspace/index.ts` | Trial/Pro/Business limit variables | Server entitlement | No charge change; changes capacity | Deploy only functions whose code changes; secret-only update still needs runtime verification | High; defaults are duplicated (`1`, `3`, `10`) |
-| Business recognition | `supabase/functions/billing-status/index.ts` exact Business Price IDs; `supabase/functions/org-restore-workspace/index.ts` Price/plan-name string matching | Business Price and limit variables | Limit recognition only | No active checkout path | Deploy affected function if code changes | High; recognition differs between functions |
+| Workspace limits | `supabase/functions/_shared/billing-catalog.ts` → `workspaceLimitForTier()` and caller-specific resolvers | Trial/Pro/Business limit variables | Server entitlement | No charge change; changes capacity | Catalog-code change: deploy billing-status and restore; secret-only update still needs runtime verification | High; defaults remain `1`, `3`, `10` |
+| Business recognition | Catalog exact-ID resolver for billing-status; catalog restore-specific resolver retains Price/plan-name string matching | Business Price and limit variables | Limit recognition only | No active checkout path | Deploy the affected importer(s) | High; caller-specific recognition deliberately remains different |
 | Test/live handling | `supabase/functions/_shared/stripe.ts`, `supabase/functions/stripe-webhook/index.ts` event storage, and deployment secrets | Stripe secret, Price IDs, webhook secret | Deployment configuration | Yes | No code deploy for secret-only correction; affected functions must be revalidated | P0; no explicit application mode marker enforces separation |
 | Portal configuration | `supabase/functions/stripe-create-checkout-session/index.ts` and `supabase/functions/stripe-create-portal-session/index.ts` → `getPortalConfigurationId()` | `STRIPE_PORTAL_CONFIGURATION_ID` | Stripe portal behavior | Can affect plan-management choices | Secret-only change: configuration refresh; code change: deploy checkout and/or portal | High; requested organization must remain explicit |
 
-Current duplication is intentional evidence, not an approved architecture: Pro Price variables are read by shared checkout code, checkout, and billing-status; limit variables are interpreted independently by billing-status and restore; frontend price copy exists separately from Stripe; Business recognition differs between billing-status and restore.
+The catalog removes duplicated server reads and default-limit interpretation from its three consumers. Caller-specific behavior remains explicit: billing-status uses exact configured Business IDs, restore preserves its broader Business matching, and checkout accepts only configured Pro monthly/yearly IDs. Frontend price copy remains separate from Stripe and from the server catalog.
 
 ## 4. Current Known Pricing Constraints
 
@@ -118,7 +119,7 @@ Use this procedure for monthly, yearly, or both. A new Stripe Price is immutable
 3. Keep the old Price and existing subscriptions intact. Do not migrate subscribers.
 4. Record masked old/new Price references in [Pricing Change Log](./PRICING-CHANGE-LOG.md).
 5. Configure the new test Price ID in `STRIPE_PRICE_PRO_MONTHLY`, `STRIPE_PRICE_PRO_YEARLY`, or both for the intended non-production Supabase project.
-6. Update repository code/config only where required. A secret-only Price replacement does not require changing the allow-list source because `assertAllowedPrice()` reads the variables. Frontend display copy is a separate change.
+6. Update repository code/config only where required. A secret-only Price replacement does not require changing catalog source because the catalog reads the variables lazily. Frontend display copy is a separate change.
 7. Run source/runtime tests, local database integration, typecheck, lint, and full repository tests.
 8. Run deployed-development function checks against the intended project.
 9. Complete a real Stripe test-mode checkout for each changed interval and confirm the Checkout Session uses the masked new Price reference.
@@ -137,15 +138,15 @@ Use this procedure for monthly, yearly, or both. A new Stripe Price is immutable
 
 ### Current limitation
 
-There is no centralized billing catalog or explicit legacy-recognition list. Replacing the current Pro Price environment variable removes that old ID from explicit Pro interval recognition, although stored webhook interval and the current unknown-active-Price Pro fallback may preserve access. Business recognition is even more sensitive because it depends on current Business Price variables or restore heuristics. Inventory and test every existing Price before a live replacement; do not claim legacy support merely because the old Stripe subscription still exists.
+The centralized catalog represents only the currently configured Price IDs. It does not contain legacy or retired Price arrays, replacement effective dates, or an unknown-Price diagnostic contract. Replacing a Pro Price environment variable removes the old ID from explicit Pro interval recognition, although stored webhook interval and the current unknown-active-Price Pro fallback may preserve access. Business recognition remains sensitive because billing-status uses exact configured IDs while restore also preserves broader Price/plan-name matching. Inventory and test every existing Price before a live replacement; do not claim legacy support merely because the old Stripe subscription still exists.
 
-The future catalog is expected to separate active checkout Prices from legacy recognition Prices, but that is not implemented today.
+Auditing and implementing explicit unknown or replaced Price handling is the next approved billing task.
 
 ## 7. Grandfathering Policy — Current Safe Default
 
 - Existing Stripe subscriptions stay on their original Price unless an explicitly approved migration changes them.
 - Changing an environment Price ID does not modify existing Stripe subscriptions.
-- Old Prices must remain supported by application recognition until a catalog provides explicit legacy recognition.
+- Old Prices must remain supported by application recognition before configuration changes retire their explicit recognition. The current catalog has no legacy-recognition entries, so any replacement requires a separate approved handling decision and proof.
 - Do not delete an old Product or Price. Do not deactivate an old Price for new purchases until existing-subscriber billing-status, webhook, portal, and restore behavior has been proved.
 - Subscription migration is a separate, higher-risk operation.
 
@@ -185,7 +186,7 @@ Do not perform subscriber migration manually as an incidental part of a Price re
 - Verify the webhook endpoint and signing secret for the same Stripe mode as the Price.
 - Record `livemode` evidence from webhook events, but do not treat that field alone as a complete guard.
 
-A future catalog/mode-marker contract should bind environment, Stripe mode, active Price set, and legacy recognition set explicitly. That is a recommendation, not current behavior.
+The current catalog has no test/live mode marker and no legacy recognition set. A future mode contract may bind environment, Stripe mode, active Price set, and any approved legacy recognition set explicitly; that is a recommendation, not current behavior.
 
 ## 10. Validation Matrix
 
@@ -222,12 +223,13 @@ Do not mark a column passed when that evidence layer was not run. Record **NOT R
 | Display copy only | No | No | No | No | No | Yes |
 | Pro Price secret value only | Validate runtime; no source deploy | Validate runtime; no source deploy | No, unless limits/tier logic also changes | No source deploy; validate projection | No source deploy; validate portal | Only if copy changes |
 | Workspace-limit secret only | Validate runtime | No | Validate runtime | No | No | Only if visible promise changes |
-| Checkout allow-list or interval code | If shared `_shared/stripe.ts` changes, yes | Yes | Review only | If shared `_shared/stripe.ts` changes, yes | If shared `_shared/stripe.ts` changes, yes | If selector/copy changes |
+| Catalog checkout allow-list or interval code | Review recognition compatibility | Yes | Review restore compatibility | No | No | If selector/copy changes |
+| Catalog workspace-limit or Price-recognition code | Yes | Review checkout compatibility | Yes | No unless projection changes separately | No unless portal targeting changes separately | If visible tier/copy changes |
 | Billing recognition/tier mapping | Yes | If checkout availability changes | Yes when restore mapping/limit changes | Yes when projection changes | Review organization/plan targeting | Yes when visible tier/copy changes |
 | Webhook projection only | Review consumer compatibility | No | Review projected fields | Yes | Review projected mapping | No unless status copy changes |
 | Portal configuration secret only | No | Validate existing-subscription redirect | No | No | Validate runtime | No |
 
-Setting an Edge secret/configuration value and deploying function source are different operations. Do not redeploy an unaffected function merely because another function changed. Conversely, changing `_shared/stripe.ts` requires redeploying every current importer: billing-status, checkout, portal, and webhook.
+Setting an Edge secret/configuration value and deploying function source are different operations. Do not redeploy an unaffected function merely because another function changed. A catalog source change requires deploying its current importers: billing-status, checkout, and restore. `_shared/stripe.ts` remains a separate shared dependency; changing it still requires redeploying its current importers: billing-status, checkout, portal, and webhook.
 
 ## 12. Rollback Procedures
 
@@ -246,7 +248,7 @@ Never repair billing by broad database deletion or by making Supabase projection
 
 ## 13. Emergency Checkout Stop
 
-There is no current application checkout kill switch. The checkout function always resolves one of the configured Pro Price IDs and validates it against the same two-ID allow-list.
+There is no current application checkout kill switch. The checkout function resolves one of the configured Pro Price IDs through the catalog and validates it against the catalog's same Pro-only allow-list.
 
 The smallest no-code emergency action is:
 
@@ -316,16 +318,19 @@ The following remain unresolved and are not approved by this runbook:
 
 Operational priority and approval come from [Master TODO V5](../product/TP3D-MASTER-TODO-V5.md). Broader context is preserved in the [July 2026 Product Strategy Debrief](../product/PRODUCT-STRATEGY-DEBRIEF-2026-07.md).
 
-## 16. Post-Catalog Update Requirement
+## 16. Catalog Implementation Status
 
-After the behavior-preserving billing catalog is implemented, update this runbook to reflect the actual new source of truth for:
+The behavior-preserving catalog is implemented and validated. Its production change surface is one shared catalog plus three consumers: billing-status, checkout, and restore. Webhook, portal, shared Stripe helpers, frontend pricing, response contracts, migrations, commercial values, and subscriber Prices were not changed.
 
-- centralized Price resolution;
-- active checkout Prices;
-- legacy recognition Prices;
-- tier-to-workspace-limit mapping;
-- unknown Price diagnostics;
-- test/live mode rules;
-- the reduced function/file change surface.
+The validated behavior remains:
 
-Do not update this document prospectively. Only document catalog behavior after implementation and validation.
+- Pro monthly/yearly are the only checkout-enabled recurring paths;
+- Business Prices are recognition-only and checkout-disabled;
+- workspace-limit defaults remain Trial `1`, Pro `3`, and Business `10` when configuration is absent or invalid;
+- unknown explicitly mapped active Prices retain the existing paid Pro/base fallback;
+- billing-status exact Business recognition and restore's broader Business recognition remain separate;
+- no legacy Price arrays, unknown-Price diagnostics, or test/live mode rules were added.
+
+Local Stage B remained 39/39 green. Focused catalog/fixture/security validation passed 908 with 5 existing skips, and the full repository suite passed 1,021 with 5 existing skips. Development deployment was limited to billing-status, checkout, and restore; known direct, included sibling, unknown active Price fallback, Pro monthly/yearly checkout creation, Business/unknown checkout rejection, restore, and sanitized authentication error checks passed. No payment was completed.
+
+The next approved billing task is explicit unknown or replaced Price handling. That task must decide diagnostics and legacy/replacement behavior without inferring commercial policy from current fallback behavior.

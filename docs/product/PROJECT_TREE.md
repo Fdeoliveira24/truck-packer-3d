@@ -1,6 +1,6 @@
 # File Tree: Truck Packer 3D
 
-**Generated:** 7/16/2026, 10:25:11 AM
+**Generated:** 7/16/2026, 5:02:27 PM
 **Root Path:** `/Users/franciscooliveira/Dropbox/360Virtual Tour Solutions/Projects/Truck Packer 3D`
 
 ```
@@ -290,6 +290,7 @@
 │   ├── 📁 functions
 │   │   ├── 📁 _shared
 │   │   │   ├── 📄 auth.ts
+│   │   │   ├── 📄 billing-catalog.ts
 │   │   │   ├── 📄 cors.ts
 │   │   │   └── 📄 stripe.ts
 │   │   ├── 📁 ban-user
@@ -372,6 +373,7 @@
 ├── 📁 tests
 │   ├── 📁 audit
 │   │   ├── 📄 autopack-results-carousel.spec.mjs
+│   │   ├── 📄 billing-catalog.spec.mjs
 │   │   ├── 📄 billing-fixture-safety.spec.mjs
 │   │   ├── 📄 import-export.spec.mjs
 │   │   ├── 📄 manual-vertical-placement.spec.mjs

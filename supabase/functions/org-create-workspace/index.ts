@@ -39,7 +39,15 @@ Deno.serve(async (req) => {
       return json({ error: "Origin not allowed" }, { status: 403, origin: null });
     }
 
-    const auth = await requireUser(req);
+    let auth;
+    try {
+      auth = await requireUser(req);
+    } catch {
+      // A Functions client without a signed-in user can still send the public
+      // anon key as its gateway Authorization value. Treat that as an
+      // unauthenticated request instead of exposing an auth-client failure.
+      return json({ error: "Unauthorized" }, { status: 401, origin });
+    }
     if (!auth.ok || !auth.user) {
       return json({ error: auth.error || "Unauthorized" }, { status: auth.status || 401, origin });
     }

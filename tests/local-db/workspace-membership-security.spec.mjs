@@ -65,11 +65,11 @@ async function rest(path, { method = 'GET', body, jwt = serviceRoleKey, prefer =
 async function edge(functionName, token, body = {}) {
   const headers = {
     apikey: anonKey,
+    Authorization: `Bearer ${anonKey}`,
     'Content-Type': 'application/json',
     Origin: browserOrigin,
   };
   if (token) {
-    headers.Authorization = `Bearer ${anonKey}`;
     headers['x-user-jwt'] = token;
   }
   return request(`/functions/v1/${functionName}`, {

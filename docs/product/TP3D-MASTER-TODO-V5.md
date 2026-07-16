@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-16
 
-**Last verified repository state:** current-state pricing operations documentation reviewed from source on `docs/billing-pricing-operations-runbook`, based on matching `main`/`origin/main` at `66218ea4af8d50aecb137c365a15c083d27d4c0c`
+**Last verified repository state:** behavior-preserving billing catalog and catalog-aware pricing operations documentation merged and pushed on matching `main`/`origin/main` at `ad5856f57c9863c8b9a723f4d5005d85711ff584`
 
 ## 1. Document Contract
 
@@ -25,7 +25,7 @@ This table is the single mutable status snapshot in V5.
 
 | Area | Status at the last verified repository state |
 |---|---|
-| Repository | Pricing operations documentation was reviewed from current source on `docs/billing-pricing-operations-runbook`, based on matching `main`/`origin/main` at `66218ea4af8d50aecb137c365a15c083d27d4c0c`. Confirm the current git state before editing. |
+| Repository | The behavior-preserving billing catalog and catalog-aware pricing runbook were merged and pushed on matching `main`/`origin/main` at `ad5856f57c9863c8b9a723f4d5005d85711ff584`. Confirm the current git state before editing. |
 | Supabase Data API grants | Complete, merged, pushed, and applied to development. |
 | Workspace/membership write boundary | Complete, merged, pushed, and applied to development. Workspace creation is transactional and server-controlled; authenticated membership access is SELECT-only. |
 | Clean local database | All 27 migrations reset successfully. |
@@ -34,7 +34,7 @@ This table is the single mutable status snapshot in V5.
 | Billing fixture safety foundation | Complete. The existing layer remains no-write, environment-bound, masked, and production-refusing. |
 | Direct-paid F12 identity | Complete and deployed. Requested-workspace direct identity precedes sibling owner-plan coverage. |
 | Pricing | Not commercially finalized. |
-| Normalized billing catalog | Complete, behavior-preserving, validated locally and in development, and awaiting this branch's final merge/push. |
+| Normalized billing catalog | Complete, behavior-preserving, validated locally and in development, merged, and pushed. |
 | Pricing operations runbook | Complete and updated for the implemented catalog. It records current implementation, safe change procedures, reduced deployment scope, rollback limits, and unresolved commercial decisions without changing behavior. |
 | Unknown or replaced price handling | Not yet audited or implemented. |
 | Max Capacity Phase C | Blocked and not started. |

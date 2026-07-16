@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-16
 
-**Last verified repository state:** `main` / `origin/main` at `c6201f654b559075928878fe96d11e094e0cb2f0`
+**Last verified repository state:** workspace hardening merged and pushed through `ee16522655b90236e7d270691e47c424dd5b7f67`
 
 ## 1. Document Contract
 
@@ -25,10 +25,11 @@ This table is the single mutable status snapshot in V5.
 
 | Area | Status at the last verified repository state |
 |---|---|
-| Repository | Last verified with `main` and `origin/main` matching at `c6201f654b559075928878fe96d11e094e0cb2f0`. Confirm the current git state before editing. |
+| Repository | Workspace hardening verified with `main` and `origin/main` matching through `ee16522655b90236e7d270691e47c424dd5b7f67`. Confirm the current git state before editing. |
 | Supabase Data API grants | Complete, merged, pushed, and applied to development. |
-| Clean local database | All 25 migrations reset successfully. |
-| Edge smoke | Local and development `billing-status`, `org-member-role-update`, `org-transfer-ownership`, and ownership restoration passed. |
+| Workspace/membership write boundary | Complete, merged, pushed, and applied to development. Workspace creation is transactional and server-controlled; authenticated membership access is SELECT-only. |
+| Clean local database | All 27 migrations reset successfully. |
+| Edge smoke | Local and development workspace creation, direct membership denial, invite, role, remove, leave, transfer, and ownership restoration passed. |
 | Local billing fixture Stage B | Unblocked and the next approved implementation. |
 | Billing fixture safety foundation | Complete. The existing layer remains no-write, environment-bound, masked, and production-refusing. |
 | Direct-paid F12 identity | Complete and deployed. Requested-workspace direct identity precedes sibling owner-plan coverage. |
@@ -87,6 +88,7 @@ Queue order is approval order. Start one branch at a time and record its active 
 
 | Milestone | Concise result | Evidence |
 |---|---|---|
+| Server-controlled workspace creation and membership writes | Workspace creation now uses one authenticated Edge call and one service-role-only transaction; authenticated direct membership DML is revoked while approved Edge/RPC paths remain functional. Local and development proof passed with exact fixture cleanup. | [Edge Function](../../supabase/functions/org-create-workspace/index.ts), [creation transaction](../../supabase/migrations/20260716061516_server_controlled_workspace_creation.sql), [membership privileges](../../supabase/migrations/20260716061518_restrict_direct_membership_mutations.sql) |
 | Explicit Supabase Data API grants | Minimum API-role table grants and schema-portable conditional sequence grants are merged, pushed, reset locally, and applied to development. | [Migration](../../supabase/migrations/2026071401_explicit_api_role_privileges.sql), [archived integration evidence](../archive/master-todos/TP3D-MASTER-TODO-V4.md#current-authbilling-integration-gate--2026-07-15) |
 | Local/dev Edge smoke | Four billing, role, transfer, and restoration paths passed without altering the known schema differences. | [Archived V4 billing evidence](../archive/master-todos/TP3D-MASTER-TODO-V4.md#1a--billing-foundation) |
 | Billing fixture safety foundation | No-write planning, immutable manifest binding, masked output, and production refusal are complete. | [Fixture safety contract](../dev/billing-fixtures.md) |
@@ -102,6 +104,8 @@ Queue order is approval order. Start one branch at a time and record its active 
 - Ambiguous organization, customer, or subscription identity fails closed.
 - Ownership changes use the dedicated ownership-transfer path.
 - Generic member-role updates cannot create, promote, demote, or replace owners.
+- Workspace creation uses the dedicated authenticated server path and one atomic database transaction.
+- Authenticated clients may read memberships through RLS but cannot directly insert, update, or delete membership rows.
 - Price amount never determines workspace ownership or billing identity.
 - Stripe is payment truth; `/billing-status` is application entitlement truth.
 - Owners alone manage checkout, portal, plan, and payment actions. Members never pay separately.

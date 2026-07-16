@@ -6,7 +6,10 @@ Start with [`product/TP3D-MASTER-TODO-V5.md`](product/TP3D-MASTER-TODO-V5.md) fo
 
 Use [`product/PRODUCT-STRATEGY-DEBRIEF-2026-07.md`](product/PRODUCT-STRATEGY-DEBRIEF-2026-07.md) as a supporting reference for broad product direction, open decisions, and deferred candidates. It does not approve implementation or create active work.
 
+Use the [`Pricing Operations Runbook`](billing/PRICING-OPERATIONS-RUNBOOK.md) for the current pricing change procedure and the append-only [`Pricing Change Log`](billing/PRICING-CHANGE-LOG.md) for future approved change evidence. Neither document makes a commercial pricing decision.
+
 - `product/`: current product rules, entitlement rules, product comparisons, and active planning docs that should guide implementation.
+- `billing/`: current pricing operations procedures and change-evidence templates.
 - `dev/`: developer setup, operational references, and command playbooks.
 - `review/`: potentially useful docs that are not authoritative until reviewed.
 - `audits/`: completed audit reports and release-gate evidence.

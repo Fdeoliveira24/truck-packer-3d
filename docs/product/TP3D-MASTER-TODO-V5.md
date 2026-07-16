@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-16
 
-**Last verified repository state:** local billing fixture Stage B validated through `4457e0e` on top of main `29334bea532c08b8605de606d795d70fcdd01132`
+**Last verified repository state:** current-state pricing operations documentation reviewed from source on `docs/billing-pricing-operations-runbook`, based on matching `main`/`origin/main` at `66218ea4af8d50aecb137c365a15c083d27d4c0c`
 
 ## 1. Document Contract
 
@@ -25,7 +25,7 @@ This table is the single mutable status snapshot in V5.
 
 | Area | Status at the last verified repository state |
 |---|---|
-| Repository | Local billing fixture Stage B passed on `test/billing-local-db-fixtures` through `4457e0e`, based on matching `main`/`origin/main` at `29334bea532c08b8605de606d795d70fcdd01132`. Confirm the current git state before editing. |
+| Repository | Pricing operations documentation was reviewed from current source on `docs/billing-pricing-operations-runbook`, based on matching `main`/`origin/main` at `66218ea4af8d50aecb137c365a15c083d27d4c0c`. Confirm the current git state before editing. |
 | Supabase Data API grants | Complete, merged, pushed, and applied to development. |
 | Workspace/membership write boundary | Complete, merged, pushed, and applied to development. Workspace creation is transactional and server-controlled; authenticated membership access is SELECT-only. |
 | Clean local database | All 27 migrations reset successfully. |
@@ -35,7 +35,7 @@ This table is the single mutable status snapshot in V5.
 | Direct-paid F12 identity | Complete and deployed. Requested-workspace direct identity precedes sibling owner-plan coverage. |
 | Pricing | Not commercially finalized. |
 | Normalized billing catalog | Audited but not implemented. |
-| Pricing operations runbook | Audited but not created. |
+| Pricing operations runbook | Complete and linked. It records current implementation, safe change procedures, deployment scope, rollback limits, and unresolved commercial decisions without changing behavior. |
 | Unknown or replaced price handling | Not yet audited or implemented. |
 | Max Capacity Phase C | Blocked and not started. |
 | Development schema drift | Legacy cases/packs, policies/functions, and billing ID differences remain a separate, non-blocking future audit. |
@@ -44,6 +44,7 @@ This table is the single mutable status snapshot in V5.
 
 - This document is the only active operational plan and status source.
 - [Billing Entitlement Rules](./BILLING_ENTITLEMENT_RULES.md) remains authoritative for billing and workspace product semantics.
+- [Pricing Operations Runbook](../billing/PRICING-OPERATIONS-RUNBOOK.md) is the current operational procedure for price, interval, limit, and display-copy changes; it does not approve commercial terms or alter the entitlement contract.
 - [AutoPack Engine Contract](../engineering/autopack-engine-contract.md) remains authoritative for packing geometry, physical safety, and editor mutation behavior.
 - [July 2026 Product Strategy Debrief](./PRODUCT-STRATEGY-DEBRIEF-2026-07.md) preserves broad direction, open decisions, and deferred candidates as a supporting reference; it does not approve implementation or create active work.
 - `AGENTS.md`, `CLAUDE.md`, and `src/CLAUDE.md` define agent working constraints and must point here for operational status.
@@ -54,25 +55,24 @@ This table is the single mutable status snapshot in V5.
 
 | Field | Current value |
 |---|---|
-| Task | Add the current-state pricing operations runbook. |
-| Branch | `docs/billing-pricing-operations-runbook` |
-| Outcome | Document current price IDs, intervals, workspace limits, operational checks, and rollback steps without changing commercial or runtime behavior. |
+| Task | Implement the behavior-preserving billing catalog. |
+| Branch | `feat/billing-behavior-preserving-catalog` |
+| Outcome | Centralize current Price recognition, interval resolution, and tier-to-workspace-limit mapping without changing checkout availability, commercial terms, existing subscriber treatment, or entitlement results. |
 | Blocker state | Unblocked. |
-| Scope boundary | Documentation and current-state operational evidence only; no pricing decision, catalog implementation, Stripe object mutation, billing semantic change, or Phase C work. |
-| Closeout | Review against current production configuration, link concise evidence, merge, and update the queue once. |
+| Scope boundary | Preserve today's Pro monthly/yearly checkout paths, current Business recognition-only status, current limits, current conservative unknown-active-Price fallback, and all billing identity protections. No new tier, interval, price, Stripe object, subscriber migration, frontend pricing change, or Phase C work. |
+| Closeout | Prove behavior parity across checkout, billing status, restore, webhook, portal, local fixtures, and repository gates; then update the pricing runbook once for the implemented catalog. |
 
 Only this row is active. The following section is an approved sequence, not simultaneous work.
 
 ## 5. Next Approved Execution Queue
 
-1. Add the current-state pricing operations runbook.
-2. Implement the behavior-preserving billing catalog.
-3. Update the pricing runbook for the implemented catalog.
-4. Audit and implement unknown or replaced price handling.
-5. Add deployed development-function smoke fixtures.
-6. Add Stripe test-mode fixtures.
-7. Reassess remaining billing reliability gates.
-8. Resume Max Capacity Phase C only after billing reliability is closed.
+1. Implement the behavior-preserving billing catalog.
+2. Update the pricing runbook for the implemented catalog.
+3. Audit and implement unknown or replaced Price handling.
+4. Add deployed development-function smoke fixtures.
+5. Add Stripe test-mode fixtures.
+6. Reassess remaining billing reliability gates.
+7. Resume Max Capacity Phase C only after billing reliability is closed.
 
 Queue order is approval order. Start one branch at a time and record its active branch, outcome, and blocker state in Section 4.
 
@@ -87,6 +87,7 @@ Queue order is approval order. Start one branch at a time and record its active 
 
 | Milestone | Concise result | Evidence |
 |---|---|---|
+| Current-state pricing operations runbook | Current pricing authority, duplicated source surfaces, safe change procedures, environment risks, validation/deployment matrices, rollback limits, grandfathering default, emergency checkout stop, and unresolved commercial decisions are documented without changing runtime or Stripe state. | [Pricing Operations Runbook](../billing/PRICING-OPERATIONS-RUNBOOK.md), [Pricing Change Log](../billing/PRICING-CHANGE-LOG.md) |
 | Local billing fixture Stage B | A localhost-only harness now runs the real local billing/ownership Edge paths, ownership RPC, authenticated RLS, and raw constraint probes. Clean 27-migration reset, 39/39 local checks, exact-ID cleanup, and repository gates passed without remote Supabase or Stripe access. | [Local fixture operator guide](../dev/local-billing-fixtures.md), [shared fixture boundary](../dev/billing-fixtures.md) |
 | Server-controlled workspace creation and membership writes | Workspace creation now uses one authenticated Edge call and one service-role-only transaction; authenticated direct membership DML is revoked while approved Edge/RPC paths remain functional. Local and development proof passed with exact fixture cleanup. | [Edge Function](../../supabase/functions/org-create-workspace/index.ts), [creation transaction](../../supabase/migrations/20260716061516_server_controlled_workspace_creation.sql), [membership privileges](../../supabase/migrations/20260716061518_restrict_direct_membership_mutations.sql) |
 | Explicit Supabase Data API grants | Minimum API-role table grants and schema-portable conditional sequence grants are merged, pushed, reset locally, and applied to development. | [Migration](../../supabase/migrations/2026071401_explicit_api_role_privileges.sql), [archived integration evidence](../archive/master-todos/TP3D-MASTER-TODO-V4.md#current-authbilling-integration-gate--2026-07-15) |
@@ -148,7 +149,7 @@ Queue order is approval order. Start one branch at a time and record its active 
 
 The current reliability phase establishes repeatable proof for organization-scoped billing behavior before product expansion resumes.
 
-The phase closes only when the remaining reliability queue items 1–7 have either passed or received an explicit, evidenced disposition. Local fixtures are complete. Closure still requires a current-state pricing runbook, a behavior-preserving catalog, defined unknown/replaced-price behavior, deployed-development smoke fixtures, Stripe test-mode fixtures, and a final gate reassessment.
+The phase closes only when the remaining reliability queue items 1–6 have either passed or received an explicit, evidenced disposition. Local fixtures and the current-state pricing runbook are complete. Closure still requires a behavior-preserving catalog, defined unknown/replaced-Price behavior, deployed-development smoke fixtures, Stripe test-mode fixtures, and a final gate reassessment.
 
 The foundation must preserve [Billing Entitlement Rules](./BILLING_ENTITLEMENT_RULES.md), [Billing Fixture Safety](../dev/billing-fixtures.md), direct-first F12 identity, fail-closed ambiguity, owner-only money actions, and production-data refusal. It does not authorize a broad billing schema migration or any next-generation billing design in Section 12.
 
@@ -261,6 +262,8 @@ The supporting [July 2026 Product Strategy Debrief](./PRODUCT-STRATEGY-DEBRIEF-2
 | Operational status and approved queue | This V5 document |
 | Broad product direction, open decisions, and deferred candidates | [July 2026 Product Strategy Debrief](./PRODUCT-STRATEGY-DEBRIEF-2026-07.md) |
 | Billing/workspace product semantics | [Billing Entitlement Rules](./BILLING_ENTITLEMENT_RULES.md) |
+| Current pricing change, deployment, validation, and rollback procedures | [Pricing Operations Runbook](../billing/PRICING-OPERATIONS-RUNBOOK.md) |
+| Append-only pricing change evidence | [Pricing Change Log](../billing/PRICING-CHANGE-LOG.md) |
 | Hosted billing fixture boundaries and commands | [Billing Fixture Safety Foundation](../dev/billing-fixtures.md) |
 | Local billing fixture commands and evidence | [Local Billing Fixtures](../dev/local-billing-fixtures.md) |
 | Owner-account billing audit baseline | [P0 Owner-Only Billing Audit](../audits/P0_OWNER_ONLY_BILLING_AUDIT.md) |

@@ -6,6 +6,8 @@ Status: Approved internal checkpoint
 >
 > The core owner-account entitlement model remains approved. References below to the “first entitlement migration pass” are historical, and guidance that would preserve unsafe stale or cross-workspace fallbacks is superseded. Billing and portal requests resolve one requested organization; unambiguous directly paid requested-workspace identity is evaluated before sibling coverage; ambiguous billing identity fails closed. Ownership changes use the dedicated transfer path, and generic member-role updates cannot create or demote owners. [Master TODO V5](./TP3D-MASTER-TODO-V5.md) controls current operational status.
 
+Operational price, interval, limit, and display-copy changes must follow the [Pricing Operations Runbook](../billing/PRICING-OPERATIONS-RUNBOOK.md). That runbook records current procedures and does not alter this product contract.
+
 This document defines the billing model Truck Packer 3D must follow going forward.
 It is the product and engineering rule sheet for billing, workspace access, feature gates, and UI behavior.
 

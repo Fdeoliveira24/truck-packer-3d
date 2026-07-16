@@ -1,22 +1,19 @@
 # File Tree: Truck Packer 3D
 
-**Generated:** 7/16/2026, 1:40:58 AM
+**Generated:** 7/16/2026, 10:25:11 AM
 **Root Path:** `/Users/franciscooliveira/Dropbox/360Virtual Tour Solutions/Projects/Truck Packer 3D`
 
 ```
+├── 📁 .claude
+│   └── 📁 skills
+│       └── 📁 tp3d-autopack-guard
+│           └── 📝 SKILL.md
 ├── 📁 .codex
 │   └── ⚙️ hooks.json
 ├── 📁 .github
 │   └── 📝 copilot-instructions.md
-├── 📁 Production
-│   ├── 📁 src
-│   │   ├── 📁 data
-│   │   └── 📁 ui
-│   └── 📁 vendor
 ├── 📁 backups
-│   ├── ⚙️ .gitignore
-│   ├── 📄 backup-20260502-2343.sql
-│   └── 📄 backup-20260502-2345.sql
+│   └── ⚙️ .gitignore
 ├── 📁 docs
 │   ├── 📁 archive
 │   │   ├── 📁 2026-01-cleanup-docs
@@ -27,11 +24,11 @@
 │   │   │   ├── 📝 AUDIT_APP_STRUCTURE.md
 │   │   │   ├── 📝 AUDIT_PACK_PREVIEW_AND_FILTERS.md
 │   │   │   ├── 📝 ESLINT_WARNINGS_SUMMARY.md
+│   │   │   ├── 📝 github-raw-urls.md
 │   │   │   ├── 📝 QUICKSTART.md
 │   │   │   ├── 📝 README.md
 │   │   │   ├── 📝 REPO_MAP_PACK_PREVIEW.md
-│   │   │   ├── 📝 SETUP_SUMMARY.md
-│   │   │   └── 📝 github-raw-urls.md
+│   │   │   └── 📝 SETUP_SUMMARY.md
 │   │   ├── 📁 2026-02-autopack
 │   │   │   └── 📝 autopack-logic.md
 │   │   ├── 📁 2026-02-phase1
@@ -47,31 +44,35 @@
 │   │   ├── 📝 DOCUMENTATION-INVENTORY-2026-07.md
 │   │   └── 📝 README.md
 │   ├── 📁 audits
+│   │   ├── 📝 account-deletion-audit.md
 │   │   ├── 📝 ARCHITECTURE_DIAGRAM.md
+│   │   ├── 📝 auth-session-race-audit-2026-02-05.md
 │   │   ├── 📝 CONTRADICTIONS_REPORT.md
 │   │   ├── 📝 CROSS_BROWSER_REPORT.md
+│   │   ├── 📝 css-audit-footer-overlay.md
 │   │   ├── 📝 DATA_INTEGRITY_REPORT.md
 │   │   ├── 📝 FORENSIC_CODEBASE_MAP.md
 │   │   ├── 📝 NETWORK_RESILIENCE_REPORT.md
 │   │   ├── 📝 P0_OWNER_ONLY_BILLING_AUDIT.md
 │   │   ├── 📝 PATCH_LOG.md
 │   │   ├── 📝 PERFORMANCE_REPORT.md
-│   │   ├── 📝 RELEASE_GATE_CHECKLIST.md
-│   │   ├── 📝 RUNTIME-ERROR-ACCESS-OFFLINE-AUDIT.md
-│   │   ├── 📝 RUNTIME_STABILITY_REPORT.md
-│   │   ├── 📝 SECURITY_REPORT.md
-│   │   ├── 📝 TEST_PLAN.md
-│   │   ├── 📝 account-deletion-audit.md
-│   │   ├── 📝 auth-session-race-audit-2026-02-05.md
-│   │   ├── 📝 css-audit-footer-overlay.md
 │   │   ├── 📝 phase1-resources-audit.md
 │   │   ├── 📝 qa-billing-entitlement-2026-05-04.md
+│   │   ├── 📝 RELEASE_GATE_CHECKLIST.md
+│   │   ├── 📝 RUNTIME_STABILITY_REPORT.md
+│   │   ├── 📝 RUNTIME-ERROR-ACCESS-OFFLINE-AUDIT.md
+│   │   ├── 📝 SECURITY_REPORT.md
 │   │   ├── 📝 settings-tab-desync-audit.md
+│   │   ├── 📝 TEST_PLAN.md
 │   │   └── 📝 ui-rearrangement-audit.md
+│   ├── 📁 billing
+│   │   ├── 📝 PRICING-CHANGE-LOG.md
+│   │   └── 📝 PRICING-OPERATIONS-RUNBOOK.md
 │   ├── 📁 dev
 │   │   ├── 📝 billing-fixtures.md
 │   │   ├── 📝 billing-status-curl.md
 │   │   ├── 📝 billing-status-setup.md
+│   │   ├── 📝 local-billing-fixtures.md
 │   │   ├── 📝 local-supabase-setup.md
 │   │   └── 📝 stripe-functions-secrets-checklist.md
 │   ├── 📁 engineering
@@ -124,45 +125,49 @@
 │   │   │   ├── 🖼️ truckpacker-cases-table-2026-05-24.png
 │   │   │   ├── 🖼️ truckpacker-scale-payload-panel-2026-05-24.png
 │   │   │   └── 🖼️ truckpacker-weight-view-range-scale-2026-05-24.png
+│   │   ├── 📝 autopack-logic-v2.md
 │   │   ├── 📝 BILLING_ENTITLEMENT_RULES.md
 │   │   ├── 📝 PRODUCT-STRATEGY-DEBRIEF-2026-07.md
 │   │   ├── 📝 PROJECT_TREE.md
 │   │   ├── 📝 SETTINGS-VISUAL-SYSTEM-CONTRACT.md
 │   │   ├── 📝 SETTINGS-WORKSPACE-GENERAL-UI-PLAN.md
+│   │   ├── 📊 TP3D_Clean_Feature_Tracker.xlsx
 │   │   ├── 📝 TP3D-MASTER-TODO-V5.md
-│   │   ├── 📄 TP3D_Clean_Feature_Tracker.xlsx
-│   │   ├── 📝 autopack-logic-v2.md
 │   │   ├── 📝 truckpacker-blackbox-audit-2026-05-24.md
 │   │   ├── 📝 truckpacker-comparison-v1-2026-04-19.md
 │   │   └── 📝 truckpacker-reference-autopack-audit-2026-05-24.md
 │   ├── 📁 review
+│   │   ├── 📝 browser-diagnostics.md
+│   │   ├── 📝 orphan-owner-workspace-cleanup.md
 │   │   ├── 📝 P0.6-DB-HEALTH-CHECKLIST.md
 │   │   ├── 📝 README.md
 │   │   ├── 📝 SUPABASE_CURRENT_STATE_02_07_2026-V1.md
 │   │   ├── 📝 TP3D_BILLING_FIXES_02_12_2026.md
-│   │   ├── 📝 browser-diagnostics.md
-│   │   ├── 📝 orphan-owner-workspace-cleanup.md
 │   │   ├── 📝 tp3d-supabase-infra-record-2026-02-03.md
 │   │   ├── 📝 tp3d-supabase-issue-summary-2026-02-03.md
 │   │   ├── 📝 truck-change-reconciliation-status-2026-06-18.md
 │   │   ├── 📝 truck-packer-supabase-current-state.md
 │   │   └── 📝 ui-bug-fixes-2026-01-29.md
 │   ├── 📁 tp3d-pack-and-cases-upload-tests
-│   │   ├── 📄 README.txt
-│   │   ├── 📄 cargo_cases_valid.csv
-│   │   ├── 📄 cargo_cases_valid.xlsx
-│   │   ├── 📄 cargo_cases_warning_inputs.csv
-│   │   ├── 📄 cargo_cases_warning_inputs.xlsx
-│   │   └── 📄 cargo_rule_test_matrix.xlsx
+│   │   ├── 📊 cargo_cases_valid.csv
+│   │   ├── 📊 cargo_cases_valid.xlsx
+│   │   ├── 📊 cargo_cases_warning_inputs.csv
+│   │   ├── 📊 cargo_cases_warning_inputs.xlsx
+│   │   ├── 📊 cargo_rule_test_matrix.xlsx
+│   │   └── 📄 README.txt
 │   └── 📝 README.md
 ├── 📁 media
 │   └── 🖼️ autopack-loading-truck-480w.gif
 ├── 📁 scripts
-│   └── 📁 billing-fixtures
-│       ├── 📄 cli.mjs
-│       ├── 📄 manifest.mjs
-│       ├── 📄 mask.mjs
-│       └── 📄 safety.mjs
+│   ├── 📁 billing-fixtures
+│   │   ├── 📄 cli.mjs
+│   │   ├── 📄 manifest.mjs
+│   │   ├── 📄 mask.mjs
+│   │   └── 📄 safety.mjs
+│   └── 📁 local-fixtures
+│       ├── 📄 cleanup.mjs
+│       ├── 📄 environment.mjs
+│       └── 📄 harness.mjs
 ├── 📁 src
 │   ├── 📁 auth
 │   │   ├── 📄 permissions.js
@@ -274,16 +279,14 @@
 │   │   └── 📄 uuid.js
 │   ├── 📁 vendor
 │   │   └── 📄 loader.js
-│   ├── 📝 CLAUDE.md
 │   ├── 📄 app.js
+│   ├── 📝 CLAUDE.md
 │   ├── 📄 debugger-old.js
 │   ├── 📄 debugger.js
 │   └── 📄 router.js
 ├── 📁 styles
-│   └── 🎨 main.css
+│   └── 📄 main.css
 ├── 📁 supabase
-│   ├── 📁 .branches
-│   │   └── 📄 _current_branch
 │   ├── 📁 functions
 │   │   ├── 📁 _shared
 │   │   │   ├── 📄 auth.ts
@@ -301,6 +304,8 @@
 │   │   │   ├── ⚙️ deno.json
 │   │   │   └── 📄 index.ts
 │   │   ├── 📁 org-archive-workspace
+│   │   │   └── 📄 index.ts
+│   │   ├── 📁 org-create-workspace
 │   │   │   └── 📄 index.ts
 │   │   ├── 📁 org-invite
 │   │   │   └── 📄 index.ts
@@ -359,8 +364,9 @@
 │   │   ├── 📄 2026050803_restore_workspace.sql
 │   │   ├── 📄 2026050804_account_purge_status.sql
 │   │   ├── 📄 2026061301_guard_profile_deletion_fields.sql
-│   │   └── 📄 2026071401_explicit_api_role_privileges.sql
-│   ├── 📁 snippets
+│   │   ├── 📄 2026071401_explicit_api_role_privileges.sql
+│   │   ├── 📄 20260716061516_server_controlled_workspace_creation.sql
+│   │   └── 📄 20260716061518_restrict_direct_membership_mutations.sql
 │   ├── ⚙️ .gitignore
 │   └── ⚙️ config.toml
 ├── 📁 tests
@@ -371,18 +377,27 @@
 │   │   ├── 📄 manual-vertical-placement.spec.mjs
 │   │   ├── 📄 max-capacity-durability.spec.mjs
 │   │   └── 📄 security-and-invariants.spec.mjs
+│   ├── 📁 local-db
+│   │   ├── 📄 billing-local.spec.mjs
+│   │   ├── 📄 ownership-local.spec.mjs
+│   │   ├── 📄 security-local.spec.mjs
+│   │   └── 📄 workspace-membership-security.spec.mjs
 │   └── 📄 stress.spec.js
 ├── 📁 tools
 │   ├── 📄 app-graph.js
 │   └── ⚙️ tp3d-graph.json
 ├── 📁 vendor
+│   ├── 📄 fa-brands-400.woff2
+│   ├── 📄 fa-solid-900.woff2
+│   ├── 📄 jspdf.umd.min.js
 │   ├── 📄 OrbitControls.js
 │   ├── 📄 OrbitControls.module.js
 │   ├── 📝 README.md
-│   ├── 📄 fa-brands-400.woff2
-│   ├── 📄 fa-solid-900.woff2
+│   ├── 📄 supabase.min.js
+│   ├── 📄 three.min.js
 │   ├── 📄 three.module.js
-│   └── 📄 tween.umd.js
+│   ├── 📄 tween.umd.js
+│   └── 📄 xlsx.full.min.js
 ├── ⚙️ .depcheckrc
 ├── ⚙️ .editorconfig
 ├── ⚙️ .gitignore
@@ -393,13 +408,13 @@
 ├── ⚙️ .stylelintrc.cjs
 ├── 📝 AGENTS.md
 ├── 📝 CLAUDE.md
-├── 📝 README.md
 ├── 📄 eslint.config.js
 ├── 🌐 index.html
 ├── ⚙️ knip.json
 ├── ⚙️ package.json
+├── 📝 README.md
 └── ⚙️ tsconfig.json
 ```
 
 ---
-*Generated by FileTree Pro Extension*
+*Generated mechanically from tracked and approved untracked repository files*

@@ -1,6 +1,6 @@
 # Billing Fixture Safety Foundation
 
-This document defines the shared safety boundary for billing fixtures. The hosted fixture CLI remains a no-write planning foundation: it does not connect to Supabase or Stripe, create users, create billing objects, change database rows, or provide cleanup commands. Local Billing Fixture Stage B is now complete in a separate localhost-only harness documented in [Local Billing Fixtures](./local-billing-fixtures.md).
+This document defines the shared safety boundary for billing fixtures. The original planning CLI remains no-write. Local Billing Fixture Stage B and the deployed-development fixture layer are complete in separate, environment-bound harnesses documented in [Local Billing Fixtures](./local-billing-fixtures.md) and [Deployed Development Billing Fixtures](./deployed-development-billing-fixtures.md).
 
 ## Why durable fixtures are needed
 
@@ -16,12 +16,12 @@ The billing safety work has runtime coverage for direct subscriptions, owner-pla
 | Source-contract/static | Function ordering, organization scoping, sanitization, and forbidden fallback checks inspect source structure. | Useful invariant evidence; not runtime or integration proof. |
 | Manual browser/sandbox | Authenticated browser and safe deployed-function checks are summarized in [Master TODO V5](../product/TP3D-MASTER-TODO-V5.md), with detailed historical evidence retained in its archive links. | Limited to fixtures already present; unavailable rows are never marked passed. |
 | Local Supabase integration | Complete. | The Stage B harness runs only against the local CLI stack, invokes the real local Edge functions with local JWTs, uses exact-ID cleanup, and rejects any Stripe key or remote URL. |
-| Deployed development integration | Deferred. | No durable hosted-development write fixture has been approved yet. |
+| Deployed development integration | Complete. | Disposable hosted-development users and rows exercise deployed Edge Functions and RLS, with manifest-owned exact-ID cleanup and unchanged non-fixture fingerprints. No Stripe key or object is used. |
 | External Stripe integration | Missing. | No repeatable Stripe test-mode customer/subscription fixture layer exists yet. |
 
-## Safety environment contract
+## Planning safety environment contract
 
-Both supported commands refuse to run unless all applicable checks pass:
+The no-write planning commands refuse to run unless all applicable checks pass:
 
 - `TP3D_FIXTURE_ENV` is exactly `dev`.
 - `SUPABASE_URL` is a hosted `https://<20-character-project-ref>.supabase.co` project URL.
@@ -61,11 +61,17 @@ npm run test:billing:local
 
 Those commands must never be pointed at a hosted project and must run with `STRIPE_SECRET_KEY` absent. See [Local Billing Fixtures](./local-billing-fixtures.md) for the explicit operator-owned start/reset/serve sequence and scenario matrix.
 
-There are deliberately no `seed`, `reset`, or `cleanup` package commands. Invoking those names directly against the CLI hard-fails with:
+The deployed-development layer has separate commands with a stricter approved-project contract:
 
-```text
-Fixture writes are not implemented in the safety-foundation branch.
+```sh
+npm run billing:fixtures:dev:plan
+npm run billing:fixtures:dev:seed -- --confirm
+npm run billing:fixtures:dev:verify
+npm run test:billing:dev
+npm run billing:fixtures:dev:cleanup -- --confirm
 ```
+
+These commands require `SUPABASE_SERVICE_ROLE_KEY`, refuse every present `STRIPE_SECRET_KEY`, and never run during `npm test`. See [Deployed Development Billing Fixtures](./deployed-development-billing-fixtures.md) for the complete lifecycle and refusal rules. The original no-write CLI still has no seed/reset/cleanup surface.
 
 ## Manifest ownership and immutability
 
@@ -80,7 +86,7 @@ Manifest schema version 1 binds every run and fixture entry to:
 - fixture type and scenario classification
 - `expectedCleanupOwnership: "manifest-ids-only"`
 
-Initial plans contain null/empty identifiers because no objects are created. Future cleanup must use immutable manifest IDs plus matching environment/project bindings. Display names and prefixes may only be secondary checks. Cross-project and cross-environment manifest reuse is rejected. The manifest contains no emails, secrets, tokens, authorization headers, or `includedOrgIds` expectation; F12 established that `includedOrgIds` is owner-coverage diagnostics, not requested-workspace direct identity.
+Initial no-write plans contain null/empty identifiers because no objects are created. The deployed-development manifest records each created object by immutable exact ID, environment, project, fixture version, creation state, and cleanup state. Cleanup uses those IDs only. Display names and prefixes are secondary checks. Cross-project and cross-environment reuse is rejected. Manifests contain no emails, passwords, secrets, tokens, authorization headers, or `includedOrgIds` expectation; F12 established that `includedOrgIds` is owner-coverage diagnostics, not requested-workspace direct identity.
 
 ## Masking policy
 
@@ -99,12 +105,11 @@ Null, short, and malformed inputs produce fixed invalid markers rather than echo
 - Use controlled plus-alias mailboxes for invite, confirmation, password-reset, or other real delivery flows.
 - Never use customer or production email addresses.
 
-## Planned later branches
+## Remaining later layers
 
-Each later layer remains separate and must preserve these refusal rules. Local Billing Fixture Stage B is complete; the remaining deferred layers are:
+Each layer remains separate and must preserve these refusal rules. Local Billing Fixture Stage B and deployed-development fixtures are complete. The remaining deferred layers are:
 
-1. `test/billing-dev-function-smoke`
-2. `test/billing-stripe-sandbox-fixtures`
-3. `ci/billing-integration-gates`
+1. `test/billing-stripe-sandbox-fixtures`
+2. `ci/billing-integration-gates`
 
-The hosted planning CLI remains no-write. The local Stage B harness is write-capable only inside the operator-started localhost stack and cleans exact captured IDs. Deployed-development fixtures, Stripe sandbox creation, CI secrets, catalog/tier/grant work, and production data remain out of scope.
+The planning CLI remains no-write. The local Stage B harness is write-capable only inside the operator-started localhost stack. The deployed-development harness is write-capable only in the pinned development project and cleans exact captured IDs. Stripe sandbox creation, CI secrets, commercial catalog/tier/grant work, and production data remain out of scope until separately approved.

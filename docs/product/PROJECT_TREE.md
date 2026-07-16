@@ -1,6 +1,6 @@
 # File Tree: Truck Packer 3D
 
-**Generated:** 7/16/2026, 5:40:35 PM
+**Generated:** 7/16/2026, 7:38:48 PM
 **Root Path:** `/Users/franciscooliveira/Dropbox/360Virtual Tour Solutions/Projects/Truck Packer 3D`
 
 ```
@@ -72,6 +72,7 @@
 │   │   ├── 📝 billing-fixtures.md
 │   │   ├── 📝 billing-status-curl.md
 │   │   ├── 📝 billing-status-setup.md
+│   │   ├── 📝 deployed-development-billing-fixtures.md
 │   │   ├── 📝 local-billing-fixtures.md
 │   │   ├── 📝 local-supabase-setup.md
 │   │   └── 📝 stripe-functions-secrets-checklist.md
@@ -161,6 +162,13 @@
 ├── 📁 scripts
 │   ├── 📁 billing-fixtures
 │   │   ├── 📄 cli.mjs
+│   │   ├── 📄 dev-cleanup.mjs
+│   │   ├── 📄 dev-cli.mjs
+│   │   ├── 📄 dev-environment.mjs
+│   │   ├── 📄 dev-invoke.mjs
+│   │   ├── 📄 dev-manifest.mjs
+│   │   ├── 📄 dev-seed.mjs
+│   │   ├── 📄 dev-verify.mjs
 │   │   ├── 📄 manifest.mjs
 │   │   ├── 📄 mask.mjs
 │   │   └── 📄 safety.mjs
@@ -376,10 +384,14 @@
 │   │   ├── 📄 autopack-results-carousel.spec.mjs
 │   │   ├── 📄 billing-catalog.spec.mjs
 │   │   ├── 📄 billing-fixture-safety.spec.mjs
+│   │   ├── 📄 deployed-billing-fixture-safety.spec.mjs
 │   │   ├── 📄 import-export.spec.mjs
 │   │   ├── 📄 manual-vertical-placement.spec.mjs
 │   │   ├── 📄 max-capacity-durability.spec.mjs
 │   │   └── 📄 security-and-invariants.spec.mjs
+│   ├── 📁 integration
+│   │   └── 📁 dev-billing
+│   │       └── 📄 deployed-functions.spec.mjs
 │   ├── 📁 local-db
 │   │   ├── 📄 billing-local.spec.mjs
 │   │   ├── 📄 ownership-local.spec.mjs

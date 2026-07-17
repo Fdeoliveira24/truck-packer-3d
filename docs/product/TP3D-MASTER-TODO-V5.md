@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-17
 
-**Last verified repository state:** Direct organization INSERT Packet 1 completed locally and in development; server-side workspace-limit enforcement and slug Phase 1 remain before Max Capacity Phase C
+**Last verified repository state:** Server-side workspace-limit Packet 2 completed locally and in development; workspace-slug Phase 1 remains before Max Capacity Phase C
 
 ## 1. Document Contract
 
@@ -25,16 +25,16 @@ This table is the single mutable status snapshot in V5.
 
 | Area | Status at the last verified repository state |
 |---|---|
-| Repository | Packet 1 completed from the clean `d149fb6` baseline; local, deployed-development, and Stripe test-mode fixture milestones remain complete. |
+| Repository | Packet 2 completed from the clean `80ce09b` baseline on `fix/server-workspace-limit-enforcement`; local, deployed-development, and Stripe test-mode fixture milestones remain complete. |
 | Supabase Data API grants | Complete, merged, pushed, and applied to development. |
 | Workspace/membership write boundary | Complete. Authenticated clients retain RLS-filtered organization/membership reads and legitimate organization updates, but cannot directly insert organizations or mutate memberships; approved signup and server-controlled creation remain functional. |
-| Server-side workspace creation limit | Missing. The browser blocks at the reported limit, but `org-create-workspace` and `tp3d_create_workspace` do not resolve entitlement, count workspaces, fail closed, or serialize concurrent creation. |
+| Server-side workspace creation limit | Complete. `org-create-workspace` supplies the trusted catalog limits to a service-role-only transaction that locks the actor profile, resolves the canonical owner entitlement, counts every owned workspace including archived rows, fails closed on unsafe/unavailable billing identity, and rejects at the effective limit. |
 | Workspace slug | Phase 1 integrity is required after the write boundary and server limit: backfill/normalize, non-null, case-insensitive uniqueness, controlled mutation, and valid UUID-derived creation. Phase 2 friendly slugs remain separate required product work. |
-| Clean local database | All 28 migrations reset successfully. |
-| Edge smoke | Local and development workspace creation, direct organization/membership denial, organization read/update, invite, role, remove, leave, transfer, and ownership restoration passed. |
-| Local billing fixture Stage B | Complete. Clean 28-migration reset, local environment/grant verification, 39/39 local integration checks, exact cleanup, and full repository gates passed. |
+| Clean local database | All 29 migrations reset successfully. |
+| Edge smoke | Local and development workspace creation limits, same-owner concurrency, archived-inclusive counting, fail-closed billing identity, direct organization/membership denial, organization read/update, invite, role, remove, leave, transfer, and ownership restoration passed. |
+| Local billing fixture Stage B | Complete. Clean 29-migration reset, local environment/grant verification, 39/39 local integration checks, exact cleanup, and full repository gates passed. |
 | Billing fixture safety foundation | Complete. The existing layer remains no-write, environment-bound, masked, and production-refusing. |
-| Deployed development fixtures | Complete. D1 lifecycle and D2 deployed Edge/PostgREST/RLS checks passed; 38 manifest-owned objects were absent after exact cleanup, the second cleanup was idempotent, and collateral fingerprints were unchanged. |
+| Deployed development fixtures | Complete. The expanded D2 deployed Edge/PostgREST/RLS matrix passed 38/38, including Packet 2 trial/paid limits, same-owner concurrency, archived counting, and fail-closed identity checks; exact cleanup covered 54 tracked objects with zero failures or collateral fingerprint differences. |
 | Stripe test-mode fixtures | Complete. S1 signed-delivery safety, S2 direct-monthly lifecycle, and S3 rejection/replay safety passed against development; exact cleanup was idempotent and Supabase/Stripe collateral fingerprints were unchanged. |
 | Direct-paid F12 identity | Complete and deployed. Requested-workspace direct identity precedes sibling owner-plan coverage. |
 | Pricing | Not commercially finalized. |
@@ -42,7 +42,7 @@ This table is the single mutable status snapshot in V5.
 | Pricing operations runbook | Complete and updated for active checkout Prices, recognition-only legacy Prices, unknown fallback diagnostics, safe replacement, deployment scope, rollback limits, and unresolved commercial decisions. |
 | Unknown or replaced Price handling | Complete. Usable explicitly mapped unknown Prices preserve conservative paid fallback with a masked diagnostic; recognized legacy Prices preserve tier/limit but remain checkout-disabled. Local and development validation passed. |
 | Billing QA BUG-02 / BUG-03 | Proven resolved. Active/included paid workspaces return usable interval and period data; paying owners have an organization-scoped Portal path. Current runtime/local tests, authenticated evidence, and the Stripe S2 lifecycle agree. |
-| Platform-foundation reliability | Open only for server-side creation-limit enforcement, slug integrity foundation, and their local/development validation. |
+| Platform-foundation reliability | Open only for the workspace-slug Phase 1 integrity foundation and its local/development validation. |
 | Max Capacity Phase C | Blocked and not started. |
 | Development schema drift | Legacy cases/packs, policies/functions, and billing ID differences remain a separate, non-blocking future audit. |
 
@@ -61,37 +61,36 @@ This table is the single mutable status snapshot in V5.
 
 | Field | Current value |
 |---|---|
-| Task | Enforce the effective owner workspace limit inside server-controlled workspace creation. |
-| Branch | Not created; use one narrowly scoped server-limit branch. |
-| Outcome | User-initiated creation fails closed at the effective owner limit and remains safe under concurrent requests, while signup and approved internal creation retain their documented behavior. |
-| Blocker state | Unblocked after Packet 1 and next in dependency order. |
-| Scope boundary | Packet 2 only. Do not combine slug, commercial billing, Stripe, AutoPack, Max Capacity Phase C, or unrelated workspace behavior. |
-| Closeout | Prove below-limit, at-limit, archived-count, inherited-plan, uncertain-entitlement, and concurrent creation behavior locally and in development before beginning slug Phase 1. |
+| Task | Implement the Phase 1 workspace-slug integrity foundation. |
+| Branch | Not created; create one narrowly scoped slug-integrity branch from the Packet 2 main baseline. |
+| Outcome | Backfill and normalize existing slugs, enforce non-null case-insensitive uniqueness and the bounded internal format, preserve UUID-derived server creation, and block uncontrolled slug mutation without treating slug knowledge as authorization. |
+| Blocker state | Unblocked after Packet 2 and next in dependency order. |
+| Scope boundary | Workspace-slug Phase 1 integrity only. Do not combine friendly-slug Phase 2 UX/routing, commercial billing, Stripe, AutoPack, Max Capacity Phase C, or unrelated workspace behavior. |
+| Closeout | Prove migration convergence, controlled mutation, creation compatibility, lookup non-authority, and local/development workspace/billing regressions before closing platform-foundation reliability. |
 
 Only this row is active. The following section is an approved sequence, not simultaneous work.
 
 ## 5. Next Approved Execution Queue
 
-1. Enforce the effective owner workspace limit inside the server-controlled creation path, including fail-closed resolution and concurrency safety.
-2. Implement the Phase 1 workspace-slug integrity foundation.
-3. Re-run the required clean-local and deployed-development workspace/billing validation after both remaining packets land.
-4. Explicitly close platform-foundation reliability.
-5. Resume Max Capacity Phase C only after that closeout.
-6. Keep the Phase 2 friendly workspace-slug capability in the approved future product roadmap; plan and implement it separately from Phase 1 integrity.
+1. Implement the Phase 1 workspace-slug integrity foundation.
+2. Re-run the required clean-local and deployed-development workspace/billing validation after the slug packet lands.
+3. Explicitly close platform-foundation reliability.
+4. Resume Max Capacity Phase C only after that closeout.
+5. Keep the Phase 2 friendly workspace-slug capability in the approved future product roadmap; plan and implement it separately from Phase 1 integrity.
 
 Queue order is approval order. Start one branch at a time and record its active branch, outcome, and blocker state in Section 4.
 
 ## 6. Current Blockers
 
-- User-initiated workspace creation does not enforce the effective owner workspace limit on the server and is not concurrency-safe.
 - Workspace slugs remain nullable, unconstrained, and directly writable until the Phase 1 integrity packet lands.
 - Commercial pricing is not final; later fixture work must not invent future commercial terms.
-- Max Capacity Phase C is blocked by the billing reliability closeout gate. It has no approved active branch and must not start early.
+- Max Capacity Phase C is blocked by the remaining platform-foundation slug closeout gate. It has no approved active branch and must not start early.
 
 ## 7. Recently Completed Milestones
 
 | Milestone | Concise result | Evidence |
 |---|---|---|
+| Server-side workspace-limit enforcement — Packet 2 | Migration `20260717142844_enforce_server_workspace_limits.sql` replaces the user-creation RPC with a service-role-only catalog-aware transaction. It locks the actor profile before entitlement resolution/count/insert, counts all canonical owner workspaces including archived rows, preserves trial/Business/Pro-fallback and payment-grace limits, rejects unsafe or unavailable billing identity, and returns stable sanitized Edge codes. Clean 29-migration reset passed; workspace security was 9/9, local billing 39/39, fixture safety 34/34, security 887 passed/5 skipped, and the full suite 1,047 passed/5 skipped. Development applied only the migration and `org-create-workspace`; 38/38 deployed checks proved below/at-limit behavior, one-winner same-owner concurrency, archived counting, and fail-closed identity, followed by exact cleanup of 54 tracked objects with zero collateral differences. | [migration](../../supabase/migrations/20260717142844_enforce_server_workspace_limits.sql), [Edge Function](../../supabase/functions/org-create-workspace/index.ts), `tests/local-db/workspace-membership-security.spec.mjs`, `tests/integration/dev-billing/deployed-functions.spec.mjs` |
 | Direct organization INSERT boundary — Packet 1 | Migration `20260717135117_restrict_direct_organization_inserts.sql` revoked authenticated organization INSERT and removed `organizations_insert_owner_self` without changing SELECT, UPDATE, slug, limit, billing, archive, deletion, or ownership semantics. Clean 28-migration reset passed; targeted security was 1/1, local billing 39/39, fixture safety 34/34, security 885 passed/5 skipped, and the full suite 1,045 passed/5 skipped. Development returned `403/42501` for direct INSERT with zero residue, while signup, server creation, canonical owner/membership/billing state, SELECT, and descriptive UPDATE passed; exact cleanup and collateral fingerprints were clean. | [migration](../../supabase/migrations/20260717135117_restrict_direct_organization_inserts.sql), `tests/local-db/workspace-membership-security.spec.mjs` |
 | Platform-foundation reliability reconciliation | Reassessment confirmed the authenticated `organizations` INSERT boundary and slug integrity gaps, and classified server-side workspace-limit enforcement as missing. The creation Edge/RPC path contains no billing/count/lock check, and the local security flow currently proves a trial owner can create multiple additional workspaces directly. BUG-02 and BUG-03 are proven resolved by current runtime/local tests, authenticated paid-workspace evidence, and Stripe S2 Portal proof. Obsolete clean worktrees/branches with no needed unique evidence were removed. | `supabase/functions/org-create-workspace/index.ts`, `supabase/migrations/20260716061516_server_controlled_workspace_creation.sql`, `tests/local-db/workspace-membership-security.spec.mjs`, [archived authenticated billing evidence](../archive/2026-03-old-todos/TP3D-MASTER-TODO-V3.md) |
 | Stripe test-mode fixtures | S1 proved the deployed webhook accepts Stripe-signed events with the seven required destination events and no probe residue. S2 proved one disposable direct-monthly Customer/Subscription lifecycle, active billing status, Portal access, signed cancellation, and entitlement revocation. S3 proved sanitized missing/invalid-signature rejection and idempotent signed replay. Exact cleanup was repeatable, with no Supabase or Stripe collateral fingerprint change; fixture safety was 50/50, local billing remained 39/39, and the repository audit was 1,050 total, 1,045 passed, 5 skipped, 0 failed. | [Stripe fixture operator guide](../dev/stripe-test-billing-fixtures.md), [shared fixture boundary](../dev/billing-fixtures.md) |
@@ -163,15 +162,14 @@ Queue order is approval order. Start one branch at a time and record its active 
 
 The current reliability phase establishes repeatable proof for organization-scoped billing behavior before product expansion resumes.
 
-The evidence-based reassessment is complete. Local, deployed-development, and Stripe test-mode fixtures, the catalog/runbook, unknown/replaced-Price behavior, Billing QA BUG-02/BUG-03, and Packet 1 are closed. The phase now closes only after the two ordered implementation packets below pass local and deployed-development validation.
+The evidence-based reassessment is complete. Local, deployed-development, and Stripe test-mode fixtures, the catalog/runbook, unknown/replaced-Price behavior, Billing QA BUG-02/BUG-03, and Packets 1–2 are closed. The phase now closes only after Packet 3 passes local and deployed-development validation.
 
-### Packet 2 — Server-side workspace-limit enforcement
+### ✅ Packet 2 — Server-side workspace-limit enforcement — complete 2026-07-17
 
-- Resolve the actor's authoritative owner entitlement and effective catalog limit before accepting user-initiated creation; uncertainty must fail closed.
-- Count canonical workspaces with the same product policy as `/billing-status`: archived workspaces count, and inherited owner-plan coverage uses the owner's applicable entitlement.
-- Acquire an owner-scoped transaction lock before the final count and insert so concurrent requests cannot both pass the same remaining slot.
-- Return a stable sanitized limit response; preserve signup workspace creation and approved internal paths.
-- Expected scope: `org-create-workspace`, the creation RPC migration, shared catalog/entitlement reuse only as necessary, and focused tests for below-limit, at-limit, archived count, inherited plans, failures, and concurrent creation.
+- The service-role-only RPC locks the actor's profile row before resolving the canonical owner billing projection, counting, comparing, or inserting; unrelated owners retain independent lock rows.
+- All actor-owned workspaces count, including archived workspaces. Trial uses the catalog Trial limit; recognized Business uses the catalog Business limit; usable known/unknown Pro-family and grace projections preserve the current Pro fallback; unavailable or ambiguous identity fails closed.
+- Signup remains on its separate server-owned bootstrap trigger, while user-initiated creation returns stable sanitized limit, unsafe-identity, unavailable-entitlement, invalid-request, unauthorized, and internal-failure codes.
+- Local and deployed-development concurrency both proved exactly one success and one limit rejection with one slot remaining and no partial organization, membership, billing, or trial residue.
 
 ### Packet 3 — Workspace slug Phase 1 integrity foundation
 

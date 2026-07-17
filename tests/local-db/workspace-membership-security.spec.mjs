@@ -4,6 +4,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 
+import { cleanupLocalFixtureRun } from '../../scripts/local-fixtures/cleanup.mjs';
+import { createLocalFixtureRun } from '../../scripts/local-fixtures/harness.mjs';
+
 const execFileAsync = promisify(execFile);
 const enabled = process.env.TP3D_LOCAL_DB_INTEGRATION === '1';
 
@@ -12,6 +15,22 @@ const anonKey = String(process.env.TP3D_LOCAL_ANON_KEY || '');
 const serviceRoleKey = String(process.env.TP3D_LOCAL_SERVICE_ROLE_KEY || '');
 const dbContainer = String(process.env.TP3D_LOCAL_DB_CONTAINER || 'supabase_db_Truck_Packer_3D');
 const browserOrigin = 'http://localhost:5500';
+let sharedProxyRun = null;
+
+test.before(async () => {
+  if (!enabled) return;
+  sharedProxyRun = await createLocalFixtureRun({
+    label: 'workspace-membership-security',
+    writeLine: () => {},
+  });
+});
+
+test.after(async () => {
+  if (!sharedProxyRun) return;
+  await cleanupLocalFixtureRun(sharedProxyRun);
+  await sharedProxyRun.close();
+  sharedProxyRun = null;
+});
 
 function requiredEnvironment() {
   assert.ok(anonKey.startsWith('eyJ'), 'TP3D_LOCAL_ANON_KEY must be the local JWT anon key');
@@ -92,6 +111,54 @@ async function sql(statement) {
   ]);
 }
 
+const rpcEntitlementConfig = Object.freeze({
+  version: 1,
+  trial_limit: 1,
+  pro_limit: 3,
+  business_limit: 10,
+  business_price_ids: ['price_packet2_business'],
+});
+
+async function seedProjectedSubscription(account, suffix, {
+  status = 'active',
+  interval = 'month',
+  priceId = `price_packet2_${interval}`,
+  currentPeriodEnd = new Date(Date.now() + 30 * 86400000).toISOString(),
+} = {}) {
+  const stripeCustomerId = `cus_packet2_${suffix}`;
+  const stripeSubscriptionId = `sub_packet2_${suffix}`;
+  const subscription = await rest('subscriptions', {
+    method: 'POST',
+    body: {
+      organization_id: account.organizationId,
+      user_id: account.user.id,
+      stripe_customer_id: stripeCustomerId,
+      stripe_subscription_id: stripeSubscriptionId,
+      status,
+      price_id: priceId,
+      interval,
+      current_period_end: currentPeriodEnd,
+    },
+    prefer: 'return=representation',
+  });
+  assert.equal(subscription.response.status, 201, JSON.stringify(subscription.body));
+  const billing = await rest(`billing_customers?organization_id=eq.${account.organizationId}`, {
+    method: 'PATCH',
+    body: {
+      stripe_customer_id: stripeCustomerId,
+      stripe_subscription_id: stripeSubscriptionId,
+      status,
+      plan_name: 'pro',
+      billing_interval: interval,
+      current_period_end: currentPeriodEnd,
+      trial_ends_at: null,
+    },
+    prefer: 'return=representation',
+  });
+  assert.equal(billing.response.status, 200, JSON.stringify(billing.body));
+  return { stripeCustomerId, stripeSubscriptionId };
+}
+
 test('local workspace creation and membership mutation boundary', { skip: !enabled }, async (t) => {
   requiredEnvironment();
   const suffix = `${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -133,6 +200,14 @@ test('local workspace creation and membership mutation boundary', { skip: !enabl
   assert.equal(initialProfiles[0]?.current_organization_id, initialOrgId);
   const initialTrials = await rows(`billing_customers?organization_id=eq.${initialOrgId}&select=organization_id`);
   assert.equal(initialTrials.length, 1, 'signup owner membership must seed one billing row');
+
+  owner.organizationId = initialOrgId;
+  const memberInitialOrg = (await rows(
+    `organizations?owner_id=eq.${member.user.id}&select=id&order=created_at.asc`,
+  ))[0];
+  member.organizationId = memberInitialOrg.id;
+  await seedProjectedSubscription(owner, `boundary-owner-${suffix}`);
+  await seedProjectedSubscription(member, `boundary-member-${suffix}`);
 
   const insertGrant = await sql(`
     select count(*)
@@ -237,8 +312,8 @@ test('local workspace creation and membership mutation boundary', { skip: !enabl
   const createdTrialRows = await rows(`billing_customers?organization_id=eq.${workspaceId}&select=organization_id,status`);
   assert.equal(createdTrialRows.length, 1, 'workspace owner membership must fire the trial seed exactly once');
 
-  const retryA = await edge('org-create-workspace', owner.token, { name: 'Explicit Duplicate Name' });
-  const retryB = await edge('org-create-workspace', owner.token, { name: 'Explicit Duplicate Name' });
+  const retryA = await edge('org-create-workspace', member.token, { name: 'Explicit Duplicate Name' });
+  const retryB = await edge('org-create-workspace', member.token, { name: 'Explicit Duplicate Name' });
   assert.equal(retryA.response.status, 200);
   assert.equal(retryB.response.status, 200);
   assert.notEqual(retryA.body.organization.id, retryB.body.organization.id,
@@ -250,7 +325,11 @@ test('local workspace creation and membership mutation boundary', { skip: !enabl
   const missingActorId = randomUUID();
   const rollback = await rest('rpc/tp3d_create_workspace', {
     method: 'POST',
-    body: { p_actor_id: missingActorId, p_name: rollbackName },
+    body: {
+      p_actor_id: missingActorId,
+      p_name: rollbackName,
+      p_entitlement_config: rpcEntitlementConfig,
+    },
     prefer: 'return=representation',
   });
   assert.equal(rollback.response.ok, false, 'missing actor must fail inside the transaction');
@@ -412,4 +491,224 @@ test('local workspace creation and membership mutation boundary', { skip: !enabl
   });
   assert.equal(blockedTransfer.response.status, 409);
   assert.equal(blockedTransfer.body?.error, 'workspace_has_active_billing');
+});
+
+test('local Packet 2 workspace limits are authoritative and concurrency-safe', { skip: !enabled }, async (t) => {
+  requiredEnvironment();
+  const suffix = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const password = `Local-${randomUUID()}-B2!`;
+  const accounts = [];
+
+  const createAccount = async (label) => {
+    const account = await signUp(`tp3d-packet2-${label}-${suffix}@example.test`, password);
+    const organization = (await rows(
+      `organizations?owner_id=eq.${account.user.id}&select=id,owner_id,archived_at&order=created_at.asc`,
+    ))[0];
+    assert.ok(organization?.id, `${label} signup must create one owner workspace`);
+    const result = { ...account, organizationId: organization.id };
+    accounts.push(result);
+    return result;
+  };
+
+  const ownerWorkspaceRows = (account) => rows(
+    `organizations?owner_id=eq.${account.user.id}&select=id,archived_at&order=created_at.asc`,
+  );
+
+  t.after(async () => {
+    const userIds = accounts.map(account => `'${account.user.id}'`).join(',');
+    if (userIds) {
+      await sql(`
+        delete from public.organizations where owner_id in (${userIds});
+        delete from auth.users where id in (${userIds});
+      `);
+    }
+  });
+
+  await t.test('trial owner is exactly at the one-workspace limit and malformed names stay sanitized', async () => {
+    const trialOwner = await createAccount('trial');
+    const before = await ownerWorkspaceRows(trialOwner);
+    assert.equal(before.length, 1);
+
+    const rejected = await edge('org-create-workspace', trialOwner.token, { name: 'Trial Overflow' });
+    assert.equal(rejected.response.status, 409);
+    assert.equal(rejected.body?.code, 'workspace_limit_reached');
+    assert.match(String(rejected.body?.error || ''), /workspace limit reached/i);
+    assert.deepEqual(await ownerWorkspaceRows(trialOwner), before,
+      'limit rejection must leave the trial owner workspace set byte-equivalent');
+
+    const malformed = await edge('org-create-workspace', trialOwner.token, { name: '   ' });
+    assert.equal(malformed.response.status, 400);
+    assert.equal(malformed.body?.code, 'invalid_workspace_name');
+    assert.doesNotMatch(JSON.stringify(malformed.body), /sql|postgres|details|hint|stripe|service.role/i);
+  });
+
+  await t.test('paid monthly owner succeeds below limit, rejects at limit, and archived workspaces still count', async () => {
+    const monthly = await createAccount('monthly');
+    await seedProjectedSubscription(monthly, `monthly-${suffix}`, { interval: 'month' });
+
+    const second = await edge('org-create-workspace', monthly.token, { name: 'Monthly Two' });
+    const third = await edge('org-create-workspace', monthly.token, { name: 'Monthly Three' });
+    assert.equal(second.response.status, 200, JSON.stringify(second.body));
+    assert.equal(third.response.status, 200, JSON.stringify(third.body));
+    assert.equal((await ownerWorkspaceRows(monthly)).length, 3);
+
+    const atLimit = await edge('org-create-workspace', monthly.token, { name: 'Monthly Four' });
+    assert.equal(atLimit.response.status, 409);
+    assert.equal(atLimit.body?.code, 'workspace_limit_reached');
+
+    const archived = await edge('org-archive-workspace', monthly.token, {
+      organization_id: second.body.organization.id,
+    });
+    assert.equal(archived.response.status, 200, JSON.stringify(archived.body));
+    const rowsAfterArchive = await ownerWorkspaceRows(monthly);
+    assert.equal(rowsAfterArchive.length, 3);
+    assert.ok(rowsAfterArchive.some(row => row.archived_at), 'one owner workspace must be archived');
+
+    const archivedStillCounts = await edge('org-create-workspace', monthly.token, {
+      name: 'Archived Does Not Free Capacity',
+    });
+    assert.equal(archivedStillCounts.response.status, 409);
+    assert.equal(archivedStillCounts.body?.code, 'workspace_limit_reached');
+    assert.equal((await ownerWorkspaceRows(monthly)).length, 3);
+  });
+
+  await t.test('paid yearly and payment-grace owners retain the existing paid fallback limit', async () => {
+    const yearly = await createAccount('yearly');
+    await seedProjectedSubscription(yearly, `yearly-${suffix}`, { interval: 'year' });
+    const yearlyCreated = await edge('org-create-workspace', yearly.token, { name: 'Yearly Two' });
+    assert.equal(yearlyCreated.response.status, 200, JSON.stringify(yearlyCreated.body));
+
+    const grace = await createAccount('grace');
+    await seedProjectedSubscription(grace, `grace-${suffix}`, {
+      status: 'past_due',
+      interval: 'month',
+      currentPeriodEnd: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    });
+    const graceCreated = await edge('org-create-workspace', grace.token, { name: 'Grace Two' });
+    assert.equal(graceCreated.response.status, 200, JSON.stringify(graceCreated.body));
+  });
+
+  await t.test('member/admin access never borrows another owner plan', async () => {
+    const paidOwner = await createAccount('foreign-paid-owner');
+    const memberOnly = await createAccount('foreign-admin');
+    await seedProjectedSubscription(paidOwner, `foreign-paid-${suffix}`);
+    const membership = await rest('organization_members', {
+      method: 'POST',
+      body: {
+        organization_id: paidOwner.organizationId,
+        user_id: memberOnly.user.id,
+        role: 'admin',
+      },
+      prefer: 'return=representation',
+    });
+    assert.equal(membership.response.status, 201, JSON.stringify(membership.body));
+
+    const rejected = await edge('org-create-workspace', memberOnly.token, { name: 'Borrowed Plan' });
+    assert.equal(rejected.response.status, 409);
+    assert.equal(rejected.body?.code, 'workspace_limit_reached');
+    assert.equal((await ownerWorkspaceRows(memberOnly)).length, 1);
+  });
+
+  await t.test('inactive, unavailable, and ambiguous billing states fail closed without residue', async () => {
+    const inactive = await createAccount('inactive');
+    await seedProjectedSubscription(inactive, `inactive-${suffix}`, { status: 'canceled' });
+    const inactiveBefore = await ownerWorkspaceRows(inactive);
+    const inactiveResult = await edge('org-create-workspace', inactive.token, { name: 'Inactive Two' });
+    assert.equal(inactiveResult.response.status, 503);
+    assert.equal(inactiveResult.body?.code, 'workspace_entitlement_unavailable');
+    assert.deepEqual(await ownerWorkspaceRows(inactive), inactiveBefore);
+
+    const unavailable = await createAccount('unavailable');
+    const removedBilling = await sql(`
+      delete from public.billing_customers
+      where organization_id = '${unavailable.organizationId}'::uuid
+      returning id;
+    `);
+    assert.match(removedBilling.stdout, /DELETE 1/);
+    const unavailableResult = await edge('org-create-workspace', unavailable.token, { name: 'Unavailable Two' });
+    assert.equal(unavailableResult.response.status, 503);
+    assert.equal(unavailableResult.body?.code, 'workspace_entitlement_unavailable');
+    assert.equal((await ownerWorkspaceRows(unavailable)).length, 1);
+
+    const ambiguous = await createAccount('ambiguous');
+    await seedProjectedSubscription(ambiguous, `ambiguous-a-${suffix}`);
+    const secondSubscription = await rest('subscriptions', {
+      method: 'POST',
+      body: {
+        organization_id: ambiguous.organizationId,
+        user_id: ambiguous.user.id,
+        stripe_customer_id: `cus_packet2_ambiguous_b_${suffix}`,
+        stripe_subscription_id: `sub_packet2_ambiguous_b_${suffix}`,
+        status: 'active',
+        price_id: 'price_packet2_month',
+        interval: 'month',
+        current_period_end: new Date(Date.now() + 30 * 86400000).toISOString(),
+      },
+      prefer: 'return=representation',
+    });
+    assert.equal(secondSubscription.response.status, 201, JSON.stringify(secondSubscription.body));
+    const ambiguousResult = await edge('org-create-workspace', ambiguous.token, { name: 'Ambiguous Two' });
+    assert.equal(ambiguousResult.response.status, 409);
+    assert.equal(ambiguousResult.body?.code, 'workspace_billing_identity_unsafe');
+    assert.equal((await ownerWorkspaceRows(ambiguous)).length, 1);
+    assert.doesNotMatch(JSON.stringify(ambiguousResult.body), /sql|postgres|subscription|stripe|details|hint/i);
+  });
+
+  await t.test('same-owner concurrent requests serialize at one remaining slot with no partial residue', async () => {
+    const concurrent = await createAccount('concurrent');
+    await seedProjectedSubscription(concurrent, `concurrent-${suffix}`);
+    const second = await edge('org-create-workspace', concurrent.token, { name: 'Concurrent Existing Two' });
+    assert.equal(second.response.status, 200, JSON.stringify(second.body));
+
+    const beforeOrganizations = await ownerWorkspaceRows(concurrent);
+    assert.equal(beforeOrganizations.length, 2);
+    const beforeMembershipCount = (await rows(
+      `organization_members?user_id=eq.${concurrent.user.id}&role=eq.owner&select=id`,
+    )).length;
+    const beforeBillingCount = (await rows(
+      `billing_customers?organization_id=in.(${beforeOrganizations.map(row => row.id).join(',')})&select=id`,
+    )).length;
+
+    const results = await Promise.all([
+      edge('org-create-workspace', concurrent.token, { name: 'Concurrent Candidate A' }),
+      edge('org-create-workspace', concurrent.token, { name: 'Concurrent Candidate B' }),
+    ]);
+    const statuses = results.map(result => result.response.status).sort((a, b) => a - b);
+    assert.deepEqual(statuses, [200, 409]);
+    const rejected = results.find(result => result.response.status === 409);
+    assert.equal(rejected.body?.code, 'workspace_limit_reached');
+
+    const afterOrganizations = await ownerWorkspaceRows(concurrent);
+    assert.equal(afterOrganizations.length, beforeOrganizations.length + 1);
+    const afterMembershipCount = (await rows(
+      `organization_members?user_id=eq.${concurrent.user.id}&role=eq.owner&select=id`,
+    )).length;
+    const afterBillingCount = (await rows(
+      `billing_customers?organization_id=in.(${afterOrganizations.map(row => row.id).join(',')})&select=id`,
+    )).length;
+    assert.equal(afterMembershipCount, beforeMembershipCount + 1,
+      'exactly one owner membership may be added');
+    assert.equal(afterBillingCount, beforeBillingCount + 1,
+      'exactly one billing placeholder may be added by the membership trigger');
+    assert.equal(afterMembershipCount, afterOrganizations.length,
+      'every created organization must have exactly one canonical owner membership');
+    assert.equal(afterBillingCount, afterOrganizations.length,
+      'every created organization must have exactly one billing row and no trial residue');
+  });
+
+  await t.test('different owners do not share the serialization lock', async () => {
+    const ownerA = await createAccount('parallel-a');
+    const ownerB = await createAccount('parallel-b');
+    await seedProjectedSubscription(ownerA, `parallel-a-${suffix}`);
+    await seedProjectedSubscription(ownerB, `parallel-b-${suffix}`);
+
+    const [createdA, createdB] = await Promise.all([
+      edge('org-create-workspace', ownerA.token, { name: 'Parallel A Two' }),
+      edge('org-create-workspace', ownerB.token, { name: 'Parallel B Two' }),
+    ]);
+    assert.equal(createdA.response.status, 200, JSON.stringify(createdA.body));
+    assert.equal(createdB.response.status, 200, JSON.stringify(createdB.body));
+    assert.equal((await ownerWorkspaceRows(ownerA)).length, 2);
+    assert.equal((await ownerWorkspaceRows(ownerB)).length, 2);
+  });
 });

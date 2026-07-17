@@ -148,6 +148,10 @@ const createWorkspaceMigrationPath = new URL(
   '../../supabase/migrations/20260716061516_server_controlled_workspace_creation.sql',
   import.meta.url
 );
+const enforceWorkspaceLimitMigrationPath = new URL(
+  '../../supabase/migrations/20260717142844_enforce_server_workspace_limits.sql',
+  import.meta.url
+);
 const restrictMembershipMutationMigrationPath = new URL(
   '../../supabase/migrations/20260716061518_restrict_direct_membership_mutations.sql',
   import.meta.url
@@ -15821,14 +15825,80 @@ test('workspace creation Edge Function authenticates, validates, and calls only 
     'workspace creation must accept and normalize only the name input');
   assert.match(src, /\.rpc\("tp3d_create_workspace", \{[\s\S]*p_actor_id: auth\.user\.id,[\s\S]*p_name: name/,
     'Edge Function must derive ownership from the verified user and call the transaction RPC');
-  assert.doesNotMatch(src, /\.from\(|\.(?:insert|update|upsert|delete)\(/,
+  assert.doesNotMatch(src, /\.from\(\s*["']|\.(?:insert|update|upsert|delete)\(/,
     'Edge Function must not split the transaction into direct table writes');
   assert.doesNotMatch(src, /body[^\n]*(?:owner|role|billing|stripe|members)/i,
     'Edge Function must not consume caller-supplied authority or billing fields');
   assert.match(src, /Each accepted request creates one distinct workspace/,
     'duplicate/retry behavior must be explicit rather than name-deduplicating unrelated workspaces');
-  assert.doesNotMatch(src, /json\(\{ error: (?:error|e)|json\(\{ error: .*\.message/,
+  assert.doesNotMatch(src, /json\(\{ error: (?:error|e)(?:\s*[,}]|\.message)/,
     'database and PostgREST error details must not be returned to the browser');
+});
+
+test('Packet 2 workspace creation resolves catalog limits inside an owner-scoped transaction', async () => {
+  const migration = await fs.readFile(enforceWorkspaceLimitMigrationPath, 'utf8');
+  const edge = await fs.readFile(orgCreateWorkspacePath, 'utf8');
+
+  assert.match(migration,
+    /create function public\.tp3d_create_workspace\(\s*p_actor_id uuid,\s*p_name text,\s*p_entitlement_config jsonb\s*\)/i,
+    'Packet 2 must replace the creation RPC with a catalog-aware service-only signature');
+  assert.match(migration,
+    /from public\.profiles p[\s\S]*where p\.id = p_actor_id[\s\S]*for update;/i,
+    'the actor profile row must serialize same-owner creation before entitlement and counting');
+  const lockIndex = migration.indexOf('for update;');
+  const countIndex = migration.indexOf('into v_workspace_count', lockIndex);
+  const insertIndex = migration.indexOf('insert into public.organizations', countIndex);
+  assert.ok(lockIndex >= 0 && countIndex > lockIndex && insertIndex > countIndex,
+    'owner lock, authoritative count, and organization insert must stay in one ordered transaction');
+  assert.match(migration,
+    /from public\.organizations o\s*where o\.owner_id = p_actor_id;/i,
+    'all canonical actor-owned workspaces must be counted');
+  const countBlock = migration.slice(
+    migration.lastIndexOf('select pg_catalog.count(*)::integer', countIndex),
+    countIndex + 100,
+  );
+  assert.doesNotMatch(countBlock, /archived_at/i,
+    'archived workspaces must not be filtered from creation capacity');
+  assert.match(migration,
+    /s\.status = 'past_due'[\s\S]*make_interval\(days => 7\)[\s\S]*s\.status = 'unpaid'[\s\S]*make_interval\(days => 3\)/,
+    'creation entitlement must preserve the current payment-grace windows');
+  assert.match(migration,
+    /v_best_status = 'trialing'[\s\S]*v_workspace_limit := v_trial_limit[\s\S]*v_best_price_id[\s\S]*v_business_limit[\s\S]*v_workspace_limit := v_pro_limit/,
+    'trial, recognized Business, and conservative paid fallback limits must remain catalog-derived');
+  assert.match(migration,
+    /if v_workspace_count >= v_workspace_limit then[\s\S]*TP3D_CREATE_WORKSPACE_LIMIT_REACHED/,
+    'the locked server transaction must reject at the exact effective limit');
+  assert.match(migration,
+    /TP3D_CREATE_BILLING_IDENTITY_UNSAFE[\s\S]*TP3D_CREATE_ENTITLEMENT_UNAVAILABLE/,
+    'unsafe identity and unavailable entitlement must fail closed distinctly');
+  assert.match(migration,
+    /revoke execute on function public\.tp3d_create_workspace\(uuid, text, jsonb\) from authenticated[\s\S]*grant execute on function public\.tp3d_create_workspace\(uuid, text, jsonb\) to service_role/i,
+    'the catalog-aware RPC must remain unreachable to browser-authenticated callers');
+
+  assert.match(edge, /import \{ getBillingCatalog \} from "\.\.\/_shared\/billing-catalog\.ts";/,
+    'the Edge Function must reuse the existing catalog authority');
+  assert.match(edge,
+    /p_entitlement_config: buildWorkspaceEntitlementConfig\(\)/,
+    'the trusted Edge path must supply catalog limits to the protected RPC');
+  assert.match(edge,
+    /workspace_limit_reached[\s\S]*workspace_billing_identity_unsafe[\s\S]*workspace_entitlement_unavailable/,
+    'stable sanitized machine error codes must distinguish limit, identity, and availability failures');
+  assert.doesNotMatch(edge, /stripeClient|STRIPE_SECRET_KEY|subscriptions\.(?:retrieve|list)/,
+    'workspace creation must not add Stripe calls or change payment semantics');
+});
+
+test('Packet 2 preserves signup bootstrap and changes no slug contract', async () => {
+  const migration = await fs.readFile(enforceWorkspaceLimitMigrationPath, 'utf8');
+  const signup = await fs.readFile(signupAutoOrgUuidMigrationPath, 'utf8');
+
+  assert.doesNotMatch(migration, /tp3d_handle_new_user|on_auth_user_created|auth\.users/i,
+    'ordinary creation enforcement must not alter the server-owned signup bootstrap');
+  assert.match(signup, /insert into public\.organizations[\s\S]*insert into public\.organization_members[\s\S]*current_organization_id = v_org_id/,
+    'signup must retain its atomic initial organization, owner membership, trial trigger, and active workspace behavior');
+  assert.match(migration, /v_org_slug := v_org_id::text;[\s\S]*set slug = v_org_slug/,
+    'Packet 2 must preserve the existing UUID slug shape');
+  assert.doesNotMatch(migration, /unique\s*\([^)]*slug|slug[^\n]*(?:not null|lower|regexp)/i,
+    'workspace slug integrity Phase 1 must not start in Packet 2');
 });
 
 test('workspace creation client preserves the public contract without direct organization membership writes', async () => {

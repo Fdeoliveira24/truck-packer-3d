@@ -9,7 +9,14 @@ import {
 } from './dev-manifest.mjs';
 import { captureDevelopmentFingerprints } from './dev-invoke.mjs';
 
-export const FULL_FIXTURE_ROLES = Object.freeze(['owner', 'admin', 'member', 'unrelated', 'invite-target']);
+export const FULL_FIXTURE_ROLES = Object.freeze([
+  'owner',
+  'admin',
+  'member',
+  'unrelated',
+  'invite-target',
+  'workspace-owner',
+]);
 
 export function fixtureEmail(runId, role) {
   return `tp3d-fixture+${runId}-${role}@fixtures.tp3d.test`;

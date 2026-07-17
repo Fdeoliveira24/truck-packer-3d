@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
@@ -42,6 +43,84 @@ async function singleRow(api, table, query, message) {
 async function persistObject(manifest, manifestPath, object) {
   addManifestObject(manifest, object);
   await writeDevelopmentManifest(manifestPath, manifest);
+}
+
+async function persistCreatedWorkspace({ api, manifest, manifestPath, fixtureKey, result }) {
+  assert.equal(result.status, 200);
+  const organizationId = String(result.body?.organization?.id || '');
+  const membershipId = String(result.body?.membership?.id || '');
+  assert.ok(organizationId);
+  assert.ok(membershipId);
+  await persistObject(
+    manifest,
+    manifestPath,
+    fixtureObject(`${fixtureKey}.organization`, 'organization', organizationId),
+  );
+  await persistObject(
+    manifest,
+    manifestPath,
+    fixtureObject(`${fixtureKey}.membership`, 'organization_membership', membershipId),
+  );
+  const billing = await singleRow(
+    api,
+    'billing_customers',
+    `select=id&organization_id=eq.${organizationId}`,
+    `${fixtureKey} billing projection`,
+  );
+  await persistObject(
+    manifest,
+    manifestPath,
+    fixtureObject(`${fixtureKey}.billing`, 'billing_customer_projection', String(billing.id)),
+  );
+  return { organizationId, membershipId, billingId: String(billing.id) };
+}
+
+async function seedPaidProjection({
+  api,
+  manifest,
+  manifestPath,
+  fixtureKey,
+  organizationId,
+  ownerId,
+  billingId,
+}) {
+  const suffix = randomUUID().replaceAll('-', '');
+  const stripeCustomerId = `cus_fixture_${suffix}`;
+  const stripeSubscriptionId = `sub_fixture_${suffix}`;
+  const inserted = await api.rest('POST', 'subscriptions', {
+    body: {
+      organization_id: organizationId,
+      user_id: ownerId,
+      stripe_customer_id: stripeCustomerId,
+      stripe_subscription_id: stripeSubscriptionId,
+      status: 'active',
+      price_id: `price_fixture_unknown_${suffix}`,
+      interval: 'month',
+      current_period_end: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+    },
+    prefer: 'return=representation',
+  });
+  assert.equal(inserted.status, 201);
+  const projectionId = String(inserted.body?.[0]?.id || '');
+  assert.ok(projectionId);
+  await persistObject(
+    manifest,
+    manifestPath,
+    fixtureObject(`${fixtureKey}.subscription`, 'subscription_projection', projectionId),
+  );
+  const updated = await api.rest('PATCH', 'billing_customers', {
+    query: `id=eq.${billingId}`,
+    body: {
+      status: 'active',
+      trial_ends_at: null,
+      stripe_customer_id: stripeCustomerId,
+      stripe_subscription_id: stripeSubscriptionId,
+    },
+    prefer: 'return=representation',
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body?.length, 1);
+  return { projectionId, stripeCustomerId, stripeSubscriptionId };
 }
 
 async function issueJwt(api, manifest, role) {
@@ -104,16 +183,20 @@ test('deployed development billing function matrix', async t => {
   const memberId = objectId(manifest, 'member.auth_user');
   const unrelatedId = objectId(manifest, 'unrelated.auth_user');
   const inviteTargetId = objectId(manifest, 'invite-target.auth_user');
+  const workspaceOwnerId = objectId(manifest, 'workspace-owner.auth_user');
   const primaryOrgId = objectId(manifest, 'owner.organization');
   const primaryBillingId = objectId(manifest, 'owner.billing_customer');
   const ownerMembershipId = objectId(manifest, 'owner.owner_membership');
+  const workspaceOwnerOrgId = objectId(manifest, 'workspace-owner.organization');
+  const workspaceOwnerBillingId = objectId(manifest, 'workspace-owner.billing_customer');
 
-  const [ownerJwt, adminJwt, memberJwt, unrelatedJwt, inviteTargetJwt] = await Promise.all([
+  const [ownerJwt, adminJwt, memberJwt, unrelatedJwt, inviteTargetJwt, workspaceOwnerJwt] = await Promise.all([
     issueJwt(api, manifest, 'owner'),
     issueJwt(api, manifest, 'admin'),
     issueJwt(api, manifest, 'member'),
     issueJwt(api, manifest, 'unrelated'),
     issueJwt(api, manifest, 'invite-target'),
+    issueJwt(api, manifest, 'workspace-owner'),
   ]);
 
   let secondaryOrgId;
@@ -136,10 +219,36 @@ test('deployed development billing function matrix', async t => {
   });
 
   await t.test('D2-2 org-create-workspace creates canonical second workspace without duplicate trial', async () => {
+    const originalBilling = await singleRow(
+      api,
+      'billing_customers',
+      `select=status,trial_ends_at,stripe_customer_id,stripe_subscription_id&id=eq.${primaryBillingId}`,
+      'owner billing before temporary capacity',
+    );
+    const temporaryProjection = await seedPaidProjection({
+      api,
+      manifest,
+      manifestPath,
+      fixtureKey: 'owner.temporary_creation_capacity',
+      organizationId: primaryOrgId,
+      ownerId,
+      billingId: primaryBillingId,
+    });
     const created = await api.invoke('org-create-workspace', {
       jwt: ownerJwt,
       body: { name: 'Disposable Development Fixture Workspace' },
     });
+    const removedProjection = await api.rest('DELETE', 'subscriptions', {
+      query: `id=eq.${temporaryProjection.projectionId}`,
+      prefer: 'return=minimal',
+    });
+    assert.ok(removedProjection.ok);
+    const restoredBilling = await api.rest('PATCH', 'billing_customers', {
+      query: `id=eq.${primaryBillingId}`,
+      body: originalBilling,
+      prefer: 'return=representation',
+    });
+    assert.equal(restoredBilling.status, 200);
     assert.equal(created.status, 200);
     secondaryOrgId = String(created.body?.organization?.id || '');
     assert.ok(secondaryOrgId);
@@ -589,6 +698,145 @@ test('deployed development billing function matrix', async t => {
       api.invoke('stripe-create-portal-session', { jwt: ownerJwt, body: { organization_id: primaryOrgId } }),
     ]);
     errors.forEach(assertSafeErrorResponse);
+  });
+
+  let workspaceOwnerPaidProjection;
+  let workspaceOwnerSecond;
+  let workspaceOwnerThird;
+  await t.test('D2-30 trial owner is rejected exactly at the one-workspace creation limit', async () => {
+    const result = await api.invoke('org-create-workspace', {
+      jwt: workspaceOwnerJwt,
+      body: { name: 'Trial Limit Must Reject' },
+    });
+    assert.equal(result.status, 409);
+    assert.equal(result.body.code, 'workspace_limit_reached');
+    assertSafeErrorResponse(result);
+  });
+
+  await t.test('D2-31 paid owner creates below the Pro fallback limit', async () => {
+    workspaceOwnerPaidProjection = await seedPaidProjection({
+      api,
+      manifest,
+      manifestPath,
+      fixtureKey: 'workspace-owner.paid_capacity',
+      organizationId: workspaceOwnerOrgId,
+      ownerId: workspaceOwnerId,
+      billingId: workspaceOwnerBillingId,
+    });
+    const result = await api.invoke('org-create-workspace', {
+      jwt: workspaceOwnerJwt,
+      body: { name: 'Workspace Limit Below Capacity' },
+    });
+    workspaceOwnerSecond = await persistCreatedWorkspace({
+      api,
+      manifest,
+      manifestPath,
+      fixtureKey: 'workspace-owner.second',
+      result,
+    });
+  });
+
+  await t.test('D2-32 concurrent same-owner requests with one slot leave exactly one complete workspace graph', async () => {
+    const before = await api.rest('GET', 'organizations', {
+      query: `select=id&owner_id=eq.${workspaceOwnerId}`,
+    });
+    assert.equal(before.status, 200);
+    assert.equal(before.body.length, 2);
+    const results = await Promise.all([
+      api.invoke('org-create-workspace', {
+        jwt: workspaceOwnerJwt,
+        body: { name: 'Concurrent Workspace A' },
+      }),
+      api.invoke('org-create-workspace', {
+        jwt: workspaceOwnerJwt,
+        body: { name: 'Concurrent Workspace B' },
+      }),
+    ]);
+    const successful = results.filter(result => result.status === 200);
+    const rejected = results.filter(result => result.status === 409 && result.body?.code === 'workspace_limit_reached');
+    assert.equal(successful.length, 1);
+    assert.equal(rejected.length, 1);
+    workspaceOwnerThird = await persistCreatedWorkspace({
+      api,
+      manifest,
+      manifestPath,
+      fixtureKey: 'workspace-owner.concurrent_winner',
+      result: successful[0],
+    });
+    const organizations = await api.rest('GET', 'organizations', {
+      query: `select=id&owner_id=eq.${workspaceOwnerId}`,
+    });
+    assert.equal(organizations.status, 200);
+    assert.equal(organizations.body.length, 3);
+    const organizationIds = organizations.body.map(row => row.id).join(',');
+    const memberships = await api.rest('GET', 'organization_members', {
+      query: `select=id&organization_id=in.(${organizationIds})&user_id=eq.${workspaceOwnerId}&role=eq.owner`,
+    });
+    const billingRows = await api.rest('GET', 'billing_customers', {
+      query: `select=id&organization_id=in.(${organizationIds})`,
+    });
+    assert.equal(memberships.body.length, 3);
+    assert.equal(billingRows.body.length, 3);
+  });
+
+  await t.test('D2-33 archived owner workspace still consumes creation capacity', async () => {
+    const archived = await api.invoke('org-archive-workspace', {
+      jwt: workspaceOwnerJwt,
+      body: { organization_id: workspaceOwnerSecond.organizationId },
+    });
+    assert.equal(archived.status, 200);
+    const result = await api.invoke('org-create-workspace', {
+      jwt: workspaceOwnerJwt,
+      body: { name: 'Archived Capacity Must Reject' },
+    });
+    assert.equal(result.status, 409);
+    assert.equal(result.body.code, 'workspace_limit_reached');
+  });
+
+  await t.test('D2-34 ambiguous owner billing identity fails closed', async () => {
+    const duplicate = await seedPaidProjection({
+      api,
+      manifest,
+      manifestPath,
+      fixtureKey: 'workspace-owner.ambiguous_capacity',
+      organizationId: workspaceOwnerOrgId,
+      ownerId: workspaceOwnerId,
+      billingId: workspaceOwnerBillingId,
+    });
+    const result = await api.invoke('org-create-workspace', {
+      jwt: workspaceOwnerJwt,
+      body: { name: 'Ambiguous Billing Must Reject' },
+    });
+    assert.equal(result.status, 409);
+    assert.equal(result.body.code, 'workspace_billing_identity_unsafe');
+    workspaceOwnerPaidProjection.ambiguousProjectionId = duplicate.projectionId;
+  });
+
+  await t.test('D2-35 unavailable owner entitlement fails closed', async () => {
+    for (const projectionId of [
+      workspaceOwnerPaidProjection.projectionId,
+      workspaceOwnerPaidProjection.ambiguousProjectionId,
+    ]) {
+      const canceled = await api.rest('PATCH', 'subscriptions', {
+        query: `id=eq.${projectionId}`,
+        body: { status: 'canceled' },
+        prefer: 'return=representation',
+      });
+      assert.equal(canceled.status, 200);
+    }
+    const canceledBilling = await api.rest('PATCH', 'billing_customers', {
+      query: `id=eq.${workspaceOwnerBillingId}`,
+      body: { status: 'canceled' },
+      prefer: 'return=representation',
+    });
+    assert.equal(canceledBilling.status, 200);
+    const result = await api.invoke('org-create-workspace', {
+      jwt: workspaceOwnerJwt,
+      body: { name: 'Unavailable Billing Must Reject' },
+    });
+    assert.equal(result.status, 503);
+    assert.equal(result.body.code, 'workspace_entitlement_unavailable');
+    assert.ok(workspaceOwnerThird.organizationId);
   });
 
   assert.ok(unknownSubscriptionId);

@@ -9,7 +9,7 @@ const { Client } = pg;
 
 const PROJECT_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
-const REQUIRED_MIGRATION_COUNT = 28;
+const REQUIRED_MIGRATION_COUNT = 29;
 
 export class LocalFixtureSafetyError extends Error {
   constructor(code, message) {
@@ -107,8 +107,8 @@ async function inspectDatabase(dbUrl) {
         has_table_privilege('service_role', 'public.subscriptions', 'UPDATE') as service_subscription_update,
         has_sequence_privilege('service_role', 'public.billing_customers_id_seq', 'USAGE') as service_billing_sequence,
         has_sequence_privilege('service_role', 'public.subscriptions_id_seq', 'USAGE') as service_subscription_sequence,
-        has_function_privilege('service_role', 'public.tp3d_create_workspace(uuid,text)', 'EXECUTE') as service_workspace_create,
-        has_function_privilege('authenticated', 'public.tp3d_create_workspace(uuid,text)', 'EXECUTE') as authenticated_workspace_create
+        has_function_privilege('service_role', 'public.tp3d_create_workspace(uuid,text,jsonb)', 'EXECUTE') as service_workspace_create,
+        has_function_privilege('authenticated', 'public.tp3d_create_workspace(uuid,text,jsonb)', 'EXECUTE') as authenticated_workspace_create
     `);
     const grantState = grants.rows[0] || {};
     const grantsActive = Boolean(

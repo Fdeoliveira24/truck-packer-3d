@@ -1,6 +1,6 @@
 const PROJECT_REF_RE = /^[a-z0-9]{20}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const STRIPE_ID_RE = /^(cus|sub)_([A-Za-z0-9]{6,})$/;
+const STRIPE_ID_RE = /^(acct|bps|clock|coupon|cs|cus|evt|in|pm|price|prod|sched|sub)_([A-Za-z0-9_]{6,})$/;
 const EMAIL_RE = /^([^@\s]+)@([^@\s]+)$/;
 
 export function maskProjectRef(value) {
@@ -35,4 +35,16 @@ export function maskEmail(value) {
 
 export function redactSecret() {
   return '[redacted]';
+}
+
+export function maskFixtureDiagnostic(value) {
+  return String(value || '')
+    .replace(/\b(?:sk|rk)_(?:test|live)_[A-Za-z0-9_]+\b/g, '[redacted-stripe-key]')
+    .replace(/\bwhsec_[A-Za-z0-9_]+\b/g, '[redacted-webhook-secret]')
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[redacted-jwt]')
+    .replace(/\b(acct|bps|clock|coupon|cs|cus|evt|in|pm|price|prod|sched|sub)_([A-Za-z0-9_]{6,})\b/g,
+      (_, prefix, body) => `${prefix}_${body.slice(0, 4)}…${body.slice(-4)}`)
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi,
+      match => `${match.slice(0, 8)}…${match.slice(-4)}`)
+    .replace(/\b[^\s@]+@[^\s@]+\.[^\s@]+\b/g, '[masked-email]');
 }

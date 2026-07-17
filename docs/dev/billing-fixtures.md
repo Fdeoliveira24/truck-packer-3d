@@ -1,6 +1,6 @@
 # Billing Fixture Safety Foundation
 
-This document defines the shared safety boundary for billing fixtures. The original planning CLI remains no-write. Local Billing Fixture Stage B and the deployed-development fixture layer are complete in separate, environment-bound harnesses documented in [Local Billing Fixtures](./local-billing-fixtures.md) and [Deployed Development Billing Fixtures](./deployed-development-billing-fixtures.md).
+This document defines the shared safety boundary for billing fixtures. The original planning CLI remains no-write. Local Billing Fixture Stage B, deployed-development fixtures, and the separately bounded Stripe test-mode layer are complete in environment-bound harnesses documented in [Local Billing Fixtures](./local-billing-fixtures.md), [Deployed Development Billing Fixtures](./deployed-development-billing-fixtures.md), and [Stripe Test-Mode Billing Fixtures](./stripe-test-billing-fixtures.md).
 
 ## Why durable fixtures are needed
 
@@ -17,7 +17,7 @@ The billing safety work has runtime coverage for direct subscriptions, owner-pla
 | Manual browser/sandbox | Authenticated browser and safe deployed-function checks are summarized in [Master TODO V5](../product/TP3D-MASTER-TODO-V5.md), with detailed historical evidence retained in its archive links. | Limited to fixtures already present; unavailable rows are never marked passed. |
 | Local Supabase integration | Complete. | The Stage B harness runs only against the local CLI stack, invokes the real local Edge functions with local JWTs, uses exact-ID cleanup, and rejects any Stripe key or remote URL. |
 | Deployed development integration | Complete. | Disposable hosted-development users and rows exercise deployed Edge Functions and RLS, with manifest-owned exact-ID cleanup and unchanged non-fixture fingerprints. No Stripe key or object is used. |
-| External Stripe integration | Missing. | No repeatable Stripe test-mode customer/subscription fixture layer exists yet. |
+| External Stripe integration | Complete for the approved direct-monthly sandbox lifecycle. | Stripe test mode now proves signed webhook delivery, direct active entitlement, Portal access, cancellation, sanitized signature rejection, replay idempotency, and exact cleanup against the approved development project. It does not define broader commercial combinations. |
 
 ## Planning safety environment contract
 
@@ -73,6 +73,19 @@ npm run billing:fixtures:dev:cleanup -- --confirm
 
 These commands require `SUPABASE_SERVICE_ROLE_KEY`, refuse every present `STRIPE_SECRET_KEY`, and never run during `npm test`. See [Deployed Development Billing Fixtures](./deployed-development-billing-fixtures.md) for the complete lifecycle and refusal rules. The original no-write CLI still has no seed/reset/cleanup surface.
 
+The completed Stripe test-mode layer has its own strict environment and confirmation gates:
+
+```sh
+npm run billing:fixtures:stripe:plan
+npm run billing:fixtures:stripe:probe -- --confirm
+npm run billing:fixtures:stripe:seed -- --confirm
+npm run billing:fixtures:stripe:verify
+npm run billing:fixtures:stripe:safety -- --confirm
+npm run billing:fixtures:stripe:cleanup -- --confirm
+```
+
+It accepts only a Stripe test key and the pinned development Supabase project. It does not retain a webhook signing secret locally; Stripe signs the disposable S1 probe. See [Stripe Test-Mode Billing Fixtures](./stripe-test-billing-fixtures.md) for the event contract, S1/S2/S3 gates, exact cleanup, and troubleshooting.
+
 ## Manifest ownership and immutability
 
 Manifest schema version 1 binds every run and fixture entry to:
@@ -107,9 +120,8 @@ Null, short, and malformed inputs produce fixed invalid markers rather than echo
 
 ## Remaining later layers
 
-Each layer remains separate and must preserve these refusal rules. Local Billing Fixture Stage B and deployed-development fixtures are complete. The remaining deferred layers are:
+Each layer remains separate and must preserve these refusal rules. Local Billing Fixture Stage B, deployed-development fixtures, and the approved Stripe direct-monthly sandbox lifecycle are complete. The remaining deferred layer is:
 
-1. `test/billing-stripe-sandbox-fixtures`
-2. `ci/billing-integration-gates`
+1. `ci/billing-integration-gates`
 
-The planning CLI remains no-write. The local Stage B harness is write-capable only inside the operator-started localhost stack. The deployed-development harness is write-capable only in the pinned development project and cleans exact captured IDs. Stripe sandbox creation, CI secrets, commercial catalog/tier/grant work, and production data remain out of scope until separately approved.
+The planning CLI remains no-write. The local Stage B harness is write-capable only inside the operator-started localhost stack. The deployed-development harness is write-capable only in the pinned development project and cleans exact captured IDs. The Stripe harness is write-capable only with an explicit Stripe test key and the same pinned development project, and cleans or terminals exact manifest-owned objects. CI secrets, additional commercial catalog/tier/grant scenarios, live Stripe state, and production data remain out of scope until separately approved.

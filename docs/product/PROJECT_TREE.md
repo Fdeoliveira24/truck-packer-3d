@@ -1,6 +1,6 @@
 # File Tree: Truck Packer 3D
 
-**Generated:** 7/16/2026, 7:38:48 PM
+**Generated:** 7/16/2026
 **Root Path:** `/Users/franciscooliveira/Dropbox/360Virtual Tour Solutions/Projects/Truck Packer 3D`
 
 ```
@@ -75,6 +75,7 @@
 │   │   ├── 📝 deployed-development-billing-fixtures.md
 │   │   ├── 📝 local-billing-fixtures.md
 │   │   ├── 📝 local-supabase-setup.md
+│   │   ├── 📝 stripe-test-billing-fixtures.md
 │   │   └── 📝 stripe-functions-secrets-checklist.md
 │   ├── 📁 engineering
 │   │   ├── 📝 autopack-core-engine-plan.md
@@ -171,7 +172,15 @@
 │   │   ├── 📄 dev-verify.mjs
 │   │   ├── 📄 manifest.mjs
 │   │   ├── 📄 mask.mjs
-│   │   └── 📄 safety.mjs
+│   │   ├── 📄 safety.mjs
+│   │   ├── 📄 stripe-cleanup.mjs
+│   │   ├── 📄 stripe-cli.mjs
+│   │   ├── 📄 stripe-environment.mjs
+│   │   ├── 📄 stripe-invoke.mjs
+│   │   ├── 📄 stripe-manifest.mjs
+│   │   ├── 📄 stripe-seed.mjs
+│   │   ├── 📄 stripe-verify.mjs
+│   │   └── 📄 stripe-webhook.mjs
 │   └── 📁 local-fixtures
 │       ├── 📄 cleanup.mjs
 │       ├── 📄 environment.mjs
@@ -390,8 +399,10 @@
 │   │   ├── 📄 max-capacity-durability.spec.mjs
 │   │   └── 📄 security-and-invariants.spec.mjs
 │   ├── 📁 integration
-│   │   └── 📁 dev-billing
-│   │       └── 📄 deployed-functions.spec.mjs
+│   │   ├── 📁 dev-billing
+│   │   │   └── 📄 deployed-functions.spec.mjs
+│   │   └── 📁 stripe-billing
+│   │       └── 📄 stripe-billing.spec.mjs
 │   ├── 📁 local-db
 │   │   ├── 📄 billing-local.spec.mjs
 │   │   ├── 📄 ownership-local.spec.mjs

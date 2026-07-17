@@ -105,9 +105,9 @@ Names, prefixes, timestamps, and fixture email patterns are secondary evidence o
 
 [Local Billing Fixtures](./local-billing-fixtures.md) run against the operator-owned local Supabase stack and may use rollback-isolated adversarial database shapes. This deployed layer uses the real hosted development functions and RLS, but it refuses shared-project conflict scenarios and never modifies schema or migrations.
 
-## Difference from future Stripe test-mode fixtures
+## Difference from Stripe test-mode fixtures
 
-This layer supplies no Stripe secret and creates zero Stripe objects. The future Stripe test-mode layer must be separately approved, use Stripe test mode only, capture Stripe object IDs in its own manifest, and prove its own exact cleanup. Passing this development layer is not Stripe sandbox evidence.
+This layer supplies no Stripe secret and creates zero Stripe objects. The separately bounded [Stripe Test-Mode Billing Fixtures](./stripe-test-billing-fixtures.md) use Stripe test mode only, capture Stripe object IDs in their own manifest, and prove independent exact cleanup. Passing this development layer is not Stripe sandbox evidence; each layer retains its own environment and refusal contract.
 
 ## Troubleshooting
 

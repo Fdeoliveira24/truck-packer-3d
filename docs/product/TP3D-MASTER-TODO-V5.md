@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-16
 
-**Last verified repository state:** deployed-development billing fixtures completed with exact cleanup after the malformed-organization contract fix was merged, pushed, and deployed to development
+**Last verified repository state:** Stripe test-mode fixture gates S1–S3 completed against the approved development project with exact cleanup and unchanged collateral fingerprints
 
 ## 1. Document Contract
 
@@ -25,7 +25,7 @@ This table is the single mutable status snapshot in V5.
 
 | Area | Status at the last verified repository state |
 |---|---|
-| Repository | The malformed requested-organization fix is merged/pushed and deployed to development. Deployed-development fixtures are complete; confirm the current git state before editing. |
+| Repository | Local, deployed-development, and Stripe test-mode fixture milestones are complete; confirm the current git state before editing. |
 | Supabase Data API grants | Complete, merged, pushed, and applied to development. |
 | Workspace/membership write boundary | Complete, merged, pushed, and applied to development. Workspace creation is transactional and server-controlled; authenticated membership access is SELECT-only. |
 | Clean local database | All 27 migrations reset successfully. |
@@ -33,6 +33,7 @@ This table is the single mutable status snapshot in V5.
 | Local billing fixture Stage B | Complete. Clean 27-migration reset, local environment/grant verification, 39/39 local integration checks, exact cleanup, and full repository gates passed. |
 | Billing fixture safety foundation | Complete. The existing layer remains no-write, environment-bound, masked, and production-refusing. |
 | Deployed development fixtures | Complete. D1 lifecycle and D2 deployed Edge/PostgREST/RLS checks passed; 38 manifest-owned objects were absent after exact cleanup, the second cleanup was idempotent, and collateral fingerprints were unchanged. |
+| Stripe test-mode fixtures | Complete. S1 signed-delivery safety, S2 direct-monthly lifecycle, and S3 rejection/replay safety passed against development; exact cleanup was idempotent and Supabase/Stripe collateral fingerprints were unchanged. |
 | Direct-paid F12 identity | Complete and deployed. Requested-workspace direct identity precedes sibling owner-plan coverage. |
 | Pricing | Not commercially finalized. |
 | Normalized billing catalog | Complete, behavior-preserving, validated locally and in development, merged, and pushed. |
@@ -56,20 +57,19 @@ This table is the single mutable status snapshot in V5.
 
 | Field | Current value |
 |---|---|
-| Task | Add Stripe test-mode fixtures. |
-| Branch | `test/billing-stripe-sandbox-fixtures` (create from updated `main` at task start) |
-| Outcome | Add separately approved Stripe test-mode fixture coverage for real Stripe object lifecycle and billing combinations that localhost and deployed-development projections cannot prove. |
-| Blocker state | Unblocked. |
-| Scope boundary | Stripe test mode only; no live key, payment, customer/production data, commercial policy, migration, production deployment, AutoPack, or Phase C work. Preserve the completed local and deployed-development fixture boundaries. |
-| Closeout | Prove exact Stripe test-object cleanup and the separately approved sandbox matrix, then reassess the remaining billing reliability gates. |
+| Task | Reassess the remaining billing reliability gates. |
+| Branch | Not created; start only through the next approved audit task. |
+| Outcome | Decide which remaining reliability observations are real blockers, already evidenced, explicitly deferred, or require separate narrowly scoped work. |
+| Blocker state | Unblocked after the Stripe fixture milestone closes. |
+| Scope boundary | Evidence-first reassessment only. Do not invent commercial pricing, redesign billing, alter production data, start AutoPack work, or begin Max Capacity Phase C. |
+| Closeout | Explicitly close or queue each remaining billing reliability gate before Phase C can be approved. |
 
 Only this row is active. The following section is an approved sequence, not simultaneous work.
 
 ## 5. Next Approved Execution Queue
 
-1. Add Stripe test-mode fixtures.
-2. Reassess remaining billing reliability gates.
-3. Resume Max Capacity Phase C only after billing reliability is closed.
+1. Reassess remaining billing reliability gates.
+2. Resume Max Capacity Phase C only after billing reliability is explicitly closed.
 
 Queue order is approval order. Start one branch at a time and record its active branch, outcome, and blocker state in Section 4.
 
@@ -77,13 +77,13 @@ Queue order is approval order. Start one branch at a time and record its active 
 
 - Billing reliability cannot close until the remaining queue gates are implemented, evidenced, and explicitly reassessed.
 - Commercial pricing is not final; later fixture work must not invent future commercial terms.
-- Exact Stripe-backed combinations remain unavailable until Stripe test-mode fixtures exist.
 - Max Capacity Phase C is blocked by the billing reliability closeout gate. It has no approved active branch and must not start early.
 
 ## 7. Recently Completed Milestones
 
 | Milestone | Concise result | Evidence |
 |---|---|---|
+| Stripe test-mode fixtures | S1 proved the deployed webhook accepts Stripe-signed events with the seven required destination events and no probe residue. S2 proved one disposable direct-monthly Customer/Subscription lifecycle, active billing status, Portal access, signed cancellation, and entitlement revocation. S3 proved sanitized missing/invalid-signature rejection and idempotent signed replay. Exact cleanup was repeatable, with no Supabase or Stripe collateral fingerprint change; fixture safety was 49/49, local billing remained 39/39, and the repository audit was 1,050 total, 1,045 passed, 5 skipped, 0 failed. | [Stripe fixture operator guide](../dev/stripe-test-billing-fixtures.md), [shared fixture boundary](../dev/billing-fixtures.md) |
 | Deployed development-function fixtures | A production-refusing hosted-development harness now proves disposable auth/workspace/billing projections, deployed Edge paths, PostgREST/RLS, authorization, invitations, ownership, archive/restore, malformed/omitted organization handling, safe pre-Stripe rejection, exact-ID cleanup, and zero collateral fingerprint changes. D1 safety was 34/34; final D2 was 32/32 executable tests covering the required 40-scenario matrix plus omission and sibling regressions; the repository audit was 1,050 total, 1,045 passed, 5 skipped, 0 failed. | [Deployed fixture operator guide](../dev/deployed-development-billing-fixtures.md), [shared fixture boundary](../dev/billing-fixtures.md) |
 | Malformed billing-status organization ID | Supplied non-empty malformed `organization_id`/`org_id` values now return sanitized 400 after authentication but before profile fallback, service-role database reads, billing lookup, or Stripe use. Omission and explicit empty values retain the existing profile fallback; valid organization authorization and F12 behavior are unchanged. | `supabase/functions/billing-status/index.ts`, `tests/audit/security-and-invariants.spec.mjs` |
 | Unknown/replaced Price handling | Active checkout and recognition-only legacy Price sets are separate. Known legacy Prices preserve tier/limit without new checkout; usable explicitly mapped unknown Prices retain conservative fallback and emit a masked `unknownPriceId` diagnostic. Local Stage B stayed 39/39 with zero residuals; repository gates and limited development deployment/smoke passed. | [Pricing Operations Runbook](../billing/PRICING-OPERATIONS-RUNBOOK.md), `supabase/functions/_shared/billing-catalog.ts`, `supabase/functions/billing-status/index.ts` |
@@ -150,7 +150,7 @@ Queue order is approval order. Start one branch at a time and record its active 
 
 The current reliability phase establishes repeatable proof for organization-scoped billing behavior before product expansion resumes.
 
-The phase closes only when the remaining reliability queue items have either passed or received an explicit, evidenced disposition. Local and deployed-development fixtures, the catalog/runbook, and unknown/replaced-Price behavior are complete. Closure still requires Stripe test-mode fixtures and a final gate reassessment.
+The phase closes only when the remaining reliability queue items have either passed or received an explicit, evidenced disposition. Local, deployed-development, and Stripe test-mode fixtures, the catalog/runbook, and unknown/replaced-Price behavior are complete. Closure now requires only the final evidence-based gate reassessment.
 
 The foundation must preserve [Billing Entitlement Rules](./BILLING_ENTITLEMENT_RULES.md), [Billing Fixture Safety](../dev/billing-fixtures.md), direct-first F12 identity, fail-closed ambiguity, owner-only money actions, and production-data refusal. It does not authorize a broad billing schema migration or any next-generation billing design in Section 12.
 
@@ -267,6 +267,7 @@ The supporting [July 2026 Product Strategy Debrief](./PRODUCT-STRATEGY-DEBRIEF-2
 | Append-only pricing change evidence | [Pricing Change Log](../billing/PRICING-CHANGE-LOG.md) |
 | Hosted billing fixture boundaries and commands | [Billing Fixture Safety Foundation](../dev/billing-fixtures.md) |
 | Local billing fixture commands and evidence | [Local Billing Fixtures](../dev/local-billing-fixtures.md) |
+| Stripe test-mode fixture commands and evidence | [Stripe Test-Mode Billing Fixtures](../dev/stripe-test-billing-fixtures.md) |
 | Owner-account billing audit baseline | [P0 Owner-Only Billing Audit](../audits/P0_OWNER_ONLY_BILLING_AUDIT.md) |
 | AutoPack and editor hard rules | [AutoPack Engine Contract](../engineering/autopack-engine-contract.md) |
 | Detailed pre-V5 implementation and browser evidence | [Archived Master TODO V4](../archive/master-todos/TP3D-MASTER-TODO-V4.md) |

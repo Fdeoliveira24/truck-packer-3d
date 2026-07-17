@@ -6,6 +6,7 @@ import { fixtureEmail, generateFixturePassword } from './dev-seed.mjs';
 import { maskProjectRef, maskStripeId, maskUuid } from './mask.mjs';
 import {
   captureStripeFingerprints,
+  resolveStripeSubscriptionPaymentGraph,
   waitFor,
   waitForSignupGraph,
 } from './stripe-invoke.mjs';
@@ -150,16 +151,15 @@ async function createStripeMoneyGraph({ stripe, supabase, config, manifest, mani
     card: { token: 'tok_visa' },
     metadata,
   });
-  await stripe.paymentMethods.attach(paymentMethod.id, { customer: customer.id });
-  await stripe.customers.update(customer.id, {
-    invoice_settings: { default_payment_method: paymentMethod.id },
-  });
   addStripeManifestObject(
     manifest,
     stripeFixtureObject('s2.payment_method', 'stripe', 'stripe_payment_method', paymentMethod.id, 'detach'),
   );
   await writeStripeManifest(manifestPath, manifest);
-
+  await stripe.paymentMethods.attach(paymentMethod.id, { customer: customer.id });
+  await stripe.customers.update(customer.id, {
+    invoice_settings: { default_payment_method: paymentMethod.id },
+  });
   const subscription = await stripe.subscriptions.create({
     customer: customer.id,
     items: [{ price: config.monthlyPriceId }],
@@ -172,6 +172,23 @@ async function createStripeMoneyGraph({ stripe, supabase, config, manifest, mani
     manifest,
     stripeFixtureObject('s2.subscription', 'stripe', 'stripe_subscription', subscription.id, 'cancel'),
   );
+  await writeStripeManifest(manifestPath, manifest);
+
+  const paymentGraph = await resolveStripeSubscriptionPaymentGraph(stripe, {
+    customerId: customer.id,
+    subscriptionId: subscription.id,
+  });
+  for (const [fixtureKey, objectType, exactId] of [
+    ['s2.invoice', 'stripe_invoice', paymentGraph.invoiceId],
+    ['s2.payment_intent', 'stripe_payment_intent', paymentGraph.paymentIntentId],
+    ['s2.charge', 'stripe_charge', paymentGraph.chargeId],
+    ['s2.balance_transaction', 'stripe_balance_transaction', paymentGraph.balanceTransactionId],
+  ]) {
+    addStripeManifestObject(
+      manifest,
+      stripeFixtureObject(fixtureKey, 'stripe', objectType, exactId, 'none', 'created', 'not_applicable'),
+    );
+  }
   await writeStripeManifest(manifestPath, manifest);
 
   const createdEvent = await findStripeEvent(stripe, {

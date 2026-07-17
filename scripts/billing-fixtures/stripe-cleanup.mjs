@@ -3,6 +3,7 @@ import { maskProjectRef, maskUuid } from './mask.mjs';
 import {
   captureStripeFingerprints,
   compareStripeFingerprints,
+  resolveStripeSubscriptionPaymentGraph,
   waitFor,
 } from './stripe-invoke.mjs';
 import {
@@ -204,6 +205,57 @@ async function captureOwnedStripeEvents({ stripe, manifest, manifestPath }) {
   return captured;
 }
 
+function captureStripeObject(manifest, fixtureKey, objectType, exactId, cleanupAction, cleanupState = 'pending') {
+  if (!exactId || hasManifestObject(manifest, 'stripe', objectType, exactId)) return false;
+  addStripeManifestObject(
+    manifest,
+    stripeFixtureObject(fixtureKey, 'stripe', objectType, exactId, cleanupAction, 'created', cleanupState),
+  );
+  return true;
+}
+
+async function captureOwnedStripePaymentGraph({ stripe, manifest, manifestPath }) {
+  let captured = 0;
+  for (const customer of manifest.objects.filter(object =>
+    object.system === 'stripe' && object.objectType === 'stripe_customer')) {
+    for await (const subscription of stripe.subscriptions.list({
+      customer: customer.exactId,
+      status: 'all',
+      limit: 100,
+    })) {
+      if (subscription.metadata?.tp3d_fixture_run_id !== manifest.runId) continue;
+      captured += Number(captureStripeObject(
+        manifest,
+        `recovery.subscription.${subscription.id}`,
+        'stripe_subscription',
+        subscription.id,
+        'cancel',
+      ));
+      const graph = await resolveStripeSubscriptionPaymentGraph(stripe, {
+        customerId: customer.exactId,
+        subscriptionId: subscription.id,
+      });
+      for (const [objectType, exactId] of [
+        ['stripe_invoice', graph.invoiceId],
+        ['stripe_payment_intent', graph.paymentIntentId],
+        ['stripe_charge', graph.chargeId],
+        ['stripe_balance_transaction', graph.balanceTransactionId],
+      ]) {
+        captured += Number(captureStripeObject(
+          manifest,
+          `recovery.${objectType}.${exactId}`,
+          objectType,
+          exactId,
+          'none',
+          'not_applicable',
+        ));
+      }
+    }
+  }
+  if (captured) await writeStripeManifest(manifestPath, manifest);
+  return captured;
+}
+
 async function settleOwnedStripeEvents({ stripe, manifest, manifestPath }) {
   let previousCount = -1;
   let stablePolls = 0;
@@ -263,7 +315,14 @@ async function cleanupStripeObject(stripe, object) {
       await stripe.testHelpers.testClocks.del(object.exactId);
       return 'absent';
     }
-    if (['stripe_event', 'stripe_portal_session'].includes(object.objectType)) return 'not_applicable';
+    if ([
+      'stripe_invoice',
+      'stripe_payment_intent',
+      'stripe_charge',
+      'stripe_balance_transaction',
+      'stripe_event',
+      'stripe_portal_session',
+    ].includes(object.objectType)) return 'not_applicable';
     return object.cleanupState;
   } catch (error) {
     if (resourceMissing(error)) return 'absent';
@@ -302,11 +361,16 @@ export async function cleanupStripeFixtures({
   let alreadyAbsent = 0;
 
   await captureOwnedSupabaseGraph({ supabase, manifest, manifestPath });
+  await captureOwnedStripePaymentGraph({ stripe, manifest, manifestPath });
 
   const stripeOrder = [
     'stripe_schedule',
     'stripe_subscription',
     'stripe_payment_method',
+    'stripe_invoice',
+    'stripe_payment_intent',
+    'stripe_charge',
+    'stripe_balance_transaction',
     'stripe_checkout_session',
     'stripe_customer',
     'stripe_coupon',

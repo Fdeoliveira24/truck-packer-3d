@@ -29,9 +29,25 @@ async function collectIds(iterable, excluded) {
 
 export async function captureStripeFingerprints(stripe, { excludedIds = new Set() } = {}) {
   const excluded = excludedIds instanceof Set ? excludedIds : new Set(excludedIds || []);
-  const [customers, subscriptions, products, prices, coupons, schedules, clocks] = await Promise.all([
+  const [
+    customers,
+    subscriptions,
+    invoices,
+    paymentIntents,
+    charges,
+    balanceTransactions,
+    products,
+    prices,
+    coupons,
+    schedules,
+    clocks,
+  ] = await Promise.all([
     collectIds(stripe.customers.list({ limit: 100 }), excluded),
     collectIds(stripe.subscriptions.list({ status: 'all', limit: 100 }), excluded),
+    collectIds(stripe.invoices.list({ limit: 100 }), excluded),
+    collectIds(stripe.paymentIntents.list({ limit: 100 }), excluded),
+    collectIds(stripe.charges.list({ limit: 100 }), excluded),
+    collectIds(stripe.balanceTransactions.list({ limit: 100 }), excluded),
     collectIds(stripe.products.list({ limit: 100 }), excluded),
     collectIds(stripe.prices.list({ limit: 100 }), excluded),
     collectIds(stripe.coupons.list({ limit: 100 }), excluded),
@@ -41,11 +57,51 @@ export async function captureStripeFingerprints(stripe, { excludedIds = new Set(
   return {
     customers: fingerprintIds(customers),
     subscriptions: fingerprintIds(subscriptions),
+    invoices: fingerprintIds(invoices),
+    payment_intents: fingerprintIds(paymentIntents),
+    charges: fingerprintIds(charges),
+    balance_transactions: fingerprintIds(balanceTransactions),
     products: fingerprintIds(products),
     prices: fingerprintIds(prices),
     coupons: fingerprintIds(coupons),
     schedules: fingerprintIds(schedules),
     test_clocks: fingerprintIds(clocks),
+  };
+}
+
+function objectId(value) {
+  if (typeof value === 'string') return value;
+  return String(value?.id || '');
+}
+
+export async function resolveStripeSubscriptionPaymentGraph(stripe, { customerId, subscriptionId }) {
+  const invoiceList = await stripe.invoices.list({ customer: customerId, limit: 100 });
+  const listedInvoice = invoiceList.data.find(invoice => objectId(invoice.subscription) === subscriptionId);
+  if (!listedInvoice) throw new Error('Stripe fixture subscription invoice could not be resolved.');
+
+  const invoice = await stripe.invoices.retrieve(listedInvoice.id, {
+    expand: ['payment_intent.latest_charge.balance_transaction'],
+  });
+  const paymentIntentId = objectId(invoice.payment_intent);
+  if (!paymentIntentId) throw new Error('Stripe fixture invoice has no PaymentIntent.');
+  const paymentIntent = typeof invoice.payment_intent === 'object'
+    ? invoice.payment_intent
+    : await stripe.paymentIntents.retrieve(paymentIntentId, {
+      expand: ['latest_charge.balance_transaction'],
+    });
+  const chargeId = objectId(paymentIntent.latest_charge);
+  if (!chargeId) throw new Error('Stripe fixture PaymentIntent has no charge.');
+  const charge = typeof paymentIntent.latest_charge === 'object'
+    ? paymentIntent.latest_charge
+    : await stripe.charges.retrieve(chargeId, { expand: ['balance_transaction'] });
+  const balanceTransactionId = objectId(charge.balance_transaction);
+  if (!balanceTransactionId) throw new Error('Stripe fixture charge has no balance transaction.');
+
+  return {
+    invoiceId: String(invoice.id),
+    paymentIntentId,
+    chargeId,
+    balanceTransactionId,
   };
 }
 

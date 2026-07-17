@@ -18,6 +18,7 @@ import {
   writeStripeManifest,
 } from '../../../scripts/billing-fixtures/stripe-manifest.mjs';
 import { maskFixtureDiagnostic } from '../../../scripts/billing-fixtures/mask.mjs';
+import { resolveStripeSubscriptionPaymentGraph } from '../../../scripts/billing-fixtures/stripe-invoke.mjs';
 import {
   REQUIRED_STRIPE_WEBHOOK_EVENTS,
   STRIPE_SIGNED_PROBE_EVENT,
@@ -166,6 +167,30 @@ test('S1 manifest allows one exact ID to represent distinct Supabase object type
     manifest,
     stripeFixtureObject('fixture.profile', 'supabase', 'profile', sharedId, 'delete'),
   ));
+});
+
+test('S1 captures the exact immutable invoice and payment object graph', async () => {
+  const graph = await resolveStripeSubscriptionPaymentGraph({
+    invoices: {
+      list: async () => ({ data: [{ id: 'in_fixture', subscription: 'sub_fixture' }] }),
+      retrieve: async () => ({
+        id: 'in_fixture',
+        payment_intent: {
+          id: 'pi_fixture',
+          latest_charge: {
+            id: 'ch_fixture',
+            balance_transaction: { id: 'txn_fixture' },
+          },
+        },
+      }),
+    },
+  }, { customerId: 'cus_fixture', subscriptionId: 'sub_fixture' });
+  assert.deepEqual(graph, {
+    invoiceId: 'in_fixture',
+    paymentIntentId: 'pi_fixture',
+    chargeId: 'ch_fixture',
+    balanceTransactionId: 'txn_fixture',
+  });
 });
 
 test('S1 plan performs read-only checks and zero writes', async () => {

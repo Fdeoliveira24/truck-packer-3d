@@ -134,6 +134,60 @@ test('local workspace creation and membership mutation boundary', { skip: !enabl
   const initialTrials = await rows(`billing_customers?organization_id=eq.${initialOrgId}&select=organization_id`);
   assert.equal(initialTrials.length, 1, 'signup owner membership must seed one billing row');
 
+  const insertGrant = await sql(`
+    select count(*)
+    from information_schema.role_table_grants
+    where table_schema = 'public'
+      and table_name = 'organizations'
+      and grantee = 'authenticated'
+      and privilege_type = 'INSERT';
+  `);
+  assert.equal(insertGrant.stdout.trim(), '0',
+    'authenticated must not retain table-level organization INSERT');
+  const updateGrant = await sql(`
+    select count(*)
+    from information_schema.role_table_grants
+    where table_schema = 'public'
+      and table_name = 'organizations'
+      and grantee = 'authenticated'
+      and privilege_type = 'UPDATE';
+  `);
+  assert.equal(updateGrant.stdout.trim(), '1',
+    'authenticated organization UPDATE must remain available through RLS');
+  const insertPolicy = await sql(`
+    select count(*)
+    from pg_catalog.pg_policies
+    where schemaname = 'public'
+      and tablename = 'organizations'
+      and policyname = 'organizations_insert_owner_self';
+  `);
+  assert.equal(insertPolicy.stdout.trim(), '0',
+    'the obsolete authenticated organization INSERT policy must be absent');
+
+  const directOrganizationId = randomUUID();
+  const directOrganizationName = `Direct Insert ${suffix}`;
+  const directOrganizationInsert = await rest('organizations', {
+    method: 'POST',
+    jwt: owner.token,
+    body: {
+      id: directOrganizationId,
+      name: directOrganizationName,
+      slug: directOrganizationId,
+      owner_id: owner.user.id,
+    },
+    prefer: 'return=representation',
+  });
+  assert.equal(directOrganizationInsert.response.status, 403);
+  assert.equal(directOrganizationInsert.body?.code, '42501');
+  const directOrganizationRows = await rows(`organizations?id=eq.${directOrganizationId}&select=id`);
+  assert.equal(directOrganizationRows.length, 0, 'denied direct INSERT must create no organization row');
+  const directMembershipRows = await rows(
+    `organization_members?organization_id=eq.${directOrganizationId}&select=id`,
+  );
+  assert.equal(directMembershipRows.length, 0, 'denied direct INSERT must create no membership row');
+  const directBillingRows = await rows(`billing_customers?organization_id=eq.${directOrganizationId}&select=id`);
+  assert.equal(directBillingRows.length, 0, 'denied direct INSERT must create no billing or trial row');
+
   const unauthenticated = await edge('org-create-workspace', '', { name: 'Unauthorized Workspace' });
   assert.equal(unauthenticated.response.status, 401);
   const invalidName = await edge('org-create-workspace', owner.token, { name: '   ' });
@@ -156,6 +210,26 @@ test('local workspace creation and membership mutation boundary', { skip: !enabl
   const createdOrganizations = await rows(`organizations?id=eq.${workspaceId}&select=id,name,owner_id,slug`);
   assert.equal(createdOrganizations.length, 1);
   assert.equal(createdOrganizations[0].owner_id, owner.user.id);
+  const authenticatedOrganizationRead = await rest(
+    `organizations?id=eq.${workspaceId}&select=id,name,owner_id`,
+    { jwt: owner.token },
+  );
+  assert.equal(authenticatedOrganizationRead.response.status, 200,
+    'authenticated organization SELECT must remain available through RLS');
+  assert.deepEqual(authenticatedOrganizationRead.body, [{
+    id: workspaceId,
+    name: 'Secure Workspace',
+    owner_id: owner.user.id,
+  }]);
+  const ownerDescriptionUpdate = await rest(`organizations?id=eq.${workspaceId}`, {
+    method: 'PATCH',
+    jwt: owner.token,
+    body: { name: 'Secure Workspace Updated' },
+    prefer: 'return=representation',
+  });
+  assert.equal(ownerDescriptionUpdate.response.status, 200,
+    `owner organization UPDATE failed: ${JSON.stringify(ownerDescriptionUpdate.body)}`);
+  assert.equal(ownerDescriptionUpdate.body?.[0]?.name, 'Secure Workspace Updated');
   const createdMemberships = await rows(`organization_members?organization_id=eq.${workspaceId}&select=user_id,role`);
   assert.deepEqual(createdMemberships, [{ user_id: owner.user.id, role: 'owner' }]);
   const currentProfile = await rows(`profiles?id=eq.${owner.user.id}&select=current_organization_id`);
@@ -252,6 +326,15 @@ test('local workspace creation and membership mutation boundary', { skip: !enabl
     role: 'admin',
   });
   assert.equal(roleUpdated.response.status, 200, JSON.stringify(roleUpdated.body));
+  const adminDescriptionUpdate = await rest(`organizations?id=eq.${workspaceId}`, {
+    method: 'PATCH',
+    jwt: member.token,
+    body: { city: 'Fixture City' },
+    prefer: 'return=representation',
+  });
+  assert.equal(adminDescriptionUpdate.response.status, 200,
+    `admin organization UPDATE failed: ${JSON.stringify(adminDescriptionUpdate.body)}`);
+  assert.equal(adminDescriptionUpdate.body?.[0]?.city, 'Fixture City');
   const memberRemoved = await edge('org-member-remove', owner.token, {
     org_id: workspaceId,
     user_id: member.user.id,

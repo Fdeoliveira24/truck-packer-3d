@@ -82,7 +82,7 @@ Stop at S1 on any signature, event-coverage, cleanup, or collateral-fingerprint 
 
 ## Gate S2 — direct monthly lifecycle
 
-S2 creates one manifest-owned disposable owner/workspace graph, Stripe test Customer, test Payment Method, and monthly test Subscription. It verifies the real Stripe-signed creation event reaches the deployed webhook, projections resolve to the exact workspace, `/billing-status` reports direct active monthly entitlement, and the owner can open a Billing Portal session.
+S2 creates one manifest-owned disposable owner/workspace graph, Stripe test Customer, test Payment Method, and monthly test Subscription. It records the automatically generated test Invoice, PaymentIntent, charge, and balance transaction by exact ID. It verifies the real Stripe-signed creation event reaches the deployed webhook, projections resolve to the exact workspace, `/billing-status` reports direct active monthly entitlement, and the owner can open a Billing Portal session.
 
 The subscription is then canceled in Stripe test mode. S2 waits for the real signed deletion event, verifies the projection becomes canceled, and confirms `/billing-status` revokes direct entitlement with the existing fail-closed result. This gate does not define new prices, limits, trial policy, sibling coverage, coupons, or commercial behavior.
 
@@ -102,7 +102,7 @@ The Stripe CLI is used only to ask Stripe to resend an existing test-mode event 
 
 The ignored, permission-restricted manifest records the fixture version, run, environment, Supabase project, Stripe account, object type, exact immutable ID, cleanup action, creation state, and cleanup state. It stores no passwords, JWTs, service-role keys, webhook secrets, authorization headers, or emails.
 
-Cleanup may act only on exact manifest-owned IDs or exact relationships rooted in a manifest-owned user or organization. Names, prefixes, timestamps, and orphan guesses are never deletion authority. Cleanup removes Supabase projections, webhook rows, memberships, workspace, profile, and auth user; deletes the test Customer and test clock; detaches the Payment Method; and confirms the Subscription is canceled. Stripe events and Portal sessions are immutable evidence and are recorded as not applicable for deletion.
+Cleanup may act only on exact manifest-owned IDs or exact relationships rooted in a manifest-owned user, organization, Stripe Customer, or Subscription. Names, prefixes, timestamps, and orphan guesses are never deletion authority. Cleanup removes Supabase projections, webhook rows, memberships, workspace, profile, and auth user; deletes the test Customer and test clock; detaches the Payment Method; and confirms the Subscription is canceled. Stripe invoices, PaymentIntents, charges, balance transactions, events, and Portal sessions are immutable test evidence and are recorded as not applicable for deletion.
 
 After cleanup:
 

@@ -1621,6 +1621,23 @@ export function createSettingsOverlay({
       if (SupabaseClient.invalidateAccountCache) {
         SupabaseClient.invalidateAccountCache();
       }
+      // Reconcile the confirmed update into canonical org-context state so the
+      // bottom sidebar chip and the Settings sidebar workspace card (both the
+      // same AccountSwitcher component, mounted twice, reading orgContext) pick
+      // up the new name immediately without a reload.
+      try {
+        if (
+          typeof window !== 'undefined' &&
+          window.TruckPackerApp &&
+          typeof window.TruckPackerApp.handleWorkspaceUpdated === 'function'
+        ) {
+          window.TruckPackerApp.handleWorkspaceUpdated(updated, { source: 'settings-org-save' });
+        } else {
+          queueAccountBundleRefresh({ force: true, source: 'settings-org-save' });
+        }
+      } catch {
+        queueAccountBundleRefresh({ force: true, source: 'settings-org-save' });
+      }
       UIComponents.showToast('Workspace updated', 'success');
       renderIfFresh(getCurrentActionId(), 'saveOrganization', epoch);
       return updated;

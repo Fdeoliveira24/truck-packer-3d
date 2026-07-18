@@ -15159,6 +15159,90 @@ test('phase 0.6C app exposes handleWorkspaceArchived and refreshes org context w
     'handleWorkspaceArchived must not sign out, reload, call billing-status, or touch Stripe');
 });
 
+test('workspace rename live-refresh: handleWorkspaceUpdated reconciles org context locally without a network refetch', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function handleWorkspaceUpdated(updatedOrg, options = {})');
+  const end = src.indexOf('// Expose billing pump globally', start);
+  const helper = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(helper, 'app must define handleWorkspaceUpdated');
+  assert.match(src, /window\.TruckPackerApp\.handleWorkspaceUpdated = handleWorkspaceUpdated/,
+    'app must expose handleWorkspaceUpdated');
+
+  // window.TruckPackerApp = (function () { ... return {...}; })() (line ~2181):
+  // the IIFE's own return object is assigned to window.TruckPackerApp AFTER
+  // the whole function body finishes, which silently discards any bridge
+  // function attached only via the early `window.TruckPackerApp.foo = foo`
+  // merge (confirmed pre-existing for handleWorkspaceLeft,
+  // handleOwnershipTransferred, and notifyOrgAccessLoss, none of which are in
+  // this return object). handleWorkspaceUpdated must be listed here too, or
+  // it is unreachable at runtime despite the assertion above passing.
+  const publicApiStart = src.indexOf('return {\n      init,');
+  const publicApiEnd = src.indexOf('};\n  })();', publicApiStart);
+  const publicApi = publicApiStart >= 0 && publicApiEnd > publicApiStart
+    ? src.slice(publicApiStart, publicApiEnd)
+    : '';
+  assert.match(publicApi, /handleWorkspaceUpdated,/,
+    'handleWorkspaceUpdated must also be exposed on the actual returned TruckPackerApp public API, ' +
+    'not only the early window.TruckPackerApp.foo = foo merge that the final IIFE return overwrites');
+
+  assert.match(helper, /normalizeOrgIdForBilling\(\(updatedOrg && updatedOrg\.id\) \|\| ''\)/,
+    'handleWorkspaceUpdated must normalize the updated org id');
+
+  // Requirement: the returned organization is reconciled into the canonical
+  // collection (orgs[]) and, when it is the active org, into activeOrg.
+  assert.match(helper, /existingOrgs\.findIndex\(\s*\n\s*org => org && normalizeOrgIdForBilling\(org\.id \|\| ''\) === normalizedOrgId\s*\n\s*\)/,
+    'handleWorkspaceUpdated must locate the updated org inside the canonical orgs collection');
+  assert.match(helper, /idx === orgIndex \? \{ \.\.\.org, \.\.\.updatedOrg \} : org/,
+    'handleWorkspaceUpdated must merge the returned fields into the matching orgs[] entry');
+  assert.match(helper, /activeOrg: isActiveOrg \? \{ \.\.\.\(orgContext\.activeOrg \|\| \{\}\), \.\.\.updatedOrg \} : orgContext\.activeOrg/,
+    'handleWorkspaceUpdated must merge the returned fields into activeOrg only when it is the active org');
+
+  // Requirement: the active organization ID itself is never reassigned by a
+  // field-level update (only archive/restore/transfer/switch may change it).
+  assert.doesNotMatch(helper, /activeOrgId:\s*(?!activeOrgId\b)/,
+    'handleWorkspaceUpdated must never reassign activeOrgId');
+
+  // Requirement: every existing consumer is notified via the established
+  // event + render pattern, not a bespoke DOM patch.
+  assert.match(helper, /dispatchOrgContextChanged\(\{[\s\S]*orgId: normalizedOrgId[\s\S]*broadcast: true/,
+    'handleWorkspaceUpdated must dispatch the canonical org-context-changed event with cross-tab broadcast');
+  assert.match(helper, /queueOrgScopedRender\(source\)/,
+    'handleWorkspaceUpdated must queue the canonical org-scoped render (drives AccountSwitcher + Settings, not per-label DOM patches)');
+
+  // A field-level rename never changes which orgs are visible/owned, so
+  // unlike archive/restore/transfer it must NOT trigger a full bundle refetch.
+  assert.doesNotMatch(helper, /refreshOrgContext\(/,
+    'handleWorkspaceUpdated must reconcile the already-returned org locally, not force a network refetch');
+  assert.doesNotMatch(helper, /signOut|forceLocalSignedOut|location\.reload|window\.location|billing-status|stripe|checkout|portal|\.innerText\s*=|\.textContent\s*=/i,
+    'handleWorkspaceUpdated must not sign out, reload, touch billing/Stripe, or directly patch DOM labels');
+});
+
+test('workspace rename live-refresh: saveOrganization hands the confirmed update to the app helper, only after success', async () => {
+  const src = await fs.readFile(settingsOverlayPath, 'utf8');
+  const start = src.indexOf('async function saveOrganization(updates, orgId = null)');
+  const end = src.indexOf('async function loadOrgMembers(orgId)', start);
+  const fn = start >= 0 && end > start ? src.slice(start, end) : '';
+
+  assert.ok(fn, 'saveOrganization must be extractable');
+  assert.match(fn, /const updated = await SupabaseClient\.updateOrganization\(orgId, trimmed\);\s*\n\s*orgData = updated;/,
+    'saveOrganization must keep updating its own local orgData from the server response');
+
+  const updateIdx = fn.indexOf('const updated = await SupabaseClient.updateOrganization');
+  const handoffIdx = fn.indexOf('TruckPackerApp.handleWorkspaceUpdated(updated');
+  const catchIdx = fn.indexOf('} catch (err) {');
+  assert.ok(updateIdx >= 0 && handoffIdx > updateIdx && handoffIdx < catchIdx,
+    'the app-helper handoff must run only after a successful update and before the catch block, ' +
+    'so a rejected updateOrganization() call never reconciles or renders stale/partial state');
+
+  assert.match(fn, /window\.TruckPackerApp &&\s*\n\s*typeof window\.TruckPackerApp\.handleWorkspaceUpdated === 'function'/,
+    'saveOrganization must hand the confirmed update to the app helper when available');
+  assert.match(fn, /window\.TruckPackerApp\.handleWorkspaceUpdated\(updated, \{ source: 'settings-org-save' \}\)/,
+    'saveOrganization must pass the server-confirmed organization object, not re-derive it');
+  assert.match(fn, /queueAccountBundleRefresh\(\{ force: true, source: 'settings-org-save' \}\)/,
+    'saveOrganization must retain a bundle-refresh fallback if the app helper is unavailable');
+});
+
 test('phase 0.6C Settings Archive UI is primary-owner-only and uses safe confirm flow', async () => {
   const src = await fs.readFile(settingsOverlayPath, 'utf8');
   const handlerStart = src.indexOf('async function archiveWorkspace(orgId, orgName)');

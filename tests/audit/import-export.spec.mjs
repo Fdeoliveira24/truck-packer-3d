@@ -185,3 +185,21 @@ test('importCaseRows ignores invalid dimensions even if parse stage is bypassed'
   assert.equal(nextCaseLibrary.length, 1);
   assert.equal(nextCaseLibrary[0].name, 'Valid');
 });
+
+test('workspace export/import payloads never include organization slug', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const ImportExport = await loadImportExport();
+  StateStore.init({
+    caseLibrary: [],
+    packLibrary: [],
+    folderLibrary: [],
+    preferences: {},
+  });
+
+  const exported = ImportExport.buildWorkspaceExportJSON('Slug Free Workspace');
+  assert.doesNotMatch(exported, /"slug"/i,
+    'workspace export payload must never include organization slug (workspace-export-v1 is local pack/case data only)');
+  const parsed = ImportExport.parseWorkspaceImportJSON(exported);
+  assert.ok(!Object.prototype.hasOwnProperty.call(parsed, 'slug'),
+    'workspace import parse result must never surface organization slug');
+});

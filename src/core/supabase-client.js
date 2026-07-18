@@ -3083,6 +3083,9 @@ export async function updateOrganization(orgId, updates) {
   if (Object.prototype.hasOwnProperty.call(updates || {}, 'owner_id')) {
     throw new Error('Direct ownership transfer is disabled. Use the org-transfer-ownership Edge Function.');
   }
+  if (Object.prototype.hasOwnProperty.call(updates || {}, 'slug')) {
+    throw new Error('Workspace slug is server-controlled and cannot be changed directly.');
+  }
 
   const { data, error } = await client
     .from('organizations')

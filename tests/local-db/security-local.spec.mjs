@@ -130,6 +130,28 @@ if (!availability.available) {
         `, [owner.organization_id, owner.userId])), '23505');
       });
 
+      await t.test('raw constraints enforce workspace slug integrity', async () => {
+        await expectPgCode(run.withRollback(db => db.query(`
+          insert into public.organizations (name, slug, owner_id)
+          values ('Null Slug Probe', null, $1::uuid)
+        `, [owner.userId])), '23502');
+
+        await expectPgCode(run.withRollback(db => db.query(`
+          insert into public.organizations (name, slug, owner_id)
+          values ('Blank Slug Probe', '   ', $1::uuid)
+        `, [owner.userId])), '23514');
+
+        await expectPgCode(run.withRollback(db => db.query(`
+          insert into public.organizations (name, slug, owner_id)
+          values ('Malformed Slug Probe', 'Not A Valid Slug!!', $1::uuid)
+        `, [owner.userId])), '23514');
+
+        await expectPgCode(run.withRollback(db => db.query(`
+          insert into public.organizations (name, slug, owner_id)
+          values ('Duplicate Slug Probe', $1, $2::uuid)
+        `, [owner.organization_id, owner.userId])), '23505');
+      });
+
       await t.test('currently permitted adversarial billing shapes are proven only inside rollback transactions', async () => {
         const adversarialWorkspace = await run.createOwnedWorkspace(owner.userId, 'adversarial');
         const secondWorkspace = await run.createOwnedWorkspace(owner.userId, 'adversarial-second');

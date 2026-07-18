@@ -156,6 +156,10 @@ const restrictMembershipMutationMigrationPath = new URL(
   '../../supabase/migrations/20260716061518_restrict_direct_membership_mutations.sql',
   import.meta.url
 );
+const enforceWorkspaceSlugIntegrityMigrationPath = new URL(
+  '../../supabase/migrations/20260717150000_enforce_workspace_slug_integrity.sql',
+  import.meta.url
+);
 async function readFunctionSources(dirUrl = supabaseFunctionsDir) {
   const entries = await fs.readdir(dirUrl, { withFileTypes: true });
   const sources = [];
@@ -14944,6 +14948,8 @@ test('phase 0.6D-pre Supabase client rejects direct ownership transfer updates',
     'updateOrganization must keep rejecting archived_at');
   assert.match(fn, /hasOwnProperty\.call\(updates \|\| \{\}, 'owner_id'\)[\s\S]*Direct ownership transfer is disabled\. Use the org-transfer-ownership Edge Function\./,
     'updateOrganization must reject owner_id ownership transfer fields');
+  assert.match(fn, /hasOwnProperty\.call\(updates \|\| \{\}, 'slug'\)[\s\S]*Workspace slug is server-controlled and cannot be changed directly\./,
+    'updateOrganization must reject direct slug mutation');
 });
 
 test('phase 0.6D-pre Supabase client rejects direct account deletion state updates', async () => {
@@ -15899,6 +15905,53 @@ test('Packet 2 preserves signup bootstrap and changes no slug contract', async (
     'Packet 2 must preserve the existing UUID slug shape');
   assert.doesNotMatch(migration, /unique\s*\([^)]*slug|slug[^\n]*(?:not null|lower|regexp)/i,
     'workspace slug integrity Phase 1 must not start in Packet 2');
+});
+
+test('Packet 3 enforces workspace slug integrity without redefining signup and without changing Packet 2 entitlement logic', async () => {
+  const migration = await fs.readFile(enforceWorkspaceSlugIntegrityMigrationPath, 'utf8');
+
+  assert.match(migration, /alter column slug set not null/i,
+    'Packet 3 must make slug non-null');
+  assert.match(migration, /create unique index organizations_slug_lower_idx[\s\S]*on public\.organizations \(lower\(slug\)\)/i,
+    'Packet 3 must enforce case-insensitive uniqueness via a lower(slug) unique index');
+  assert.match(migration, /add constraint organizations_slug_format_check[\s\S]*check \(slug ~ '\^\[a-z0-9-\]\{1,100\}\$'\)/,
+    'Packet 3 must enforce a bounded, safe-character slug format');
+  assert.match(migration, /before update of slug on public\.organizations/i,
+    'Packet 3 must guard slug with a column-scoped UPDATE trigger');
+  assert.match(migration, /current_user in \('service_role', 'postgres', 'supabase_admin', 'supabase_auth_admin'\)/,
+    'the slug guard must reuse the proven invoker-rights trusted-role pattern');
+  assert.match(migration, /partition by lower\(slug\)/i,
+    'the backfill must deterministically converge duplicate and case-variant slugs');
+  assert.doesNotMatch(migration, /create or replace function public\.tp3d_handle_new_user/i,
+    'Packet 3 must not redefine the signup trigger');
+
+  const guardStart = migration.indexOf('create or replace function public.tp3d_guard_organizations_slug_update()');
+  const guardEnd = migration.indexOf('drop trigger if exists tp3d_guard_organizations_slug_update', guardStart);
+  const guardFn = guardStart >= 0 && guardEnd > guardStart ? migration.slice(guardStart, guardEnd) : '';
+  assert.ok(guardFn, 'the slug guard function must be extractable');
+  assert.doesNotMatch(guardFn, /\bsecurity definer\b/i,
+    'the slug guard trigger must run with invoker rights so current_user reflects the real caller, not the archived_at guard\'s security-definer pattern');
+
+  // tp3d_create_workspace() IS redefined -- its existing INSERT wrote slug =
+  // null as a placeholder before a follow-up UPDATE, which the new NOT NULL
+  // constraint would reject before that UPDATE ever ran. The redefinition
+  // must change only the creation tail (pre-generate the id, write the final
+  // slug in one INSERT, no follow-up UPDATE) and leave every entitlement,
+  // locking, counting, and limit-check line byte-identical to Packet 2.
+  const createStart = migration.indexOf('create or replace function public.tp3d_create_workspace(');
+  const createEnd = migration.indexOf('-- 1) Backfill/converge', createStart);
+  const createFn = createStart >= 0 && createEnd > createStart ? migration.slice(createStart, createEnd) : '';
+  assert.ok(createFn, 'the redefined tp3d_create_workspace must be extractable');
+  assert.doesNotMatch(createFn, /values \(v_name, null, p_actor_id/,
+    'the null-slug insert placeholder must be removed');
+  assert.match(createFn, /v_org_id := pg_catalog\.gen_random_uuid\(\);[\s\S]*v_org_slug := v_org_id::text;[\s\S]*insert into public\.organizations \(id, name, slug, owner_id, created_at, updated_at\)/,
+    'the redefined creation tail must pre-generate the id and write the canonical slug in one INSERT');
+  assert.match(createFn, /if v_workspace_count >= v_workspace_limit then[\s\S]*TP3D_CREATE_WORKSPACE_LIMIT_REACHED/,
+    'Packet 2 workspace-limit enforcement must remain byte-for-byte intact');
+  assert.match(createFn, /for update;[\s\S]*TP3D_CREATE_PROFILE_MISSING/,
+    'Packet 2 owner-scoped locking must remain intact');
+  assert.match(createFn, /'workspace_count', v_workspace_count \+ 1,\s*\n\s*'workspace_limit', v_workspace_limit/,
+    'the returned jsonb contract must remain unchanged');
 });
 
 test('workspace creation client preserves the public contract without direct organization membership writes', async () => {

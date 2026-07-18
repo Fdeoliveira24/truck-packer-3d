@@ -9,7 +9,7 @@ const { Client } = pg;
 
 const PROJECT_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
-const REQUIRED_MIGRATION_COUNT = 29;
+const REQUIRED_MIGRATION_COUNT = 30;
 
 export class LocalFixtureSafetyError extends Error {
   constructor(code, message) {

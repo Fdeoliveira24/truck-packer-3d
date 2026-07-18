@@ -189,9 +189,12 @@ test('local workspace creation and membership mutation boundary', { skip: !enabl
     }
   });
 
-  const initialOrgs = await rows(`organizations?owner_id=eq.${owner.user.id}&select=id,name,owner_id`);
+  const initialOrgs = await rows(`organizations?owner_id=eq.${owner.user.id}&select=id,name,owner_id,slug`);
   assert.equal(initialOrgs.length, 1, 'signup must still create exactly one default workspace');
   const initialOrgId = initialOrgs[0].id;
+  assert.match(initialOrgs[0].slug, /^[a-z0-9-]{1,100}$/, 'signup slug must satisfy the bounded format');
+  assert.equal(initialOrgs[0].slug, initialOrgId.toLowerCase(),
+    'signup slug must remain the canonical UUID-derived shape');
   const initialMemberships = await rows(
     `organization_members?organization_id=eq.${initialOrgId}&user_id=eq.${owner.user.id}&select=role`,
   );
@@ -285,6 +288,10 @@ test('local workspace creation and membership mutation boundary', { skip: !enabl
   const createdOrganizations = await rows(`organizations?id=eq.${workspaceId}&select=id,name,owner_id,slug`);
   assert.equal(createdOrganizations.length, 1);
   assert.equal(createdOrganizations[0].owner_id, owner.user.id);
+  assert.match(createdOrganizations[0].slug, /^[a-z0-9-]{1,100}$/,
+    'server-created workspace slug must satisfy the bounded format');
+  assert.equal(createdOrganizations[0].slug, workspaceId.toLowerCase(),
+    'server-created workspace slug must remain the canonical UUID-derived shape');
   const authenticatedOrganizationRead = await rest(
     `organizations?id=eq.${workspaceId}&select=id,name,owner_id`,
     { jwt: owner.token },
@@ -305,6 +312,29 @@ test('local workspace creation and membership mutation boundary', { skip: !enabl
   assert.equal(ownerDescriptionUpdate.response.status, 200,
     `owner organization UPDATE failed: ${JSON.stringify(ownerDescriptionUpdate.body)}`);
   assert.equal(ownerDescriptionUpdate.body?.[0]?.name, 'Secure Workspace Updated');
+
+  const ownerSlugMutation = await rest(`organizations?id=eq.${workspaceId}`, {
+    method: 'PATCH',
+    jwt: owner.token,
+    body: { slug: `hijacked-${suffix}` },
+    prefer: 'return=representation',
+  });
+  assert.equal(ownerSlugMutation.response.status, 403,
+    `owner direct slug mutation must be rejected: ${JSON.stringify(ownerSlugMutation.body)}`);
+  assert.equal(ownerSlugMutation.body?.code, '42501');
+  const slugAfterOwnerAttempt = await rows(`organizations?id=eq.${workspaceId}&select=slug`);
+  assert.equal(slugAfterOwnerAttempt[0]?.slug, createdOrganizations[0].slug,
+    'denied owner slug mutation must leave slug unchanged');
+
+  const serviceSlugUpdate = await rest(`organizations?id=eq.${workspaceId}`, {
+    method: 'PATCH',
+    body: { slug: createdOrganizations[0].slug },
+    prefer: 'return=representation',
+  });
+  assert.equal(serviceSlugUpdate.response.status, 200,
+    `service-role slug update must remain possible: ${JSON.stringify(serviceSlugUpdate.body)}`);
+  assert.equal(serviceSlugUpdate.body?.[0]?.slug, createdOrganizations[0].slug);
+
   const createdMemberships = await rows(`organization_members?organization_id=eq.${workspaceId}&select=user_id,role`);
   assert.deepEqual(createdMemberships, [{ user_id: owner.user.id, role: 'owner' }]);
   const currentProfile = await rows(`profiles?id=eq.${owner.user.id}&select=current_organization_id`);
@@ -320,6 +350,16 @@ test('local workspace creation and membership mutation boundary', { skip: !enabl
     'accepted retries intentionally create distinct workspaces');
   createdOrgIds.add(retryA.body.organization.id);
   createdOrgIds.add(retryB.body.organization.id);
+  const retrySlugs = await rows(
+    `organizations?id=in.(${retryA.body.organization.id},${retryB.body.organization.id})&select=id,slug`,
+  );
+  assert.equal(retrySlugs.length, 2);
+  retrySlugs.forEach(row => {
+    assert.match(row.slug, /^[a-z0-9-]{1,100}$/);
+    assert.equal(row.slug, row.id.toLowerCase());
+  });
+  assert.notEqual(retrySlugs[0].slug, retrySlugs[1].slug,
+    'multiple workspace creation must produce unique slugs');
 
   const rollbackName = `Rollback ${suffix}`;
   const missingActorId = randomUUID();
@@ -414,6 +454,20 @@ test('local workspace creation and membership mutation boundary', { skip: !enabl
   assert.equal(adminDescriptionUpdate.response.status, 200,
     `admin organization UPDATE failed: ${JSON.stringify(adminDescriptionUpdate.body)}`);
   assert.equal(adminDescriptionUpdate.body?.[0]?.city, 'Fixture City');
+
+  const adminSlugMutation = await rest(`organizations?id=eq.${workspaceId}`, {
+    method: 'PATCH',
+    jwt: member.token,
+    body: { slug: `admin-hijacked-${suffix}` },
+    prefer: 'return=representation',
+  });
+  assert.equal(adminSlugMutation.response.status, 403,
+    `admin direct slug mutation must be rejected: ${JSON.stringify(adminSlugMutation.body)}`);
+  assert.equal(adminSlugMutation.body?.code, '42501');
+  const slugAfterAdminAttempt = await rows(`organizations?id=eq.${workspaceId}&select=slug`);
+  assert.equal(slugAfterAdminAttempt[0]?.slug, createdOrganizations[0].slug,
+    'denied admin slug mutation must leave slug unchanged');
+
   const memberRemoved = await edge('org-member-remove', owner.token, {
     org_id: workspaceId,
     user_id: member.user.id,
@@ -556,13 +610,18 @@ test('local Packet 2 workspace limits are authoritative and concurrency-safe', {
     assert.equal(atLimit.response.status, 409);
     assert.equal(atLimit.body?.code, 'workspace_limit_reached');
 
+    const archivedOrgId = second.body.organization.id;
+    const slugBeforeArchive = await rows(`organizations?id=eq.${archivedOrgId}&select=slug`);
     const archived = await edge('org-archive-workspace', monthly.token, {
-      organization_id: second.body.organization.id,
+      organization_id: archivedOrgId,
     });
     assert.equal(archived.response.status, 200, JSON.stringify(archived.body));
     const rowsAfterArchive = await ownerWorkspaceRows(monthly);
     assert.equal(rowsAfterArchive.length, 3);
     assert.ok(rowsAfterArchive.some(row => row.archived_at), 'one owner workspace must be archived');
+    const slugAfterArchive = await rows(`organizations?id=eq.${archivedOrgId}&select=slug`);
+    assert.equal(slugAfterArchive[0]?.slug, slugBeforeArchive[0]?.slug,
+      'archive must not alter slug');
 
     const archivedStillCounts = await edge('org-create-workspace', monthly.token, {
       name: 'Archived Does Not Free Capacity',
@@ -570,6 +629,15 @@ test('local Packet 2 workspace limits are authoritative and concurrency-safe', {
     assert.equal(archivedStillCounts.response.status, 409);
     assert.equal(archivedStillCounts.body?.code, 'workspace_limit_reached');
     assert.equal((await ownerWorkspaceRows(monthly)).length, 3);
+
+    const restored = await edge('org-restore-workspace', monthly.token, {
+      organization_id: archivedOrgId,
+    });
+    assert.equal(restored.response.status, 200, JSON.stringify(restored.body));
+    const slugAfterRestore = await rows(`organizations?id=eq.${archivedOrgId}&select=slug,archived_at`);
+    assert.equal(slugAfterRestore[0]?.archived_at, null, 'workspace must be restored');
+    assert.equal(slugAfterRestore[0]?.slug, slugBeforeArchive[0]?.slug,
+      'restore must not alter slug');
   });
 
   await t.test('paid yearly and payment-grace owners retain the existing paid fallback limit', async () => {

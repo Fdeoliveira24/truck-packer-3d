@@ -6518,6 +6518,57 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return refreshPromise;
     }
 
+    // Reconcile a server-confirmed organization update (e.g. a workspace rename)
+    // into canonical org-context state without a network refetch: the caller
+    // already has the fresh row from updateOrganization(). Unlike archive/
+    // restore/transfer, a field-level update never changes which orgs are
+    // visible or owned, so a full refreshOrgContext() round-trip is not needed.
+    function handleWorkspaceUpdated(updatedOrg, options = {}) {
+      const normalizedOrgId = normalizeOrgIdForBilling((updatedOrg && updatedOrg.id) || '');
+      if (!normalizedOrgId || !updatedOrg) return false;
+
+      const source = options && options.source ? String(options.source) : 'workspace-updated';
+      const activeOrgId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
+      const isActiveOrg = activeOrgId === normalizedOrgId;
+
+      const existingOrgs = Array.isArray(orgContext.orgs) ? orgContext.orgs : [];
+      const orgIndex = existingOrgs.findIndex(
+        org => org && normalizeOrgIdForBilling(org.id || '') === normalizedOrgId
+      );
+      const inCollection = orgIndex >= 0;
+      if (!inCollection && !isActiveOrg) return false;
+
+      const nextOrgs = inCollection
+        ? existingOrgs.map((org, idx) => (idx === orgIndex ? { ...org, ...updatedOrg } : org))
+        : existingOrgs;
+
+      orgContext = {
+        ...orgContext,
+        orgs: nextOrgs,
+        activeOrg: isActiveOrg ? { ...(orgContext.activeOrg || {}), ...updatedOrg } : orgContext.activeOrg,
+        updatedAt: Date.now(),
+      };
+
+      try {
+        if (SupabaseClient && typeof SupabaseClient.invalidateAccountCache === 'function') {
+          SupabaseClient.invalidateAccountCache();
+        }
+      } catch {
+        // ignore
+      }
+
+      if (isActiveOrg) {
+        dispatchOrgContextChanged({
+          orgId: normalizedOrgId,
+          reason: source,
+          broadcast: true,
+          source: 'workspace-updated',
+        });
+      }
+      queueOrgScopedRender(source);
+      return true;
+    }
+
     // Expose billing pump globally for SettingsOverlay (avoids import coupling)
     try {
       window.TruckPackerApp = window.TruckPackerApp || {};
@@ -6528,6 +6579,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       window.TruckPackerApp.handleWorkspaceArchived = handleWorkspaceArchived;
       window.TruckPackerApp.handleWorkspaceRestored = handleWorkspaceRestored;
       window.TruckPackerApp.handleOwnershipTransferred = handleOwnershipTransferred;
+      window.TruckPackerApp.handleWorkspaceUpdated = handleWorkspaceUpdated;
       _orgAccessLossHandler = handleOrgAccessLoss;
     } catch { /* ignore */ }
 
@@ -9796,6 +9848,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       getWorkspaceSwitchState,
       handleWorkspaceArchived,
       handleWorkspaceRestored,
+      handleWorkspaceUpdated,
       openCreateWorkspaceFlow,
       EditorUI,
       ui: {

@@ -2,6 +2,8 @@
 **Phase: UI-2 (docs only) · Created: 2026-05-16**
 **Scope: settings-overlay.js view-mode section only (no edit mode, no CSS, no auth/billing)**
 
+**Update 2026-07-18 (Platform UX/UI Compatibility Closeout):** the Slug row described below has been hidden from Card 1 in `settings-overlay.js` — it is a UUID-derived internal identifier with no user-facing meaning until Workspace Slug Phase 2 (friendly slugs). The stored value, import/export, and read-only server contract are unchanged. Every "Slug" reference in this plan is historical; Phase UI-3 must **not** reintroduce the Slug row when executed.
+
 ---
 
 ## A. Current Problems
@@ -10,7 +12,7 @@
 
 One large `.card.tp3d-settings-card-max` holds everything. Inside it, a single `viewContainer.grid` accumulates:
 
-1. Logo row → Name → Slug → Phone → Address → Role rows (orgRow)
+1. Logo row → Name → ~~Slug~~ (hidden 2026-07-18) → Phone → Address → Role rows (orgRow)
 2. **[divider]** Export intro + Export button (owner/admin only)
 3. **[divider]** "Remove yourself…" intro
 4. Transfer ownership warning + Transfer button (primary owner only) — `btn btn-primary`
@@ -43,7 +45,7 @@ The view-mode render path is reorganized into **four cards** plus one trailing s
 [tp3d-settings-org-divider]
   orgRow: Logo
   orgRow: Name
-  orgRow: Slug        (read-only, no editing slug yet)
+  (Slug row removed 2026-07-18 — hidden pending Phase 2 friendly slugs; do not re-add)
   orgRow: Phone
   orgRow: Address     (if orgData.address_line1)
   orgRow: Role
@@ -237,7 +239,7 @@ None of these gates change — the DOM reorganization only changes _where_ the e
 After Phase UI-3 is applied, manually verify in the browser (http://localhost:8080) before committing:
 
 ### Member user (not owner/admin)
-- [ ] Card 1 shows: Logo, Name, Slug, Phone, Address, Role rows
+- [ ] Card 1 shows: Logo, Name, Phone, Address, Role rows (no Slug row — hidden 2026-07-18)
 - [ ] Card 1 shows: "Only admins can edit workspace details." muted note (no Edit button)
 - [ ] Card 2 (Backup & Export) is NOT shown
 - [ ] Card 3 (Ownership & Access) is shown — Leave button is enabled
@@ -309,7 +311,8 @@ The exact changes:
 
 1. CARD 1 — Workspace Identity
    Keep the existing orgCard as card 1. It already uses .card.tp3d-settings-card-max.
-   Keep its title ("General"), divider, and orgRows (Logo/Name/Slug/Phone/Address/Role).
+   Keep its title ("General"), divider, and orgRows (Logo/Name/Phone/Address/Role).
+   The Slug row was hidden 2026-07-18 (Platform UX/UI Compatibility Closeout) — do not re-add it.
    Keep the Edit Workspace button block and the "Only admins can edit..." note.
    Remove the export, leave, transfer, and archive blocks from inside orgCard/viewContainer.
    These move to separate cards (below).

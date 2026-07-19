@@ -5681,7 +5681,6 @@ export function createSettingsOverlay({
             return el;
           };
           viewContainer.appendChild(orgRow('Name', makeSkeleton()));
-          viewContainer.appendChild(orgRow('Slug', makeSkeleton()));
           viewContainer.appendChild(orgRow('Phone', makeSkeleton()));
           viewContainer.appendChild(orgRow('Address', makeSkeleton()));
           viewContainer.appendChild(orgRow('Role', makeSkeleton()));
@@ -5698,7 +5697,6 @@ export function createSettingsOverlay({
               return el;
             };
             viewContainer.appendChild(orgRow('Name', makeSkeleton2()));
-            viewContainer.appendChild(orgRow('Slug', makeSkeleton2()));
             viewContainer.appendChild(orgRow('Phone', makeSkeleton2()));
             viewContainer.appendChild(orgRow('Address', makeSkeleton2()));
             viewContainer.appendChild(orgRow('Role', makeSkeleton2()));
@@ -5840,16 +5838,12 @@ export function createSettingsOverlay({
             )
           );
 
-          viewContainer.appendChild(
-            orgRow(
-              'Slug',
-              (() => {
-                const el = doc.createElement('div');
-                el.textContent = orgData.slug || '—';
-                return el;
-              })()
-            )
-          );
+          // Slug is a UUID-derived internal identifier with no user-facing
+          // routing or sharing purpose today (Workspace Slug Phase 1 is
+          // integrity-only; see docs/product/TP3D-MASTER-TODO-V5.md). Hidden
+          // from Settings until a Phase 2 friendly-slug feature gives it a
+          // meaning worth showing. The stored value, import/export, and the
+          // read-only server-side contract are all unchanged.
 
           viewContainer.appendChild(
             orgRow(

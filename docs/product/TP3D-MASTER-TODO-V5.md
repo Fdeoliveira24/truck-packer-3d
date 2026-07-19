@@ -62,11 +62,11 @@ This table is the single mutable status snapshot in V5.
 | Field | Current value |
 |---|---|
 | Task | Complete the final Platform UX–UI Compatibility Closeout. |
-| Branch | Not created. |
-| Outcome | Not yet scoped in detail; per Section 9/12, confirm UI/UX behavior remains correct and consistent across the now-closed platform-foundation reliability changes (Packets 1–3) before Max Capacity Phase C may resume. |
-| Blocker state | Unblocked after the platform-foundation reliability closeout (Section 9); next in dependency order. |
+| Branch | `fix/platform-ux-ui-compatibility-closeout`. |
+| Outcome | Focused inspection confirmed workspace creation, workspace-limit error messaging, workspace switching, rename live-refresh, and archive/restore all already behave correctly post-Packets-1–3. One real compatibility finding: the UUID-derived Slug row in Settings had no user-facing meaning and was hidden. Awaiting the operator's full local/development validation pass before merge. |
+| Blocker state | In progress. Unblocked after the platform-foundation reliability closeout (Section 9). |
 | Scope boundary | UX/UI compatibility closeout only. Do not start friendly-slug Phase 2 UX/routing, commercial billing, Stripe, AutoPack, or Max Capacity Phase C. |
-| Closeout | Record the result here and in Section 7 before Max Capacity Phase C may resume. |
+| Closeout | Merge only after the operator confirms full `npm test`, typecheck, lint, clean local Supabase reset, workspace-security integration, and local billing/security fixtures all pass. Record final evidence here and in Section 7 before Max Capacity Phase C may resume. |
 
 Only this row is active. The following section is an approved sequence, not simultaneous work.
 
@@ -186,6 +186,20 @@ The evidence-based reassessment is complete. Local, deployed-development, and St
 - Full audit suite 1,051/1,056 passed (0 fail, 5 pre-existing skips), typecheck and lint clean, `workspace-membership-security.spec.mjs` (Packets 1+2+3 together) 9/9, local billing/ownership/security 40/40, development migration ledger 30/30 with zero drift.
 - Declares platform-foundation reliability formally closed. Does not declare the final Platform UX–UI Compatibility Closeout complete and does not declare Max Capacity Phase C ready; both remain the next, unstarted, gated tasks (Section 5).
 
+### ⏳ Platform UX–UI Compatibility Closeout — in progress, branch `fix/platform-ux-ui-compatibility-closeout`
+
+Focused inspection (not yet full validation) confirmed the completed platform-foundation work (Packets 1–3) behaves correctly in the UI:
+
+- workspace creation uses the approved server path only (no direct `.from()` insert);
+- workspace-limit failure messages are already safe and understandable (`getEdgeFunctionErrorMessage()` surfaces the Edge Function's own sanitized text, e.g. "Workspace limit reached...", with a generic fallback; no raw codes/SQL leak);
+- workspace switching and workspace rename already update all organization-scoped UI live, without reload (rename fixed in the prior `fix/workspace-name-live-refresh` merge, `8d47db7`);
+- archive/restore already reconcile correctly (`handleWorkspaceArchived`/`handleWorkspaceRestored`, proven via deployed D2-20);
+- no UI path attempts direct organization INSERT or direct membership mutation (existing static contract tests).
+
+One real compatibility finding: the UUID-derived Slug row in the Settings General card had no user-facing meaning (Workspace Slug Phase 1 is integrity-only) and could read as a confusing or misleading internal identifier. Disposition: **hidden** from `src/ui/overlays/settings-overlay.js` (2 loading-skeleton placeholders + the real value row; 3 call sites, the only file in `src/` that read `orgData.slug`). The stored value, import/export, and read-only server-side contract are unchanged; no slug editing, routing, or sharing UI was introduced. `docs/product/SETTINGS-WORKSPACE-GENERAL-UI-PLAN.md` (an approved-but-deferred Phase UI-2/UI-3 plan that assumed Slug stayed in Card 1) was updated at its four Slug references so a future Phase UI-3 execution does not silently reintroduce the row.
+
+No sharing, routing, billing, schema, or AutoPack behavior was introduced. Not yet marked complete: awaiting the operator's full `npm test`, typecheck, lint, clean local Supabase reset, workspace-security integration, and local billing/security fixture results before merge.
+
 ### Historical billing bug dispositions
 
 - **BUG-02 — proven resolved:** current production-handler/local billing tests retain `month`/`year` and `currentPeriodEnd` for directly paid workspaces, configured and recognized legacy Prices recover interval metadata, and the authenticated paid-workspace matrix returned usable interval and renewal values.
@@ -251,19 +265,34 @@ The decisions in Section 11 are prerequisites. Each accepted candidate needs a s
 - Pack/Case business identifiers should wait for a dedicated product/data audit.
 - Existing development schema drift requires a separate evidence-first audit, not opportunistic normalization.
 
-### Required Workspace Slug Product Phase
+### Workspace Slug Phase 2 (Friendly Slugs) — deferred
 
-After the Phase 1 integrity foundation, the full friendly workspace-slug feature remains required product work, not optional metadata cleanup. It must be planned and implemented separately with:
+Workspace Slug Phase 1 (integrity-only: backfill/normalize, non-null, case-insensitive uniqueness, bounded format, server-controlled mutation) is complete and closed — see Section 9. The technical Slug row is currently hidden from Settings (Platform UX/UI Compatibility Closeout, Section 9) because the UUID-derived slug has no user-facing meaning yet.
+
+The full friendly workspace-slug feature remains required product work, not optional metadata cleanup, and is **not required before Max Capacity Phase C**. It must be planned and implemented separately with:
 
 - owner-authorized human-readable slug editing, validation, availability/collision checks, and reserved words;
 - Settings editing UX, rename behavior, and audit logging;
 - authenticated slug-based workspace URL resolution and routing;
-- approved share-link strategy without treating the slug as a bearer secret;
 - redirect or alias behavior after rename;
 - import/export implications and migration from UUID-derived slugs;
-- enumeration resistance and explicit tests proving authentication, membership, and authorization remain independent of slug knowledge.
+- enumeration resistance and explicit tests proving authentication, membership, and authorization remain independent of slug knowledge;
+- re-exposing the Slug row in Settings once it carries real user-facing meaning.
 
 Slug possession must never grant workspace access.
+
+### Pack Publishing / Crew View / Share Links — deferred
+
+A separate deferred product initiative, **not part of Workspace Slug Phase 2**. Not started; not required before Max Capacity Phase C. Future scope includes:
+
+- published load plans;
+- public or authenticated viewers;
+- revocable share tokens;
+- checklist/crew behavior;
+- permissions;
+- a version strategy for published plans.
+
+Any future share-link design must use its own dedicated token/credential — the workspace slug must never act as the access credential for shared or published content.
 
 ### Visual Quality and Rendering Performance
 

@@ -26,23 +26,33 @@ This document defines the permanent engineering contract for Truck Packer 3D Aut
 
 ## Hard Rules
 
-Scoring must never weaken or bypass hard rules. A candidate is valid only if all relevant hard rules pass.
+Scoring must never weaken or bypass hard rules. A candidate is valid only if all relevant hard rules pass. Hard rules are geometry/physics rules and are the same for every AutoPack strategy, including Max Capacity.
 
 Hard rules include:
 
 - containment using the canonical tolerance, currently `CONTAINMENT_EPS_INCHES = 0.05`;
 - no overlaps;
 - wheel-well blocked-body exclusion;
+- wheel-well cantilever/overhang and center-of-mass stability limits (`MAX_WHEELWELL_OVERHANG_FRACTION`, COM checks);
 - cab/front-overhang void exclusion;
-- orientation lock and `canFlip`;
-- support fraction;
-- COM/stability checks where implemented;
-- `noStackOnTop` / `stackable:false` support-side behavior;
-- `maxStackCount` as direct-child support cap;
-- child-vs-support weight check except pallet bypass behavior;
+- support **footprint fraction** (`MIN_SUPPORT_FRACTION`) — geometric contact area, always enforced;
 - rear/front retention rules where applicable;
 - no unsupported floating cases;
 - no invalid seam-crossing placements.
+
+## Relaxable Cargo-Handling Preferences (Max Capacity only)
+
+Max Capacity is a distinct, never-auto-selected AutoPack strategy (`src/packing-core/solution.js`, `applyMaxCapacityRuleProfile()` in `src/services/autopack-solver.js`) that may relax the following cargo-handling **preferences** — not physical rules — for every item in the solve, uniformly:
+
+- orientation lock and `canFlip` (all orientations become permitted);
+- `noStackOnTop` / `stackable:false` support-side behavior;
+- `maxStackCount` as a direct-child support cap (treated as unlimited);
+- load priority and lane (`loadPriority`, `laneItem`) solver ordering behavior;
+- the **child-vs-support weight comparison** used to decide whether a support can carry a candidate's weight. This is intentionally relaxed and is proven by a dedicated test (`AUTOPACK-MAX-A relaxes child-vs-support weight without weakening support geometry`), which also proves the support **footprint fraction** hard rule stays enforced for the same relaxed pair — Max Capacity relaxes whether a lighter item may carry a heavier one, never whether there is real geometric contact area.
+
+Mechanism note: the solver neutralizes this comparison by evaluating each solved item with its weight temporarily set to 0 for the duration of the solve only (`applyMaxCapacityRuleProfile()`'s shallow clone). This never erases or overwrites the canonical stored case weight — case-library weight data, `computeStats()` totals, and final weight/PDF reporting always read the real, canonical case weight. The same relaxation, applied at reconciliation time (Truck Change, repair) rather than solve time, is implemented separately via `supportCanCarry()`'s `maxCapacitySupportRelationship()` check (both sides of a support pair must currently carry `packedProfile: 'max-capacity'`) and, for Wheel Wells support validation specifically, `projectMaxCapacitySupportRecords()`.
+
+`packedProfile: 'max-capacity'` is **mode-level metadata**: the solver relaxes preferences for every item in a Max Capacity solve uniformly, so an applied instance carrying this marker is not proof that its specific placement individually required any particular relaxed rule — only that it belongs to a Max Capacity result and is evaluated under that profile wherever relevant. See [Max Capacity Phase C — Packed-Profile Semantics Audit](../audits/max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md) for the full contract.
 
 ## Quality Scoring
 

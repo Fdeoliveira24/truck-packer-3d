@@ -3893,6 +3893,17 @@ export function createEditorScreen({
       statChips.className = 'tp3d-autopack-results__stat-chips';
       statChips.appendChild(makeAutoPackResultChip('Floor', formatAutoPackResultNumber(viewedOption.floorCount)));
       statChips.appendChild(makeAutoPackResultChip('Stacked', formatAutoPackResultNumber(viewedOption.stackedCount)));
+      // Max Capacity only: every placement in this candidate result used the
+      // relaxed handling profile uniformly, so packedCount already IS the
+      // profile-membership count for this candidate — no separate field needed.
+      if (viewedOption.id === 'max-capacity' && Number(viewedOption.packedCount) > 0) {
+        const maxCapacityChip = makeAutoPackResultChip('Max Capacity profile', formatAutoPackResultNumber(viewedOption.packedCount));
+        const maxCapacityChipHelp = 'This result used the more permissive Max Capacity handling profile. ' +
+          'Review these placements before treating the plan as transport-ready.';
+        maxCapacityChip.title = maxCapacityChipHelp;
+        maxCapacityChip.setAttribute('aria-label', maxCapacityChipHelp);
+        statChips.appendChild(maxCapacityChip);
+      }
       metrics.appendChild(statChips);
       body.appendChild(metrics);
 
@@ -5325,10 +5336,20 @@ export function createEditorScreen({
       const incompleteNote = unresolvedCount > 0
         ? `<div class="muted tp3d-editor-fs-xs">${unresolvedCount} cargo item${unresolvedCount === 1 ? '' : 's'} could not be resolved. Weight and volume totals are incomplete.</div>`
         : '';
+      const maxCapacityProfileCount = stats.maxCapacityProfileCount || 0;
+      // Contract C: this is profile membership, not per-case relaxation evidence —
+      // see docs/audits/max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md.
+      const maxCapacityProfileTooltip = 'These packed cases are currently associated with the Max Capacity ' +
+        'handling profile. The profile may relax optional cargo-handling preferences while still respecting ' +
+        'hard physical placement rules. The count does not mean every individual case required a relaxed preference.';
+      const maxCapacityProfileRow = maxCapacityProfileCount > 0
+        ? `<div class="row space-between"><span class="muted tp3d-editor-fs-sm" data-tooltip="${maxCapacityProfileTooltip}">Max Capacity profile</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${maxCapacityProfileCount}</b></div>`
+        : '';
       statsEl.innerHTML = `
               <div class="tp3d-editor-fw-semibold">Stats</div>
               <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Cases loaded</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${stats.totalCases}</b></div>
               <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Packed (in truck)</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${stats.packedCases}</b></div>
+              ${maxCapacityProfileRow}
               ${unresolvedRow}
               <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Volume used</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${stats.volumePercent.toFixed(1)}%</b></div>
               <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Total weight</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}</b></div>

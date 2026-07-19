@@ -3931,6 +3931,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
             y += 14;
             doc.text(`Packed (in truck): ${stats.packedCases}`, margin, y);
             y += 14;
+            const maxCapacityProfileCount = stats.maxCapacityProfileCount || 0;
+            if (maxCapacityProfileCount > 0) {
+              doc.text(`Max Capacity profile cases: ${maxCapacityProfileCount}`, margin, y);
+              y += 14;
+            }
             doc.text(`Volume used: ${stats.volumePercent.toFixed(1)}%`, margin, y);
             y += 14;
             doc.text(`Total weight: ${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}`, margin, y);

@@ -2327,6 +2327,7 @@ export function computeStats(pack, caseLibraryOverride) {
   let stagedCases = 0;
   let hiddenCases = 0;
   let unresolvedInstances = 0;
+  let maxCapacityProfileCount = 0;
   const getCase = caseId => {
     if (Array.isArray(caseLibraryOverride)) return caseLibraryOverride.find(c => c.id === caseId) || null;
     return CaseLibrary.getById(caseId);
@@ -2358,6 +2359,11 @@ export function computeStats(pack, caseLibraryOverride) {
       return;
     }
     packedCases++;
+    // Contract C: packedProfile === 'max-capacity' on a currently packed instance
+    // means active Max Capacity profile membership, not per-instance evidence
+    // that a relaxed rule was individually required. See docs/audits/
+    // max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md.
+    if (instanceUsesMaxCapacityProfile(inst)) maxCapacityProfileCount++;
     usedIn3 += c.volume || Utils.volumeInCubicInches(dims);
     totalWeight += Number(c.weight) || 0;
   });
@@ -2376,6 +2382,7 @@ export function computeStats(pack, caseLibraryOverride) {
     packedCases,
     stagedCases,
     unresolvedInstances,
+    maxCapacityProfileCount,
     volumeUsed: usedIn3,
     volumePercent,
     totalWeight,

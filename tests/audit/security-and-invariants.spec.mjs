@@ -19297,11 +19297,16 @@ test('G1.2C-INSPECTOR-CARD-POLISH Stats card uses label/value rows and keeps the
   const statsBlock = src.slice(statsStart, statsEnd);
 
   const labelValueRows = statsBlock.match(/<div class="row space-between">/g) || [];
-  // 4 always-present stat rows + 1 conditional "Unresolved cases" row (dangling refs).
-  assert.equal(labelValueRows.length, 5,
-    'Stats card renders the 4 core label/value rows plus a conditional Unresolved row');
+  // 4 always-present stat rows + 1 conditional "Unresolved cases" row (dangling refs)
+  // + 1 conditional "Max Capacity profile" row (Phase C, Contract C profile-membership count).
+  assert.equal(labelValueRows.length, 6,
+    'Stats card renders the 4 core label/value rows plus the conditional Unresolved and Max Capacity profile rows');
   assert.match(statsBlock, /Unresolved cases/, 'Stats card surfaces an Unresolved cases row');
   assert.match(statsBlock, /unresolvedCount > 0/, 'the Unresolved row is conditional on unresolvedCount');
+  assert.match(statsBlock, /Max Capacity profile/, 'Stats card surfaces a Max Capacity profile row');
+  assert.match(statsBlock, /maxCapacityProfileCount > 0/, 'the Max Capacity profile row is conditional on maxCapacityProfileCount');
+  assert.match(statsBlock, /\$\{stats\.maxCapacityProfileCount \|\| 0\}|stats\.maxCapacityProfileCount/,
+    'the Max Capacity profile row must read from the canonical stats.maxCapacityProfileCount value');
 
   ['Cases loaded', 'Packed (in truck)', 'Volume used', 'Total weight'].forEach(label => {
     const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -19315,7 +19320,11 @@ test('G1.2C-INSPECTOR-CARD-POLISH Stats card uses label/value rows and keeps the
   assert.match(statsBlock, /\$\{Utils\.formatWeight\(stats\.totalWeight, prefs\.units\.weight\)\}/,
     'Stats card must keep using Utils.formatWeight(stats.totalWeight, ...)');
 
-  assert.doesNotMatch(statsBlock, /ft³|ft3|capacity|cubicFt|packedVolume/i,
+  // "capacity" alone is excluded from this check when it is part of the approved
+  // "Max Capacity" AutoPack profile name, its "maxCapacity…" identifiers, or its
+  // "max-capacity-…" doc/file references (Phase C, Contract C) - the invented-stat
+  // patterns this guards against are the ft³/cubicFt/packedVolume forms.
+  assert.doesNotMatch(statsBlock, /ft³|ft3|(?<!max[ -])(?<!max)capacity|cubicFt|packedVolume/i,
     'Stats card must not invent packed/capacity ft³ values');
 });
 

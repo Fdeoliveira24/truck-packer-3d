@@ -18,8 +18,8 @@ This document defines the permanent engineering contract for Truck Packer 3D Aut
 
 - `src/services/autopack-solver.js`: geometry evaluation, candidate generation, scoring, support validation, containment/collision checks, stacking behavior, Wheel Wells / Front Overhang solver details.
 - `src/services/autopack-engine.js`: AutoPack orchestration, pack-to-solver item building, staging handoff, operation flow, animation handoff, final pack mutation.
+- `src/services/autopack-item-builder.js`: pre-solve item normalization and orientation-candidate preparation (`buildLegacyAutoPackItems`), consumed directly by `autopack-engine.js`.
 - `src/services/pack-library.js`: canonical pack/case data operations, usable zones, blocked zones, manual revalidation, delete/update/add/duplicate mutation contracts.
-- `src/services/autopack-legacy-solver.js`: legacy item normalization / legacy solver helpers still referenced by AutoPack engine, including `buildLegacyAutoPackItems`; do not remove until production callers are eliminated.
 - `src/screens/editor-screen.js`: editor interactions, Inspector actions, selection behavior, manual operations, UI event wiring.
 - `src/editor/scene-runtime.js`: scene object representation, 3D object sync, visual selection/runtime scene behavior.
 - `src/core/operation-lifecycle.js`: operation locks, busy-state behavior, lifecycle safety.

@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-18
 
-**Last verified repository state:** Platform-foundation reliability formally closed after a read-only readiness audit confirmed Packets 1–3 hold together as a system with no regressions; the final Platform UX–UI Compatibility Closeout is next, before Max Capacity Phase C
+**Last verified repository state:** Platform-foundation reliability and the final Platform UX–UI Compatibility Closeout are both complete, each validated locally and (where applicable) in development with zero failures; Max Capacity Phase C is the next approved task and has not started
 
 ## 1. Document Contract
 
@@ -42,8 +42,9 @@ This table is the single mutable status snapshot in V5.
 | Pricing operations runbook | Complete and updated for active checkout Prices, recognition-only legacy Prices, unknown fallback diagnostics, safe replacement, deployment scope, rollback limits, and unresolved commercial decisions. |
 | Unknown or replaced Price handling | Complete. Usable explicitly mapped unknown Prices preserve conservative paid fallback with a masked diagnostic; recognized legacy Prices preserve tier/limit but remain checkout-disabled. Local and development validation passed. |
 | Billing QA BUG-02 / BUG-03 | Proven resolved. Active/included paid workspaces return usable interval and period data; paying owners have an organization-scoped Portal path. Current runtime/local tests, authenticated evidence, and the Stripe S2 lifecycle agree. |
-| Platform-foundation reliability | Closed. The readiness audit re-verified, on a fresh clean 30-migration reset, that Packets 1–3 hold together as one system with no regressions: a single direct SQL check confirmed all nine cross-packet invariants (INSERT revoke, obsolete policy absence, descriptive UPDATE grant, slug NOT NULL/format/uniqueness/guard trigger, `tp3d_create_workspace` service-role-only access) simultaneously; the full audit suite, typecheck, lint, workspace-security integration, and local billing/ownership/security fixtures all passed with zero failures; the development migration ledger showed zero drift (30/30). The final Platform UX–UI Compatibility Closeout is the next task and has not started. |
-| Max Capacity Phase C | Blocked and not started. |
+| Platform-foundation reliability | Closed. The readiness audit re-verified, on a fresh clean 30-migration reset, that Packets 1–3 hold together as one system with no regressions: a single direct SQL check confirmed all nine cross-packet invariants (INSERT revoke, obsolete policy absence, descriptive UPDATE grant, slug NOT NULL/format/uniqueness/guard trigger, `tp3d_create_workspace` service-role-only access) simultaneously; the full audit suite, typecheck, lint, workspace-security integration, and local billing/ownership/security fixtures all passed with zero failures; the development migration ledger showed zero drift (30/30). |
+| Platform UX–UI Compatibility Closeout | Closed. Focused inspection confirmed workspace creation, workspace-limit error messaging, workspace switching, rename live-refresh, archive/restore, and the absence of any direct-INSERT/membership-mutation UI path all already behave correctly post-Packets-1–3. One real finding: the UUID-derived Slug row in Settings had no user-facing meaning and was hidden (`src/ui/overlays/settings-overlay.js`); stored value, import/export, and the read-only server contract are unchanged. Operator-confirmed: full `npm test`, typecheck, lint, clean local Supabase reset, workspace-security integration (9/9), and local billing/ownership/security (40/40) all passed with zero failures and zero residual fixture rows. |
+| Max Capacity Phase C | Next approved task. Not started in this run. |
 | Development schema drift | Legacy cases/packs, policies/functions, and billing ID differences remain a separate, non-blocking future audit. |
 
 ## 3. Current Source of Truth
@@ -61,32 +62,33 @@ This table is the single mutable status snapshot in V5.
 
 | Field | Current value |
 |---|---|
-| Task | Complete the final Platform UX–UI Compatibility Closeout. |
-| Branch | `fix/platform-ux-ui-compatibility-closeout`. |
-| Outcome | Focused inspection confirmed workspace creation, workspace-limit error messaging, workspace switching, rename live-refresh, and archive/restore all already behave correctly post-Packets-1–3. One real compatibility finding: the UUID-derived Slug row in Settings had no user-facing meaning and was hidden. Awaiting the operator's full local/development validation pass before merge. |
-| Blocker state | In progress. Unblocked after the platform-foundation reliability closeout (Section 9). |
-| Scope boundary | UX/UI compatibility closeout only. Do not start friendly-slug Phase 2 UX/routing, commercial billing, Stripe, AutoPack, or Max Capacity Phase C. |
-| Closeout | Merge only after the operator confirms full `npm test`, typecheck, lint, clean local Supabase reset, workspace-security integration, and local billing/security fixtures all pass. Record final evidence here and in Section 7 before Max Capacity Phase C may resume. |
+| Task | Max Capacity Phase C (reporting follow-up only — see Section 10). Not started. |
+| Branch | Not created. |
+| Outcome | Not yet scoped for implementation in this run. Per Section 10, Phase C is a small reporting follow-up (report how many applied cases use relaxed handling rules) without UI redesign or legal/axle/DOT claims. |
+| Blocker state | Unblocked — platform-foundation reliability and the Platform UX–UI Compatibility Closeout are both complete. Next in dependency order; not started. |
+| Scope boundary | Do not start implementation in a documentation/audit-only run. Do not combine with friendly-slug Phase 2, Pack Publishing/Crew View/Share Links, commercial billing, or Stripe. |
+| Closeout | To be recorded here and in Section 7 once Phase C work actually begins. |
 
 Only this row is active. The following section is an approved sequence, not simultaneous work.
 
 ## 5. Next Approved Execution Queue
 
-1. Complete the final Platform UX–UI Compatibility Closeout.
-2. Resume Max Capacity Phase C only after that closeout.
-3. Keep the Phase 2 friendly workspace-slug capability in the approved future product roadmap; plan and implement it separately from Phase 1 integrity.
+1. Max Capacity Phase C (reporting follow-up only, per Section 10).
+2. Keep the Phase 2 friendly workspace-slug capability in the approved future product roadmap; plan and implement it separately from Phase 1 integrity.
+3. Keep Pack Publishing / Crew View / Share Links as a separate deferred product initiative (Section 12); not part of Phase 2.
 
 Queue order is approval order. Start one branch at a time and record its active branch, outcome, and blocker state in Section 4.
 
 ## 6. Current Blockers
 
 - Commercial pricing is not final; later fixture work must not invent future commercial terms.
-- Max Capacity Phase C is blocked until the final Platform UX–UI Compatibility Closeout is complete. It has no approved active branch and must not start early.
+- None remaining for Max Capacity Phase C: platform-foundation reliability and the Platform UX–UI Compatibility Closeout are both closed. Phase C has no approved active branch yet and has not started.
 
 ## 7. Recently Completed Milestones
 
 | Milestone | Concise result | Evidence |
 |---|---|---|
+| Platform UX–UI Compatibility Closeout | Branch `fix/platform-ux-ui-compatibility-closeout`. Focused inspection confirmed workspace creation, workspace-limit error messaging, workspace switching, rename live-refresh, archive/restore, and the absence of any direct-INSERT/membership-mutation UI path all already behave correctly post-Packets-1–3 — no code change needed for those. One real finding: the UUID-derived Slug row in the Settings General card had no user-facing meaning (Phase 1 is integrity-only) and was hidden (2 loading-skeleton placeholders + the real value row, the only 3 call sites reading `orgData.slug` in `src/`). Stored value, import/export, and the read-only server contract are unchanged; no editing, routing, or sharing UI was added. `docs/product/SETTINGS-WORKSPACE-GENERAL-UI-PLAN.md` (an approved-but-deferred Phase UI-2/UI-3 plan assuming Slug stayed in Card 1) was reconciled at its four Slug references. Operator-confirmed: full `npm test`, typecheck, lint, clean local Supabase reset, workspace-security integration (9/9), and local billing/ownership/security (40/40) all passed, zero failures, zero residual fixture rows. No sharing, routing, billing, schema, or AutoPack behavior was introduced. | [migration/plan doc](../product/SETTINGS-WORKSPACE-GENERAL-UI-PLAN.md), `src/ui/overlays/settings-overlay.js`, `tests/local-db/workspace-membership-security.spec.mjs`, `tests/local-db/security-local.spec.mjs`, `tests/audit/security-and-invariants.spec.mjs` |
 | Platform-foundation reliability closeout — readiness audit | Read-only audit (no branch, no code changes) on `main` HEAD `3253580`. Re-verified from a clean 30-migration reset that Packets 1–3 hold together with no regressions: one direct SQL query confirmed all nine cross-packet invariants simultaneously (organization INSERT revoked/UPDATE retained, obsolete insert policy absent, slug NOT NULL/format/uniqueness/guard trigger all present, `tp3d_create_workspace` service-role-only). Full audit suite 1,051/1,056 passed, typecheck/lint clean, `workspace-membership-security.spec.mjs` (Packets 1+2+3 together) 9/9, local billing/ownership/security 40/40, development migration ledger 30/30 with zero drift. Formally declares platform-foundation reliability closed; the final Platform UX–UI Compatibility Closeout remains the next, unstarted task. | `tests/local-db/workspace-membership-security.spec.mjs`, `tests/local-db/security-local.spec.mjs`, `tests/audit/security-and-invariants.spec.mjs` |
 | Workspace-slug Phase 1 integrity — Packet 3 | Migration `20260717150000_enforce_workspace_slug_integrity.sql` backfills/converges every null, blank, malformed, duplicate, or case-variant-duplicate slug to the canonical `lower(id::text)` UUID-derived shape (deterministic, collision-free by construction), then enforces `NOT NULL`, a case-insensitive unique index on `lower(slug)`, and a bounded `^[a-z0-9-]{1,100}$` format check. Direct authenticated/anon slug mutation is blocked by an invoker-rights guard trigger (`before update of slug`) reusing the proven `tp3d_guard_profile_deletion_fields` trusted-role pattern — no change to the signup trigger. `tp3d_create_workspace` was redefined only to replace its null-slug-then-update insert (incompatible with `NOT NULL`) with a single INSERT writing a pre-generated id/slug directly; every entitlement, locking, counting, and limit-check line is unchanged from Packet 2. Local: clean 30-migration reset, workspace-security integration 9/9, local billing/ownership/security 40/40, full audit suite 1,051/1,056 passed (0 fail, 5 pre-existing skips), typecheck and lint clean. Development: migration applied to `yduzbvijzwczjapanxbd`; all 82 pre-existing organizations converged to valid/unique/non-null slugs with zero manual intervention; deployed D2 matrix passed 38/38 including signup, server workspace creation, workspace limits, same-owner concurrency, and archive/restore; exact-ID cleanup of 6 disposable fixture users completed with zero residue. Self-audit confirmed slug is not used as authorization anywhere, Packet 2 entitlement/concurrency logic is byte-identical, and no Phase 2 friendly-slug work began. | [migration](../../supabase/migrations/20260717150000_enforce_workspace_slug_integrity.sql), `tests/local-db/workspace-membership-security.spec.mjs`, `tests/local-db/security-local.spec.mjs`, `tests/audit/security-and-invariants.spec.mjs`, `tests/integration/dev-billing/deployed-functions.spec.mjs` |
 | Server-side workspace-limit enforcement — Packet 2 | Migration `20260717142844_enforce_server_workspace_limits.sql` replaces the user-creation RPC with a service-role-only catalog-aware transaction. It locks the actor profile before entitlement resolution/count/insert, counts all canonical owner workspaces including archived rows, preserves trial/Business/Pro-fallback and payment-grace limits, rejects unsafe or unavailable billing identity, and returns stable sanitized Edge codes. Clean 29-migration reset passed; workspace security was 9/9, local billing 39/39, fixture safety 34/34, security 887 passed/5 skipped, and the full suite 1,047 passed/5 skipped. Development applied only the migration and `org-create-workspace`; 38/38 deployed checks proved below/at-limit behavior, one-winner same-owner concurrency, archived counting, and fail-closed identity, followed by exact cleanup of 54 tracked objects with zero collateral differences. | [migration](../../supabase/migrations/20260717142844_enforce_server_workspace_limits.sql), [Edge Function](../../supabase/functions/org-create-workspace/index.ts), `tests/local-db/workspace-membership-security.spec.mjs`, `tests/integration/dev-billing/deployed-functions.spec.mjs` |
@@ -184,11 +186,11 @@ The evidence-based reassessment is complete. Local, deployed-development, and St
 - Read-only audit, no branch, no code changes, re-verified on `main` HEAD `3253580`.
 - A clean 30-migration reset from zero passed, then one direct SQL query confirmed all nine cross-packet invariants simultaneously on that single database: `authenticated` retains 0 `organizations` INSERT / 1 UPDATE grant, the obsolete `organizations_insert_owner_self` policy is absent, `slug` is `NOT NULL` with its format CHECK/`lower(slug)` unique index/guard trigger all present, and `tp3d_create_workspace` is `service_role`-only (0 `authenticated` grants).
 - Full audit suite 1,051/1,056 passed (0 fail, 5 pre-existing skips), typecheck and lint clean, `workspace-membership-security.spec.mjs` (Packets 1+2+3 together) 9/9, local billing/ownership/security 40/40, development migration ledger 30/30 with zero drift.
-- Declares platform-foundation reliability formally closed. Does not declare the final Platform UX–UI Compatibility Closeout complete and does not declare Max Capacity Phase C ready; both remain the next, unstarted, gated tasks (Section 5).
+- Declares platform-foundation reliability formally closed.
 
-### ⏳ Platform UX–UI Compatibility Closeout — in progress, branch `fix/platform-ux-ui-compatibility-closeout`
+### ✅ Platform UX–UI Compatibility Closeout — complete 2026-07-18, branch `fix/platform-ux-ui-compatibility-closeout`
 
-Focused inspection (not yet full validation) confirmed the completed platform-foundation work (Packets 1–3) behaves correctly in the UI:
+Focused inspection confirmed the completed platform-foundation work (Packets 1–3) behaves correctly in the UI:
 
 - workspace creation uses the approved server path only (no direct `.from()` insert);
 - workspace-limit failure messages are already safe and understandable (`getEdgeFunctionErrorMessage()` surfaces the Edge Function's own sanitized text, e.g. "Workspace limit reached...", with a generic fallback; no raw codes/SQL leak);
@@ -198,7 +200,7 @@ Focused inspection (not yet full validation) confirmed the completed platform-fo
 
 One real compatibility finding: the UUID-derived Slug row in the Settings General card had no user-facing meaning (Workspace Slug Phase 1 is integrity-only) and could read as a confusing or misleading internal identifier. Disposition: **hidden** from `src/ui/overlays/settings-overlay.js` (2 loading-skeleton placeholders + the real value row; 3 call sites, the only file in `src/` that read `orgData.slug`). The stored value, import/export, and read-only server-side contract are unchanged; no slug editing, routing, or sharing UI was introduced. `docs/product/SETTINGS-WORKSPACE-GENERAL-UI-PLAN.md` (an approved-but-deferred Phase UI-2/UI-3 plan that assumed Slug stayed in Card 1) was updated at its four Slug references so a future Phase UI-3 execution does not silently reintroduce the row.
 
-No sharing, routing, billing, schema, or AutoPack behavior was introduced. Not yet marked complete: awaiting the operator's full `npm test`, typecheck, lint, clean local Supabase reset, workspace-security integration, and local billing/security fixture results before merge.
+No sharing, routing, billing, schema, or AutoPack behavior was introduced. Operator-confirmed full validation: `npm test`, typecheck, lint, and clean local Supabase reset all passed; `TP3D_LOCAL_DB_INTEGRATION=1 node --test tests/local-db/workspace-membership-security.spec.mjs` passed 9/9; `npm run test:billing:local` passed 40/40 with zero residual fixture rows on cleanup. Merged to `main`.
 
 ### Historical billing bug dispositions
 

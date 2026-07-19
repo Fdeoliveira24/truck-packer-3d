@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-19
 
-**Last verified repository state:** Platform-foundation reliability and the final Platform UX–UI Compatibility Closeout are complete; Max Capacity Phase C reporting is closed and merged to `main` at `99be0776d0070f18b18379bbe1e978a3dec03c43`; the evidence-only AutoPack strategy differentiation audit is complete and committed at `e2c44720587496de8705c29a2763437f21703439` on `audit/autopack-strategy-differentiation`, with no production behavior change, and the audit branch has not yet been pushed or merged
+**Last verified repository state:** Platform-foundation reliability and the final Platform UX–UI Compatibility Closeout are complete; Max Capacity Phase C reporting is closed and merged to `main` at `99be0776d0070f18b18379bbe1e978a3dec03c43`; the evidence-only AutoPack strategy differentiation audit is closed and merged to `main` at `ec1cf4a`, with no production behavior change; the legacy AutoPack solver retirement audit is the single active task on `audit/legacy-autopack-solver-retirement`
 
 ## 1. Document Contract
 
@@ -17,7 +17,7 @@
 9. Do not duplicate mutable status in multiple sections.
 10. Each active task must have one branch, one outcome, and one blocker state.
 11. Replace outdated status rather than appending contradictory status.
-12. Billing reliability, the Platform UX/UI Compatibility Closeout, and Max Capacity Phase C reporting are closed; Phase C was merged to `main` at `99be0776d0070f18b18379bbe1e978a3dec03c43`. The evidence-only AutoPack strategy differentiation audit is the single active task (Section 4).
+12. Billing reliability, the Platform UX/UI Compatibility Closeout, Max Capacity Phase C reporting, and the evidence-only AutoPack strategy differentiation audit are closed; Phase C was merged to `main` at `99be0776d0070f18b18379bbe1e978a3dec03c43`, and the strategy audit was merged to `main` at `ec1cf4a`. The legacy AutoPack solver retirement audit is the single active task (Section 4).
 
 ## 2. Current Status Snapshot
 
@@ -25,7 +25,7 @@ This table is the single mutable status snapshot in V5.
 
 | Area | Status at the last verified repository state |
 |---|---|
-| Repository | Active evidence-only branch `audit/autopack-strategy-differentiation`; the primary audit is committed at `e2c44720587496de8705c29a2763437f21703439`, has not been pushed or merged, and changes no production behavior. |
+| Repository | Active evidence-only branch `audit/legacy-autopack-solver-retirement`, created from `main` at `ec1cf4a`; no audit work has started yet and no production behavior has changed. |
 | Supabase Data API grants | Complete, merged, pushed, and applied to development. |
 | Workspace/membership write boundary | Complete. Authenticated clients retain RLS-filtered organization/membership reads and legitimate organization updates, but cannot directly insert organizations or mutate memberships; approved signup and server-controlled creation remain functional. |
 | Server-side workspace creation limit | Complete. `org-create-workspace` supplies the trusted catalog limits to a service-role-only transaction that locks the actor profile, resolves the canonical owner entitlement, counts every owned workspace including archived rows, fails closed on unsafe/unavailable billing identity, and rejects at the effective limit. |
@@ -45,7 +45,8 @@ This table is the single mutable status snapshot in V5.
 | Platform-foundation reliability | Closed. The readiness audit re-verified, on a fresh clean 30-migration reset, that Packets 1–3 hold together as one system with no regressions: a single direct SQL check confirmed all nine cross-packet invariants (INSERT revoke, obsolete policy absence, descriptive UPDATE grant, slug NOT NULL/format/uniqueness/guard trigger, `tp3d_create_workspace` service-role-only access) simultaneously; the full audit suite, typecheck, lint, workspace-security integration, and local billing/ownership/security fixtures all passed with zero failures; the development migration ledger showed zero drift (30/30). |
 | Platform UX–UI Compatibility Closeout | Closed. Focused inspection confirmed workspace creation, workspace-limit error messaging, workspace switching, rename live-refresh, archive/restore, and the absence of any direct-INSERT/membership-mutation UI path all already behave correctly post-Packets-1–3. One real finding: the UUID-derived Slug row in Settings had no user-facing meaning and was hidden (`src/ui/overlays/settings-overlay.js`); stored value, import/export, and the read-only server contract are unchanged. Operator-confirmed: full `npm test`, typecheck, lint, clean local Supabase reset, workspace-security integration (9/9), and local billing/ownership/security (40/40) all passed with zero failures and zero residual fixture rows. |
 | Max Capacity Phase C | Closed and merged to `main` at `99be0776d0070f18b18379bbe1e978a3dec03c43`; the approved packed-profile semantics contract and reporting surfaces are complete. |
-| AutoPack strategy differentiation audit | Active evidence-only task. Complete and committed at `e2c44720587496de8705c29a2763437f21703439` on `audit/autopack-strategy-differentiation`; unblocked, not yet pushed or merged, and no production behavior changed. |
+| AutoPack strategy differentiation audit | Closed and merged to `main` at `ec1cf4a`; no production behavior changed. |
+| Legacy AutoPack solver retirement audit | Active evidence-only task. Scope defined; audit work has not started. Branch `audit/legacy-autopack-solver-retirement`, unblocked. |
 | Development schema drift | Legacy cases/packs, policies/functions, and billing ID differences remain a separate, non-blocking future audit. |
 
 ## 3. Current Source of Truth
@@ -63,36 +64,35 @@ This table is the single mutable status snapshot in V5.
 
 | Field | Current value |
 |---|---|
-| Task | AutoPack strategy differentiation audit — evidence reconciliation and closeout. |
-| Branch | `audit/autopack-strategy-differentiation` |
-| Outcome | Evidence-only characterization of six production strategies across 15 deterministic fixtures, with machine-readable results, focused tests, and representative browser evidence. The primary audit is complete and committed at `e2c44720587496de8705c29a2763437f21703439`; no production behavior changed. |
-| Blocker state | Unblocked. The audit is complete and committed; the branch has not yet been pushed or merged. |
-| Scope boundary | Audit harness, deterministic fixtures, generated evidence, tests, and concise documentation only. The Max Capacity product-copy clarification remains a recommendation, not approved implementation work. |
-| Closeout | Review the committed evidence, then explicitly authorize push and merge of the audit branch. |
+| Task | Legacy AutoPack solver retirement audit — determine whether the legacy solver is still reachable, imported, used as fallback, required by tests, persistence, browser globals, or compatibility paths, and produce a safe removal recommendation. |
+| Branch | `audit/legacy-autopack-solver-retirement` |
+| Outcome | Evidence-only classification of every legacy-solver reference into unreachable dead code, test-only compatibility code, dormant fallback code, still-active production behavior, or documentation-only reference, ending in a safe-removal recommendation. No production deletion or behavior change in this branch. |
+| Blocker state | Unblocked and approved to begin. |
+| Scope boundary | Evidence-only. Actual removal happens later on a separate branch (likely `cleanup/remove-legacy-autopack-solver`) only after this audit proves the production path does not depend on the legacy solver. |
+| Closeout | Produce the audit report and safe-removal recommendation, then seek explicit authorization before any removal branch begins. |
 
 Only this row is active. The following section is an approved sequence, not simultaneous work.
 
 ## 5. Next Approved Execution Queue
 
-1. Review the committed AutoPack strategy differentiation evidence and cleanup metadata.
-2. After explicit authorization, push `audit/autopack-strategy-differentiation` and merge it to `main`.
-3. Keep the Phase 2 friendly workspace-slug capability in the approved future product roadmap; plan and implement it separately from Phase 1 integrity.
-4. Keep Pack Publishing / Crew View / Share Links as a separate deferred product initiative (Section 12); not part of Phase 2.
-
-The audit's Max Capacity product-copy clarification is a recommendation only and is not approved implementation work.
+1. Complete the legacy AutoPack solver retirement audit (evidence-only; see Section 4).
+2. After the audit proves the production path is independent of the legacy solver, and after explicit authorization, remove the legacy solver on a dedicated branch (likely `cleanup/remove-legacy-autopack-solver`).
+3. Implement Inspector per-case Notes.
+4. Perform an `app.js` modularization inventory (M0 inventory only, not extraction) and plan low-risk extraction; do not begin broad `app.js` extraction before the legacy solver question is resolved.
 
 Queue order is approval order. Start one branch at a time and record its active branch, outcome, and blocker state in Section 4.
 
 ## 6. Current Blockers
 
-- None for the active AutoPack strategy differentiation audit. It is complete, committed, and awaiting explicit review, push, and merge authorization.
-- Commercial pricing is not final, but that remains unrelated and non-blocking for this evidence-only audit closeout.
+- None for the active legacy AutoPack solver retirement audit. It is unblocked and approved to begin.
+- Removal of the legacy solver is blocked on this audit's findings and on explicit authorization.
+- Commercial pricing is not final, but that remains unrelated and non-blocking for this audit.
 
 ## 7. Recently Completed Milestones
 
 | Milestone | Concise result | Evidence |
 |---|---|---|
-| AutoPack strategy differentiation audit | Complete and committed at `e2c44720587496de8705c29a2763437f21703439` on evidence-only branch `audit/autopack-strategy-differentiation`; 15 deterministic fixtures across six strategies produced stable signatures, zero invalid placements, zero canonical-count mismatches, and matching representative browser evidence. No production behavior changed; the branch is not yet pushed or merged. Max Capacity copy clarification remains a recommendation only. | [audit report](../audits/autopack-strategy-differentiation-audit-2026-07-19.md), [machine results](../audits/autopack-strategy-differentiation-results-2026-07-19.json), `scripts/autopack-strategy-audit.mjs`, `tests/audit/autopack-strategy-differentiation.spec.mjs` |
+| AutoPack strategy differentiation audit | Closed and merged to `main` at `ec1cf4a`. 15 deterministic fixtures across six strategies produced stable signatures, zero invalid placements, zero canonical-count mismatches, and matching representative browser evidence. All six strategies remain retained, Balanced remains the default, production physical-layout dedupe remains required, Max Capacity remains manual-only, and Constrained Space First remains Wheel-Wells-only. No production behavior changed. Max Capacity copy clarification remains a recommendation only, not approved implementation work. | [audit report](../audits/autopack-strategy-differentiation-audit-2026-07-19.md), [machine results](../audits/autopack-strategy-differentiation-results-2026-07-19.json), `scripts/autopack-strategy-audit.mjs`, `tests/audit/autopack-strategy-differentiation.spec.mjs` |
 | Max Capacity Phase C — profile-membership reporting | Closed and merged to `main` at `99be0776d0070f18b18379bbe1e978a3dec03c43`. Implements the approved Contract C `maxCapacityProfileCount` reporting in the applied Stats card, pre-Apply Results panel, and PDF summary without changing solver, geometry, duplicate, reconciliation, billing, auth, or schema behavior. | [Packed-Profile Semantics Audit](../audits/max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md), `src/services/pack-library.js`, `src/screens/editor-screen.js`, `src/app.js`, `tests/audit/max-capacity-phase-c-reporting.spec.mjs` |
 | Platform UX–UI Compatibility Closeout | Branch `fix/platform-ux-ui-compatibility-closeout`. Focused inspection confirmed workspace creation, workspace-limit error messaging, workspace switching, rename live-refresh, archive/restore, and the absence of any direct-INSERT/membership-mutation UI path all already behave correctly post-Packets-1–3 — no code change needed for those. One real finding: the UUID-derived Slug row in the Settings General card had no user-facing meaning (Phase 1 is integrity-only) and was hidden (2 loading-skeleton placeholders + the real value row, the only 3 call sites reading `orgData.slug` in `src/`). Stored value, import/export, and the read-only server contract are unchanged; no editing, routing, or sharing UI was added. `docs/product/SETTINGS-WORKSPACE-GENERAL-UI-PLAN.md` (an approved-but-deferred Phase UI-2/UI-3 plan assuming Slug stayed in Card 1) was reconciled at its four Slug references. Operator-confirmed: full `npm test`, typecheck, lint, clean local Supabase reset, workspace-security integration (9/9), and local billing/ownership/security (40/40) all passed, zero failures, zero residual fixture rows. No sharing, routing, billing, schema, or AutoPack behavior was introduced. | [migration/plan doc](../product/SETTINGS-WORKSPACE-GENERAL-UI-PLAN.md), `src/ui/overlays/settings-overlay.js`, `tests/local-db/workspace-membership-security.spec.mjs`, `tests/local-db/security-local.spec.mjs`, `tests/audit/security-and-invariants.spec.mjs` |
 | Platform-foundation reliability closeout — readiness audit | Read-only audit (no branch, no code changes) on `main` HEAD `3253580`. Re-verified from a clean 30-migration reset that Packets 1–3 hold together with no regressions: one direct SQL query confirmed all nine cross-packet invariants simultaneously (organization INSERT revoked/UPDATE retained, obsolete insert policy absent, slug NOT NULL/format/uniqueness/guard trigger all present, `tp3d_create_workspace` service-role-only). Full audit suite 1,051/1,056 passed, typecheck/lint clean, `workspace-membership-security.spec.mjs` (Packets 1+2+3 together) 9/9, local billing/ownership/security 40/40, development migration ledger 30/30 with zero drift. Formally declares platform-foundation reliability closed; the final Platform UX–UI Compatibility Closeout remains the next, unstarted task. | `tests/local-db/workspace-membership-security.spec.mjs`, `tests/local-db/security-local.spec.mjs`, `tests/audit/security-and-invariants.spec.mjs` |
@@ -222,7 +222,7 @@ The stable AutoPack/editor baseline includes the solution portfolio, Max Capacit
 
 Phase C — a small reporting follow-up, without UI redesign or legal, axle, or DOT claims — is closed and merged to `main` at `99be0776d0070f18b18379bbe1e978a3dec03c43`, per the permanent contract recorded in [Max Capacity Phase C — Packed-Profile Semantics Audit](../audits/max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md): `packedProfile` denotes active Max Capacity profile membership (Contract C), reported as the `maxCapacityProfileCount` canonical statistic in the applied Stats card, the pre-Apply Results panel, and the PDF summary. Duplicate handling, Truck Change/reconciliation, the solver, and geometry were intentionally not touched.
 
-The evidence-only AutoPack strategy differentiation audit is complete and committed on `audit/autopack-strategy-differentiation`; it changes no production behavior and awaits explicit review, push, and merge. Its Max Capacity product-copy clarification is a recommendation only, not approved implementation work. See Section 4 for the active-task state and Section 7 for evidence links.
+The evidence-only AutoPack strategy differentiation audit is closed and merged to `main` at `ec1cf4a`; it changed no production behavior. Its Max Capacity product-copy clarification is a recommendation only, not approved implementation work. The legacy AutoPack solver retirement audit is now the single active task (Section 4); the legacy solver itself is not being removed yet. See Section 4 for the active-task state and Section 7 for evidence links.
 
 Future AutoPack quality, strategy, manual placement, and performance architecture belong in the reference-only inventory below. They are not active work.
 

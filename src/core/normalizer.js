@@ -186,7 +186,7 @@ export function normalizeCase(c, now) {
     stopGroup: safeString(c && c.stopGroup, ''),
     keepTogetherGroup: safeString(c && c.keepTogetherGroup, ''),
     canFlip: cargo.canFlip,
-    notes: safeString(c && c.notes, ''),
+    notes: cargo.notes,
     color,
     createdAt,
     updatedAt,

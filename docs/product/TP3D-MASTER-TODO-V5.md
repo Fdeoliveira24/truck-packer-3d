@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-18
 
-**Last verified repository state:** Platform-foundation reliability and the final Platform UX–UI Compatibility Closeout are both complete, each validated locally and (where applicable) in development with zero failures; Max Capacity Phase C is the next approved task and has not started
+**Last verified repository state:** Platform-foundation reliability and the final Platform UX–UI Compatibility Closeout are both complete, each validated locally and (where applicable) in development with zero failures; Max Capacity Phase C is unblocked and its packed-profile semantics audit is the active task on `audit/max-capacity-phase-c-profile-semantics` (audit/documentation/test-characterization only — no UI implementation)
 
 ## 1. Document Contract
 
@@ -17,7 +17,7 @@
 9. Do not duplicate mutable status in multiple sections.
 10. Each active task must have one branch, one outcome, and one blocker state.
 11. Replace outdated status rather than appending contradictory status.
-12. Max Capacity Phase C remains blocked until billing reliability work is explicitly closed.
+12. Billing reliability and the Platform UX/UI Compatibility Closeout are both closed; Max Capacity Phase C is unblocked at the roadmap level. Production reporting implementation remains gated by approval of the packed-profile semantics audit (Section 4).
 
 ## 2. Current Status Snapshot
 
@@ -44,7 +44,7 @@ This table is the single mutable status snapshot in V5.
 | Billing QA BUG-02 / BUG-03 | Proven resolved. Active/included paid workspaces return usable interval and period data; paying owners have an organization-scoped Portal path. Current runtime/local tests, authenticated evidence, and the Stripe S2 lifecycle agree. |
 | Platform-foundation reliability | Closed. The readiness audit re-verified, on a fresh clean 30-migration reset, that Packets 1–3 hold together as one system with no regressions: a single direct SQL check confirmed all nine cross-packet invariants (INSERT revoke, obsolete policy absence, descriptive UPDATE grant, slug NOT NULL/format/uniqueness/guard trigger, `tp3d_create_workspace` service-role-only access) simultaneously; the full audit suite, typecheck, lint, workspace-security integration, and local billing/ownership/security fixtures all passed with zero failures; the development migration ledger showed zero drift (30/30). |
 | Platform UX–UI Compatibility Closeout | Closed. Focused inspection confirmed workspace creation, workspace-limit error messaging, workspace switching, rename live-refresh, archive/restore, and the absence of any direct-INSERT/membership-mutation UI path all already behave correctly post-Packets-1–3. One real finding: the UUID-derived Slug row in Settings had no user-facing meaning and was hidden (`src/ui/overlays/settings-overlay.js`); stored value, import/export, and the read-only server contract are unchanged. Operator-confirmed: full `npm test`, typecheck, lint, clean local Supabase reset, workspace-security integration (9/9), and local billing/ownership/security (40/40) all passed with zero failures and zero residual fixture rows. |
-| Max Capacity Phase C | Next approved task. Not started in this run. |
+| Max Capacity Phase C | Unblocked. Packed-profile semantics audit active on `audit/max-capacity-phase-c-profile-semantics`; reporting implementation not started, gated by audit approval. |
 | Development schema drift | Legacy cases/packs, policies/functions, and billing ID differences remain a separate, non-blocking future audit. |
 
 ## 3. Current Source of Truth
@@ -62,18 +62,18 @@ This table is the single mutable status snapshot in V5.
 
 | Field | Current value |
 |---|---|
-| Task | Max Capacity Phase C (reporting follow-up only — see Section 10). Not started. |
-| Branch | Not created. |
-| Outcome | Not yet scoped for implementation in this run. Per Section 10, Phase C is a small reporting follow-up (report how many applied cases use relaxed handling rules) without UI redesign or legal/axle/DOT claims. |
-| Blocker state | Unblocked — platform-foundation reliability and the Platform UX–UI Compatibility Closeout are both complete. Next in dependency order; not started. |
-| Scope boundary | Do not start implementation in a documentation/audit-only run. Do not combine with friendly-slug Phase 2, Pack Publishing/Crew View/Share Links, commercial billing, or Stripe. |
-| Closeout | To be recorded here and in Section 7 once Phase C work actually begins. |
+| Task | Max Capacity Phase C — packed-profile semantics audit and implementation readiness. |
+| Branch | `audit/max-capacity-phase-c-profile-semantics` |
+| Outcome | Define the permanent `packedProfile` contract, characterize duplicate and Truck Change behavior, approve user-facing wording, and produce the minimal implementation plan. See [Max Capacity Phase C — Packed-Profile Semantics Audit](../audits/max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md). |
+| Blocker state | Unblocked at the roadmap level — billing reliability and the Platform UX–UI Compatibility Closeout are both closed. Production reporting implementation remains gated by approval of this audit. |
+| Scope boundary | This branch is audit/documentation/test-characterization only — no Phase C UI implementation, no solver changes, no geometry/physical-validity changes. Do not combine with friendly-slug Phase 2, Pack Publishing/Crew View/Share Links, commercial billing, or Stripe. |
+| Closeout | To be recorded here and in Section 7 once the approved `feat/max-capacity-phase-c-reporting` implementation branch actually begins and completes. |
 
 Only this row is active. The following section is an approved sequence, not simultaneous work.
 
 ## 5. Next Approved Execution Queue
 
-1. Max Capacity Phase C (reporting follow-up only, per Section 10).
+1. Max Capacity Phase C packed-profile semantics audit (this branch), followed by the approved reporting implementation on a separate `feat/max-capacity-phase-c-reporting` branch once the audit is approved.
 2. Keep the Phase 2 friendly workspace-slug capability in the approved future product roadmap; plan and implement it separately from Phase 1 integrity.
 3. Keep Pack Publishing / Crew View / Share Links as a separate deferred product initiative (Section 12); not part of Phase 2.
 
@@ -82,7 +82,7 @@ Queue order is approval order. Start one branch at a time and record its active 
 ## 6. Current Blockers
 
 - Commercial pricing is not final; later fixture work must not invent future commercial terms.
-- None remaining for Max Capacity Phase C: platform-foundation reliability and the Platform UX–UI Compatibility Closeout are both closed. Phase C has no approved active branch yet and has not started.
+- None remaining for Max Capacity Phase C at the roadmap level. The packed-profile semantics audit is active on audit/max-capacity-phase-c-profile-semantics; production reporting implementation remains gated by operator approval of the audit.
 
 ## 7. Recently Completed Milestones
 
@@ -214,7 +214,7 @@ The foundation must preserve [Billing Entitlement Rules](./BILLING_ENTITLEMENT_R
 
 The stable AutoPack/editor baseline includes the solution portfolio, Max Capacity Phase A, durable per-instance Phase B metadata, editor operation lifecycle guards, manual placement safety, organized Unpack polish, and the existing Wheel Wells and Front Overhang hard-rule contracts. Detailed milestone reports remain in [archived V4](../archive/master-todos/TP3D-MASTER-TODO-V4.md).
 
-Phase C is a small reporting follow-up only: report how many applied cases use relaxed handling rules, without UI redesign or legal, axle, or DOT claims. Its implementation remains blocked by Section 6.
+Phase C is a small reporting follow-up only: report how many currently packed instances are associated with the Max Capacity handling profile, without UI redesign or legal, axle, or DOT claims. The permanent `packedProfile` contract, duplicate/Truck-Change behavior characterization, approved wording, and implementation plan are recorded in [Max Capacity Phase C — Packed-Profile Semantics Audit](../audits/max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md). Production implementation is gated by approval of that audit, not by Section 6 (which has no remaining Phase C blockers).
 
 Future AutoPack quality, strategy, manual placement, and performance architecture belong in the reference-only inventory below. They are not active work.
 

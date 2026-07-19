@@ -21,11 +21,11 @@ Audited at commit `b5cd47b` by direct source read plus Graphify call-path mappin
 | Front Overhang retention | `src/services/pack-library.js` (`evaluateFrontOverhangRearRetention`) | Consumed by the solver via import — already shared |
 | Solver-side hard rules | `autopack-solver.js` (`supportsCandidate`, `canSupportStack`, `hasStackCapacity`, `canSupportCandidateWeight`, `isAabbContainedInZone`, `collidesPacked`, `validatePackedPlacements`) | One pipeline inside the solver |
 | Manual/editor hard rules | `pack-library.js` (`aabbIsFullyValid`, `aabbIsSupported`, `supportCanCarry`, `reconcilePlacementsForTruck`) | **Second, parallel pipeline** with the same intent |
-| Item normalization for AutoPack | `src/services/autopack-legacy-solver.js` (`buildLegacyAutoPackItems`) | Live; `solveLegacyAutoPack` is dead code kept intentionally |
+| Item normalization for AutoPack | `src/services/autopack-item-builder.js` (`buildLegacyAutoPackItems`) | Live; the legacy solver (`autopack-legacy-solver.js`, `solveLegacyAutoPack`) was retired and removed (evidence-only audit: `docs/audits/legacy-autopack-solver-retirement-audit-2026-07-19.md`) |
 | Orchestration, staging, commit, animation | `src/services/autopack-engine.js` (`createAutoPackEngine.pack`) | Already thin orchestration; commits final state before animation |
 | Operation locking | `src/core/operation-lifecycle.js` | Single-slot token lock; wired into engine, editor, keyboard, InteractionManager |
 | Editor mutations + revalidation | `editor-screen.js` → `PackLibrary.updateCasesWithManualRevalidation` → `revalidateManualPlacements` | Delete reports dependent staging (merged in `b5cd47b`) |
-| Oriented dims / rotation math | `src/core/oriented-dims.js` | Already the single source; solver, pack-library, legacy all route through it |
+| Oriented dims / rotation math | `src/core/oriented-dims.js` | Already the single source; solver, pack-library, and the item builder all route through it |
 
 ### 1.2 Confirmed duplication (the architectural debt this plan removes)
 

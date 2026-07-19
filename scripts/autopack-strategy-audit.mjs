@@ -2,7 +2,6 @@
 
 import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { performance } from 'node:perf_hooks';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { PACKING_STRATEGIES, runAdaptiveAutoPack, runPackingStrategies } from '../src/packing-core/solution.js';
@@ -23,11 +22,20 @@ import { computeCoG } from '../src/services/cog-service.js';
 import { createAutoPackStrategyAuditFixtures } from '../tests/fixtures/autopack-strategy-audit-fixtures.mjs';
 
 export const AUDIT_DATE = '2026-07-19';
+export const PRODUCTION_BASELINE_COMMIT = '99be0776d0070f18b18379bbe1e978a3dec03c43';
+export const AUDIT_BRANCH = 'audit/autopack-strategy-differentiation';
+export const AUDIT_COMMIT = 'e2c44720587496de8705c29a2763437f21703439';
 export const STRATEGY_IDS = Object.freeze(PACKING_STRATEGIES.map(strategy => strategy.id));
 export const SIGNATURE_PRECISION = 1000;
 export const POSITION_EPSILON_INCHES = 0.001;
+export const NEAR_DUPLICATE_DEFINITION =
+  'same packed SKU multiset, at most max(1, ceil(10% of the larger packed-item count)) changed physical poses, at most max(1, ceil(5% of the larger packed-item count)) changed orientations, and no more than 1 inch mean displacement';
 
 const CONTACT_EPSILON_INCHES = 0.05;
+const NEAR_DUPLICATE_POSE_FRACTION = 0.1;
+const NEAR_DUPLICATE_ORIENTATION_FRACTION = 0.05;
+const NEAR_DUPLICATE_MINIMUM_CHANGE_COUNT = 1;
+const NEAR_DUPLICATE_MAX_MEAN_DISPLACEMENT_INCHES = 1;
 const BROWSER_EVIDENCE = Object.freeze({
   method: 'Playwright CLI isolated Chromium session against http://localhost:5500/index.html',
   isolation: 'Authenticated first, then forced offline before injecting fixture state; no auth state saved.',
@@ -494,7 +502,7 @@ function maxUsableX(zones, fallback) {
   return zones.length ? Math.max(...zones.map(zone => zone.max.x)) : fallback;
 }
 
-function solutionMetrics(fixture, solution, strategyId, runtimeSamplesMs) {
+function solutionMetrics(fixture, solution, strategyId) {
   const zones = getTrailerUsableZones(fixture.truck);
   const wheelWell = getWheelWellGeometry(fixture.truck);
   const records = placementRecords(fixture, solution);
@@ -577,12 +585,6 @@ function solutionMetrics(fixture, solution, strategyId, runtimeSamplesMs) {
     signatures: {
       identityAwareSha256: signatures.identityAware,
       physicalLayoutSha256: signatures.physicalLayout,
-    },
-    runtimeMs: {
-      samples: runtimeSamplesMs.map(value => round(value, 3)),
-      average: round(runtimeSamplesMs.reduce((sum, value) => sum + value, 0) / runtimeSamplesMs.length, 3),
-      minimum: round(Math.min(...runtimeSamplesMs), 3),
-      maximum: round(Math.max(...runtimeSamplesMs), 3),
     },
   };
 }
@@ -699,8 +701,15 @@ export function compareStrategySolutions(fixture, leftSolution, rightSolution) {
   const rightSkuCounts = skuCounts(right);
   const samePackedSkuMultiset = stableStringify(leftSkuCounts) === stableStringify(rightSkuCounts);
   const exactPhysicalLayout = leftSignatures.physicalLayout === rightSignatures.physicalLayout;
-  const nearLimit = Math.max(1, Math.ceil(Math.max(left.length, right.length) * 0.1));
-  const orientationLimit = Math.max(1, Math.ceil(Math.max(left.length, right.length) * 0.05));
+  const comparedPackedCount = Math.max(left.length, right.length);
+  const nearLimit = Math.max(
+    NEAR_DUPLICATE_MINIMUM_CHANGE_COUNT,
+    Math.ceil(comparedPackedCount * NEAR_DUPLICATE_POSE_FRACTION)
+  );
+  const orientationLimit = Math.max(
+    NEAR_DUPLICATE_MINIMUM_CHANGE_COUNT,
+    Math.ceil(comparedPackedCount * NEAR_DUPLICATE_ORIENTATION_FRACTION)
+  );
   const averageDisplacement = displacements.length
     ? displacements.reduce((sum, value) => sum + value, 0) / displacements.length
     : 0;
@@ -709,7 +718,7 @@ export function compareStrategySolutions(fixture, leftSolution, rightSolution) {
     samePackedSkuMultiset &&
     changedMatches.length <= nearLimit &&
     physicalOrientationChangeCount <= orientationLimit &&
-    averageDisplacement <= 1;
+    averageDisplacement <= NEAR_DUPLICATE_MAX_MEAN_DISPLACEMENT_INCHES;
   return {
     exactPhysicalLayout,
     exactIdentityAwareLayout: leftSignatures.identityAware === rightSignatures.identityAware,
@@ -732,9 +741,7 @@ function pairKey(leftId, rightId) {
 }
 
 function runOneSolution(input, strategyId) {
-  const started = performance.now();
-  const solution = runPackingStrategies(input, [strategyId]).selectedSolution;
-  return { solution, runtimeMs: performance.now() - started };
+  return runPackingStrategies(input, [strategyId]).selectedSolution;
 }
 
 export function runFixtureAudit(fixture, { repeats = 2 } = {}) {
@@ -750,15 +757,13 @@ export function runFixtureAudit(fixture, { repeats = 2 } = {}) {
   const strategyResults = [];
   const deterministicFailures = [];
   for (const strategyId of STRATEGY_IDS) {
-    const samples = [];
     let first = null;
     let firstSignature = null;
     for (let repeat = 0; repeat < repeats; repeat += 1) {
-      const run = runOneSolution(input, strategyId);
-      samples.push(run.runtimeMs);
-      const signature = buildPlacementSignatures(fixture, run.solution);
+      const solution = runOneSolution(input, strategyId);
+      const signature = buildPlacementSignatures(fixture, solution);
       if (!first) {
-        first = run.solution;
+        first = solution;
         firstSignature = signature;
       } else if (
         signature.identityAware !== firstSignature.identityAware ||
@@ -768,7 +773,7 @@ export function runFixtureAudit(fixture, { repeats = 2 } = {}) {
       }
     }
     solutions.set(strategyId, first);
-    strategyResults.push(solutionMetrics(fixture, first, strategyId, samples));
+    strategyResults.push(solutionMetrics(fixture, first, strategyId));
   }
 
   const pairwise = {};
@@ -858,12 +863,10 @@ function aggregateAudit(fixtures) {
         identicalToBalancedFixtures: 0,
         packedTotal: 0,
         requestedTotal: 0,
-        averageRuntimeMs: 0,
       },
     ])
   );
   const pairSummary = {};
-  const runtimeSamples = Object.fromEntries(STRATEGY_IDS.map(id => [id, []]));
   for (const fixture of fixtures) {
     const maxPacked = Math.max(...fixture.strategyResults.map(result => result.packedCount));
     const balanced = fixture.strategyResults.find(result => result.strategyId === 'default');
@@ -873,7 +876,6 @@ function aggregateAudit(fixtures) {
       summary.bestPackedCountFixtures += result.packedCount === maxPacked ? 1 : 0;
       summary.packedTotal += result.packedCount;
       summary.requestedTotal += result.requestedCount;
-      runtimeSamples[result.strategyId].push(...result.runtimeMs.samples);
       if (
         result.strategyId !== 'default' &&
         result.signatures.physicalLayoutSha256 !== balanced.signatures.physicalLayoutSha256
@@ -903,8 +905,6 @@ function aggregateAudit(fixtures) {
     }
   }
   for (const id of STRATEGY_IDS) {
-    const samples = runtimeSamples[id];
-    strategySummary[id].averageRuntimeMs = round(samples.reduce((sum, value) => sum + value, 0) / samples.length, 3);
     strategySummary[id].packedPercent = strategySummary[id].requestedTotal
       ? round((strategySummary[id].packedTotal / strategySummary[id].requestedTotal) * 100, 2)
       : 100;
@@ -952,12 +952,15 @@ function aggregateAudit(fixtures) {
 export function runStrategyAudit({ repeats = 2 } = {}) {
   const fixtures = createAutoPackStrategyAuditFixtures().map(fixture => runFixtureAudit(fixture, { repeats }));
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     auditDate: AUDIT_DATE,
-    units: 'inches / pounds / milliseconds',
+    productionBaselineCommit: PRODUCTION_BASELINE_COMMIT,
+    auditBranch: AUDIT_BRANCH,
+    auditCommit: AUDIT_COMMIT,
+    units: 'inches / pounds',
     deterministicInputs: true,
     repeatCount: repeats,
-    runtimeNote: 'Runtime samples are observational and are excluded from every determinism and distinctness decision.',
+    nearDuplicateDefinition: NEAR_DUPLICATE_DEFINITION,
     strategyRegistry: PACKING_STRATEGIES.map(entry => ({
       id: entry.id,
       strategy: entry.strategy,
@@ -986,6 +989,13 @@ export function buildMarkdownReport(report) {
     '',
     `Audit date: ${report.auditDate}`,
     '',
+    '## Repository state',
+    '',
+    `- Production code baseline tested: \`${report.productionBaselineCommit}\` (\`merge: complete Max Capacity Phase C reporting\`).`,
+    `- Audit branch: \`${report.auditBranch}\`.`,
+    `- Evidence/audit commit: \`${report.auditCommit}\` (\`audit(autopack): measure strategy differentiation\`).`,
+    '- All changes above the production baseline are audit fixtures, harness/tests, evidence, screenshots, and concise documentation only; no production runtime file changed.',
+    '',
     '## Executive result',
     '',
     `The harness measured ${report.aggregate.totalStrategyRuns} strategy/fixture cells across ${report.aggregate.fixtureCount} deterministic fixtures, ` +
@@ -1011,11 +1021,11 @@ export function buildMarkdownReport(report) {
     '- Every registered strategy is run directly with the same truck, zones, items, and feature options.',
     '- Identity-aware signatures include item identity, packed/staged state, normalized pose, dimensions, supporters, and Front Overhang retention dependencies when present.',
     '- Physical-layout signatures ignore interchangeable instance IDs, matching the production Results dedupe intent.',
-    '- Numbers in signatures are rounded to 0.001 inch/radian. Pairwise near-duplicate means the same packed SKU multiset, at most 10% changed physical poses, at most 5% changed orientations, and no more than 1 inch mean displacement.',
+    `- Numbers in signatures are rounded to 0.001 inch/radian. Pairwise near-duplicate means ${report.nearDuplicateDefinition}.`,
     '- Packed count excludes any placement failing containment, blocked-body, overlap, or minimum-support checks. The solver produced no such invalid placements in this run.',
     '- Floor footprint is the exact union of floor/deck/shelf placement rectangles divided by the union of usable surface rectangles at each surface height.',
     '- CoG uses the canonical CoG helper over packed instances only. This avoids staged work-area positions contaminating partial-load balance results.',
-    '- Runtime is observational only and is never used to decide determinism, equality, ranking, or recommendations.',
+    '- Environment-dependent runtime measurements are intentionally omitted from canonical committed evidence and from every determinism, equality, ranking, and recommendation decision.',
     '',
     '## Fixture matrix',
     '',
@@ -1029,16 +1039,15 @@ export function buildMarkdownReport(report) {
     '',
     '## Strategy summary',
     '',
-    '| Strategy | Complete fixtures | Best packed-count fixtures | Physically differs from Balanced | Identical to Balanced | Aggregate packed | Avg runtime |',
-    '|---|---:|---:|---:|---:|---:|---:|'
+    '| Strategy | Complete fixtures | Best packed-count fixtures | Physically differs from Balanced | Identical to Balanced | Aggregate packed |',
+    '|---|---:|---:|---:|---:|---:|'
   );
   for (const id of STRATEGY_IDS) {
     const summary = report.aggregate.strategySummary[id];
     lines.push(
       `| ${shortId(id)} | ${summary.completeFixtures}/${summary.fixtures} | ` +
         `${summary.bestPackedCountFixtures}/${summary.fixtures} | ${summary.distinctFromBalancedFixtures}/${summary.fixtures} | ` +
-        `${summary.identicalToBalancedFixtures}/${summary.fixtures} | ${summary.packedTotal}/${summary.requestedTotal} (${summary.packedPercent}%) | ` +
-        `${summary.averageRuntimeMs} ms |`
+        `${summary.identicalToBalancedFixtures}/${summary.fixtures} | ${summary.packedTotal}/${summary.requestedTotal} (${summary.packedPercent}%) |`
     );
   }
   lines.push(
@@ -1146,7 +1155,6 @@ export function buildMarkdownReport(report) {
       `- Expected convergence: ${interpretation.convergence}`,
       `- Best measurable use: ${interpretation.bestUse}`,
       `- Recommendation: ${interpretation.recommendation}`,
-      `- Runtime: ${summary.averageRuntimeMs} ms mean over the recorded local samples; observational only.`,
       ''
     );
   }
@@ -1177,7 +1185,7 @@ export function buildMarkdownReport(report) {
     '- Candidate-search counters and internal solver scores are not exposed by the current solver result contract, so this audit does not fabricate them.',
     '- “Distinct stacks” is reported as deterministic support-root count plus max/average support depth; arbitrary bridge geometry prevents a universal human-style column count.',
     '- Browser evidence validates the live selectable order, visible cards/metrics, dedupe count, and Apply path on representative loads; it is not used for broad solver measurement.',
-    '- The JSON artifact is the machine-readable source for every fixture, strategy metric, signature hash, pairwise comparison, warning, rejection count, and runtime sample.',
+    '- The JSON artifact is the deterministic machine-readable source for every fixture, strategy metric, signature hash, pairwise comparison, warning, and rejection count.',
     '',
     '## Reproduction',
     '',

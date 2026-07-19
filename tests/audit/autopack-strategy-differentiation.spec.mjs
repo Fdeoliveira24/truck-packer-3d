@@ -3,8 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { URL } from 'node:url';
 import {
+  AUDIT_BRANCH,
+  AUDIT_COMMIT,
+  NEAR_DUPLICATE_DEFINITION,
+  PRODUCTION_BASELINE_COMMIT,
   STRATEGY_IDS,
   buildPlacementSignatures,
+  buildMarkdownReport,
   compareStrategySolutions,
   runStrategyAudit,
   stableStringify,
@@ -15,6 +20,10 @@ import { createAutoPackStrategyAuditFixtures } from '../fixtures/autopack-strate
 
 const artifactPath = new URL(
   '../../docs/audits/autopack-strategy-differentiation-results-2026-07-19.json',
+  import.meta.url
+);
+const markdownArtifactPath = new URL(
+  '../../docs/audits/autopack-strategy-differentiation-audit-2026-07-19.md',
   import.meta.url
 );
 const report = runStrategyAudit({ repeats: 2 });
@@ -29,18 +38,6 @@ function strategy(fixtureResult, id) {
   const value = fixtureResult.strategyResults.find(entry => entry.strategyId === id);
   assert.ok(value, `strategy ${id} must exist for ${fixtureResult.id}`);
   return value;
-}
-
-function removeRuntime(value) {
-  if (Array.isArray(value)) return value.map(removeRuntime);
-  if (!value || typeof value !== 'object') return value;
-  return Object.keys(value)
-    .sort()
-    .reduce((acc, key) => {
-      if (key === 'runtimeMs' || key === 'averageRuntimeMs') return acc;
-      acc[key] = removeRuntime(value[key]);
-      return acc;
-    }, {});
 }
 
 function result(packedRows, unpacked = []) {
@@ -96,6 +93,39 @@ test('STRATEGY-AUDIT registry and adaptive order match the six production preset
     'max-capacity',
     'constrained-first',
   ]);
+});
+
+test('STRATEGY-AUDIT durable metadata distinguishes the production baseline from the audit commit', async () => {
+  const artifact = JSON.parse(await fs.readFile(artifactPath, 'utf8'));
+  const generatedMarkdown = buildMarkdownReport(report);
+  const committedMarkdown = await fs.readFile(markdownArtifactPath, 'utf8');
+
+  assert.equal(PRODUCTION_BASELINE_COMMIT, '99be0776d0070f18b18379bbe1e978a3dec03c43');
+  assert.equal(report.productionBaselineCommit, PRODUCTION_BASELINE_COMMIT);
+  assert.equal(artifact.productionBaselineCommit, PRODUCTION_BASELINE_COMMIT);
+  assert.equal(report.auditBranch, AUDIT_BRANCH);
+  assert.equal(report.auditCommit, AUDIT_COMMIT);
+  assert.notEqual(report.productionBaselineCommit, report.auditCommit);
+  assert.ok(generatedMarkdown.includes(`Production code baseline tested: \`${PRODUCTION_BASELINE_COMMIT}\``));
+  assert.ok(generatedMarkdown.includes(`Evidence/audit commit: \`${AUDIT_COMMIT}\``));
+  assert.ok(committedMarkdown.includes(PRODUCTION_BASELINE_COMMIT));
+});
+
+test('STRATEGY-AUDIT canonical machine evidence contains no runtime fields', () => {
+  const runtimeKeys = [];
+  const visit = value => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    for (const [key, nested] of Object.entries(value)) {
+      if (key.toLowerCase().includes('runtime')) runtimeKeys.push(key);
+      visit(nested);
+    }
+  };
+  visit(report);
+  assert.deepEqual(runtimeKeys, []);
 });
 
 test('STRATEGY-AUDIT fixtures are fresh, deterministic literals with no random source', async () => {
@@ -262,6 +292,28 @@ test('STRATEGY-AUDIT near-duplicate threshold is explicit and sound', () => {
   const far = result([{ id, position: { x: 12, y: 10, z: -20 }, dims }]);
   assert.equal(compareStrategySolutions(sourceFixture, baseline, near).nearDuplicate, true);
   assert.equal(compareStrategySolutions(sourceFixture, baseline, far).nearDuplicate, false);
+
+  const thresholdFixture = createAutoPackStrategyAuditFixtures().find(entry => entry.id === 'identical-over-demand');
+  const rows = thresholdFixture.items.slice(0, 11).map((item, index) => ({
+    id: item.instanceId,
+    position: { x: 2 + index * 10, y: 2, z: 0 },
+    dims: { length: 4, width: 4, height: 4 },
+  }));
+  const moveFirst = count =>
+    result(
+      rows.map((row, index) => ({
+        ...row,
+        position: { ...row.position, z: index < count ? 0.5 : 0 },
+      })),
+      thresholdFixture.items.slice(11).map(item => item.instanceId)
+    );
+  const thresholdBaseline = result(rows, thresholdFixture.items.slice(11).map(item => item.instanceId));
+  assert.equal(compareStrategySolutions(thresholdFixture, thresholdBaseline, moveFirst(2)).nearDuplicate, true);
+  assert.equal(compareStrategySolutions(thresholdFixture, thresholdBaseline, moveFirst(3)).nearDuplicate, false);
+
+  const markdown = buildMarkdownReport(report);
+  assert.equal(report.nearDuplicateDefinition, NEAR_DUPLICATE_DEFINITION);
+  assert.ok(markdown.includes(`Pairwise near-duplicate means ${NEAR_DUPLICATE_DEFINITION}.`));
 });
 
 test('STRATEGY-AUDIT adaptive portfolio never mutates caller-owned items', () => {
@@ -279,7 +331,9 @@ test('STRATEGY-AUDIT adaptive portfolio never mutates caller-owned items', () =>
   assert.ok(adaptive.solutions.some(entry => entry.id === 'max-capacity'));
 });
 
-test('STRATEGY-AUDIT committed machine artifact matches a fresh run outside runtime samples', async () => {
-  const artifact = JSON.parse(await fs.readFile(artifactPath, 'utf8'));
-  assert.deepEqual(removeRuntime(artifact), removeRuntime(report));
+test('STRATEGY-AUDIT committed JSON and Markdown artifacts match a fresh run byte-for-byte', async () => {
+  const artifact = await fs.readFile(artifactPath, 'utf8');
+  const markdown = await fs.readFile(markdownArtifactPath, 'utf8');
+  assert.equal(artifact, `${JSON.stringify(report, null, 2)}\n`);
+  assert.equal(markdown, buildMarkdownReport(report));
 });

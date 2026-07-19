@@ -4,9 +4,10 @@ Audit date: 2026-07-19
 
 ## Repository state
 
+- Production code baseline tested: `99be0776d0070f18b18379bbe1e978a3dec03c43` (`merge: complete Max Capacity Phase C reporting`).
 - Audit branch: `audit/autopack-strategy-differentiation`.
-- Production baseline tested: `99be0776d0070f18b18379bbe1e978a3dec03c43` (`merge: complete Max Capacity Phase C reporting`).
-- All committed changes above that baseline are audit fixtures, harness/tests, evidence, screenshots, and the concise V5 closeout only; no production runtime file changed.
+- Evidence/audit commit: `e2c44720587496de8705c29a2763437f21703439` (`audit(autopack): measure strategy differentiation`).
+- All changes above the production baseline are audit fixtures, harness/tests, evidence, screenshots, and concise documentation only; no production runtime file changed.
 
 ## Executive result
 
@@ -24,11 +25,11 @@ This is characterization evidence only. No production solver, strategy, heuristi
 - Every registered strategy is run directly with the same truck, zones, items, and feature options.
 - Identity-aware signatures include item identity, packed/staged state, normalized pose, dimensions, supporters, and Front Overhang retention dependencies when present.
 - Physical-layout signatures ignore interchangeable instance IDs, matching the production Results dedupe intent.
-- Numbers in signatures are rounded to 0.001 inch/radian. Pairwise near-duplicate means the same packed SKU multiset, at most 10% changed physical poses, at most 5% changed orientations, and no more than 1 inch mean displacement.
+- Numbers in signatures are rounded to 0.001 inch/radian. Pairwise near-duplicate means same packed SKU multiset, at most max(1, ceil(10% of the larger packed-item count)) changed physical poses, at most max(1, ceil(5% of the larger packed-item count)) changed orientations, and no more than 1 inch mean displacement.
 - Packed count excludes any placement failing containment, blocked-body, overlap, or minimum-support checks. The solver produced no such invalid placements in this run.
 - Floor footprint is the exact union of floor/deck/shelf placement rectangles divided by the union of usable surface rectangles at each surface height.
 - CoG uses the canonical CoG helper over packed instances only. This avoids staged work-area positions contaminating partial-load balance results.
-- Runtime is observational only and is never used to decide determinism, equality, ranking, or recommendations.
+- Environment-dependent runtime measurements are intentionally omitted from canonical committed evidence and from every determinism, equality, ranking, and recommendation decision.
 
 ## Fixture matrix
 
@@ -52,14 +53,14 @@ This is characterization evidence only. No production solver, strategy, heuristi
 
 ## Strategy summary
 
-| Strategy | Complete fixtures | Best packed-count fixtures | Physically differs from Balanced | Identical to Balanced | Aggregate packed | Avg runtime |
-|---|---:|---:|---:|---:|---:|---:|
-| Balanced | 5/15 | 10/15 | 0/15 | 15/15 | 351/529 (66.35%) | 3.977 ms |
-| Compact fill | 5/15 | 10/15 | 1/15 | 14/15 | 351/529 (66.35%) | 2.66 ms |
-| Floor first (no stacking) | 3/15 | 4/15 | 9/15 | 6/15 | 116/529 (21.93%) | 0.456 ms |
-| Stack priority | 4/15 | 9/15 | 3/15 | 12/15 | 344/529 (65.03%) | 5.433 ms |
-| Max Capacity | 5/15 | 10/15 | 11/15 | 4/15 | 404/529 (76.37%) | 1.815 ms |
-| Constrained space first | 5/15 | 10/15 | 2/15 | 13/15 | 363/529 (68.62%) | 1.981 ms |
+| Strategy | Complete fixtures | Best packed-count fixtures | Physically differs from Balanced | Identical to Balanced | Aggregate packed |
+|---|---:|---:|---:|---:|---:|
+| Balanced | 5/15 | 10/15 | 0/15 | 15/15 | 351/529 (66.35%) |
+| Compact fill | 5/15 | 10/15 | 1/15 | 14/15 | 351/529 (66.35%) |
+| Floor first (no stacking) | 3/15 | 4/15 | 9/15 | 6/15 | 116/529 (21.93%) |
+| Stack priority | 4/15 | 9/15 | 3/15 | 12/15 | 344/529 (65.03%) |
+| Max Capacity | 5/15 | 10/15 | 11/15 | 4/15 | 404/529 (76.37%) |
+| Constrained space first | 5/15 | 10/15 | 2/15 | 13/15 | 363/529 (68.62%) |
 
 ## Per-fixture packed-count and dedupe evidence
 
@@ -138,7 +139,6 @@ The current implementation is a **relaxed-handling physical-fit estimate**, not 
 - Expected convergence: It is the comparison baseline; ties are intentionally retained in its favor for automatic selection.
 - Best measurable use: General-purpose first result where tidy rows and a balanced normal-rule solution are preferred.
 - Recommendation: Keep as the default and tie-break baseline.
-- Runtime: 3.977 ms mean over the recorded local samples; observational only.
 
 ### Compact fill
 
@@ -152,7 +152,6 @@ The current implementation is a **relaxed-handling physical-fit estimate**, not 
 - Expected convergence: Convergence is common when candidate validity and later compaction dominate the local score. It remained identical in the compact-fill-pressure fixture but differed in the sub-grid Wheel Wells yaw control.
 - Best measurable use: A denser local-waste-first alternative that accepts mixed yaw where Balanced favors a tidier single-yaw row.
 - Recommendation: Keep, but retain production dedupe and expand the corpus because measurable differentiation is currently sparse.
-- Runtime: 2.66 ms mean over the recorded local samples; observational only.
 
 ### Floor first (no stacking)
 
@@ -166,7 +165,6 @@ The current implementation is a **relaxed-handling physical-fit estimate**, not 
 - Expected convergence: Expected for one-item, all-on-floor, physically impossible, and no-stack loads where the normal pipeline also has no useful stacking opportunity.
 - Best measurable use: Flat, accessible loads where the user explicitly values no stacking over packed count.
 - Recommendation: Keep as a clear semantic option.
-- Runtime: 0.456 ms mean over the recorded local samples; observational only.
 
 ### Stack priority
 
@@ -180,7 +178,6 @@ The current implementation is a **relaxed-handling physical-fit estimate**, not 
 - Expected convergence: Expected when the ordinary later stack phase reaches the same final arrangement, or when every item already fits the floor / cannot fit at all.
 - Best measurable use: Loads where early vertical use recovers cargo before open-floor choices consume useful support surfaces.
 - Recommendation: Keep; its gains and Front Overhang loss prove a real tradeoff rather than an alias.
-- Runtime: 5.433 ms mean over the recorded local samples; observational only.
 
 ### Max Capacity
 
@@ -194,7 +191,6 @@ The current implementation is a **relaxed-handling physical-fit estimate**, not 
 - Expected convergence: Expected when no relaxed preference binds, for trivial/full-floor loads, and where physical dimensions make every strategy fail.
 - Best measurable use: A manual what-if estimate for the physical fit available after relaxing approved handling preferences.
 - Recommendation: Keep manual-only, and clarify that it is not guaranteed to maximize packed count.
-- Runtime: 1.815 ms mean over the recorded local samples; observational only.
 
 ### Constrained space first
 
@@ -208,7 +204,6 @@ The current implementation is a **relaxed-handling physical-fit estimate**, not 
 - Expected convergence: Expected and intentional outside real Wheel Wells geometry; production therefore does not run or show it for Standard or Front Overhang.
 - Best measurable use: Wheel Wells loads with channel-fitting cargo that would otherwise lose narrow-zone opportunities.
 - Recommendation: Keep Wheel-Wells-only.
-- Runtime: 1.981 ms mean over the recorded local samples; observational only.
 
 ## Browser validation
 
@@ -228,7 +223,7 @@ No application exception was observed. The isolated offline run logged the exist
 - Candidate-search counters and internal solver scores are not exposed by the current solver result contract, so this audit does not fabricate them.
 - “Distinct stacks” is reported as deterministic support-root count plus max/average support depth; arbitrary bridge geometry prevents a universal human-style column count.
 - Browser evidence validates the live selectable order, visible cards/metrics, dedupe count, and Apply path on representative loads; it is not used for broad solver measurement.
-- The JSON artifact is the machine-readable source for every fixture, strategy metric, signature hash, pairwise comparison, warning, rejection count, and runtime sample.
+- The JSON artifact is the deterministic machine-readable source for every fixture, strategy metric, signature hash, pairwise comparison, warning, and rejection count.
 
 ## Reproduction
 

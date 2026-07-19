@@ -1,10 +1,13 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "auditDate": "2026-07-19",
-  "units": "inches / pounds / milliseconds",
+  "productionBaselineCommit": "99be0776d0070f18b18379bbe1e978a3dec03c43",
+  "auditBranch": "audit/autopack-strategy-differentiation",
+  "auditCommit": "e2c44720587496de8705c29a2763437f21703439",
+  "units": "inches / pounds",
   "deterministicInputs": true,
   "repeatCount": 2,
-  "runtimeNote": "Runtime samples are observational and are excluded from every determinism and distinctness decision.",
+  "nearDuplicateDefinition": "same packed SKU multiset, at most max(1, ceil(10% of the larger packed-item count)) changed physical poses, at most max(1, ceil(5% of the larger packed-item count)) changed orientations, and no more than 1 inch mean displacement",
   "strategyRegistry": [
     {
       "id": "default",
@@ -162,15 +165,6 @@
           "signatures": {
             "identityAwareSha256": "c5823f571c8c4376c503bab4b6217b42bdccb8d93491504bd573316cc89c9c06",
             "physicalLayoutSha256": "2218939345fdbc298ae546384b24f3bcfd655efa89fa21d52e525092d623506c"
-          },
-          "runtimeMs": {
-            "samples": [
-              1.891,
-              0.217
-            ],
-            "average": 1.054,
-            "minimum": 0.217,
-            "maximum": 1.891
           }
         },
         {
@@ -242,15 +236,6 @@
           "signatures": {
             "identityAwareSha256": "c5823f571c8c4376c503bab4b6217b42bdccb8d93491504bd573316cc89c9c06",
             "physicalLayoutSha256": "2218939345fdbc298ae546384b24f3bcfd655efa89fa21d52e525092d623506c"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.327,
-              0.114
-            ],
-            "average": 0.22,
-            "minimum": 0.114,
-            "maximum": 0.327
           }
         },
         {
@@ -322,15 +307,6 @@
           "signatures": {
             "identityAwareSha256": "c5823f571c8c4376c503bab4b6217b42bdccb8d93491504bd573316cc89c9c06",
             "physicalLayoutSha256": "2218939345fdbc298ae546384b24f3bcfd655efa89fa21d52e525092d623506c"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.171,
-              0.121
-            ],
-            "average": 0.146,
-            "minimum": 0.121,
-            "maximum": 0.171
           }
         },
         {
@@ -402,15 +378,6 @@
           "signatures": {
             "identityAwareSha256": "c5823f571c8c4376c503bab4b6217b42bdccb8d93491504bd573316cc89c9c06",
             "physicalLayoutSha256": "2218939345fdbc298ae546384b24f3bcfd655efa89fa21d52e525092d623506c"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.121,
-              0.261
-            ],
-            "average": 0.191,
-            "minimum": 0.121,
-            "maximum": 0.261
           }
         },
         {
@@ -482,15 +449,6 @@
           "signatures": {
             "identityAwareSha256": "c5823f571c8c4376c503bab4b6217b42bdccb8d93491504bd573316cc89c9c06",
             "physicalLayoutSha256": "2218939345fdbc298ae546384b24f3bcfd655efa89fa21d52e525092d623506c"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.323,
-              0.14
-            ],
-            "average": 0.232,
-            "minimum": 0.14,
-            "maximum": 0.323
           }
         },
         {
@@ -562,15 +520,6 @@
           "signatures": {
             "identityAwareSha256": "c5823f571c8c4376c503bab4b6217b42bdccb8d93491504bd573316cc89c9c06",
             "physicalLayoutSha256": "2218939345fdbc298ae546384b24f3bcfd655efa89fa21d52e525092d623506c"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.075,
-              0.05
-            ],
-            "average": 0.063,
-            "minimum": 0.05,
-            "maximum": 0.075
           }
         }
       ],
@@ -934,15 +883,6 @@
           "signatures": {
             "identityAwareSha256": "8ad04ef6b2bfff5cc91f73b17f736984da8e67d78dce7ac1d098810aee622662",
             "physicalLayoutSha256": "5be90e4b50c7436fc9dbd8293b8260ec957d2e2c9cba94173424d0a8e2b85177"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.989,
-              0.752
-            ],
-            "average": 0.87,
-            "minimum": 0.752,
-            "maximum": 0.989
           }
         },
         {
@@ -1014,15 +954,6 @@
           "signatures": {
             "identityAwareSha256": "8ad04ef6b2bfff5cc91f73b17f736984da8e67d78dce7ac1d098810aee622662",
             "physicalLayoutSha256": "5be90e4b50c7436fc9dbd8293b8260ec957d2e2c9cba94173424d0a8e2b85177"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.624,
-              0.743
-            ],
-            "average": 0.684,
-            "minimum": 0.624,
-            "maximum": 0.743
           }
         },
         {
@@ -1094,15 +1025,6 @@
           "signatures": {
             "identityAwareSha256": "8ad04ef6b2bfff5cc91f73b17f736984da8e67d78dce7ac1d098810aee622662",
             "physicalLayoutSha256": "5be90e4b50c7436fc9dbd8293b8260ec957d2e2c9cba94173424d0a8e2b85177"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.57,
-              0.536
-            ],
-            "average": 0.553,
-            "minimum": 0.536,
-            "maximum": 0.57
           }
         },
         {
@@ -1174,15 +1096,6 @@
           "signatures": {
             "identityAwareSha256": "8ad04ef6b2bfff5cc91f73b17f736984da8e67d78dce7ac1d098810aee622662",
             "physicalLayoutSha256": "5be90e4b50c7436fc9dbd8293b8260ec957d2e2c9cba94173424d0a8e2b85177"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.499,
-              0.353
-            ],
-            "average": 0.426,
-            "minimum": 0.353,
-            "maximum": 0.499
           }
         },
         {
@@ -1254,15 +1167,6 @@
           "signatures": {
             "identityAwareSha256": "8ad04ef6b2bfff5cc91f73b17f736984da8e67d78dce7ac1d098810aee622662",
             "physicalLayoutSha256": "5be90e4b50c7436fc9dbd8293b8260ec957d2e2c9cba94173424d0a8e2b85177"
-          },
-          "runtimeMs": {
-            "samples": [
-              1.091,
-              1.165
-            ],
-            "average": 1.128,
-            "minimum": 1.091,
-            "maximum": 1.165
           }
         },
         {
@@ -1334,15 +1238,6 @@
           "signatures": {
             "identityAwareSha256": "8ad04ef6b2bfff5cc91f73b17f736984da8e67d78dce7ac1d098810aee622662",
             "physicalLayoutSha256": "5be90e4b50c7436fc9dbd8293b8260ec957d2e2c9cba94173424d0a8e2b85177"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.358,
-              0.334
-            ],
-            "average": 0.346,
-            "minimum": 0.334,
-            "maximum": 0.358
           }
         }
       ],
@@ -1710,15 +1605,6 @@
           "signatures": {
             "identityAwareSha256": "56b504d4085e790ca3408ac59b1d0287f15c4ad6f7876304d545d0336d3919c7",
             "physicalLayoutSha256": "5553fc4efb2065347f51232521926af5dedbbeafe4ebe3644b97bccf4f5329c3"
-          },
-          "runtimeMs": {
-            "samples": [
-              2.048,
-              1.407
-            ],
-            "average": 1.727,
-            "minimum": 1.407,
-            "maximum": 2.048
           }
         },
         {
@@ -1794,15 +1680,6 @@
           "signatures": {
             "identityAwareSha256": "40c2be8e454b897ca46b9f68352504122c6a32526040f4b2a2e61115dce2336e",
             "physicalLayoutSha256": "c3f3053804a4ba21e121c1ee5ca5f25518145e75a92a09c7ea404dc035765401"
-          },
-          "runtimeMs": {
-            "samples": [
-              1.022,
-              1.013
-            ],
-            "average": 1.018,
-            "minimum": 1.013,
-            "maximum": 1.022
           }
         },
         {
@@ -1878,15 +1755,6 @@
           "signatures": {
             "identityAwareSha256": "56b504d4085e790ca3408ac59b1d0287f15c4ad6f7876304d545d0336d3919c7",
             "physicalLayoutSha256": "5553fc4efb2065347f51232521926af5dedbbeafe4ebe3644b97bccf4f5329c3"
-          },
-          "runtimeMs": {
-            "samples": [
-              1.467,
-              1.447
-            ],
-            "average": 1.457,
-            "minimum": 1.447,
-            "maximum": 1.467
           }
         },
         {
@@ -1962,15 +1830,6 @@
           "signatures": {
             "identityAwareSha256": "56b504d4085e790ca3408ac59b1d0287f15c4ad6f7876304d545d0336d3919c7",
             "physicalLayoutSha256": "5553fc4efb2065347f51232521926af5dedbbeafe4ebe3644b97bccf4f5329c3"
-          },
-          "runtimeMs": {
-            "samples": [
-              1.244,
-              0.987
-            ],
-            "average": 1.115,
-            "minimum": 0.987,
-            "maximum": 1.244
           }
         },
         {
@@ -2046,15 +1905,6 @@
           "signatures": {
             "identityAwareSha256": "56b504d4085e790ca3408ac59b1d0287f15c4ad6f7876304d545d0336d3919c7",
             "physicalLayoutSha256": "5553fc4efb2065347f51232521926af5dedbbeafe4ebe3644b97bccf4f5329c3"
-          },
-          "runtimeMs": {
-            "samples": [
-              1.593,
-              1.565
-            ],
-            "average": 1.579,
-            "minimum": 1.565,
-            "maximum": 1.593
           }
         },
         {
@@ -2130,15 +1980,6 @@
           "signatures": {
             "identityAwareSha256": "bb14657c6318c0c660e5f266639ada666d91dcdfe84160b4901e3e70f55dcdff",
             "physicalLayoutSha256": "d500a738390afc539c2c42a130f4e6124bd80441e7f2c5adfac1a6216c7ec99b"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.956,
-              0.839
-            ],
-            "average": 0.898,
-            "minimum": 0.839,
-            "maximum": 0.956
           }
         }
       ],
@@ -2529,15 +2370,6 @@
           "signatures": {
             "identityAwareSha256": "0f00a612391b4767c5e2aab4b2bb1473dd99b18c7785f421b167a3289824f93b",
             "physicalLayoutSha256": "eac38960d9410b141eb6e6bcb85e384f6a8dca76d08b2ba4ff6dde66c4967309"
-          },
-          "runtimeMs": {
-            "samples": [
-              12.461,
-              4.95
-            ],
-            "average": 8.706,
-            "minimum": 4.95,
-            "maximum": 12.461
           }
         },
         {
@@ -2634,15 +2466,6 @@
           "signatures": {
             "identityAwareSha256": "0f00a612391b4767c5e2aab4b2bb1473dd99b18c7785f421b167a3289824f93b",
             "physicalLayoutSha256": "eac38960d9410b141eb6e6bcb85e384f6a8dca76d08b2ba4ff6dde66c4967309"
-          },
-          "runtimeMs": {
-            "samples": [
-              3.074,
-              2.819
-            ],
-            "average": 2.947,
-            "minimum": 2.819,
-            "maximum": 3.074
           }
         },
         {
@@ -2784,15 +2607,6 @@
           "signatures": {
             "identityAwareSha256": "a5718cfade84cf19f163587e8a61742549a93b68d81fb17dc9ec291801632b58",
             "physicalLayoutSha256": "148d9479d6a2d18fef2d67921040493aabbd8dafd2afdd9d20f28722d1d392ba"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.63,
-              0.544
-            ],
-            "average": 0.587,
-            "minimum": 0.544,
-            "maximum": 0.63
           }
         },
         {
@@ -2889,15 +2703,6 @@
           "signatures": {
             "identityAwareSha256": "0f00a612391b4767c5e2aab4b2bb1473dd99b18c7785f421b167a3289824f93b",
             "physicalLayoutSha256": "eac38960d9410b141eb6e6bcb85e384f6a8dca76d08b2ba4ff6dde66c4967309"
-          },
-          "runtimeMs": {
-            "samples": [
-              13.998,
-              10.369
-            ],
-            "average": 12.184,
-            "minimum": 10.369,
-            "maximum": 13.998
           }
         },
         {
@@ -3006,15 +2811,6 @@
           "signatures": {
             "identityAwareSha256": "11c55083f47703ce0e93b8937719dbbc4cda6f98372084f6bb5ff888038525df",
             "physicalLayoutSha256": "b45df4bc3e4befe238877aed05dbd389cdb326f3989ad6cdd564d17466e13c42"
-          },
-          "runtimeMs": {
-            "samples": [
-              8.554,
-              5.594
-            ],
-            "average": 7.074,
-            "minimum": 5.594,
-            "maximum": 8.554
           }
         },
         {
@@ -3111,15 +2907,6 @@
           "signatures": {
             "identityAwareSha256": "0f00a612391b4767c5e2aab4b2bb1473dd99b18c7785f421b167a3289824f93b",
             "physicalLayoutSha256": "eac38960d9410b141eb6e6bcb85e384f6a8dca76d08b2ba4ff6dde66c4967309"
-          },
-          "runtimeMs": {
-            "samples": [
-              2.242,
-              2.223
-            ],
-            "average": 2.233,
-            "minimum": 2.223,
-            "maximum": 2.242
           }
         }
       ],
@@ -3570,15 +3357,6 @@
           "signatures": {
             "identityAwareSha256": "086a4c4dee2f0e2e37b09f5309ffbc079214d2a66bd6d2aa0cc5fd2edd81ee98",
             "physicalLayoutSha256": "6d755a2252eaed9f580870439d5d751ae299067ae980bf8fa10a34efbb20fff4"
-          },
-          "runtimeMs": {
-            "samples": [
-              2.777,
-              2.584
-            ],
-            "average": 2.681,
-            "minimum": 2.584,
-            "maximum": 2.777
           }
         },
         {
@@ -3697,15 +3475,6 @@
           "signatures": {
             "identityAwareSha256": "086a4c4dee2f0e2e37b09f5309ffbc079214d2a66bd6d2aa0cc5fd2edd81ee98",
             "physicalLayoutSha256": "6d755a2252eaed9f580870439d5d751ae299067ae980bf8fa10a34efbb20fff4"
-          },
-          "runtimeMs": {
-            "samples": [
-              2.381,
-              2.429
-            ],
-            "average": 2.405,
-            "minimum": 2.381,
-            "maximum": 2.429
           }
         },
         {
@@ -3832,15 +3601,6 @@
           "signatures": {
             "identityAwareSha256": "0d6f06f4ae00a4a76d5f538a66f848534aed786f52a1df0165ede11599c650dc",
             "physicalLayoutSha256": "d7fb90ac402a3e315626eb24bb5e47e85d305de2fe34924e867de4113f39d65c"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.395,
-              0.262
-            ],
-            "average": 0.329,
-            "minimum": 0.262,
-            "maximum": 0.395
           }
         },
         {
@@ -3955,15 +3715,6 @@
           "signatures": {
             "identityAwareSha256": "c26c9e52bbd4cb03326011266f28248ae8e9f71b621b8e566902732b0c26500d",
             "physicalLayoutSha256": "03888f1ed88ce90f0201b66059781fb2fe9ddbf9a0900c56f968b5d87b5ce477"
-          },
-          "runtimeMs": {
-            "samples": [
-              4.756,
-              5.072
-            ],
-            "average": 4.914,
-            "minimum": 4.756,
-            "maximum": 5.072
           }
         },
         {
@@ -4061,15 +3812,6 @@
           "signatures": {
             "identityAwareSha256": "1cf962d10b5a5c3135695bdb4e3045185afb8b741db555f7ec6b0c4171408f3d",
             "physicalLayoutSha256": "a82c81e066f15fd52a1f70874359e8d86cdfb0ebfb6ad75292e5c3a11f0056af"
-          },
-          "runtimeMs": {
-            "samples": [
-              5.195,
-              5.033
-            ],
-            "average": 5.114,
-            "minimum": 5.033,
-            "maximum": 5.195
           }
         },
         {
@@ -4188,15 +3930,6 @@
           "signatures": {
             "identityAwareSha256": "086a4c4dee2f0e2e37b09f5309ffbc079214d2a66bd6d2aa0cc5fd2edd81ee98",
             "physicalLayoutSha256": "6d755a2252eaed9f580870439d5d751ae299067ae980bf8fa10a34efbb20fff4"
-          },
-          "runtimeMs": {
-            "samples": [
-              2.747,
-              2.285
-            ],
-            "average": 2.516,
-            "minimum": 2.285,
-            "maximum": 2.747
           }
         }
       ],
@@ -4580,15 +4313,6 @@
           "signatures": {
             "identityAwareSha256": "423196fd894ac7c80ed3c0b56304947bed2325e55835553cc0ca09236738d295",
             "physicalLayoutSha256": "df0815ccf52121f804b233db9d04bc4e94560d51e5aba4639099e036f52ca84e"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.495,
-              0.331
-            ],
-            "average": 0.413,
-            "minimum": 0.331,
-            "maximum": 0.495
           }
         },
         {
@@ -4660,15 +4384,6 @@
           "signatures": {
             "identityAwareSha256": "423196fd894ac7c80ed3c0b56304947bed2325e55835553cc0ca09236738d295",
             "physicalLayoutSha256": "df0815ccf52121f804b233db9d04bc4e94560d51e5aba4639099e036f52ca84e"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.356,
-              0.323
-            ],
-            "average": 0.34,
-            "minimum": 0.323,
-            "maximum": 0.356
           }
         },
         {
@@ -4769,15 +4484,6 @@
           "signatures": {
             "identityAwareSha256": "036e2ae709c6447c607a6e883268be103e37b845eadb958d4f58d37cdf5234ef",
             "physicalLayoutSha256": "3bf6adca837b23ee2adc6c46b87f32a03fe27b6e42fdaf6005a2bb392dd9fb16"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.311,
-              0.282
-            ],
-            "average": 0.296,
-            "minimum": 0.282,
-            "maximum": 0.311
           }
         },
         {
@@ -4849,15 +4555,6 @@
           "signatures": {
             "identityAwareSha256": "423196fd894ac7c80ed3c0b56304947bed2325e55835553cc0ca09236738d295",
             "physicalLayoutSha256": "df0815ccf52121f804b233db9d04bc4e94560d51e5aba4639099e036f52ca84e"
-          },
-          "runtimeMs": {
-            "samples": [
-              2.156,
-              2.263
-            ],
-            "average": 2.209,
-            "minimum": 2.156,
-            "maximum": 2.263
           }
         },
         {
@@ -4929,15 +4626,6 @@
           "signatures": {
             "identityAwareSha256": "72024a0be69ccace01dfdf34d887f61779064e6c398489e8a8b454ca569e9b72",
             "physicalLayoutSha256": "329154d751f926a4816675835d284f451fce35b35824f3b87cc80a7f9e59d2a3"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.697,
-              1.368
-            ],
-            "average": 1.032,
-            "minimum": 0.697,
-            "maximum": 1.368
           }
         },
         {
@@ -5009,15 +4697,6 @@
           "signatures": {
             "identityAwareSha256": "423196fd894ac7c80ed3c0b56304947bed2325e55835553cc0ca09236738d295",
             "physicalLayoutSha256": "df0815ccf52121f804b233db9d04bc4e94560d51e5aba4639099e036f52ca84e"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.692,
-              0.56
-            ],
-            "average": 0.626,
-            "minimum": 0.56,
-            "maximum": 0.692
           }
         }
       ],
@@ -5404,15 +5083,6 @@
           "signatures": {
             "identityAwareSha256": "92c69e03f5d313d1b22163b7fa39d18add2d56ac342c8529258ba941e1fa5e0e",
             "physicalLayoutSha256": "cda402424728d98908e008be36d3bccd2ff15ad1e2c93967edb8dbc5cc7e06fe"
-          },
-          "runtimeMs": {
-            "samples": [
-              1.099,
-              1.22
-            ],
-            "average": 1.16,
-            "minimum": 1.099,
-            "maximum": 1.22
           }
         },
         {
@@ -5507,15 +5177,6 @@
           "signatures": {
             "identityAwareSha256": "92c69e03f5d313d1b22163b7fa39d18add2d56ac342c8529258ba941e1fa5e0e",
             "physicalLayoutSha256": "cda402424728d98908e008be36d3bccd2ff15ad1e2c93967edb8dbc5cc7e06fe"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.988,
-              0.971
-            ],
-            "average": 0.98,
-            "minimum": 0.971,
-            "maximum": 0.988
           }
         },
         {
@@ -5640,15 +5301,6 @@
           "signatures": {
             "identityAwareSha256": "9934ea568e6fa1a6825950ec7de8c7b530e8feedf61b83ecaa7c6bfa9e59ec9d",
             "physicalLayoutSha256": "a461f5f719ed8a5d34219e54e811bcdcde188c1f0b85383a4b41f911ecc9f464"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.158,
-              0.142
-            ],
-            "average": 0.15,
-            "minimum": 0.142,
-            "maximum": 0.158
           }
         },
         {
@@ -5743,15 +5395,6 @@
           "signatures": {
             "identityAwareSha256": "92c69e03f5d313d1b22163b7fa39d18add2d56ac342c8529258ba941e1fa5e0e",
             "physicalLayoutSha256": "cda402424728d98908e008be36d3bccd2ff15ad1e2c93967edb8dbc5cc7e06fe"
-          },
-          "runtimeMs": {
-            "samples": [
-              3.126,
-              2.884
-            ],
-            "average": 3.005,
-            "minimum": 2.884,
-            "maximum": 3.126
           }
         },
         {
@@ -5848,15 +5491,6 @@
           "signatures": {
             "identityAwareSha256": "99ea6cb061e1fbb7d9cfb30934c43352ce988e2adb0fe975347b17d3c25112d0",
             "physicalLayoutSha256": "6d3f32303d6a087cd1e46f62453401299ce9a0cc33532597e59e397caea1ad2c"
-          },
-          "runtimeMs": {
-            "samples": [
-              1.422,
-              2.544
-            ],
-            "average": 1.983,
-            "minimum": 1.422,
-            "maximum": 2.544
           }
         },
         {
@@ -5951,15 +5585,6 @@
           "signatures": {
             "identityAwareSha256": "92c69e03f5d313d1b22163b7fa39d18add2d56ac342c8529258ba941e1fa5e0e",
             "physicalLayoutSha256": "cda402424728d98908e008be36d3bccd2ff15ad1e2c93967edb8dbc5cc7e06fe"
-          },
-          "runtimeMs": {
-            "samples": [
-              1.808,
-              1.222
-            ],
-            "average": 1.515,
-            "minimum": 1.222,
-            "maximum": 1.808
           }
         }
       ],
@@ -6352,15 +5977,6 @@
           "signatures": {
             "identityAwareSha256": "33e4086b085da1fe626d15ce708c69569fd68d19d92ceed0a7052214dccaaacd",
             "physicalLayoutSha256": "cd9bfe52393e4c7709a96cecbd5c60ce944c0cbdfba1513bd6a6aae2f5d28190"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.191,
-              0.137
-            ],
-            "average": 0.164,
-            "minimum": 0.137,
-            "maximum": 0.191
           }
         },
         {
@@ -6461,15 +6077,6 @@
           "signatures": {
             "identityAwareSha256": "33e4086b085da1fe626d15ce708c69569fd68d19d92ceed0a7052214dccaaacd",
             "physicalLayoutSha256": "cd9bfe52393e4c7709a96cecbd5c60ce944c0cbdfba1513bd6a6aae2f5d28190"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.12,
-              0.12
-            ],
-            "average": 0.12,
-            "minimum": 0.12,
-            "maximum": 0.12
           }
         },
         {
@@ -6570,15 +6177,6 @@
           "signatures": {
             "identityAwareSha256": "33e4086b085da1fe626d15ce708c69569fd68d19d92ceed0a7052214dccaaacd",
             "physicalLayoutSha256": "cd9bfe52393e4c7709a96cecbd5c60ce944c0cbdfba1513bd6a6aae2f5d28190"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.152,
-              0.1
-            ],
-            "average": 0.126,
-            "minimum": 0.1,
-            "maximum": 0.152
           }
         },
         {
@@ -6679,15 +6277,6 @@
           "signatures": {
             "identityAwareSha256": "33e4086b085da1fe626d15ce708c69569fd68d19d92ceed0a7052214dccaaacd",
             "physicalLayoutSha256": "cd9bfe52393e4c7709a96cecbd5c60ce944c0cbdfba1513bd6a6aae2f5d28190"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.155,
-              0.146
-            ],
-            "average": 0.151,
-            "minimum": 0.146,
-            "maximum": 0.155
           }
         },
         {
@@ -6772,15 +6361,6 @@
           "signatures": {
             "identityAwareSha256": "c7a504ee16eff1ea665bb388dba52953e11fe1115c9036ca31d80ea8fa620294",
             "physicalLayoutSha256": "3747ad88cd51bb320896dd89fb7006ed7ed1ecf4374e54c9c7b67dffcdf7c431"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.565,
-              0.561
-            ],
-            "average": 0.563,
-            "minimum": 0.561,
-            "maximum": 0.565
           }
         },
         {
@@ -6881,15 +6461,6 @@
           "signatures": {
             "identityAwareSha256": "33e4086b085da1fe626d15ce708c69569fd68d19d92ceed0a7052214dccaaacd",
             "physicalLayoutSha256": "cd9bfe52393e4c7709a96cecbd5c60ce944c0cbdfba1513bd6a6aae2f5d28190"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.355,
-              0.132
-            ],
-            "average": 0.244,
-            "minimum": 0.132,
-            "maximum": 0.355
           }
         }
       ],
@@ -7253,15 +6824,6 @@
           "signatures": {
             "identityAwareSha256": "ed41acfd314fd77b21db289dcbee94bfaaf461f351e5500787077c5975edf3eb",
             "physicalLayoutSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.179,
-              0.087
-            ],
-            "average": 0.133,
-            "minimum": 0.087,
-            "maximum": 0.179
           }
         },
         {
@@ -7333,15 +6895,6 @@
           "signatures": {
             "identityAwareSha256": "ed41acfd314fd77b21db289dcbee94bfaaf461f351e5500787077c5975edf3eb",
             "physicalLayoutSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.231,
-              0.093
-            ],
-            "average": 0.162,
-            "minimum": 0.093,
-            "maximum": 0.231
           }
         },
         {
@@ -7413,15 +6966,6 @@
           "signatures": {
             "identityAwareSha256": "ed41acfd314fd77b21db289dcbee94bfaaf461f351e5500787077c5975edf3eb",
             "physicalLayoutSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.056,
-              0.039
-            ],
-            "average": 0.048,
-            "minimum": 0.039,
-            "maximum": 0.056
           }
         },
         {
@@ -7493,15 +7037,6 @@
           "signatures": {
             "identityAwareSha256": "ed41acfd314fd77b21db289dcbee94bfaaf461f351e5500787077c5975edf3eb",
             "physicalLayoutSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.09,
-              0.087
-            ],
-            "average": 0.088,
-            "minimum": 0.087,
-            "maximum": 0.09
           }
         },
         {
@@ -7587,15 +7122,6 @@
           "signatures": {
             "identityAwareSha256": "a72bb43047cc64801037b335fa4d5685eb7d4b27c06e378d0bde83a3a997a71b",
             "physicalLayoutSha256": "7862c618889f33c544a0363ca31280bf2e6b83106f7f8e4f3ae3929e5375224c"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.338,
-              0.268
-            ],
-            "average": 0.303,
-            "minimum": 0.268,
-            "maximum": 0.338
           }
         },
         {
@@ -7667,15 +7193,6 @@
           "signatures": {
             "identityAwareSha256": "ed41acfd314fd77b21db289dcbee94bfaaf461f351e5500787077c5975edf3eb",
             "physicalLayoutSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.089,
-              0.088
-            ],
-            "average": 0.088,
-            "minimum": 0.088,
-            "maximum": 0.089
           }
         }
       ],
@@ -8076,15 +7593,6 @@
           "signatures": {
             "identityAwareSha256": "1ba2b02a1008a24025164dc8a6143cc75254a1aff1a0812ef024f3f8805b693e",
             "physicalLayoutSha256": "489e809f8263b2d547397000064d4307552e71944b5e0ac365d8ede9c62e26ba"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.792,
-              0.873
-            ],
-            "average": 0.833,
-            "minimum": 0.792,
-            "maximum": 0.873
           }
         },
         {
@@ -8173,15 +7681,6 @@
           "signatures": {
             "identityAwareSha256": "1ba2b02a1008a24025164dc8a6143cc75254a1aff1a0812ef024f3f8805b693e",
             "physicalLayoutSha256": "489e809f8263b2d547397000064d4307552e71944b5e0ac365d8ede9c62e26ba"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.692,
-              0.784
-            ],
-            "average": 0.738,
-            "minimum": 0.692,
-            "maximum": 0.784
           }
         },
         {
@@ -8288,15 +7787,6 @@
           "signatures": {
             "identityAwareSha256": "8faed307b19ef9b4ae3faff5b85ee2f7946b8957f87af5d235455135ca6bf879",
             "physicalLayoutSha256": "7fc23421ae9d8849a1c5cb1d564548c8a86c5be17604e594306c95d2fc5f1eca"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.173,
-              0.162
-            ],
-            "average": 0.167,
-            "minimum": 0.162,
-            "maximum": 0.173
           }
         },
         {
@@ -8385,15 +7875,6 @@
           "signatures": {
             "identityAwareSha256": "1ba2b02a1008a24025164dc8a6143cc75254a1aff1a0812ef024f3f8805b693e",
             "physicalLayoutSha256": "489e809f8263b2d547397000064d4307552e71944b5e0ac365d8ede9c62e26ba"
-          },
-          "runtimeMs": {
-            "samples": [
-              1.722,
-              1.832
-            ],
-            "average": 1.777,
-            "minimum": 1.722,
-            "maximum": 1.832
           }
         },
         {
@@ -8486,15 +7967,6 @@
           "signatures": {
             "identityAwareSha256": "0d9590cfbd26d8422cb54c9efdbf672e4af21bab1201f8ac3b79ab67b97ac07c",
             "physicalLayoutSha256": "04495f851c53d52f689eafb90b50a77c37fe2871b5347b9a1b5ee75045cbfdd1"
-          },
-          "runtimeMs": {
-            "samples": [
-              1.217,
-              1.05
-            ],
-            "average": 1.133,
-            "minimum": 1.05,
-            "maximum": 1.217
           }
         },
         {
@@ -8583,15 +8055,6 @@
           "signatures": {
             "identityAwareSha256": "1ba2b02a1008a24025164dc8a6143cc75254a1aff1a0812ef024f3f8805b693e",
             "physicalLayoutSha256": "489e809f8263b2d547397000064d4307552e71944b5e0ac365d8ede9c62e26ba"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.459,
-              0.637
-            ],
-            "average": 0.548,
-            "minimum": 0.459,
-            "maximum": 0.637
           }
         }
       ],
@@ -8983,15 +8446,6 @@
           "signatures": {
             "identityAwareSha256": "f1607975633146758bdb3d04f6fb45d793d09de8ebdc71e567b811825ddc809e",
             "physicalLayoutSha256": "37e9933f239e9fd30d2da48f520535131e6a7329bebcfda65787fe486aaece6b"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.811,
-              0.586
-            ],
-            "average": 0.698,
-            "minimum": 0.586,
-            "maximum": 0.811
           }
         },
         {
@@ -9071,15 +8525,6 @@
           "signatures": {
             "identityAwareSha256": "f1607975633146758bdb3d04f6fb45d793d09de8ebdc71e567b811825ddc809e",
             "physicalLayoutSha256": "37e9933f239e9fd30d2da48f520535131e6a7329bebcfda65787fe486aaece6b"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.381,
-              0.361
-            ],
-            "average": 0.371,
-            "minimum": 0.361,
-            "maximum": 0.381
           }
         },
         {
@@ -9183,15 +8628,6 @@
           "signatures": {
             "identityAwareSha256": "7aa2d50bf18018f5ea93c789db36fb811dc4cc8ae54b6c6f7b47045a23706308",
             "physicalLayoutSha256": "92a932fe5f852ea8351c97a88d15e002191355f941a71f7da19f5d7206df0172"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.267,
-              0.464
-            ],
-            "average": 0.365,
-            "minimum": 0.267,
-            "maximum": 0.464
           }
         },
         {
@@ -9271,15 +8707,6 @@
           "signatures": {
             "identityAwareSha256": "f1607975633146758bdb3d04f6fb45d793d09de8ebdc71e567b811825ddc809e",
             "physicalLayoutSha256": "37e9933f239e9fd30d2da48f520535131e6a7329bebcfda65787fe486aaece6b"
-          },
-          "runtimeMs": {
-            "samples": [
-              2.471,
-              2.374
-            ],
-            "average": 2.423,
-            "minimum": 2.374,
-            "maximum": 2.471
           }
         },
         {
@@ -9360,15 +8787,6 @@
           "signatures": {
             "identityAwareSha256": "bc51c7ea8e317656bcaa2e177eca524ec2775bab8e5e571cd40603d21f5fc574",
             "physicalLayoutSha256": "7af74f1945f62ea2f2cd7c630a9906dab5c6d825b42697cdf123d0a07d9cc1f6"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.583,
-              0.761
-            ],
-            "average": 0.672,
-            "minimum": 0.583,
-            "maximum": 0.761
           }
         },
         {
@@ -9448,15 +8866,6 @@
           "signatures": {
             "identityAwareSha256": "f1607975633146758bdb3d04f6fb45d793d09de8ebdc71e567b811825ddc809e",
             "physicalLayoutSha256": "37e9933f239e9fd30d2da48f520535131e6a7329bebcfda65787fe486aaece6b"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.492,
-              0.408
-            ],
-            "average": 0.45,
-            "minimum": 0.408,
-            "maximum": 0.492
           }
         }
       ],
@@ -9861,15 +9270,6 @@
           "signatures": {
             "identityAwareSha256": "facbead19cac97927f4c61f8ffbfc39a9b12757fbabf2fcd6beeb48d56d1380d",
             "physicalLayoutSha256": "2741914d199eb07dbb50c3f2dc1bd0bc3bec3d7714a8000f9bebba93fbbf7f12"
-          },
-          "runtimeMs": {
-            "samples": [
-              3.27,
-              2.649
-            ],
-            "average": 2.96,
-            "minimum": 2.649,
-            "maximum": 3.27
           }
         },
         {
@@ -9962,15 +9362,6 @@
           "signatures": {
             "identityAwareSha256": "facbead19cac97927f4c61f8ffbfc39a9b12757fbabf2fcd6beeb48d56d1380d",
             "physicalLayoutSha256": "2741914d199eb07dbb50c3f2dc1bd0bc3bec3d7714a8000f9bebba93fbbf7f12"
-          },
-          "runtimeMs": {
-            "samples": [
-              2.749,
-              3.136
-            ],
-            "average": 2.942,
-            "minimum": 2.749,
-            "maximum": 3.136
           }
         },
         {
@@ -10075,15 +9466,6 @@
           "signatures": {
             "identityAwareSha256": "7332d619bce68f891c475b27d3baf35562fa3088ae062908255f1fbc16aaa0fb",
             "physicalLayoutSha256": "5db53b194c092b851af5187d9c796f763b17b7dd5750ddc0e011efbb59e298e9"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.284,
-              0.216
-            ],
-            "average": 0.25,
-            "minimum": 0.216,
-            "maximum": 0.284
           }
         },
         {
@@ -10176,15 +9558,6 @@
           "signatures": {
             "identityAwareSha256": "facbead19cac97927f4c61f8ffbfc39a9b12757fbabf2fcd6beeb48d56d1380d",
             "physicalLayoutSha256": "2741914d199eb07dbb50c3f2dc1bd0bc3bec3d7714a8000f9bebba93fbbf7f12"
-          },
-          "runtimeMs": {
-            "samples": [
-              5.195,
-              5.382
-            ],
-            "average": 5.288,
-            "minimum": 5.195,
-            "maximum": 5.382
           }
         },
         {
@@ -10256,15 +9629,6 @@
           "signatures": {
             "identityAwareSha256": "ae8897941355ed4ef13e086d190429abadcfb7f43b95ffb177c53bd731a337bd",
             "physicalLayoutSha256": "ca594709f7e4924413ae4a5bca5a622a7715e9472621de72e7d281a73d8f052b"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.79,
-              0.919
-            ],
-            "average": 0.855,
-            "minimum": 0.79,
-            "maximum": 0.919
           }
         },
         {
@@ -10357,15 +9721,6 @@
           "signatures": {
             "identityAwareSha256": "facbead19cac97927f4c61f8ffbfc39a9b12757fbabf2fcd6beeb48d56d1380d",
             "physicalLayoutSha256": "2741914d199eb07dbb50c3f2dc1bd0bc3bec3d7714a8000f9bebba93fbbf7f12"
-          },
-          "runtimeMs": {
-            "samples": [
-              2.508,
-              2.444
-            ],
-            "average": 2.476,
-            "minimum": 2.444,
-            "maximum": 2.508
           }
         }
       ],
@@ -10812,15 +10167,6 @@
           "signatures": {
             "identityAwareSha256": "b5d6c0129cbddd50a7c2eb37422e2f38403e100a6182f947a32ef2e9b70103d3",
             "physicalLayoutSha256": "fe6d00307dca9b3433f35839036910e41cf6b81469c7c5f8bcad5988f8e43f13"
-          },
-          "runtimeMs": {
-            "samples": [
-              32.426,
-              23.19
-            ],
-            "average": 27.808,
-            "minimum": 23.19,
-            "maximum": 32.426
           }
         },
         {
@@ -10929,15 +10275,6 @@
           "signatures": {
             "identityAwareSha256": "b5d6c0129cbddd50a7c2eb37422e2f38403e100a6182f947a32ef2e9b70103d3",
             "physicalLayoutSha256": "fe6d00307dca9b3433f35839036910e41cf6b81469c7c5f8bcad5988f8e43f13"
-          },
-          "runtimeMs": {
-            "samples": [
-              22.502,
-              22.396
-            ],
-            "average": 22.449,
-            "minimum": 22.396,
-            "maximum": 22.502
           }
         },
         {
@@ -11072,15 +10409,6 @@
           "signatures": {
             "identityAwareSha256": "e95fb7741892821f8ac5b8efae45e09c2089e5ce31113198fa6449301f54b8b8",
             "physicalLayoutSha256": "01d1596f02cc53043e0808574b5a58bfd2245376e86b5c03f54ea682b67c045c"
-          },
-          "runtimeMs": {
-            "samples": [
-              1.06,
-              0.944
-            ],
-            "average": 1.002,
-            "minimum": 0.944,
-            "maximum": 1.06
           }
         },
         {
@@ -11184,15 +10512,6 @@
           "signatures": {
             "identityAwareSha256": "c2091a6db3fcf1d20a96230b7d2d32da63ee380bd429888f186f0f0d39031249",
             "physicalLayoutSha256": "bd850592237f1e33ce4c969e0640ece4ab46755cc1a2b0d7ba163ab685050aef"
-          },
-          "runtimeMs": {
-            "samples": [
-              47.185,
-              38.279
-            ],
-            "average": 42.732,
-            "minimum": 38.279,
-            "maximum": 47.185
           }
         },
         {
@@ -11278,15 +10597,6 @@
           "signatures": {
             "identityAwareSha256": "376ab78ff92d85b52a9a50b6dbcbd94c9d449bff3dee105cfa795d537d9f3d94",
             "physicalLayoutSha256": "88bb0528ae3d72694010bca6bb8b04899d0cd04d356be91e3eb15314311116eb"
-          },
-          "runtimeMs": {
-            "samples": [
-              3.782,
-              3.768
-            ],
-            "average": 3.775,
-            "minimum": 3.768,
-            "maximum": 3.782
           }
         },
         {
@@ -11383,15 +10693,6 @@
           "signatures": {
             "identityAwareSha256": "639f196e62cce0c27a90274ac2d5f49030757a356d026a56a0494621bb16e88b",
             "physicalLayoutSha256": "ef910b7caa8e2e8702513dbe46ef50ee623063992bcd19caaf940e865afde426"
-          },
-          "runtimeMs": {
-            "samples": [
-              13.545,
-              13.21
-            ],
-            "average": 13.377,
-            "minimum": 13.21,
-            "maximum": 13.545
           }
         }
       ],
@@ -11801,15 +11102,6 @@
           "signatures": {
             "identityAwareSha256": "99b9ac95d99397ace9d91e300b9b8deef21a1ebb7800d61600fa0fb84852c57a",
             "physicalLayoutSha256": "0d4748f1eca39a14a8df3e10e4291c66caa2c2aad8287168ea6f7eb315a4f826"
-          },
-          "runtimeMs": {
-            "samples": [
-              12.248,
-              8.558
-            ],
-            "average": 10.403,
-            "minimum": 8.558,
-            "maximum": 12.248
           }
         },
         {
@@ -11881,15 +11173,6 @@
           "signatures": {
             "identityAwareSha256": "99b9ac95d99397ace9d91e300b9b8deef21a1ebb7800d61600fa0fb84852c57a",
             "physicalLayoutSha256": "0d4748f1eca39a14a8df3e10e4291c66caa2c2aad8287168ea6f7eb315a4f826"
-          },
-          "runtimeMs": {
-            "samples": [
-              4.881,
-              4.103
-            ],
-            "average": 4.492,
-            "minimum": 4.103,
-            "maximum": 4.881
           }
         },
         {
@@ -12014,15 +11297,6 @@
           "signatures": {
             "identityAwareSha256": "9a2631ee7a7a347118865ac8287c4126fbc29ce5483f964fbe4e2f1186d07fce",
             "physicalLayoutSha256": "94a74d5c05e936569ef6d11daa53c463427cc9e0a3422488a95e6d3d9740591c"
-          },
-          "runtimeMs": {
-            "samples": [
-              1.522,
-              1.164
-            ],
-            "average": 1.343,
-            "minimum": 1.164,
-            "maximum": 1.522
           }
         },
         {
@@ -12115,15 +11389,6 @@
           "signatures": {
             "identityAwareSha256": "3ce1da8f145986873b7272a0d183b6b8469eb5a871485e9c55ef60cb9e7e9600",
             "physicalLayoutSha256": "2233597519c3b425c537cb65749ee915975d409af33c1000656612a0a561dac8"
-          },
-          "runtimeMs": {
-            "samples": [
-              4.959,
-              4.975
-            ],
-            "average": 4.967,
-            "minimum": 4.959,
-            "maximum": 4.975
           }
         },
         {
@@ -12207,15 +11472,6 @@
           "signatures": {
             "identityAwareSha256": "f6760a93324afa5091a33c3958a24352e5e85854cf3e398919987b6d6f414d75",
             "physicalLayoutSha256": "772eeb203ab83923f81cb2ba68cf1e0057683a8157f226d4c6ee7f5181914ae7"
-          },
-          "runtimeMs": {
-            "samples": [
-              1.842,
-              1.673
-            ],
-            "average": 1.757,
-            "minimum": 1.673,
-            "maximum": 1.842
           }
         },
         {
@@ -12287,15 +11543,6 @@
           "signatures": {
             "identityAwareSha256": "99b9ac95d99397ace9d91e300b9b8deef21a1ebb7800d61600fa0fb84852c57a",
             "physicalLayoutSha256": "0d4748f1eca39a14a8df3e10e4291c66caa2c2aad8287168ea6f7eb315a4f826"
-          },
-          "runtimeMs": {
-            "samples": [
-              4.319,
-              4.277
-            ],
-            "average": 4.298,
-            "minimum": 4.277,
-            "maximum": 4.319
           }
         }
       ],
@@ -12650,15 +11897,6 @@
           "signatures": {
             "identityAwareSha256": "26a9b22b836ae5df118a9e07061405433f63711d9f7ceb00c6621b57450f9c01",
             "physicalLayoutSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.063,
-              0.031
-            ],
-            "average": 0.047,
-            "minimum": 0.031,
-            "maximum": 0.063
           }
         },
         {
@@ -12721,15 +11959,6 @@
           "signatures": {
             "identityAwareSha256": "26a9b22b836ae5df118a9e07061405433f63711d9f7ceb00c6621b57450f9c01",
             "physicalLayoutSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.029,
-              0.025
-            ],
-            "average": 0.027,
-            "minimum": 0.025,
-            "maximum": 0.029
           }
         },
         {
@@ -12792,15 +12021,6 @@
           "signatures": {
             "identityAwareSha256": "26a9b22b836ae5df118a9e07061405433f63711d9f7ceb00c6621b57450f9c01",
             "physicalLayoutSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.018,
-              0.015
-            ],
-            "average": 0.016,
-            "minimum": 0.015,
-            "maximum": 0.018
           }
         },
         {
@@ -12863,15 +12083,6 @@
           "signatures": {
             "identityAwareSha256": "26a9b22b836ae5df118a9e07061405433f63711d9f7ceb00c6621b57450f9c01",
             "physicalLayoutSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.03,
-              0.027
-            ],
-            "average": 0.028,
-            "minimum": 0.027,
-            "maximum": 0.03
           }
         },
         {
@@ -12934,15 +12145,6 @@
           "signatures": {
             "identityAwareSha256": "26a9b22b836ae5df118a9e07061405433f63711d9f7ceb00c6621b57450f9c01",
             "physicalLayoutSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.026,
-              0.032
-            ],
-            "average": 0.029,
-            "minimum": 0.026,
-            "maximum": 0.032
           }
         },
         {
@@ -13005,15 +12207,6 @@
           "signatures": {
             "identityAwareSha256": "26a9b22b836ae5df118a9e07061405433f63711d9f7ceb00c6621b57450f9c01",
             "physicalLayoutSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-          },
-          "runtimeMs": {
-            "samples": [
-              0.038,
-              0.025
-            ],
-            "average": 0.032,
-            "minimum": 0.025,
-            "maximum": 0.038
           }
         }
       ],
@@ -13286,7 +12479,6 @@
         "identicalToBalancedFixtures": 15,
         "packedTotal": 351,
         "requestedTotal": 529,
-        "averageRuntimeMs": 3.977,
         "packedPercent": 66.35
       },
       "compact-fill": {
@@ -13297,7 +12489,6 @@
         "identicalToBalancedFixtures": 14,
         "packedTotal": 351,
         "requestedTotal": 529,
-        "averageRuntimeMs": 2.66,
         "packedPercent": 66.35
       },
       "floor-first": {
@@ -13308,7 +12499,6 @@
         "identicalToBalancedFixtures": 6,
         "packedTotal": 116,
         "requestedTotal": 529,
-        "averageRuntimeMs": 0.456,
         "packedPercent": 21.93
       },
       "stack-priority": {
@@ -13319,7 +12509,6 @@
         "identicalToBalancedFixtures": 12,
         "packedTotal": 344,
         "requestedTotal": 529,
-        "averageRuntimeMs": 5.433,
         "packedPercent": 65.03
       },
       "max-capacity": {
@@ -13330,7 +12519,6 @@
         "identicalToBalancedFixtures": 4,
         "packedTotal": 404,
         "requestedTotal": 529,
-        "averageRuntimeMs": 1.815,
         "packedPercent": 76.37
       },
       "constrained-first": {
@@ -13341,7 +12529,6 @@
         "identicalToBalancedFixtures": 13,
         "packedTotal": 363,
         "requestedTotal": 529,
-        "averageRuntimeMs": 1.981,
         "packedPercent": 68.62
       }
     },

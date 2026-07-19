@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-19
 
-**Last verified repository state:** Platform-foundation reliability and the final Platform UX–UI Compatibility Closeout are both complete, each validated locally and (where applicable) in development with zero failures; Max Capacity Phase C reporting is complete on `feat/max-capacity-phase-c-reporting` — the approved packed-profile semantics audit contract (Contract C) is implemented, validated (full `npm test` 1071/1076 passed/5 pre-existing skips, typecheck/lint clean, local billing 40/40, workspace-security integration 9/9), and committed, not yet merged
+**Last verified repository state:** Platform-foundation reliability and the final Platform UX–UI Compatibility Closeout are complete; Max Capacity Phase C reporting is closed and merged to `main` at `99be0776d0070f18b18379bbe1e978a3dec03c43`; the evidence-only AutoPack strategy differentiation audit is complete and committed at `e2c44720587496de8705c29a2763437f21703439` on `audit/autopack-strategy-differentiation`, with no production behavior change, and the audit branch has not yet been pushed or merged
 
 ## 1. Document Contract
 
@@ -17,7 +17,7 @@
 9. Do not duplicate mutable status in multiple sections.
 10. Each active task must have one branch, one outcome, and one blocker state.
 11. Replace outdated status rather than appending contradictory status.
-12. Billing reliability and the Platform UX/UI Compatibility Closeout are both closed. Max Capacity Phase C reporting is implemented under the approved packed-profile semantics audit (Contract C) on `feat/max-capacity-phase-c-reporting`, validated, and committed; merge to `main` is a separate, explicit step (Section 4).
+12. Billing reliability, the Platform UX/UI Compatibility Closeout, and Max Capacity Phase C reporting are closed; Phase C was merged to `main` at `99be0776d0070f18b18379bbe1e978a3dec03c43`. The evidence-only AutoPack strategy differentiation audit is the single active task (Section 4).
 
 ## 2. Current Status Snapshot
 
@@ -25,7 +25,7 @@ This table is the single mutable status snapshot in V5.
 
 | Area | Status at the last verified repository state |
 |---|---|
-| Repository | Packet 2 completed from the clean `80ce09b` baseline on `fix/server-workspace-limit-enforcement`; local, deployed-development, and Stripe test-mode fixture milestones remain complete. |
+| Repository | Active evidence-only branch `audit/autopack-strategy-differentiation`; the primary audit is committed at `e2c44720587496de8705c29a2763437f21703439`, has not been pushed or merged, and changes no production behavior. |
 | Supabase Data API grants | Complete, merged, pushed, and applied to development. |
 | Workspace/membership write boundary | Complete. Authenticated clients retain RLS-filtered organization/membership reads and legitimate organization updates, but cannot directly insert organizations or mutate memberships; approved signup and server-controlled creation remain functional. |
 | Server-side workspace creation limit | Complete. `org-create-workspace` supplies the trusted catalog limits to a service-role-only transaction that locks the actor profile, resolves the canonical owner entitlement, counts every owned workspace including archived rows, fails closed on unsafe/unavailable billing identity, and rejects at the effective limit. |
@@ -44,7 +44,8 @@ This table is the single mutable status snapshot in V5.
 | Billing QA BUG-02 / BUG-03 | Proven resolved. Active/included paid workspaces return usable interval and period data; paying owners have an organization-scoped Portal path. Current runtime/local tests, authenticated evidence, and the Stripe S2 lifecycle agree. |
 | Platform-foundation reliability | Closed. The readiness audit re-verified, on a fresh clean 30-migration reset, that Packets 1–3 hold together as one system with no regressions: a single direct SQL check confirmed all nine cross-packet invariants (INSERT revoke, obsolete policy absence, descriptive UPDATE grant, slug NOT NULL/format/uniqueness/guard trigger, `tp3d_create_workspace` service-role-only access) simultaneously; the full audit suite, typecheck, lint, workspace-security integration, and local billing/ownership/security fixtures all passed with zero failures; the development migration ledger showed zero drift (30/30). |
 | Platform UX–UI Compatibility Closeout | Closed. Focused inspection confirmed workspace creation, workspace-limit error messaging, workspace switching, rename live-refresh, archive/restore, and the absence of any direct-INSERT/membership-mutation UI path all already behave correctly post-Packets-1–3. One real finding: the UUID-derived Slug row in Settings had no user-facing meaning and was hidden (`src/ui/overlays/settings-overlay.js`); stored value, import/export, and the read-only server contract are unchanged. Operator-confirmed: full `npm test`, typecheck, lint, clean local Supabase reset, workspace-security integration (9/9), and local billing/ownership/security (40/40) all passed with zero failures and zero residual fixture rows. |
-| Max Capacity Phase C | Reporting implemented on `feat/max-capacity-phase-c-reporting` per the approved packed-profile semantics audit (Contract C); validated and committed, not yet merged to `main`. |
+| Max Capacity Phase C | Closed and merged to `main` at `99be0776d0070f18b18379bbe1e978a3dec03c43`; the approved packed-profile semantics contract and reporting surfaces are complete. |
+| AutoPack strategy differentiation audit | Active evidence-only task. Complete and committed at `e2c44720587496de8705c29a2763437f21703439` on `audit/autopack-strategy-differentiation`; unblocked, not yet pushed or merged, and no production behavior changed. |
 | Development schema drift | Legacy cases/packs, policies/functions, and billing ID differences remain a separate, non-blocking future audit. |
 
 ## 3. Current Source of Truth
@@ -62,33 +63,37 @@ This table is the single mutable status snapshot in V5.
 
 | Field | Current value |
 |---|---|
-| Task | Max Capacity Phase C — profile-membership reporting, implemented per the approved packed-profile semantics audit. |
-| Branch | `feat/max-capacity-phase-c-reporting` |
-| Outcome | Canonical `maxCapacityProfileCount` statistic added to `computeStats()`; surfaced in the applied Stats card, the pre-Apply AutoPack Results panel (Max Capacity option only), and the PDF summary. See Section 10 and [Max Capacity Phase C — Packed-Profile Semantics Audit](../audits/max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md) for the approved contract this implements. |
-| Blocker state | Unblocked. Implementation complete, validated (full `npm test`, typecheck, lint, `git diff --check`, local billing, workspace-security integration all passed), and committed on this branch. Not yet merged to `main` — merge is a separate, explicit step. |
-| Scope boundary | This branch is the Phase C reporting implementation only — no solver, duplicate, Truck Change, geometry, billing, or schema changes. Do not combine with friendly-slug Phase 2, Pack Publishing/Crew View/Share Links, commercial billing, or Stripe. |
-| Closeout | Recorded in Section 7 below. Merge to `main` remains an explicit follow-up action. |
+| Task | AutoPack strategy differentiation audit — evidence reconciliation and closeout. |
+| Branch | `audit/autopack-strategy-differentiation` |
+| Outcome | Evidence-only characterization of six production strategies across 15 deterministic fixtures, with machine-readable results, focused tests, and representative browser evidence. The primary audit is complete and committed at `e2c44720587496de8705c29a2763437f21703439`; no production behavior changed. |
+| Blocker state | Unblocked. The audit is complete and committed; the branch has not yet been pushed or merged. |
+| Scope boundary | Audit harness, deterministic fixtures, generated evidence, tests, and concise documentation only. The Max Capacity product-copy clarification remains a recommendation, not approved implementation work. |
+| Closeout | Review the committed evidence, then explicitly authorize push and merge of the audit branch. |
 
 Only this row is active. The following section is an approved sequence, not simultaneous work.
 
 ## 5. Next Approved Execution Queue
 
-1. Merge `feat/max-capacity-phase-c-reporting` to `main` when explicitly authorized.
-2. Keep the Phase 2 friendly workspace-slug capability in the approved future product roadmap; plan and implement it separately from Phase 1 integrity.
-3. Keep Pack Publishing / Crew View / Share Links as a separate deferred product initiative (Section 12); not part of Phase 2.
+1. Review the committed AutoPack strategy differentiation evidence and cleanup metadata.
+2. After explicit authorization, push `audit/autopack-strategy-differentiation` and merge it to `main`.
+3. Keep the Phase 2 friendly workspace-slug capability in the approved future product roadmap; plan and implement it separately from Phase 1 integrity.
+4. Keep Pack Publishing / Crew View / Share Links as a separate deferred product initiative (Section 12); not part of Phase 2.
+
+The audit's Max Capacity product-copy clarification is a recommendation only and is not approved implementation work.
 
 Queue order is approval order. Start one branch at a time and record its active branch, outcome, and blocker state in Section 4.
 
 ## 6. Current Blockers
 
-- Commercial pricing is not final; later fixture work must not invent future commercial terms.
-- None remaining for Max Capacity Phase C. Reporting is implemented, validated, and committed on `feat/max-capacity-phase-c-reporting`; only the explicit merge-to-main decision is outstanding.
+- None for the active AutoPack strategy differentiation audit. It is complete, committed, and awaiting explicit review, push, and merge authorization.
+- Commercial pricing is not final, but that remains unrelated and non-blocking for this evidence-only audit closeout.
 
 ## 7. Recently Completed Milestones
 
 | Milestone | Concise result | Evidence |
 |---|---|---|
-| Max Capacity Phase C — profile-membership reporting | Branch `feat/max-capacity-phase-c-reporting` (built on top of the merged `audit/max-capacity-phase-c-profile-semantics` audit). Implements the approved packed-profile semantics contract: `packedProfile === 'max-capacity'` means active Max Capacity profile membership (Contract C), not per-case proof that a relaxed rule was individually required. Added one canonical statistic, `maxCapacityProfileCount`, to `computeStats()` (`src/services/pack-library.js`), counting currently packed, non-hidden, case-resolved instances carrying the marker — using the same live geometric packed/staged classification already used for `packedCases`, so it can never disagree with "Packed in truck." Surfaced in three existing surfaces with no redesign: the applied Stats card (`src/screens/editor-screen.js` `renderTruckInspector()`, conditional row hidden at zero, "Max Capacity profile" label with an explanatory tooltip); the pre-Apply AutoPack Results panel (`renderAutoPackResultsPanel()`, one conditional chip for the Max Capacity option only, reusing the existing candidate `packedCount` — no new engine field); and the PDF summary (`src/app.js` `generatePDF()`, one conditional line). No changes to the solver, engine relaxation logic, duplicate handling, Truck Change/reconciliation, geometry, billing, auth, or schema. 10 new focused tests (`tests/audit/max-capacity-phase-c-reporting.spec.mjs`) plus 2 pre-existing test-file assertions in `security-and-invariants.spec.mjs` updated to reflect the new Stats-card row (one row-count assertion, one over-broad "capacity" keyword-ban regex narrowed to exclude the approved "Max Capacity" name/identifiers/doc-path forms while still catching genuinely invented ft³/capacity values). Full validation: `npm test` 1071/1076 passed (0 failed, 5 pre-existing skips), typecheck and lint clean (0 errors), `git diff --check` clean, local billing/ownership/security 40/40, workspace-security integration 9/9. Committed, not yet merged to `main`. | [Packed-Profile Semantics Audit](../audits/max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md), `src/services/pack-library.js`, `src/screens/editor-screen.js`, `src/app.js`, `tests/audit/max-capacity-phase-c-reporting.spec.mjs`, `tests/audit/max-capacity-duplicate-characterization.spec.mjs`, `tests/audit/max-capacity-truck-change-characterization.spec.mjs` |
+| AutoPack strategy differentiation audit | Complete and committed at `e2c44720587496de8705c29a2763437f21703439` on evidence-only branch `audit/autopack-strategy-differentiation`; 15 deterministic fixtures across six strategies produced stable signatures, zero invalid placements, zero canonical-count mismatches, and matching representative browser evidence. No production behavior changed; the branch is not yet pushed or merged. Max Capacity copy clarification remains a recommendation only. | [audit report](../audits/autopack-strategy-differentiation-audit-2026-07-19.md), [machine results](../audits/autopack-strategy-differentiation-results-2026-07-19.json), `scripts/autopack-strategy-audit.mjs`, `tests/audit/autopack-strategy-differentiation.spec.mjs` |
+| Max Capacity Phase C — profile-membership reporting | Closed and merged to `main` at `99be0776d0070f18b18379bbe1e978a3dec03c43`. Implements the approved Contract C `maxCapacityProfileCount` reporting in the applied Stats card, pre-Apply Results panel, and PDF summary without changing solver, geometry, duplicate, reconciliation, billing, auth, or schema behavior. | [Packed-Profile Semantics Audit](../audits/max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md), `src/services/pack-library.js`, `src/screens/editor-screen.js`, `src/app.js`, `tests/audit/max-capacity-phase-c-reporting.spec.mjs` |
 | Platform UX–UI Compatibility Closeout | Branch `fix/platform-ux-ui-compatibility-closeout`. Focused inspection confirmed workspace creation, workspace-limit error messaging, workspace switching, rename live-refresh, archive/restore, and the absence of any direct-INSERT/membership-mutation UI path all already behave correctly post-Packets-1–3 — no code change needed for those. One real finding: the UUID-derived Slug row in the Settings General card had no user-facing meaning (Phase 1 is integrity-only) and was hidden (2 loading-skeleton placeholders + the real value row, the only 3 call sites reading `orgData.slug` in `src/`). Stored value, import/export, and the read-only server contract are unchanged; no editing, routing, or sharing UI was added. `docs/product/SETTINGS-WORKSPACE-GENERAL-UI-PLAN.md` (an approved-but-deferred Phase UI-2/UI-3 plan assuming Slug stayed in Card 1) was reconciled at its four Slug references. Operator-confirmed: full `npm test`, typecheck, lint, clean local Supabase reset, workspace-security integration (9/9), and local billing/ownership/security (40/40) all passed, zero failures, zero residual fixture rows. No sharing, routing, billing, schema, or AutoPack behavior was introduced. | [migration/plan doc](../product/SETTINGS-WORKSPACE-GENERAL-UI-PLAN.md), `src/ui/overlays/settings-overlay.js`, `tests/local-db/workspace-membership-security.spec.mjs`, `tests/local-db/security-local.spec.mjs`, `tests/audit/security-and-invariants.spec.mjs` |
 | Platform-foundation reliability closeout — readiness audit | Read-only audit (no branch, no code changes) on `main` HEAD `3253580`. Re-verified from a clean 30-migration reset that Packets 1–3 hold together with no regressions: one direct SQL query confirmed all nine cross-packet invariants simultaneously (organization INSERT revoked/UPDATE retained, obsolete insert policy absent, slug NOT NULL/format/uniqueness/guard trigger all present, `tp3d_create_workspace` service-role-only). Full audit suite 1,051/1,056 passed, typecheck/lint clean, `workspace-membership-security.spec.mjs` (Packets 1+2+3 together) 9/9, local billing/ownership/security 40/40, development migration ledger 30/30 with zero drift. Formally declares platform-foundation reliability closed; the final Platform UX–UI Compatibility Closeout remains the next, unstarted task. | `tests/local-db/workspace-membership-security.spec.mjs`, `tests/local-db/security-local.spec.mjs`, `tests/audit/security-and-invariants.spec.mjs` |
 | Workspace-slug Phase 1 integrity — Packet 3 | Migration `20260717150000_enforce_workspace_slug_integrity.sql` backfills/converges every null, blank, malformed, duplicate, or case-variant-duplicate slug to the canonical `lower(id::text)` UUID-derived shape (deterministic, collision-free by construction), then enforces `NOT NULL`, a case-insensitive unique index on `lower(slug)`, and a bounded `^[a-z0-9-]{1,100}$` format check. Direct authenticated/anon slug mutation is blocked by an invoker-rights guard trigger (`before update of slug`) reusing the proven `tp3d_guard_profile_deletion_fields` trusted-role pattern — no change to the signup trigger. `tp3d_create_workspace` was redefined only to replace its null-slug-then-update insert (incompatible with `NOT NULL`) with a single INSERT writing a pre-generated id/slug directly; every entitlement, locking, counting, and limit-check line is unchanged from Packet 2. Local: clean 30-migration reset, workspace-security integration 9/9, local billing/ownership/security 40/40, full audit suite 1,051/1,056 passed (0 fail, 5 pre-existing skips), typecheck and lint clean. Development: migration applied to `yduzbvijzwczjapanxbd`; all 82 pre-existing organizations converged to valid/unique/non-null slugs with zero manual intervention; deployed D2 matrix passed 38/38 including signup, server workspace creation, workspace limits, same-owner concurrency, and archive/restore; exact-ID cleanup of 6 disposable fixture users completed with zero residue. Self-audit confirmed slug is not used as authorization anywhere, Packet 2 entitlement/concurrency logic is byte-identical, and no Phase 2 friendly-slug work began. | [migration](../../supabase/migrations/20260717150000_enforce_workspace_slug_integrity.sql), `tests/local-db/workspace-membership-security.spec.mjs`, `tests/local-db/security-local.spec.mjs`, `tests/audit/security-and-invariants.spec.mjs`, `tests/integration/dev-billing/deployed-functions.spec.mjs` |
@@ -215,7 +220,9 @@ The foundation must preserve [Billing Entitlement Rules](./BILLING_ENTITLEMENT_R
 
 The stable AutoPack/editor baseline includes the solution portfolio, Max Capacity Phase A, durable per-instance Phase B metadata, editor operation lifecycle guards, manual placement safety, organized Unpack polish, and the existing Wheel Wells and Front Overhang hard-rule contracts. Detailed milestone reports remain in [archived V4](../archive/master-todos/TP3D-MASTER-TODO-V4.md).
 
-Phase C — a small reporting follow-up, without UI redesign or legal, axle, or DOT claims — is implemented on `feat/max-capacity-phase-c-reporting`, per the permanent contract recorded in [Max Capacity Phase C — Packed-Profile Semantics Audit](../audits/max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md): `packedProfile` denotes active Max Capacity profile membership (Contract C), reported as the `maxCapacityProfileCount` canonical statistic in the applied Stats card, the pre-Apply Results panel, and the PDF summary. Duplicate handling, Truck Change/reconciliation, the solver, and geometry were intentionally not touched — the characterization evidence in that audit proved a duplicate may correctly retain the marker when profile membership is required for coherent validation. See Section 7 for full validation results. Merge to `main` remains a separate, explicit step.
+Phase C — a small reporting follow-up, without UI redesign or legal, axle, or DOT claims — is closed and merged to `main` at `99be0776d0070f18b18379bbe1e978a3dec03c43`, per the permanent contract recorded in [Max Capacity Phase C — Packed-Profile Semantics Audit](../audits/max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md): `packedProfile` denotes active Max Capacity profile membership (Contract C), reported as the `maxCapacityProfileCount` canonical statistic in the applied Stats card, the pre-Apply Results panel, and the PDF summary. Duplicate handling, Truck Change/reconciliation, the solver, and geometry were intentionally not touched.
+
+The evidence-only AutoPack strategy differentiation audit is complete and committed on `audit/autopack-strategy-differentiation`; it changes no production behavior and awaits explicit review, push, and merge. Its Max Capacity product-copy clarification is a recommendation only, not approved implementation work. See Section 4 for the active-task state and Section 7 for evidence links.
 
 Future AutoPack quality, strategy, manual placement, and performance architecture belong in the reference-only inventory below. They are not active work.
 
@@ -272,7 +279,7 @@ The decisions in Section 11 are prerequisites. Each accepted candidate needs a s
 
 Workspace Slug Phase 1 (integrity-only: backfill/normalize, non-null, case-insensitive uniqueness, bounded format, server-controlled mutation) is complete and closed — see Section 9. The technical Slug row is currently hidden from Settings (Platform UX/UI Compatibility Closeout, Section 9) because the UUID-derived slug has no user-facing meaning yet.
 
-The full friendly workspace-slug feature remains required product work, not optional metadata cleanup, and is **not required before Max Capacity Phase C**. It must be planned and implemented separately with:
+The full friendly workspace-slug feature remains required product work, not optional metadata cleanup, and remains separate from the now-closed Max Capacity Phase C. It must be planned and implemented separately with:
 
 - owner-authorized human-readable slug editing, validation, availability/collision checks, and reserved words;
 - Settings editing UX, rename behavior, and audit logging;
@@ -286,7 +293,7 @@ Slug possession must never grant workspace access.
 
 ### Pack Publishing / Crew View / Share Links — deferred
 
-A separate deferred product initiative, **not part of Workspace Slug Phase 2**. Not started; not required before Max Capacity Phase C. Future scope includes:
+A separate deferred product initiative, **not part of Workspace Slug Phase 2**. Not started and separate from the now-closed Max Capacity Phase C. Future scope includes:
 
 - published load plans;
 - public or authenticated viewers;

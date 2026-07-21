@@ -4,7 +4,9 @@
 
 This document is the permanent architecture contract for Cargo Instructions: Standard Instructions (Case-owned), Instance Notes (Pack-instance-owned), and Pack Notes (Pack-owned). It must be read before changing `notes`/`instanceNotes` fields, Case↔Instance propagation, or the Inspector's Standard Instructions / Instance Notes surfaces.
 
-Phase 0 is evidence-only. **No production code changed in this phase.** No user-visible functionality changed. This document locks the architecture; implementation is deferred to approved later phases (Section 8).
+Phase 0 was evidence-only: no production code changed, no user-visible functionality changed. This document locks the architecture; implementation proceeds per the phase plan in Section 8.
+
+**Implementation status (2026-07-20):** Phase 1 (Standard Instructions, read-only Inspector card) and Phase 2 (Instance Notes, `instanceNotes`) are both implementation-complete, automated-test-validated, and committed on `feat/inspector-case-notes` at `ffd1d75` and `086004b` respectively. Live browser QA for both is outstanding — this environment has no dev-serve script and no Supabase credentials to authenticate past sign-in (confirmed directly). Phase 3 (Pack Notes Editor access) has not been started. See Section 8 for per-phase evidence.
 
 ---
 
@@ -34,7 +36,7 @@ Case  (src/services/case-library.js — CaseLibrary; canonical record)
 Pack Instance  (pack.cases[i] — element of Pack.cases, normalized by normalizeInstance())
 ├── Position / Rotation / Scale        (transform)
 ├── Loaded State                       (placement: 'packed' | 'staged', hidden)
-├── Instance Notes                     (instanceNotes — NEW, this phase locks the name only)
+├── Instance Notes                     (instanceNotes — implemented Phase 2, `086004b`)
 ├── Flags                              (orientationLocked, lockedRotation, packedProfile, deliverySequence)
 └── Runtime Data                       (orientedDims, groupId)
 
@@ -73,7 +75,7 @@ This diagram is the single source of truth for where a Cargo Instructions field 
 - Canonical update path: `CaseLibrary.upsert(caseData)`.
 
 ### Pack Instance owns (Instance Notes is new; everything else already exists)
-- `instanceNotes` — **new field, not yet implemented.** Recommended contract, matching the Standard Instructions convention already proven this branch: string or `null`, trimmed, whitespace-only → `null`. Normalizer: extend `normalizer.js::normalizeInstance` (the only normalizer for instances — there is no `instance.model.js` counterpart to `case.model.js`, so this is a single-file addition).
+- `instanceNotes` — **implemented, Phase 2 (`086004b`).** Same contract as Standard Instructions: string or `null`, trimmed, whitespace-only → `null`. Normalized in `normalizer.js::normalizeInstance` (the only normalizer for instances — there is no `instance.model.js` counterpart to `case.model.js`).
 - `transform` (position, rotation, scale), `placement` (`'packed' | 'staged' | null`), `hidden`, `groupId`, `orientationLocked`, `lockedRotation`, `orientedDims`, `deliverySequence`, `packedProfile`.
 - Recommended canonical update path for `instanceNotes`: `PackLibrary.updateInstance(packId, instanceId, { instanceNotes })` — an existing, production-used, single-instance patch function (currently used for the `hidden` visibility toggle at `editor-screen.js:4902`). It does not trigger placement/collision revalidation, which is correct for a non-geometric text field.
 
@@ -145,11 +147,11 @@ Net effect: editing a Case's Standard Instructions from the Cases screen while t
 
 ---
 
-## 8. Implementation plan (future phases — not begun)
+## 8. Implementation plan
 
-1. **Phase 1 — Standard Instructions inline card.** Remove the modal from the Inspector's Standard Instructions surface (built on `feat/inspector-case-notes` this session); replace with an always-visible read-only card in `renderSingleInspector`, labeled as inherited from the Case. Update the corresponding test file. No data-layer change.
-2. **Phase 2 — Instance Notes.** Add `instanceNotes` to `normalizeInstance()`; add a single-selection Inspector button/card wired to `PackLibrary.updateInstance`; add the full test suite mirrored from Phase 1's proven patterns (normalization, persistence, undo/redo, duplication, AutoPack/Truck-Change survival, JSON round trip).
-3. **Phase 3 — Pack Notes Editor access.** Add a minimal Editor toolbar/header entry point calling `PackLibrary.update(pack.id, { notes })` directly; field-parity test against the existing Packs-screen Edit Pack modal.
+1. **Phase 1 — Standard Instructions inline card. DONE — `ffd1d75`.** Removed the Inspector Notes modal prototype (`openCaseNotesModal` and its button) entirely; replaced with an always-visible, read-only "Standard Instructions" section in `renderSingleInspector`'s top Case summary card. Cases-screen `case-modal.js` label updated to match. No persisted-field or normalization change. 17 focused tests, full suite/typecheck/lint clean. Live browser QA outstanding (environment blocker, see Implementation status above).
+2. **Phase 2 — Instance Notes. DONE — `086004b`.** Added `instanceNotes` to `normalizeInstance()`; added a single-selection Inspector control wired to `PackLibrary.updateInstance`, with packId/instanceId selection safety mirroring Phase 1's proven pattern. Verified directly (not assumed) that AutoPack and Truck Change/canonical-pose reconciliation already preserve `instanceNotes`. Found and fixed a real gap: `buildSafeDuplicateInstances` was deep-cloning the full source instance and would have copied `instanceNotes` onto a fresh duplicate; it now resets to `null` on duplicate. 16 new focused tests, full suite/typecheck/lint clean. Live browser QA outstanding (same environment blocker).
+3. **Phase 3 — Pack Notes Editor access. Not started.** Add a minimal Editor toolbar/header entry point calling `PackLibrary.update(pack.id, { notes })` directly; field-parity test against the existing Packs-screen Edit Pack modal.
 4. **Phase 4 (optional, not scoped by this contract) — indicators.** Subtle "has instructions/notes" indicators on Case cards / Pack cards, if pursued; no repository precedent exists for this pattern today, so it would need its own small design decision before implementation.
 
 Each phase is independently shippable and independently revertible; none depends on a later phase's code.

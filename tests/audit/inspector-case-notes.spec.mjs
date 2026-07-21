@@ -26,6 +26,7 @@ const stateStoreUrl = new URL('../../src/core/state-store.js', import.meta.url);
 const caseLibraryUrl = new URL('../../src/services/case-library.js', import.meta.url);
 const packLibraryUrl = new URL('../../src/services/pack-library.js', import.meta.url);
 const importExportUrl = new URL('../../src/services/import-export.js', import.meta.url);
+const autopackEngineUrl = new URL('../../src/services/autopack-engine.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 
 function baseCase(overrides = {}) {
@@ -370,5 +371,316 @@ test('the Standard Instructions value is rendered with safe plain-text assignmen
 
   assert.match(block, /instructionsValue\.textContent = note;/, 'the populated value must be assigned via textContent, not innerHTML');
   assert.doesNotMatch(block, /instructionsValue\.innerHTML/, 'the Standard Instructions value must never be assigned via innerHTML');
+  assert.match(block, /tp3d-case-notes-read/, 'the populated value must reuse the existing line-break-preserving read-only class');
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Item Notes (Pack-instance-owned instanceNotes).
+//
+// Item Notes describe one specific placed unit in one specific Pack — unlike
+// Standard Instructions, this remains genuinely editable from the Inspector,
+// so it keeps the proven Empty/Read/Edit modal pattern (formerly used for
+// Standard Instructions), retargeted at PackLibrary.updateInstance instead
+// of CaseLibrary.upsert. See
+// docs/engineering/cargo-instructions-ownership-contract.md.
+// ---------------------------------------------------------------------------
+
+function baseInstance(caseId, overrides = {}) {
+  return {
+    id: 'inst-notes-1',
+    caseId,
+    transform: {
+      position: { x: 20, y: 5, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+    hidden: false,
+    groupId: null,
+    placement: 'packed',
+    ...overrides,
+  };
+}
+
+test('core/normalizer.js normalizeInstance stores instanceNotes as string-or-null', async () => {
+  const Normalizer = await import(normalizerUrl.href);
+  const caseMap = new Map();
+  assert.equal(Normalizer.normalizeInstance(baseInstance('case-x', { instanceNotes: '  Dented corner  ' }), caseMap).instanceNotes, 'Dented corner');
+  assert.equal(Normalizer.normalizeInstance(baseInstance('case-x', { instanceNotes: '   ' }), caseMap).instanceNotes, null);
+  assert.equal(Normalizer.normalizeInstance(baseInstance('case-x', {}), caseMap).instanceNotes, null,
+    'legacy instances with no instanceNotes field must normalize safely to null');
+  assert.equal(Normalizer.normalizeInstance(baseInstance('case-x', { instanceNotes: 7 }), caseMap).instanceNotes, null);
+  const multiline = 'Line one\nLine two';
+  assert.equal(Normalizer.normalizeInstance(baseInstance('case-x', { instanceNotes: multiline }), caseMap).instanceNotes, multiline,
+    'internal line breaks must be preserved');
+});
+
+test('PackLibrary.updateInstance saves instanceNotes on only the targeted instance, leaving the Case, Pack Notes, and sibling instances untouched', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const CaseLibrary = await import(caseLibraryUrl.href);
+  const PackLibrary = await import(packLibraryUrl.href);
+  const c = baseCase({ notes: 'Case-level instructions' });
+  const instA = baseInstance(c.id, { id: 'inst-a' });
+  const instB = baseInstance(c.id, {
+    id: 'inst-b',
+    transform: { position: { x: 40, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+  });
+  const pack = {
+    id: 'pack-item-notes',
+    title: 'Item Notes Pack',
+    notes: 'Pack-level notes',
+    truck: { length: 300, width: 96, height: 110, shapeMode: 'rect' },
+    cases: [instA, instB],
+  };
+  StateStore.init({ caseLibrary: [c], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  PackLibrary.updateInstance(pack.id, instA.id, { instanceNotes: 'Arrived with a dent' });
+  const afterSave = PackLibrary.getById(pack.id);
+  assert.equal(afterSave.cases.find(i => i.id === instA.id).instanceNotes, 'Arrived with a dent');
+  assert.equal(afterSave.cases.find(i => i.id === instB.id).instanceNotes, undefined, 'the sibling instance must be untouched');
+  assert.equal(afterSave.notes, 'Pack-level notes', 'Pack Notes must be untouched');
+  assert.equal(CaseLibrary.getById(c.id).notes, 'Case-level instructions', 'Standard Instructions must be untouched');
+
+  PackLibrary.updateInstance(pack.id, instA.id, { instanceNotes: null });
+  assert.equal(PackLibrary.getById(pack.id).cases.find(i => i.id === instA.id).instanceNotes, null, 'clearing must save null');
+});
+
+test('PackLibrary.updateInstance instanceNotes changes participate in StateStore undo/redo as a single history step', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const PackLibrary = await import(packLibraryUrl.href);
+  const c = baseCase({});
+  const inst = baseInstance(c.id, { instanceNotes: 'Original item note' });
+  const pack = { id: 'pack-undo-notes', title: 'Undo Pack', truck: { length: 300, width: 96, height: 110, shapeMode: 'rect' }, cases: [inst] };
+  StateStore.init({ caseLibrary: [c], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  PackLibrary.updateInstance(pack.id, inst.id, { instanceNotes: 'Updated item note' });
+  assert.equal(PackLibrary.getById(pack.id).cases[0].instanceNotes, 'Updated item note');
+
+  StateStore.undo();
+  assert.equal(PackLibrary.getById(pack.id).cases[0].instanceNotes, 'Original item note',
+    'packLibrary is already a significant/undoable state key — no new history plumbing is needed');
+
+  StateStore.redo();
+  assert.equal(PackLibrary.getById(pack.id).cases[0].instanceNotes, 'Updated item note');
+});
+
+test('two instances of the same Case can hold independent instanceNotes while still resolving the identical Standard Instructions', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const CaseLibrary = await import(caseLibraryUrl.href);
+  const PackLibrary = await import(packLibraryUrl.href);
+  const c = baseCase({ notes: 'Shared Standard Instructions' });
+  const instA = baseInstance(c.id, { id: 'inst-own-a' });
+  const instB = baseInstance(c.id, {
+    id: 'inst-own-b',
+    transform: { position: { x: 40, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+  });
+  const pack = { id: 'pack-own', title: 'Ownership Pack', truck: { length: 300, width: 96, height: 110, shapeMode: 'rect' }, cases: [instA, instB] };
+  StateStore.init({ caseLibrary: [c], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  PackLibrary.updateInstance(pack.id, instA.id, { instanceNotes: 'Item A: handle with care' });
+  PackLibrary.updateInstance(pack.id, instB.id, { instanceNotes: 'Item B: repackaged in field' });
+
+  const after = PackLibrary.getById(pack.id);
+  assert.equal(after.cases.find(i => i.id === instA.id).instanceNotes, 'Item A: handle with care');
+  assert.equal(after.cases.find(i => i.id === instB.id).instanceNotes, 'Item B: repackaged in field');
+  assert.equal(CaseLibrary.getById(c.id).notes, 'Shared Standard Instructions', 'editing Item Notes must never mutate case.notes');
+});
+
+test('duplicating the whole Pack preserves Item Notes on every cloned instance', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const PackLibrary = await import(packLibraryUrl.href);
+  const c = baseCase({});
+  const inst = baseInstance(c.id, { instanceNotes: 'Preserve me across Pack duplication' });
+  const pack = { id: 'pack-dup-whole', title: 'Whole Pack Dup', truck: { length: 300, width: 96, height: 110, shapeMode: 'rect' }, cases: [inst] };
+  StateStore.init({ caseLibrary: [c], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  const copy = PackLibrary.duplicate(pack.id);
+  assert.ok(copy && copy.id !== pack.id);
+  assert.equal(copy.cases[0].instanceNotes, 'Preserve me across Pack duplication');
+});
+
+test('duplicating a single instance in the Editor starts the new instance with no Item Notes (does not copy the source instance\'s instanceNotes)', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const PackLibrary = await import(packLibraryUrl.href);
+  const c = baseCase({});
+  const inst = baseInstance(c.id, { instanceNotes: 'Only true of the original unit' });
+  const pack = { id: 'pack-dup-inst', title: 'Instance Dup', truck: { length: 300, width: 96, height: 110, shapeMode: 'rect' }, cases: [inst] };
+  StateStore.init({ caseLibrary: [c], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  const result = PackLibrary.duplicateInstancesSafely(pack.id, [inst], [c]);
+  assert.ok(result && result.newIds.length === 1);
+  const dup = result.pack.cases.find(i => i.id === result.newIds[0]);
+  assert.equal(dup.instanceNotes, null, 'a freshly duplicated instance must not inherit the source instanceNotes');
+
+  const original = result.pack.cases.find(i => i.id === inst.id);
+  assert.equal(original.instanceNotes, 'Only true of the original unit', 'the original instance must be unaffected by the duplicate');
+});
+
+test('AutoPack repacking (buildAutoPackNextCases) preserves instanceNotes on a repositioned, non-hidden instance', async () => {
+  const AutoPackEngine = await import(autopackEngineUrl.href);
+  const inst = {
+    id: 'inst-ap',
+    caseId: 'case-ap',
+    transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+    hidden: false,
+    placement: 'staged',
+    instanceNotes: 'Fragile top',
+  };
+  const placements = new Map([[inst.id, { x: 10, y: 5, z: 0 }]]);
+  const rotations = new Map([[inst.id, { x: 0, y: 0, z: 0 }]]);
+  const [next] = AutoPackEngine.buildAutoPackNextCases([inst], placements, rotations, new Map(), new Map());
+  assert.equal(next.instanceNotes, 'Fragile top');
+  assert.equal(next.placement, 'packed');
+});
+
+test('Truck Change reconciliation (reconcilePlacementsForTruck / canonical pose) preserves instanceNotes', async () => {
+  const PackLibrary = await import(packLibraryUrl.href);
+  const truck = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
+  const c = { id: 'case-recon', name: 'Recon Case', dimensions: { length: 10, width: 10, height: 10 }, weight: 10, category: 'Default' };
+  const inst = {
+    id: 'inst-recon',
+    caseId: c.id,
+    transform: { position: { x: 20, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+    hidden: false,
+    groupId: null,
+    placement: 'packed',
+    instanceNotes: 'Preserve through reconciliation',
+  };
+  const pack = { id: 'pack-recon', truck, cases: [inst] };
+
+  const result = PackLibrary.reconcilePlacementsForTruck(pack, truck, [c]);
+  const reconciled = result.nextPack.cases.find(i => i.id === inst.id);
+  assert.equal(reconciled.instanceNotes, 'Preserve through reconciliation');
+});
+
+test('toggling instance visibility or transform via PackLibrary.updateInstance preserves an unrelated instanceNotes value', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const PackLibrary = await import(packLibraryUrl.href);
+  const c = baseCase({});
+  const inst = baseInstance(c.id, { instanceNotes: 'Survive a visibility toggle' });
+  const pack = { id: 'pack-hidden-notes', title: 'Hidden Toggle Pack', truck: { length: 300, width: 96, height: 110, shapeMode: 'rect' }, cases: [inst] };
+  StateStore.init({ caseLibrary: [c], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  PackLibrary.updateInstance(pack.id, inst.id, { hidden: true });
+  assert.equal(PackLibrary.getById(pack.id).cases[0].instanceNotes, 'Survive a visibility toggle');
+
+  PackLibrary.updateInstance(pack.id, inst.id, {
+    transform: { position: { x: 60, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+  });
+  assert.equal(PackLibrary.getById(pack.id).cases[0].instanceNotes, 'Survive a visibility toggle',
+    'a position/rotation update must not disturb an unrelated field');
+});
+
+test('instanceNotes survives Pack, app, and workspace JSON export/import round trips, and legacy instances with no field remain valid', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const ImportExport = await import(importExportUrl.href);
+  const c = baseCase({});
+  const noted = baseInstance(c.id, { id: 'inst-rt-notes', instanceNotes: 'Round trip item note' });
+  const legacy = baseInstance(c.id, {
+    id: 'inst-rt-legacy',
+    transform: { position: { x: 60, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+  });
+  const pack = {
+    id: 'pack-rt-notes',
+    title: 'Item Notes Round Trip',
+    truck: { length: 300, width: 96, height: 110, shapeMode: 'rect' },
+    cases: [noted, legacy],
+  };
+  StateStore.init({ caseLibrary: [c], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  const packPayload = ImportExport.parsePackImportJSON(ImportExport.buildPackExportJSON(pack));
+  const notedOut = packPayload.pack.cases.find(i => i.id === noted.id);
+  const legacyOut = packPayload.pack.cases.find(i => i.id === legacy.id);
+  assert.equal(notedOut.instanceNotes, 'Round trip item note');
+  assert.equal(legacyOut.instanceNotes ?? null, null, 'a legacy instance with no instanceNotes field must import safely');
+
+  const restoredApp = ImportExport.parseAppImportJSON(ImportExport.buildAppExportJSON());
+  const appPack = restoredApp.packLibrary.find(p => p.id === pack.id);
+  assert.equal(appPack.cases.find(i => i.id === noted.id).instanceNotes, 'Round trip item note');
+
+  const restoredWorkspace = ImportExport.parseWorkspaceImportJSON(ImportExport.buildWorkspaceExportJSON('QA Workspace'));
+  const wsPack = restoredWorkspace.packLibrary.find(p => p.id === pack.id);
+  assert.equal(wsPack.cases.find(i => i.id === noted.id).instanceNotes, 'Round trip item note');
+});
+
+// ---------------------------------------------------------------------------
+// editor-screen.js source-contract checks for openInstanceNotesModal.
+// ---------------------------------------------------------------------------
+
+test('editor-screen defines openInstanceNotesModal(pack, inst) and captures packId + instanceId before any modal opens', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = extractFunctionBlock(src, 'function openInstanceNotesModal(pack, inst)');
+  assert.ok(block.length > 0, 'editor-screen must define openInstanceNotesModal(pack, inst)');
+
+  const packIdCaptureIdx = block.indexOf('const packId = pack.id;');
+  const instanceIdCaptureIdx = block.indexOf('const instanceId = inst.id;');
+  assert.ok(packIdCaptureIdx >= 0 && instanceIdCaptureIdx >= 0, 'packId and instanceId must both be captured once from the passed-in pack/inst');
+  const firstModalCallIdx = block.indexOf('UIComponents.showModal');
+  assert.ok(packIdCaptureIdx < firstModalCallIdx && instanceIdCaptureIdx < firstModalCallIdx,
+    'packId and instanceId must be captured before any modal is opened');
+});
+
+test('openInstanceNotesModal Save writes through PackLibrary.updateInstance (the canonical Pack-instance update path), never CaseLibrary, TruckChangeController, or manual revalidation', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = extractFunctionBlock(src, 'function openInstanceNotesModal(pack, inst)');
+  assert.match(block, /PackLibrary\.updateInstance\(packId, instanceId, \{ instanceNotes: trimmed \|\| null \}\)/,
+    'Save must call PackLibrary.updateInstance with the captured packId/instanceId and a trimmed, null-on-empty value');
+  assert.doesNotMatch(block, /CaseLibrary\.upsert/, 'Item Notes must never write through CaseLibrary — it is not Case-owned');
+  assert.doesNotMatch(block, /TruckChangeController/, 'Item Notes must not go through the Truck Change controller');
+  assert.doesNotMatch(block, /updateCasesWithManualRevalidation/, 'a plain text field must not trigger geometry/placement revalidation');
+});
+
+test('openInstanceNotesModal fails safely when the captured Pack/instance no longer exists, and Save failure preserves the draft instead of closing', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = extractFunctionBlock(src, 'function openInstanceNotesModal(pack, inst)');
+  const guardCount = (block.match(/resolveInstance\(\)/g) || []).length;
+  assert.ok(guardCount >= 2, 'both the state-resolve path and the Save handler must re-check resolveInstance() before acting');
+  assert.match(block, /PackLibrary\.getById\(packId\)/, 'resolveInstance must re-resolve the Pack via packId, never trust a stale pack reference');
+  assert.match(block, /currentPack\.cases \|\| \[\]\)\.find\(i => i\.id === instanceId\)/, 'resolveInstance must re-resolve the instance via instanceId');
+  assert.match(block, /This item no longer exists\./, 'a missing Pack or instance must surface a clear error instead of silently updating the wrong item');
+
+  const saveHandlerStart = block.indexOf("label: 'Save'");
+  const saveHandlerBlock = block.slice(saveHandlerStart, block.indexOf('},', saveHandlerStart));
+  assert.match(saveHandlerBlock, /if \(!resolveInstance\(\)\) \{[\s\S]*?return false;/,
+    'Save failure (missing Pack/instance) must return false so showModal does NOT close — the draft and edit state are preserved');
+});
+
+test('openInstanceNotesModal reuses UIComponents.showModal for all three states via a locally Escape-scoped wrapper (no bespoke modal markup, no shared-primitive change)', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = extractFunctionBlock(src, 'function openInstanceNotesModal(pack, inst)');
+  const showModalCalls = (block.match(/UIComponents\.showModal\(/g) || []).length;
+  assert.equal(showModalCalls, 1, 'only the local showNotesModal wrapper should call UIComponents.showModal directly');
+  const showNotesModalCalls = (block.match(/(?<!function )showNotesModal\(\{/g) || []).length;
+  assert.equal(showNotesModalCalls, 3, 'Empty, Read, and Edit states must each render through the local showNotesModal wrapper');
+
+  assert.match(block, /No notes for this item yet\./, 'Empty state must show the approved empty message');
+  assert.match(block, /label: 'Add Note'/, 'Empty state must offer Add Note');
+  assert.match(block, /label: 'Edit'/, 'Read state must offer Edit');
+  assert.match(block, /label: 'Cancel'/, 'Edit state must offer Cancel');
+  assert.match(block, /label: 'Save'/, 'Edit state must offer Save');
+});
+
+test('the Item Notes control lives in the single-selection Inspector top summary card, distinct from Standard Instructions, and only for a single resolved selection', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const singleBlock = extractFunctionBlock(src, 'function renderSingleInspector(pack, inst, caseData, prefs)');
+  const transformMarkerIdx = singleBlock.indexOf('=== Transform Card');
+  const summaryCardBlock = transformMarkerIdx > 0 ? singleBlock.slice(0, transformMarkerIdx) : singleBlock;
+  const actionsMarkerIdx = singleBlock.indexOf('=== Actions Card');
+  const actionsCardBlock = actionsMarkerIdx > 0 ? singleBlock.slice(actionsMarkerIdx) : '';
+
+  assert.match(summaryCardBlock, /openInstanceNotesModal\(pack, inst\)/, 'the Item Notes button must be built inside the top summary card');
+  assert.doesNotMatch(actionsCardBlock, /openInstanceNotesModal/, 'the Item Notes button must NOT be in the Actions card');
+
+  const multiBlock = extractFunctionBlock(src, 'function renderMultiInspector(pack, selected)');
+  assert.doesNotMatch(multiBlock, /openInstanceNotesModal/, 'multi-selection Inspector must not offer Item Notes');
+
+  const unresolvedBlock = extractFunctionBlock(src, 'function renderUnresolvedCaseInspector(pack, inst)');
+  assert.doesNotMatch(unresolvedBlock, /openInstanceNotesModal/, 'an unresolved (missing case) selection must not offer Item Notes');
+});
+
+test('the Item Notes Read-state value is rendered with safe plain-text assignment, never innerHTML', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = extractFunctionBlock(src, 'function openInstanceNotesModal(pack, inst)');
+  assert.match(block, /content\.textContent = note;/, 'the populated Read-state value must be assigned via textContent, not innerHTML');
+  assert.doesNotMatch(block, /content\.innerHTML/, 'the Item Notes value must never be assigned via innerHTML');
   assert.match(block, /tp3d-case-notes-read/, 'the populated value must reuse the existing line-break-preserving read-only class');
 });

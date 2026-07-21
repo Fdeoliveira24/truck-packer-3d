@@ -5061,6 +5061,132 @@ export function createEditorScreen({
       });
     }
 
+    // Item Notes for the Inspector's single selected Pack instance. Unlike
+    // Standard Instructions (Case-owned, read-only in the Inspector), Item
+    // Notes are owned by this one placed instance in this one Pack, so the
+    // canonical update path is PackLibrary.updateInstance, never
+    // CaseLibrary.upsert. Both packId and instanceId are captured up front so
+    // the draft can never migrate to a different instance if the selection
+    // changes while the modal is open, and either being missing (deleted/
+    // synced away while the modal is open) fails safely instead of writing
+    // anywhere.
+    function openInstanceNotesModal(pack, inst) {
+      const packId = pack.id;
+      const instanceId = inst.id;
+
+      // Escape-to-close scoped to this modal only, mirroring the same local
+      // pattern already used in truck-change-controller.js's
+      // showManagedModal rather than changing the shared
+      // UIComponents.showModal primitive for every caller.
+      function showNotesModal(config) {
+        let modalRef = null;
+        function handleEscape(ev) {
+          if (ev.key === 'Escape' && config.dismissible !== false && modalRef) {
+            ev.preventDefault();
+            modalRef.close();
+          }
+        }
+        modalRef = UIComponents.showModal({
+          ...config,
+          onClose: () => {
+            document.removeEventListener('keydown', handleEscape);
+            if (typeof config.onClose === 'function') config.onClose();
+          },
+        });
+        document.addEventListener('keydown', handleEscape);
+        return modalRef;
+      }
+
+      function resolveInstance() {
+        const currentPack = PackLibrary.getById(packId);
+        if (!currentPack) return null;
+        const currentInst = (currentPack.cases || []).find(i => i.id === instanceId);
+        return currentInst || null;
+      }
+
+      function open(state) {
+        const current = resolveInstance();
+        if (!current) {
+          UIComponents.showToast('This item no longer exists.', 'error', { title: 'Item Notes' });
+          return;
+        }
+        const note = String(current.instanceNotes || '').trim();
+        const resolvedState = state === 'auto' ? (note ? 'read' : 'empty') : state;
+
+        if (resolvedState === 'empty') {
+          const content = document.createElement('div');
+          content.className = 'muted';
+          content.textContent = 'No notes for this item yet.';
+          showNotesModal({
+            title: 'Item Notes',
+            content,
+            actions: [
+              { label: 'Add Note', variant: 'primary', onClick: () => { open('edit'); return true; } },
+            ],
+          });
+          return;
+        }
+
+        if (resolvedState === 'read') {
+          const content = document.createElement('div');
+          content.classList.add('tp3d-editor-sub-sm', 'tp3d-case-notes-read');
+          content.textContent = note;
+          showNotesModal({
+            title: 'Item Notes',
+            content,
+            actions: [
+              { label: 'Close', variant: 'ghost' },
+              { label: 'Edit', variant: 'primary', onClick: () => { open('edit'); return true; } },
+            ],
+          });
+          return;
+        }
+
+        // Edit state: a fresh textarea seeded from the current saved note.
+        // Cancel, Escape, and backdrop click all discard this draft without
+        // touching storage — only Save writes through
+        // PackLibrary.updateInstance, and closing the dialog any other way
+        // never deletes a previously saved note.
+        const wrap = document.createElement('div');
+        wrap.className = 'field';
+        const textarea = document.createElement('textarea');
+        textarea.className = 'input tp3d-textarea-minh-60';
+        textarea.placeholder = 'Add notes specific to this item (condition, delivery note, etc.)...';
+        textarea.value = note;
+        wrap.appendChild(textarea);
+        showNotesModal({
+          title: 'Item Notes',
+          content: wrap,
+          actions: [
+            { label: 'Cancel', variant: 'ghost', onClick: () => { open('auto'); return true; } },
+            {
+              label: 'Save',
+              variant: 'primary',
+              onClick: () => {
+                if (!resolveInstance()) {
+                  // Save failure: keep the draft and stay in edit state — do
+                  // not close (returning false leaves this same modal, with
+                  // the user's typed text still in the textarea, open).
+                  UIComponents.showToast('This item no longer exists.', 'error', { title: 'Item Notes' });
+                  return false;
+                }
+                const trimmed = textarea.value.trim();
+                // A single updateInstance call here is one Pack update and
+                // one Undo/Redo history entry (packLibrary is in
+                // StateStore's significant-state list) — never loop this
+                // over multiple instances.
+                PackLibrary.updateInstance(packId, instanceId, { instanceNotes: trimmed || null });
+                open('auto');
+                return true;
+              },
+            },
+          ],
+        });
+      }
+
+      open('auto');
+    }
+
     // Every editor truck writer delegates to the shared, single-flight
     // reconciliation controller. The current render is also the canonical
     // control restoration path for Cancel, X, overlay click, and Escape.
@@ -5707,6 +5833,27 @@ export function createEditorScreen({
       }
       instructionsWrap.appendChild(instructionsValue);
       card.appendChild(instructionsWrap);
+
+      // Item Notes: Pack-instance-owned, editable only for this specific
+      // placed item in this specific Pack — distinct from the Case-owned,
+      // read-only Standard Instructions section above. Reuses the existing
+      // row/space-between header pattern (a direct .card child, matching the
+      // "#inspector-body .card>.row.space-between" sizing rule) and the
+      // existing makeActionButton helper, so no new layout system or CSS
+      // class is needed.
+      const itemNotesRow = document.createElement('div');
+      itemNotesRow.className = 'row space-between';
+      const itemNotesLabel = document.createElement('div');
+      itemNotesLabel.className = 'muted tp3d-editor-sub-sm';
+      itemNotesLabel.textContent = 'Item Notes — only for this item in this Pack.';
+      const itemNotesButton = makeActionButton({
+        label: 'Item Notes',
+        iconClass: 'fa-solid fa-note-sticky',
+        onClick: () => openInstanceNotesModal(pack, inst),
+      });
+      itemNotesRow.appendChild(itemNotesLabel);
+      itemNotesRow.appendChild(itemNotesButton);
+      card.appendChild(itemNotesRow);
 
       inspectorEl.appendChild(card);
 

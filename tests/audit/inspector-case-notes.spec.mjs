@@ -10,8 +10,8 @@ import fs from 'node:fs/promises';
 // and the canonical update path (CaseLibrary.upsert) that the Cases-screen
 // Case editor (case-modal.js) uses. Per the locked Cargo Instructions
 // architecture (docs/engineering/cargo-instructions-ownership-contract.md),
-// the Inspector renders Standard Instructions as an always-visible,
-// read-only section — it is never editable from the Editor.
+// the Inspector renders Standard Instructions as a read-only section in the
+// combined Notes modal — it is never editable from the Editor.
 //
 // editor-screen.js renders through Three.js/DOM and has no jsdom harness in
 // this suite, so — matching the existing convention in
@@ -28,6 +28,8 @@ const packLibraryUrl = new URL('../../src/services/pack-library.js', import.meta
 const importExportUrl = new URL('../../src/services/import-export.js', import.meta.url);
 const autopackEngineUrl = new URL('../../src/services/autopack-engine.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
+const appPath = new URL('../../src/app.js', import.meta.url);
+const stylesPath = new URL('../../styles/main.css', import.meta.url);
 
 function baseCase(overrides = {}) {
   return {
@@ -267,11 +269,49 @@ test('a null (empty) case note survives the same JSON export/import round trips 
   assert.equal(restoredApp.caseLibrary.find(c => c.id === unnoted.id).notes, null);
 });
 
+test('the PDF Cargo Instructions manifest includes case.notes once per Case and instanceNotes once per owning Pack instance', async () => {
+  const ImportExport = await import(importExportUrl.href);
+  const notedCase = baseCase({ id: 'case-pdf', name: 'Pallet No-Top Conflict', notes: '  Keep upright.\nNo top loading.  ' });
+  const otherCase = baseCase({ id: 'case-pdf-empty', name: 'No Instructions', notes: '   ' });
+  const caseMap = new Map([[notedCase.id, notedCase], [otherCase.id, otherCase]]);
+  const pack = {
+    cases: [
+      baseInstance(notedCase.id, { id: 'inst-pdf-1', instanceNotes: '  Deliver separately.\nInspect before loading.  ' }),
+      baseInstance(notedCase.id, { id: 'inst-pdf-2', instanceNotes: '   ' }),
+      baseInstance(otherCase.id, { id: 'inst-pdf-3' }),
+    ],
+  };
+
+  const manifest = ImportExport.buildCargoInstructionsManifest(pack, caseId => caseMap.get(caseId) || null);
+  assert.deepEqual(manifest.caseEntries, [{
+    caseId: notedCase.id,
+    caseName: notedCase.name,
+    caseNotes: 'Keep upright.\nNo top loading.',
+  }], 'Standard Case Instructions must be emitted once even when multiple instances reference the same Case');
+  assert.deepEqual(manifest.itemEntries, [{
+    instanceId: 'inst-pdf-1',
+    caseId: notedCase.id,
+    instanceName: 'Pallet No-Top Conflict #1',
+    itemNotes: 'Deliver separately.\nInspect before loading.',
+  }], 'empty Item Notes must be omitted cleanly and a populated note must be emitted only for its owning instance');
+});
+
+test('generatePDF renders the Cargo Instructions manifest with separate Case and Item sections', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  assert.match(src, /ImportExport\.buildCargoInstructionsManifest\(pack\)/,
+    'PDF export must build its note content through the export manifest helper');
+  assert.match(src, /'CASE INFORMATION'/);
+  assert.match(src, /\['Standard Case Instructions', entry\.caseNotes\]/,
+    'PDF Case information must render case.notes through the manifest value');
+  assert.match(src, /'ITEM DETAILS'/);
+  assert.match(src, /\['Item Notes', entry\.itemNotes\]/,
+    'PDF Item details must render instanceNotes through the manifest value');
+});
+
 // ---------------------------------------------------------------------------
-// Cases-screen and Inspector must edit the identical Case Library field: both
-// ultimately call CaseLibrary.upsert() on the same case id, so a value written
-// through one path is immediately visible through the other. No duplicate
-// notes property exists, and no packed-instance note was introduced.
+// The Cases screen owns edits to the Case Library field through
+// CaseLibrary.upsert(), while the Inspector reads that exact field. No
+// duplicate Case-level notes property exists.
 // ---------------------------------------------------------------------------
 
 test('a note saved via the Cases-screen case-modal.js payload shape is visible to the Inspector\'s read-only render', async () => {
@@ -325,6 +365,8 @@ test('the single-selection Inspector top summary card offers exactly one compact
 
   assert.match(summaryCardBlock, /openNotesModal\(pack, inst\)/, 'the Notes button must be built inside the top summary card');
   assert.match(summaryCardBlock, /label: 'Notes',/, 'a single compact Notes button must be present');
+  assert.match(summaryCardBlock, /iconClass: 'fa-regular fa-file-lines'/,
+    'the compact Notes button must render the approved document icon through the existing Font Awesome system');
   assert.doesNotMatch(summaryCardBlock, /'Applies to every unit of this Case\.'/,
     'the always-visible Standard Instructions content block must no longer render inline in the summary card');
   assert.doesNotMatch(summaryCardBlock, /Item Notes — only for this item in this Pack\./,
@@ -596,6 +638,19 @@ test('openNotesModal renders both Standard Case Instructions (read-only) and Ite
   assert.doesNotMatch(block, /This item only/, 'the This item only ownership badge must be removed — section titles alone carry ownership now');
 });
 
+test('openNotesModal header renders the document icon, Notes title, and Case name in one compact hierarchy', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = extractFunctionBlock(src, 'function openNotesModal(pack, inst)');
+  assert.match(block, /headingIconGlyph\.className = 'fa-regular fa-file-lines'/,
+    'the modal header must reuse the approved document icon');
+  assert.match(block, /headingTitle\.textContent = config\.title \|\| 'Notes'/,
+    'Notes must remain the primary modal title');
+  assert.match(block, /headingSubtitle\.textContent = config\.subtitle \|\| 'Case'/,
+    'the selected Case name must be the modal header subtitle');
+  assert.doesNotMatch(block, /wrap\.appendChild\(subtitle\)/,
+    'the Case name must not remain a detached first row in the modal body');
+});
+
 test('openNotesModal Save writes through PackLibrary.updateInstance (the canonical Pack-instance update path), never CaseLibrary, TruckChangeController, or manual revalidation', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = extractFunctionBlock(src, 'function openNotesModal(pack, inst)');
@@ -629,7 +684,10 @@ test('openNotesModal reuses UIComponents.showModal for all three Item Notes stat
   const showNotesModalCalls = (block.match(/(?<!function )showNotesModal\(\{/g) || []).length;
   assert.equal(showNotesModalCalls, 3, 'Empty, Read, and Edit Item Notes states must each render through the local showNotesModal wrapper');
 
-  assert.match(block, /No notes for this item yet\./, 'Empty state must show the approved empty message');
+  assert.match(block, /No notes for this case yet\./, 'the fully empty state must show the approved case-level empty message');
+  assert.match(block, /No notes for this item yet\./,
+    'an empty Item Notes section must remain clear when Standard Case Instructions exist');
+  assert.match(block, /tp3d-notes-empty-state-icon/, 'the fully empty state must include the document icon');
   assert.match(block, /label: 'Add Note'/, 'Empty state must offer Add Note');
   assert.match(block, /label: 'Edit'/, 'Read state must offer Edit');
   assert.match(block, /label: 'Cancel'/, 'Edit state must offer Cancel');
@@ -641,6 +699,12 @@ test('openNotesModal shows a Last edited timestamp using the existing pack.lastE
   const block = extractFunctionBlock(src, 'function openNotesModal(pack, inst)');
   assert.match(block, /Last edited \$\{Utils\.formatRelativeTime\(currentPackForEdited\.lastEdited\)\}/,
     'Last edited must be derived from the existing pack.lastEdited field via the existing formatRelativeTime helper');
+  assert.match(block, /lastEdited\.className = 'muted tp3d-notes-last-edited'/,
+    'Last edited must use a dedicated muted secondary-text style below the Item Notes content');
+
+  const css = await fs.readFile(stylesPath, 'utf8');
+  const timestampRule = css.match(/\.tp3d-notes-last-edited\s*\{[^}]*\}/)?.[0] || '';
+  assert.match(timestampRule, /font-size:\s*12px;/, 'Last edited must render at the approved 12px size');
 });
 
 test('the Notes button lives in the single-selection Inspector top summary card, and only for a single resolved selection', async () => {

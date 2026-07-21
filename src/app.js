@@ -3912,6 +3912,62 @@ const TP3D_BUILD_STAMP = Object.freeze({
             y += lineHeight;
           });
 
+          // Cargo Instructions manifest. Standard Case Instructions are
+          // rendered once per referenced Case; Item Notes are rendered once
+          // for their owning Pack instance. Empty values are omitted.
+          const cargoInstructions = ImportExport.buildCargoInstructionsManifest(pack);
+          if (cargoInstructions.caseEntries.length || cargoInstructions.itemEntries.length) {
+            const ensureInstructionSpace = needed => {
+              if (y + needed <= pageHeight - margin) return;
+              doc.addPage();
+              y = margin;
+            };
+            const writeInstructionField = (label, value) => {
+              ensureInstructionSpace(30);
+              doc.setFont('helvetica', 'bold');
+              doc.setFontSize(10);
+              doc.text(`${label}:`, margin, y);
+              y += 13;
+              doc.setFont('helvetica', 'normal');
+              const lines = doc.splitTextToSize(String(value || ''), pageWidth - margin * 2 - 12);
+              lines.forEach(line => {
+                ensureInstructionSpace(13);
+                doc.text(line, margin + 12, y);
+                y += 13;
+              });
+              y += 5;
+            };
+            const writeInstructionEntry = (heading, fields) => {
+              ensureInstructionSpace(48);
+              doc.setFont('helvetica', 'bold');
+              doc.setFontSize(10);
+              doc.text(heading, margin, y);
+              y += 17;
+              fields.forEach(([label, value]) => writeInstructionField(label, value));
+              y += 8;
+            };
+
+            ensureInstructionSpace(52);
+            y += y > margin ? 16 : 0;
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(16);
+            doc.text('CARGO INSTRUCTIONS', margin, y);
+            y += 24;
+
+            cargoInstructions.caseEntries.forEach(entry => {
+              writeInstructionEntry('CASE INFORMATION', [
+                ['Case', entry.caseName],
+                ['Standard Case Instructions', entry.caseNotes],
+              ]);
+            });
+            cargoInstructions.itemEntries.forEach(entry => {
+              writeInstructionEntry('ITEM DETAILS', [
+                ['Instance', entry.instanceName],
+                ['Item Notes', entry.itemNotes],
+              ]);
+            });
+          }
+
           // Summary
           const includeStats = Boolean(prefs.export && prefs.export.pdfIncludeStats);
           if (includeStats) {

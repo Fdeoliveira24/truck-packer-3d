@@ -631,7 +631,8 @@ test('org context cross-tab sync includes user + epoch metadata and stale guards
   assert.match(source, /dispatchOrgContextChanged\([\s\S]*timestamp/);
   assert.match(source, /window\.addEventListener\('storage'[\s\S]*ORG_CONTEXT_SYNC_KEY/);
   assert.match(source, /detailUserId && truth\.userId && detailUserId !== truth\.userId/);
-  assert.match(source, /detailEpoch && detailEpoch < lastAppliedOrgContextVersion/);
+  assert.match(source, /getOrgContextEffectiveVersion\(detail\)/);
+  assert.match(source, /compareOrgContextOrder\(detailEpoch, detailTabId\) < 0/);
 });
 
 // ── Cross-tab auth proof & bundle noise elimination ────────────────────
@@ -23607,4 +23608,242 @@ test('APP-STABILIZATION-PHASE1 app flushes and resets history only at scoped bou
   const bundleFn = src.slice(bundleStart, bundleEnd);
   assert.match(bundleFn, /bundle\.partial !== true[\s\S]*nextOrgInActiveList[\s\S]*Storage\.finalizeLegacyMigration\(\)/,
     'legacy migration finalizes only after a full bundle confirms active membership');
+});
+
+async function createPhase2OrgOrderingHarness() {
+  const src = await fs.readFile(appPath, 'utf8');
+  const helperStart = src.indexOf('function parseOrgContextVersion(');
+  const helperEnd = src.indexOf('\n    /**\n     * @param {{', helperStart);
+  const handleStart = src.indexOf('function handleIncomingOrgContextSync(');
+  const handleEnd = src.indexOf('\n    // ── getActiveOrgIdNow', handleStart);
+  assert.ok(helperStart >= 0 && helperEnd > helperStart && handleStart >= 0 && handleEnd > handleStart,
+    'Phase 2 org ordering functions are extractable');
+
+  const context = {
+    __dispatches: [],
+    __appliedOrgs: [],
+    __writes: [],
+    console: { info() { }, warn() { }, error() { } },
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    let orgContextVersion = 0;
+    let lastAppliedOrgContextVersion = 0;
+    let lastAppliedOrgContextTabId = '';
+    let orgContext = { activeOrgId: null, activeOrg: null, orgs: [], role: null, updatedAt: 0 };
+    let orgContextQueued = false;
+    let _orgBundleFetchInflightForOrg = null;
+    const orgContextTabId = 'tab-local';
+    const ORG_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const _ORG_ROLE_GRACE_MS = 1000;
+    const _orgRoleHydrationGraceUntilByOrg = new Map();
+    const getSignedInUserIdStrict = () => 'user-1';
+    const isTp3dDebugEnabled = () => false;
+    const beginWorkspaceSwitch = () => {};
+    const writeLocalOrgId = orgId => { globalThis.__writes.push(orgId); };
+    const applyWorkspaceScopedLocalState = orgId => { globalThis.__appliedOrgs.push(orgId); };
+    const resetWorkspaceScopedUiState = () => {};
+    const reconcileBillingStateForActiveOrg = () => {};
+    const markWorkspaceSwitchReady = () => {};
+    const markWorkspaceSwitchOrgReadyIfResolved = () => {};
+    const markWorkspaceSwitchBillingReadyIfSettled = () => {};
+    const getBillingState = () => ({});
+    const dispatchOrgContextChanged = options => { globalThis.__dispatches.push(options); };
+    const applyOrgRequiredUi = () => {};
+    const queueOrgScopedRender = () => {};
+    const maybeScheduleBillingRefresh = () => {};
+    const isLogoutInProgress = () => true;
+    const authGateIsSettled = () => true;
+    const refreshOrgContext = () => Promise.resolve();
+    ${src.slice(helperStart, helperEnd)}
+    ${src.slice(handleStart, handleEnd)}
+    globalThis.__handle = handleIncomingOrgContextSync;
+    globalThis.__effective = getOrgContextEffectiveVersion;
+    globalThis.__compare = compareOrgContextOrder;
+    globalThis.__next = nextOrgContextVersion;
+    globalThis.__setOrder = (version, tabId) => {
+      orgContextVersion = Number(version) || 0;
+      lastAppliedOrgContextVersion = Number(version) || 0;
+      lastAppliedOrgContextTabId = String(tabId || '');
+    };
+    globalThis.__snapshot = () => ({
+      orgContextVersion,
+      lastAppliedOrgContextVersion,
+      lastAppliedOrgContextTabId,
+      activeOrgId: orgContext.activeOrgId,
+    });
+  `, context);
+
+  return {
+    handle: payload => context.__handle(payload, { source: 'phase2-test' }),
+    effective: payload => context.__effective(payload),
+    next: () => context.__next(),
+    setOrder: (version, tabId) => context.__setOrder(version, tabId),
+    snapshot: () => context.__snapshot(),
+    calls: context,
+  };
+}
+
+test('APP-STABILIZATION-PHASE2 fresh-tab timestamps outrank old local counters while stale and unsafe payloads stay rejected', async () => {
+  const runtime = await createPhase2OrgOrderingHarness();
+  const orgA = '11111111-1111-4111-8111-111111111111';
+  const orgB = '22222222-2222-4222-8222-222222222222';
+  runtime.setOrder(8, 'tab-established');
+
+  assert.equal(runtime.handle({
+    orgId: orgA,
+    userId: 'user-1',
+    tabId: 'tab-fresh',
+    epoch: 1,
+    ts: 100,
+  }), true, 'a fresh tab uses its newer timestamp instead of losing on epoch 1');
+  assert.equal(runtime.snapshot().lastAppliedOrgContextVersion, 100);
+  assert.equal(runtime.snapshot().activeOrgId, orgA);
+  assert.equal(runtime.calls.__dispatches[0].tabId, 'tab-fresh',
+    'the accepted origin tab id is preserved through the local relay');
+
+  assert.equal(runtime.handle({
+    orgId: orgB,
+    userId: 'user-1',
+    tabId: 'tab-stale',
+    epoch: 9,
+    timestamp: 90,
+  }), false, 'a genuinely older logical version stays rejected');
+  assert.equal(runtime.handle({
+    orgId: orgB,
+    userId: 'another-user',
+    tabId: 'tab-z',
+    epoch: 101,
+  }), false, 'wrong-user payload stays rejected');
+  assert.equal(runtime.handle({
+    orgId: orgB,
+    userId: 'user-1',
+    tabId: 'tab-local',
+    epoch: 101,
+  }), false, 'self-origin payload stays rejected');
+  assert.equal(runtime.handle({
+    orgId: 'not-an-org',
+    userId: 'user-1',
+    tabId: 'tab-z',
+    epoch: 101,
+  }), false, 'malformed organization payload stays rejected');
+  assert.equal(runtime.snapshot().activeOrgId, orgA);
+});
+
+test('APP-STABILIZATION-PHASE2 equal versions converge by tab id and the next local version advances past remote state', async () => {
+  const orgA = '11111111-1111-4111-8111-111111111111';
+  const orgB = '22222222-2222-4222-8222-222222222222';
+  const payloadA = { orgId: orgA, userId: 'user-1', tabId: 'tab-a', epoch: 500, ts: 500 };
+  const payloadZ = { orgId: orgB, userId: 'user-1', tabId: 'tab-z', epoch: 500, ts: 500 };
+
+  const first = await createPhase2OrgOrderingHarness();
+  assert.equal(first.handle(payloadA), true);
+  assert.equal(first.handle(payloadZ), true);
+  assert.equal(first.snapshot().lastAppliedOrgContextTabId, 'tab-z');
+  assert.equal(first.snapshot().activeOrgId, orgB);
+
+  const second = await createPhase2OrgOrderingHarness();
+  assert.equal(second.handle(payloadZ), true);
+  assert.equal(second.handle(payloadA), false);
+  assert.equal(second.snapshot().lastAppliedOrgContextTabId, 'tab-z');
+  assert.equal(second.snapshot().activeOrgId, orgB,
+    'both arrival orders choose the same tab-id winner');
+
+  const futureVersion = Date.now() + 60000;
+  second.setOrder(futureVersion, 'tab-z');
+  assert.equal(second.next(), futureVersion + 1,
+    'a later local dispatch advances beyond the last applied remote version');
+});
+
+test('APP-STABILIZATION-PHASE2 canonical sync cancels the legacy fallback only after acceptance', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const canonicalStart = src.indexOf('if (key === ORG_CONTEXT_SYNC_KEY && ev.newValue) {');
+  const canonicalEnd = src.indexOf('if (key === WORKSPACE_SWITCH_SYNC_KEY', canonicalStart);
+  const canonicalBlock = src.slice(canonicalStart, canonicalEnd);
+  assert.ok(canonicalBlock, 'canonical storage handler is extractable');
+  assert.match(canonicalBlock, /const accepted = payload[\s\S]*handleIncomingOrgContextSync/,
+    'canonical handling records whether the payload was actually accepted');
+  assert.match(canonicalBlock, /if \(accepted && _legacyOrgSyncTimer\) \{[\s\S]*clearTimeout\(_legacyOrgSyncTimer\)/,
+    'only an accepted canonical payload cancels the legacy backend-refresh fallback');
+  assert.doesNotMatch(canonicalBlock, /canonical-arrived/,
+    'mere arrival is no longer treated as successful reconciliation');
+});
+
+async function createPhase2BillingLockHarness() {
+  const src = await fs.readFile(appPath, 'utf8');
+  const keyStart = src.indexOf('function _billingLockKey(');
+  const keyEnd = src.indexOf('/**\n * Try to acquire a cross-tab billing lock', keyStart);
+  const readStart = src.indexOf('function _readStorageJson(', keyEnd);
+  const acquireStart = src.indexOf('function _tryAcquireBillingLock(', readStart);
+  const releaseStart = src.indexOf('function _releaseBillingLock(', acquireStart);
+  assert.ok(keyStart >= 0 && keyEnd > keyStart && readStart >= 0 && acquireStart > readStart && releaseStart > acquireStart,
+    'Phase 2 billing lock helpers are extractable');
+
+  const localStorage = createStabilizationMemoryStorage();
+  const context = { window: { localStorage }, __now: 100000 };
+  vm.createContext(context);
+  vm.runInContext(`
+    const _BILLING_LOCK_TTL_MS = 20000;
+    const _BILLING_LOCK_RETRY_MIN_MS = 1200;
+    const _BILLING_LOCK_RETRY_GRACE_MS = 100;
+    const _billingTabId = 'tab-current';
+    const billingDebugLog = () => {};
+    const Date = { now: () => globalThis.__now };
+    ${src.slice(keyStart, keyEnd)}
+    ${src.slice(readStart, acquireStart)}
+    ${src.slice(acquireStart, releaseStart)}
+    globalThis.__delay = _getBillingLockRetryDelay;
+    globalThis.__acquire = _tryAcquireBillingLock;
+    globalThis.__key = _billingLockKey;
+    globalThis.__legacyKey = _billingLegacyLockKey;
+  `, context);
+
+  return {
+    localStorage,
+    setNow: now => { context.__now = now; },
+    delay: orgId => context.__delay(orgId, context.__now),
+    acquire: orgId => context.__acquire(orgId, 'phase2-test'),
+    key: orgId => context.__key(orgId),
+    legacyKey: orgId => context.__legacyKey(orgId),
+  };
+}
+
+test('APP-STABILIZATION-PHASE2 dead billing lock retry waits through TTL and can acquire after expiry', async () => {
+  const runtime = await createPhase2BillingLockHarness();
+  const orgId = '11111111-1111-4111-8111-111111111111';
+  runtime.localStorage.setItem(runtime.key(orgId), JSON.stringify({ tabId: 'dead-tab', at: 100000 }));
+
+  assert.equal(runtime.delay(orgId), 20100,
+    'fresh foreign lock waits for the full remaining TTL plus expiry grace');
+  assert.equal(runtime.acquire(orgId), false, 'the foreign lock is still valid before the retry');
+
+  runtime.setNow(120100);
+  assert.equal(runtime.acquire(orgId), true, 'the same bounded retry can acquire after expiry');
+  assert.equal(JSON.parse(runtime.localStorage.getItem(runtime.key(orgId))).tabId, 'tab-current');
+
+  runtime.localStorage.values.clear();
+  runtime.setNow(200000);
+  runtime.localStorage.setItem(runtime.legacyKey(orgId), JSON.stringify({ tabId: 'older-tab', at: 180100 }));
+  assert.equal(runtime.delay(orgId), 1200,
+    'an almost-expired compatible legacy lock retains the bounded minimum delay');
+  runtime.localStorage.values.clear();
+  assert.equal(runtime.delay(orgId), 1200, 'missing or invalid locks use the same bounded minimum');
+});
+
+test('APP-STABILIZATION-PHASE2 billing retry remains single, epoch-scoped, org-scoped, and non-forced', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const retryStart = src.indexOf("if (!String(reason || '').startsWith('cross-tab-retry:')) {");
+  const retryEnd = src.indexOf('\n    return getBillingState();', retryStart);
+  const retryBlock = src.slice(retryStart, retryEnd);
+  assert.ok(retryBlock, 'billing lock retry block is extractable');
+  assert.match(retryBlock, /retryDelayMs = _getBillingLockRetryDelay\(retryOrgId\)/,
+    'retry delay derives from the live compatible lock');
+  assert.match(retryBlock, /if \(_billingEpoch !== retryBillingEpoch\) return/,
+    'identity/billing epoch changes invalidate the delayed retry');
+  assert.match(retryBlock, /getActiveOrgIdForBilling\(\)[\s\S]*!== retryOrgId\) return/,
+    'workspace changes invalidate the old-org retry');
+  assert.match(retryBlock, /refreshBilling\(\{ force: false, reason: 'cross-tab-retry:' \+ reason \}\)/,
+    'the one retry remains non-forced so a shared success can satisfy it');
+  assert.equal((retryBlock.match(/setTimeout\(/g) || []).length, 1,
+    'the lock path schedules one bounded retry rather than a polling loop');
 });

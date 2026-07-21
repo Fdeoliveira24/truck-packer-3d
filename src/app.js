@@ -384,6 +384,8 @@ function isEntitlementAllowed(status) {
 // SECTION: CROSS-TAB BILLING COORDINATION (Rule C)
 // ============================================================================
 const _BILLING_LOCK_TTL_MS = 20000;      // lock expires after 20s (dead-tab safety)
+const _BILLING_LOCK_RETRY_MIN_MS = 1200;
+const _BILLING_LOCK_RETRY_GRACE_MS = 100;
 const _BILLING_SHARED_FRESH_MS = 90000;   // shared result considered fresh for 90s (cross-tab window)
 let _billingTabId = '';
 /** @type {BroadcastChannel|null} */
@@ -421,6 +423,15 @@ function _readStorageJson(key) {
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? parsed : null;
   } catch (_) { return null; }
+}
+
+function _getBillingLockRetryDelay(orgId, now = Date.now()) {
+  const lock = _readStorageJson(_billingLockKey(orgId)) || _readStorageJson(_billingLegacyLockKey(orgId));
+  const lockAt = Number(lock && lock.at);
+  if (!Number.isFinite(lockAt) || lockAt <= 0) return _BILLING_LOCK_RETRY_MIN_MS;
+  const lockAge = Math.max(0, Number(now) - lockAt);
+  const remainingTtl = Math.max(0, Math.min(_BILLING_LOCK_TTL_MS, _BILLING_LOCK_TTL_MS - lockAge));
+  return Math.max(_BILLING_LOCK_RETRY_MIN_MS, remainingTtl + _BILLING_LOCK_RETRY_GRACE_MS);
 }
 
 function _tryAcquireBillingLock(orgId, reason = 'manual') {
@@ -1347,9 +1358,14 @@ async function refreshBilling({ force = false, reason = 'manual', authoritativeR
     }
     // Broadcast/storage listeners should update soon; keep one bounded retry for stale browsers.
     if (!String(reason || '').startsWith('cross-tab-retry:')) {
+      const retryBillingEpoch = _billingEpoch;
+      const retryOrgId = requestedOrgId;
+      const retryDelayMs = _getBillingLockRetryDelay(retryOrgId);
       setTimeout(() => {
+        if (_billingEpoch !== retryBillingEpoch) return;
+        if (normalizeOrgIdForBilling(getActiveOrgIdForBilling()) !== retryOrgId) return;
         refreshBilling({ force: false, reason: 'cross-tab-retry:' + reason }).catch(() => { });
-      }, 1200);
+      }, retryDelayMs);
     }
     return getBillingState();
   }
@@ -5183,6 +5199,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     };
     let orgContextVersion = 0;
     let lastAppliedOrgContextVersion = 0;
+    let lastAppliedOrgContextTabId = '';
     const orgContextTabId = (() => {
       try {
         const existing = window.sessionStorage.getItem('tp3d:org-context-tab-id');
@@ -5970,15 +5987,39 @@ const TP3D_BUILD_STAMP = Object.freeze({
     }
 
     function nextOrgContextVersion() {
-      orgContextVersion = parseOrgContextVersion(orgContextVersion) + 1;
+      orgContextVersion = Math.max(parseOrgContextVersion(orgContextVersion) + 1, Date.now());
       return orgContextVersion;
     }
 
-    function markOrgContextVersion(version) {
+    function getOrgContextEffectiveVersion(payload) {
+      if (!payload || typeof payload !== 'object') return 0;
+      return Math.max(
+        parseOrgContextVersion(payload.epoch),
+        parseOrgContextVersion(payload.version),
+        parseOrgContextVersion(payload.ts),
+        parseOrgContextVersion(payload.timestamp)
+      );
+    }
+
+    function compareOrgContextOrder(version, tabId = '') {
+      const parsed = parseOrgContextVersion(version);
+      if (!parsed) return -1;
+      if (parsed !== lastAppliedOrgContextVersion) {
+        return parsed > lastAppliedOrgContextVersion ? 1 : -1;
+      }
+      const incomingTabId = String(tabId || '');
+      if (incomingTabId === lastAppliedOrgContextTabId) return 0;
+      return incomingTabId > lastAppliedOrgContextTabId ? 1 : -1;
+    }
+
+    function markOrgContextVersion(version, tabId = '') {
       const parsed = parseOrgContextVersion(version);
       if (!parsed) return 0;
       orgContextVersion = Math.max(orgContextVersion, parsed);
-      lastAppliedOrgContextVersion = Math.max(lastAppliedOrgContextVersion, parsed);
+      if (compareOrgContextOrder(parsed, tabId) >= 0) {
+        lastAppliedOrgContextVersion = parsed;
+        lastAppliedOrgContextTabId = String(tabId || '');
+      }
       return parsed;
     }
 
@@ -5990,6 +6031,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
      *   broadcast?: boolean,
      *   source?: string|null,
      *   ts?: number,
+     *   tabId?: string|null,
      *   userId?: string|null,
      *   allowEmpty?: boolean,
      *   confirmedNoOrg?: boolean,
@@ -6012,7 +6054,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (!nextOrgId && !(allowEmpty && dispatchConfirmedNoOrg)) return 0;
       const signedInUserId = userId || getSignedInUserIdStrict();
       if (!signedInUserId) return 0;
-      const nextVersion = markOrgContextVersion(version || nextOrgContextVersion());
+      const detailTabId = options && options.tabId ? String(options.tabId) : orgContextTabId;
+      const nextVersion = markOrgContextVersion(version || nextOrgContextVersion(), detailTabId);
       const detail = {
         orgId: nextOrgId,
         reason: reason || null,
@@ -6021,7 +6064,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         ts: Number.isFinite(Number(ts)) ? Number(ts) : Date.now(),
         timestamp: Number.isFinite(Number(ts)) ? Number(ts) : Date.now(),
         epoch: nextVersion,
-        tabId: orgContextTabId,
+        tabId: detailTabId,
         source,
       };
 
@@ -6071,20 +6114,20 @@ const TP3D_BUILD_STAMP = Object.freeze({
     }
 
     function handleIncomingOrgContextSync(payload, { source = 'org-sync-storage' } = {}) {
-      if (!payload || typeof payload !== 'object') return;
+      if (!payload || typeof payload !== 'object') return false;
       const incomingOrgId = payload.orgId ? String(payload.orgId).trim() : '';
-      if (!incomingOrgId || !ORG_UUID_RE.test(incomingOrgId)) return;
+      if (!incomingOrgId || !ORG_UUID_RE.test(incomingOrgId)) return false;
 
       const payloadUserId = payload.userId ? String(payload.userId) : '';
       const currentUserId = getSignedInUserIdStrict();
-      if (!currentUserId || !payloadUserId || payloadUserId !== currentUserId) return;
+      if (!currentUserId || !payloadUserId || payloadUserId !== currentUserId) return false;
 
       const incomingTabId = payload.tabId ? String(payload.tabId) : '';
-      if (incomingTabId && incomingTabId === orgContextTabId) return;
+      if (incomingTabId && incomingTabId === orgContextTabId) return false;
 
-      const incomingVersion = parseOrgContextVersion(payload.epoch || payload.version);
-      if (!incomingVersion) return;
-      if (incomingVersion <= lastAppliedOrgContextVersion) {
+      const incomingVersion = getOrgContextEffectiveVersion(payload);
+      if (!incomingVersion) return false;
+      if (compareOrgContextOrder(incomingVersion, incomingTabId) <= 0) {
         if (isTp3dDebugEnabled()) {
           console.info('[orgContext] ignore-stale-sync', {
             source,
@@ -6092,7 +6135,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             lastAppliedOrgContextVersion,
           });
         }
-        return;
+        return false;
       }
 
       if (isTp3dDebugEnabled()) {
@@ -6106,7 +6149,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         });
       }
 
-      markOrgContextVersion(incomingVersion);
+      markOrgContextVersion(incomingVersion, incomingTabId);
 
       const currentOrgId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
       const isSwitchingOrg = !currentOrgId || currentOrgId !== incomingOrgId;
@@ -6141,6 +6184,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         broadcast: false,
         source,
         ts: payload.ts || payload.timestamp,
+        tabId: incomingTabId,
         userId: currentUserId,
       });
 
@@ -6153,11 +6197,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       if (isLogoutInProgress() || !authGateIsSettled()) {
         orgContextQueued = true;
-        return;
+        return true;
       }
       void refreshOrgContext(source, { force: true, forceEmit: false })
         .then(() => markWorkspaceSwitchOrgReadyIfResolved('org-sync:org-context-refreshed'))
         .catch(() => { });
+      return true;
     }
 
     // ── getActiveOrgIdNow: best-effort sync orgId with fallbacks ──
@@ -6742,6 +6787,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       };
       orgContextVersion = 0;
       lastAppliedOrgContextVersion = 0;
+      lastAppliedOrgContextTabId = '';
       _orgBundleFetchInflightForOrg = null;
       _orgRoleHydrationGraceUntilByOrg.clear();
       lastOrgIdNotified = null;
@@ -8628,17 +8674,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
             const key = ev && ev.key ? String(ev.key) : '';
             if (!key) return;
             if (key === ORG_CONTEXT_SYNC_KEY && ev.newValue) {
-              // Canonical sync arrived — cancel any pending legacy hint
-              if (_legacyOrgSyncTimer) {
+              const payload = parseOrgContextSyncPayload(ev.newValue);
+              const accepted = payload
+                ? handleIncomingOrgContextSync(payload, { source: 'org-sync-storage' })
+                : false;
+              if (accepted && _legacyOrgSyncTimer) {
                 clearTimeout(_legacyOrgSyncTimer);
                 _legacyOrgSyncTimer = null;
                 if (isTp3dDebugEnabled()) {
-                  console.info('[orgSync] legacy-hint:cancelled', { reason: 'canonical-arrived' });
+                  console.info('[orgSync] legacy-hint:cancelled', { reason: 'canonical-accepted' });
                 }
-              }
-              const payload = parseOrgContextSyncPayload(ev.newValue);
-              if (payload) {
-                handleIncomingOrgContextSync(payload, { source: 'org-sync-storage' });
               }
               return;
             }
@@ -8710,8 +8755,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
               }
               return;
             }
-            const detailEpoch = parseOrgContextVersion(detail && detail.epoch ? detail.epoch : 0);
-            if (detailEpoch && detailEpoch < lastAppliedOrgContextVersion) {
+            const detailEpoch = getOrgContextEffectiveVersion(detail);
+            const detailTabId = detail && detail.tabId ? String(detail.tabId) : '';
+            if (detailEpoch && compareOrgContextOrder(detailEpoch, detailTabId) < 0) {
               if (isTp3dDebugEnabled()) {
                 console.info('[orgContext] ignore-older-epoch', {
                   detailEpoch,
@@ -8721,7 +8767,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
               return;
             }
             if (detailEpoch) {
-              markOrgContextVersion(detailEpoch);
+              markOrgContextVersion(detailEpoch, detailTabId);
             }
 
             const detailOrgId = detail && detail.orgId ? String(detail.orgId) : null;

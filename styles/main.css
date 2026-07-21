@@ -4681,6 +4681,16 @@ body.modal-open {
   gap: 4px;
 }
 
+.tp3d-notes-indicator-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
 .tp3d-editor-handling-chips {
   display: flex;
   flex-wrap: wrap;
@@ -5107,6 +5117,22 @@ body.modal-open {
   gap: 10px;
 }
 
+.tp3d-editor-inspector-title-row {
+  flex-wrap: nowrap;
+}
+
+.tp3d-editor-inspector-title-row .tp3d-editor-title-lg-semibold {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp3d-editor-inspector-title-row .btn {
+  flex-shrink: 0;
+}
+
 #inspector-body .card>.row.space-between .tp3d-editor-info-icon {
   margin-left: auto;
 }
@@ -5184,6 +5210,10 @@ body.modal-open {
   width: 16px;
   flex-shrink: 0;
   text-align: center;
+}
+
+.tp3d-editor-action-grid-span-full {
+  grid-column: 1 / -1;
 }
 
 .tp3d-editor-mb-6 {

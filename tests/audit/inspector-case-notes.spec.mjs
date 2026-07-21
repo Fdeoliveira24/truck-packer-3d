@@ -308,23 +308,12 @@ function extractFunctionBlock(src, signature) {
   return end > start ? src.slice(start, end) : '';
 }
 
-// extractStandardInstructionsBlock isolates just the read-only Standard
-// Instructions section within renderSingleInspector, so assertions about "no
-// Save/Edit/Add action here" aren't accidentally satisfied by unrelated
-// Inspector actions (e.g. Set Category) elsewhere in the same function.
-function extractStandardInstructionsBlock(singleBlock) {
-  const start = singleBlock.indexOf('// Standard Instructions:');
-  if (start < 0) return '';
-  const end = singleBlock.indexOf('inspectorEl.appendChild(card);', start);
-  return end > start ? singleBlock.slice(start, end) : '';
-}
-
-test('editor-screen no longer defines a Notes-editing modal (openCaseNotesModal removed)', async () => {
+test('editor-screen no longer defines the removed prototype Notes-editing modal (openCaseNotesModal)', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
-  assert.doesNotMatch(src, /openCaseNotesModal/, 'the prototype Inspector Notes modal must be fully removed in favor of the read-only Standard Instructions card');
+  assert.doesNotMatch(src, /openCaseNotesModal/, 'the original prototype Inspector Notes modal must remain removed');
 });
 
-test('renderSingleInspector renders an always-visible, read-only Standard Instructions section in the top summary card', async () => {
+test('the single-selection Inspector top summary card offers exactly one compact Notes button (progressive disclosure), not always-visible content blocks', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const singleBlock = extractFunctionBlock(src, 'function renderSingleInspector(pack, inst, caseData, prefs)');
   assert.ok(singleBlock.length > 0, 'editor-screen must define renderSingleInspector(pack, inst, caseData, prefs)');
@@ -334,44 +323,19 @@ test('renderSingleInspector renders an always-visible, read-only Standard Instru
   const actionsMarkerIdx = singleBlock.indexOf('=== Actions Card');
   const actionsCardBlock = actionsMarkerIdx > 0 ? singleBlock.slice(actionsMarkerIdx) : '';
 
-  assert.match(summaryCardBlock, /'Standard Instructions'/, 'the top summary card must render the Standard Instructions heading');
-  assert.match(summaryCardBlock, /'Applies to every unit of this Case\.'/, 'the ownership description must be present');
-  assert.match(summaryCardBlock, /'No standard instructions\.'/, 'the empty state copy must be present');
-  assert.doesNotMatch(actionsCardBlock, /Standard Instructions/, 'Standard Instructions must not appear in the Actions card');
+  assert.match(summaryCardBlock, /openNotesModal\(pack, inst\)/, 'the Notes button must be built inside the top summary card');
+  assert.match(summaryCardBlock, /label: 'Notes',/, 'a single compact Notes button must be present');
+  assert.doesNotMatch(summaryCardBlock, /'Applies to every unit of this Case\.'/,
+    'the always-visible Standard Instructions content block must no longer render inline in the summary card');
+  assert.doesNotMatch(summaryCardBlock, /Item Notes — only for this item in this Pack\./,
+    'the always-visible Item Notes row must no longer render inline in the summary card');
+  assert.doesNotMatch(actionsCardBlock, /openNotesModal/, 'the Notes button must NOT be in the Actions card');
 
   const multiBlock = extractFunctionBlock(src, 'function renderMultiInspector(pack, selected)');
-  assert.doesNotMatch(multiBlock, /Standard Instructions/, 'multi-selection Inspector must not render Standard Instructions');
+  assert.doesNotMatch(multiBlock, /openNotesModal/, 'multi-selection Inspector must not offer Notes');
 
   const unresolvedBlock = extractFunctionBlock(src, 'function renderUnresolvedCaseInspector(pack, inst)');
-  assert.doesNotMatch(unresolvedBlock, /Standard Instructions/, 'an unresolved (missing case) selection must not render Standard Instructions');
-});
-
-test('the Standard Instructions section is non-interactive: no modal, no textarea, no Add/Edit/Save/Cancel action, no CaseLibrary mutation', async () => {
-  const src = await fs.readFile(editorScreenPath, 'utf8');
-  const singleBlock = extractFunctionBlock(src, 'function renderSingleInspector(pack, inst, caseData, prefs)');
-  const block = extractStandardInstructionsBlock(singleBlock);
-  assert.ok(block.length > 0, 'must be able to isolate the Standard Instructions block');
-
-  assert.doesNotMatch(block, /UIComponents\.showModal/, 'must not open a modal');
-  assert.doesNotMatch(block, /createElement\('textarea'\)/, 'must not contain a textarea');
-  assert.doesNotMatch(block, /label: 'Add/, 'must not offer an Add action');
-  assert.doesNotMatch(block, /label: 'Edit'/, 'must not offer an Edit action');
-  assert.doesNotMatch(block, /label: 'Save'/, 'must not offer a Save action');
-  assert.doesNotMatch(block, /label: 'Cancel'/, 'must not offer a Cancel action');
-  assert.doesNotMatch(block, /label: 'Clear'/, 'must not offer a Clear action');
-  assert.doesNotMatch(block, /CaseLibrary\.upsert/, 'must never mutate CaseLibrary from the Inspector');
-  assert.doesNotMatch(block, /PackLibrary\./, 'must never mutate the Pack or Pack instance');
-  assert.doesNotMatch(block, /addEventListener\('click'/, 'must not attach a click handler (not interactive)');
-});
-
-test('the Standard Instructions value is rendered with safe plain-text assignment, never innerHTML', async () => {
-  const src = await fs.readFile(editorScreenPath, 'utf8');
-  const singleBlock = extractFunctionBlock(src, 'function renderSingleInspector(pack, inst, caseData, prefs)');
-  const block = extractStandardInstructionsBlock(singleBlock);
-
-  assert.match(block, /instructionsValue\.textContent = note;/, 'the populated value must be assigned via textContent, not innerHTML');
-  assert.doesNotMatch(block, /instructionsValue\.innerHTML/, 'the Standard Instructions value must never be assigned via innerHTML');
-  assert.match(block, /tp3d-case-notes-read/, 'the populated value must reuse the existing line-break-preserving read-only class');
+  assert.doesNotMatch(unresolvedBlock, /openNotesModal/, 'an unresolved (missing case) selection must not offer Notes');
 });
 
 // ---------------------------------------------------------------------------
@@ -379,9 +343,8 @@ test('the Standard Instructions value is rendered with safe plain-text assignmen
 //
 // Item Notes describe one specific placed unit in one specific Pack — unlike
 // Standard Instructions, this remains genuinely editable from the Inspector,
-// so it keeps the proven Empty/Read/Edit modal pattern (formerly used for
-// Standard Instructions), retargeted at PackLibrary.updateInstance instead
-// of CaseLibrary.upsert. See
+// so it keeps the proven Empty/Read/Edit modal pattern, retargeted at
+// PackLibrary.updateInstance instead of CaseLibrary.upsert. See
 // docs/engineering/cargo-instructions-ownership-contract.md.
 // ---------------------------------------------------------------------------
 
@@ -603,13 +566,18 @@ test('instanceNotes survives Pack, app, and workspace JSON export/import round t
 });
 
 // ---------------------------------------------------------------------------
-// editor-screen.js source-contract checks for openInstanceNotesModal.
+// editor-screen.js source-contract checks for openNotesModal — the single,
+// merged Notes modal. It presents Standard Case Instructions (Case-owned,
+// read-only) and Item Notes (Pack-instance-owned, editable) together for
+// progressive disclosure, but the two fields are never merged: only Item
+// Notes has a Save action, and only PackLibrary.updateInstance is ever
+// called from this function.
 // ---------------------------------------------------------------------------
 
-test('editor-screen defines openInstanceNotesModal(pack, inst) and captures packId + instanceId before any modal opens', async () => {
+test('editor-screen defines openNotesModal(pack, inst) and captures packId + instanceId before any modal opens', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
-  const block = extractFunctionBlock(src, 'function openInstanceNotesModal(pack, inst)');
-  assert.ok(block.length > 0, 'editor-screen must define openInstanceNotesModal(pack, inst)');
+  const block = extractFunctionBlock(src, 'function openNotesModal(pack, inst)');
+  assert.ok(block.length > 0, 'editor-screen must define openNotesModal(pack, inst)');
 
   const packIdCaptureIdx = block.indexOf('const packId = pack.id;');
   const instanceIdCaptureIdx = block.indexOf('const instanceId = inst.id;');
@@ -619,19 +587,28 @@ test('editor-screen defines openInstanceNotesModal(pack, inst) and captures pack
     'packId and instanceId must be captured before any modal is opened');
 });
 
-test('openInstanceNotesModal Save writes through PackLibrary.updateInstance (the canonical Pack-instance update path), never CaseLibrary, TruckChangeController, or manual revalidation', async () => {
+test('openNotesModal renders both Standard Case Instructions (read-only) and Item Notes (editable) as clearly separated sections, with no ownership/copy badges', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
-  const block = extractFunctionBlock(src, 'function openInstanceNotesModal(pack, inst)');
+  const block = extractFunctionBlock(src, 'function openNotesModal(pack, inst)');
+  assert.match(block, /'Standard Case Instructions'/, 'the Case-owned section must be labeled Standard Case Instructions');
+  assert.match(block, /label\.textContent = 'Item Notes'/, 'the instance-owned section must be labeled Item Notes');
+  assert.doesNotMatch(block, /Case-wide/, 'the Case-wide ownership badge must be removed — section titles alone carry ownership now');
+  assert.doesNotMatch(block, /This item only/, 'the This item only ownership badge must be removed — section titles alone carry ownership now');
+});
+
+test('openNotesModal Save writes through PackLibrary.updateInstance (the canonical Pack-instance update path), never CaseLibrary, TruckChangeController, or manual revalidation', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = extractFunctionBlock(src, 'function openNotesModal(pack, inst)');
   assert.match(block, /PackLibrary\.updateInstance\(packId, instanceId, \{ instanceNotes: trimmed \|\| null \}\)/,
     'Save must call PackLibrary.updateInstance with the captured packId/instanceId and a trimmed, null-on-empty value');
-  assert.doesNotMatch(block, /CaseLibrary\.upsert/, 'Item Notes must never write through CaseLibrary — it is not Case-owned');
+  assert.doesNotMatch(block, /CaseLibrary\.upsert/, 'Standard Case Instructions is read-only here — nothing in this modal may write through CaseLibrary');
   assert.doesNotMatch(block, /TruckChangeController/, 'Item Notes must not go through the Truck Change controller');
   assert.doesNotMatch(block, /updateCasesWithManualRevalidation/, 'a plain text field must not trigger geometry/placement revalidation');
 });
 
-test('openInstanceNotesModal fails safely when the captured Pack/instance no longer exists, and Save failure preserves the draft instead of closing', async () => {
+test('openNotesModal fails safely when the captured Pack/instance no longer exists, and Save failure preserves the draft instead of closing', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
-  const block = extractFunctionBlock(src, 'function openInstanceNotesModal(pack, inst)');
+  const block = extractFunctionBlock(src, 'function openNotesModal(pack, inst)');
   const guardCount = (block.match(/resolveInstance\(\)/g) || []).length;
   assert.ok(guardCount >= 2, 'both the state-resolve path and the Save handler must re-check resolveInstance() before acting');
   assert.match(block, /PackLibrary\.getById\(packId\)/, 'resolveInstance must re-resolve the Pack via packId, never trust a stale pack reference');
@@ -644,13 +621,13 @@ test('openInstanceNotesModal fails safely when the captured Pack/instance no lon
     'Save failure (missing Pack/instance) must return false so showModal does NOT close — the draft and edit state are preserved');
 });
 
-test('openInstanceNotesModal reuses UIComponents.showModal for all three states via a locally Escape-scoped wrapper (no bespoke modal markup, no shared-primitive change)', async () => {
+test('openNotesModal reuses UIComponents.showModal for all three Item Notes states via a locally Escape-scoped wrapper (no bespoke modal markup, no shared-primitive change)', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
-  const block = extractFunctionBlock(src, 'function openInstanceNotesModal(pack, inst)');
+  const block = extractFunctionBlock(src, 'function openNotesModal(pack, inst)');
   const showModalCalls = (block.match(/UIComponents\.showModal\(/g) || []).length;
   assert.equal(showModalCalls, 1, 'only the local showNotesModal wrapper should call UIComponents.showModal directly');
   const showNotesModalCalls = (block.match(/(?<!function )showNotesModal\(\{/g) || []).length;
-  assert.equal(showNotesModalCalls, 3, 'Empty, Read, and Edit states must each render through the local showNotesModal wrapper');
+  assert.equal(showNotesModalCalls, 3, 'Empty, Read, and Edit Item Notes states must each render through the local showNotesModal wrapper');
 
   assert.match(block, /No notes for this item yet\./, 'Empty state must show the approved empty message');
   assert.match(block, /label: 'Add Note'/, 'Empty state must offer Add Note');
@@ -659,7 +636,14 @@ test('openInstanceNotesModal reuses UIComponents.showModal for all three states 
   assert.match(block, /label: 'Save'/, 'Edit state must offer Save');
 });
 
-test('the Item Notes control lives in the single-selection Inspector top summary card, distinct from Standard Instructions, and only for a single resolved selection', async () => {
+test('openNotesModal shows a Last edited timestamp using the existing pack.lastEdited field and Utils.formatRelativeTime (no new persistence field)', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = extractFunctionBlock(src, 'function openNotesModal(pack, inst)');
+  assert.match(block, /Last edited \$\{Utils\.formatRelativeTime\(currentPackForEdited\.lastEdited\)\}/,
+    'Last edited must be derived from the existing pack.lastEdited field via the existing formatRelativeTime helper');
+});
+
+test('the Notes button lives in the single-selection Inspector top summary card, and only for a single resolved selection', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const singleBlock = extractFunctionBlock(src, 'function renderSingleInspector(pack, inst, caseData, prefs)');
   const transformMarkerIdx = singleBlock.indexOf('=== Transform Card');
@@ -667,20 +651,36 @@ test('the Item Notes control lives in the single-selection Inspector top summary
   const actionsMarkerIdx = singleBlock.indexOf('=== Actions Card');
   const actionsCardBlock = actionsMarkerIdx > 0 ? singleBlock.slice(actionsMarkerIdx) : '';
 
-  assert.match(summaryCardBlock, /openInstanceNotesModal\(pack, inst\)/, 'the Item Notes button must be built inside the top summary card');
-  assert.doesNotMatch(actionsCardBlock, /openInstanceNotesModal/, 'the Item Notes button must NOT be in the Actions card');
+  assert.match(summaryCardBlock, /openNotesModal\(pack, inst\)/, 'the Notes button must be built inside the top summary card');
+  assert.doesNotMatch(actionsCardBlock, /openNotesModal/, 'the Notes button must NOT be in the Actions card');
 
   const multiBlock = extractFunctionBlock(src, 'function renderMultiInspector(pack, selected)');
-  assert.doesNotMatch(multiBlock, /openInstanceNotesModal/, 'multi-selection Inspector must not offer Item Notes');
+  assert.doesNotMatch(multiBlock, /openNotesModal/, 'multi-selection Inspector must not offer Notes');
 
   const unresolvedBlock = extractFunctionBlock(src, 'function renderUnresolvedCaseInspector(pack, inst)');
-  assert.doesNotMatch(unresolvedBlock, /openInstanceNotesModal/, 'an unresolved (missing case) selection must not offer Item Notes');
+  assert.doesNotMatch(unresolvedBlock, /openNotesModal/, 'an unresolved (missing case) selection must not offer Notes');
 });
 
-test('the Item Notes Read-state value is rendered with safe plain-text assignment, never innerHTML', async () => {
+test('the Notes button title row never wraps the button below the case name, regardless of title length', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
-  const block = extractFunctionBlock(src, 'function openInstanceNotesModal(pack, inst)');
-  assert.match(block, /content\.textContent = note;/, 'the populated Read-state value must be assigned via textContent, not innerHTML');
-  assert.doesNotMatch(block, /content\.innerHTML/, 'the Item Notes value must never be assigned via innerHTML');
-  assert.match(block, /tp3d-case-notes-read/, 'the populated value must reuse the existing line-break-preserving read-only class');
+  const singleBlock = extractFunctionBlock(src, 'function renderSingleInspector(pack, inst, caseData, prefs)');
+  assert.match(singleBlock, /titleRow\.className = 'row space-between tp3d-editor-inspector-title-row'/,
+    'the title row must use the anti-wrap layout class so a long case name cannot push the Notes button to a new line');
+});
+
+test('the Notes button shows a subtle indicator dot only when Standard Case Instructions or Item Notes exist', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const singleBlock = extractFunctionBlock(src, 'function renderSingleInspector(pack, inst, caseData, prefs)');
+  assert.match(singleBlock, /const hasAnyNotes = Boolean\(String\(caseData\.notes \|\| ''\)\.trim\(\)\) \|\| Boolean\(String\(inst\.instanceNotes \|\| ''\)\.trim\(\)\)/,
+    'the indicator must reflect either Standard Case Instructions or Item Notes having content');
+  assert.match(singleBlock, /if \(hasAnyNotes\) \{[\s\S]*?tp3d-notes-indicator-dot/, 'the dot must only be appended when hasAnyNotes is true');
+});
+
+test('the populated Standard Case Instructions and Item Notes values are rendered with safe plain-text assignment, never innerHTML', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = extractFunctionBlock(src, 'function openNotesModal(pack, inst)');
+  assert.match(block, /value\.textContent = note;/, 'the populated Standard Case Instructions value must be assigned via textContent, not innerHTML');
+  assert.match(block, /content\.textContent = note;/, 'the populated Item Notes Read-state value must be assigned via textContent, not innerHTML');
+  assert.doesNotMatch(block, /\.innerHTML\s*=/, 'no note value may ever be assigned via innerHTML');
+  assert.match(block, /tp3d-case-notes-read/, 'the populated values must reuse the existing line-break-preserving read-only class');
 });

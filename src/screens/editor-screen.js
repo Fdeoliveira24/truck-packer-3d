@@ -4876,15 +4876,18 @@ export function createEditorScreen({
           scope: 'everywhere',
           label: 'Everywhere',
           iconClass: 'fa-solid fa-layer-group',
+          fullWidth: true,
         },
-      ].forEach(({ scope, label, iconClass, iconHtml }) => {
-        row.appendChild(makeActionButton({
+      ].forEach(({ scope, label, iconClass, iconHtml, fullWidth }) => {
+        const btn = makeActionButton({
           label,
           iconClass,
           iconHtml,
           disabled: !buckets[scope].length,
           onClick: () => selectCategoryGroup(pack, categoryKey, scope),
-        }));
+        });
+        if (fullWidth) btn.classList.add('tp3d-editor-action-grid-span-full');
+        row.appendChild(btn);
       });
       card.appendChild(row);
       return card;
@@ -5061,18 +5064,22 @@ export function createEditorScreen({
       });
     }
 
-    // Item Notes for the Inspector's single selected Pack instance. Unlike
-    // Standard Instructions (Case-owned, read-only in the Inspector), Item
-    // Notes are owned by this one placed instance in this one Pack, so the
-    // canonical update path is PackLibrary.updateInstance, never
+    // Single Notes modal for the Inspector's single selected Pack instance,
+    // presenting both Cargo Instructions tiers together for progressive
+    // disclosure while keeping their ownership and mutation paths entirely
+    // separate: Standard Instructions (Case-owned) is always read-only here —
+    // the Cases-screen Case editor remains its only editing location — and
+    // Item Notes (Pack-instance-owned) is the only editable part of this
+    // modal, saved exclusively through PackLibrary.updateInstance, never
     // CaseLibrary.upsert. Both packId and instanceId are captured up front so
     // the draft can never migrate to a different instance if the selection
     // changes while the modal is open, and either being missing (deleted/
     // synced away while the modal is open) fails safely instead of writing
     // anywhere.
-    function openInstanceNotesModal(pack, inst) {
+    function openNotesModal(pack, inst) {
       const packId = pack.id;
       const instanceId = inst.id;
+      const caseId = inst.caseId;
 
       // Escape-to-close scoped to this modal only, mirroring the same local
       // pattern already used in truck-change-controller.js's
@@ -5104,22 +5111,65 @@ export function createEditorScreen({
         return currentInst || null;
       }
 
+      // Re-resolved fresh on every open so an edit made elsewhere (Cases
+      // screen) while this modal is closed is never stale, and so a Case
+      // deleted out from under an open modal degrades to "—" instead of
+      // throwing.
+      function buildStandardInstructionsSection() {
+        const caseData = CaseLibrary.getById(caseId);
+        const section = document.createElement('div');
+        section.className = 'tp3d-editor-standard-instructions';
+        const label = document.createElement('div');
+        label.classList.add('tp3d-editor-fw-semibold');
+        label.textContent = 'Standard Case Instructions';
+        section.appendChild(label);
+        const note = String((caseData && caseData.notes) || '').trim();
+        const value = document.createElement('div');
+        if (note) {
+          value.classList.add('tp3d-editor-sub-sm', 'tp3d-case-notes-read');
+          value.textContent = note;
+        } else {
+          value.classList.add('muted', 'tp3d-editor-sub-sm');
+          value.textContent = 'No standard instructions.';
+        }
+        section.appendChild(value);
+        return section;
+      }
+
+      function buildItemNotesHeader() {
+        const label = document.createElement('div');
+        label.classList.add('tp3d-editor-fw-semibold');
+        label.textContent = 'Item Notes';
+        return label;
+      }
+
       function open(state) {
         const current = resolveInstance();
         if (!current) {
-          UIComponents.showToast('This item no longer exists.', 'error', { title: 'Item Notes' });
+          UIComponents.showToast('This item no longer exists.', 'error', { title: 'Notes' });
           return;
         }
+        const caseData = CaseLibrary.getById(caseId);
         const note = String(current.instanceNotes || '').trim();
         const resolvedState = state === 'auto' ? (note ? 'read' : 'empty') : state;
 
+        const wrap = document.createElement('div');
+        wrap.className = 'tp3d-editor-card-grid-gap-12';
+        const subtitle = document.createElement('div');
+        subtitle.className = 'muted tp3d-editor-sub-sm';
+        subtitle.textContent = (caseData && caseData.name) || 'Case';
+        wrap.appendChild(subtitle);
+        wrap.appendChild(buildStandardInstructionsSection());
+        wrap.appendChild(buildItemNotesHeader());
+
         if (resolvedState === 'empty') {
-          const content = document.createElement('div');
-          content.className = 'muted';
-          content.textContent = 'No notes for this item yet.';
+          const msg = document.createElement('div');
+          msg.className = 'muted';
+          msg.textContent = 'No notes for this item yet.';
+          wrap.appendChild(msg);
           showNotesModal({
-            title: 'Item Notes',
-            content,
+            title: 'Notes',
+            content: wrap,
             actions: [
               { label: 'Add Note', variant: 'primary', onClick: () => { open('edit'); return true; } },
             ],
@@ -5131,9 +5181,17 @@ export function createEditorScreen({
           const content = document.createElement('div');
           content.classList.add('tp3d-editor-sub-sm', 'tp3d-case-notes-read');
           content.textContent = note;
+          wrap.appendChild(content);
+          const currentPackForEdited = PackLibrary.getById(packId);
+          if (currentPackForEdited && currentPackForEdited.lastEdited) {
+            const lastEdited = document.createElement('div');
+            lastEdited.className = 'muted tp3d-editor-sub-sm';
+            lastEdited.textContent = `Last edited ${Utils.formatRelativeTime(currentPackForEdited.lastEdited)}`;
+            wrap.appendChild(lastEdited);
+          }
           showNotesModal({
-            title: 'Item Notes',
-            content,
+            title: 'Notes',
+            content: wrap,
             actions: [
               { label: 'Close', variant: 'ghost' },
               { label: 'Edit', variant: 'primary', onClick: () => { open('edit'); return true; } },
@@ -5147,15 +5205,16 @@ export function createEditorScreen({
         // touching storage — only Save writes through
         // PackLibrary.updateInstance, and closing the dialog any other way
         // never deletes a previously saved note.
-        const wrap = document.createElement('div');
-        wrap.className = 'field';
+        const fieldWrap = document.createElement('div');
+        fieldWrap.className = 'field';
         const textarea = document.createElement('textarea');
         textarea.className = 'input tp3d-textarea-minh-60';
         textarea.placeholder = 'Add notes specific to this item (condition, delivery note, etc.)...';
         textarea.value = note;
-        wrap.appendChild(textarea);
+        fieldWrap.appendChild(textarea);
+        wrap.appendChild(fieldWrap);
         showNotesModal({
-          title: 'Item Notes',
+          title: 'Notes',
           content: wrap,
           actions: [
             { label: 'Cancel', variant: 'ghost', onClick: () => { open('auto'); return true; } },
@@ -5167,14 +5226,15 @@ export function createEditorScreen({
                   // Save failure: keep the draft and stay in edit state — do
                   // not close (returning false leaves this same modal, with
                   // the user's typed text still in the textarea, open).
-                  UIComponents.showToast('This item no longer exists.', 'error', { title: 'Item Notes' });
+                  UIComponents.showToast('This item no longer exists.', 'error', { title: 'Notes' });
                   return false;
                 }
                 const trimmed = textarea.value.trim();
                 // A single updateInstance call here is one Pack update and
                 // one Undo/Redo history entry (packLibrary is in
                 // StateStore's significant-state list) — never loop this
-                // over multiple instances.
+                // over multiple instances. Standard Instructions is never
+                // touched by this handler — it has no Save action of its own.
                 PackLibrary.updateInstance(packId, instanceId, { instanceNotes: trimmed || null });
                 open('auto');
                 return true;
@@ -5759,20 +5819,35 @@ export function createEditorScreen({
       card.className = 'card';
       card.classList.add('tp3d-editor-card-grid-gap-12');
 
-      // Header: name + subtitle.
-      const header = document.createElement('div');
+      // Header: name (+ Notes) row, then subtitle. titleRow is appended
+      // directly to .card (not wrapped) so it picks up the existing
+      // "#inspector-body .card>.row.space-between" sizing/min-width rule.
+      const titleRow = document.createElement('div');
+      titleRow.className = 'row space-between tp3d-editor-inspector-title-row';
       const title = document.createElement('div');
       title.classList.add('tp3d-editor-title-lg-semibold');
       title.textContent = caseData.name || '—';
+      const hasAnyNotes = Boolean(String(caseData.notes || '').trim()) || Boolean(String(inst.instanceNotes || '').trim());
+      const notesButton = makeActionButton({
+        label: 'Notes',
+        iconClass: 'fa-solid fa-note-sticky',
+        onClick: () => openNotesModal(pack, inst),
+      });
+      if (hasAnyNotes) {
+        const notesIndicator = document.createElement('span');
+        notesIndicator.className = 'tp3d-notes-indicator-dot';
+        notesButton.appendChild(notesIndicator);
+      }
+      titleRow.appendChild(title);
+      titleRow.appendChild(notesButton);
+      card.appendChild(titleRow);
       const sub = document.createElement('div');
       sub.className = 'muted';
       sub.classList.add('tp3d-editor-sub-sm');
       const mfg = caseData.manufacturer ? caseData.manufacturer : '—';
       const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
       sub.textContent = `${mfg} • ${Utils.formatDims(d, lengthUnit)}`;
-      header.appendChild(title);
-      header.appendChild(sub);
-      card.appendChild(header);
+      card.appendChild(sub);
       card.appendChild(makeMiniCategoryChip(caseData.category));
 
       // Handling rules: case-level policy and this-instance lock, shown separately.
@@ -5808,52 +5883,6 @@ export function createEditorScreen({
         }
         card.appendChild(rulesWrap);
       }
-
-      // Standard Instructions: Case-owned, always visible, read-only. Editing
-      // happens only in the Cases-screen Case editor — see
-      // docs/engineering/cargo-instructions-ownership-contract.md.
-      const instructionsWrap = document.createElement('div');
-      instructionsWrap.className = 'tp3d-editor-standard-instructions';
-      const instructionsLabel = document.createElement('div');
-      instructionsLabel.className = 'muted tp3d-editor-sub-sm';
-      instructionsLabel.textContent = 'Standard Instructions';
-      instructionsWrap.appendChild(instructionsLabel);
-      const instructionsDesc = document.createElement('div');
-      instructionsDesc.className = 'muted tp3d-editor-sub-sm';
-      instructionsDesc.textContent = 'Applies to every unit of this Case.';
-      instructionsWrap.appendChild(instructionsDesc);
-      const note = String(caseData.notes || '').trim();
-      const instructionsValue = document.createElement('div');
-      if (note) {
-        instructionsValue.classList.add('tp3d-editor-sub-sm', 'tp3d-case-notes-read');
-        instructionsValue.textContent = note;
-      } else {
-        instructionsValue.classList.add('muted', 'tp3d-editor-sub-sm');
-        instructionsValue.textContent = 'No standard instructions.';
-      }
-      instructionsWrap.appendChild(instructionsValue);
-      card.appendChild(instructionsWrap);
-
-      // Item Notes: Pack-instance-owned, editable only for this specific
-      // placed item in this specific Pack — distinct from the Case-owned,
-      // read-only Standard Instructions section above. Reuses the existing
-      // row/space-between header pattern (a direct .card child, matching the
-      // "#inspector-body .card>.row.space-between" sizing rule) and the
-      // existing makeActionButton helper, so no new layout system or CSS
-      // class is needed.
-      const itemNotesRow = document.createElement('div');
-      itemNotesRow.className = 'row space-between';
-      const itemNotesLabel = document.createElement('div');
-      itemNotesLabel.className = 'muted tp3d-editor-sub-sm';
-      itemNotesLabel.textContent = 'Item Notes — only for this item in this Pack.';
-      const itemNotesButton = makeActionButton({
-        label: 'Item Notes',
-        iconClass: 'fa-solid fa-note-sticky',
-        onClick: () => openInstanceNotesModal(pack, inst),
-      });
-      itemNotesRow.appendChild(itemNotesLabel);
-      itemNotesRow.appendChild(itemNotesButton);
-      card.appendChild(itemNotesRow);
 
       inspectorEl.appendChild(card);
 

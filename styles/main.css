@@ -4722,7 +4722,7 @@ body.modal-open {
 
 .tp3d-notes-modal-heading-subtitle {
   color: var(--text-muted);
-  font-size: var(--text-sm);
+  font-size: 12px;
   font-weight: var(--font-normal);
 }
 

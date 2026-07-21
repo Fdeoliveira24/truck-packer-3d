@@ -2459,8 +2459,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
     let logoutActionPromise = null;
     let logoutInProgress = false;
     let logoutStartedAt = 0;
-    let logoutFallbackTimer = null;
-    const LOGOUT_FALLBACK_RELOAD_DELAY_MS = 2200;
+    let signedOutFinalized = false;
+    let signedOutFinalizationInFlight = false;
     let applyPostLogoutLocalStateReset = () => {
       SessionManager.clear();
       StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
@@ -2475,62 +2475,47 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (logoutInProgress === active) return;
       logoutInProgress = active;
       logoutStartedAt = active ? Date.now() : 0;
-      if (!active && logoutFallbackTimer) {
-        clearTimeout(logoutFallbackTimer);
-        logoutFallbackTimer = null;
-      }
       if (isTp3dDebugEnabled()) {
         console.info('[authLogout] latch', { active, source, reason, startedAt: logoutStartedAt || null });
       }
     }
 
-    function scheduleLogoutFallbackReload(source = 'logout') {
-      if (logoutFallbackTimer) {
-        clearTimeout(logoutFallbackTimer);
-        logoutFallbackTimer = null;
+    function finalizeSignedOutLocally({
+      source = 'auth',
+      event = 'SIGNED_OUT',
+      treatAsSignedOut = true,
+      userInitiatedSignOut = false,
+      onRetry = bootstrapAuthGate,
+    } = {}) {
+      if (signedOutFinalized || signedOutFinalizationInFlight) {
+        if (signedOutFinalized && isLogoutInProgress()) {
+          setLogoutInProgress(false, { source, reason: 'signed-out-already-finalized' });
+        }
+        return false;
       }
-      logoutFallbackTimer = setTimeout(() => {
-        logoutFallbackTimer = null;
-        let hasSession = false;
-        try {
-          const authState =
-            SupabaseClient && typeof SupabaseClient.getAuthState === 'function' ? SupabaseClient.getAuthState() : null;
-          const session = authState && authState.session ? authState.session : null;
-          hasSession = Boolean(session && session.access_token);
-        } catch {
-          hasSession = false;
+      signedOutFinalizationInFlight = true;
+      try {
+        applyPostLogoutLocalStateReset();
+        _executeSignedOutCleanup({
+          event,
+          treatAsSignedOut,
+          userInitiatedSignOut: Boolean(userInitiatedSignOut),
+          onRetry,
+        });
+        signedOutFinalized = true;
+      } finally {
+        signedOutFinalizationInFlight = false;
+        if (isLogoutInProgress()) {
+          setLogoutInProgress(false, { source, reason: 'signed-out-finalized' });
         }
-        let signedOutUi = false;
-        try {
-          const bodySignedOut = document.body && document.body.getAttribute('data-auth') === 'signed_out';
-          const overlayOpen =
-            Boolean(AuthOverlay && typeof AuthOverlay.isOpen === 'function' && AuthOverlay.isOpen());
-          signedOutUi = Boolean(bodySignedOut && overlayOpen);
-        } catch {
-          signedOutUi = false;
-        }
-        if (isTp3dDebugEnabled()) {
-          console.info('[authLogout] fallback-check', {
-            source,
-            hasSession,
-            signedOutUi,
-            logoutInProgress,
-          });
-        }
-        if (!hasSession && !signedOutUi) {
-          if (isTp3dDebugEnabled()) console.info('[authLogout] fallback-reload', { source });
-          try { window.location.reload(); } catch (_) { /* ignore */ }
-          return;
-        }
-        if (!hasSession && signedOutUi) {
-          setLogoutInProgress(false, { source, reason: 'stable-signed-out-ui' });
-        }
-      }, LOGOUT_FALLBACK_RELOAD_DELAY_MS);
+      }
+      return true;
     }
 
     async function performUserInitiatedLogout({ source = 'logout' } = {}) {
       if (logoutActionPromise) return logoutActionPromise;
       logoutActionPromise = (async () => {
+        signedOutFinalized = false;
         setLogoutInProgress(true, { source, reason: 'start' });
         try {
           UIComponents.closeAllDropdowns();
@@ -2540,10 +2525,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // ignore
         }
 
-        let usedSupabaseSignOut = false;
         try {
           if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
-            usedSupabaseSignOut = true;
             if (SupabaseClient.setAuthIntent) SupabaseClient.setAuthIntent('signOut');
             const result = await SupabaseClient.signOut({ global: true, allowOffline: true, userInitiated: true });
             if (isTp3dDebugEnabled()) {
@@ -2563,15 +2546,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           }
         }
 
-        applyPostLogoutLocalStateReset();
-
-        if (usedSupabaseSignOut) {
-          scheduleLogoutFallbackReload(source);
-          return;
-        }
-
-        setLogoutInProgress(false, { source, reason: 'local-fallback' });
-        UIComponents.showToast('Logged out', 'info');
+        finalizeSignedOutLocally({ source, userInitiatedSignOut: true });
       })().finally(() => {
         logoutActionPromise = null;
       });
@@ -2592,20 +2567,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
         });
       }
 
-      if (isLogoutInProgress()) {
-        setLogoutInProgress(false, { source: 'tp3d:auth-signed-out', reason: 'event' });
-      }
-
-      // Force signed-out UI state
-      try {
-        if (AuthOverlay && typeof AuthOverlay.show === 'function') {
-          AuthOverlay.show();
-        } else {
-          window.location.reload();
-        }
-      } catch {
-        window.location.reload();
-      }
+      const userInitiatedSignOut = isLogoutInProgress();
+      finalizeSignedOutLocally({
+        source: 'tp3d:auth-signed-out',
+        userInitiatedSignOut,
+      });
     });
 
     // Show small toasts on connectivity changes to improve UX
@@ -7887,14 +7853,26 @@ const TP3D_BUILD_STAMP = Object.freeze({
         authGateSignedOutCandidate(() => {
           // This fires after AUTH_SIGNED_OUT_STABLE_MS with no intervening SIGNED_IN.
           try { document.body.setAttribute('data-auth', 'signed_out'); } catch { /* ignore */ }
-          _executeSignedOutCleanup({ event, treatAsSignedOut, userInitiatedSignOut: false, onRetry });
+          finalizeSignedOutLocally({
+            source: 'auth-gate-signed-out',
+            event,
+            treatAsSignedOut,
+            userInitiatedSignOut: false,
+            onRetry,
+          });
         });
         // Don't set data-auth yet — keep signed_in appearance while gate is pending
         return;
       }
       // ── end Auth Stability Gate ────────────────────────────────────────────────────
 
-      _executeSignedOutCleanup({ event, treatAsSignedOut, userInitiatedSignOut, onRetry });
+      finalizeSignedOutLocally({
+        source: 'render-auth-state',
+        event,
+        treatAsSignedOut,
+        userInitiatedSignOut,
+        onRetry,
+      });
     }
 
     /** Extracted destructive signed-out actions so the auth gate timer can call them. */
@@ -8306,6 +8284,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const inviteRevokedMessage = 'This invite link is no longer valid. Please ask the workspace owner to send a new invite.';
       const inviteWrongEmailMessage = 'Invite email does not match the signed-in account.';
       const inviteGenericFailureMessage = 'This invite link could not be accepted. Please ask the workspace owner to send a new invite.';
+      const inviteRetryableFailureMessage = 'This invite could not be accepted right now. Please try again.';
       let inviteHandoffNotice = null;
 
       function sanitizeInviteHandoffMessage(message) {
@@ -8321,10 +8300,44 @@ const TP3D_BUILD_STAMP = Object.freeze({
       function mapInviteAcceptFailureMessage(error) {
         const raw = String(error || '').trim();
         const lower = raw.toLowerCase();
-        if (lower.includes('expired')) return inviteExpiredMessage;
-        if (lower.includes('email does not match')) return inviteWrongEmailMessage;
-        if (lower.includes('no longer valid') || lower.includes('revoked')) return inviteRevokedMessage;
+        if (lower.includes('invite') && lower.includes('expired')) return inviteExpiredMessage;
+        if (lower.includes('invite email does not match')) return inviteWrongEmailMessage;
+        if (
+          lower.includes('invite') &&
+          (lower.includes('no longer valid') || lower.includes('revoked') || lower.includes('not found'))
+        ) {
+          return inviteRevokedMessage;
+        }
         return inviteGenericFailureMessage;
+      }
+
+      function isTerminalInviteAcceptFailure(error) {
+        const lower = String(error || '').trim().toLowerCase();
+        return Boolean(
+          lower === 'missing invite token' ||
+          lower === 'invite token is required' ||
+          lower.includes('invite not found') ||
+          lower.includes('invite link has expired') ||
+          lower.includes('invite has expired') ||
+          lower.startsWith('invite expired') ||
+          lower.includes('invite is no longer valid') ||
+          lower.includes('invite role is no longer valid') ||
+          lower.includes('invite email does not match') ||
+          lower.includes('invite was revoked') ||
+          lower.includes('invite has been revoked') ||
+          lower.startsWith('invite revoked') ||
+          lower.includes('invalid invite role') ||
+          lower.includes('invite has an invalid role')
+        );
+      }
+
+      function clearPendingInviteToken() {
+        pendingInviteToken = null;
+        try {
+          window.sessionStorage.removeItem(inviteTokenStorageKey);
+        } catch (_) {
+          // ignore
+        }
       }
 
       function clearInviteHandoffNotice() {
@@ -8467,14 +8480,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
         try {
           UIComponents.showToast('Accepting invite…', 'info', { title: 'Workspace', duration: 6000 });
           const result = await acceptOrgInvite(token);
-          pendingInviteToken = null;
-          try {
-            window.sessionStorage.removeItem(inviteTokenStorageKey);
-          } catch (_) {
-            // ignore
-          }
 
           if (result && result.ok) {
+            clearPendingInviteToken();
             clearInviteHandoffNotice();
             const acceptedOrgId = String(
               (result && result.organization_id) ||
@@ -8494,7 +8502,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
             requestAuthRefresh('invite-accepted', { force: true, forceBundle: true, sessionHint: session });
             try { SettingsOverlay.open('org-members'); } catch (_) { /* ignore */ }
           } else {
-            const inviteMessage = mapInviteAcceptFailureMessage(result && result.error ? result.error : '');
+            const inviteError = result && result.error ? result.error : '';
+            const isTerminalFailure = isTerminalInviteAcceptFailure(inviteError);
+            if (isTerminalFailure) clearPendingInviteToken();
+            const inviteMessage = isTerminalFailure
+              ? mapInviteAcceptFailureMessage(inviteError)
+              : inviteRetryableFailureMessage;
             // Rejection branches are only reachable when a valid session exists (signed-in user).
             // The no-session path returns early above and uses setInviteHandoffNotice for the
             // signed-out case. Here, clear any stale notice state and rely on the toast only.
@@ -8505,13 +8518,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
             });
           }
         } catch (err) {
-          pendingInviteToken = null;
-          try {
-            window.sessionStorage.removeItem(inviteTokenStorageKey);
-          } catch (_) {
-            // ignore
-          }
-          const inviteMessage = mapInviteAcceptFailureMessage(err && err.message ? err.message : '');
+          const inviteError = err && err.message ? err.message : '';
+          const isTerminalFailure = isTerminalInviteAcceptFailure(inviteError);
+          if (isTerminalFailure) clearPendingInviteToken();
+          const inviteMessage = isTerminalFailure
+            ? mapInviteAcceptFailureMessage(inviteError)
+            : inviteRetryableFailureMessage;
           clearInviteHandoffNotice();
           UIComponents.showToast(inviteMessage, 'error', { title: 'Workspace', duration: 12000 });
         } finally {
@@ -8551,6 +8563,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // fall back to it during the brief window where getAuthState() returns
           // status:'unknown' / hasToken:false right after a valid event.
           if (session && session.access_token) {
+            if (!isLogoutInProgress() && !logoutActionPromise) signedOutFinalized = false;
             lastAuthEventSnapshot = { status: 'signed_in', userId: newUserId, hasToken: true, session, ts: Date.now() };
           } else if (isSignedOutEvent) {
             lastAuthEventSnapshot = { status: 'signed_out', userId: null, hasToken: false, session: null, ts: Date.now() };

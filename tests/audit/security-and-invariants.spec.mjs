@@ -617,10 +617,14 @@ test('logout actions use canonical helper and avoid timed reload after signOut',
   assert.match(source, /async function performUserInitiatedLogout\(/);
   assert.match(source, /performUserInitiatedLogout\(\{ source: 'trial-expired-modal' \}\)/);
   assert.match(source, /performUserInitiatedLogout\(\{ source: 'trial-welcome' \}\)/);
-
-  const timedReloadAfterSignOut =
-    /SupabaseClient\.signOut\([\s\S]{0,600}setTimeout\([\s\S]{0,250}location\.reload\(/;
-  assert.equal(timedReloadAfterSignOut.test(source), false);
+  const start = source.indexOf('let logoutActionPromise = null;');
+  const end = source.indexOf('// Show small toasts on connectivity changes', start);
+  const logoutBlock = start >= 0 && end > start ? source.slice(start, end) : '';
+  assert.ok(logoutBlock, 'logout implementation block must be extractable');
+  assert.doesNotMatch(logoutBlock, /logoutFallbackTimer|LOGOUT_FALLBACK_RELOAD_DELAY_MS|scheduleLogoutFallbackReload/,
+    'logout must not retain its timer fallback state or helper');
+  assert.doesNotMatch(logoutBlock, /setTimeout\(|location\.reload\(/,
+    'logout must not schedule or trigger a page reload');
 });
 
 test('org context cross-tab sync includes user + epoch metadata and stale guards', async () => {
@@ -13948,7 +13952,7 @@ test('phase 3C1 app maps invite accept failures to persistent handoff copy', asy
     'invite accept failure mapper must classify expired responses');
   assert.match(inviteBlock, /includes\('no longer valid'\) \|\| lower\.includes\('revoked'\)[\s\S]*inviteRevokedMessage/,
     'invite accept failure mapper must classify revoked/no-longer-valid responses');
-  assert.match(inviteBlock, /includes\('email does not match'\)[\s\S]*inviteWrongEmailMessage/,
+  assert.match(inviteBlock, /includes\('invite email does not match'\)[\s\S]*inviteWrongEmailMessage/,
     'invite accept failure mapper must preserve email mismatch responses');
   // Rejection failures no longer call setInviteHandoffNotice (toast-only for signed-in users).
   // They must call clearInviteHandoffNotice() to clean up stale state, and show a toast.
@@ -14093,8 +14097,8 @@ test('phase 3C1 signed-in invite rejection clears notice state instead of settin
   assert.ok(fnBody.length > 0, 'tryAcceptPendingInvite must be extractable');
 
   // Rejection branches (result.ok=false and catch) must call clearInviteHandoffNotice, not set error notice
-  const elseIdx = fnBody.indexOf('const inviteMessage = mapInviteAcceptFailureMessage(result');
-  const catchIdx = fnBody.indexOf('const inviteMessage = mapInviteAcceptFailureMessage(err');
+  const elseIdx = fnBody.indexOf("const inviteError = result && result.error ? result.error : '';");
+  const catchIdx = fnBody.indexOf("const inviteError = err && err.message ? err.message : '';");
   assert.ok(elseIdx > 0, 'result.ok=false branch must be locatable');
   assert.ok(catchIdx > elseIdx, 'catch branch must be locatable after else branch');
 
@@ -24046,4 +24050,289 @@ test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMut
   );
   assert.match(applyPosition, /savePos\.addEventListener\('click', \(\) => \{\s*if \(editorMutationBlocked\(\)\) return;/,
     'manual position Apply rejects busy state before scene or pack mutation');
+});
+
+test('APP-STABILIZATION-PHASE4 invite failures distinguish terminal responses from retryable failures', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function isTerminalInviteAcceptFailure(');
+  const end = src.indexOf('\n\n      function clearPendingInviteToken(', start);
+  const classifierSource = src.slice(start, end);
+  assert.ok(start >= 0 && end > start, 'terminal invite classifier is extractable');
+
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(`
+    ${classifierSource}
+    globalThis.__isTerminal = isTerminalInviteAcceptFailure;
+  `, context);
+
+  for (const message of [
+    'Invite not found or expired.',
+    'This invite link has expired.',
+    'Invite email does not match the signed-in account.',
+    'Invite is no longer valid.',
+    'Invite was revoked.',
+    'Invite has an invalid role.',
+    'Missing invite token',
+  ]) {
+    assert.equal(context.__isTerminal(message), true, `${message} is terminal`);
+  }
+  for (const message of [
+    'Network error',
+    'Failed to fetch',
+    'Request timed out',
+    'Internal server error',
+    'Invite acceptance failed',
+    'Unexpected response',
+    'JWT expired',
+    'Function not found',
+    'Invite acceptance request expired',
+    'Invite acceptance failed: JWT expired',
+    'Invite function not found',
+    '',
+  ]) {
+    assert.equal(context.__isTerminal(message), false, `${message || 'empty failure'} remains retryable`);
+  }
+});
+
+async function createPhase4InviteHarness({ response = null, throwMessage = '' } = {}) {
+  const src = await fs.readFile(appPath, 'utf8');
+  const constantsStart = src.indexOf('const inviteHandoffSigninMessage');
+  const constantsEnd = src.indexOf('let inviteHandoffNotice = null;', constantsStart);
+  const mapStart = src.indexOf('function mapInviteAcceptFailureMessage(', constantsEnd);
+  const terminalStart = src.indexOf('function isTerminalInviteAcceptFailure(', mapStart);
+  const clearTokenStart = src.indexOf('function clearPendingInviteToken(', terminalStart);
+  const clearNoticeStart = src.indexOf('function clearInviteHandoffNotice(', clearTokenStart);
+  const tryStart = src.indexOf('async function tryAcceptPendingInvite(', clearNoticeStart);
+  const tryEnd = src.indexOf('\n\n      if (!authListenerInstalled)', tryStart);
+  assert.ok(
+    constantsStart >= 0 && constantsEnd > constantsStart &&
+    mapStart > constantsEnd && terminalStart > mapStart &&
+    clearTokenStart > terminalStart && clearNoticeStart > clearTokenStart &&
+    tryStart > clearNoticeStart && tryEnd > tryStart,
+    'Phase 4 invite helpers are extractable',
+  );
+
+  const sessionStorage = createStabilizationMemoryStorage();
+  sessionStorage.setItem('tp3d:pending_invite_token', 'phase4-secret-token');
+  const context = {
+    window: { sessionStorage },
+    __response: response,
+    __throwMessage: throwMessage,
+    __toasts: [],
+    __tokenAtRefresh: undefined,
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    let pendingInviteToken = 'phase4-secret-token';
+    let inviteAcceptInFlight = false;
+    const inviteTokenStorageKey = 'tp3d:pending_invite_token';
+    ${src.slice(constantsStart, constantsEnd)}
+    ${src.slice(mapStart, terminalStart)}
+    ${src.slice(terminalStart, clearTokenStart)}
+    ${src.slice(clearTokenStart, clearNoticeStart)}
+    const SupabaseClient = { getSession: () => ({ access_token: 'session-access-token' }) };
+    const UIComponents = {
+      showToast(message) { globalThis.__toasts.push(String(message)); },
+    };
+    const acceptOrgInvite = async () => {
+      if (globalThis.__throwMessage) throw new Error(globalThis.__throwMessage);
+      return globalThis.__response;
+    };
+    const clearInviteHandoffNotice = () => {};
+    const setInviteHandoffNotice = () => {};
+    const scheduleInviteHandoffNoticeRender = () => {};
+    const refreshOrgContext = async () => {
+      globalThis.__tokenAtRefresh = pendingInviteToken;
+    };
+    const setActiveOrgId = async () => {};
+    const requestAuthRefresh = () => {};
+    const SettingsOverlay = { open() {} };
+    ${src.slice(tryStart, tryEnd)}
+    globalThis.__run = tryAcceptPendingInvite;
+    globalThis.__getToken = () => pendingInviteToken;
+  `, context);
+  return { context, sessionStorage };
+}
+
+test('APP-STABILIZATION-PHASE4 invite token clears only on success or confirmed terminal failure', async () => {
+  const success = await createPhase4InviteHarness({
+    response: { ok: true, organization_id: '11111111-1111-4111-8111-111111111111' },
+  });
+  await success.context.__run({ access_token: 'session-access-token' });
+  assert.equal(success.context.__getToken(), null, 'success clears the in-memory token');
+  assert.equal(success.sessionStorage.getItem('tp3d:pending_invite_token'), null,
+    'success clears the session-storage copy');
+  assert.equal(success.context.__tokenAtRefresh, null,
+    'success clears the token before refreshing or switching organization context');
+
+  const terminal = await createPhase4InviteHarness({
+    response: { ok: false, error: 'Invite email does not match the signed-in account.' },
+  });
+  await terminal.context.__run({ access_token: 'session-access-token' });
+  assert.equal(terminal.context.__getToken(), null, 'terminal rejection clears the in-memory token');
+  assert.equal(terminal.sessionStorage.getItem('tp3d:pending_invite_token'), null,
+    'terminal rejection clears the session-storage copy');
+
+  const retryableResult = await createPhase4InviteHarness({
+    response: { ok: false, error: 'Internal server error' },
+  });
+  await retryableResult.context.__run({ access_token: 'session-access-token' });
+  assert.equal(retryableResult.context.__getToken(), 'phase4-secret-token',
+    'retryable server result retains the in-memory token');
+  assert.equal(retryableResult.sessionStorage.getItem('tp3d:pending_invite_token'), 'phase4-secret-token',
+    'retryable server result retains the session-storage copy');
+
+  const retryableThrow = await createPhase4InviteHarness({ throwMessage: 'Failed to fetch' });
+  await retryableThrow.context.__run({ access_token: 'session-access-token' });
+  assert.equal(retryableThrow.context.__getToken(), 'phase4-secret-token',
+    'retryable thrown failure retains the in-memory token');
+  assert.equal(retryableThrow.sessionStorage.getItem('tp3d:pending_invite_token'), 'phase4-secret-token',
+    'retryable thrown failure retains the session-storage copy');
+
+  for (const runtime of [success, terminal, retryableResult, retryableThrow]) {
+    assert.equal(runtime.context.__toasts.some(message => message.includes('phase4-secret-token')), false,
+      'invite feedback never renders the raw token');
+  }
+});
+
+async function createPhase4LogoutHarness(mode = 'resolve') {
+  const src = await fs.readFile(appPath, 'utf8');
+  const finalizerStart = src.indexOf('function finalizeSignedOutLocally(');
+  const finalizerEnd = src.indexOf('\n\n    async function performUserInitiatedLogout(', finalizerStart);
+  const performStart = src.indexOf('async function performUserInitiatedLogout(', finalizerEnd);
+  const performEnd = src.indexOf('\n\n    // Listen for auth signed-out events', performStart);
+  assert.ok(finalizerStart >= 0 && finalizerEnd > finalizerStart && performStart > finalizerEnd && performEnd > performStart,
+    'Phase 4 logout functions are extractable');
+
+  const context = { __mode: mode, __calls: null };
+  vm.createContext(context);
+  vm.runInContext(`
+    let logoutActionPromise = null;
+    let logoutInProgress = false;
+    let logoutStartedAt = 0;
+    let signedOutFinalized = false;
+    let signedOutFinalizationInFlight = false;
+    const calls = {
+      resets: 0,
+      cleanupAttempts: 0,
+      cleanups: [],
+      signOuts: 0,
+      signOutOptions: null,
+      authIntents: [],
+    };
+    const bootstrapAuthGate = () => {};
+    const applyPostLogoutLocalStateReset = () => { calls.resets += 1; };
+    const isLogoutInProgress = () => logoutInProgress;
+    const setLogoutInProgress = next => {
+      logoutInProgress = Boolean(next);
+      logoutStartedAt = logoutInProgress ? Date.now() : 0;
+    };
+    const _executeSignedOutCleanup = options => {
+      calls.cleanupAttempts += 1;
+      if (globalThis.__cleanupFailuresRemaining > 0) {
+        globalThis.__cleanupFailuresRemaining -= 1;
+        throw new Error('cleanup failed');
+      }
+      calls.cleanups.push(options);
+    };
+    const UIComponents = { closeAllDropdowns() {} };
+    const SettingsOverlay = { close() {} };
+    const AccountOverlay = { close() {} };
+    const isTp3dDebugEnabled = () => false;
+    const SupabaseClient = {
+      setAuthIntent(intent) { calls.authIntents.push(intent); },
+      async signOut(options) {
+        calls.signOuts += 1;
+        calls.signOutOptions = options;
+        if (globalThis.__mode === 'event') {
+          finalizeSignedOutLocally({
+            source: 'tp3d:auth-signed-out',
+            userInitiatedSignOut: isLogoutInProgress(),
+          });
+        }
+        if (globalThis.__mode === 'throw') throw new Error('offline sign-out failure');
+        return { ok: true, offline: false };
+      },
+    };
+    ${src.slice(finalizerStart, finalizerEnd)}
+    ${src.slice(performStart, performEnd)}
+    globalThis.__run = performUserInitiatedLogout;
+    globalThis.__finalize = finalizeSignedOutLocally;
+    globalThis.__calls = calls;
+  `, context);
+  return context;
+}
+
+test('APP-STABILIZATION-PHASE4 logout finalizes once for event, missing-event, throw, and cross-tab paths', async () => {
+  for (const mode of ['resolve', 'event', 'throw']) {
+    const runtime = await createPhase4LogoutHarness(mode);
+    await runtime.__run({ source: `phase4-${mode}` });
+    assert.equal(runtime.__calls.signOuts, 1, `${mode} path calls canonical signOut once`);
+    assert.equal(runtime.__calls.resets, 1, `${mode} path applies the local reset once`);
+    assert.equal(runtime.__calls.cleanups.length, 1, `${mode} path runs canonical cleanup once`);
+    assert.equal(runtime.__calls.cleanups[0].event, 'SIGNED_OUT');
+    assert.equal(runtime.__calls.cleanups[0].treatAsSignedOut, true);
+    assert.equal(runtime.__calls.cleanups[0].userInitiatedSignOut, true);
+    assert.equal(runtime.__calls.signOutOptions.global, true);
+    assert.equal(runtime.__calls.signOutOptions.allowOffline, true);
+    assert.equal(runtime.__calls.signOutOptions.userInitiated, true);
+  }
+
+  const crossTab = await createPhase4LogoutHarness('resolve');
+  assert.equal(crossTab.__finalize({ source: 'cross-tab', userInitiatedSignOut: false }), true);
+  assert.equal(crossTab.__finalize({ source: 'cross-tab-duplicate', userInitiatedSignOut: false }), false);
+  assert.equal(crossTab.__calls.resets, 1, 'duplicate cross-tab delivery does not repeat local reset');
+  assert.equal(crossTab.__calls.cleanups.length, 1, 'duplicate cross-tab delivery does not repeat cleanup');
+  assert.equal(crossTab.__calls.cleanups[0].userInitiatedSignOut, false,
+    'standalone cross-tab sign-out remains non-user-initiated');
+
+  const recovery = await createPhase4LogoutHarness('resolve');
+  recovery.__cleanupFailuresRemaining = 1;
+  assert.throws(
+    () => recovery.__finalize({ source: 'first-delivery', userInitiatedSignOut: false }),
+    /cleanup failed/,
+    'a failed essential cleanup remains observable',
+  );
+  assert.equal(recovery.__finalize({ source: 'retry-delivery', userInitiatedSignOut: false }), true,
+    'a later delivery can retry finalization after cleanup failure');
+  assert.equal(recovery.__calls.cleanupAttempts, 2, 'cleanup is retried after the failed attempt');
+  assert.equal(recovery.__calls.cleanups.length, 1, 'only the successful cleanup is finalized');
+});
+
+test('APP-STABILIZATION-PHASE4 logout source has no reload fallback and shares deterministic cleanup', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('let logoutActionPromise = null;');
+  const end = src.indexOf('// Show small toasts on connectivity changes', start);
+  const logoutBlock = src.slice(start, end);
+  assert.ok(start >= 0 && end > start, 'logout source block is extractable');
+  assert.doesNotMatch(logoutBlock, /logoutFallbackTimer|LOGOUT_FALLBACK_RELOAD_DELAY_MS|scheduleLogoutFallbackReload/,
+    'timer fallback state and helper are removed');
+  assert.doesNotMatch(logoutBlock, /setTimeout\(|location\.reload\(/,
+    'logout source cannot schedule or force a reload');
+
+  const finalizerStart = logoutBlock.indexOf('function finalizeSignedOutLocally(');
+  const performStart = logoutBlock.indexOf('async function performUserInitiatedLogout(', finalizerStart);
+  const listenerStart = logoutBlock.indexOf("window.addEventListener('tp3d:auth-signed-out'", performStart);
+  const finalizer = logoutBlock.slice(finalizerStart, performStart);
+  const perform = logoutBlock.slice(performStart, listenerStart);
+  const listener = logoutBlock.slice(listenerStart);
+  assert.match(finalizer, /applyPostLogoutLocalStateReset\(\)[\s\S]*_executeSignedOutCleanup\(\{\s*event,\s*treatAsSignedOut/,
+    'one finalizer owns both local reset and canonical signed-out cleanup');
+  assert.ok(finalizer.indexOf('_executeSignedOutCleanup({') < finalizer.indexOf('signedOutFinalized = true'),
+    'finalization is marked complete only after essential cleanup succeeds');
+  assert.match(perform, /SupabaseClient\.signOut\(\{ global: true, allowOffline: true, userInitiated: true \}\)[\s\S]*catch \(err\)[\s\S]*finalizeSignedOutLocally\(\{ source, userInitiatedSignOut: true \}\)/,
+    'settled and thrown signOut paths converge on the shared finalizer');
+  assert.match(listener, /const userInitiatedSignOut = isLogoutInProgress\(\);[\s\S]*finalizeSignedOutLocally\(\{[\s\S]*userInitiatedSignOut/,
+    'custom event captures user intent before finalization releases the latch');
+  assert.match(src, /if \(session && session\.access_token\) \{\s*if \(!isLogoutInProgress\(\) && !logoutActionPromise\) signedOutFinalized = false;/,
+    'only an authenticated lifecycle outside the active logout action re-arms finalization');
+
+  const renderStart = src.indexOf('async function renderAuthState(');
+  const cleanupStart = src.indexOf('function _executeSignedOutCleanup(', renderStart);
+  const renderAuth = src.slice(renderStart, cleanupStart);
+  assert.equal((renderAuth.match(/finalizeSignedOutLocally\(\{/g) || []).length, 2,
+    'immediate and stability-gated signed-out rendering share the same idempotence boundary');
+  assert.doesNotMatch(renderAuth, /^\s*_executeSignedOutCleanup\(\{/m,
+    'renderAuthState cannot bypass the shared signed-out finalizer');
 });

@@ -114,6 +114,7 @@ export function openCaseModal({
   CaseLibrary,
   CategoryService,
   onSaved,
+  beforeMutate = null,
   doc = document,
 }) {
   const prefs = PreferencesManager.get();
@@ -253,6 +254,7 @@ export function openCaseModal({
       newCatName.focus();
       return;
     }
+    if (typeof beforeMutate === 'function' && beforeMutate() === false) return;
     const next = CategoryService.upsert({ name: nextName, color: newCatColor.value });
     populateCategorySelect(next.key);
     updateSwatch();
@@ -430,7 +432,6 @@ export function openCaseModal({
           const categoryKey = String(catSelect.value || 'default');
           const catMeta = catOptions.find(c => c.key === categoryKey) || CategoryService.meta(categoryKey);
           const categoryColor = normalizeCaseModalColor(catColorInput.value, catMeta.color || '#ff9f1c');
-          CategoryService.upsert({ key: categoryKey, name: catMeta.name, color: categoryColor });
           const orientationLock = canonicalOrientationLock(orient.select.value);
           const laneValue = lane.select.value === 'always' ? true : lane.select.value === 'never' ? false : null;
           const priorityValue = priority.select.value === '1' ? 1 : priority.select.value === '-1' ? -1 : 0;
@@ -462,6 +463,8 @@ export function openCaseModal({
             notes: String(notes.value || '').trim(),
             color: categoryColor,
           };
+          if (typeof beforeMutate === 'function' && beforeMutate() === false) return false;
+          CategoryService.upsert({ key: categoryKey, name: catMeta.name, color: categoryColor });
           CaseLibrary.upsert(caseData);
           UIComponents.showToast('Case saved', 'success');
           if (typeof onSaved === 'function') onSaved(caseData);

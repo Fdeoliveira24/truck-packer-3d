@@ -3718,6 +3718,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       function clearPackPreview(packId) {
+        if (OperationLifecycle.isBusy()) {
+          UIComponents.showToast('Finish the current operation before clearing a preview.', 'info', { title: 'Preview' });
+          return false;
+        }
         const pack = PackLibrary.getById(packId);
         if (!pack) return false;
         if (!pack.thumbnail) return false;
@@ -4212,6 +4216,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       UIComponents,
       ImportExport,
       PackLibrary,
+      OperationLifecycle,
       Utils,
     });
     const ImportCasesDialog = createImportCasesDialog({
@@ -4219,6 +4224,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       UIComponents,
       ImportExport,
       StateStore,
+      OperationLifecycle,
       Utils,
     });
     const TruckChangeController = createTruckChangeController({
@@ -4242,6 +4248,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       ExportService,
       CardDisplayOverlay,
       TruckChangeController,
+      OperationLifecycle,
       featureFlags,
       persistNow: () => Storage.saveNow(),
       toast,
@@ -4263,6 +4270,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       ImportCasesDialog,
       createTableFooter,
       CardDisplayOverlay,
+      OperationLifecycle,
     });
 
     // ============================================================================

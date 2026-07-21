@@ -9269,8 +9269,12 @@ test('RECON every production truck writer routes through the shared controller',
     'Editor owns ephemeral truck and cargo scene rendering');
   assert.doesNotMatch(editor, /PackLibrary\.update\(pack\.id, \{ truck/,
     'Editor has no direct truck writer');
-  assert.equal((packs.match(/TruckChangeController\.request\(\{/g) || []).length, 2,
-    'Packs toolbar preset and Edit Pack Save both use the controller');
+  assert.match(packs, /function requestTruckChange\(options\)/,
+    'Packs routes truck changes through its operation-lifecycle wrapper');
+  assert.equal((packs.match(/TruckChangeController\.request\(\{/g) || []).length, 1,
+    'the operation-lifecycle wrapper has one shared controller delegation');
+  assert.equal((packs.match(/\brequestTruckChange\(\{/g) || []).length, 2,
+    'Packs toolbar preset and Edit Pack Save both use the guarded wrapper');
   assert.doesNotMatch(packs, /PackLibrary\.update\(pack\.id, \{ truck/,
     'Packs toolbar has no direct truck writer');
   assert.match(controller, /PackLibrary\.reconcilePlacementsForTruck\(pack, nextTruck, caseLibrary\)/);
@@ -23846,4 +23850,200 @@ test('APP-STABILIZATION-PHASE2 billing retry remains single, epoch-scoped, org-s
     'the one retry remains non-forced so a shared success can satisfy it');
   assert.equal((retryBlock.match(/setTimeout\(/g) || []).length, 1,
     'the lock path schedules one bounded retry rather than a polling loop');
+});
+
+test('APP-STABILIZATION-PHASE3 app shares one lifecycle with screens, dialogs, editor, and preview clearing', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const constructionStart = src.indexOf('const ImportPackDialog = createImportPackDialog({');
+  const constructionEnd = src.indexOf('// SECTION: SCREEN UI (UPDATES)', constructionStart);
+  const construction = src.slice(constructionStart, constructionEnd);
+  assert.ok(construction, 'screen and dialog construction block is extractable');
+  for (const factory of [
+    'createImportPackDialog',
+    'createImportCasesDialog',
+    'createPacksScreen',
+    'createCasesScreen',
+    'createEditorScreen',
+  ]) {
+    const start = construction.indexOf(`${factory}({`);
+    const end = construction.indexOf('\n    });', start);
+    assert.ok(start >= 0 && end > start, `${factory} construction is extractable`);
+    assert.match(construction.slice(start, end), /OperationLifecycle/,
+      `${factory} receives the single authoritative lifecycle`);
+  }
+
+  const clearStart = src.indexOf('function clearPackPreview(');
+  const clearEnd = src.indexOf('\n      function captureScreenshot(', clearStart);
+  const clearFn = src.slice(clearStart, clearEnd);
+  assert.ok(clearFn.indexOf('OperationLifecycle.isBusy()') < clearFn.indexOf('PackLibrary.getById(packId)'),
+    'preview clearing rejects busy state before reading or mutating the pack');
+  assert.ok(clearFn.indexOf('OperationLifecycle.isBusy()') < clearFn.indexOf('PackLibrary.update(packId'),
+    'preview clearing cannot race an active capture or editor operation');
+});
+
+test('APP-STABILIZATION-PHASE3 Packs truck preview owns and releases the lifecycle token at every terminal', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const requestStart = src.indexOf('function requestTruckChange(');
+  const requestEnd = src.indexOf('\n    function formatTruckDims(', requestStart);
+  const requestSource = src.slice(requestStart, requestEnd);
+  assert.ok(requestSource, 'Packs truck lifecycle wrapper is extractable');
+
+  const { createOperationLifecycle } = await import(
+    `${operationLifecyclePath.href}?phase3-packs=${Date.now()}-${Math.random()}`
+  );
+  const OperationLifecycle = createOperationLifecycle({ now: () => 123 });
+  const context = {
+    OperationLifecycle,
+    __controllerCalls: 0,
+    __lastOptions: null,
+    __status: 'preview',
+    __busyNotices: 0,
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    const mutationBlockedWhileBusy = () => {
+      const blocked = OperationLifecycle.isBusy();
+      if (blocked) globalThis.__busyNotices += 1;
+      return blocked;
+    };
+    const TruckChangeController = {
+      request(options) {
+        globalThis.__controllerCalls += 1;
+        globalThis.__lastOptions = options;
+        return { status: globalThis.__status };
+      },
+    };
+    ${requestSource}
+    globalThis.__requestTruckChange = requestTruckChange;
+  `, context);
+
+  const pack = { id: 'pack-1' };
+  assert.equal(context.__requestTruckChange({ pack }).status, 'preview');
+  assert.equal(OperationLifecycle.currentOperation().kind, 'changingTruck',
+    'preview keeps the lifecycle slot for its full modal lifetime');
+  assert.equal(context.__requestTruckChange({ pack }).status, 'busy',
+    'a second truck mutation is rejected while preview owns the slot');
+  assert.equal(context.__controllerCalls, 1, 'busy request never reaches the controller');
+
+  context.__lastOptions.restoreControls();
+  assert.equal(OperationLifecycle.isBusy(), false, 'cancel/close restoration releases the token');
+
+  context.__status = 'committed';
+  context.__requestTruckChange({ pack });
+  assert.equal(OperationLifecycle.isBusy(), false, 'non-preview terminal releases immediately');
+
+  context.__status = 'preview';
+  context.__requestTruckChange({ pack });
+  assert.equal(OperationLifecycle.isBusy(), true);
+  context.__lastOptions.onCommitted({ id: pack.id });
+  assert.equal(OperationLifecycle.isBusy(), false, 'preview commit callback releases the token');
+});
+
+test('APP-STABILIZATION-PHASE3 Packs and Cases re-check guarded mutation commit edges', async () => {
+  const [packsSrc, casesSrc] = await Promise.all([
+    fs.readFile(packsScreenPath, 'utf8'),
+    fs.readFile(casesScreenPath, 'utf8'),
+  ]);
+
+  assert.match(packsSrc, /function openPack\(packId\) \{\s*if \(mutationBlockedWhileBusy\(\)\) return;\s*const pack = PackLibrary\.open/,
+    'active pack switching is guarded at the mutation edge');
+  assert.match(packsSrc, /function openNewPackModal\(\) \{\s*if \(mutationBlockedWhileBusy\(\)\) return;/,
+    'new-pack entry is guarded');
+  assert.match(packsSrc, /async function handleBulkDelete\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*PackLibrary\.remove/,
+    'bulk pack delete checks both before and after confirmation');
+  assert.match(packsSrc, /async function deletePack\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*PackLibrary\.remove/,
+    'single pack delete checks both before and after confirmation');
+  assert.match(packsSrc, /ImportPackDialog\.open\(\{ beforeMutate: \(\) => !mutationBlockedWhileBusy\(\) \}\)/,
+    'pack import receives a commit-time lifecycle callback');
+  for (const mutation of [
+    'FolderLibrary.createFolder',
+    'FolderLibrary.renameFolder',
+    'FolderLibrary.deleteFolder',
+    'FolderLibrary.movePackToFolder',
+    'PackLibrary.duplicate',
+  ]) {
+    const index = packsSrc.indexOf(mutation);
+    assert.ok(index >= 0, `${mutation} remains wired`);
+    assert.match(packsSrc.slice(Math.max(0, index - 260), index), /mutationBlockedWhileBusy\(\)/,
+      `${mutation} is preceded by the shared busy guard`);
+  }
+
+  assert.match(casesSrc, /function openCaseModal\(existing\) \{\s*if \(mutationBlockedWhileBusy\(\)\) return;[\s\S]*beforeMutate/,
+    'case create/edit entry and modal commit share the guard');
+  assert.match(casesSrc, /ImportCasesDialog\.open\(\{ beforeMutate \}\)/,
+    'case import receives a commit-time lifecycle callback');
+  assert.match(casesSrc, /async function bulkDeleteSelected\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*StateStore\.set/,
+    'bulk case delete checks both before and after confirmation');
+  assert.match(casesSrc, /async function deleteCase\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*StateStore\.set/,
+    'single case delete checks both before and after confirmation');
+  assert.match(casesSrc, /!mutationBlockedWhileBusy\(\{ notify: false \}\)[\s\S]*CategoryService\.resetToDefaultIfNoCases/,
+    'render-time empty-category normalization cannot mutate while busy');
+});
+
+test('APP-STABILIZATION-PHASE3 dialog guards sit immediately before import, category, and case commits', async () => {
+  const [packDialog, casesDialog, caseModal] = await Promise.all([
+    fs.readFile(importPackDialogPath, 'utf8'),
+    fs.readFile(importCasesDialogPath, 'utf8'),
+    fs.readFile(caseModalPath, 'utf8'),
+  ]);
+
+  assert.match(packDialog, /if \(!mutationAllowed\(\)\) return;\s*const result = PackLibrary\.importPackPayload/,
+    'single pack import re-checks immediately before commit');
+  assert.match(packDialog, /for \(const payload[\s\S]*if \(!mutationAllowed\(\)\)[\s\S]*PackLibrary\.importPackPayload\(payload\)/,
+    'each batch pack import row re-checks before commit');
+  assert.match(casesDialog, /const result = ImportExport\.importCaseRows\(parsedResult\.valid\);\s*if \(!mutationAllowed\(\)\) return;\s*StateStore\.set/,
+    'case import computes a pure plan then checks immediately before state commit');
+
+  const addCategory = caseModal.slice(
+    caseModal.indexOf("newCatSave.addEventListener('click'"),
+    caseModal.indexOf('catWrap.appendChild(catCreateRow)'),
+  );
+  assert.ok(addCategory.indexOf('beforeMutate() === false') < addCategory.indexOf('CategoryService.upsert'),
+    'shared modal checks before adding a category');
+  const saveStart = caseModal.indexOf("label: 'Save'", caseModal.indexOf('UIComponents.showModal({'));
+  const saveBlock = caseModal.slice(saveStart, saveStart + 4200);
+  const saveGuard = saveBlock.indexOf('beforeMutate() === false');
+  assert.ok(saveGuard >= 0, 'shared modal Save has a lifecycle guard');
+  assert.ok(saveGuard < saveBlock.indexOf('CategoryService.upsert'), 'Save guards the category commit');
+  assert.ok(saveGuard < saveBlock.indexOf('CaseLibrary.upsert'), 'Save guards the case commit');
+});
+
+test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMutationBlocked', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const newCase = src.slice(
+    src.indexOf('function openEditorNewCaseModal()'),
+    src.indexOf('function setCaseFiltersVisible', src.indexOf('function openEditorNewCaseModal()')),
+  );
+  assert.match(newCase, /editorMutationBlocked\(\)[\s\S]*beforeMutate: \(\) => !editorMutationBlocked\(\)/,
+    'editor New Case checks both modal entry and Save/Add Category commits');
+
+  const visibility = src.slice(
+    src.indexOf('function makeVisibilityButton('),
+    src.indexOf('function duplicateSelection(', src.indexOf('function makeVisibilityButton(')),
+  );
+  assert.ok(visibility.indexOf('editorMutationBlocked()') < visibility.indexOf('PackLibrary.updateInstance'),
+    'visibility mutation is guarded before any instance write');
+
+  const category = src.slice(
+    src.indexOf('function openSetCategoryModal('),
+    src.indexOf('// Single Notes modal', src.indexOf('function openSetCategoryModal(')),
+  );
+  assert.match(category, /function openSetCategoryModal[\s\S]*editorMutationBlocked\(\)/,
+    'Set Category entry is guarded');
+  assert.ok(category.lastIndexOf('editorMutationBlocked()') < category.indexOf('CategoryService.upsert'),
+    'Set Category Apply re-checks before its first write');
+
+  const notesSave = src.slice(
+    src.indexOf("label: 'Save'", src.indexOf('function openNotesModal(')),
+    src.indexOf('// Every editor truck writer', src.indexOf('function openNotesModal(')),
+  );
+  assert.ok(notesSave.indexOf('editorMutationBlocked()') < notesSave.indexOf('PackLibrary.updateInstance'),
+    'Item Notes Save re-checks before the instance write');
+
+  const applyPosition = src.slice(
+    src.indexOf("savePos.addEventListener('click'"),
+    src.indexOf('transformCard.appendChild(savePos)', src.indexOf("savePos.addEventListener('click'")),
+  );
+  assert.match(applyPosition, /savePos\.addEventListener\('click', \(\) => \{\s*if \(editorMutationBlocked\(\)\) return;/,
+    'manual position Apply rejects busy state before scene or pack mutation');
 });

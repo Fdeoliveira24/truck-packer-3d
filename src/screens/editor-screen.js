@@ -4460,6 +4460,7 @@ export function createEditorScreen({
     }
 
     function openEditorNewCaseModal() {
+      if (editorMutationBlocked()) return;
       openSharedCaseModal({
         existing: null,
         Utils,
@@ -4467,6 +4468,7 @@ export function createEditorScreen({
         PreferencesManager,
         CaseLibrary,
         CategoryService,
+        beforeMutate: () => !editorMutationBlocked(),
         onSaved: () => {
           if (caseSearchEl) caseSearchEl.value = '';
           browserCats.clear();
@@ -4902,6 +4904,7 @@ export function createEditorScreen({
         iconClass: showSelection ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash',
         disabled: !instances.length,
         onClick: () => {
+          if (editorMutationBlocked()) return;
           instances.forEach(inst => PackLibrary.updateInstance(pack.id, inst.id, { hidden: !showSelection }));
         },
       });
@@ -4932,6 +4935,7 @@ export function createEditorScreen({
     }
 
     function openSetCategoryModal(pack, selectedIds) {
+      if (editorMutationBlocked()) return;
       const selected = Array.isArray(selectedIds) ? selectedIds : [];
       const selectedCaseIds = new Set();
       const currentKeys = new Set();
@@ -5033,6 +5037,7 @@ export function createEditorScreen({
             label: 'Apply',
             variant: 'primary',
             onClick: () => {
+              if (editorMutationBlocked()) return false;
               const name = String(nameInput.value || '').trim();
               if (!name) {
                 UIComponents.showToast('Category name is required', 'warning');
@@ -5280,6 +5285,7 @@ export function createEditorScreen({
               label: 'Save',
               variant: 'primary',
               onClick: () => {
+                if (editorMutationBlocked()) return false;
                 if (!resolveInstance()) {
                   // Save failure: keep the draft and stay in edit state — do
                   // not close (returning false leaves this same modal, with
@@ -5976,6 +5982,7 @@ export function createEditorScreen({
       savePos.type = 'button';
       savePos.innerHTML = '<i class="fa-solid fa-location-crosshairs"></i> Apply position';
       savePos.addEventListener('click', () => {
+        if (editorMutationBlocked()) return;
         const nextPos = {
           x: Utils.unitToInches(Number(fX.input.value) || 0, lengthUnit),
           y: Utils.unitToInches(Number(fY.input.value) || 0, lengthUnit),

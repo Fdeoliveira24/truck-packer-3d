@@ -386,12 +386,16 @@ export function openCaseModal({
   notesWrap.classList.add('tp3d-grid-span-full');
   const notesLabel = doc.createElement('div');
   notesLabel.className = 'label';
-  notesLabel.textContent = 'Notes';
+  notesLabel.textContent = 'Standard Instructions';
+  const notesDesc = doc.createElement('div');
+  notesDesc.className = 'muted tp3d-editor-sub-sm';
+  notesDesc.textContent = 'Applies to every unit of this Case.';
   const notes = doc.createElement('textarea');
   notes.className = 'input';
   notes.classList.add('tp3d-textarea-minh-60');
   notes.value = initial.notes || '';
   notesWrap.appendChild(notesLabel);
+  notesWrap.appendChild(notesDesc);
   notesWrap.appendChild(notes);
 
   content.appendChild(fName.wrap);

@@ -4675,6 +4675,12 @@ body.modal-open {
   gap: 4px;
 }
 
+.tp3d-editor-standard-instructions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .tp3d-editor-handling-chips {
   display: flex;
   flex-wrap: wrap;

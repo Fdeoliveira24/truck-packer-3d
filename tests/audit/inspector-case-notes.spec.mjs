@@ -2,12 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 
-// Inspector per-case Notes.
+// Inspector per-case Standard Instructions (Case.notes).
 //
-// Notes are a Case-template field (like Category and the other handling-rule
-// metadata already on a Case), so the data-layer coverage below exercises the
-// single shared normalizer (cargo-canonical.js) and the canonical update path
-// (CaseLibrary.upsert) that the Inspector's Notes modal also uses.
+// Standard Instructions are a Case-template field (like Category and the
+// other handling-rule metadata already on a Case), so the data-layer
+// coverage below exercises the single shared normalizer (cargo-canonical.js)
+// and the canonical update path (CaseLibrary.upsert) that the Cases-screen
+// Case editor (case-modal.js) uses. Per the locked Cargo Instructions
+// architecture (docs/engineering/cargo-instructions-ownership-contract.md),
+// the Inspector renders Standard Instructions as an always-visible,
+// read-only section — it is never editable from the Editor.
 //
 // editor-screen.js renders through Three.js/DOM and has no jsdom harness in
 // this suite, so — matching the existing convention in
@@ -23,7 +27,6 @@ const caseLibraryUrl = new URL('../../src/services/case-library.js', import.meta
 const packLibraryUrl = new URL('../../src/services/pack-library.js', import.meta.url);
 const importExportUrl = new URL('../../src/services/import-export.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
-const uiComponentsPath = new URL('../../src/ui/ui-components.js', import.meta.url);
 
 function baseCase(overrides = {}) {
   return {
@@ -149,6 +152,48 @@ test('duplicating a selected instance preserves caseId, so the duplicate resolve
   assert.equal(CaseLibrary.getById(duplicatedInstance.caseId).notes, 'Handle with two people');
 });
 
+test('two Pack instances referencing the same Case resolve the current Standard Instructions live, with no per-instance snapshot', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const CaseLibrary = await import(caseLibraryUrl.href);
+  const noted = baseCase({ notes: 'Original instructions' });
+  const instA = {
+    id: 'inst-a',
+    caseId: noted.id,
+    transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+    hidden: false,
+    groupId: null,
+    placement: 'packed',
+  };
+  const instB = {
+    id: 'inst-b',
+    caseId: noted.id,
+    transform: { position: { x: 20, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+    hidden: false,
+    groupId: null,
+    placement: 'packed',
+  };
+  const pack = {
+    id: 'pack-two',
+    title: 'Two Instance Pack',
+    truck: { length: 300, width: 96, height: 110, shapeMode: 'rect' },
+    cases: [instA, instB],
+  };
+  StateStore.init({ caseLibrary: [noted], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  // Neither instance stores a copy of notes — both resolve via caseId.
+  assert.equal(instA.notes, undefined);
+  assert.equal(instB.notes, undefined);
+  assert.equal(CaseLibrary.getById(instA.caseId).notes, 'Original instructions');
+  assert.equal(CaseLibrary.getById(instB.caseId).notes, 'Original instructions');
+
+  CaseLibrary.upsert({ ...CaseLibrary.getById(noted.id), notes: 'Updated instructions' });
+
+  assert.equal(CaseLibrary.getById(instA.caseId).notes, 'Updated instructions',
+    'instance A must resolve the updated Case value on next lookup, with no reconciliation step needed');
+  assert.equal(CaseLibrary.getById(instB.caseId).notes, 'Updated instructions',
+    'instance B must resolve the same updated Case value independently');
+});
+
 // ---------------------------------------------------------------------------
 // Import/export persistence
 // ---------------------------------------------------------------------------
@@ -228,7 +273,7 @@ test('a null (empty) case note survives the same JSON export/import round trips 
 // notes property exists, and no packed-instance note was introduced.
 // ---------------------------------------------------------------------------
 
-test('a note saved via the Cases-screen case-modal.js payload shape is visible to the Inspector, and vice versa', async () => {
+test('a note saved via the Cases-screen case-modal.js payload shape is visible to the Inspector\'s read-only render', async () => {
   const StateStore = await import(stateStoreUrl.href);
   const CaseLibrary = await import(caseLibraryUrl.href);
   StateStore.init({ caseLibrary: [baseCase({})], packLibrary: [], folderLibrary: [], preferences: {} });
@@ -238,13 +283,7 @@ test('a note saved via the Cases-screen case-modal.js payload shape is visible t
   const casesScreenPayload = { ...CaseLibrary.getById('case-notes-1'), notes: String('  From Cases screen  ').trim() };
   CaseLibrary.upsert(casesScreenPayload);
   assert.equal(CaseLibrary.getById('case-notes-1').notes, 'From Cases screen',
-    'a Cases-screen edit must be readable as the Inspector Notes modal reads it: CaseLibrary.getById(caseId).notes');
-
-  // openCaseNotesModal's Save handler spreads the latest record plus the raw
-  // textarea value — simulate that shape from the Inspector side.
-  CaseLibrary.upsert({ ...CaseLibrary.getById('case-notes-1'), notes: 'From Inspector' });
-  assert.equal(CaseLibrary.getById('case-notes-1').notes, 'From Inspector',
-    'an Inspector edit must be the same field the Cases-screen case-modal.js reads via initial.notes');
+    'a Cases-screen edit must be readable as the Inspector reads it: CaseLibrary.getById(caseId).notes');
 });
 
 test('data/models/case.model.js normalizeCase keeps notes and hazmatClass on the same string-or-null convention (no divergent representation introduced)', async () => {
@@ -268,111 +307,68 @@ function extractFunctionBlock(src, signature) {
   return end > start ? src.slice(start, end) : '';
 }
 
-test('editor-screen defines openCaseNotesModal(caseData) and captures the case identity before any modal opens', async () => {
+// extractStandardInstructionsBlock isolates just the read-only Standard
+// Instructions section within renderSingleInspector, so assertions about "no
+// Save/Edit/Add action here" aren't accidentally satisfied by unrelated
+// Inspector actions (e.g. Set Category) elsewhere in the same function.
+function extractStandardInstructionsBlock(singleBlock) {
+  const start = singleBlock.indexOf('// Standard Instructions:');
+  if (start < 0) return '';
+  const end = singleBlock.indexOf('inspectorEl.appendChild(card);', start);
+  return end > start ? singleBlock.slice(start, end) : '';
+}
+
+test('editor-screen no longer defines a Notes-editing modal (openCaseNotesModal removed)', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
-  const block = extractFunctionBlock(src, 'function openCaseNotesModal(caseData)');
-  assert.ok(block.length > 0, 'editor-screen must define openCaseNotesModal(caseData)');
-
-  const idCaptureIdx = block.indexOf('const caseId = caseData.id;');
-  assert.ok(idCaptureIdx >= 0, 'caseId must be captured once from the passed-in caseData');
-  const firstModalCallIdx = block.indexOf('UIComponents.showModal');
-  assert.ok(idCaptureIdx < firstModalCallIdx, 'caseId must be captured before any modal is opened');
+  assert.doesNotMatch(src, /openCaseNotesModal/, 'the prototype Inspector Notes modal must be fully removed in favor of the read-only Standard Instructions card');
 });
 
-test('openCaseNotesModal Save writes through CaseLibrary.upsert (the canonical case-template update path), never a pack/instance mutation', async () => {
-  const src = await fs.readFile(editorScreenPath, 'utf8');
-  const block = extractFunctionBlock(src, 'function openCaseNotesModal(caseData)');
-  assert.match(block, /CaseLibrary\.upsert\(\{\s*\.\.\.latest,\s*notes:\s*textarea\.value\s*\}\)/,
-    'Save must call CaseLibrary.upsert with the captured case plus the raw textarea value (normalization is delegated to the shared canonical parser)');
-  assert.doesNotMatch(block, /PackLibrary\.(update|updateCasesWithManualRevalidation)/,
-    'Notes must not go through a pack/instance update path — the note belongs to the case template');
-});
-
-test('openCaseNotesModal fails safely when the captured case no longer exists, and Save failure preserves the draft instead of closing', async () => {
-  const src = await fs.readFile(editorScreenPath, 'utf8');
-  const block = extractFunctionBlock(src, 'function openCaseNotesModal(caseData)');
-  const guardCount = (block.match(/CaseLibrary\.getById\(caseId\)/g) || []).length;
-  assert.ok(guardCount >= 2, 'both the state-resolve path and the Save handler must re-check CaseLibrary.getById(caseId) before acting');
-  assert.match(block, /This case no longer exists\./, 'a missing case must surface a clear error instead of silently updating the wrong case');
-
-  const saveHandlerStart = block.indexOf("label: 'Save'");
-  const saveHandlerBlock = block.slice(saveHandlerStart, block.indexOf('},', saveHandlerStart));
-  assert.match(saveHandlerBlock, /if \(!latest\) \{[\s\S]*?return false;/,
-    'Save failure (missing case) must return false so showModal does NOT close — the draft and edit state are preserved, per the approved Save-failure contract');
-});
-
-test('openCaseNotesModal reuses UIComponents.showModal for all three states via a locally Escape-scoped wrapper (no bespoke modal markup, no shared-primitive change)', async () => {
-  const src = await fs.readFile(editorScreenPath, 'utf8');
-  const block = extractFunctionBlock(src, 'function openCaseNotesModal(caseData)');
-  const showModalCalls = (block.match(/UIComponents\.showModal\(/g) || []).length;
-  assert.equal(showModalCalls, 1, 'only the local showNotesModal wrapper should call UIComponents.showModal directly');
-  const showNotesModalCalls = (block.match(/(?<!function )showNotesModal\(\{/g) || []).length;
-  assert.equal(showNotesModalCalls, 3, 'Empty, Read, and Edit states must each render through the local showNotesModal wrapper');
-
-  assert.match(block, /No notes for this case yet\./, 'Empty state must show the approved empty message');
-  assert.match(block, /label: 'Add note'/, 'Empty state must offer Add note (only action; × and backdrop cover Close)');
-  assert.match(block, /label: 'Edit'/, 'Read state must offer Edit');
-  assert.match(block, /label: 'Cancel'/, 'Edit state must offer Cancel');
-  assert.match(block, /label: 'Save'/, 'Edit state must offer Save');
-  assert.match(block, /label: 'Close'/, 'Read state must offer Close');
-  assert.match(block, /placeholder = 'Add details about handling, defects, or special instructions\.\.\.'/,
-    'Edit state textarea must use the approved placeholder');
-  assert.match(block, /title: `Notes — \$\{caseLabel\}`/, 'every state must title the modal with Notes and the selected case name');
-});
-
-test('openCaseNotesModal handles Escape locally (matching the existing truck-change-controller.js pattern), without touching the shared showModal primitive', async () => {
-  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
-  const block = extractFunctionBlock(editorSrc, 'function openCaseNotesModal(caseData)');
-  assert.match(block, /function showNotesModal\(config\)/, 'a local wrapper must own Escape handling for this feature only');
-  assert.match(block, /ev\.key === 'Escape'/);
-  assert.match(block, /document\.addEventListener\('keydown', handleEscape\)/);
-  assert.match(block, /document\.removeEventListener\('keydown', handleEscape\)/,
-    'the local keydown listener must be removed on close to avoid leaking a document-level listener per modal open');
-
-  // The shared primitive itself must remain exactly as it was before this
-  // feature: truck-change-controller.js already implements its own capture-
-  // phase Escape handling on top of showModal precisely because showModal does
-  // not provide it globally. A generic bubble-phase Escape handler added to
-  // showModal would run alongside that existing handler for every Truck Change
-  // modal — an interaction this feature must not introduce.
-  const uiSrc = await fs.readFile(uiComponentsPath, 'utf8');
-  const showModalStart = uiSrc.indexOf('function showModal(config)');
-  const showModalEnd = uiSrc.indexOf('\n  function showAutoPackLoadingOverlay', showModalStart);
-  const showModalBlock = showModalStart >= 0 && showModalEnd > showModalStart ? uiSrc.slice(showModalStart, showModalEnd) : '';
-  assert.ok(showModalBlock.length > 0, 'ui-components must still define showModal(config)');
-  assert.doesNotMatch(showModalBlock, /Escape/, 'showModal must not gain global Escape handling for this feature');
-});
-
-test('the Inspector Notes button lives in the top case-summary card, not the Actions card, and only for a single resolved selection', async () => {
+test('renderSingleInspector renders an always-visible, read-only Standard Instructions section in the top summary card', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const singleBlock = extractFunctionBlock(src, 'function renderSingleInspector(pack, inst, caseData, prefs)');
   assert.ok(singleBlock.length > 0, 'editor-screen must define renderSingleInspector(pack, inst, caseData, prefs)');
 
-  // Isolate the summary-card header (up to the Transform card comment) and the
-  // Actions card separately so button placement is checked structurally, not
-  // just by presence anywhere in the function.
   const transformMarkerIdx = singleBlock.indexOf('=== Transform Card');
   const summaryCardBlock = transformMarkerIdx > 0 ? singleBlock.slice(0, transformMarkerIdx) : singleBlock;
   const actionsMarkerIdx = singleBlock.indexOf('=== Actions Card');
   const actionsCardBlock = actionsMarkerIdx > 0 ? singleBlock.slice(actionsMarkerIdx) : '';
 
-  assert.match(summaryCardBlock, /openCaseNotesModal\(caseData\)/,
-    'the Notes button must be built inside the top summary card, alongside the case-name header');
-  assert.match(summaryCardBlock, /titleRow\.className = 'row space-between'/,
-    'the summary card must reuse the existing row/space-between header pattern (same as Transform/Rotate cardHeaderWithInfo) rather than a new layout system');
-  assert.doesNotMatch(actionsCardBlock, /openCaseNotesModal/, 'the Notes button must NOT be in the Actions card');
+  assert.match(summaryCardBlock, /'Standard Instructions'/, 'the top summary card must render the Standard Instructions heading');
+  assert.match(summaryCardBlock, /'Applies to every unit of this Case\.'/, 'the ownership description must be present');
+  assert.match(summaryCardBlock, /'No standard instructions\.'/, 'the empty state copy must be present');
+  assert.doesNotMatch(actionsCardBlock, /Standard Instructions/, 'Standard Instructions must not appear in the Actions card');
 
   const multiBlock = extractFunctionBlock(src, 'function renderMultiInspector(pack, selected)');
-  assert.doesNotMatch(multiBlock, /openCaseNotesModal/, 'multi-selection Inspector must not offer Notes');
+  assert.doesNotMatch(multiBlock, /Standard Instructions/, 'multi-selection Inspector must not render Standard Instructions');
 
   const unresolvedBlock = extractFunctionBlock(src, 'function renderUnresolvedCaseInspector(pack, inst)');
-  assert.doesNotMatch(unresolvedBlock, /openCaseNotesModal/, 'an unresolved (missing case) selection must not offer Notes');
+  assert.doesNotMatch(unresolvedBlock, /Standard Instructions/, 'an unresolved (missing case) selection must not render Standard Instructions');
 });
 
-test('the Notes button is built fresh via the existing makeActionButton helper (no new button component, no persisted DOM/listener reuse across rerenders)', async () => {
+test('the Standard Instructions section is non-interactive: no modal, no textarea, no Add/Edit/Save/Cancel action, no CaseLibrary mutation', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const singleBlock = extractFunctionBlock(src, 'function renderSingleInspector(pack, inst, caseData, prefs)');
-  assert.match(singleBlock, /const notesButton = makeActionButton\(\{\s*\n\s*label: 'Notes',/,
-    'the Notes button must reuse the same makeActionButton helper as every other Inspector action button');
-  assert.match(singleBlock, /titleRow\.appendChild\(notesButton\);/);
+  const block = extractStandardInstructionsBlock(singleBlock);
+  assert.ok(block.length > 0, 'must be able to isolate the Standard Instructions block');
+
+  assert.doesNotMatch(block, /UIComponents\.showModal/, 'must not open a modal');
+  assert.doesNotMatch(block, /createElement\('textarea'\)/, 'must not contain a textarea');
+  assert.doesNotMatch(block, /label: 'Add/, 'must not offer an Add action');
+  assert.doesNotMatch(block, /label: 'Edit'/, 'must not offer an Edit action');
+  assert.doesNotMatch(block, /label: 'Save'/, 'must not offer a Save action');
+  assert.doesNotMatch(block, /label: 'Cancel'/, 'must not offer a Cancel action');
+  assert.doesNotMatch(block, /label: 'Clear'/, 'must not offer a Clear action');
+  assert.doesNotMatch(block, /CaseLibrary\.upsert/, 'must never mutate CaseLibrary from the Inspector');
+  assert.doesNotMatch(block, /PackLibrary\./, 'must never mutate the Pack or Pack instance');
+  assert.doesNotMatch(block, /addEventListener\('click'/, 'must not attach a click handler (not interactive)');
+});
+
+test('the Standard Instructions value is rendered with safe plain-text assignment, never innerHTML', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const singleBlock = extractFunctionBlock(src, 'function renderSingleInspector(pack, inst, caseData, prefs)');
+  const block = extractStandardInstructionsBlock(singleBlock);
+
+  assert.match(block, /instructionsValue\.textContent = note;/, 'the populated value must be assigned via textContent, not innerHTML');
+  assert.doesNotMatch(block, /instructionsValue\.innerHTML/, 'the Standard Instructions value must never be assigned via innerHTML');
+  assert.match(block, /tp3d-case-notes-read/, 'the populated value must reuse the existing line-break-preserving read-only class');
 });

@@ -5061,120 +5061,6 @@ export function createEditorScreen({
       });
     }
 
-    // Per-case Notes for the Inspector's single selected case. Notes are a
-    // Case-template field (like Category and handling rules above), so — exactly
-    // like Set Category — the canonical update path is CaseLibrary.upsert, not a
-    // pack/instance mutation. The captured caseId is the sole source of truth for
-    // every save, so the draft can never migrate to a different case, and a
-    // missing case (deleted/synced away while the modal is open) fails safely
-    // instead of writing anywhere.
-    function openCaseNotesModal(caseData) {
-      const caseId = caseData.id;
-
-      // Escape-to-close scoped to this modal only, mirroring the existing local
-      // pattern in truck-change-controller.js's showManagedModal rather than
-      // changing the shared UIComponents.showModal primitive for every caller.
-      function showNotesModal(config) {
-        let modalRef = null;
-        function handleEscape(ev) {
-          if (ev.key === 'Escape' && config.dismissible !== false && modalRef) {
-            ev.preventDefault();
-            modalRef.close();
-          }
-        }
-        modalRef = UIComponents.showModal({
-          ...config,
-          onClose: () => {
-            document.removeEventListener('keydown', handleEscape);
-            if (typeof config.onClose === 'function') config.onClose();
-          },
-        });
-        document.addEventListener('keydown', handleEscape);
-        return modalRef;
-      }
-
-      function open(state) {
-        const current = CaseLibrary.getById(caseId);
-        if (!current) {
-          UIComponents.showToast('This case no longer exists.', 'error', { title: 'Notes' });
-          return;
-        }
-        const caseLabel = current.name || 'Case';
-        const note = String(current.notes || '').trim();
-        const resolvedState = state === 'auto' ? (note ? 'read' : 'empty') : state;
-
-        if (resolvedState === 'empty') {
-          const content = document.createElement('div');
-          content.className = 'muted';
-          content.textContent = 'No notes for this case yet.';
-          showNotesModal({
-            title: `Notes — ${caseLabel}`,
-            content,
-            actions: [
-              { label: 'Add note', variant: 'primary', onClick: () => { open('edit'); return true; } },
-            ],
-          });
-          return;
-        }
-
-        if (resolvedState === 'read') {
-          const content = document.createElement('div');
-          content.classList.add('tp3d-editor-sub-sm', 'tp3d-case-notes-read');
-          content.textContent = note;
-          showNotesModal({
-            title: `Notes — ${caseLabel}`,
-            content,
-            actions: [
-              { label: 'Close', variant: 'ghost' },
-              { label: 'Edit', variant: 'primary', onClick: () => { open('edit'); return true; } },
-            ],
-          });
-          return;
-        }
-
-        // Edit state: a fresh textarea seeded from the current saved note. Cancel,
-        // Escape, and backdrop click all discard this draft without touching
-        // storage — only Save writes through CaseLibrary.upsert, and closing the
-        // dialog any other way never deletes a previously saved note.
-        const wrap = document.createElement('div');
-        wrap.className = 'field';
-        const textarea = document.createElement('textarea');
-        textarea.className = 'input tp3d-textarea-minh-60';
-        textarea.placeholder = 'Add details about handling, defects, or special instructions...';
-        textarea.value = note;
-        wrap.appendChild(textarea);
-        showNotesModal({
-          title: `Notes — ${caseLabel}`,
-          content: wrap,
-          actions: [
-            { label: 'Cancel', variant: 'ghost', onClick: () => { open('auto'); return true; } },
-            {
-              label: 'Save',
-              variant: 'primary',
-              onClick: () => {
-                const latest = CaseLibrary.getById(caseId);
-                if (!latest) {
-                  // Save failure: keep the draft and stay in edit state — do not
-                  // close (returning false leaves this same modal, with the
-                  // user's typed text still in the textarea, open).
-                  UIComponents.showToast('This case no longer exists.', 'error', { title: 'Notes' });
-                  return false;
-                }
-                // CaseLibrary.upsert routes notes through the shared canonical
-                // parser (cargo-canonical.js), so empty/whitespace collapses to
-                // null (Empty state) and any other text is trimmed and kept.
-                CaseLibrary.upsert({ ...latest, notes: textarea.value });
-                open('auto');
-                return true;
-              },
-            },
-          ],
-        });
-      }
-
-      open('auto');
-    }
-
     // Every editor truck writer delegates to the shared, single-flight
     // reconciliation controller. The current render is also the canonical
     // control restoration path for Cancel, X, overlay click, and Escape.
@@ -5747,30 +5633,20 @@ export function createEditorScreen({
       card.className = 'card';
       card.classList.add('tp3d-editor-card-grid-gap-12');
 
-      // Header: name (+ Notes) row, then subtitle. titleRow is appended
-      // directly to .card (not wrapped) so it matches cardHeaderWithInfo's
-      // structure below and picks up the existing
-      // "#inspector-body .card>.row.space-between" sizing/min-width rule.
-      const titleRow = document.createElement('div');
-      titleRow.className = 'row space-between';
+      // Header: name + subtitle.
+      const header = document.createElement('div');
       const title = document.createElement('div');
       title.classList.add('tp3d-editor-title-lg-semibold');
       title.textContent = caseData.name || '—';
-      const notesButton = makeActionButton({
-        label: 'Notes',
-        iconClass: 'fa-solid fa-note-sticky',
-        onClick: () => openCaseNotesModal(caseData),
-      });
-      titleRow.appendChild(title);
-      titleRow.appendChild(notesButton);
-      card.appendChild(titleRow);
       const sub = document.createElement('div');
       sub.className = 'muted';
       sub.classList.add('tp3d-editor-sub-sm');
       const mfg = caseData.manufacturer ? caseData.manufacturer : '—';
       const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
       sub.textContent = `${mfg} • ${Utils.formatDims(d, lengthUnit)}`;
-      card.appendChild(sub);
+      header.appendChild(title);
+      header.appendChild(sub);
+      card.appendChild(header);
       card.appendChild(makeMiniCategoryChip(caseData.category));
 
       // Handling rules: case-level policy and this-instance lock, shown separately.
@@ -5806,6 +5682,31 @@ export function createEditorScreen({
         }
         card.appendChild(rulesWrap);
       }
+
+      // Standard Instructions: Case-owned, always visible, read-only. Editing
+      // happens only in the Cases-screen Case editor — see
+      // docs/engineering/cargo-instructions-ownership-contract.md.
+      const instructionsWrap = document.createElement('div');
+      instructionsWrap.className = 'tp3d-editor-standard-instructions';
+      const instructionsLabel = document.createElement('div');
+      instructionsLabel.className = 'muted tp3d-editor-sub-sm';
+      instructionsLabel.textContent = 'Standard Instructions';
+      instructionsWrap.appendChild(instructionsLabel);
+      const instructionsDesc = document.createElement('div');
+      instructionsDesc.className = 'muted tp3d-editor-sub-sm';
+      instructionsDesc.textContent = 'Applies to every unit of this Case.';
+      instructionsWrap.appendChild(instructionsDesc);
+      const note = String(caseData.notes || '').trim();
+      const instructionsValue = document.createElement('div');
+      if (note) {
+        instructionsValue.classList.add('tp3d-editor-sub-sm', 'tp3d-case-notes-read');
+        instructionsValue.textContent = note;
+      } else {
+        instructionsValue.classList.add('muted', 'tp3d-editor-sub-sm');
+        instructionsValue.textContent = 'No standard instructions.';
+      }
+      instructionsWrap.appendChild(instructionsValue);
+      card.appendChild(instructionsWrap);
 
       inspectorEl.appendChild(card);
 

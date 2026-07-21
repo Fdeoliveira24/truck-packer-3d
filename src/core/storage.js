@@ -24,10 +24,13 @@ export const STORAGE_KEY = 'truckPacker3d:v1';
 // user-scoped while packs/cases/currentPackId live under the active workspace.
 let STORAGE_SCOPE = 'anon';
 let WORKSPACE_SCOPE = 'no-org';
+let pendingLegacyMigration = null;
 
 /** Set the current storage scope (typically the signed-in user id). */
 export function setStorageScope(scope) {
-  STORAGE_SCOPE = String(scope || 'anon').trim() || 'anon';
+  const nextScope = String(scope || 'anon').trim() || 'anon';
+  if (nextScope !== STORAGE_SCOPE) pendingLegacyMigration = null;
+  STORAGE_SCOPE = nextScope;
 }
 
 /** Return the current scope value (for diagnostics). */
@@ -37,7 +40,9 @@ export function getStorageScope() {
 
 /** Set the current workspace scope (typically the active org id). */
 export function setWorkspaceScope(scope) {
-  WORKSPACE_SCOPE = String(scope || 'no-org').trim() || 'no-org';
+  const nextScope = String(scope || 'no-org').trim() || 'no-org';
+  if (nextScope !== WORKSPACE_SCOPE) pendingLegacyMigration = null;
+  WORKSPACE_SCOPE = nextScope;
 }
 
 /** Return the current workspace scope value. */
@@ -57,24 +62,23 @@ function getWorkspaceScopedKey() {
 
 function readUserScopedRaw(scopedKey) {
   let raw = window.localStorage.getItem(scopedKey);
+  let sourceKey = raw ? scopedKey : null;
 
-  // P0.9 – One-time migration: if the scoped key is empty but the legacy
-  // unscoped key has data, copy it over and remove the legacy key so a
-  // second user won't collide with it.
+  // Legacy fallback stays non-destructive until a full account bundle confirms
+  // which workspace owns the combined payload.
   if (!raw && scopedKey !== STORAGE_KEY) {
     try {
       const legacyRaw = window.localStorage.getItem(STORAGE_KEY);
       if (legacyRaw) {
-        window.localStorage.setItem(scopedKey, legacyRaw);
-        window.localStorage.removeItem(STORAGE_KEY);
         raw = legacyRaw;
+        sourceKey = STORAGE_KEY;
       }
     } catch (_migrationErr) {
       // migration is best-effort; fall through to normal null return
     }
   }
 
-  return raw;
+  return { raw, sourceKey };
 }
 
 function parseStoredPayload(raw, key) {
@@ -88,6 +92,21 @@ function parseStoredPayload(raw, key) {
 }
 
 const saveDebounced = debounce(saveNow, 250);
+
+function hasWorkspaceData(payload) {
+  return Boolean(
+    payload &&
+      typeof payload === 'object' &&
+      Array.isArray(payload.caseLibrary) &&
+      Array.isArray(payload.packLibrary)
+  );
+}
+
+function combinedLegacyPayloadAt(key) {
+  if (!key) return null;
+  const payload = parseStoredPayload(window.localStorage.getItem(key), key);
+  return hasWorkspaceData(payload) ? payload : null;
+}
 
 export function readJson(key, fallback = null) {
   try {
@@ -132,40 +151,66 @@ export function removeKey(key) {
 export function load() {
   const scopedKey = getScopedKey();
   const workspaceKey = getWorkspaceScopedKey();
+  pendingLegacyMigration = null;
   try {
-    const userRaw = readUserScopedRaw(scopedKey);
-    const userPayload = parseStoredPayload(userRaw, scopedKey);
+    const userRead = readUserScopedRaw(scopedKey);
+    const userPayload = parseStoredPayload(userRead.raw, userRead.sourceKey || scopedKey);
 
     const workspaceRaw = window.localStorage.getItem(workspaceKey);
     const workspacePayload = parseStoredPayload(workspaceRaw, workspaceKey);
-    const hasWorkspaceData = Boolean(
-      workspacePayload &&
-        typeof workspacePayload === 'object' &&
-        Array.isArray(workspacePayload.caseLibrary) &&
-        Array.isArray(workspacePayload.packLibrary)
-    );
+    const workspaceDataAvailable = hasWorkspaceData(workspacePayload);
+    let legacyWorkspacePayload = hasWorkspaceData(userPayload) ? userPayload : null;
+    let legacySourceKey = legacyWorkspacePayload ? (userRead.sourceKey || scopedKey) : null;
+    let legacySourceRaw = legacyWorkspacePayload ? userRead.raw : null;
+    if (!legacyWorkspacePayload && scopedKey !== STORAGE_KEY) {
+      const baseRaw = window.localStorage.getItem(STORAGE_KEY);
+      const basePayload = parseStoredPayload(baseRaw, STORAGE_KEY);
+      if (hasWorkspaceData(basePayload)) {
+        legacyWorkspacePayload = basePayload;
+        legacySourceKey = STORAGE_KEY;
+        legacySourceRaw = baseRaw;
+      }
+    }
+    const effectiveWorkspacePayload = workspaceDataAvailable ? workspacePayload : legacyWorkspacePayload;
+    const hasEffectiveWorkspaceData = hasWorkspaceData(effectiveWorkspacePayload);
+
+    pendingLegacyMigration = legacyWorkspacePayload
+      ? {
+          sourceKey: legacySourceKey,
+          sourceRaw: legacySourceRaw,
+          scopedKey,
+          workspaceKey,
+          storageScope: STORAGE_SCOPE,
+          workspaceScope: WORKSPACE_SCOPE,
+          conflict: workspaceDataAvailable,
+        }
+      : null;
     const preferences =
       userPayload && userPayload.preferences && typeof userPayload.preferences === 'object'
         ? userPayload.preferences
+        : legacyWorkspacePayload && legacyWorkspacePayload.preferences && typeof legacyWorkspacePayload.preferences === 'object'
+          ? legacyWorkspacePayload.preferences
         : null;
 
-    if (!preferences && !hasWorkspaceData) return null;
+    if (!preferences && !hasEffectiveWorkspaceData) return null;
 
     return {
       version:
-        (workspacePayload && workspacePayload.version) ||
+        (effectiveWorkspacePayload && effectiveWorkspacePayload.version) ||
         (userPayload && userPayload.version) ||
         APP_VERSION,
       savedAt:
-        (workspacePayload && workspacePayload.savedAt) ||
+        (effectiveWorkspacePayload && effectiveWorkspacePayload.savedAt) ||
         (userPayload && userPayload.savedAt) ||
         0,
       preferences,
-      caseLibrary: hasWorkspaceData ? workspacePayload.caseLibrary : null,
-      packLibrary: hasWorkspaceData ? workspacePayload.packLibrary : null,
+      caseLibrary: hasEffectiveWorkspaceData ? effectiveWorkspacePayload.caseLibrary : null,
+      packLibrary: hasEffectiveWorkspaceData ? effectiveWorkspacePayload.packLibrary : null,
       folderLibrary:
-        hasWorkspaceData && Array.isArray(workspacePayload.folderLibrary) ? workspacePayload.folderLibrary : [],
-      currentPackId: hasWorkspaceData ? workspacePayload.currentPackId || null : null,
+        hasEffectiveWorkspaceData && Array.isArray(effectiveWorkspacePayload.folderLibrary)
+          ? effectiveWorkspacePayload.folderLibrary
+          : [],
+      currentPackId: hasEffectiveWorkspaceData ? effectiveWorkspacePayload.currentPackId || null : null,
     };
   } catch (err) {
     emit('storage:load_error', {
@@ -179,6 +224,78 @@ export function load() {
 
 export function saveSoon() {
   saveDebounced();
+}
+
+export function flushPendingSave() {
+  return typeof saveDebounced.flush === 'function' ? saveDebounced.flush() : undefined;
+}
+
+export function cancelPendingSave() {
+  if (typeof saveDebounced.cancel === 'function') saveDebounced.cancel();
+}
+
+export function finalizeLegacyMigration() {
+  const pending = pendingLegacyMigration;
+  if (!pending) return { ok: false, skipped: true, reason: 'none' };
+  if (
+    pending.storageScope !== STORAGE_SCOPE ||
+    pending.workspaceScope !== WORKSPACE_SCOPE ||
+    STORAGE_SCOPE === 'anon' ||
+    WORKSPACE_SCOPE === 'no-org'
+  ) {
+    return { ok: false, skipped: true, reason: 'scope' };
+  }
+  if (
+    !pending.sourceKey ||
+    window.localStorage.getItem(pending.sourceKey) !== pending.sourceRaw
+  ) {
+    return { ok: false, skipped: true, reason: 'source-changed' };
+  }
+  if (pending.conflict || hasWorkspaceData(combinedLegacyPayloadAt(pending.workspaceKey))) {
+    return { ok: false, skipped: true, reason: 'workspace-exists' };
+  }
+
+  const state = StateStore.get();
+  const savedAt = Date.now();
+  const workspacePayload = {
+    version: APP_VERSION,
+    savedAt,
+    caseLibrary: state.caseLibrary,
+    packLibrary: state.packLibrary,
+    folderLibrary: Array.isArray(state.folderLibrary) ? state.folderLibrary : [],
+    currentPackId: state.currentPackId,
+  };
+  const userPayload = {
+    version: APP_VERSION,
+    savedAt,
+    preferences: state.preferences,
+  };
+  const workspaceRaw = JSON.stringify(workspacePayload);
+  const userRaw = JSON.stringify(userPayload);
+
+  try {
+    window.localStorage.setItem(pending.workspaceKey, workspaceRaw);
+    if (window.localStorage.getItem(pending.workspaceKey) !== workspaceRaw) {
+      throw new Error('Workspace migration verification failed');
+    }
+    window.localStorage.setItem(pending.scopedKey, userRaw);
+    if (window.localStorage.getItem(pending.scopedKey) !== userRaw) {
+      throw new Error('User migration verification failed');
+    }
+    if (pending.sourceKey === STORAGE_KEY && pending.sourceKey !== pending.scopedKey) {
+      window.localStorage.removeItem(pending.sourceKey);
+    }
+    pendingLegacyMigration = null;
+    emit('storage:saved', { key: pending.workspaceKey, savedAt });
+    return { ok: true, migrated: true };
+  } catch (err) {
+    emit('storage:save_error', {
+      key: pending.workspaceKey,
+      message: err && err.message ? err.message : 'Legacy migration failed',
+      error: err,
+    });
+    return { ok: false, error: err };
+  }
 }
 
 export function saveNow() {
@@ -199,7 +316,10 @@ export function saveNow() {
       folderLibrary: Array.isArray(state.folderLibrary) ? state.folderLibrary : [],
       currentPackId: state.currentPackId,
     };
-    window.localStorage.setItem(scopedKey, JSON.stringify(userPayload));
+    const existingCombinedUserPayload = combinedLegacyPayloadAt(scopedKey);
+    if (!existingCombinedUserPayload) {
+      window.localStorage.setItem(scopedKey, JSON.stringify(userPayload));
+    }
     window.localStorage.setItem(workspaceKey, JSON.stringify(workspacePayload));
     emit('storage:saved', { key: workspaceKey, savedAt: workspacePayload.savedAt });
   } catch (err) {

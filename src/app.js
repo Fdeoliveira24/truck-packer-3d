@@ -4853,9 +4853,19 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return `${userScope}|${getWorkspaceStorageScope(targetOrgId)}`;
     }
 
+    function flushPendingStorageSave() {
+      if (Storage && typeof Storage.flushPendingSave === 'function') {
+        Storage.flushPendingSave();
+      }
+    }
+
     function setWorkspaceStorageScope(targetOrgId) {
       const scope = getWorkspaceStorageScope(targetOrgId);
       if (Storage && typeof Storage.setWorkspaceScope === 'function') {
+        const currentScope = typeof Storage.getWorkspaceScope === 'function'
+          ? Storage.getWorkspaceScope()
+          : null;
+        if (currentScope !== null && currentScope !== scope) flushPendingStorageSave();
         Storage.setWorkspaceScope(scope);
       }
       return scope;
@@ -4863,9 +4873,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
     function applyWorkspaceScopedLocalState(targetOrgId, { seedIfMissing = true, force = false } = {}) {
       const nextStorageKey = getWorkspaceStorageKey(targetOrgId);
-      setWorkspaceStorageScope(targetOrgId);
       const workspaceChanged = lastLoadedWorkspaceStorageKey !== nextStorageKey;
       if (!force && !workspaceChanged) return false;
+      if (force && !workspaceChanged) flushPendingStorageSave();
+      setWorkspaceStorageScope(targetOrgId);
       if (workspaceChanged) {
         try {
           if (KeyboardManager && typeof KeyboardManager.clearClipboard === 'function') {
@@ -4903,6 +4914,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       SessionManager.clear();
       // P0.9 – Don't wipe user-scoped storage (data should survive for next login).
       // Instead, pause autosave → reset in-memory state → set scope to anon.
+      flushPendingStorageSave();
       suspendAutoSave = true;
       try {
         resetAppStateToEmpty();
@@ -4976,7 +4988,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         folderLibrary: [],
         preferences: Defaults.defaultPreferences,
       };
-      StateStore.replace(emptyState, { skipHistory: true });
+      StateStore.replace(emptyState, { skipHistory: true, resetHistory: true });
     }
 
     /**
@@ -5004,7 +5016,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           packLibrary: storedPacks,
           folderLibrary: Array.isArray(stored.folderLibrary) ? stored.folderLibrary : [],
           preferences: storedPrefs,
-        }, { skipHistory: true });
+        }, { skipHistory: true, resetHistory: true });
       } else if (seedIfMissing) {
         // No saved data for this user – seed with demo data (same as initial boot).
         const fallbackPreferences = stored && stored.preferences ? stored.preferences : Defaults.defaultPreferences;
@@ -5020,7 +5032,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           packLibrary: [demoPack],
           folderLibrary: [],
           preferences: fallbackPreferences,
-        }, { skipHistory: true });
+        }, { skipHistory: true, resetHistory: true });
         Storage.saveNow();
       } else {
         StateStore.replace({
@@ -5031,7 +5043,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           packLibrary: [],
           folderLibrary: [],
           preferences: (stored && stored.preferences) || Defaults.defaultPreferences,
-        }, { skipHistory: true });
+        }, { skipHistory: true, resetHistory: true });
       }
     }
 
@@ -7118,6 +7130,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
         applyWorkspaceScopedLocalState(nextOrgIdStr, { seedIfMissing: false });
         resetWorkspaceScopedUiState(nextOrgIdStr);
       }
+      if (
+        bundle.partial !== true &&
+        nextOrgInActiveList &&
+        Storage &&
+        typeof Storage.finalizeLegacyMigration === 'function'
+      ) {
+        Storage.finalizeLegacyMigration();
+      }
 
       // Best-effort: persist current org to profile when we have a real profile row.
       if (resolved.profile && !resolved.profile._isDefault) {
@@ -7610,6 +7630,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       // synchronously by billing/org notifications can promote the stale
       // localStorage org hint (read by resolveActiveOrganizationId in the
       // billing service).
+      flushPendingStorageSave();
       try { window.__TP3D_USER_SWITCH_PENDING = true; } catch (_) { /* ignore */ }
       try { resetBillingPumpForUserSwitch(); } catch (_) { /* ignore */ }
       try { clearBillingState(); } catch (_) { /* ignore */ }
@@ -7716,6 +7737,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
         // ── P0.9: Scope storage to this user and reload state ──────────
         const uid = user && user.id ? String(user.id) : 'anon';
+        if (
+          typeof Storage.getStorageScope === 'function' &&
+          Storage.getStorageScope() !== uid
+        ) {
+          flushPendingStorageSave();
+        }
         Storage.setStorageScope(uid);
 
         const hintedOrgId = readLocalOrgId();
@@ -7834,6 +7861,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       lastAuthEventSnapshot = { status: 'signed_out', userId: null, hasToken: false, session: null, ts: Date.now() };
 
       // ── P0.9: Reset scope to anon so autosave can't write to the old user's key ──
+      flushPendingStorageSave();
       suspendAutoSave = true;
       try {
         resetAppStateToEmpty();

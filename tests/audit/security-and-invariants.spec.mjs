@@ -47,6 +47,7 @@ const accountOverlayPath = new URL('../../src/ui/overlays/account-overlay.js', i
 const appPath = new URL('../../src/app.js', import.meta.url);
 const indexHtmlPath = new URL('../../index.html', import.meta.url);
 const storagePath = new URL('../../src/core/storage.js', import.meta.url);
+const browserPath = new URL('../../src/core/browser.js', import.meta.url);
 const importExportPath = new URL('../../src/services/import-export.js', import.meta.url);
 const importCasesDialogPath = new URL('../../src/ui/overlays/import-cases-dialog.js', import.meta.url);
 const folderLibraryPath = new URL('../../src/services/folder-library.js', import.meta.url);
@@ -17177,8 +17178,8 @@ test('phase 0.7B-1B storage saves and loads folderLibrary only in workspace payl
     : '';
 
   assert.ok(loadFn, 'load must be extractable');
-  assert.match(loadFn, /folderLibrary:[\s\S]{0,140}workspacePayload\.folderLibrary/,
-    'load must return folderLibrary from workspace payload');
+  assert.match(loadFn, /folderLibrary:[\s\S]{0,140}effectiveWorkspacePayload\.folderLibrary/,
+    'load must return folderLibrary from the effective workspace payload');
   assert.ok(fn, 'saveNow must be extractable');
   assert.doesNotMatch(userPayload, /folderLibrary/,
     'folderLibrary must not be saved in user-scoped preferences payload');
@@ -22163,6 +22164,7 @@ async function createOrgContextApplyRuntimeHarness() {
     __workspaceApplies: [],
     __workspaceResets: [],
     __accessGateCalls: 0,
+    __legacyMigrationFinalizations: 0,
     console: { info() { }, warn() { }, error() { } },
     document: { hidden: false },
     window: {},
@@ -22190,6 +22192,9 @@ async function createOrgContextApplyRuntimeHarness() {
       orgChangedEmitted: 0,
     };
     const SupabaseClient = {};
+    const Storage = {
+      finalizeLegacyMigration: () => { globalThis.__legacyMigrationFinalizations += 1; },
+    };
     const AccountSwitcher = {
       refresh: () => { globalThis.__accountSwitcherRefreshes += 1; },
     };
@@ -22247,6 +22252,8 @@ test('BUG-01-AL runtime: delayed cross-tab active bundle apply clears the stale 
   assert.strictEqual(state.orgContext.activeOrg.name, org.name, 'the switcher has the resolved workspace label');
   assert.strictEqual(state.accountSwitcherRefreshes, 1,
     'the state owner refreshes the mounted switcher after the delayed active apply');
+  assert.strictEqual(runtime.calls.__legacyMigrationFinalizations, 1,
+    'a full authoritative bundle may finalize a pending legacy migration');
   assert.deepStrictEqual(Array.from(runtime.calls.__orgRequiredCalls), [true],
     'the active-workspace UI is enabled before the final switcher refresh');
 });
@@ -22265,6 +22272,8 @@ test('BUG-01-AM runtime: partial bundle stays conservative and a later full bund
   assert.strictEqual(runtime.snapshot().orgContextResolved, false, 'partial bundle leaves resolution conservative');
   assert.strictEqual(runtime.snapshot().accountSwitcherRefreshes, 0,
     'partial bundle cannot replace Loading with an unproven workspace');
+  assert.strictEqual(runtime.calls.__legacyMigrationFinalizations, 0,
+    'partial bundle cannot finalize a legacy migration');
 
   const org = { id: 'org-test1', name: 'test1 Workspace', role: 'owner' };
   await runtime.apply({
@@ -22282,6 +22291,8 @@ test('BUG-01-AM runtime: partial bundle stays conservative and a later full bund
   assert.strictEqual(recovered.orgContext.activeOrgId, org.id, 'the replacement belongs to the current identity');
   assert.strictEqual(recovered.accountSwitcherRefreshes, 1,
     'recovery produces exactly one final switcher refresh, not a loop');
+  assert.strictEqual(runtime.calls.__legacyMigrationFinalizations, 1,
+    'the later full bundle finalizes a pending legacy migration exactly once');
 });
 
 // ─── BUG-07: sidebar billing DOM must be cleared at the source, not CSS-hidden ─
@@ -23307,4 +23318,293 @@ test('BILLING-UNMAPPED-8 billing-status returns sanitized errors only', async ()
     'the fatal handler returns a fixed sanitized error string');
   assert.match(src, /console\.error\("billing-status fatal:", e\);/,
     'raw error stays in server logs');
+});
+
+function createStabilizationMemoryStorage() {
+  const values = new Map();
+  let failingKey = null;
+  return {
+    values,
+    setFailingKey(key) {
+      failingKey = key;
+    },
+    get length() {
+      return values.size;
+    },
+    getItem(key) {
+      return values.has(key) ? values.get(key) : null;
+    },
+    setItem(key, value) {
+      if (failingKey && key === failingKey) throw new Error('quota');
+      values.set(key, String(value));
+    },
+    removeItem(key) {
+      values.delete(key);
+    },
+    key(index) {
+      return Array.from(values.keys())[index] || null;
+    },
+  };
+}
+
+test('APP-STABILIZATION-PHASE1 StateStore boundary replacement rebases history without changing same-scope undo', async () => {
+  const StateStore = await import(`${stateStorePath.href}?phase1-history=${Date.now()}-${Math.random()}`);
+
+  StateStore.init({ caseLibrary: [{ id: 'A-1' }], packLibrary: [], folderLibrary: [], preferences: {} });
+  StateStore.set({ caseLibrary: [{ id: 'A-2' }] });
+  assert.equal(StateStore.undo(), true, 'ordinary same-scope undo remains available');
+  assert.deepEqual(StateStore.get('caseLibrary'), [{ id: 'A-1' }]);
+  assert.equal(StateStore.redo(), true, 'ordinary same-scope redo remains available');
+
+  let undoAvailableDuringNotification = null;
+  StateStore.subscribe(changes => {
+    if (changes && changes._replace) undoAvailableDuringNotification = StateStore.undo();
+  });
+  StateStore.replace(
+    { caseLibrary: [{ id: 'B-1' }], packLibrary: [], folderLibrary: [], preferences: {} },
+    { skipHistory: true, resetHistory: true }
+  );
+
+  assert.equal(undoAvailableDuringNotification, false,
+    'history is reset before replacement subscribers are notified');
+  assert.equal(StateStore.undo(), false, 'prior-scope history is unreachable after replacement');
+  assert.equal(StateStore.redo(), false, 'prior-scope redo history is unreachable after replacement');
+  assert.deepEqual(StateStore.get('caseLibrary'), [{ id: 'B-1' }]);
+});
+
+test('APP-STABILIZATION-PHASE1 debounce flush invokes the latest call once and cancel drops pending work', async () => {
+  const originalWindow = globalThis.window;
+  const timers = new Map();
+  let nextTimerId = 0;
+  globalThis.window = {
+    setTimeout(fn) {
+      nextTimerId += 1;
+      timers.set(nextTimerId, fn);
+      return nextTimerId;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
+  };
+
+  try {
+    const { debounce } = await import(`${browserPath.href}?phase1-debounce=${Date.now()}-${Math.random()}`);
+    const calls = [];
+    const receiver = { label: 'latest' };
+    const debounced = debounce(function(value) {
+      calls.push([this.label, value]);
+    }, 250);
+
+    debounced.call({ label: 'old' }, 'old');
+    debounced.call(receiver, 'new');
+    debounced.flush();
+    assert.deepEqual(calls, [['latest', 'new']]);
+    assert.equal(timers.size, 0, 'flush clears the delayed callback');
+
+    debounced.call(receiver, 'cancelled');
+    debounced.cancel();
+    for (const fn of timers.values()) fn();
+    assert.deepEqual(calls, [['latest', 'new']], 'cancelled work never executes');
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test('APP-STABILIZATION-PHASE1 pending autosave flushes into the outgoing scope before replacement', async () => {
+  const originalWindow = globalThis.window;
+  const localStorage = createStabilizationMemoryStorage();
+  const timers = new Map();
+  let nextTimerId = 0;
+  globalThis.window = {
+    localStorage,
+    setTimeout(fn) {
+      nextTimerId += 1;
+      timers.set(nextTimerId, fn);
+      return nextTimerId;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
+  };
+
+  try {
+    const StateStore = await import(stateStorePath.href);
+    const Storage = await import(`${storagePath.href}?phase1-autosave=${Date.now()}-${Math.random()}`);
+    StateStore.init({ caseLibrary: [{ id: 'A-old' }], packLibrary: [], folderLibrary: [], preferences: {} });
+    Storage.setStorageScope('user-A');
+    Storage.setWorkspaceScope('org-A');
+    Storage.saveNow();
+
+    StateStore.set({ caseLibrary: [{ id: 'A-new' }] });
+    Storage.saveSoon();
+    Storage.flushPendingSave();
+    assert.equal(timers.size, 0, 'flush removes the pending timer before scope changes');
+
+    Storage.setStorageScope('user-B');
+    Storage.setWorkspaceScope('org-B');
+    StateStore.replace(
+      { caseLibrary: [{ id: 'B' }], packLibrary: [], folderLibrary: [], preferences: {} },
+      { skipHistory: true, resetHistory: true }
+    );
+    Storage.saveNow();
+    for (const fn of timers.values()) fn();
+
+    const savedA = JSON.parse(localStorage.getItem('truckPacker3d:v1:user-A:workspace:org-A'));
+    const savedB = JSON.parse(localStorage.getItem('truckPacker3d:v1:user-B:workspace:org-B'));
+    assert.deepEqual(savedA.caseLibrary, [{ id: 'A-new' }]);
+    assert.deepEqual(savedB.caseLibrary, [{ id: 'B' }]);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test('APP-STABILIZATION-PHASE1 legacy combined storage stays intact until authoritative finalization', async () => {
+  const originalWindow = globalThis.window;
+  const localStorage = createStabilizationMemoryStorage();
+  globalThis.window = {
+    localStorage,
+    setTimeout,
+    clearTimeout,
+  };
+  const legacy = {
+    version: 'legacy',
+    savedAt: 7,
+    preferences: { theme: 'dark' },
+    caseLibrary: [{ id: 'legacy-case' }],
+    packLibrary: [{ id: 'legacy-pack' }],
+    folderLibrary: [{ id: 'legacy-folder' }],
+    currentPackId: 'legacy-pack',
+  };
+  const legacyRaw = JSON.stringify(legacy);
+
+  try {
+    localStorage.setItem('truckPacker3d:v1', legacyRaw);
+    const StateStore = await import(stateStorePath.href);
+    const Storage = await import(`${storagePath.href}?phase1-legacy=${Date.now()}-${Math.random()}`);
+
+    const anonLoaded = Storage.load();
+    assert.deepEqual(anonLoaded.caseLibrary, legacy.caseLibrary);
+    assert.deepEqual(anonLoaded.packLibrary, legacy.packLibrary);
+    assert.equal(localStorage.getItem('truckPacker3d:v1'), legacyRaw,
+      'anonymous loading never removes or rewrites the legacy source');
+
+    Storage.setStorageScope('user-1');
+    Storage.setWorkspaceScope('org-1');
+    const scopedLoaded = Storage.load();
+    StateStore.init({
+      caseLibrary: scopedLoaded.caseLibrary,
+      packLibrary: scopedLoaded.packLibrary,
+      folderLibrary: scopedLoaded.folderLibrary,
+      currentPackId: scopedLoaded.currentPackId,
+      preferences: scopedLoaded.preferences,
+    });
+    const migrated = Storage.finalizeLegacyMigration();
+
+    assert.equal(migrated.ok, true);
+    assert.equal(localStorage.getItem('truckPacker3d:v1'), null,
+      'base source is removed only after both split payloads verify');
+    const userPayload = JSON.parse(localStorage.getItem('truckPacker3d:v1:user-1'));
+    const workspacePayload = JSON.parse(localStorage.getItem('truckPacker3d:v1:user-1:workspace:org-1'));
+    assert.deepEqual(userPayload.preferences, legacy.preferences);
+    assert.deepEqual(workspacePayload.caseLibrary, legacy.caseLibrary);
+    assert.deepEqual(workspacePayload.packLibrary, legacy.packLibrary);
+    assert.deepEqual(workspacePayload.folderLibrary, legacy.folderLibrary);
+    assert.equal(workspacePayload.currentPackId, legacy.currentPackId);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test('APP-STABILIZATION-PHASE1 failed or conflicting legacy migration preserves its source', async () => {
+  const originalWindow = globalThis.window;
+  const combined = {
+    preferences: { theme: 'light' },
+    caseLibrary: [{ id: 'legacy-case' }],
+    packLibrary: [{ id: 'legacy-pack' }],
+    folderLibrary: [],
+    currentPackId: 'legacy-pack',
+  };
+  const combinedRaw = JSON.stringify(combined);
+
+  try {
+    const failingStorage = createStabilizationMemoryStorage();
+    globalThis.window = { localStorage: failingStorage, setTimeout, clearTimeout };
+    failingStorage.setItem('truckPacker3d:v1:user-fail', combinedRaw);
+    const StateStore = await import(stateStorePath.href);
+    const FailingStorage = await import(`${storagePath.href}?phase1-failure=${Date.now()}-${Math.random()}`);
+    FailingStorage.setStorageScope('user-fail');
+    FailingStorage.setWorkspaceScope('org-fail');
+    const loaded = FailingStorage.load();
+    StateStore.init({ ...loaded, selectedInstanceIds: [], currentScreen: 'packs' });
+    failingStorage.setFailingKey('truckPacker3d:v1:user-fail:workspace:org-fail');
+    assert.equal(FailingStorage.finalizeLegacyMigration().ok, false);
+    assert.equal(failingStorage.getItem('truckPacker3d:v1:user-fail'), combinedRaw,
+      'failed workspace write leaves the only combined source byte-for-byte intact');
+
+    const conflictStorage = createStabilizationMemoryStorage();
+    globalThis.window = { localStorage: conflictStorage, setTimeout, clearTimeout };
+    conflictStorage.setItem('truckPacker3d:v1', combinedRaw);
+    conflictStorage.setItem('truckPacker3d:v1:user-conflict', JSON.stringify({ preferences: {} }));
+    const existingWorkspaceRaw = JSON.stringify({ caseLibrary: [{ id: 'existing' }], packLibrary: [] });
+    conflictStorage.setItem('truckPacker3d:v1:user-conflict:workspace:org-conflict', existingWorkspaceRaw);
+    const ConflictStorage = await import(`${storagePath.href}?phase1-conflict=${Date.now()}-${Math.random()}`);
+    ConflictStorage.setStorageScope('user-conflict');
+    ConflictStorage.setWorkspaceScope('org-conflict');
+    ConflictStorage.load();
+    const conflict = ConflictStorage.finalizeLegacyMigration();
+    assert.equal(conflict.reason, 'workspace-exists');
+    assert.equal(conflictStorage.getItem('truckPacker3d:v1'), combinedRaw,
+      'conflicting legacy source remains available for recovery');
+    assert.equal(conflictStorage.getItem('truckPacker3d:v1:user-conflict:workspace:org-conflict'), existingWorkspaceRaw,
+      'an existing valid workspace is never overwritten');
+
+    const changedSourceStorage = createStabilizationMemoryStorage();
+    globalThis.window = { localStorage: changedSourceStorage, setTimeout, clearTimeout };
+    changedSourceStorage.setItem('truckPacker3d:v1', combinedRaw);
+    const ChangedSourceStorage = await import(`${storagePath.href}?phase1-source-change=${Date.now()}-${Math.random()}`);
+    ChangedSourceStorage.setStorageScope('user-changed');
+    ChangedSourceStorage.setWorkspaceScope('org-changed');
+    ChangedSourceStorage.load();
+    const newerSourceRaw = JSON.stringify({ ...combined, savedAt: 99 });
+    changedSourceStorage.setItem('truckPacker3d:v1', newerSourceRaw);
+    const sourceChanged = ChangedSourceStorage.finalizeLegacyMigration();
+    assert.equal(sourceChanged.reason, 'source-changed');
+    assert.equal(changedSourceStorage.getItem('truckPacker3d:v1'), newerSourceRaw,
+      'a source changed by another tab is never removed or overwritten');
+    assert.equal(changedSourceStorage.getItem('truckPacker3d:v1:user-changed:workspace:org-changed'), null,
+      'a changed source is not copied into a destination under stale assumptions');
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test('APP-STABILIZATION-PHASE1 app flushes and resets history only at scoped boundaries', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const workspaceScopeStart = src.indexOf('function setWorkspaceStorageScope(');
+  const workspaceScopeEnd = src.indexOf('\n    function applyWorkspaceScopedLocalState(', workspaceScopeStart);
+  const workspaceScopeFn = src.slice(workspaceScopeStart, workspaceScopeEnd);
+  assert.ok(workspaceScopeFn.indexOf('flushPendingStorageSave()') < workspaceScopeFn.indexOf('Storage.setWorkspaceScope(scope)'),
+    'workspace pending save flushes before the scope changes');
+
+  const resetStart = src.indexOf('function resetAppStateToEmpty(');
+  const resetEnd = src.indexOf('\n    function loadScopedStateOrSeed(', resetStart);
+  const resetFn = src.slice(resetStart, resetEnd);
+  assert.match(resetFn, /resetHistory:\s*true/,
+    'empty-state replacement rebases history');
+
+  const loadStart = src.indexOf('function loadScopedStateOrSeed(');
+  const loadEnd = src.indexOf('\n    \/\/ =+', loadStart);
+  const loadFn = src.slice(loadStart, loadEnd);
+  assert.equal((loadFn.match(/resetHistory:\s*true/g) || []).length, 3,
+    'loaded, seeded, and empty workspace replacements all rebase history');
+
+  const bundleStart = src.indexOf('async function applyOrgContextFromBundle(');
+  const bundleEnd = src.indexOf('\n    async function refreshOrgContext(', bundleStart);
+  const bundleFn = src.slice(bundleStart, bundleEnd);
+  assert.match(bundleFn, /bundle\.partial !== true[\s\S]*nextOrgInActiveList[\s\S]*Storage\.finalizeLegacyMigration\(\)/,
+    'legacy migration finalizes only after a full bundle confirms active membership');
 });

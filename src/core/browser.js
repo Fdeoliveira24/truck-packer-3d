@@ -35,10 +35,43 @@ export function uuid() {
 
 export function debounce(fn, waitMs) {
   let t = null;
-  return function (...args) {
+  let pendingArgs = null;
+  let pendingThis = null;
+
+  function invokePending() {
+    if (!pendingArgs) return undefined;
+    const args = pendingArgs;
+    const receiver = pendingThis;
+    pendingArgs = null;
+    pendingThis = null;
+    return fn.apply(receiver, args);
+  }
+
+  function debounced(...args) {
     window.clearTimeout(t);
-    t = window.setTimeout(() => fn.apply(this, args), waitMs);
+    pendingArgs = args;
+    pendingThis = this;
+    t = window.setTimeout(() => {
+      t = null;
+      invokePending();
+    }, waitMs);
+  }
+
+  debounced.flush = () => {
+    if (t === null) return undefined;
+    window.clearTimeout(t);
+    t = null;
+    return invokePending();
   };
+
+  debounced.cancel = () => {
+    if (t !== null) window.clearTimeout(t);
+    t = null;
+    pendingArgs = null;
+    pendingThis = null;
+  };
+
+  return debounced;
 }
 
 export function formatRelativeTime(ts) {

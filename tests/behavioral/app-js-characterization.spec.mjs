@@ -297,6 +297,94 @@ async function reproduceStaleAuthUserResult(page, operation) {
   }, { operationName: operation, session: nextSession });
 }
 
+async function settleDeferredAuthRequest(page, { operation, events = [], resolution = {} }) {
+  return page.evaluate(async ({ operationName, authEvents, requestResolution }) => {
+    const api = window.SupabaseClient;
+    const control = window.__TP3D_FAKE_SUPABASE_CONTROL__;
+    if (!api || !control) throw new Error('Auth regression controls are unavailable.');
+
+    const readAuth = () => {
+      const state = api.getAuthState();
+      return {
+        epoch: api.getAuthEpoch(),
+        status: state && state.status ? state.status : null,
+        userId: state && state.user && state.user.id ? String(state.user.id) : null,
+        userMarker: state && state.user && state.user.user_metadata
+          ? state.user.user_metadata.auth_marker || null
+          : null,
+        sessionUserId: state && state.session && state.session.user && state.session.user.id
+          ? String(state.session.user.id)
+          : null,
+        token: state && state.session && state.session.access_token
+          ? String(state.session.access_token)
+          : null,
+      };
+    };
+    const summarizeResult = value => {
+      const user = value && value.id
+        ? value
+        : value && value.data && value.data.user
+          ? value.data.user
+          : null;
+      return {
+        userId: user && user.id ? String(user.id) : null,
+        userMarker: user && user.user_metadata ? user.user_metadata.auth_marker || null : null,
+        reason: value && value.reason ? String(value.reason) : null,
+        signedOut: Boolean(value && value.signedOut),
+      };
+    };
+
+    const originalDateNow = Date.now;
+    try {
+      control.setGetUserMode('deferred');
+      Date.now = () => originalDateNow() + 60000;
+      const requestCount = control.snapshot().getUserRequests.length;
+      let signedOutEvent = null;
+      if (operationName === 'validateSessionRevocation' && requestResolution.expectSignedOut) {
+        signedOutEvent = new Promise(resolve => {
+          window.addEventListener('tp3d:auth-signed-out', resolve, { once: true });
+        });
+      }
+      const pending = operationName === 'validateSessionRevocation'
+        ? null
+        : api.getUserSingleFlight();
+      if (operationName === 'validateSessionRevocation') window.dispatchEvent(new Event('focus'));
+      const request = await control.waitForGetUserRequest(requestCount);
+
+      for (const entry of authEvents) {
+        await control.emitAuth(entry.event, entry.session);
+      }
+      const beforeSettlement = readAuth();
+
+      const settled = requestResolution.error
+        ? control.resolveGetUserError(
+          request.index,
+          requestResolution.error.message,
+          requestResolution.error.status
+        )
+        : control.resolveGetUser(request.index, requestResolution.user);
+      if (!settled) throw new Error(`Unable to settle deferred getUser request ${request.index}.`);
+
+      let result = null;
+      if (pending) {
+        result = await pending;
+      } else if (signedOutEvent) {
+        await signedOutEvent;
+      } else {
+        await new Promise(resolve => window.requestAnimationFrame(() => resolve()));
+      }
+      return {
+        beforeSettlement,
+        afterSettlement: readAuth(),
+        result: summarizeResult(result),
+        request,
+      };
+    } finally {
+      Date.now = originalDateNow;
+    }
+  }, { operationName: operation, authEvents: events, requestResolution: resolution });
+}
+
 test.before(async () => {
   harness = await createAppBrowserHarness();
 });
@@ -412,6 +500,175 @@ test('stale revocation validation result cannot replace newer authoritative auth
   assert.equal(observed.afterSwitch.sessionUserId, 'user-b');
   assert.equal(observed.afterStaleResult.sessionUserId, 'user-b');
   assert.equal(observed.afterStaleResult.userId, 'user-b', JSON.stringify(observed));
+});
+
+test('stale getUser result cannot restore user A after authoritative sign-out', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const observed = await settleDeferredAuthRequest(page, {
+    operation: 'getUserSingleFlight',
+    events: [{ event: 'SIGNED_OUT', session: null }],
+    resolution: { user: sessionFor('user-a').user },
+  });
+  assert.equal(observed.beforeSettlement.status, 'signed_out');
+  assert.equal(observed.afterSettlement.status, 'signed_out');
+  assert.equal(observed.afterSettlement.userId, null, JSON.stringify(observed));
+  assert.equal(observed.afterSettlement.sessionUserId, null);
+  assert.equal(observed.result.userId, null);
+});
+
+test('stale revoked response cannot sign out newer authoritative user B', async t => {
+  const scenario = await harness.createScenario(signedInScenario(['user-a', 'user-b']));
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const observed = await settleDeferredAuthRequest(page, {
+    operation: 'validateSessionRevocation',
+    events: [{ event: 'SIGNED_IN', session: sessionFor('user-b') }],
+    resolution: { error: { message: 'Invalid token', status: 401 } },
+  });
+  assert.equal(observed.beforeSettlement.userId, 'user-b');
+  assert.equal(observed.afterSettlement.status, 'signed_in');
+  assert.equal(observed.afterSettlement.userId, 'user-b', JSON.stringify(observed));
+  assert.equal(observed.afterSettlement.sessionUserId, 'user-b');
+});
+
+test('A to B to A with a changed token rejects the original A result', async t => {
+  const scenario = await harness.createScenario(signedInScenario(['user-a', 'user-b']));
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const currentA = sessionFor('user-a');
+  currentA.access_token = 'access-user-a-new';
+  currentA.user.user_metadata.auth_marker = 'current-a-new-token';
+  const staleA = sessionFor('user-a').user;
+  staleA.user_metadata.auth_marker = 'stale-a-old-token';
+  const observed = await settleDeferredAuthRequest(page, {
+    operation: 'getUserSingleFlight',
+    events: [
+      { event: 'SIGNED_IN', session: sessionFor('user-b') },
+      { event: 'SIGNED_IN', session: currentA },
+    ],
+    resolution: { user: staleA },
+  });
+  assert.equal(observed.beforeSettlement.token, 'access-user-a-new');
+  assert.equal(observed.afterSettlement.userId, 'user-a');
+  assert.equal(observed.afterSettlement.userMarker, 'current-a-new-token', JSON.stringify(observed));
+  assert.ok(observed.result.userId, JSON.stringify(observed));
+  assert.notEqual(observed.result.userMarker, 'stale-a-old-token');
+});
+
+test('TOKEN_REFRESHED invalidates an older getUser result for the same user', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const refreshedA = sessionFor('user-a');
+  refreshedA.access_token = 'access-user-a-refreshed';
+  refreshedA.user.user_metadata.auth_marker = 'current-refreshed';
+  const staleA = sessionFor('user-a').user;
+  staleA.user_metadata.auth_marker = 'stale-pre-refresh';
+  const observed = await settleDeferredAuthRequest(page, {
+    operation: 'getUserSingleFlight',
+    events: [{ event: 'TOKEN_REFRESHED', session: refreshedA }],
+    resolution: { user: staleA },
+  });
+  assert.equal(observed.beforeSettlement.token, 'access-user-a-refreshed');
+  assert.equal(observed.afterSettlement.token, 'access-user-a-refreshed');
+  assert.equal(observed.afterSettlement.userMarker, 'current-refreshed', JSON.stringify(observed));
+  assert.equal(observed.result.userMarker, 'current-refreshed');
+});
+
+test('raw getUser cooldown data is not served across an auth epoch transition', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const observed = await page.evaluate(async () => {
+    const api = window.SupabaseClient;
+    const control = window.__TP3D_FAKE_SUPABASE_CONTROL__;
+    const client = api.getClient();
+    const originalDateNow = Date.now;
+    const cacheTime = originalDateNow() + 60000;
+    try {
+      control.setGetUserMode('deferred');
+      Date.now = () => cacheTime;
+      const firstCount = control.snapshot().getUserRequests.length;
+      const firstRaw = client.auth.getUser();
+      const firstRequest = await control.waitForGetUserRequest(firstCount);
+      control.resolveGetUser(firstRequest.index, sessionForUser('user-a', 'stale-cache'));
+      const firstResult = await firstRaw;
+
+      api.resetAccountBundleCache('def-009-cache-regression');
+      const secondCount = control.snapshot().getUserRequests.length;
+      Date.now = () => cacheTime + 100;
+      const secondRaw = client.auth.getUser();
+      const outcome = await Promise.race([
+        control.waitForGetUserRequest(secondCount).then(request => ({ type: 'request', request })),
+        secondRaw.then(result => ({ type: 'cached', result })),
+      ]);
+      Date.now = originalDateNow;
+      if (outcome.type === 'request') {
+        control.resolveGetUser(outcome.request.index, sessionForUser('user-a', 'current-epoch'));
+      }
+      const secondResult = await secondRaw;
+      return {
+        firstUserId: firstResult.data && firstResult.data.user ? firstResult.data.user.id : null,
+        firstMarker: firstResult.data && firstResult.data.user
+          ? firstResult.data.user.user_metadata.auth_marker
+          : null,
+        outcome: outcome.type,
+        secondUserId: secondResult.data && secondResult.data.user ? secondResult.data.user.id : null,
+        secondMarker: secondResult.data && secondResult.data.user
+          ? secondResult.data.user.user_metadata.auth_marker
+          : null,
+      };
+    } finally {
+      Date.now = originalDateNow;
+    }
+
+    function sessionForUser(userId, marker) {
+      return {
+        id: userId,
+        email: `${userId}@example.test`,
+        user_metadata: { auth_marker: marker },
+      };
+    }
+  });
+  assert.equal(observed.firstUserId, 'user-a');
+  assert.equal(observed.firstMarker, 'stale-cache');
+  assert.equal(observed.outcome, 'request', JSON.stringify(observed));
+  assert.equal(observed.secondUserId, 'user-a');
+  assert.equal(observed.secondMarker, 'current-epoch');
+});
+
+test('current-context revoked response still enforces local sign-out', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const observed = await settleDeferredAuthRequest(page, {
+    operation: 'validateSessionRevocation',
+    resolution: { error: { message: 'Invalid token', status: 401 }, expectSignedOut: true },
+  });
+  assert.equal(observed.beforeSettlement.userId, 'user-a');
+  assert.equal(observed.afterSettlement.status, 'signed_out', JSON.stringify(observed));
+  assert.equal(observed.afterSettlement.userId, null);
+  assert.equal(observed.afterSettlement.sessionUserId, null);
 });
 
 test('same-tab workspace switching exposes not-ready then ready lifecycle state', async t => {

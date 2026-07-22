@@ -209,6 +209,40 @@ export function getCurrentAuthKey() {
   return getAuthKey(s);
 }
 
+function captureAuthRequestContext() {
+  const session = (_authState && _authState.session) || _session || null;
+  return {
+    epoch: _authEpoch,
+    status: _authState && _authState.status ? _authState.status : 'unknown',
+    userId: getCurrentUserId(),
+    sessionUserId: normalizeUserId(session && session.user ? session.user.id : null),
+    authKey: getAuthKey(session),
+    accessToken: session && session.access_token ? String(session.access_token) : null,
+  };
+}
+
+function isAuthRequestContextCurrent(context) {
+  if (!context) return false;
+  const session = (_authState && _authState.session) || _session || null;
+  return context.epoch === _authEpoch
+    && context.status === (_authState && _authState.status ? _authState.status : 'unknown')
+    && context.userId === getCurrentUserId()
+    && context.sessionUserId === normalizeUserId(session && session.user ? session.user.id : null)
+    && context.authKey === getAuthKey(session)
+    && context.accessToken === (session && session.access_token ? String(session.access_token) : null);
+}
+
+function getCurrentAuthoritativeUser() {
+  if (_authState && _authState.status === 'signed_out') return null;
+  const session = (_authState && _authState.session) || _session || null;
+  const sessionUser = session && session.user ? session.user : null;
+  const stateUser = _authState && _authState.user ? _authState.user : null;
+  const sessionUserId = normalizeUserId(sessionUser && sessionUser.id);
+  const stateUserId = normalizeUserId(stateUser && stateUser.id);
+  if (sessionUserId && sessionUserId !== stateUserId) return sessionUser;
+  return stateUser || sessionUser || null;
+}
+
 export function getTabId() {
   return initTabId();
 }
@@ -237,6 +271,8 @@ function bumpAuthEpoch(reason = '') {
   _authEpoch++;
   _inflightAccount = { key: null, epoch: null, promise: null, startedAt: 0 }; // Cancel any in-flight fetch
   _accountCache = { key: null, ts: 0, data: null }; // Invalidate cache
+  _getUserRawLastResult = null;
+  _getUserRawLastAt = 0;
   if (debugEnabled()) {
     const reasonNote = reason ? ` (${reason})` : '';
     debugLog('log', '[SupabaseClient] Auth epoch bumped to', _authEpoch + reasonNote);
@@ -918,24 +954,33 @@ function getUserRawSingleFlight() {
     return Promise.resolve(out);
   }
 
+  const requestContext = captureAuthRequestContext();
   const TIMEOUT_MS = 3000;
-  const p = (async () => {
+  let p = null;
+  p = (async () => {
     let timeoutId = null;
     try {
       const timeoutPromise = new Promise((_, reject) => {
         timeoutId = window.setTimeout(() => reject(new Error('getUser timeout')), TIMEOUT_MS);
       });
-      const res = await Promise.race([authGetUser(), timeoutPromise]);
+      const vendorPromise = Promise.resolve().then(() => authGetUser());
+      const res = await Promise.race([vendorPromise, timeoutPromise]);
+      if (!isAuthRequestContextCurrent(requestContext)) {
+        return { data: { user: getCurrentAuthoritativeUser() }, error: null };
+      }
       if (res && res.error) return { data: res.data || null, error: res.error };
       const out = res || { data: { user: null }, error: null };
       _getUserRawLastResult = out;
       _getUserRawLastAt = Date.now();
       return out;
     } catch (err) {
+      if (!isAuthRequestContextCurrent(requestContext)) {
+        return { data: { user: getCurrentAuthoritativeUser() }, error: null };
+      }
       return { data: null, error: err };
     } finally {
       if (timeoutId) window.clearTimeout(timeoutId);
-      _getUserRawPromise = null;
+      if (_getUserRawPromise === p) _getUserRawPromise = null;
     }
   })();
   _getUserRawPromise = p;
@@ -1186,14 +1231,18 @@ export function getUserSingleFlight() {
 
   requireClient();
 
-  const p = (async () => {
+  const requestContext = captureAuthRequestContext();
+  let p = null;
+  p = (async () => {
     try {
       const res = await getUserRawSingleFlight();
+      if (!isAuthRequestContextCurrent(requestContext)) return getCurrentAuthoritativeUser();
       if (res && res.error) throw res.error;
       const user = res && res.data && res.data.user ? res.data.user : null;
       updateAuthState({ user });
       return user;
     } catch (err) {
+      if (!isAuthRequestContextCurrent(requestContext)) return getCurrentAuthoritativeUser();
       const msg = String(err && err.message ? err.message : '');
       if (debugEnabled()) {
         debugLog('error', '[SupabaseClient] getUser failed:', err && err.message ? err.message : err);
@@ -1224,7 +1273,7 @@ export function getUserSingleFlight() {
       }
       throw err;
     } finally {
-      _getUserPromise = null;
+      if (_getUserPromise === p) _getUserPromise = null;
     }
   })();
 
@@ -1258,8 +1307,12 @@ export async function validateSessionRevocation({ source = 'unknown', timeoutMs 
   const authGetUser = _authGetUser || (client.auth && client.auth.__tp3dOriginalGetUser) || null;
   if (typeof authGetUser !== 'function') return { ok: true, skipped: true, reason: 'no-auth-get-user' };
 
+  const requestContext = captureAuthRequestContext();
   try {
     const res = await withTimeoutReject(authGetUser(), timeoutMs, 'auth revocation check timeout');
+    if (!isAuthRequestContextCurrent(requestContext)) {
+      return { ok: true, skipped: true, reason: 'stale-auth-context' };
+    }
     if (res && res.error) throw res.error;
 
     const user = res && res.data && res.data.user ? res.data.user : null;
@@ -1270,6 +1323,9 @@ export async function validateSessionRevocation({ source = 'unknown', timeoutMs 
 
     return { ok: true, skipped: true, reason: 'no-user' };
   } catch (err) {
+    if (!isAuthRequestContextCurrent(requestContext)) {
+      return { ok: true, skipped: true, reason: 'stale-auth-context' };
+    }
     const msg = String(err && err.message ? err.message : '');
     if (msg.includes('timeout') || isNetworkFetchError(err)) {
       _authCooldownUntil = Date.now() + 2000;

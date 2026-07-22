@@ -8,11 +8,45 @@
   const orgFailureWaiters = new Set();
   const authEventLog = [];
   const authSubscribers = new Set();
+  const getUserRequests = [];
+  const getUserRequestWaiters = new Set();
   const sharedProfilePrefix = 'tp3d:test:fake-profile:';
 
   let currentSession = clone(scenario.initialSession || null);
   let orgQueriesUnavailable = Boolean(scenario.orgQueriesUnavailable);
+  let getUserMode = scenario.getUserMode === 'deferred' ? 'deferred' : 'auto';
   let client = null;
+
+  function summarizeGetUserRequest(entry, index) {
+    return {
+      index,
+      userId: entry && entry.user && entry.user.id ? String(entry.user.id) : null,
+      settled: Boolean(entry && entry.settled),
+    };
+  }
+
+  function notifyGetUserRequestWaiters() {
+    for (const waiter of Array.from(getUserRequestWaiters)) {
+      if (getUserRequests.length <= waiter.afterCount) continue;
+      getUserRequestWaiters.delete(waiter);
+      const index = getUserRequests.length - 1;
+      waiter.resolve(summarizeGetUserRequest(getUserRequests[index], index));
+    }
+  }
+
+  function createDeferredGetUserRequest() {
+    const entry = {
+      user: currentSession && currentSession.user ? clone(currentSession.user) : null,
+      settled: false,
+      resolve: null,
+    };
+    const promise = new Promise(resolve => {
+      entry.resolve = resolve;
+    });
+    getUserRequests.push(entry);
+    notifyGetUserRequestWaiters();
+    return promise;
+  }
 
   function recordOrgQueryFailure(operation) {
     const failure = { operation: String(operation), userId: currentUserId() || null };
@@ -225,6 +259,7 @@
       return { data: { session: clone(currentSession) }, error: null };
     },
     async getUser() {
+      if (getUserMode === 'deferred') return createDeferredGetUserRequest();
       return {
         data: { user: currentSession && currentSession.user ? clone(currentSession.user) : null },
         error: null,
@@ -277,6 +312,37 @@
       currentSession = clone(session || null);
       return control.snapshot();
     },
+    setGetUserMode(mode) {
+      getUserMode = mode === 'deferred' ? 'deferred' : 'auto';
+      return getUserMode;
+    },
+    waitForGetUserRequest(afterCount = 0) {
+      const normalizedCount = Math.max(0, Number(afterCount) || 0);
+      if (getUserRequests.length > normalizedCount) {
+        const index = getUserRequests.length - 1;
+        return Promise.resolve(summarizeGetUserRequest(getUserRequests[index], index));
+      }
+      return new Promise(resolve => {
+        getUserRequestWaiters.add({ afterCount: normalizedCount, resolve });
+      });
+    },
+    resolveGetUser(index, user) {
+      const normalizedIndex = Math.max(0, Number(index) || 0);
+      const entry = getUserRequests[normalizedIndex];
+      if (!entry || entry.settled || typeof entry.resolve !== 'function') return false;
+      entry.settled = true;
+      const resolvedUser = arguments.length >= 2 ? clone(user) : clone(entry.user);
+      entry.resolve({ data: { user: resolvedUser }, error: null });
+      return true;
+    },
+    resolveGetUserError(index, message = 'Invalid token', status = 401) {
+      const normalizedIndex = Math.max(0, Number(index) || 0);
+      const entry = getUserRequests[normalizedIndex];
+      if (!entry || entry.settled || typeof entry.resolve !== 'function') return false;
+      entry.settled = true;
+      entry.resolve({ data: { user: null }, error: { message: String(message), status: Number(status) } });
+      return true;
+    },
     setOrgQueriesUnavailable(value) {
       orgQueriesUnavailable = Boolean(value);
       return orgQueriesUnavailable;
@@ -304,6 +370,8 @@
         orgQueriesUnavailable,
         authSubscriberCount: authSubscribers.size,
         authEvents: clone(authEventLog),
+        getUserMode,
+        getUserRequests: getUserRequests.map(summarizeGetUserRequest),
         orgQueryFailures: clone(orgQueryFailures),
         queries: clone(queryLog),
       };

@@ -206,6 +206,97 @@ async function readArmedBillingPlan(page) {
   });
 }
 
+async function reproduceStaleAuthUserResult(page, operation) {
+  const nextSession = sessionFor('user-b');
+  nextSession.user.banned_until = null;
+  return page.evaluate(async ({ operationName, session }) => {
+    const api = window.SupabaseClient;
+    const control = window.__TP3D_FAKE_SUPABASE_CONTROL__;
+    if (!api || !control) throw new Error('Auth reproduction controls are unavailable.');
+
+    const readAuth = () => {
+      const state = api.getAuthState();
+      return {
+        epoch: api.getAuthEpoch(),
+        status: state && state.status ? state.status : null,
+        userId: state && state.user && state.user.id ? String(state.user.id) : null,
+        sessionUserId: state && state.session && state.session.user && state.session.user.id
+          ? String(state.session.user.id)
+          : null,
+        token: state && state.session && state.session.access_token
+          ? String(state.session.access_token)
+          : null,
+      };
+    };
+
+    let stopAuthWait = () => {};
+    let switchPromise = Promise.resolve();
+    const originalDateNow = Date.now;
+    try {
+      control.setGetUserMode('deferred');
+      Date.now = () => originalDateNow() + 60000;
+
+      const requestCount = control.snapshot().getUserRequests.length;
+      const nextUserReady = new Promise((resolve, reject) => {
+        const timeoutId = window.setTimeout(() => {
+          stopAuthWait();
+          reject(new Error(`Timed out waiting for authoritative auth user ${session.user.id}.`));
+        }, 10000);
+        stopAuthWait = api.onAuthStateChange((event, authSession) => {
+          const eventUserId = authSession && authSession.user && authSession.user.id
+            ? String(authSession.user.id)
+            : null;
+          if (eventUserId !== String(session.user.id)) return;
+          queueMicrotask(() => {
+            const current = readAuth();
+            if (current.userId !== String(session.user.id)
+              || current.sessionUserId !== String(session.user.id)) return;
+            window.clearTimeout(timeoutId);
+            stopAuthWait();
+            resolve({ event, current });
+          });
+        });
+      });
+
+      const stalePromise = operationName === 'getUserSingleFlight'
+        ? api.getUserSingleFlight()
+        : null;
+      if (operationName === 'validateSessionRevocation') {
+        window.dispatchEvent(new Event('focus'));
+      }
+      const request = await control.waitForGetUserRequest(requestCount);
+      switchPromise = control.emitAuth('SIGNED_IN', session);
+      await nextUserReady;
+      const afterSwitch = readAuth();
+
+      if (!control.resolveGetUser(request.index)) {
+        throw new Error(`Unable to resolve deferred getUser request ${request.index}.`);
+      }
+      const staleResult = stalePromise
+        ? await stalePromise
+        : await new Promise(resolve => window.requestAnimationFrame(() => resolve(null)));
+      const afterStaleResult = readAuth();
+      await switchPromise;
+
+      return {
+        afterSwitch,
+        afterStaleResult,
+        final: readAuth(),
+        request,
+        staleResultUserId: staleResult && staleResult.id
+          ? String(staleResult.id)
+          : staleResult && staleResult.userId
+            ? String(staleResult.userId)
+            : null,
+      };
+    } finally {
+      Date.now = originalDateNow;
+      stopAuthWait();
+      await switchPromise.catch(() => {});
+    }
+  }, { operationName: operation, session: nextSession });
+}
+
 test.before(async () => {
   harness = await createAppBrowserHarness();
 });
@@ -293,6 +384,34 @@ test('signed-in boot and TOKEN_REFRESHED preserve the active user workspace', as
     beforeRefresh.fakeSupabase.authSubscriberCount);
   assert.equal(afterRefresh.authBodyState, 'signed_in');
   assert.equal(scenario.diagnostics.pageErrors.length, 0, JSON.stringify(scenario.diagnostics.pageErrors));
+});
+
+test('stale getUserSingleFlight result cannot replace newer authoritative auth user', async t => {
+  const scenario = await harness.createScenario(signedInScenario(['user-a', 'user-b']));
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const observed = await reproduceStaleAuthUserResult(page, 'getUserSingleFlight');
+  assert.equal(observed.afterSwitch.userId, 'user-b');
+  assert.equal(observed.afterSwitch.sessionUserId, 'user-b');
+  assert.equal(observed.afterStaleResult.sessionUserId, 'user-b');
+  assert.equal(observed.afterStaleResult.userId, 'user-b', JSON.stringify(observed));
+});
+
+test('stale revocation validation result cannot replace newer authoritative auth user', async t => {
+  const scenario = await harness.createScenario(signedInScenario(['user-a', 'user-b']));
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const observed = await reproduceStaleAuthUserResult(page, 'validateSessionRevocation');
+  assert.equal(observed.afterSwitch.userId, 'user-b');
+  assert.equal(observed.afterSwitch.sessionUserId, 'user-b');
+  assert.equal(observed.afterStaleResult.sessionUserId, 'user-b');
+  assert.equal(observed.afterStaleResult.userId, 'user-b', JSON.stringify(observed));
 });
 
 test('same-tab workspace switching exposes not-ready then ready lifecycle state', async t => {

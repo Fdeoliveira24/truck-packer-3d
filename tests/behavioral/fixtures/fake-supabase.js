@@ -4,6 +4,8 @@
   const scenario = window.__TP3D_FAKE_SUPABASE_SCENARIO__ || {};
   const clone = value => (value == null ? value : JSON.parse(JSON.stringify(value)));
   const queryLog = [];
+  const orgQueryFailures = [];
+  const orgFailureWaiters = new Set();
   const authEventLog = [];
   const authSubscribers = new Set();
   const sharedProfilePrefix = 'tp3d:test:fake-profile:';
@@ -11,6 +13,16 @@
   let currentSession = clone(scenario.initialSession || null);
   let orgQueriesUnavailable = Boolean(scenario.orgQueriesUnavailable);
   let client = null;
+
+  function recordOrgQueryFailure(operation) {
+    const failure = { operation: String(operation), userId: currentUserId() || null };
+    orgQueryFailures.push(failure);
+    for (const waiter of Array.from(orgFailureWaiters)) {
+      if (orgQueryFailures.length <= waiter.afterCount) continue;
+      orgFailureWaiters.delete(waiter);
+      waiter.resolve(clone(failure));
+    }
+  }
 
   function currentUserId() {
     return currentSession && currentSession.user && currentSession.user.id
@@ -148,7 +160,9 @@
 
     async function execute(terminal) {
       queryLog.push({ ...clone(state), terminal, userId: currentUserId() || null });
-      const userId = String(filterValue('id') || filterValue('user_id') || currentUserId() || '');
+      const userId = state.table === 'profiles'
+        ? String(filterValue('id') || currentUserId() || '')
+        : String(filterValue('user_id') || currentUserId() || '');
 
       if (state.table === 'profiles') {
         const profile = profileFor(userId);
@@ -163,6 +177,7 @@
 
       if (state.table === 'organization_members') {
         if (orgQueriesUnavailable) {
+          recordOrgQueryFailure('organization_members');
           return { data: terminal === 'array' ? [] : null, error: { message: 'org query unavailable', status: 503 } };
         }
         const membership = membershipFor(userId);
@@ -266,6 +281,15 @@
       orgQueriesUnavailable = Boolean(value);
       return orgQueriesUnavailable;
     },
+    waitForOrgQueryFailure(afterCount = 0) {
+      const normalizedCount = Math.max(0, Number(afterCount) || 0);
+      if (orgQueryFailures.length > normalizedCount) {
+        return Promise.resolve(clone(orgQueryFailures[orgQueryFailures.length - 1]));
+      }
+      return new Promise(resolve => {
+        orgFailureWaiters.add({ afterCount: normalizedCount, resolve });
+      });
+    },
     setOrganizations(userId, organizations) {
       if (!scenario.organizations) scenario.organizations = {};
       scenario.organizations[String(userId)] = clone(organizations || []);
@@ -280,6 +304,7 @@
         orgQueriesUnavailable,
         authSubscriberCount: authSubscribers.size,
         authEvents: clone(authEventLog),
+        orgQueryFailures: clone(orgQueryFailures),
         queries: clone(queryLog),
       };
     },
@@ -298,6 +323,7 @@
           queryLog.push({ rpc: String(name || ''), userId: currentUserId() || null });
           if (name === 'get_user_organizations' || name === 'get_user_archived_organizations') {
             if (orgQueriesUnavailable) {
+              recordOrgQueryFailure(name);
               return result(null, { message: 'org query unavailable', status: 503 });
             }
             const orgs = organizationsFor(currentUserId());

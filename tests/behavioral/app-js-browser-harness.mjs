@@ -28,6 +28,7 @@ const MIME_TYPES = new Map([
 function installPrebootInstrumentation() {
   const listeners = [];
   const removals = [];
+  const dispatches = [];
   const timeouts = [];
   const timeoutClears = [];
   const intervals = [];
@@ -66,6 +67,7 @@ function installPrebootInstrumentation() {
 
   const originalAddEventListener = EventTarget.prototype.addEventListener;
   const originalRemoveEventListener = EventTarget.prototype.removeEventListener;
+  const originalDispatchEvent = EventTarget.prototype.dispatchEvent;
   EventTarget.prototype.addEventListener = new Proxy(originalAddEventListener, {
     apply(target, thisArg, args) {
       listeners.push({
@@ -84,6 +86,15 @@ function installPrebootInstrumentation() {
         type: String(args[0] || ''),
         listenerId: listenerId(args[1]),
         ...normalizeOptions(args[2]),
+      });
+      return Reflect.apply(target, thisArg, args);
+    },
+  });
+  EventTarget.prototype.dispatchEvent = new Proxy(originalDispatchEvent, {
+    apply(target, thisArg, args) {
+      dispatches.push({
+        target: targetName(thisArg),
+        type: args[0] && args[0].type ? String(args[0].type) : '',
       });
       return Reflect.apply(target, thisArg, args);
     },
@@ -151,6 +162,7 @@ function installPrebootInstrumentation() {
       return {
         listeners: listeners.map(value => ({ ...value })),
         removals: removals.map(value => ({ ...value })),
+        dispatches: dispatches.map(value => ({ ...value })),
         timeouts: timeouts.map(value => ({ ...value })),
         timeoutClears: [...timeoutClears],
         intervals: intervals.map(value => ({ ...value })),
@@ -285,14 +297,14 @@ function createBillingTransport() {
   let mode = 'automatic';
   let defaultStatus = 200;
   let defaultBody = {
-    plan: 'Free',
-    status: 'trialing',
-    entitlementStatus: 'trialing',
+    plan: 'Pro',
+    status: 'active',
+    entitlementStatus: 'active',
     workspaceIncluded: true,
     workspaceCount: 1,
     workspaceLimit: 1,
     billingOwnerUserId: null,
-    canManageBilling: false,
+    canManageBilling: true,
   };
   const pending = [];
 

@@ -134,8 +134,8 @@ function installPrebootInstrumentation() {
   if (typeof window.BroadcastChannel === 'function') {
     const OriginalBroadcastChannel = window.BroadcastChannel;
     window.BroadcastChannel = new Proxy(OriginalBroadcastChannel, {
-      construct(target, args) {
-        const value = Reflect.construct(target, args, target);
+      construct(target, args, newTarget) {
+        const value = Reflect.construct(target, args, newTarget);
         channels.push({ name: String(args[0] || '') });
         return value;
       },
@@ -297,7 +297,7 @@ function createBillingTransport() {
   let mode = 'automatic';
   let defaultStatus = 200;
   let defaultBody = {
-    plan: 'Pro',
+    plan: 'pro',
     status: 'active',
     entitlementStatus: 'active',
     workspaceIncluded: true,
@@ -307,12 +307,25 @@ function createBillingTransport() {
     canManageBilling: true,
   };
   const pending = [];
+  const pendingWaiters = new Set();
+
+  const notifyPendingWaiters = () => {
+    for (const waiter of Array.from(pendingWaiters)) {
+      if (pending.length < waiter.count) continue;
+      pendingWaiters.delete(waiter);
+      clearTimeout(waiter.timeoutId);
+      waiter.resolve();
+    }
+  };
 
   return {
     async handle(route) {
       const request = route.request();
       if (mode === 'deferred') {
-        await new Promise(resolve => pending.push({ route, request, resolve }));
+        await new Promise(resolve => {
+          pending.push({ route, request, resolve });
+          notifyPendingWaiters();
+        });
         return;
       }
       const parsed = new URL(request.url());
@@ -339,6 +352,22 @@ function createBillingTransport() {
         headers: entry.request.headers(),
       }));
     },
+    async waitForPendingCount(count, timeoutMs = 15000) {
+      const normalizedCount = Math.max(1, Number(count) || 1);
+      if (pending.length >= normalizedCount) return;
+      await new Promise((resolve, reject) => {
+        const waiter = {
+          count: normalizedCount,
+          reject,
+          resolve,
+          timeoutId: setTimeout(() => {
+            pendingWaiters.delete(waiter);
+            reject(new Error(`Timed out waiting for ${normalizedCount} deferred billing request(s).`));
+          }, timeoutMs),
+        };
+        pendingWaiters.add(waiter);
+      });
+    },
     async release(index, body, status = 200) {
       const entry = pending[index];
       if (!entry) throw new Error(`No deferred billing request at index ${index}.`);
@@ -353,6 +382,11 @@ function createBillingTransport() {
       entry.resolve();
     },
     async abortAll() {
+      for (const waiter of Array.from(pendingWaiters)) {
+        pendingWaiters.delete(waiter);
+        clearTimeout(waiter.timeoutId);
+        waiter.reject(new Error('Billing transport closed before the deferred request arrived.'));
+      }
       const entries = pending.splice(0);
       for (const entry of entries) {
         await entry.route.abort('failed').catch(() => {});
@@ -387,15 +421,21 @@ export async function createAppBrowserHarness() {
         requestFailures: [],
       };
       const billing = createBillingTransport();
-      const serializedScenario = JSON.stringify(scenario).replace(/[\u2028\u2029]/g, character =>
-        `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`
-      );
-      await context.addInitScript({
-        content: `(${installPrebootInstrumentation.toString()})();\n`
-          + `window.__TP3D_FAKE_SUPABASE_SCENARIO__ = ${serializedScenario};\n`
-          + fakeSupabaseSource,
-      });
-      await installDeterministicRoutes(context, diagnostics, billing);
+      try {
+        const serializedScenario = JSON.stringify(scenario).replace(/[\u2028\u2029]/g, character =>
+          `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`
+        );
+        await context.addInitScript({
+          content: `(${installPrebootInstrumentation.toString()})();\n`
+            + `window.__TP3D_FAKE_SUPABASE_SCENARIO__ = ${serializedScenario};\n`
+            + fakeSupabaseSource,
+        });
+        await installDeterministicRoutes(context, diagnostics, billing);
+      } catch (error) {
+        await billing.abortAll().catch(() => {});
+        await context.close().catch(() => {});
+        throw error;
+      }
 
       const pages = new Set();
       const attachPageDiagnostics = page => {
@@ -439,14 +479,20 @@ export async function createAppBrowserHarness() {
         openPage,
         waitForAppReady,
         async close() {
-          await billing.abortAll();
-          await context.close();
+          try {
+            await billing.abortAll();
+          } finally {
+            await context.close();
+          }
         },
       };
     },
     async close() {
-      await browser.close();
-      await server.close();
+      try {
+        await browser.close();
+      } finally {
+        await server.close();
+      }
     },
   };
 }
@@ -459,6 +505,11 @@ export async function readRuntimeSnapshot(page) {
       fatalOverlayShown: Boolean(window.__TP3D_BOOT && window.__TP3D_BOOT.fatalOverlayShown),
     },
     facadeKeys: window.TruckPackerApp ? Object.keys(window.TruckPackerApp).sort() : [],
+    facadeDebugKeys: window.TruckPackerApp && window.TruckPackerApp._debug
+      ? Object.keys(window.TruckPackerApp._debug).sort()
+      : [],
+    billingGlobalKeys: Object.keys(window).filter(key => /billing/i.test(key)).sort(),
+    billingDebugKeys: window.__TP3D_BILLING ? Object.keys(window.__TP3D_BILLING).sort() : [],
     fakeSupabase: window.__TP3D_FAKE_SUPABASE_CONTROL__
       ? window.__TP3D_FAKE_SUPABASE_CONTROL__.snapshot()
       : null,

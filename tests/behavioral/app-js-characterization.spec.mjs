@@ -33,6 +33,20 @@ function organization(id, name, role = 'owner') {
   };
 }
 
+function billingResponse(plan, overrides = {}) {
+  return {
+    plan,
+    status: 'active',
+    entitlementStatus: 'active',
+    workspaceIncluded: true,
+    workspaceCount: 1,
+    workspaceLimit: 3,
+    billingOwnerUserId: 'user-a',
+    canManageBilling: true,
+    ...overrides,
+  };
+}
+
 function signedInScenario(userIds = ['user-a']) {
   const profiles = {};
   const organizations = {};
@@ -141,6 +155,57 @@ async function switchWorkspaceAndWait(page, orgId, workspaceName) {
   return { ...observed, after: observed.state, during };
 }
 
+async function armWindowEvent(page, eventType) {
+  await page.evaluate(type => {
+    if (!window.__TP3D_TEST_WINDOW_EVENTS__) window.__TP3D_TEST_WINDOW_EVENTS__ = {};
+    window.__TP3D_TEST_WINDOW_EVENTS__[type] = new Promise((resolve, reject) => {
+      const timeoutId = window.setTimeout(() => {
+        window.removeEventListener(type, handler);
+        reject(new Error(`Timed out waiting for window ${type} event.`));
+      }, 15000);
+      const handler = event => {
+        window.clearTimeout(timeoutId);
+        resolve({ type: event.type, online: window.navigator.onLine });
+      };
+      window.addEventListener(type, handler, { once: true });
+    });
+  }, eventType);
+}
+
+async function readArmedWindowEvent(page, eventType) {
+  return page.evaluate(async type => {
+    const result = await window.__TP3D_TEST_WINDOW_EVENTS__[type];
+    delete window.__TP3D_TEST_WINDOW_EVENTS__[type];
+    return result;
+  }, eventType);
+}
+
+async function armBillingPlan(page, plan) {
+  await page.evaluate(expectedPlan => {
+    window.__TP3D_TEST_BILLING_STATE__ = new Promise((resolve, reject) => {
+      let unsubscribe = () => {};
+      const timeoutId = window.setTimeout(() => {
+        unsubscribe();
+        reject(new Error(`Timed out waiting for billing plan ${expectedPlan}.`));
+      }, 15000);
+      unsubscribe = window.__TP3D_BILLING.subscribeBilling(state => {
+        if (!state || state.plan !== expectedPlan) return;
+        window.clearTimeout(timeoutId);
+        unsubscribe();
+        resolve(state);
+      });
+    });
+  }, plan);
+}
+
+async function readArmedBillingPlan(page) {
+  return page.evaluate(async () => {
+    const state = await window.__TP3D_TEST_BILLING_STATE__;
+    delete window.__TP3D_TEST_BILLING_STATE__;
+    return state;
+  });
+}
+
 test.before(async () => {
   harness = await createAppBrowserHarness();
 });
@@ -164,6 +229,9 @@ test('App.js signed-out boot reaches the real ready state through index.html', a
   assert.ok(snapshot.facadeKeys.includes('init'), 'the final real TruckPackerApp facade is published');
   assert.ok(snapshot.facadeKeys.includes('getWorkspaceSwitchState'));
   t.diagnostic(`Observed window.TruckPackerApp facade: ${snapshot.facadeKeys.join(', ')}`);
+  t.diagnostic(`Observed window.TruckPackerApp._debug facade: ${snapshot.facadeDebugKeys.join(', ')}`);
+  t.diagnostic(`Observed billing globals: ${snapshot.billingGlobalKeys.join(', ') || '(none)'}`);
+  t.diagnostic(`Observed __TP3D_BILLING surface: ${snapshot.billingDebugKeys.join(', ') || '(none)'}`);
   assert.equal(snapshot.fakeSupabase.userId, null);
   assert.ok(snapshot.fakeSupabase.authSubscriberCount >= 2,
     'the production Supabase wrapper and App.js auth listener both subscribe');
@@ -321,6 +389,103 @@ test('failed organization bundle loading can recover on a later hydration', asyn
   assert.equal(recovered.after.active, false);
   assert.equal(recovered.after.orgReady, true);
   assert.equal(recovered.after.billingReady, true);
+  assert.equal(scenario.diagnostics.pageErrors.length, 0, JSON.stringify(scenario.diagnostics.pageErrors));
+});
+
+test('deferred billing rejects a stale auth epoch and lets the latest authoritative generation own state', async t => {
+  const scenario = await harness.createScenario(signedInScenario(['user-a', 'user-b']));
+  t.after(() => scenario.close());
+
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+  scenario.billing.setDeferred();
+
+  const switchToB = page.evaluate(session =>
+    window.__TP3D_FAKE_SUPABASE_CONTROL__.emitAuth('SIGNED_IN', session), sessionFor('user-b'));
+  await scenario.billing.waitForPendingCount(1);
+  const firstPending = scenario.billing.pendingSnapshot();
+  assert.equal(new URL(firstPending[0].url).searchParams.get('organization_id'), ORG_B);
+
+  const switchBackToA = page.evaluate(session =>
+    window.__TP3D_FAKE_SUPABASE_CONTROL__.emitAuth('SIGNED_IN', session), sessionFor('user-a'));
+  await scenario.billing.release(0, billingResponse('free', {
+    status: 'past_due',
+    entitlementStatus: 'workspace_limit_reached',
+    workspaceIncluded: false,
+    workspaceLimit: 0,
+    billingOwnerUserId: 'user-b',
+    canManageBilling: false,
+  }));
+
+  await scenario.billing.waitForPendingCount(1);
+  const latestPending = scenario.billing.pendingSnapshot();
+  assert.equal(new URL(latestPending[0].url).searchParams.get('organization_id'), ORG_A);
+  await scenario.billing.release(0, billingResponse('pro'));
+
+  const authResults = await Promise.allSettled([switchToB, switchBackToA]);
+  assert.deepEqual(authResults.map(result => result.status), ['fulfilled', 'fulfilled']);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const blockedGeneration = await page.evaluate(() => window.__TP3D_BILLING.getBillingState());
+  assert.equal(blockedGeneration.entitlementStatus, 'billing_unavailable');
+  assert.match(blockedGeneration.error && blockedGeneration.error.message || '', /identity mismatch/i);
+
+  await page.evaluate(() => window.__TP3D_BILLING.clearBillingState());
+  await armBillingPlan(page, 'Pro');
+  const authoritativeRecovery = page.evaluate(() => window.__TP3D_BILLING.refreshBilling(true));
+  await scenario.billing.waitForPendingCount(1);
+  await scenario.billing.release(0, billingResponse('pro'));
+  await authoritativeRecovery;
+  const finalBilling = await readArmedBillingPlan(page);
+  assert.equal(finalBilling.plan, 'Pro', JSON.stringify(finalBilling));
+  assert.equal(finalBilling.orgId, ORG_A);
+  assert.equal(finalBilling.entitlementStatus, 'active');
+  assert.equal(await page.locator('#modal-root .modal-overlay:visible').count(), 0,
+    'the stale blocking entitlement must not win the access gate');
+  assert.equal(scenario.diagnostics.pageErrors.length, 0, JSON.stringify(scenario.diagnostics.pageErrors));
+});
+
+test('offline workspace activity recovers billing after the native online event', async t => {
+  const scenario = await harness.createScenario(multiWorkspaceScenario());
+  t.after(() => scenario.close());
+
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+  scenario.billing.setAutomatic({ message: 'offline billing transport unavailable' }, 503);
+  const failedSwitch = await switchWorkspaceAndWait(page, ORG_B, 'Workspace B');
+  assert.equal(failedSwitch.activeOrgId, ORG_B);
+  const unavailableBilling = await page.evaluate(() => window.__TP3D_BILLING.getBillingState());
+  assert.ok(!unavailableBilling.ok || unavailableBilling.entitlementStatus === 'billing_unavailable',
+    JSON.stringify(unavailableBilling));
+
+  await armWindowEvent(page, 'offline');
+  await scenario.context.setOffline(true);
+  const offlineEvent = await readArmedWindowEvent(page, 'offline');
+  assert.equal(offlineEvent.online, false);
+
+  scenario.billing.setDeferred();
+  await armBillingPlan(page, 'Pro');
+
+  await armWindowEvent(page, 'online');
+  await scenario.context.setOffline(false);
+  const onlineEvent = await readArmedWindowEvent(page, 'online');
+  assert.equal(onlineEvent.online, true);
+  const recoveryRefresh = page.evaluate(() => {
+    window.__TP3D_BILLING.clearBillingState();
+    return window.__TP3D_BILLING.refreshBilling(true);
+  });
+  await scenario.billing.waitForPendingCount(1);
+  const recoveryPending = scenario.billing.pendingSnapshot();
+  assert.equal(new URL(recoveryPending[0].url).searchParams.get('organization_id'), ORG_B);
+  await scenario.billing.release(0, billingResponse('pro'));
+  await recoveryRefresh;
+
+  const recoveredBilling = await readArmedBillingPlan(page);
+  assert.equal(recoveredBilling.plan, 'Pro');
+  assert.equal(recoveredBilling.entitlementStatus, 'active');
+  assert.equal(await page.evaluate(() => window.navigator.onLine), true);
   assert.equal(scenario.diagnostics.pageErrors.length, 0, JSON.stringify(scenario.diagnostics.pageErrors));
 });
 

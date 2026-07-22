@@ -1253,7 +1253,6 @@ td {
 
 th {
   font-size: var(--text-xs);
-  text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-secondary);
   background: var(--bg-elevated);

@@ -47,6 +47,111 @@ function billingResponse(plan, overrides = {}) {
   };
 }
 
+async function installDeferredBillingAction(scenario, functionName) {
+  const functionUrlSuffix = `/functions/v1/${functionName}`;
+  let releaseResponse;
+  let resolveRequest;
+  let rejectRequest;
+  const responseGate = new Promise(resolve => {
+    releaseResponse = resolve;
+  });
+  const requestObserved = new Promise((resolve, reject) => {
+    resolveRequest = resolve;
+    rejectRequest = reject;
+  });
+  const requestTimeout = setTimeout(() => {
+    rejectRequest(new Error(`Timed out waiting for deferred billing action ${functionName}.`));
+  }, 15000);
+
+  await scenario.context.route(`https://**${functionUrlSuffix}`, async route => {
+    const request = route.request();
+    let body = null;
+    try {
+      body = request.postDataJSON();
+    } catch {
+      body = null;
+    }
+    const headers = request.headers();
+    clearTimeout(requestTimeout);
+    resolveRequest({
+      body,
+      method: request.method(),
+      url: request.url(),
+      userJwt: headers['x-user-jwt'] || null,
+    });
+    const response = await responseGate;
+    await route.fulfill({
+      status: response.status,
+      contentType: 'application/json; charset=utf-8',
+      body: JSON.stringify(response.body),
+    });
+  });
+
+  return {
+    waitForRequest() {
+      return requestObserved;
+    },
+    release(body, status = 200) {
+      releaseResponse({ body, status });
+    },
+  };
+}
+
+async function installBillingNavigationInterception(page, expectedUrl) {
+  let resolveAttempt;
+  let rejectAttempt;
+  const attempted = new Promise((resolve, reject) => {
+    resolveAttempt = resolve;
+    rejectAttempt = reject;
+  });
+  const timeoutId = setTimeout(() => {
+    rejectAttempt(new Error(`Timed out waiting for billing navigation to ${expectedUrl}.`));
+  }, 15000);
+  await page.route(expectedUrl, async route => {
+    const request = route.request();
+    await route.fulfill({ status: 204, body: '' });
+    clearTimeout(timeoutId);
+    resolveAttempt({
+      method: request.method(),
+      url: request.url(),
+    });
+  });
+  return {
+    wait() {
+      return attempted;
+    },
+  };
+}
+
+async function beginBillingFacadeAction(page, action, input = null) {
+  await page.evaluate(({ actionName, actionInput }) => {
+    const api = window.__TP3D_BILLING;
+    if (!api || typeof api[actionName] !== 'function') {
+      throw new Error(`Billing facade action ${actionName} is unavailable.`);
+    }
+    window.__TP3D_TEST_BILLING_ACTION_RESULT__ = actionName === 'startCheckout'
+      ? api[actionName](actionInput)
+      : api[actionName]();
+  }, { actionName: action, actionInput: input });
+}
+
+async function readBillingActionContext(page) {
+  return page.evaluate(() => {
+    const authState = window.SupabaseClient.getAuthState();
+    const billingState = window.__TP3D_BILLING.getBillingState();
+    return {
+      activeOrgId: window.OrgContext.getActiveOrgId(),
+      authEpoch: window.SupabaseClient.getAuthEpoch(),
+      billingOrgId: billingState.orgId || null,
+      canManageBilling: billingState.canManageBilling,
+      status: authState && authState.status ? authState.status : null,
+      userId: authState && authState.user && authState.user.id
+        ? String(authState.user.id)
+        : null,
+    };
+  });
+}
+
 function signedInScenario(userIds = ['user-a']) {
   const profiles = {};
   const organizations = {};
@@ -724,6 +829,134 @@ test('current-context revoked response still enforces local sign-out', async t =
   assert.equal(observed.afterSettlement.status, 'signed_out', JSON.stringify(observed));
   assert.equal(observed.afterSettlement.userId, null);
   assert.equal(observed.afterSettlement.sessionUserId, null);
+});
+
+test('TRIAGE-3C checkout response still redirects after an authoritative organization switch', async t => {
+  const scenario = await harness.createScenario(multiWorkspaceScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const transport = await installDeferredBillingAction(scenario, 'stripe-create-checkout-session');
+  const before = await readBillingActionContext(page);
+  await beginBillingFacadeAction(page, 'startCheckout', { interval: 'month' });
+  const request = await transport.waitForRequest();
+  assert.equal(request.body.organization_id, ORG_A);
+  assert.equal(request.userJwt, 'access-user-a');
+
+  await switchWorkspaceAndWait(page, ORG_B, 'Workspace B');
+  const afterTransition = await readBillingActionContext(page);
+  const checkoutUrl = 'https://checkout.stripe.com/c/pay_triage_3c_org_a';
+  const navigationInterceptor = await installBillingNavigationInterception(page, checkoutUrl);
+  transport.release({ url: checkoutUrl });
+  const navigation = await navigationInterceptor.wait();
+  const afterResponse = await readBillingActionContext(page);
+
+  t.diagnostic(`TRIAGE-3C scenario A: ${JSON.stringify({ before, request, afterTransition, afterResponse, navigation })}`);
+  assert.equal(afterTransition.userId, 'user-a');
+  assert.equal(afterTransition.activeOrgId, ORG_B);
+  assert.equal(afterTransition.billingOrgId, ORG_B);
+  assert.equal(afterResponse.activeOrgId, ORG_B);
+  assert.equal(navigation.url, checkoutUrl);
+  assert.equal(page.url(), `${harness.baseUrl}/index.html`);
+});
+
+test('TRIAGE-3C portal response still redirects after an authoritative user switch', async t => {
+  const scenario = await harness.createScenario(signedInScenario(['user-a', 'user-b']));
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const transport = await installDeferredBillingAction(scenario, 'stripe-create-portal-session');
+  const before = await readBillingActionContext(page);
+  await beginBillingFacadeAction(page, 'openPortal');
+  const request = await transport.waitForRequest();
+  assert.equal(request.body.organization_id, ORG_A);
+  assert.equal(request.userJwt, 'access-user-a');
+
+  await page.evaluate(session =>
+    window.__TP3D_FAKE_SUPABASE_CONTROL__.emitAuth('SIGNED_IN', session), sessionFor('user-b'));
+  await waitForSignedInOwner(page, 'user-b', ORG_B);
+  const afterTransition = await readBillingActionContext(page);
+  const portalUrl = 'https://billing.stripe.com/p/session/triage_3c_user_a_org_a';
+  const navigationInterceptor = await installBillingNavigationInterception(page, portalUrl);
+  transport.release({ url: portalUrl });
+  const navigation = await navigationInterceptor.wait();
+  const afterResponse = await readBillingActionContext(page);
+
+  t.diagnostic(`TRIAGE-3C scenario B: ${JSON.stringify({ before, request, afterTransition, afterResponse, navigation })}`);
+  assert.equal(afterTransition.userId, 'user-b');
+  assert.equal(afterTransition.activeOrgId, ORG_B);
+  assert.equal(afterTransition.billingOrgId, ORG_B);
+  assert.ok(afterTransition.authEpoch > before.authEpoch);
+  assert.equal(afterResponse.userId, 'user-b');
+  assert.equal(navigation.url, portalUrl);
+  assert.equal(page.url(), `${harness.baseUrl}/index.html`);
+});
+
+test('TRIAGE-3C checkout response still redirects after sign-out', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const transport = await installDeferredBillingAction(scenario, 'stripe-create-checkout-session');
+  const before = await readBillingActionContext(page);
+  await beginBillingFacadeAction(page, 'startCheckout', { interval: 'year' });
+  const request = await transport.waitForRequest();
+  assert.equal(request.body.organization_id, ORG_A);
+  assert.equal(request.userJwt, 'access-user-a');
+
+  await page.evaluate(() =>
+    window.__TP3D_FAKE_SUPABASE_CONTROL__.emitAuth('SIGNED_OUT', null));
+  await page.waitForFunction(() => document.body && document.body.dataset.auth === 'signed_out');
+  const afterTransition = await readBillingActionContext(page);
+  const checkoutUrl = 'https://checkout.stripe.com/c/pay_triage_3c_signed_out';
+  const navigationInterceptor = await installBillingNavigationInterception(page, checkoutUrl);
+  transport.release({ url: checkoutUrl });
+  const navigation = await navigationInterceptor.wait();
+  const afterResponse = await readBillingActionContext(page);
+
+  t.diagnostic(`TRIAGE-3C scenario C: ${JSON.stringify({ before, request, afterTransition, afterResponse, navigation })}`);
+  assert.equal(afterTransition.status, 'signed_out');
+  assert.equal(afterTransition.userId, null);
+  assert.ok(afterTransition.authEpoch > before.authEpoch);
+  assert.notEqual(afterTransition.canManageBilling, true);
+  assert.equal(afterResponse.status, 'signed_out');
+  assert.equal(navigation.url, checkoutUrl);
+  assert.equal(page.url(), `${harness.baseUrl}/index.html`);
+});
+
+test('TRIAGE-3C current billing action context still redirects normally', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const transport = await installDeferredBillingAction(scenario, 'stripe-create-checkout-session');
+  const before = await readBillingActionContext(page);
+  await beginBillingFacadeAction(page, 'startCheckout', { interval: 'month' });
+  const request = await transport.waitForRequest();
+  assert.equal(request.body.organization_id, ORG_A);
+  assert.equal(request.userJwt, 'access-user-a');
+
+  const checkoutUrl = 'https://checkout.stripe.com/c/pay_triage_3c_current';
+  const navigationInterceptor = await installBillingNavigationInterception(page, checkoutUrl);
+  transport.release({ url: checkoutUrl });
+  const navigation = await navigationInterceptor.wait();
+  const afterResponse = await readBillingActionContext(page);
+
+  t.diagnostic(`TRIAGE-3C scenario D: ${JSON.stringify({ before, request, afterResponse, navigation })}`);
+  assert.equal(afterResponse.userId, before.userId);
+  assert.equal(afterResponse.authEpoch, before.authEpoch);
+  assert.equal(afterResponse.activeOrgId, before.activeOrgId);
+  assert.equal(afterResponse.billingOrgId, before.billingOrgId);
+  assert.equal(navigation.url, checkoutUrl);
+  assert.equal(page.url(), `${harness.baseUrl}/index.html`);
 });
 
 test('same-tab workspace switching exposes not-ready then ready lifecycle state', async t => {

@@ -5171,6 +5171,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
       billingReady: false,
       remote: false,
     };
+    let lastAppliedWorkspaceSwitchOrder = {
+      transitionAt: 0,
+      stateAt: 0,
+      tabId: '',
+    };
     let orgContextVersion = 0;
     let lastAppliedOrgContextVersion = 0;
     let lastAppliedOrgContextTabId = '';
@@ -5194,11 +5199,72 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return { ...workspaceSwitchState };
     }
 
-    function dispatchWorkspaceSwitchStateChanged(reason = 'update', { broadcast = true } = {}) {
+    function normalizeWorkspaceSwitchOrder(payload, fallbackTabId = '') {
+      if (!payload || typeof payload !== 'object') return null;
+      const active = Boolean(payload.active);
+      const startedAt = Number(payload.startedAt || 0);
+      const finishedAt = Number(payload.finishedAt || 0);
+      const dispatchedAt = Number(payload.ts || 0);
+      const transitionAt = Number.isFinite(startedAt) && startedAt > 0
+        ? startedAt
+        : active
+          ? dispatchedAt
+          : finishedAt || dispatchedAt;
+      const stateAt = active
+        ? dispatchedAt || transitionAt
+        : Math.max(
+          Number.isFinite(finishedAt) ? finishedAt : 0,
+          Number.isFinite(dispatchedAt) ? dispatchedAt : 0,
+          transitionAt
+        );
+      if (!Number.isFinite(transitionAt) || transitionAt <= 0 || !Number.isFinite(stateAt) || stateAt <= 0) {
+        return null;
+      }
+      return {
+        transitionAt: Math.floor(transitionAt),
+        stateAt: Math.floor(stateAt),
+        tabId: String(payload.tabId || fallbackTabId || ''),
+      };
+    }
+
+    function compareWorkspaceSwitchOrder(incoming, applied = lastAppliedWorkspaceSwitchOrder) {
+      if (!incoming) return -1;
+      if (incoming.transitionAt !== applied.transitionAt) {
+        return incoming.transitionAt > applied.transitionAt ? 1 : -1;
+      }
+      if (incoming.stateAt !== applied.stateAt) {
+        return incoming.stateAt > applied.stateAt ? 1 : -1;
+      }
+      if (incoming.tabId === applied.tabId) return 0;
+      return incoming.tabId > applied.tabId ? 1 : -1;
+    }
+
+    function recordWorkspaceSwitchOrder(order) {
+      if (!order || compareWorkspaceSwitchOrder(order) < 0) return false;
+      lastAppliedWorkspaceSwitchOrder = { ...order };
+      return true;
+    }
+
+    function nextWorkspaceSwitchDispatchTimestamp() {
+      return Math.max(Date.now(), Number(lastAppliedWorkspaceSwitchOrder.stateAt || 0) + 1);
+    }
+
+    function dispatchWorkspaceSwitchStateChanged(
+      reason = 'update',
+      { broadcast = true, recordOrder = true } = {}
+    ) {
       const detail = {
         ...getWorkspaceSwitchState(),
         reason: reason || 'update',
       };
+      const dispatchTs = nextWorkspaceSwitchDispatchTimestamp();
+      if (recordOrder) {
+        recordWorkspaceSwitchOrder(normalizeWorkspaceSwitchOrder({
+          ...detail,
+          tabId: orgContextTabId,
+          ts: dispatchTs,
+        }));
+      }
       try {
         window.dispatchEvent(new CustomEvent('tp3d:workspace-switch-state', { detail }));
       } catch {
@@ -5212,7 +5278,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           ...detail,
           userId,
           tabId: orgContextTabId,
-          ts: Date.now(),
+          ts: dispatchTs,
         };
         const encoded = JSON.stringify(payload);
         window.localStorage.setItem(WORKSPACE_SWITCH_SYNC_KEY, encoded);
@@ -5373,6 +5439,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const targetOrgId = normalizeOrgIdForBilling(payload.toOrgId || '');
       if (!targetOrgId) return;
 
+      const incomingOrder = normalizeWorkspaceSwitchOrder(payload, incomingTabId);
+      if (!incomingOrder || compareWorkspaceSwitchOrder(incomingOrder) <= 0) return;
+
       const nextVersion = Number(payload.version || 0) || ((workspaceSwitchState.version || 0) + 1);
       const incomingTs = Number(payload.ts || payload.startedAt || 0) || 0;
       const incomingActive = Boolean(payload.active);
@@ -5386,7 +5455,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
         ) {
           return;
         }
+        recordWorkspaceSwitchOrder(incomingOrder);
         clearWorkspaceSwitchTimer();
+        const appliedVersion = Math.max(Number(workspaceSwitchState.version || 0) || 0, nextVersion);
         workspaceSwitchState = {
           active: true,
           fromOrgId: normalizeOrgIdForBilling(payload.fromOrgId || '') || null,
@@ -5394,16 +5465,19 @@ const TP3D_BUILD_STAMP = Object.freeze({
           source: payload.source ? String(payload.source) : 'workspace-switch-sync',
           startedAt: Number(payload.startedAt || payload.ts || Date.now()) || Date.now(),
           finishedAt: 0,
-          version: nextVersion,
+          version: appliedVersion,
           localStateReady: Boolean(payload.localStateReady),
           orgReady: Boolean(payload.orgReady),
           billingReady: Boolean(payload.billingReady),
           remote: true,
         };
-        dispatchWorkspaceSwitchStateChanged(payload.reason || 'sync', { broadcast: false });
+        dispatchWorkspaceSwitchStateChanged(payload.reason || 'sync', {
+          broadcast: false,
+          recordOrder: false,
+        });
         try {
           workspaceSwitchTimer = window.setTimeout(() => {
-            if (workspaceSwitchState.active && workspaceSwitchState.version === nextVersion) {
+            if (workspaceSwitchState.active && workspaceSwitchState.version === appliedVersion) {
               finishWorkspaceSwitch('sync-timeout', { broadcast: false });
             }
           }, WORKSPACE_SWITCH_MAX_MS);
@@ -5419,6 +5493,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (workspaceSwitchState.active && workspaceSwitchState.remote !== true) {
         return;
       }
+      recordWorkspaceSwitchOrder(incomingOrder);
       clearWorkspaceSwitchTimer();
       workspaceSwitchState = {
         ...workspaceSwitchState,
@@ -5433,7 +5508,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
         billingReady: Boolean(payload.billingReady),
         remote: true,
       };
-      dispatchWorkspaceSwitchStateChanged(payload.reason || 'sync-complete', { broadcast: false });
+      dispatchWorkspaceSwitchStateChanged(payload.reason || 'sync-complete', {
+        broadcast: false,
+        recordOrder: false,
+      });
     }
 
     let lastOrgPersistAt = 0;

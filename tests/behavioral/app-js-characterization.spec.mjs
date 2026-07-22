@@ -777,7 +777,7 @@ test('real two-page context propagates cross-tab workspace readiness', async t =
   assert.equal(scenario.diagnostics.pageErrors.length, 0, JSON.stringify(scenario.diagnostics.pageErrors));
 });
 
-test('TRIAGE-3B older conflicting active readiness can replace a newer completed target', async t => {
+test('DEF-010 older conflicting active readiness cannot replace a newer completed target', async t => {
   const scenario = await harness.createScenario(multiWorkspaceScenario());
   t.after(() => scenario.close());
 
@@ -821,11 +821,9 @@ test('TRIAGE-3B older conflicting active readiness can replace a newer completed
   t.diagnostic(`TRIAGE-3B scenario A: ${JSON.stringify({ before, after })}`);
 
   assert.equal(after.activeOrgId, ORG_B, JSON.stringify({ before, after }));
+  assert.equal(after.billingOrgId, ORG_B);
   assert.equal(after.localOrgId, ORG_B);
-  assert.equal(after.state.active, true);
-  assert.equal(after.state.toOrgId, ORG_A);
-  assert.equal(after.state.version, 1);
-  assert.equal(after.state.remote, true);
+  assert.deepEqual(after.state, before.state);
   assert.equal(after.route, before.route);
 });
 
@@ -880,6 +878,163 @@ test('TRIAGE-3B older completion for another target cannot finish a newer local 
   assert.equal(after.state.version, before.state.version);
   assert.equal(after.state.remote, false);
   assert.equal(after.route, before.route);
+});
+
+test('DEF-010 older same-target progress cannot lower readiness flags', async t => {
+  const scenario = await harness.createScenario(multiWorkspaceScenario());
+  t.after(() => scenario.close());
+
+  const receiver = await scenario.openPage();
+  const sender = await openWorkspaceSyncSender(scenario);
+  await scenario.waitForAppReady(receiver);
+  await waitForSignedInOwner(receiver, 'user-a', ORG_A);
+  scenario.billing.setDeferred();
+
+  await receiver.evaluate(orgId => window.OrgContext.setActiveOrgId(orgId, {
+    source: 'def-010-same-target-progress',
+  }), ORG_B);
+  const before = await receiver.evaluate(() => window.TruckPackerApp.getWorkspaceSwitchState());
+  assert.equal(before.active, true, JSON.stringify(before));
+  assert.equal(before.toOrgId, ORG_B);
+  assert.equal(before.localStateReady, true);
+  assert.equal(before.orgReady, true);
+  assert.equal(before.billingReady, false);
+
+  const after = await sendWorkspaceSwitchSyncAndObserve(sender, receiver, {
+    active: true,
+    fromOrgId: ORG_A,
+    toOrgId: ORG_B,
+    source: 'def-010-older-progress',
+    startedAt: before.startedAt,
+    finishedAt: 0,
+    version: 999,
+    localStateReady: false,
+    orgReady: false,
+    billingReady: false,
+    remote: true,
+    reason: 'def-010-older-same-target-progress',
+    userId: 'user-a',
+    tabId: 'def-010-older-progress-tab',
+    ts: Math.max(1, Number(before.startedAt)),
+  });
+
+  assert.equal(after.activeOrgId, ORG_B);
+  assert.equal(after.billingOrgId, ORG_B);
+  assert.equal(after.localOrgId, ORG_B);
+  assert.deepEqual(after.state, before);
+});
+
+test('DEF-010 genuinely newer remote progress is accepted before canonical org synchronization', async t => {
+  const scenario = await harness.createScenario(multiWorkspaceScenario());
+  t.after(() => scenario.close());
+
+  const receiver = await scenario.openPage();
+  const sender = await openWorkspaceSyncSender(scenario);
+  await scenario.waitForAppReady(receiver);
+  await waitForSignedInOwner(receiver, 'user-a', ORG_A);
+
+  const transitionAt = Date.now() + 60000;
+  const first = await sendWorkspaceSwitchSyncAndObserve(sender, receiver, {
+    active: true,
+    fromOrgId: ORG_A,
+    toOrgId: ORG_B,
+    source: 'def-010-newer-remote',
+    startedAt: transitionAt,
+    finishedAt: 0,
+    version: 1,
+    localStateReady: true,
+    orgReady: false,
+    billingReady: false,
+    remote: false,
+    reason: 'def-010-newer-remote-begin',
+    userId: 'user-a',
+    tabId: 'def-010-newer-tab',
+    ts: transitionAt,
+  });
+  assert.equal(first.activeOrgId, ORG_A);
+  assert.equal(first.billingOrgId, ORG_A);
+  assert.equal(first.state.active, true);
+  assert.equal(first.state.toOrgId, ORG_B);
+  assert.equal(first.state.localStateReady, true);
+  assert.equal(first.state.orgReady, false);
+
+  const progress = await sendWorkspaceSwitchSyncAndObserve(sender, receiver, {
+    active: true,
+    fromOrgId: ORG_A,
+    toOrgId: ORG_B,
+    source: 'def-010-newer-remote',
+    startedAt: transitionAt,
+    finishedAt: 0,
+    version: 1,
+    localStateReady: true,
+    orgReady: true,
+    billingReady: false,
+    remote: true,
+    reason: 'def-010-newer-remote-progress',
+    userId: 'user-a',
+    tabId: 'def-010-newer-tab',
+    ts: transitionAt + 1,
+  });
+  assert.equal(progress.activeOrgId, ORG_A);
+  assert.equal(progress.billingOrgId, ORG_A);
+  assert.equal(progress.state.toOrgId, ORG_B);
+  assert.equal(progress.state.localStateReady, true);
+  assert.equal(progress.state.orgReady, true);
+  assert.equal(progress.state.billingReady, false);
+  assert.equal(progress.state.remote, true);
+});
+
+test('DEF-010 equal-time readiness state converges on the greater tab ID', async t => {
+  const scenario = await harness.createScenario(multiWorkspaceScenario());
+  t.after(() => scenario.close());
+
+  const receiver = await scenario.openPage();
+  const sender = await openWorkspaceSyncSender(scenario);
+  await scenario.waitForAppReady(receiver);
+  await waitForSignedInOwner(receiver, 'user-a', ORG_A);
+
+  const transitionAt = Date.now() + 60000;
+  const payload = {
+    active: true,
+    fromOrgId: ORG_A,
+    source: 'def-010-equal-time',
+    startedAt: transitionAt,
+    finishedAt: 0,
+    version: 1,
+    localStateReady: false,
+    orgReady: false,
+    billingReady: false,
+    remote: true,
+    userId: 'user-a',
+    ts: transitionAt,
+  };
+  const lower = await sendWorkspaceSwitchSyncAndObserve(sender, receiver, {
+    ...payload,
+    toOrgId: ORG_B,
+    reason: 'def-010-equal-time-lower-first',
+    tabId: 'def-010-tab-a',
+  });
+  assert.equal(lower.state.toOrgId, ORG_B);
+
+  const greater = await sendWorkspaceSwitchSyncAndObserve(sender, receiver, {
+    ...payload,
+    toOrgId: ORG_A,
+    reason: 'def-010-equal-time-greater',
+    tabId: 'def-010-tab-z',
+  });
+  assert.equal(greater.state.toOrgId, ORG_A);
+  assert.equal(greater.state.source, 'def-010-equal-time');
+
+  const lowerAfterGreater = await sendWorkspaceSwitchSyncAndObserve(sender, receiver, {
+    ...payload,
+    toOrgId: ORG_B,
+    reason: 'def-010-equal-time-lower-last',
+    tabId: 'def-010-tab-m',
+  });
+  assert.equal(lowerAfterGreater.state.toOrgId, ORG_A);
+  assert.equal(lowerAfterGreater.activeOrgId, ORG_A);
+  assert.equal(lowerAfterGreater.billingOrgId, ORG_A);
+  assert.equal(lowerAfterGreater.localOrgId, ORG_A);
 });
 
 test('failed organization bundle loading can recover on a later hydration', async t => {

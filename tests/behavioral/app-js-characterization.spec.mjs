@@ -6,6 +6,7 @@ import {
 } from './app-js-browser-harness.mjs';
 
 let harness;
+let billingActionResultSequence = 0;
 const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
 const ORG_IDS = [ORG_A, ORG_B];
@@ -98,41 +99,67 @@ async function installDeferredBillingAction(scenario, functionName) {
 }
 
 async function installBillingNavigationInterception(page, expectedUrl) {
-  let resolveAttempt;
-  let rejectAttempt;
-  const attempted = new Promise((resolve, reject) => {
-    resolveAttempt = resolve;
-    rejectAttempt = reject;
-  });
-  const timeoutId = setTimeout(() => {
-    rejectAttempt(new Error(`Timed out waiting for billing navigation to ${expectedUrl}.`));
-  }, 15000);
+  const attempts = [];
+  const waiters = new Set();
   await page.route(expectedUrl, async route => {
     const request = route.request();
     await route.fulfill({ status: 204, body: '' });
-    clearTimeout(timeoutId);
-    resolveAttempt({
+    const attempt = {
       method: request.method(),
       url: request.url(),
-    });
+    };
+    attempts.push(attempt);
+    for (const waiter of Array.from(waiters)) {
+      waiters.delete(waiter);
+      clearTimeout(waiter.timeoutId);
+      waiter.resolve(attempt);
+    }
   });
   return {
-    wait() {
-      return attempted;
+    attemptCount() {
+      return attempts.length;
+    },
+    async wait(timeoutMs = 15000) {
+      if (attempts.length) return attempts[attempts.length - 1];
+      return new Promise((resolve, reject) => {
+        const waiter = {
+          resolve,
+          timeoutId: setTimeout(() => {
+            waiters.delete(waiter);
+            reject(new Error(`Timed out waiting for billing navigation to ${expectedUrl}.`));
+          }, timeoutMs),
+        };
+        waiters.add(waiter);
+      });
     },
   };
 }
 
 async function beginBillingFacadeAction(page, action, input = null) {
-  await page.evaluate(({ actionName, actionInput }) => {
+  billingActionResultSequence += 1;
+  const resultKey = `billing-action-${billingActionResultSequence}`;
+  await page.evaluate(({ actionName, actionInput, key }) => {
     const api = window.__TP3D_BILLING;
     if (!api || typeof api[actionName] !== 'function') {
       throw new Error(`Billing facade action ${actionName} is unavailable.`);
     }
-    window.__TP3D_TEST_BILLING_ACTION_RESULT__ = actionName === 'startCheckout'
+    window.__TP3D_TEST_BILLING_ACTION_RESULTS__ = window.__TP3D_TEST_BILLING_ACTION_RESULTS__ || {};
+    window.__TP3D_TEST_BILLING_ACTION_RESULTS__[key] = actionName === 'startCheckout'
       ? api[actionName](actionInput)
       : api[actionName]();
-  }, { actionName: action, actionInput: input });
+  }, { actionName: action, actionInput: input, key: resultKey });
+  return {
+    result() {
+      return page.evaluate(async key => {
+        const pending = window.__TP3D_TEST_BILLING_ACTION_RESULTS__
+          && window.__TP3D_TEST_BILLING_ACTION_RESULTS__[key];
+        if (!pending) throw new Error(`Missing billing action result ${key}.`);
+        const result = await pending;
+        await new Promise(resolve => window.requestAnimationFrame(() => resolve()));
+        return result;
+      }, resultKey);
+    },
+  };
 }
 
 async function readBillingActionContext(page) {
@@ -831,7 +858,7 @@ test('current-context revoked response still enforces local sign-out', async t =
   assert.equal(observed.afterSettlement.sessionUserId, null);
 });
 
-test('TRIAGE-3C checkout response still redirects after an authoritative organization switch', async t => {
+test('DEF-011 TRIAGE-3C checkout rejects a stale response after an authoritative organization switch', async t => {
   const scenario = await harness.createScenario(multiWorkspaceScenario());
   t.after(() => scenario.close());
   const page = await scenario.openPage();
@@ -840,7 +867,7 @@ test('TRIAGE-3C checkout response still redirects after an authoritative organiz
 
   const transport = await installDeferredBillingAction(scenario, 'stripe-create-checkout-session');
   const before = await readBillingActionContext(page);
-  await beginBillingFacadeAction(page, 'startCheckout', { interval: 'month' });
+  const action = await beginBillingFacadeAction(page, 'startCheckout', { interval: 'month' });
   const request = await transport.waitForRequest();
   assert.equal(request.body.organization_id, ORG_A);
   assert.equal(request.userJwt, 'access-user-a');
@@ -850,19 +877,20 @@ test('TRIAGE-3C checkout response still redirects after an authoritative organiz
   const checkoutUrl = 'https://checkout.stripe.com/c/pay_triage_3c_org_a';
   const navigationInterceptor = await installBillingNavigationInterception(page, checkoutUrl);
   transport.release({ url: checkoutUrl });
-  const navigation = await navigationInterceptor.wait();
+  const result = await action.result();
   const afterResponse = await readBillingActionContext(page);
 
-  t.diagnostic(`TRIAGE-3C scenario A: ${JSON.stringify({ before, request, afterTransition, afterResponse, navigation })}`);
+  t.diagnostic(`DEF-011 scenario A: ${JSON.stringify({ before, request, afterTransition, afterResponse, result })}`);
   assert.equal(afterTransition.userId, 'user-a');
   assert.equal(afterTransition.activeOrgId, ORG_B);
   assert.equal(afterTransition.billingOrgId, ORG_B);
   assert.equal(afterResponse.activeOrgId, ORG_B);
-  assert.equal(navigation.url, checkoutUrl);
+  assert.deepEqual(result, { ok: false, error: 'Billing context changed. Please try again.' });
+  assert.equal(navigationInterceptor.attemptCount(), 0);
   assert.equal(page.url(), `${harness.baseUrl}/index.html`);
 });
 
-test('TRIAGE-3C portal response still redirects after an authoritative user switch', async t => {
+test('DEF-011 TRIAGE-3C portal rejects a stale response after an authoritative user switch', async t => {
   const scenario = await harness.createScenario(signedInScenario(['user-a', 'user-b']));
   t.after(() => scenario.close());
   const page = await scenario.openPage();
@@ -871,7 +899,7 @@ test('TRIAGE-3C portal response still redirects after an authoritative user swit
 
   const transport = await installDeferredBillingAction(scenario, 'stripe-create-portal-session');
   const before = await readBillingActionContext(page);
-  await beginBillingFacadeAction(page, 'openPortal');
+  const action = await beginBillingFacadeAction(page, 'openPortal');
   const request = await transport.waitForRequest();
   assert.equal(request.body.organization_id, ORG_A);
   assert.equal(request.userJwt, 'access-user-a');
@@ -883,20 +911,21 @@ test('TRIAGE-3C portal response still redirects after an authoritative user swit
   const portalUrl = 'https://billing.stripe.com/p/session/triage_3c_user_a_org_a';
   const navigationInterceptor = await installBillingNavigationInterception(page, portalUrl);
   transport.release({ url: portalUrl });
-  const navigation = await navigationInterceptor.wait();
+  const result = await action.result();
   const afterResponse = await readBillingActionContext(page);
 
-  t.diagnostic(`TRIAGE-3C scenario B: ${JSON.stringify({ before, request, afterTransition, afterResponse, navigation })}`);
+  t.diagnostic(`DEF-011 scenario B: ${JSON.stringify({ before, request, afterTransition, afterResponse, result })}`);
   assert.equal(afterTransition.userId, 'user-b');
   assert.equal(afterTransition.activeOrgId, ORG_B);
   assert.equal(afterTransition.billingOrgId, ORG_B);
   assert.ok(afterTransition.authEpoch > before.authEpoch);
   assert.equal(afterResponse.userId, 'user-b');
-  assert.equal(navigation.url, portalUrl);
+  assert.deepEqual(result, { ok: false, error: 'Billing context changed. Please try again.' });
+  assert.equal(navigationInterceptor.attemptCount(), 0);
   assert.equal(page.url(), `${harness.baseUrl}/index.html`);
 });
 
-test('TRIAGE-3C checkout response still redirects after sign-out', async t => {
+test('DEF-011 TRIAGE-3C checkout rejects a stale response after sign-out', async t => {
   const scenario = await harness.createScenario(signedInScenario());
   t.after(() => scenario.close());
   const page = await scenario.openPage();
@@ -905,7 +934,7 @@ test('TRIAGE-3C checkout response still redirects after sign-out', async t => {
 
   const transport = await installDeferredBillingAction(scenario, 'stripe-create-checkout-session');
   const before = await readBillingActionContext(page);
-  await beginBillingFacadeAction(page, 'startCheckout', { interval: 'year' });
+  const action = await beginBillingFacadeAction(page, 'startCheckout', { interval: 'year' });
   const request = await transport.waitForRequest();
   assert.equal(request.body.organization_id, ORG_A);
   assert.equal(request.userJwt, 'access-user-a');
@@ -917,20 +946,21 @@ test('TRIAGE-3C checkout response still redirects after sign-out', async t => {
   const checkoutUrl = 'https://checkout.stripe.com/c/pay_triage_3c_signed_out';
   const navigationInterceptor = await installBillingNavigationInterception(page, checkoutUrl);
   transport.release({ url: checkoutUrl });
-  const navigation = await navigationInterceptor.wait();
+  const result = await action.result();
   const afterResponse = await readBillingActionContext(page);
 
-  t.diagnostic(`TRIAGE-3C scenario C: ${JSON.stringify({ before, request, afterTransition, afterResponse, navigation })}`);
+  t.diagnostic(`DEF-011 scenario C: ${JSON.stringify({ before, request, afterTransition, afterResponse, result })}`);
   assert.equal(afterTransition.status, 'signed_out');
   assert.equal(afterTransition.userId, null);
   assert.ok(afterTransition.authEpoch > before.authEpoch);
   assert.notEqual(afterTransition.canManageBilling, true);
   assert.equal(afterResponse.status, 'signed_out');
-  assert.equal(navigation.url, checkoutUrl);
+  assert.deepEqual(result, { ok: false, error: 'Billing context changed. Please try again.' });
+  assert.equal(navigationInterceptor.attemptCount(), 0);
   assert.equal(page.url(), `${harness.baseUrl}/index.html`);
 });
 
-test('TRIAGE-3C current billing action context still redirects normally', async t => {
+test('DEF-011 TRIAGE-3C unchanged checkout context still redirects normally', async t => {
   const scenario = await harness.createScenario(signedInScenario());
   t.after(() => scenario.close());
   const page = await scenario.openPage();
@@ -939,7 +969,7 @@ test('TRIAGE-3C current billing action context still redirects normally', async 
 
   const transport = await installDeferredBillingAction(scenario, 'stripe-create-checkout-session');
   const before = await readBillingActionContext(page);
-  await beginBillingFacadeAction(page, 'startCheckout', { interval: 'month' });
+  const action = await beginBillingFacadeAction(page, 'startCheckout', { interval: 'month' });
   const request = await transport.waitForRequest();
   assert.equal(request.body.organization_id, ORG_A);
   assert.equal(request.userJwt, 'access-user-a');
@@ -947,15 +977,266 @@ test('TRIAGE-3C current billing action context still redirects normally', async 
   const checkoutUrl = 'https://checkout.stripe.com/c/pay_triage_3c_current';
   const navigationInterceptor = await installBillingNavigationInterception(page, checkoutUrl);
   transport.release({ url: checkoutUrl });
-  const navigation = await navigationInterceptor.wait();
+  const [navigation, result] = await Promise.all([
+    navigationInterceptor.wait(),
+    action.result(),
+  ]);
   const afterResponse = await readBillingActionContext(page);
 
-  t.diagnostic(`TRIAGE-3C scenario D: ${JSON.stringify({ before, request, afterResponse, navigation })}`);
+  t.diagnostic(`DEF-011 scenario D: ${JSON.stringify({ before, request, afterResponse, navigation, result })}`);
   assert.equal(afterResponse.userId, before.userId);
   assert.equal(afterResponse.authEpoch, before.authEpoch);
   assert.equal(afterResponse.activeOrgId, before.activeOrgId);
   assert.equal(afterResponse.billingOrgId, before.billingOrgId);
+  assert.deepEqual(result, { ok: true, error: null });
   assert.equal(navigation.url, checkoutUrl);
+  assert.equal(page.url(), `${harness.baseUrl}/index.html`);
+});
+
+test('DEF-011 portal rejects a stale response after sign-out', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const transport = await installDeferredBillingAction(scenario, 'stripe-create-portal-session');
+  const action = await beginBillingFacadeAction(page, 'openPortal');
+  const request = await transport.waitForRequest();
+  assert.equal(request.body.organization_id, ORG_A);
+  assert.equal(request.userJwt, 'access-user-a');
+
+  await page.evaluate(() =>
+    window.__TP3D_FAKE_SUPABASE_CONTROL__.emitAuth('SIGNED_OUT', null));
+  await page.waitForFunction(() => document.body && document.body.dataset.auth === 'signed_out');
+  const portalUrl = 'https://billing.stripe.com/p/session/def_011_signed_out';
+  const navigationInterceptor = await installBillingNavigationInterception(page, portalUrl);
+  transport.release({ url: portalUrl });
+  const result = await action.result();
+
+  assert.deepEqual(result, { ok: false, error: 'Billing context changed. Please try again.' });
+  assert.equal(navigationInterceptor.attemptCount(), 0);
+  assert.equal(page.url(), `${harness.baseUrl}/index.html`);
+});
+
+test('DEF-011 access loss invalidates a pending checkout redirect', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const transport = await installDeferredBillingAction(scenario, 'stripe-create-checkout-session');
+  const action = await beginBillingFacadeAction(page, 'startCheckout', { interval: 'month' });
+  await transport.waitForRequest();
+
+  scenario.billing.setDeferred();
+  await armWindowEvent(page, 'tp3d:org-access-lost');
+  const accessLossRefresh = page.evaluate(() =>
+    window.__TP3D_BILLING.refreshBilling({ force: true, reason: 'def-011-access-loss' }));
+  await scenario.billing.waitForPendingCount(1);
+  await scenario.billing.release(0, { error: 'forbidden' }, 403);
+  await Promise.all([
+    accessLossRefresh,
+    readArmedWindowEvent(page, 'tp3d:org-access-lost'),
+  ]);
+
+  const checkoutUrl = 'https://checkout.stripe.com/c/pay_def_011_access_loss';
+  const navigationInterceptor = await installBillingNavigationInterception(page, checkoutUrl);
+  transport.release({ url: checkoutUrl });
+  const result = await action.result();
+
+  assert.deepEqual(result, { ok: false, error: 'Billing context changed. Please try again.' });
+  assert.equal(navigationInterceptor.attemptCount(), 0);
+  assert.equal(page.url(), `${harness.baseUrl}/index.html`);
+});
+
+test('DEF-011 management authority loss invalidates a pending portal redirect', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const transport = await installDeferredBillingAction(scenario, 'stripe-create-portal-session');
+  const action = await beginBillingFacadeAction(page, 'openPortal');
+  await transport.waitForRequest();
+
+  scenario.billing.setDeferred();
+  const authorityRefresh = page.evaluate(() =>
+    window.__TP3D_BILLING.refreshBilling({ force: true, reason: 'def-011-authority-loss' }));
+  await scenario.billing.waitForPendingCount(1);
+  await scenario.billing.release(0, billingResponse('pro', {
+    billingOwnerUserId: 'another-owner',
+    canManageBilling: false,
+  }));
+  await authorityRefresh;
+  const authorityAfterRefresh = await readBillingActionContext(page);
+  assert.equal(authorityAfterRefresh.canManageBilling, false);
+
+  const portalUrl = 'https://billing.stripe.com/p/session/def_011_authority_loss';
+  const navigationInterceptor = await installBillingNavigationInterception(page, portalUrl);
+  transport.release({ url: portalUrl });
+  const result = await action.result();
+
+  assert.deepEqual(result, { ok: false, error: 'Billing context changed. Please try again.' });
+  assert.equal(navigationInterceptor.attemptCount(), 0);
+  assert.equal(page.url(), `${harness.baseUrl}/index.html`);
+});
+
+test('DEF-011 unresolved authority during refresh cannot reuse prior permission', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const transport = await installDeferredBillingAction(scenario, 'stripe-create-portal-session');
+  const action = await beginBillingFacadeAction(page, 'openPortal');
+  await transport.waitForRequest();
+
+  scenario.billing.setDeferred();
+  const authorityRefresh = page.evaluate(() =>
+    window.__TP3D_BILLING.refreshBilling({ force: true, reason: 'def-011-authority-pending' }));
+  await scenario.billing.waitForPendingCount(1);
+  const pendingBilling = await page.evaluate(() => window.__TP3D_BILLING.getBillingState());
+  assert.equal(pendingBilling.loading, true);
+  assert.equal(pendingBilling.canManageBilling, true);
+
+  const portalUrl = 'https://billing.stripe.com/p/session/def_011_authority_pending';
+  const navigationInterceptor = await installBillingNavigationInterception(page, portalUrl);
+  transport.release({ url: portalUrl });
+  const result = await action.result();
+  assert.deepEqual(result, { ok: false, error: 'Billing context changed. Please try again.' });
+  assert.equal(navigationInterceptor.attemptCount(), 0);
+
+  await scenario.billing.release(0, billingResponse('pro'));
+  await authorityRefresh;
+  assert.equal(page.url(), `${harness.baseUrl}/index.html`);
+});
+
+test('DEF-011 a newer portal supersedes an older checkout', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const checkoutTransport = await installDeferredBillingAction(scenario, 'stripe-create-checkout-session');
+  const portalTransport = await installDeferredBillingAction(scenario, 'stripe-create-portal-session');
+  const olderCheckout = await beginBillingFacadeAction(page, 'startCheckout', { interval: 'month' });
+  await checkoutTransport.waitForRequest();
+  const newerPortal = await beginBillingFacadeAction(page, 'openPortal');
+  await portalTransport.waitForRequest();
+
+  const checkoutUrl = 'https://checkout.stripe.com/c/pay_def_011_superseded';
+  const portalUrl = 'https://billing.stripe.com/p/session/def_011_latest';
+  const checkoutNavigation = await installBillingNavigationInterception(page, checkoutUrl);
+  const portalNavigation = await installBillingNavigationInterception(page, portalUrl);
+  checkoutTransport.release({ url: checkoutUrl });
+  const olderResult = await olderCheckout.result();
+  assert.deepEqual(olderResult, { ok: false, error: 'Billing context changed. Please try again.' });
+  assert.equal(checkoutNavigation.attemptCount(), 0);
+
+  portalTransport.release({ url: portalUrl });
+  const [navigation, newerResult] = await Promise.all([
+    portalNavigation.wait(),
+    newerPortal.result(),
+  ]);
+  assert.deepEqual(newerResult, { ok: true, error: null });
+  assert.equal(navigation.url, portalUrl);
+});
+
+test('DEF-011 a newer checkout supersedes an older portal regardless of response order', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const checkoutTransport = await installDeferredBillingAction(scenario, 'stripe-create-checkout-session');
+  const portalTransport = await installDeferredBillingAction(scenario, 'stripe-create-portal-session');
+  const olderPortal = await beginBillingFacadeAction(page, 'openPortal');
+  await portalTransport.waitForRequest();
+  const newerCheckout = await beginBillingFacadeAction(page, 'startCheckout', { interval: 'year' });
+  await checkoutTransport.waitForRequest();
+
+  const portalUrl = 'https://billing.stripe.com/p/session/def_011_superseded';
+  const checkoutUrl = 'https://checkout.stripe.com/c/pay_def_011_latest';
+  const portalNavigation = await installBillingNavigationInterception(page, portalUrl);
+  const checkoutNavigation = await installBillingNavigationInterception(page, checkoutUrl);
+  checkoutTransport.release({ url: checkoutUrl });
+  const [navigation, newerResult] = await Promise.all([
+    checkoutNavigation.wait(),
+    newerCheckout.result(),
+  ]);
+  assert.deepEqual(newerResult, { ok: true, error: null });
+  assert.equal(navigation.url, checkoutUrl);
+
+  portalTransport.release({ url: portalUrl });
+  const olderResult = await olderPortal.result();
+  assert.deepEqual(olderResult, { ok: false, error: 'Billing context changed. Please try again.' });
+  assert.equal(portalNavigation.attemptCount(), 0);
+});
+
+test('DEF-011 unchanged portal context still redirects normally', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const transport = await installDeferredBillingAction(scenario, 'stripe-create-portal-session');
+  const action = await beginBillingFacadeAction(page, 'openPortal');
+  await transport.waitForRequest();
+  const portalUrl = 'https://billing.stripe.com/p/session/def_011_current';
+  const navigationInterceptor = await installBillingNavigationInterception(page, portalUrl);
+  transport.release({ url: portalUrl });
+  const [navigation, result] = await Promise.all([
+    navigationInterceptor.wait(),
+    action.result(),
+  ]);
+
+  assert.deepEqual(result, { ok: true, error: null });
+  assert.equal(navigation.url, portalUrl);
+  assert.equal(page.url(), `${harness.baseUrl}/index.html`);
+});
+
+test('DEF-011 unsafe checkout URL keeps the existing service rejection', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const transport = await installDeferredBillingAction(scenario, 'stripe-create-checkout-session');
+  const action = await beginBillingFacadeAction(page, 'startCheckout', { interval: 'month' });
+  await transport.waitForRequest();
+  transport.release({ url: 'https://billing-attacker.example/checkout' });
+  const result = await action.result();
+
+  assert.deepEqual(result, { ok: false, error: 'Unexpected checkout redirect URL.' });
+  assert.equal(page.url(), `${harness.baseUrl}/index.html`);
+});
+
+test('DEF-011 checkout timeout remains an error and a late response cannot navigate', async t => {
+  const scenario = await harness.createScenario(signedInScenario());
+  t.after(() => scenario.close());
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+
+  const transport = await installDeferredBillingAction(scenario, 'stripe-create-checkout-session');
+  const action = await beginBillingFacadeAction(page, 'startCheckout', { interval: 'month' });
+  await transport.waitForRequest();
+  const result = await action.result();
+  assert.deepEqual(result, { ok: false, error: 'Checkout request timed out' });
+
+  const lateUrl = 'https://checkout.stripe.com/c/pay_def_011_late_timeout';
+  const navigationInterceptor = await installBillingNavigationInterception(page, lateUrl);
+  transport.release({ url: lateUrl });
+  await page.evaluate(() => new Promise(resolve => window.requestAnimationFrame(() => resolve())));
+  assert.equal(navigationInterceptor.attemptCount(), 0);
   assert.equal(page.url(), `${harness.baseUrl}/index.html`);
 });
 

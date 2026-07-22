@@ -1914,12 +1914,109 @@ function getCheckoutPlanOptions() {
   };
 }
 
+const BILLING_ACTION_CONTEXT_CHANGED_ERROR = 'Billing context changed. Please try again.';
+let _billingActionGeneration = 0;
+
+function captureBillingActionContext(action) {
+  const readCurrent = () => {
+    let authState = null;
+    let authEpoch = null;
+    try {
+      authState = SupabaseClient && typeof SupabaseClient.getAuthState === 'function'
+        ? SupabaseClient.getAuthState()
+        : null;
+      authEpoch = SupabaseClient && typeof SupabaseClient.getAuthEpoch === 'function'
+        ? SupabaseClient.getAuthEpoch()
+        : null;
+    } catch {
+      authState = null;
+      authEpoch = null;
+    }
+    const status = authState && authState.status ? String(authState.status) : 'unknown';
+    const session = authState && authState.session ? authState.session : null;
+    const user = authState && authState.user
+      ? authState.user
+      : session && session.user
+        ? session.user
+        : null;
+    const userId = user && user.id ? String(user.id) : '';
+    const sessionUserId = session && session.user && session.user.id ? String(session.user.id) : '';
+    const signedIn = Boolean(
+      status === 'signed_in' &&
+      userId &&
+      sessionUserId === userId &&
+      session &&
+      session.access_token
+    );
+    const activeOrgId = getActiveOrgIdForBilling();
+    const billingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
+    const authorityConfirmed = Boolean(
+      _billingState.ok === true &&
+      !_billingState.loading &&
+      !_billingState.pending &&
+      !_billingState.error &&
+      _billingState.canManageBilling === true
+    );
+    return {
+      authEpoch,
+      status,
+      userId,
+      signedIn,
+      activeOrgId,
+      billingEpoch: _billingEpoch,
+      billingOrgId,
+      authorityConfirmed,
+    };
+  };
+
+  _billingActionGeneration += 1;
+  const generation = _billingActionGeneration;
+  const started = readCurrent();
+  const validAtStart = Boolean(
+    started.signedIn &&
+    Number.isFinite(started.authEpoch) &&
+    started.userId &&
+    started.activeOrgId &&
+    started.billingOrgId === started.activeOrgId &&
+    started.authorityConfirmed
+  );
+
+  return {
+    generation,
+    validAtStart,
+    isCurrent() {
+      const current = readCurrent();
+      let reason = '';
+      if (generation !== _billingActionGeneration) reason = 'superseded';
+      else if (!current.signedIn) reason = 'signed-out';
+      else if (current.authEpoch !== started.authEpoch) reason = 'auth-epoch';
+      else if (current.userId !== started.userId) reason = 'user';
+      else if (current.activeOrgId !== started.activeOrgId) reason = 'active-org';
+      else if (current.billingOrgId !== started.activeOrgId) reason = 'billing-org';
+      else if (current.billingEpoch !== started.billingEpoch) reason = 'billing-epoch';
+      else if (!current.authorityConfirmed) reason = 'billing-authority';
+      if (reason) {
+        billingDebugLog(`${action}:discard-stale-context`, {
+          generation,
+          currentGeneration: _billingActionGeneration,
+          reason,
+        });
+      }
+      return !reason;
+    },
+  };
+}
+
 /**
  * Start Stripe Checkout for a given billing interval.
  * @param {string|{interval?:'month'|'year',priceId?:string,price_id?:string}} input
  * @returns {Promise<{ok:boolean, error:string|null}>}
  */
 async function startCheckout(input) {
+  const actionContext = captureBillingActionContext('checkout');
+  if (!actionContext.validAtStart) {
+    return { ok: false, error: BILLING_ACTION_CONTEXT_CHANGED_ERROR };
+  }
   let interval = 'month';
   let priceId = '';
   let hasExplicitInterval = false;
@@ -1958,6 +2055,9 @@ async function startCheckout(input) {
   ]);
   billingDebugLog('checkout:result', { ok: Boolean(result && result.ok), error: result && result.error ? String(result.error) : null });
   if (result.ok && result.url) {
+    if (!actionContext.isCurrent()) {
+      return { ok: false, error: BILLING_ACTION_CONTEXT_CHANGED_ERROR };
+    }
     window.location.href = result.url;
     return { ok: true, error: null };
   }
@@ -1969,6 +2069,10 @@ async function startCheckout(input) {
  * @returns {Promise<{ok:boolean, error:string|null}>}
  */
 async function openPortal() {
+  const actionContext = captureBillingActionContext('portal');
+  if (!actionContext.validAtStart) {
+    return { ok: false, error: BILLING_ACTION_CONTEXT_CHANGED_ERROR };
+  }
   billingDebugLog('portal:start', { activeOrgId: getActiveOrgIdForBilling() || null });
   const result = await Promise.race([
     createPortalSession(),
@@ -1978,6 +2082,9 @@ async function openPortal() {
   ]);
   billingDebugLog('portal:result', { ok: Boolean(result && result.ok), error: result && result.error ? String(result.error) : null });
   if (result.ok && result.url) {
+    if (!actionContext.isCurrent()) {
+      return { ok: false, error: BILLING_ACTION_CONTEXT_CHANGED_ERROR };
+    }
     window.location.href = result.url;
     return { ok: true, error: null };
   }

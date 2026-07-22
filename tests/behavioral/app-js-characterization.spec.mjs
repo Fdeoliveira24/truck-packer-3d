@@ -155,6 +155,61 @@ async function switchWorkspaceAndWait(page, orgId, workspaceName) {
   return { ...observed, after: observed.state, during };
 }
 
+async function sendWorkspaceSwitchSyncAndObserve(sender, receiver, payload) {
+  const storageKey = 'tp3d:workspace-switch-state-sync';
+  await receiver.evaluate(({ expectedKey, expectedReason }) => {
+    let timeoutId;
+    let storageHandler;
+    window.__TP3D_TEST_WORKSPACE_SYNC_OBSERVED__ = new Promise((resolve, reject) => {
+      storageHandler = event => {
+        if (!event || event.key !== expectedKey || !event.newValue) return;
+        let parsed = null;
+        try {
+          parsed = JSON.parse(event.newValue);
+        } catch {
+          return;
+        }
+        if (!parsed || String(parsed.reason || '') !== expectedReason) return;
+        queueMicrotask(() => {
+          window.removeEventListener('storage', storageHandler);
+          window.clearTimeout(timeoutId);
+          const billing = window.__TP3D_BILLING && window.__TP3D_BILLING.getBillingState
+            ? window.__TP3D_BILLING.getBillingState()
+            : null;
+          resolve({
+            activeOrgId: window.OrgContext.getActiveOrgId(),
+            billingOrgId: billing && billing.orgId ? String(billing.orgId) : null,
+            localOrgId: window.localStorage.getItem('tp3d:active-org-id'),
+            route: window.location.hash,
+            state: window.TruckPackerApp.getWorkspaceSwitchState(),
+          });
+        });
+      };
+      window.addEventListener('storage', storageHandler);
+      timeoutId = window.setTimeout(() => {
+        window.removeEventListener('storage', storageHandler);
+        reject(new Error(`Timed out waiting for workspace sync ${expectedReason}.`));
+      }, 10000);
+    });
+  }, { expectedKey: storageKey, expectedReason: String(payload.reason || '') });
+
+  await sender.evaluate(({ key, value }) => {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  }, { key: storageKey, value: payload });
+
+  return receiver.evaluate(async () => {
+    const observed = await window.__TP3D_TEST_WORKSPACE_SYNC_OBSERVED__;
+    delete window.__TP3D_TEST_WORKSPACE_SYNC_OBSERVED__;
+    return observed;
+  });
+}
+
+async function openWorkspaceSyncSender(scenario) {
+  const page = await scenario.context.newPage();
+  await page.goto(`${harness.baseUrl}/__workspace-sync-sender__`, { waitUntil: 'domcontentloaded' });
+  return page;
+}
+
 async function armWindowEvent(page, eventType) {
   await page.evaluate(type => {
     if (!window.__TP3D_TEST_WINDOW_EVENTS__) window.__TP3D_TEST_WINDOW_EVENTS__ = {};
@@ -720,6 +775,111 @@ test('real two-page context propagates cross-tab workspace readiness', async t =
   assert.ok(receiverObserved.detail.states.some(state => state.active && state.remote),
     'the receiver observes an active remote switch before readiness');
   assert.equal(scenario.diagnostics.pageErrors.length, 0, JSON.stringify(scenario.diagnostics.pageErrors));
+});
+
+test('TRIAGE-3B older conflicting active readiness can replace a newer completed target', async t => {
+  const scenario = await harness.createScenario(multiWorkspaceScenario());
+  t.after(() => scenario.close());
+
+  const receiver = await scenario.openPage();
+  const sender = await openWorkspaceSyncSender(scenario);
+  await scenario.waitForAppReady(receiver);
+  await waitForSignedInOwner(receiver, 'user-a', ORG_A);
+
+  await switchWorkspaceAndWait(receiver, ORG_B, 'Workspace B');
+  await switchWorkspaceAndWait(receiver, ORG_A, 'Workspace A');
+  await switchWorkspaceAndWait(receiver, ORG_B, 'Workspace B');
+  const before = await receiver.evaluate(() => ({
+    activeOrgId: window.OrgContext.getActiveOrgId(),
+    localOrgId: window.localStorage.getItem('tp3d:active-org-id'),
+    route: window.location.hash,
+    state: window.TruckPackerApp.getWorkspaceSwitchState(),
+  }));
+  assert.equal(before.activeOrgId, ORG_B);
+  assert.equal(before.state.active, false);
+  assert.equal(before.state.toOrgId, ORG_B);
+  assert.ok(before.state.version > 1, JSON.stringify(before));
+
+  const staleTimestamp = Math.max(1, Number(before.state.finishedAt) - 5000);
+  const after = await sendWorkspaceSwitchSyncAndObserve(sender, receiver, {
+    active: true,
+    fromOrgId: ORG_B,
+    toOrgId: ORG_A,
+    source: 'triage-3b-older-tab',
+    startedAt: staleTimestamp,
+    finishedAt: 0,
+    version: 1,
+    localStateReady: false,
+    orgReady: false,
+    billingReady: false,
+    remote: false,
+    reason: 'triage-3b-older-conflicting-active',
+    userId: 'user-a',
+    tabId: 'triage-3b-stale-tab',
+    ts: staleTimestamp,
+  });
+  t.diagnostic(`TRIAGE-3B scenario A: ${JSON.stringify({ before, after })}`);
+
+  assert.equal(after.activeOrgId, ORG_B, JSON.stringify({ before, after }));
+  assert.equal(after.localOrgId, ORG_B);
+  assert.equal(after.state.active, true);
+  assert.equal(after.state.toOrgId, ORG_A);
+  assert.equal(after.state.version, 1);
+  assert.equal(after.state.remote, true);
+  assert.equal(after.route, before.route);
+});
+
+test('TRIAGE-3B older completion for another target cannot finish a newer local switch', async t => {
+  const scenario = await harness.createScenario(multiWorkspaceScenario());
+  t.after(() => scenario.close());
+
+  const receiver = await scenario.openPage();
+  const sender = await openWorkspaceSyncSender(scenario);
+  await scenario.waitForAppReady(receiver);
+  await waitForSignedInOwner(receiver, 'user-a', ORG_A);
+  scenario.billing.setDeferred();
+
+  await receiver.evaluate(orgId => window.OrgContext.setActiveOrgId(orgId, {
+    source: 'triage-3b-newer-local-switch',
+  }), ORG_B);
+  const before = await receiver.evaluate(() => ({
+    activeOrgId: window.OrgContext.getActiveOrgId(),
+    localOrgId: window.localStorage.getItem('tp3d:active-org-id'),
+    route: window.location.hash,
+    state: window.TruckPackerApp.getWorkspaceSwitchState(),
+  }));
+  assert.equal(before.activeOrgId, ORG_B);
+  assert.equal(before.state.active, true, JSON.stringify(before));
+  assert.equal(before.state.toOrgId, ORG_B);
+  assert.equal(before.state.remote, false);
+
+  const staleTimestamp = Math.max(1, Number(before.state.startedAt) - 5000);
+  const after = await sendWorkspaceSwitchSyncAndObserve(sender, receiver, {
+    active: false,
+    fromOrgId: ORG_B,
+    toOrgId: ORG_A,
+    source: 'triage-3b-older-tab',
+    startedAt: staleTimestamp - 1000,
+    finishedAt: staleTimestamp,
+    version: 1,
+    localStateReady: true,
+    orgReady: true,
+    billingReady: true,
+    remote: true,
+    reason: 'triage-3b-stale-completion',
+    userId: 'user-a',
+    tabId: 'triage-3b-stale-tab',
+    ts: staleTimestamp,
+  });
+  t.diagnostic(`TRIAGE-3B scenario B: ${JSON.stringify({ before, after })}`);
+
+  assert.equal(after.activeOrgId, ORG_B, JSON.stringify({ before, after }));
+  assert.equal(after.localOrgId, ORG_B);
+  assert.equal(after.state.active, true);
+  assert.equal(after.state.toOrgId, ORG_B);
+  assert.equal(after.state.version, before.state.version);
+  assert.equal(after.state.remote, false);
+  assert.equal(after.route, before.route);
 });
 
 test('failed organization bundle loading can recover on a later hydration', async t => {

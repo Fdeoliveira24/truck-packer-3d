@@ -63,6 +63,7 @@ const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.me
 const truckChangeControllerPath = new URL('../../src/ui/truck-change-controller.js', import.meta.url);
 const sceneRuntimePath = new URL('../../src/editor/scene-runtime.js', import.meta.url);
 const casesScreenPath = new URL('../../src/screens/cases-screen.js', import.meta.url);
+const settingsScreenPath = new URL('../../src/screens/settings-screen.js', import.meta.url);
 const categoryServicePath = new URL('../../src/services/category-service.js', import.meta.url);
 const stylesMainPath = new URL('../../styles/main.css', import.meta.url);
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
@@ -7642,10 +7643,10 @@ test('EDITOR inspector unit labels follow preferences and repaint on preference 
 });
 
 test('PREFERENCES remove millimeter selection and use hidden-opacity slider', async () => {
-  const [settingsSrc, indexSrc, appSrc, utilsSrc, utilsIndexSrc] = await Promise.all([
+  const [settingsSrc, indexSrc, settingsScreenSrc, utilsSrc, utilsIndexSrc] = await Promise.all([
     fs.readFile(settingsOverlayPath, 'utf8'),
     fs.readFile(indexHtmlPath, 'utf8'),
-    fs.readFile(appPath, 'utf8'),
+    fs.readFile(settingsScreenPath, 'utf8'),
     fs.readFile(coreUtilsPath, 'utf8'),
     fs.readFile(coreUtilsIndexPath, 'utf8'),
   ]);
@@ -7674,11 +7675,11 @@ test('PREFERENCES remove millimeter selection and use hidden-opacity slider', as
     'legacy settings markup must also use a range slider for hidden opacity');
   assert.match(indexSrc, /id="pref-hidden-opacity-value"[\s\S]*0\.30/,
     'legacy settings markup must show the hidden opacity value beside the slider');
-  assert.match(appSrc, /const elHiddenValue[\s\S]*document\.getElementById\('pref-hidden-opacity-value'\)/,
+  assert.match(settingsScreenSrc, /const elHiddenValue[\s\S]*document\.getElementById\('pref-hidden-opacity-value'\)/,
     'legacy settings controller must bind the hidden opacity value readout');
-  assert.match(appSrc, /elHidden\.addEventListener\('input', syncHiddenOpacityValue\)/,
+  assert.match(settingsScreenSrc, /elHidden\.addEventListener\('input', syncHiddenOpacityValue\)/,
     'hidden opacity readout must update while the slider moves');
-  assert.match(appSrc, /elHiddenValue\.textContent = Number\(elHidden\.value\)\.toFixed\(2\)/,
+  assert.match(settingsScreenSrc, /elHiddenValue\.textContent = Number\(elHidden\.value\)\.toFixed\(2\)/,
     'legacy settings controller must format the hidden opacity readout consistently');
 });
 

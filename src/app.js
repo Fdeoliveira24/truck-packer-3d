@@ -61,6 +61,7 @@ import { createSceneRuntime } from './editor/scene-runtime.js';
 import { createCaseScene, createInteractionManager, createEditorScreen } from './screens/editor-screen.js';
 import { createPacksScreen } from './screens/packs-screen.js';
 import { createCasesScreen } from './screens/cases-screen.js';
+import { createSettingsScreen } from './screens/settings-screen.js';
 import * as CoreUtils from './core/utils/index.js';
 import * as BrowserUtils from './core/browser.js';
 import * as CoreDefaults from './core/defaults.js';
@@ -4467,74 +4468,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     // SECTION: SCREEN UI (SETTINGS)
     // ============================================================================
-    const SettingsUI = (() => {
-      const elLength = /** @type {HTMLSelectElement} */ (document.getElementById('pref-length'));
-      const elWeight = /** @type {HTMLSelectElement} */ (document.getElementById('pref-weight'));
-      const elTheme = /** @type {HTMLSelectElement} */ (document.getElementById('pref-theme'));
-      const elLabel = /** @type {HTMLInputElement} */ (document.getElementById('pref-label-size'));
-      const elHidden = /** @type {HTMLInputElement} */ (document.getElementById('pref-hidden-opacity'));
-      const elHiddenValue = /** @type {HTMLElement} */ (document.getElementById('pref-hidden-opacity-value'));
-      const elSnap = /** @type {HTMLSelectElement} */ (document.getElementById('pref-snapping-enabled'));
-      const elGrid = /** @type {HTMLInputElement} */ (document.getElementById('pref-grid-size'));
-      const elShot = /** @type {HTMLSelectElement} */ (document.getElementById('pref-shot-res'));
-      const elPdfStats = /** @type {HTMLSelectElement} */ (document.getElementById('pref-pdf-stats'));
-      const btnSave = /** @type {HTMLButtonElement} */ (document.getElementById('btn-save-prefs'));
-      const btnReset = /** @type {HTMLButtonElement} */ (document.getElementById('btn-reset-demo'));
-
-      function initSettingsUI() {
-        btnSave.addEventListener('click', () => save());
-        elHidden.addEventListener('input', syncHiddenOpacityValue);
-        btnReset.addEventListener('click', async () => {
-          const ok = await UIComponents.confirm({
-            title: 'Reset demo data?',
-            message: 'This replaces your local data with the demo set.',
-            danger: true,
-            okLabel: 'Reset',
-          });
-          if (!ok) return;
-          Storage.clearAll();
-          window.location.reload();
-        });
-      }
-
-      function syncHiddenOpacityValue() {
-        if (!elHiddenValue) return;
-        elHiddenValue.textContent = Number(elHidden.value).toFixed(2);
-      }
-
-      function loadForm() {
-        const p = PreferencesManager.get();
-        elLength.value = p.units.length;
-        elWeight.value = p.units.weight;
-        elTheme.value = p.theme;
-        elLabel.value = String(p.labelFontSize);
-        elHidden.value = String(p.hiddenCaseOpacity);
-        syncHiddenOpacityValue();
-        elSnap.value = String(Boolean(p.snapping.enabled));
-        elGrid.value = String(p.snapping.gridSize);
-        elShot.value = p.export.screenshotResolution;
-        elPdfStats.value = String(Boolean(p.export.pdfIncludeStats));
-      }
-
-      function save() {
-        const prev = PreferencesManager.get();
-        const next = Utils.deepClone(prev);
-        next.units.length = elLength.value;
-        next.units.weight = elWeight.value;
-        next.theme = elTheme.value;
-        next.labelFontSize = Utils.clamp(Number(elLabel.value) || 12, 8, 24);
-        next.hiddenCaseOpacity = Utils.clamp(Number(elHidden.value) || 0.3, 0, 1);
-        next.snapping.enabled = elSnap.value === 'true';
-        next.snapping.gridSize = Math.max(0.25, Number(elGrid.value) || 1);
-        next.export.screenshotResolution = elShot.value;
-        next.export.pdfIncludeStats = elPdfStats.value === 'true';
-        PreferencesManager.set(next);
-        PreferencesManager.applyTheme(next.theme);
-        UIComponents.showToast('Preferences saved', 'success');
-      }
-
-      return { init: initSettingsUI, loadForm };
-    })();
+    const SettingsUI = createSettingsScreen({
+      Utils,
+      UIComponents,
+      PreferencesManager,
+      Storage,
+    });
 
     // ============================================================================
     // SECTION: GLOBAL INPUT (KEYBOARD)

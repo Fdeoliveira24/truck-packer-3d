@@ -2,7 +2,7 @@
 
 **Reviewer stance:** Adversarial second engineer. Goal: break the contract before implementation does.
 **Subject:** `docs/engineering/p0-domain-module-contract.md`
-**Verdict up front:** The contract is sound in its ownership model and correctly resolves the two prior blockers (mutual coupling via late-bound callbacks; AccountSwitcher via inter-module-private accessors). It is **not yet fully airtight** on three concrete points that must be closed before Stage 1. I concur with **SAFE TO BEGIN AFTER LISTED CHARACTERIZATION TESTS**, with the additions below.
+**Verdict up front:** The contract is sound in its ownership model and correctly resolves the two prior blockers (mutual coupling; AccountSwitcher via inter-module-private accessors). The three points I flagged as not-yet-airtight have now been closed by the gate-closure phase (see **Gate-closure disposition** at the end). Updated verdict: **concur with SAFE TO BEGIN.**
 
 ## 1. Contradictions found
 
@@ -52,6 +52,15 @@
 1. Resolve the `getActiveOrgIdForBilling` injected-vs-global contradiction (recommend: leave global).
 2. Trace the current caller of `markWorkspaceSwitchBillingReadyIfSettled` + `_billingGateApplier` setter; confirm callback direction/owner.
 3. Establish a **fresh green browser baseline on current HEAD** (the deferred gate must run before, not just during, extraction).
-4. Add the three characterization pins (billing facade set + copy; `refreshBilling` wrappable; `window.OrgContext` exact-4-members).
+4. Add the four characterization pins (billing facade set + copy; `refreshBilling` wrappable; `window.OrgContext` exact-4-members).
 
-With these four closed, the contract is implementation-ready and the staged plan is safe.
+## Gate-closure disposition (all findings resolved)
+
+- **Finding 1 (contradiction) — CLOSED.** Source confirms `getActiveOrgIdForBilling` (app.js:936) reads the `window.OrgContext` global + localStorage fallback; contract updated to preserve the global read, not inject. My recommendation was adopted.
+- **Finding 2 (unproven callback direction) — CLOSED, with a material correction I concur with.** The trace shows readiness is marked via the **existing `subscribeBilling` subscription** (app.js:9241), synchronously inside `_notifyBilling` after `_billingState` mutation, not via a new `onBillingSettled` callback. This is *better* than the contract's original proposal — it uses the existing API and adds no surface. `_billingGateApplier` confirmed set-once (9239), null-guarded (957). Ownership model stands.
+- **Finding 3 (stale browser baseline) — CLOSED.** Full behavioral suite run on current HEAD: **37/37 green**. I additionally flag (and the contract now records) that owner/non-owner checkout/portal money-action flows are not individually browser-scripted; DEF-011 is audit-structural. This is **non-blocking for the baseline** (nothing red) but the Stage-1 browser subset must add live checkout/portal exercise before Billing merges — retained as a Stage-1 gate, not a baseline blocker.
+- **Findings 4–9 (overexposure / cycles / ordering / identity / test gaps / staging) — CLOSED or retained-as-documented.** The four pins are added and passing; `getBillingState` copy semantics are pinned structurally; `window.OrgContext` exact-4-members pinned (guards accidental exposure of the unresolved members); no import cycle; late-bind null-guards required per the confirmed `_billingGateApplier` precedent.
+
+**Residual (carried into Stage 1, not blocking):** confirm `authBlockState` sole-writer during Stage 3; add live checkout/portal + storage-isolation scenarios to the Stage-1/Stage-4 browser subset; per-site assert no reader retains a snapshot across an async boundary during each stage's re-pointing.
+
+**Updated verdict: SAFE TO BEGIN.** The four mandatory closures are complete; the contract is implementation-ready and the Billing-first staged plan is safe.

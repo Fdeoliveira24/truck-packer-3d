@@ -63,6 +63,7 @@ const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.me
 const trailerGeometryPath = new URL('../../src/editor/trailer-geometry.js', import.meta.url);
 const keyboardManagerPath = new URL('../../src/ui/keyboard-manager.js', import.meta.url);
 const recoverableErrorOverlayPath = new URL('../../src/ui/recoverable-error-overlay.js', import.meta.url);
+const debuggerPath = new URL('../../src/debugger.js', import.meta.url);
 const truckChangeControllerPath = new URL('../../src/ui/truck-change-controller.js', import.meta.url);
 const sceneRuntimePath = new URL('../../src/editor/scene-runtime.js', import.meta.url);
 const casesScreenPath = new URL('../../src/screens/cases-screen.js', import.meta.url);
@@ -24340,4 +24341,83 @@ test('APP-STABILIZATION-PHASE4 logout source has no reload fallback and shares d
     'immediate and stability-gated signed-out rendering share the same idempotence boundary');
   assert.doesNotMatch(renderAuth, /^\s*_executeSignedOutCleanup\(\{/m,
     'renderAuthState cannot bypass the shared signed-out finalizer');
+});
+
+// ─── P0 DOMAIN CONTRACT PINS (pre-extraction) ────────────────────────────────
+// These lock the exact CURRENT facade / copy / wrapping / assignment-timing
+// contracts that the coordinated Organization/Billing/Auth extraction must
+// preserve. They are structural (source-pattern) assertions of present behavior;
+// the runtime copy/wrap behavior is additionally exercised by the browser
+// characterization suite. See docs/engineering/p0-domain-module-contract.md.
+
+test('P0-CONTRACT window.__TP3D_BILLING exposes exactly the current member set (pickCheckoutInterval added later)', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+  const start = app.indexOf('window.__TP3D_BILLING = {');
+  assert.ok(start >= 0, 'window.__TP3D_BILLING object literal must exist');
+  const end = app.indexOf('\n  };', start);
+  assert.ok(end > start, 'billing facade literal must close at its top-level brace');
+  const facade = app.slice(start, end);
+
+  for (const member of [
+    'getBillingState', 'subscribeBilling', 'refreshBilling', 'clearBillingState',
+    'canUseProFeatures', 'getProRuleSet', 'getCheckoutPlanOptions',
+    'startCheckout', 'openPortal', 'selfTest',
+  ]) {
+    assert.match(facade, new RegExp('\\n    ' + member + '[,:]'),
+      `billing facade must expose ${member} as a top-level member`);
+  }
+  // Exactly ten top-level members (4-space indent); selfTest body is deeper-indented.
+  const topLevelMembers = (facade.match(/\n {4}[a-zA-Z]+[,:]/g) || []).length;
+  assert.equal(topLevelMembers, 10, 'billing facade must expose exactly ten initial members');
+
+  // pickCheckoutInterval is NOT in the initial literal; it is added at the init point.
+  assert.doesNotMatch(facade, /pickCheckoutInterval/,
+    'pickCheckoutInterval must not appear in the initial billing facade literal');
+  assert.match(app, /window\.__TP3D_BILLING\.pickCheckoutInterval = pickCheckoutInterval/,
+    'pickCheckoutInterval must be added to the facade at the later initialization point');
+});
+
+test('P0-CONTRACT getBillingState returns a fresh object literal, not the live _billingState reference', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+  const start = app.indexOf('function getBillingState() {');
+  const end = app.indexOf('\nfunction subscribeBilling', start);
+  assert.ok(start >= 0 && end > start, 'getBillingState body must be locatable');
+  const body = app.slice(start, end);
+  assert.match(body, /return \{/, 'getBillingState must return a fresh object literal (copy semantics)');
+  assert.doesNotMatch(body, /return _billingState\b/,
+    'getBillingState must not return the live _billingState reference');
+  assert.match(body, /_billingState\.\w+/, 'getBillingState must copy fields off _billingState');
+});
+
+test('P0-CONTRACT refreshBilling is a reassignable facade member wrappable in place by diagnostics', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+  const dbg = await fs.readFile(debuggerPath, 'utf8');
+  const start = app.indexOf('window.__TP3D_BILLING = {');
+  const facade = app.slice(start, app.indexOf('\n  };', start));
+  assert.match(facade, /\n    refreshBilling,/,
+    'refreshBilling must be a plain (writable) facade member so diagnostics can wrap it');
+  assert.match(dbg, /billing\.refreshBilling\.bind\(billing\)/,
+    'debugger must capture the original refreshBilling before wrapping');
+  assert.match(dbg, /billing\.refreshBilling = function/,
+    'debugger must wrap by reassigning the facade member in place');
+});
+
+test('P0-CONTRACT window.OrgContext exposes exactly four members and no unresolved facade methods', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+  const start = app.indexOf('const OrgContext = {');
+  assert.ok(start >= 0, 'OrgContext object literal must exist');
+  const end = app.indexOf('\n    };', start);
+  assert.ok(end > start, 'OrgContext literal must close');
+  const facade = app.slice(start, end);
+
+  for (const m of ['getActiveOrgId', 'setActiveOrgId', 'hydrateActiveOrgId', 'getActiveRole']) {
+    assert.match(facade, new RegExp('\\n {6}' + m + '[,:]'), `OrgContext must expose ${m}`);
+  }
+  const members = (facade.match(/\n {6}[a-zA-Z]+[,:]/g) || []).length;
+  assert.equal(members, 4, 'OrgContext must expose exactly four members');
+  for (const absent of ['handleWorkspaceLeft', 'handleOwnershipTransferred', 'notifyOrgAccessLoss']) {
+    assert.doesNotMatch(facade, new RegExp(absent),
+      `OrgContext must not expose the unresolved member ${absent}`);
+  }
+  assert.match(app, /window\.OrgContext = OrgContext/, 'OrgContext assignment timing must be preserved');
 });

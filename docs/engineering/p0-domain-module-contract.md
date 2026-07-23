@@ -109,7 +109,9 @@ All methods below are the *permanent* surface. Naming is behavior-specific (no `
 
 ### Organization module — `createOrgContext({ ... }) → OrgContextModule`
 
-Injected: `StateStore`, `SupabaseClient`, `UIComponents`, `getBillingState` (billing accessor), `maybeScheduleBillingRefresh` (billing), `setWorkspaceStorageScope`/`flushPendingStorageSave`/`markLocalStateReady` (root storage), `getSignedInUserIdStrict` (auth), `dispatchEvent` (window).
+Injected: `StateStore`, `SupabaseClient`, `UIComponents`, `getBillingState` (billing accessor), `maybeScheduleBillingRefresh` (billing), `subscribeBilling` (billing — org registers its readiness marker as a billing subscriber, the existing mechanism), `setWorkspaceStorageScope`/`flushPendingStorageSave`/`markLocalStateReady` (root storage), `getSignedInUserIdStrict` (auth), `dispatchEvent` (window).
+
+> **Gate-2 correction (verified):** the billing→org readiness path is the **existing `subscribeBilling` subscription** (app.js:9241 registers `subscribeBilling(s => markWorkspaceSwitchBillingReadyIfSettled(s, 'billing-subscriber'))`), plus three direct synchronous `markWorkspaceSwitchBillingReadyIfSettled(getBillingState(), …)` calls inside org functions (5315/5347/5602). There is **no new `onBillingSettled` callback**; org subscribes to `BillingModule.subscribeBilling`, exactly as today.
 
 | Method | Args | Returns | Sync | Side effects / events | Order / guard | Visibility |
 |---|---|---|---|---|---|---|
@@ -129,7 +131,9 @@ Injected: `StateStore`, `SupabaseClient`, `UIComponents`, `getBillingState` (bil
 
 ### Billing module — `createBilling({ ... }) → BillingModule`
 
-Injected: `getActiveOrgIdForBilling` (org/root accessor), `SupabaseClient`, billing service fns (`fetchBillingStatus`,`createCheckoutSession`,`createPortalSession`), `onBillingSettled` (callback → org's `markWorkspaceSwitchBillingReady`), `dispatchEvent`.
+Injected: `SupabaseClient`, billing service fns (`fetchBillingStatus`,`createCheckoutSession`,`createPortalSession`), `dispatchEvent`.
+
+> **Gate-1 correction (verified):** `getActiveOrgIdForBilling` is **NOT injected**. It is a billing-region function (app.js:936) that reads the **`window.OrgContext` global** (`window.OrgContext.getActiveOrgId()`, normalized) with a `localStorage['tp3d:active-org-id']` fallback. Defined at module top level but only *called* after init (post-5382), so the global is always present when read; the localStorage fallback is a deliberate resilience/compatibility behavior, not an implementation detail. **Decision: preserve the `window.OrgContext` global read verbatim** — do not introduce an injected replacement. It becomes a billing-module-internal function reading the global. There is **no readiness callback injected into Billing** (Gate-2); org subscribes to `BillingModule.subscribeBilling`.
 
 | Method | Args | Returns | Sync | Guard | Visibility |
 |---|---|---|---|---|---|
@@ -201,7 +205,7 @@ AccountSwitcher will later consume: `getOrgContextSnapshot()` (activeOrg, orgs, 
 | user A→B→A | order tuple + version monotonicity prevent regression |
 | superseded switch | newer `beginWorkspaceSwitch` supersedes; order tuple gates |
 
-**Ownership model — VALIDATED (candidate confirmed):** Org owns `workspaceSwitchState` + all transition methods + event dispatch; root supplies `localStateReady`; billing calls `OrgContextModule.markWorkspaceSwitchBillingReady(snapshot)` on settle (synchronous, no async indirection — preserves ordering); auth supplies identity truth via injected accessor. This is the only model that keeps the completion rule synchronous and single-owner.
+**Ownership model — VALIDATED (candidate confirmed; mechanism corrected by Gate 2):** Org owns `workspaceSwitchState` + all transition methods + event dispatch; root supplies `localStateReady`; **billing readiness reaches org through the existing `subscribeBilling` subscription** — org registers `markWorkspaceSwitchBillingReadyIfSettled` as a billing subscriber (app.js:9241), and `_notifyBilling()` invokes it **synchronously after `_billingState` mutation** (and before the direct gate re-application at the refresh tail, app.js:1737). Stale results are discarded before `_notifyBilling`, so no readiness marking fires for them. Auth supplies identity truth via injected accessor. This keeps the completion rule synchronous and single-owner and requires **no new inter-module callback** — only the existing subscription API. `_billingGateApplier` is a *separate* mechanism: root sets it once to `updateSidebarNotice` (app.js:9239) via `setBillingGateApplier`; `applyAccessGateFromBilling` early-returns when it is absent (app.js:957), so it is safe before binding and never repeatedly rebound.
 
 ---
 
@@ -392,9 +396,21 @@ No behavior is *entirely* uncharacterized, so a separate characterization-only c
 9. **Stop conditions:** any DEF-009/010/011 regression, ordering change, facade drift, or red browser matrix halts the stage.
 10. **Approval:**
 
-> **SAFE TO BEGIN AFTER LISTED CHARACTERIZATION TESTS**
+> **SAFE TO BEGIN**
 >
-> Add, as the first commit on this branch, the two "mandatory before Stage 1" pins (billing facade member-set + `getBillingState()` copy identity; `refreshBilling` in-place wrappability). Re-enable the browser characterization gate for this phase. With those in place, Stage 1 (Billing) may proceed under the frozen contract above.
+> All four mandatory gates are closed (see Gate Closure below): the `getActiveOrgIdForBilling` contradiction is resolved (preserve global read); the billing→readiness call direction is verified (existing `subscribeBilling` subscription, synchronous); the current-HEAD browser baseline is green (37/37); and the four characterization pins are added and passing (audit 1,144/0/5). Stage 1 (Billing) may proceed under the frozen contract above, with the Stage-1 browser subset (Audit 15) — including live owner/non-owner checkout+portal and stale-context-no-navigation — required before the phase merges.
+
+---
+
+## Gate Closure (post-review)
+
+**Gate 1 — `getActiveOrgIdForBilling`:** RESOLVED. Defined app.js:936 (billing region, module top level); reads `window.OrgContext.getActiveOrgId()` (normalized) with `localStorage['tp3d:active-org-id']` fallback; 17 callers; only invoked post-init (after the 5382 `window.OrgContext` assignment), so no facade-timing hazard; the fallback is a deliberate resilience/compat behavior. **Rule: preserve the global read; do not inject.** Recorded under Billing dependencies (Audit 3), construction/wiring (Audit 5), and prohibited changes (Audit 17).
+
+**Gate 2 — billing→readiness:** VERIFIED. (1) Callers of `markWorkspaceSwitchBillingReadyIfSettled`: the init-registered billing subscriber (9241) plus three direct in-org calls (5315/5347/5602). (2)/(3) Fires on every billing state change via `_notifyBilling` — after success, failure (error is a settled state), clear, cached/freshness reuse, and cross-tab application; **not** after stale-result rejection (discarded before notify). (4) Inspects a `getBillingState()` copy. (5) Synchronous. (6) `_notifyBilling()` runs after `_billingState` mutation; in `refreshBilling` it precedes the direct `applyAccessGateFromBilling` re-call (1737). (7) `_billingGateApplier` set once to `updateSidebarNotice` (9239). (8)/(9) Absent (`null`) from module-eval until init; `applyAccessGateFromBilling` early-returns when absent (957). (10) No repeated binding. **Ownership model confirmed; mechanism corrected to the existing subscription — no new callback.**
+
+**Gate 3 — current-HEAD browser baseline:** GREEN. `node --test tests/behavioral/app-js-characterization.spec.mjs` (via PTY), node v22.23.1, Playwright/Chromium 1.61.1, on this branch HEAD (`c188550` + these gate changes; production code identical to `4f83c32`). **37 passed / 0 failed / 0 skipped**, ~52.9s. Covers DEF-009/010/011-adjacent scenarios: signed-out/signed-in boot, repeated-init ownership, token refresh, A→B→A user switch, same-tab + cross-tab workspace switch, workspace readiness ordering (incl. equal-time tab-ID convergence, newer-remote-progress acceptance), failed org-bundle recovery, stale-auth-epoch billing rejection + authoritative-generation ownership, offline/online billing recovery. **Coverage note (non-blocking):** the suite does not individually script owner/non-owner **checkout/portal** money-action flows; DEF-011 is covered structurally in the audit suite and must be added to the Stage-1 browser subset before Billing merges (Audit 15). No result is non-green.
+
+**Gate 4 — characterization pins:** ADDED (4 tests, `tests/audit/security-and-invariants.spec.mjs`, `P0-CONTRACT …`): (1) `window.__TP3D_BILLING` exactly 10 members + `pickCheckoutInterval` added at init; (2) `getBillingState` returns a fresh object literal, not the live `_billingState`; (3) `refreshBilling` is a writable facade member and the debugger wraps it in place; (4) `window.OrgContext` exactly 4 members with `handleWorkspaceLeft`/`handleOwnershipTransferred`/`notifyOrgAccessLoss` absent. Audit total **1,144 passed / 0 failed / 5 skipped** (was 1,140).
 
 ---
 

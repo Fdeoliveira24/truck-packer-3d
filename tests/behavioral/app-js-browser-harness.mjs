@@ -174,6 +174,39 @@ function installPrebootInstrumentation() {
   };
 }
 
+// TRIAGE-3D-B: deterministic, test-only failure injection at an already-exposed
+// initialization boundary (window.TruckPackerApp.EditorUI.init, called from the
+// unguarded src/app.js:9049-9058 block). A property-setter trap on
+// window.TruckPackerApp fires synchronously the instant app.js assigns the facade
+// (src/app.js:2304 / src/app.js:6851), which happens before boot() ever calls
+// init() (src/app.js:10225-10243) — so the throwing replacement is installed with
+// no timing race against the auto-boot. Only the facade assignment that already
+// carries an EditorUI object is patched; the earlier `window.TruckPackerApp =
+// window.TruckPackerApp || {}` stub assignment is ignored.
+function installEditorInitFailureTrap() {
+  let actualApp;
+  Object.defineProperty(window, 'TruckPackerApp', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return actualApp;
+    },
+    set(value) {
+      actualApp = value;
+      if (value && value.EditorUI && typeof value.EditorUI.init === 'function' && !window.__TRIAGE_ORIGINAL_EDITOR_INIT__) {
+        const original = value.EditorUI.init;
+        let callCount = 0;
+        window.__TRIAGE_ORIGINAL_EDITOR_INIT__ = original;
+        window.__TRIAGE_EDITOR_INIT_CALLS__ = () => callCount;
+        value.EditorUI.init = function throwingEditorInit(...args) {
+          callCount += 1;
+          throw new Error('TRIAGE-3D-B injected initializer failure');
+        };
+      }
+    },
+  });
+}
+
 async function startStaticServer() {
   const server = http.createServer(async (request, response) => {
     try {
@@ -430,6 +463,30 @@ export async function createAppBrowserHarness() {
             + `window.__TP3D_FAKE_SUPABASE_SCENARIO__ = ${serializedScenario};\n`
             + fakeSupabaseSource,
         });
+        if (scenario.injectEditorInitFailure) {
+          await context.addInitScript({
+            content: `(${installEditorInitFailureTrap.toString()})();`,
+          });
+        }
+        if (scenario.supabaseConfigOverride) {
+          // TRIAGE-3D-B Scenario E: rewrite the served index.html's inline
+          // window.__TP3D_SUPABASE config block (index.html:1008-1016) to an
+          // existing, intentionally-recoverable degraded value (see
+          // src/app.js:8305-8332). Test-only response rewrite; src/ is untouched.
+          const overrideJson = JSON.stringify(scenario.supabaseConfigOverride);
+          await context.route('**/index.html', async route => {
+            const response = await route.fetch();
+            const body = await response.text();
+            const replaced = body.replace(
+              /window\.__TP3D_SUPABASE\s*=\s*\{[\s\S]*?\};/,
+              `window.__TP3D_SUPABASE = ${overrideJson};`
+            );
+            if (replaced === body) {
+              throw new Error('harness: could not find window.__TP3D_SUPABASE block in index.html to override');
+            }
+            await route.fulfill({ response, body: replaced });
+          });
+        }
         await installDeterministicRoutes(context, diagnostics, billing);
       } catch (error) {
         await billing.abortAll().catch(() => {});

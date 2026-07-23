@@ -636,6 +636,116 @@ test('repeated init preserves first-init listener, timer, channel, network, and 
   assert.equal(scenario.diagnostics.pageErrors.length, 0, JSON.stringify(scenario.diagnostics.pageErrors));
 });
 
+test('TRIAGE-3D-B unexpected initializer failure settles initCompleted without markAppReady, then a restored retry stays suppressed', async t => {
+  const scenario = await harness.createScenario({ initialSession: null, injectEditorInitFailure: true });
+  t.after(() => scenario.close());
+
+  const page = await scenario.openPage();
+
+  // The property-setter trap (installEditorInitFailureTrap) fires the instant
+  // app.js assigns window.TruckPackerApp (src/app.js:2304/10202), before boot()
+  // ever calls init() (src/app.js:10225-10243). By the time the facade is
+  // observable here, the throwing EditorUI.init replacement is already installed.
+  await page.waitForFunction(() => (
+    window.TruckPackerApp
+    && window.TruckPackerApp.EditorUI
+    && typeof window.__TRIAGE_ORIGINAL_EDITOR_INIT__ === 'function'
+  ));
+
+  const preFailure = await readRuntimeSnapshot(page);
+
+  // The unguarded AppShell/PacksUI/CasesUI/EditorUI/... init block (src/app.js:
+  // 9049-9058) is not wrapped in try/catch, so the injected throw propagates out
+  // of init()'s async IIFE and rejects the promise boot() awaits.
+  await page.waitForFunction(() => window.__TP3D_BOOT && window.__TP3D_BOOT.fatalOverlayShown === true, null, { timeout: 15000 });
+
+  const afterFailure = await readRuntimeSnapshot(page);
+  const editorInitCallsAfterFailure = await page.evaluate(() => window.__TRIAGE_EDITOR_INIT_CALLS__());
+
+  // --- Scenario A: unexpected initialization failure ---
+  assert.equal(editorInitCallsAfterFailure, 1, 'the injected initializer ran exactly once');
+  assert.equal(afterFailure.boot.appReady, false, 'BootState.appReady stays falsy on an unexpected init failure (markAppReady is never reached past the throw)');
+  assert.equal(afterFailure.boot.fatalOverlayShown, true, 'boot()\'s .catch() (src/app.js:10233-10236) shows the fatal overlay for an unexpected init failure');
+  assert.ok(afterFailure.facadeKeys.includes('init'), 'the TruckPackerApp facade remains present after a failed init');
+  assert.ok(afterFailure.facadeKeys.includes('EditorUI'), 'the TruckPackerApp facade remains present after a failed init');
+  assert.deepEqual(afterFailure.facadeKeys, preFailure.facadeKeys, 'the facade key set is unchanged by the failure');
+
+  // --- Scenario C: ownership left behind ---
+  // SupabaseClient.onAuthStateChange (src/app.js:8719-8721) runs well before the
+  // unguarded init block and is not undone by the later, unrelated throw.
+  assert.ok(
+    afterFailure.fakeSupabase.authSubscriberCount >= 1,
+    'the auth listener installed earlier in init() remains registered after the later unrelated failure'
+  );
+  assert.deepEqual(
+    afterFailure.instrumentation.channels,
+    preFailure.instrumentation.channels,
+    'the failure itself does not acquire additional BroadcastChannel ownership'
+  );
+  t.diagnostic(`window listener types installed by the time of failure: ${afterFailure.instrumentation.listeners.filter(entry => entry.target === 'window').map(entry => entry.type).join(', ')}`);
+
+  // --- Scenario B: second init() call after restoring the (now-fixed) initializer ---
+  await page.evaluate(() => {
+    window.TruckPackerApp.EditorUI.init = window.__TRIAGE_ORIGINAL_EDITOR_INIT__;
+  });
+
+  const secondCallResult = await page.evaluate(async () => {
+    const result = await window.TruckPackerApp.init();
+    return result === undefined ? 'undefined' : typeof result;
+  });
+  const editorInitCallsAfterRetry = await page.evaluate(() => window.__TRIAGE_EDITOR_INIT_CALLS__());
+  const afterRetry = await readRuntimeSnapshot(page);
+
+  assert.equal(secondCallResult, 'undefined', 'a second init() call after failure returns undefined — the same no-op shape as a post-success repeated call (src/app.js:8278)');
+  assert.equal(editorInitCallsAfterRetry, 1, 'the restored, working EditorUI.init is never invoked by the second call: initCompleted (set true in the finally block regardless of success or failure) silently suppresses the retry');
+  assert.equal(afterRetry.boot.appReady, false, 'appReady is still never set: the suppressed retry cannot self-heal readiness');
+  assert.equal(afterRetry.boot.fatalOverlayShown, true, 'the fatal overlay from the first failure is still showing; the suppressed retry cannot clear or transition it');
+  assert.equal(
+    afterRetry.fakeSupabase.authSubscriberCount,
+    afterFailure.fakeSupabase.authSubscriberCount,
+    'the suppressed retry does not add a duplicate Supabase auth subscription'
+  );
+  assert.deepEqual(
+    afterRetry.instrumentation,
+    afterFailure.instrumentation,
+    'the suppressed retry acquires no additional browser-owned resources (listeners/timers/channels/fetches)'
+  );
+
+  assert.equal(scenario.diagnostics.pageErrors.length, 0, JSON.stringify(scenario.diagnostics.pageErrors));
+});
+
+test('TRIAGE-3D-B expected degraded Supabase config path reaches appReady and stays a no-op on retry', async t => {
+  const scenario = await harness.createScenario({
+    initialSession: null,
+    supabaseConfigOverride: {
+      url: 'https://example.invalid.supabase.co',
+      // Stripe-publishable-shaped key instead of a JWT anon key is an existing,
+      // intentionally-recoverable degraded config path — see src/app.js:8311-8332.
+      anonKey: 'sb_publishable_test_not_a_jwt_value',
+    },
+  });
+  t.after(() => scenario.close());
+
+  const page = await scenario.openPage();
+  await page.waitForFunction(
+    () => window.__TP3D_BOOT && (window.__TP3D_BOOT.appReady || window.__TP3D_BOOT.fatalOverlayShown),
+    null,
+    { timeout: 15000 }
+  );
+
+  const afterDegraded = await readRuntimeSnapshot(page);
+  assert.equal(afterDegraded.boot.appReady, true, 'the expected degraded Supabase-config path still reaches appReady (src/app.js:8325-8330)');
+  assert.equal(afterDegraded.boot.fatalOverlayShown, false, 'the expected degraded path is distinguishable from an unexpected failure: no fatal overlay');
+
+  const secondCallResult = await page.evaluate(async () => {
+    const result = await window.TruckPackerApp.init();
+    return result === undefined ? 'undefined' : typeof result;
+  });
+  assert.equal(secondCallResult, 'undefined', 'a second init() call after the degraded path remains a no-op, same as a successful boot');
+
+  assert.equal(scenario.diagnostics.pageErrors.length, 0, JSON.stringify(scenario.diagnostics.pageErrors));
+});
+
 test('signed-in boot and TOKEN_REFRESHED preserve the active user workspace', async t => {
   const scenario = await harness.createScenario(signedInScenario());
   t.after(() => scenario.close());

@@ -60,6 +60,7 @@ const packingCorePath = new URL('../../src/packing-core/index.js', import.meta.u
 const packingCoreValidationPath = new URL('../../src/packing-core/validation.js', import.meta.url);
 const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
+const trailerGeometryPath = new URL('../../src/editor/trailer-geometry.js', import.meta.url);
 const truckChangeControllerPath = new URL('../../src/ui/truck-change-controller.js', import.meta.url);
 const sceneRuntimePath = new URL('../../src/editor/scene-runtime.js', import.meta.url);
 const casesScreenPath = new URL('../../src/screens/cases-screen.js', import.meta.url);
@@ -4218,7 +4219,8 @@ test('3B-GEOMETRY-TOLERANCE uses one shared inch-space containment tolerance', a
   const validationSrc = await fs.readFile(packingCoreValidationPath, 'utf8');
   const appSrc = await fs.readFile(appPath, 'utf8');
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
-  const productionSrc = [packSrc, solverSrc, validationSrc, appSrc, editorSrc].join('\n');
+  const trailerGeometrySrc = await fs.readFile(trailerGeometryPath, 'utf8');
+  const productionSrc = [packSrc, solverSrc, validationSrc, appSrc, editorSrc, trailerGeometrySrc].join('\n');
 
   const definitions = productionSrc.match(/\b(?:export\s+)?const\s+CONTAINMENT_EPS_INCHES\s*=/g) || [];
   assert.equal(definitions.length, 1,
@@ -4236,16 +4238,16 @@ test('3B-GEOMETRY-TOLERANCE uses one shared inch-space containment tolerance', a
   assert.match(solverSrc, /\bisAabbContainedInAnyZone\(/,
     'autopack-solver.js must call the canonical containment helper instead of a local tolerance');
 
-  const appHelperStart = appSrc.indexOf('function isAabbContainedInAnyZone(aabb, zones)');
-  const appHelperEnd = appSrc.indexOf('\n      function zonesInchesToWorld', appHelperStart);
+  const appHelperStart = trailerGeometrySrc.indexOf('function isAabbContainedInAnyZone(aabb, zones)');
+  const appHelperEnd = trailerGeometrySrc.indexOf('\n    function zonesInchesToWorld', appHelperStart);
   const appHelperBlock = appHelperStart >= 0 && appHelperEnd > appHelperStart
-    ? appSrc.slice(appHelperStart, appHelperEnd)
+    ? trailerGeometrySrc.slice(appHelperStart, appHelperEnd)
     : '';
-  assert.ok(appHelperBlock, 'app.js TrailerGeometry containment helper must be present');
+  assert.ok(appHelperBlock, 'trailer-geometry.js TrailerGeometry containment helper must be present');
   assert.match(appHelperBlock, /CorePackLibrary\.CONTAINMENT_EPS_INCHES/,
-    'app.js TrailerGeometry containment helper must reference the shared inch tolerance');
+    'trailer-geometry.js TrailerGeometry containment helper must reference the shared inch tolerance');
   assert.doesNotMatch(appHelperBlock, /0\.01/,
-    'app.js TrailerGeometry containment helper must not retain the old 0.01 world-unit tolerance');
+    'trailer-geometry.js TrailerGeometry containment helper must not retain the old 0.01 world-unit tolerance');
 
   const editorHelperStart = editorSrc.indexOf('function isInsideTruck(aabb)');
   const editorHelperEnd = editorSrc.indexOf('\n    function checkCollision', editorHelperStart);
@@ -4472,12 +4474,12 @@ test('A1.1B AutoPack engine defaults every truck mode to front-first loading', a
 // getFrontBonusBlockedZones) and is never usable.
 
 test('G2.2-CAB-OVERHANG getFrontBonusZone() returns the raised deck starting at y=bonusHeight (deck height / cab clearance)', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
-  const start = appSrc.indexOf('function getFrontBonusZone(truck)');
-  const end = appSrc.indexOf('\n      function getFrontBonusBlockedZones', start);
-  const block = start >= 0 && end > start ? appSrc.slice(start, end) : '';
+  const trailerGeometrySrc = await fs.readFile(trailerGeometryPath, 'utf8');
+  const start = trailerGeometrySrc.indexOf('function getFrontBonusZone(truck)');
+  const end = trailerGeometrySrc.indexOf('\n    function getFrontBonusBlockedZones', start);
+  const block = start >= 0 && end > start ? trailerGeometrySrc.slice(start, end) : '';
 
-  assert.ok(block, 'getFrontBonusZone must be defined in app.js TrailerGeometry');
+  assert.ok(block, 'getFrontBonusZone must be defined in trailer-geometry.js TrailerGeometry');
   assert.match(
     block,
     /zone\(\{ x: L, y: bonusHeight, z: -W \/ 2 \}, \{ x: L \+ bonusLength, y: H, z: W \/ 2 \}\)/,
@@ -4502,7 +4504,7 @@ test('G2.2-CAB-OVERHANG getFrontBonusZone() returns the raised deck starting at 
 
 test('G2.2-CAB-OVERHANG getFrontBonusBlockedZones() returns the cab void below the deck (pack-library.js and app.js)', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const trailerGeometrySrc = await fs.readFile(trailerGeometryPath, 'utf8');
 
   const truck = {
     length: 200,
@@ -4531,10 +4533,10 @@ test('G2.2-CAB-OVERHANG getFrontBonusBlockedZones() returns the cab void below t
     'frontBonus with bonusLength=0 must not have a cab void'
   );
 
-  assert.match(appSrc, /function getFrontBonusBlockedZones\(truck\)/,
-    'app.js TrailerGeometry must define getFrontBonusBlockedZones for visual/settle use');
-  assert.match(appSrc, /getFrontBonusBlockedZones,\n\s*\};/,
-    'app.js TrailerGeometry must export getFrontBonusBlockedZones from its returned object');
+  assert.match(trailerGeometrySrc, /function getFrontBonusBlockedZones\(truck\)/,
+    'trailer-geometry.js TrailerGeometry must define getFrontBonusBlockedZones for visual/settle use');
+  assert.match(trailerGeometrySrc, /getFrontBonusBlockedZones,\n\s*\};/,
+    'trailer-geometry.js TrailerGeometry must export getFrontBonusBlockedZones from its returned object');
 });
 
 test('G2.2-CAB-OVERHANG scene-runtime accounts for total visual length including the front overhang', async () => {
@@ -12819,13 +12821,13 @@ test('AUTO-PACK-A0 trailer geometry helpers block wheel wells and preserve front
 });
 
 test('AUTO-PACK-A0 AutoPack keeps zone containment and stacking guards wired', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const trailerGeometrySrc = await fs.readFile(trailerGeometryPath, 'utf8');
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
 
   assert.match(engineSrc, /const zones = TrailerGeometry\.getTrailerUsableZones\(truck\)/,
     'AutoPack must continue deriving usable zones from trailer geometry');
-  assert.match(appSrc, /if \(mode === 'frontBonus'\)[\s\S]*if \(mode === 'wheelWells'\)/,
-    'app-local trailer geometry must keep frontBonus and wheelWells branches');
+  assert.match(trailerGeometrySrc, /if \(mode === 'frontBonus'\)[\s\S]*if \(mode === 'wheelWells'\)/,
+    'trailer-geometry.js must keep frontBonus and wheelWells branches');
 });
 
 test('AUTO-PACK-A0B normalizeInstance preserves manual orientation lock metadata', async () => {

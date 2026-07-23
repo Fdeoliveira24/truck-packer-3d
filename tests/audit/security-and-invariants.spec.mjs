@@ -61,6 +61,7 @@ const packingCoreValidationPath = new URL('../../src/packing-core/validation.js'
 const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 const trailerGeometryPath = new URL('../../src/editor/trailer-geometry.js', import.meta.url);
+const keyboardManagerPath = new URL('../../src/ui/keyboard-manager.js', import.meta.url);
 const truckChangeControllerPath = new URL('../../src/ui/truck-change-controller.js', import.meta.url);
 const sceneRuntimePath = new URL('../../src/editor/scene-runtime.js', import.meta.url);
 const casesScreenPath = new URL('../../src/screens/cases-screen.js', import.meta.url);
@@ -12959,15 +12960,15 @@ test('AUTO-PACK-A0B app and pack import paths do not strip orientation locks', a
 });
 
 test('AUTO-PACK-A0B clipboard and duplicate flows preserve orientation lock metadata', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await fs.readFile(keyboardManagerPath, 'utf8');
   const duplicateStart = src.indexOf('function duplicateSelected()');
-  const duplicateEnd = src.indexOf('\n      function copySelected()', duplicateStart);
+  const duplicateEnd = src.indexOf('\n    function copySelected()', duplicateStart);
   const duplicateBlock = duplicateStart >= 0 && duplicateEnd > duplicateStart ? src.slice(duplicateStart, duplicateEnd) : '';
   const copyStart = src.indexOf('function copySelected()');
-  const copyEnd = src.indexOf('\n      function pasteClipboard()', copyStart);
+  const copyEnd = src.indexOf('\n    function pasteClipboard()', copyStart);
   const copyBlock = copyStart >= 0 && copyEnd > copyStart ? src.slice(copyStart, copyEnd) : '';
   const pasteStart = src.indexOf('function pasteClipboard()');
-  const pasteEnd = src.indexOf('\n      function focusSelected(', pasteStart);
+  const pasteEnd = src.indexOf('\n    function focusSelected(', pasteStart);
   const pasteBlock = pasteStart >= 0 && pasteEnd > pasteStart ? src.slice(pasteStart, pasteEnd) : '';
   const packLibSrc = await fs.readFile(packLibraryPath, 'utf8');
   const safeStart = packLibSrc.indexOf('export function buildSafeDuplicateInstances(');
@@ -12987,22 +12988,22 @@ test('AUTO-PACK-A0B clipboard and duplicate flows preserve orientation lock meta
 });
 
 test('EDITOR keyboard shortcut ownership keeps bare F for Flip only', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const keyboardSrc = await fs.readFile(keyboardManagerPath, 'utf8');
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
 
-  const shortcutsStart = appSrc.indexOf('\n      shortcuts = {\n');
-  const shortcutsEnd = appSrc.indexOf('\n      };', shortcutsStart);
+  const shortcutsStart = keyboardSrc.indexOf('\n    shortcuts = {\n');
+  const shortcutsEnd = keyboardSrc.indexOf('\n    };', shortcutsStart);
   assert.ok(shortcutsStart >= 0 && shortcutsEnd > shortcutsStart, 'KeyboardManager shortcuts block must exist');
-  const shortcutsBlock = appSrc.slice(shortcutsStart, shortcutsEnd);
+  const shortcutsBlock = keyboardSrc.slice(shortcutsStart, shortcutsEnd);
   assert.equal(/\n\s*f:\s*focusSelected,/.test(shortcutsBlock), false,
     'app-level KeyboardManager must not bind bare F');
   assert.match(shortcutsBlock, /'shift\+f': focusSelected,/,
     'app-level focus selected may use Shift+F instead of bare F');
 
-  const focusStart = appSrc.indexOf('function focusSelected(');
-  const focusEnd = appSrc.indexOf('\n      function toggleGrid()', focusStart);
+  const focusStart = keyboardSrc.indexOf('function focusSelected(');
+  const focusEnd = keyboardSrc.indexOf('\n    function toggleGrid()', focusStart);
   assert.ok(focusStart >= 0 && focusEnd > focusStart, 'focusSelected handler must exist');
-  const focusBlock = appSrc.slice(focusStart, focusEnd);
+  const focusBlock = keyboardSrc.slice(focusStart, focusEnd);
   assert.match(focusBlock, /event && typeof event\.stopPropagation === 'function'[\s\S]*event\.stopPropagation\(\)/,
     'Shift+F focus must stop propagation so the editor flip handler does not also run');
 
@@ -19726,17 +19727,17 @@ test('OPERATION-LIFECYCLE-AMEND InteractionManager receives the lifecycle and gu
 });
 
 test('OPERATION-LIFECYCLE-AMEND global keyboard mutations are blocked while busy', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
-  assert.match(appSrc, /function mutationBlockedWhileBusy\(\)[\s\S]*?OperationLifecycle\.isBusy\(\)/,
+  const keyboardSrc = await fs.readFile(keyboardManagerPath, 'utf8');
+  assert.match(keyboardSrc, /function mutationBlockedWhileBusy\(\)[\s\S]*?OperationLifecycle\.isBusy\(\)/,
     'app keyboard manager must have a busy-guard helper backed by the lifecycle');
   for (const fn of ['function duplicateSelected()', 'function pasteClipboard()', 'function undo()', 'function redo()']) {
-    const start = appSrc.indexOf(fn);
+    const start = keyboardSrc.indexOf(fn);
     assert.ok(start >= 0, `${fn} must exist`);
-    const block = appSrc.slice(start, start + 260);
+    const block = keyboardSrc.slice(start, start + 260);
     assert.match(block, /if \(mutationBlockedWhileBusy\(\)\) return;/, `${fn} must be blocked while busy`);
   }
   // Delete shortcut routes through InteractionManager.deleteSelection (guarded above).
-  assert.match(appSrc, /function deleteSelected\(\)[\s\S]*?InteractionManager\.deleteSelection\(\)/,
+  assert.match(keyboardSrc, /function deleteSelected\(\)[\s\S]*?InteractionManager\.deleteSelection\(\)/,
     'delete shortcut must route through the guarded InteractionManager.deleteSelection');
 });
 

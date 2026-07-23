@@ -62,6 +62,7 @@ const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 const trailerGeometryPath = new URL('../../src/editor/trailer-geometry.js', import.meta.url);
 const keyboardManagerPath = new URL('../../src/ui/keyboard-manager.js', import.meta.url);
+const recoverableErrorOverlayPath = new URL('../../src/ui/recoverable-error-overlay.js', import.meta.url);
 const truckChangeControllerPath = new URL('../../src/ui/truck-change-controller.js', import.meta.url);
 const sceneRuntimePath = new URL('../../src/editor/scene-runtime.js', import.meta.url);
 const casesScreenPath = new URL('../../src/screens/cases-screen.js', import.meta.url);
@@ -20775,7 +20776,7 @@ test('HARDEN-P1B queueOrgScopedRender calls syncRecoverableErrorOverlay after Ed
 });
 
 test('HARDEN-P1B hasMissingEditorPack and syncRecoverableErrorOverlay implement pack-not-found path', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await fs.readFile(recoverableErrorOverlayPath, 'utf8');
 
   // Both functions must be present
   assert.match(src, /function hasMissingEditorPack\(\)/, 'hasMissingEditorPack function present');

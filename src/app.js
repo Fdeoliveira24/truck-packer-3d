@@ -55,6 +55,8 @@ import { Router } from './router.js';
 import { createUIComponents } from './ui/ui-components.js';
 import { createTruckChangeController } from './ui/truck-change-controller.js';
 import { createKeyboardManager } from './ui/keyboard-manager.js';
+import { createAppShell } from './ui/app-shell.js';
+import { createRecoverableErrorOverlay } from './ui/recoverable-error-overlay.js';
 import { createOperationLifecycle } from './core/operation-lifecycle.js';
 import { createTableFooter } from './ui/table-footer.js';
 import { TrailerPresets } from './data/trailer-presets.js';
@@ -3308,114 +3310,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     // SECTION: APP SHELL / NAVIGATION
     // ============================================================================
-    const AppShell = (() => {
-      const appRoot = document.getElementById('app');
-      const sidebar = document.getElementById('sidebar');
-      const btnSidebar = document.getElementById('btn-sidebar');
-      const topbarTitle = document.getElementById('topbar-title');
-      const topbarSubtitle = document.getElementById('topbar-subtitle');
-      const contentRoot = document.querySelector('.content');
-      const navButtons = Array.from(document.querySelectorAll('[data-nav]'));
-
-      const screenTitles = {
-        packs: { title: 'Packs', subtitle: 'Project library' },
-        cases: { title: 'Cases', subtitle: 'Inventory management' },
-        editor: { title: 'Editor', subtitle: '3D workspace' },
-        updates: { title: 'Release Notes', subtitle: 'Verified product changes' },
-        roadmap: { title: 'Roadmap', subtitle: 'Published product plans' },
-        settings: { title: 'Settings', subtitle: 'Preferences' },
-      };
-
-      function toggleSidebar() {
-        const isMobile = window.matchMedia('(max-width: 899px)').matches;
-        if (isMobile) {
-          sidebar.classList.toggle('open');
-        } else {
-          appRoot.classList.toggle('sidebar-collapsed');
-        }
-      }
-
-      function initShell() {
-        btnSidebar.addEventListener('click', toggleSidebar);
-        navButtons.forEach(btn => {
-          btn.addEventListener('click', () => {
-            const target = btn.getAttribute('data-nav');
-            navigate(target);
-            if (window.matchMedia('(max-width: 899px)').matches) {
-              sidebar.classList.remove('open');
-            }
-          });
-        });
-
-        window.addEventListener('resize', () => {
-          if (!window.matchMedia('(max-width: 899px)').matches) {
-            sidebar.classList.remove('open');
-          }
-        });
-      }
-
-      function navigate(screenKey) {
-        StateStore.set({ currentScreen: screenKey }, { skipHistory: true });
-      }
-
-      function renderShell() {
-        const screen = StateStore.get('currentScreen');
-        navButtons.forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-nav') === screen));
-        document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-        const el = document.getElementById(`screen-${screen}`);
-        if (el) {
-          el.classList.add('active');
-          if (
-            screen === 'editor' &&
-            window.TruckPackerApp &&
-            window.TruckPackerApp.EditorUI &&
-            typeof window.TruckPackerApp.EditorUI.onActivated === 'function'
-          ) {
-            window.requestAnimationFrame(() => {
-              window.requestAnimationFrame(() => {
-                try {
-                  window.TruckPackerApp.EditorUI.onActivated();
-                } catch (err) {
-                  console.warn('[AppShell] Editor activation hook failed', err);
-                }
-              });
-            });
-          }
-        }
-        if (contentRoot) contentRoot.classList.toggle('editor-mode', screen === 'editor');
-
-        const isMobile = window.matchMedia('(max-width: 899px)').matches;
-
-        if (screen === 'editor') {
-          // Collapse sidebar to maximize editor viewport (desktop only)
-          if (isMobile) {
-            appRoot.classList.remove('sidebar-collapsed');
-            sidebar.classList.remove('open');
-          } else {
-            appRoot.classList.add('sidebar-collapsed');
-            sidebar.classList.remove('open');
-          }
-          // Ensure editor panels visible to avoid empty canvas gap
-          const editorLeft = document.getElementById('editor-left');
-          const editorRight = document.getElementById('editor-right');
-          editorLeft && editorLeft.classList.remove('hidden');
-          editorRight && editorRight.classList.remove('hidden');
-          const pack = PackLibrary.getById(StateStore.get('currentPackId'));
-          topbarTitle.textContent = pack ? pack.title || 'Editor' : 'Editor';
-          topbarSubtitle.textContent = pack ? `Edited ${Utils.formatRelativeTime(pack.lastEdited)}` : '3D workspace';
-          return;
-        }
-
-        // Restore sidebar when leaving editor (desktop)
-        if (!isMobile) appRoot.classList.remove('sidebar-collapsed');
-
-        const meta = screenTitles[screen] || { title: 'Truck Packer 3D', subtitle: '' };
-        topbarTitle.textContent = meta.title;
-        topbarSubtitle.textContent = meta.subtitle;
-      }
-
-      return { init: initShell, navigate, renderShell };
-    })();
+    const AppShell = createAppShell({
+      StateStore,
+      PackLibrary,
+      Utils,
+    });
 
     // ============================================================================
     // SECTION: 3D ENGINE (SCENE)
@@ -4590,30 +4489,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
       UpdatesUI.render();
       RoadmapUI.render();
       SettingsUI.loadForm();
-      syncRecoverableErrorOverlay();
+      RecoverableErrorOverlay.syncRecoverableErrorOverlay();
     }
 
     let routeNotFoundActive = false;
 
-    function hasMissingEditorPack() {
-      if (StateStore.get('currentScreen') !== 'editor') return false;
-      const packId = StateStore.get('currentPackId');
-      if (!packId) return false;
-      return !PackLibrary.getById(packId);
-    }
-
-    function syncRecoverableErrorOverlay() {
-      if (BootState.fatalOverlayShown || BootState.maintenanceMode) return;
-      if (routeNotFoundActive) {
-        ErrorOverlay.showNotFound({ kind: 'route' });
-        return;
-      }
-      if (hasMissingEditorPack()) {
-        ErrorOverlay.showNotFound({ kind: 'pack' });
-        return;
-      }
-      ErrorOverlay.hide();
-    }
+    const RecoverableErrorOverlay = createRecoverableErrorOverlay({
+      StateStore,
+      PackLibrary,
+      ErrorOverlay,
+      BootState,
+      getRouteNotFound: () => routeNotFoundActive,
+    });
 
     // ============================================================================
     // SECTION: APP INIT (ORDER CRITICAL)
@@ -6389,7 +6276,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // ignore
         }
         try {
-          syncRecoverableErrorOverlay();
+          RecoverableErrorOverlay.syncRecoverableErrorOverlay();
         } catch {
           // ignore
         }
@@ -8442,7 +8329,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (!replaced || StateStore.get('currentScreen') !== 'packs') {
           AppShell.navigate('packs');
         }
-        syncRecoverableErrorOverlay();
+        RecoverableErrorOverlay.syncRecoverableErrorOverlay();
       });
 
       // Sidebar upgrade notice subscriber
@@ -9523,7 +9410,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           changes._redo ||
           changes._replace
         ) {
-          syncRecoverableErrorOverlay();
+          RecoverableErrorOverlay.syncRecoverableErrorOverlay();
         }
       });
 
@@ -9533,15 +9420,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
             routeNotFoundActive = false;
             ErrorOverlay.hide();
             AppShell.navigate(screen);
-            syncRecoverableErrorOverlay();
+            RecoverableErrorOverlay.syncRecoverableErrorOverlay();
           },
           onNotFound: () => {
             routeNotFoundActive = true;
-            syncRecoverableErrorOverlay();
+            RecoverableErrorOverlay.syncRecoverableErrorOverlay();
           },
           onNeutral: () => {
             routeNotFoundActive = false;
-            syncRecoverableErrorOverlay();
+            RecoverableErrorOverlay.syncRecoverableErrorOverlay();
           },
         });
       } catch (err) {

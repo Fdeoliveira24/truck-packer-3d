@@ -111,7 +111,7 @@ All methods below are the *permanent* surface. Naming is behavior-specific (no `
 
 Injected: `StateStore`, `SupabaseClient`, `UIComponents`, `getBillingState` (billing accessor), `maybeScheduleBillingRefresh` (billing), `subscribeBilling` (billing — org registers its readiness marker as a billing subscriber, the existing mechanism), `setWorkspaceStorageScope`/`flushPendingStorageSave`/`markLocalStateReady` (root storage), `getSignedInUserIdStrict` (auth), `dispatchEvent` (window).
 
-> **Gate-2 correction (verified):** the billing→org readiness path is the **existing `subscribeBilling` subscription** (app.js:9241 registers `subscribeBilling(s => markWorkspaceSwitchBillingReadyIfSettled(s, 'billing-subscriber'))`), plus three direct synchronous `markWorkspaceSwitchBillingReadyIfSettled(getBillingState(), …)` calls inside org functions (5315/5347/5602). There is **no new `onBillingSettled` callback**; org subscribes to `BillingModule.subscribeBilling`, exactly as today.
+> **Gate-2 correction (verified):** the billing→org readiness path is the **existing `subscribeBilling` subscription** (app.js:9241 registers `subscribeBilling(s => markWorkspaceSwitchBillingReadyIfSettled(s, 'billing-subscriber'))`), plus three direct synchronous `markWorkspaceSwitchBillingReadyIfSettled(getBillingState(), …)` calls inside org functions (5315/5347/5602). There is **no new `onBillingSettled` callback**; org subscribes to `BillingService.subscribeBilling`, exactly as today.
 
 | Method | Args | Returns | Sync | Side effects / events | Order / guard | Visibility |
 |---|---|---|---|---|---|---|
@@ -129,11 +129,11 @@ Injected: `StateStore`, `SupabaseClient`, `UIComponents`, `getBillingState` (bil
 | `handleWorkspaceArchived/Restored/Updated()` | — | (current) | — | reconciliation | facade compat | **public via `TruckPackerApp`** |
 | `installOrgContextGlobals()` | — | void | sync | assigns `window.OrgContext`, `window.__TP3D_ORG_METRICS__` | must run at current point (5382) | root calls once |
 
-### Billing module — `createBilling({ ... }) → BillingModule`
+### Billing module — `createBillingService({ ... }) → BillingService`
 
-Injected: `SupabaseClient`, billing service fns (`fetchBillingStatus`,`createCheckoutSession`,`createPortalSession`), `dispatchEvent`.
+Injected (frozen — see **Stage 1 Amendment · A1** for the full per-dependency contract): `SupabaseClient`; billing network fns `fetchBillingStatus`/`createCheckoutSession`/`createPortalSession`; and the five **root-owned shared utilities** `isTp3dDebugEnabled`/`normalizeOrgIdForBilling`/`normalizeBillingEntitlementStatus`/`billingDebugLog`/`billingAuthLifecycleDebugLog` (defined in app.js, injected by reference, captured once, never on the facade). **Not injected:** `dispatchEvent` (verified: billing dispatches no window `CustomEvent` — dropped, zero behavior change), `acceptOrgInvite` (used only at root, 7933), `window.OrgContext` (`getActiveOrgIdForBilling` keeps its verbatim global read — Gate-1).
 
-> **Gate-1 correction (verified):** `getActiveOrgIdForBilling` is **NOT injected**. It is a billing-region function (app.js:936) that reads the **`window.OrgContext` global** (`window.OrgContext.getActiveOrgId()`, normalized) with a `localStorage['tp3d:active-org-id']` fallback. Defined at module top level but only *called* after init (post-5382), so the global is always present when read; the localStorage fallback is a deliberate resilience/compatibility behavior, not an implementation detail. **Decision: preserve the `window.OrgContext` global read verbatim** — do not introduce an injected replacement. It becomes a billing-module-internal function reading the global. There is **no readiness callback injected into Billing** (Gate-2); org subscribes to `BillingModule.subscribeBilling`.
+> **Gate-1 correction (verified):** `getActiveOrgIdForBilling` is **NOT injected**. It is a billing-region function (app.js:936) that reads the **`window.OrgContext` global** (`window.OrgContext.getActiveOrgId()`, normalized) with a `localStorage['tp3d:active-org-id']` fallback. Defined at module top level but only *called* after init (post-5382), so the global is always present when read; the localStorage fallback is a deliberate resilience/compatibility behavior, not an implementation detail. **Decision: preserve the `window.OrgContext` global read verbatim** — do not introduce an injected replacement. It becomes a billing-module-internal function reading the global. There is **no readiness callback injected into Billing** (Gate-2); org subscribes to `BillingService.subscribeBilling`.
 
 | Method | Args | Returns | Sync | Guard | Visibility |
 |---|---|---|---|---|---|
@@ -219,7 +219,7 @@ AccountSwitcher will later consume: `getOrgContextSnapshot()` (activeOrg, orgs, 
 5. `init()`: Supabase init → auth-listener install (guarded `authListenerInstalled`) → unguarded initializer block → `Router.init` → `bootstrapAuthGate` → `markAppReady`; **`pickCheckoutInterval` added to `__TP3D_BILLING` at 8682**.
 
 **After extraction — two-step construction (required):**
-- **Step A (construct):** root calls `createBilling(...)` at the **current 2103 point** and immediately `installBillingGlobals()` (creates channel, storage listeners, assigns `window.__TP3D_BILLING`) — preserving pre-IIFE timing. Root calls `createOrgContext(...)` and `createAuthReaction(...)` inside the IIFE at their current points; `installOrgContextGlobals()` at the **current 5382 point**.
+- **Step A (construct):** root calls `createBillingService(...)` at the **current 2103 point** and immediately `installBillingGlobals()` (creates channel, storage listeners, assigns `window.__TP3D_BILLING`) — preserving pre-IIFE timing. Root calls `createOrgContext(...)` and `createAuthReaction(...)` inside the IIFE at their current points; `installOrgContextGlobals()` at the **current 5382 point**.
 - **Step B (bind late collaborators, after all three exist):** `Billing.setBillingGateApplier(rootGateApplier)`; org receives billing accessors; billing receives `onBillingSettled = OrgContextModule.markWorkspaceSwitchBillingReady`; auth receives org+billing+root callbacks. All bindings are **synchronous, callable once, cannot throw, do not change observable timing**.
 
 **Methods callable before all three connected:** none may fire cross-module before Step B. Billing's channel/storage listeners are installed at Step A but their handlers only *read* billing-private state until a message arrives (post-init); `onBillingSettled` is null-guarded until bound. Org dispatch and readiness are inert until `beginWorkspaceSwitch` (post-init). **Rule:** every late-bound callback is null-checked at call site (existing `_billingGateApplier` pattern).
@@ -359,11 +359,11 @@ No behavior is *entirely* uncharacterized, so a separate characterization-only c
 
 ## Audit 15 — Implementation staging and rollback
 
-**Revised order — Billing first is confirmed safest** (most self-contained: module-top-level, already accessed by others via `getBillingState()` copy + `getActiveOrgIdForBilling()` facade, so moving it behind its existing facade changes the fewest external reads):
+**Revised order — Billing first is confirmed safest** (state-ownership + dependency-direction rationale — **corrected**; see **Stage 1 Amendment · Corrected Billing-first rationale**. Billing is *not* the fewest-external-reads domain — the move-map found a **large** external surface, ≈48 mechanical retargets across ≈43 lines. Billing is first because its authoritative mutable state and its cross-tab channel + storage mirrors are already concentrated behind an established, characterized facade, Organization depends on Billing settlement, and the large call-site surface is purely mechanical and requires no Organization/Auth ownership transfer):
 
 | Stage | Symbols | Allowed files | APIs needed present | Browser subset | Rollback | Stop condition |
 |---|---|---|---|---|---|---|
-| **1 Billing+Checkout/Portal+diag** | all `_billing*`, `refreshBilling`, `startCheckout`, `openPortal`, `captureBillingActionContext`, facade, channel, `getActiveOrgIdForBilling` injected | app.js, `src/core/billing.js`, audit spec | org accessor injected (still in app.js) | billing refresh, stale discard, cross-tab freshness, owner+non-owner checkout/portal, stale-context no-nav | revert stage commit | any DEF-011/epoch regression |
+| **1 Billing+Checkout/Portal+diag** | all `_billing*`, `refreshBilling`, `startCheckout`, `openPortal`, `captureBillingActionContext`, `applyAccessGateFromBilling`, `getActiveOrgIdForBilling` (reads `window.OrgContext` global — Gate-1, **not** injected), facade, channel | app.js, `src/services/billing-service.js`, audit spec | 5 root shared utils injected (A1); `window.OrgContext` global read preserved; `maybeScheduleBillingRefresh`/`updateSidebarNotice`/`pickCheckoutInterval` stay at root | billing refresh, stale discard, cross-tab freshness, owner+non-owner checkout/portal, stale-context no-nav | revert stage commit | any DEF-011/epoch regression |
 | **2 Org+readiness+diag** | orgContext, switch state, DEF-010, sync, events, metrics, `window.OrgContext` | app.js, `src/core/org-context.js`, audit spec | billing settle callback bound | same/cross-tab switch, readiness ordering, failed bundle, A→B→A | revert | DEF-010 ordering change |
 | **3 Auth reaction+profile** | renderAuthState, checkProfileStatus, refresh scheduling, authGate | app.js, `src/core/auth-reaction.js`, audit spec | org+billing+root callbacks bound | sign-in/out, disabled/deleted, wobble | revert | DEF-009 / wrongful sign-out |
 | **4 Integration** | wiring verify, `_executeSignedOutCleanup` calls confirmed ordered | app.js | — | full matrix + repeated-init + storage isolation | revert to pre-stage-1 | any red |
@@ -399,12 +399,14 @@ No behavior is *entirely* uncharacterized, so a separate characterization-only c
 > **SAFE TO BEGIN**
 >
 > All four mandatory gates are closed (see Gate Closure below): the `getActiveOrgIdForBilling` contradiction is resolved (preserve global read); the billing→readiness call direction is verified (existing `subscribeBilling` subscription, synchronous); the current-HEAD browser baseline is green (37/37); and the four characterization pins are added and passing (audit 1,144/0/5). Stage 1 (Billing) may proceed under the frozen contract above, with the Stage-1 browser subset (Audit 15) — including live owner/non-owner checkout+portal and stale-context-no-navigation — required before the phase merges.
+>
+> **Stage 1 (Billing): SAFE TO BEGIN STAGE 1.** The three move-map ownership decisions are now frozen in the **Stage 1 Amendment** (below): shared-utility injection (A1), `applyAccessGateFromBilling`/`setBillingGateApplier` ownership (A2), and the ≈48-site external retarget surface (A3). No production ownership decision remains open; Stage 1 is *move + inject + wire + mechanical retarget*. The live owner/non-owner checkout+portal browser exercise remains a **pre-merge** gate (Stage 1 does not merge; integration merges at Stage 4), not a pre-begin blocker.
 
 ---
 
 ## Gate Closure (post-review)
 
-**Gate 1 — `getActiveOrgIdForBilling`:** RESOLVED. Defined app.js:936 (billing region, module top level); reads `window.OrgContext.getActiveOrgId()` (normalized) with `localStorage['tp3d:active-org-id']` fallback; 17 callers; only invoked post-init (after the 5382 `window.OrgContext` assignment), so no facade-timing hazard; the fallback is a deliberate resilience/compat behavior. **Rule: preserve the global read; do not inject.** Recorded under Billing dependencies (Audit 3), construction/wiring (Audit 5), and prohibited changes (Audit 17).
+**Gate 1 — `getActiveOrgIdForBilling`:** RESOLVED. Defined app.js:936 (billing region, module top level); reads `window.OrgContext.getActiveOrgId()` (normalized) with `localStorage['tp3d:active-org-id']` fallback; 17 callers; only invoked post-init (after the 5382 `window.OrgContext` assignment), so no facade-timing hazard; the fallback is a deliberate resilience/compat behavior. **Rule: preserve the global read; do not inject.** It MOVES into `BillingService` (a module-instance method, off the `window.__TP3D_BILLING` facade) and continues reading the `window.OrgContext` global; its 4 external callers + 1 AutoPackEngine injection retarget to `BillingService.getActiveOrgIdForBilling` (Stage 1 Amendment · A3). Recorded under Billing dependencies (Audit 3), construction/wiring (Audit 5), and prohibited changes (Audit 17).
 
 **Gate 2 — billing→readiness:** VERIFIED. (1) Callers of `markWorkspaceSwitchBillingReadyIfSettled`: the init-registered billing subscriber (9241) plus three direct in-org calls (5315/5347/5602). (2)/(3) Fires on every billing state change via `_notifyBilling` — after success, failure (error is a settled state), clear, cached/freshness reuse, and cross-tab application; **not** after stale-result rejection (discarded before notify). (4) Inspects a `getBillingState()` copy. (5) Synchronous. (6) `_notifyBilling()` runs after `_billingState` mutation; in `refreshBilling` it precedes the direct `applyAccessGateFromBilling` re-call (1737). (7) `_billingGateApplier` set once to `updateSidebarNotice` (9239). (8)/(9) Absent (`null`) from module-eval until init; `applyAccessGateFromBilling` early-returns when absent (957). (10) No repeated binding. **Ownership model confirmed; mechanism corrected to the existing subscription — no new callback.**
 
@@ -417,3 +419,144 @@ No behavior is *entirely* uncharacterized, so a separate characterization-only c
 ## Cited-symbol existence (validation)
 
 All symbols in this contract were confirmed present in `src/app.js` at audit time: `_billingState`(113), `_billingEpoch`(164), `_billingActionGeneration`(1925), `getBillingState`(971), `refreshBilling`(1239), `captureBillingActionContext`(1927), `startCheckout`(2022), `openPortal`(2078), `window.__TP3D_BILLING`(2103), `pickCheckoutInterval`(8682), `workspaceSwitchState`(4534), `markWorkspaceSwitchReady`(4743), `markWorkspaceSwitchBillingReadyIfSettled`(4780), `finishWorkspaceSwitch`(4727), `OrgContext`/`window.OrgContext`(5378/5382), `setActiveOrgId`(5276), `clearOrgContext`(6204), `renderAuthState`(7137), `_executeSignedOutCleanup`(7330), `checkProfileStatus`(~7422). Line numbers are point-in-time anchors.
+
+---
+
+## Stage 1 Amendment — Billing extraction move contract (authoritative)
+
+**Added:** 2026-07-23 · **Verified against** `src/app.js` @ `60bf00b` (9,510 lines; the `window.TruckPackerApp` IIFE begins at **L2311**). Documentation-only. Resolves the three implementation-level ownership decisions the Stage-1 move-map exposed but the base contract left implicit. **Where this section and Audits 3/5/15 conflict for Stage 1, this section governs.**
+
+**Frozen naming.** Module file `src/services/billing-service.js`; factory `createBillingService(deps) → BillingService`; the composition root holds the instance as `BillingService`. This is the billing **domain/state** module and is distinct from the existing **network** layer `src/data/services/billing.service.js` (whose `fetchBillingStatus`/`createCheckoutSession`/`createPortalSession` it consumes). Earlier provisional labels `createBilling`/`BillingModule`/`src/core/billing.js` denote this same module.
+
+**Region shape (verified).** The billing implementation is **module-top-level, before the IIFE**, spanning roughly **L113–L2144** (state at 113; `window.__TP3D_BILLING` facade at 2103–2134; tp3dDebug `getBillingState` window alias at 2137–2144). It is **not a contiguous block**: shared root utilities (`isTp3dDebugEnabled` 828, `billingDebugLog` 841, `normalizeOrgIdForBilling` 929) and unrelated root/auth helpers (e.g. the visible-auth-revocation check ~875) are physically interleaved. **The extraction is therefore symbol-defined, not a line-range cut** — the move set below is authoritative; anything not in it stays at root even when it sits between billing lines.
+
+### A1 — Shared root-utility ownership + Billing injection (frozen)
+
+The five helpers **remain defined in `src/app.js`** as shared root utilities. They are **not** moved into `billing-service.js`; **no** shared-utility module is created in Stage 1. Verified caller distribution (non-billing = callers in the IIFE/root, outside the billing region):
+
+| Helper | Def | Billing-internal callers | Non-billing callers | Reassigned/wrapped? | On facade? | Stage-1 disposition |
+|---|---|---|---|---|---|---|
+| `isTp3dDebugEnabled` | 828 | 7 | **41** | no | no | RETAIN @ root; inject into Billing |
+| `normalizeOrgIdForBilling` | 929 | 19 | **28** (+1 injection ref @3372) | no | no | RETAIN @ root; inject into Billing |
+| `billingDebugLog` | 841 | ~34 | **16** | no | no | RETAIN @ root; inject into Billing |
+| `billingAuthLifecycleDebugLog` | 202 | 7 | **8** | no | no | RETAIN @ root; inject into Billing |
+| `normalizeBillingEntitlementStatus` | 355 | 6 | **3** | no | no | RETAIN @ root; inject into Billing |
+
+Non-billing callers keep calling the root definitions unchanged. Billing's own references to these helpers are satisfied by construction-time injection. **None is reassigned, monkey-patched, wrapped, or rebound anywhere** (verified — only `refreshBilling` is wrapped, and only on the facade object). None appears on `window.__TP3D_BILLING`.
+
+**Frozen `createBillingService` dependency shape** (exact; no duplicate aliases):
+
+| Prop | Source symbol | Owner | Why Billing needs it | Req? | Absent → | Sync? | May throw? | Identity matters? | Rebindable? | Captured | On facade? |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `SupabaseClient` | `import * as SupabaseClient` (92) | core import | `getAuthState`/`getAuthEpoch` (captureBillingActionContext 1932–1936), `signOut` (refresh 401 path 1623) | yes | throw at construction | namespace | methods may throw (caught today) | n/a | no | once | no |
+| `fetchBillingStatus` | billing.service.js (97) | data/service | refresh fetch (1473) | yes | throw | async fn | yes (caught) | no | no | once | no |
+| `createCheckoutSession` | billing.service.js (98) | data/service | startCheckout (2058) | yes | throw | async fn | yes (caught) | no | no | once | no |
+| `createPortalSession` | billing.service.js (99) | data/service | openPortal (2085) | yes | throw | async fn | yes (caught) | no | no | once | no |
+| `isTp3dDebugEnabled` | app.js root util (828) | **root (RETAIN)** | debug gating in billing logs/trace | yes | throw | sync | no | no | no | once | no |
+| `normalizeOrgIdForBilling` | app.js root util (929) | **root (RETAIN)** | org-id normalization in refresh/cross-tab/action guards | yes | throw | sync | no | no | no | once | no |
+| `normalizeBillingEntitlementStatus` | app.js root util (355) | **root (RETAIN)** | entitlement normalization in state-apply + pro-rules | yes | throw | sync | no | no | no | once | no |
+| `billingDebugLog` | app.js root util (841) | **root (RETAIN)** | billing debug logging | yes | throw | sync | no | no | no | once | no |
+| `billingAuthLifecycleDebugLog` | app.js root util (202) | **root (RETAIN)** | auth-lifecycle debug logging | yes | throw | sync | no | no | no | once | no |
+
+**Not injected:** `dispatchEvent` (verified — billing dispatches **no** window `CustomEvent`; communicates only via the `tp3d-billing` channel + storage mirrors; the base-contract `dispatchEvent` entry is dropped, zero behavior change); `acceptOrgInvite` (used only at root, 7933); `window.OrgContext` (**not** injected — `getActiveOrgIdForBilling` keeps its verbatim `window.OrgContext.getActiveOrgId()` read + localStorage fallback, Gate-1). **Rules:** required deps fail loudly at construction; each reference is captured once; **no dynamic rebinding** after construction; **no bind/wrap/clone/memoize/normalize** of any injected reference (none is wrapped today).
+
+### A2 — `applyAccessGateFromBilling` final ownership + gate-applier setter (frozen)
+
+**Traced (verified).** `applyAccessGateFromBilling(billingSnapshot, meta = {})` (957) guards `if (typeof _billingGateApplier !== 'function') return;` then calls `_billingGateApplier(billingSnapshot || getBillingState(), meta)` (960). It reads `_billingGateApplier` (+ fallback `getBillingState()`); it mutates nothing itself. **Internal callers (9):** 642, 684, 1084, 1151, 1320, 1448, 1562, 1612, 1737. **External callers (5):** 6691 (Org), 8256/8300 (Auth/init), 9240 (init subscriber cb), 9242 (init gate-init). `_billingGateApplier` inits `null` (177), is **set once** to `updateSidebarNotice` at 9239, and is never re-nulled. Refresh-tail order (preserve verbatim): `_notifyBilling()` (1736) → direct `applyAccessGateFromBilling(getBillingState(),'refreshed:')` (1737); the subscriber path (registered at 9240) and this direct call **double-apply** the gate by design. Stale results are discarded before `_notifyBilling`. Before binding, all calls are safe no-ops. Cross-tab/init call sites already wrap in try/catch, so an applier throw stays contained as today.
+
+**Decision.** `applyAccessGateFromBilling` is **Billing-owned**; `_billingGateApplier` is **Billing-private state**. `applyAccessGateFromBilling` is exposed as a **module-instance method (PRIVATE MODULE API)** — reachable by the root/other domains as `BillingService.applyAccessGateFromBilling`, but **NOT** added to `window.__TP3D_BILLING`. The 9 internal calls move with the module (order preserved, including the 1736→1737 double-apply). The 5 external calls retarget to `BillingService.applyAccessGateFromBilling(...)`. Access-gate application stays **separate** from the `subscribeBilling` workspace-readiness bridge (Gate-2); no Billing→Org callback, event, Promise, timer, or microtask is introduced.
+
+**Setter — one exact API:** `setBillingGateApplier(fn)`.
+
+| Aspect | Contract |
+|---|---|
+| Argument | the root gate applier (`updateSidebarNotice`) |
+| null / undefined | not passed today; setter stores the reference as-is (the `typeof … === 'function'` guard at 957 remains the sole gate) |
+| repeated calls | replace prior (init calls exactly once, 9239) |
+| returns | void |
+| applies state immediately? | **No** — assignment only; the explicit `applyAccessGateFromBilling(getBillingState(),'gate-init')` at 9242 stays the immediate application |
+| may throw? | no |
+| before init / after signout / after clear | inert until called; unaffected afterward (never re-nulled today) |
+| identity observed? | no (invoked directly, never compared) |
+| visibility | **module-instance / root-private — NOT on `window.__TP3D_BILLING`** |
+
+Root wiring 9239–9242 becomes, in order: `BillingService.setBillingGateApplier(updateSidebarNotice)` → `BillingService.subscribeBilling(s => BillingService.applyAccessGateFromBilling(s, { reason: 'billing-subscriber' }))` → `BillingService.subscribeBilling(s => markWorkspaceSwitchBillingReadyIfSettled(s, 'billing-subscriber'))` → `BillingService.applyAccessGateFromBilling(BillingService.getBillingState(), { reason: 'gate-init' })`. (`updateSidebarNotice` and `markWorkspaceSwitchBillingReadyIfSettled` stay at root.) This supersedes Audit-5 Step-B's stale `onBillingSettled` phrasing — there is no such callback (Gate-2).
+
+### A3 — External Billing call-site retarget surface (authoritative inventory)
+
+Every external Stage-1 change is a **mechanical retarget** of a bare symbol to the `BillingService` instance — no change to arguments, await-ness, guards, order, catch behavior, or return handling. Verified inventory (external = outside the moved billing region):
+
+| Symbol | Disposition | External call sites (lines) | Domains | Await / return | Callback identity / `this`? |
+|---|---|---|---|---|---|
+| `getBillingState` | MOVE (facade) | **10** direct: 2820, 2822, 4782, 5315, 5347, 5602, 6691, 8256, 8300, 9242 | Org (4782, 5315, 5347, 5602, 6691), Auth/init (8256, 8300), root/init (2820, 2822, 9242) | return consumed (sync copy) | invoked, not passed |
+| `subscribeBilling` | MOVE (facade) | **2**: 9240, 9241 | root/init | returns unsubscribe (unused) | arg is an arrow (safe) |
+| `refreshBilling` | MOVE (facade; debugger-wrapped) | **9**: 2969, 5842, 9297, 9320, 9322, 9323, 9326, 9329, 9330 | Org (2969), root/init (rest) | awaited @2969; else `.catch`/`.then` | invoked, not passed |
+| `clearBillingState` | MOVE (facade) | **8**: 5869, 5925, 5961, 5996, 6039, 7107, 7385, 8075 | Org (5869–6039), Auth/root (7107, 7385, 8075) | void | invoked |
+| `applyAccessGateFromBilling` | MOVE (**PRIVATE module API**) | **5**: 6691, 8256, 8300, 9240, 9242 | Org, Auth/init, root/init | void | 9240 inside arrow (safe) |
+| `getActiveOrgIdForBilling` | MOVE (off-facade method; reads `window.OrgContext`) | **4** direct: 2826, 5637, 7266, 9257 **+1 injection @3367** | root/diag, Auth/root, AutoPackEngine deps | return consumed | **3367 stored bare ref → safe as closure** |
+| `getProRuleSet` | MOVE (facade) | **1** direct: 3502 **+1 injection @3369** | diag/UI, AutoPackEngine deps | return consumed | **3369 stored bare ref → safe as closure** |
+| `getCheckoutPlanOptions` | MOVE (facade) | **1**: 8490 | UI | return consumed | invoked |
+| `startCheckout` | MOVE (facade; money) | **3**: 8724, 8806, 9222 | UI | `.then` | invoked inside arrow |
+| `openPortal` | MOVE (facade; money) | **2**: 2862, 9082 | UI | `.then` / void | invoked inside arrow |
+| `setBillingGateApplier` (new) | PRIVATE module API | **1** call site: 9239 | root/init | void | n/a |
+| `canUseProFeatures`, `_notifyBilling`, `captureBillingActionContext`, `selfTest` | MOVE | **0 external** | — | — | — |
+| `maybeScheduleBillingRefresh` | **RETAIN — IIFE-local root** (def 5678; exposed on `window.TruckPackerApp` at 6118/9454) | not moved; ~12 callers stay internal | root/Org/UI | — | itself becomes a `refreshBilling` retargeter (its 5842 call) |
+| `normalizeBillingEntitlementStatus` (+ 4 shared utils, A1) | RETAIN @ root | non-billing callers **unchanged** | — | — | — |
+
+**Retained facade-reads (NOT retargeted).** Four pre-existing **defensive** reads via `window.__TP3D_BILLING.getBillingState()` with `typeof … === 'function' ? … : null` fallbacks — 2818–2819, 3496–3497, 5724–5726, 7257–7259 — stay verbatim. Converting them to `BillingService.getBillingState()` would drop the guard/null-fallback semantics, so it is **out of Stage-1 scope** (not a mechanical retarget). The "don't route internal calls through the facade" rule targets *new* facade routing, not these existing guarded reads.
+
+**Verified total: ≈48 mechanical symbol-retargets across ≈43 external lines** (five lines carry two symbols: 6691, 8256, 8300, 9240, 9242), plus 4 retained facade-reads. The earlier "~55" estimate was the right order of magnitude. A fumbled retarget surfaces **loudly** — eslint `no-undef` on the now-moved symbol, plus a runtime `ReferenceError` → red browser suite — not silently.
+
+**Callback/identity resolution (frozen).** The only stored function-reference retargets are the AutoPackEngine deps `getActiveOrgIdForBilling` (3367) and `getProRuleSet` (3369), passed as bare references into a deps object that stores and later calls them. `BillingService.getProRuleSet` / `BillingService.getActiveOrgIdForBilling` passed **bare** are safe because `BillingService`'s methods are **closures over module state and use no `this`** (the same property that makes `getBillingState`'s copy safe). No `(...args) => BillingService.method(...args)` wrapper is needed or permitted. The debugger's `billing.refreshBilling.bind(billing)` is `this`-agnostic (`refreshBilling` ignores `this`), so facade wrapping is preserved. AutoPackEngine is constructed inside the IIFE (3362), after `BillingService` exists at module-eval, so the references resolve.
+
+### Authoritative Stage 1 move map
+
+No `UNRESOLVED BLOCKER` entries remain. Legend: **MOVE** = into `billing-service.js`; **RETAIN** = stays in app.js; **RETARGET** = external caller re-points to `BillingService.*`; **PUBLIC FACADE** = on `window.__TP3D_BILLING`; **PRIVATE API** = module-instance method, off the facade.
+
+| Symbol / surface | Class | Notes |
+|---|---|---|
+| `_billingState`, `_billingEpoch`, `_billingSubscribers` | MOVE | billing-private state |
+| refresh single-flight / queue+requeue / authoritative-generation / lock+freshness / offline-online state | MOVE | billing-private (PREP-3 §5) |
+| `_billingActionGeneration` (1925) | MOVE | shared DEF-011 counter; stays single (Audit 7) |
+| `_billingTabId` (`__tp3d_billing_tab`) | MOVE | do not unify (Audit 8) |
+| `_billingBroadcast` + `tp3d-billing` BroadcastChannel (811) | MOVE | created via `installBillingGlobals()` at current eval point |
+| billing storage mirrors `billing:*` + legacy `tp3d:billing:*` | MOVE | retain both (Audit 8) |
+| `_billingGateApplier` (177) | MOVE (PRIVATE state) | set via `setBillingGateApplier` |
+| `getBillingState`, `subscribeBilling`, `refreshBilling`, `clearBillingState`, `canUseProFeatures`, `getProRuleSet`, `getCheckoutPlanOptions`, `startCheckout`, `openPortal`, `selfTest` | MOVE + **PUBLIC FACADE** | exact 10-member facade preserved |
+| `pickCheckoutInterval` | **RETAIN — IIFE-local**; PUBLIC FACADE (late-added @8682) | root defines it; root augments the facade at init |
+| `_notifyBilling`, `captureBillingActionContext`, all `_billing*` refresh/lock/freshness/cross-tab helpers | MOVE (private) | billing-internal |
+| `applyAccessGateFromBilling` (957) | MOVE — **PRIVATE API** | not on facade; 5 external retargets (A3) |
+| `setBillingGateApplier` | **PRIVATE API** (new) | root binds `updateSidebarNotice` once (A2) |
+| `getActiveOrgIdForBilling` (936) | MOVE — off-facade method | reads `window.OrgContext` global (Gate-1); 4+1 retargets |
+| `clearBillingAuthoritativeRefreshRequirement`, `markBillingAuthoritativeRefreshForNextSignIn` | MOVE — PRIVATE API | mutate billing-authoritative-refresh state (165–170); root cleanup calls them |
+| Billing diagnostics/trace (`__TP3D_BILLING_TRACE_CURRENT_ID__`) | MOVE | non-authoritative diagnostic |
+| `isTp3dDebugEnabled`, `normalizeOrgIdForBilling`, `normalizeBillingEntitlementStatus`, `billingDebugLog`, `billingAuthLifecycleDebugLog` | **RETAIN — shared root utility** | injected into Billing (A1) |
+| `maybeScheduleBillingRefresh` (5678), `resetBillingPumpForUserSwitch` (5667), and all `_billingPump*` state (5661–5665) | **RETAIN — IIFE-local root (billing pump)** | **correction to Audit 2/3:** the billing pump is app-runtime, not billing-module — defined in the IIFE, closes over IIFE scope, exposed on `window.TruckPackerApp` (6118/9454), and only *calls* billing (`refreshBilling` @5842 retargets; `billingDebugLog`/`billingAuthLifecycleDebugLog` are injected root utils). `resetBillingPumpForUserSwitch` is called from Auth cleanup (7106) as a root-internal call (no retarget). Base-contract Audit 2 (line ~93) / Audit 3 (line ~149) listed these under Billing; that is corrected here. |
+| `updateSidebarNotice` (gate applier) | **RETAIN — IIFE-local root** | supplied to `setBillingGateApplier` |
+| facade assignment timing (2103) + `pickCheckoutInterval` augmentation (8682) | **RETAIN — root composition** | preserve pre-IIFE + init timing (Audit 5/12) |
+| `subscribeBilling` readiness registration (9240/9241) | **RETAIN — root composition** (RETARGET to `BillingService.subscribeBilling`) | the callbacks stay at root; the call re-points |
+| auth-listener ownership, signed-out cleanup orchestration, Org readiness interpretation, storage-scope orchestration | **RETAIN — root** | Audits 6/11 |
+| `window.__TP3D_BILLING` (10 members + late `pickCheckoutInterval`) | **PUBLIC FACADE** | no new member added |
+| `window.__TP3D_USER_SWITCH_PENDING`, `localStorage`, `BroadcastChannel`, `document`, `navigator` | platform/root globals | accessed directly by moved code; unchanged |
+
+**MOVE closure-dependency summary:** every MOVE function closes over (a) billing-private state — **moves with it**; (b) the A1 injected dependencies — **provided at construction**; (c) for `getActiveOrgIdForBilling` only, the `window.OrgContext` global — **retained global read**; (d) platform globals (`localStorage`/`BroadcastChannel`/`document`/`navigator`/`window.__TP3D_USER_SWITCH_PENDING`) — **accessed directly, unchanged**. No MOVE function depends on an IIFE-local root symbol except through the retargeted public/private `BillingService` surface.
+
+### Corrected Billing-first rationale
+
+The base contract (Audit 15) described Billing as "most self-contained… fewest external reads." **That is false** and is retracted: the verified external surface is **large** (≈48 mechanical retargets across ≈43 lines). Billing is nonetheless the correct first stage on **state-ownership and dependency-direction** grounds:
+
+- its authoritative mutable state (`_billingState`, epoch/generation, action-generation) is already concentrated at module top level;
+- its facade `window.__TP3D_BILLING` is already established and now characterized (4 P0-CONTRACT pins);
+- checkout/portal money-action safety (DEF-011) belongs with Billing and must not be split;
+- its `tp3d-billing` cross-tab channel and its `billing:*`/legacy storage mirrors are domain-specific;
+- Organization depends on Billing **settlement** (readiness `billingReady`), so extracting Billing first gives Organization a stable dependency to bind against;
+- the large call-site surface is **purely mechanical** (bare-symbol → `BillingService.*`) and needs **no** Organization/Auth ownership transfer;
+- the shared utilities Billing happens to sit beside stay at root via explicit injection (A1), so no non-billing code is disturbed.
+
+**Billing-first is justified by state ownership and dependency direction, not by a small number of call sites.**
+
+### Stage 1 approval
+
+**SAFE TO BEGIN STAGE 1.** All gating items are satisfied: the five shared helpers have permanent ownership (RETAIN @ root + inject, A1); the `createBillingService` dependency shape is exact (A1); `applyAccessGateFromBilling` and `_billingGateApplier` have final Billing ownership with one exact setter `setBillingGateApplier(fn)` (A2); the external retarget surface is fully enumerated with callback/identity cases resolved (A3); no import cycle is required (Billing receives root utilities by injection, imports only `core`/`services`); no new public-facade member is added (`applyAccessGateFromBilling`/`setBillingGateApplier`/`getActiveOrgIdForBilling` are off-facade); and no production behavior decision remains open. Stage 1 is *move + inject + wire + mechanical retarget*.
+
+**Characterization tests:** no new pin is mandatory before writing code — the four existing P0-CONTRACT pins, the full audit suite (1,144/0/5), and the green 37/37 browser baseline cover the pre-begin surface, and a fumbled retarget fails loudly (eslint `no-undef` + browser red). **Recommended (add during Stage 1, before it merges — not in this docs-only run):** (1) a pin that `AutoPackEngine` receives `getProRuleSet`/`getActiveOrgIdForBilling` as callable closures after retarget; (2) the live owner/non-owner **checkout+portal** action-generation exercise already retained as the Stage-1 pre-merge browser gate (Audit 14/15, Gate 3). These are pre-merge, not pre-begin, blockers — Stage 1 does not merge (integration merges at Stage 4).

@@ -103,4 +103,39 @@
 
 **Characterization-test decision:** **no test is added in this docs-only run**, and none is *mandatory before begin* — the existing four P0-CONTRACT pins + full audit (1,144/0/5) + green 37/37 baseline + loud-failure retargets cover the pre-begin surface. The two items above are pre-merge additions, consistent with the master plan's begin≠merge separation. No existing assertion was found factually wrong, so no test file was modified.
 
-**Amendment verdict: SAFE TO BEGIN STAGE 1.** A1/A2/A3 are exact and internally consistent; the move map has no `UNRESOLVED BLOCKER`; the corrected rationale is honest about the large surface; the one base-contract contradiction (billing pump) is resolved in the amendment's favor. Stage 1 is implementation-mechanical. The checkout/portal live gate remains the pre-merge condition, not a blocker to starting.
+**Amendment verdict: SAFE TO BEGIN STAGE 1.** *(**SUPERSEDED 2026-07-24** — see Amendment 2 Review below; verdict now **NOT SAFE TO BEGIN STAGE 1**.)* A1/A2/A3 are exact and internally consistent; the move map has no `UNRESOLVED BLOCKER`; the corrected rationale is honest about the large surface; the one base-contract contradiction (billing pump) is resolved in the amendment's favor. Stage 1 is implementation-mechanical. The checkout/portal live gate remains the pre-merge condition, not a blocker to starting. — **This verdict rested on A3, which a bidirectional AST pass has since shown to be incomplete; it is withdrawn.**
+
+---
+
+## Stage 1 Amendment 2 Review (complete free-variable gate)
+
+**Subject:** the dependency-completion amendment (D1–D5) **and** the bidirectional AST free-variable gate. **Stance:** adversarial; I re-ran the reasoning against `c7bdc7c`. **Headline:** the four dependency decisions are correct, but the amendment's own completeness gate exposes a **larger unresolved blocker** (IIFE writes billing-private state), so I do **not** endorse "SAFE TO BEGIN."
+
+**Challenge answers:**
+1. **`nullableFiniteNumber` Billing-only?** Yes — sole callers 380/381 inside `applyBillingEntitlementFields`; no other reference. MOVE is correct.
+2. **Move change hoisting/timing?** No — it's a function declaration co-located with its only caller inside the factory; hoisted within the same scope; behavior identical.
+3. **`ORG_UUID_RE` safe to share by reference?** Yes — immutable RegExp literal; sharing the reference is preferable to duplicating (single source, no flag drift).
+4. **`g`/`y` flags?** No — `/…/i` only. Verified at line 927.
+5. **`lastIndex` mutation risk?** None — non-global `.test()` does not advance `lastIndex`; concurrent Billing/root/Org use is safe.
+6. **Inject vs duplicate the regex?** Inject — a duplicate would be a second copy of a validation rule that could silently drift. Correct call.
+7. **`bootStartedAtMs` preserves the boot epoch?** Yes — injected value captured once; construction is module-eval (after the 175 capture); `ageFromInitMs` identical.
+8. **Could construction occur after the timestamp capture?** Yes, and it must (const TDZ) — construction at ~2103 is after `_bootStartedAtMs`@175 and `ORG_UUID_RE`@927. The amendment records this timing constraint; good.
+9. **Value capture vs reading the root const?** Equivalent for a primitive — the injected number is the same value; Billing never re-reads/re-captures.
+10. **`setAuthTruthSnapshotAccessor` required (late-bound)?** Yes — assigned at 5202 inside the IIFE, after billing construction; cannot be a construction dep.
+11. **Inject at construction instead?** No — would force reordering root code (moving the 5202 assignment before construction), which the amendment forbids.
+12. **Setter preserves pre-assignment behavior?** Yes — Billing's stored ref starts unset; `getCurrentBillingAuthUserId`'s `typeof===‘function’?…:null` guard is unchanged.
+13. **Function identity / `this`?** Preserved — the same accessor reference is stored; invoked with no `this` dependence.
+14. **`getCurrentBillingAuthUserId` exact fallback?** Yes — returns `''` when the accessor is unset or yields no `userId`, identical to today.
+15. **`setOrgAccessLossHandler` required (late-bound)?** Yes — `_orgAccessLossHandler` assigned at 6126; late-bound. Correct.
+16. **Moving the stored handler alter Organization ownership?** No — `handleOrgAccessLoss` stays Org-owned; Billing merely stores a reference and invokes it, exactly as the current slot does.
+17. **Access-denied early-return preserved?** Yes — truthy→`return getBillingState()`; falsy→toast path; order unchanged.
+18. **Handler throws?** Same as today — the call is inside `refreshBilling`'s existing flow; no new try/catch added or removed (preserve verbatim).
+19. **Setter calls at the same lifecycle points?** Yes — 9239 / 5202 / 6126; no eager binding.
+20. **Setters expand the public facade?** No — all four private setters are module-instance/off-`window.__TP3D_BILLING`.
+21. **Import cycle?** No — Billing imports only `core`/`services`; all root/IIFE deps arrive by injection or late-bound setter.
+22. **Additional characterization tests mandatory?** Moot — blocked below. When unblocked, the org-access-loss-on-refresh path (D5) is the least-covered and warrants a pin.
+23. **Does the AST gate cover what greps missed?** Yes — and it is the reason this blocker surfaced. The gate must be **bidirectional**; a one-directional pass would still have missed B1/B2/B3.
+24. **Is Stage 1 now fully mechanical?** **No.**
+25. **Any other unresolved MOVE-function free variables?** **(A) direction: none** after D1–D5. **(B) direction: YES — a material blocker.** The IIFE billing pump / focus handler / workspace-lifecycle / auth-lifecycle code uses **~14 billing-private functions**, **reads `_billingState.*` directly (~11 sites)**, and — decisively — **writes billing-private state** (`_billingLastFocusRefreshAt = now`@9296; `_lastBillingKey`/`_lastBillingKeyAt`@5674–5675 in `resetBillingPumpForUserSwitch`). A copy-returning facade cannot express those writes.
+
+**Independent verdict: NOT SAFE TO BEGIN STAGE 1.** D1–D5 are exact and I endorse them. But per this amendment's own completeness gate, the (B) surface is an unresolved **boundary** decision, not a dependency gap — the Billing pump is not merely a `refreshBilling` caller (as the pump-reconciliation commit claimed); it orchestrates billing internals and mutates billing-private state. Resolving it means an architect choice (move the pump-family into Billing with its own org/auth injection contract, **or** define a full private orchestration API plus explicit billing state-mutation setters) followed by a re-run of the bidirectional gate to zero. I concur with recording this as a blocker and not proceeding. I also note, for the record, that two prior amendments (which I endorsed) missed this because they relied on grep caller-counts; the AST gate is now correctly mandatory.

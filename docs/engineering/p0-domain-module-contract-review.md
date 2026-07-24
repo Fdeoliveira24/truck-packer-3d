@@ -45,7 +45,7 @@
 
 ## 9. Staging plan safety
 
-- **Billing-first is correct.** Rationale in the contract holds: billing is module-top-level, already accessed via `getBillingState()` copy and the `window.OrgContext` global, so its extraction changes the fewest external reads. The Stage-1 `onBillingSettled` callback pointing at the still-in-app.js `markWorkspaceSwitchBillingReadyIfSettled` is **not a prohibited temporary bridge** — it is the permanent callback whose target relocates in Stage 2; the callback contract is stable. Confirmed acceptable.
+- **Billing-first is correct.** Billing is module-top-level with concentrated authoritative state, already accessed via `getBillingState()` copy and the `window.OrgContext` global. **Correction (superseded by the Stage 1 Amendment):** the earlier "changes the fewest external reads" claim is false — the verified external surface is *large* (≈48 mechanical retargets across ≈43 lines); Billing-first stands on state-ownership + dependency-direction grounds, not read count. Likewise the billing→readiness bridge is the existing `subscribeBilling` subscription (Gate-2), **not** a new `onBillingSettled` callback; its target `markWorkspaceSwitchBillingReadyIfSettled` relocates in Stage 2 and the subscription contract is stable. Confirmed acceptable.
 - **One caution:** Stage 1 leaves org (in app.js) calling `BillingModule.getBillingState()` and billing calling app.js-resident org functions. This is a *larger* app.js↔module surface mid-flight than any prior phase. Each stage MUST be independently green (audit + browser subset) before proceeding, and nothing merges to canonical until Stage 4. The contract states this; enforce it strictly.
 
 ## Summary of required closures before Stage 1

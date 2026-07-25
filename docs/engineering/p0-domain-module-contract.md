@@ -1,6 +1,7 @@
 # P0 Domain Module Contract
 
 **Status:** Authoritative pre-implementation contract for the coordinated P0 extraction
+**Stage 1 (Billing) — IMPLEMENTED & GREEN (2026-07-24):** Billing extracted to `src/services/billing-service.js` via `createBillingService(...)`; app.js reduced ~1,765 lines. The Amendment-2 (B) blocker was resolved by the architect-approved *behavior-first* boundary — the billing pump/focus/lifecycle orchestration is retained in app.js and reads billing state via `getBillingState()` while touching retained pump state through narrow private BillingService methods (`resetRefreshDedupForUserSwitch`, `getLastFocusRefreshAt`/`markFocusRefreshAt`); `billingAuthLifecycleDebugLog` and `_BILLING_SHARED_FRESH_MS` were reclassified during implementation. Validation: browser characterization 37/37, audit 1144/0/5, eslint 0 errors. **The implementation and its passing tests now govern where they differ from the pre-implementation prose below.**
 **Branch:** `refactor/app-js-p0-domain-cluster`
 **Date:** 2026-07-23
 **Scope:** EU-09 Organization/Workspace, EU-10 Billing (state/refresh/cross-tab/channel), EU-11 Checkout/Portal guards, EU-12 Auth-state reaction + profile enforcement, EU-14 diagnostics absorbed by owners

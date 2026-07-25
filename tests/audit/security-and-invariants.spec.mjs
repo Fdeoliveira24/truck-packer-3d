@@ -45,6 +45,15 @@ function makeXlsxFile(aoa, name = 'cases.xlsx') {
 const billingServiceUrl = new URL('../../src/data/services/billing.service.js', import.meta.url);
 const accountOverlayPath = new URL('../../src/ui/overlays/account-overlay.js', import.meta.url);
 const appPath = new URL('../../src/app.js', import.meta.url);
+const billingServicePath = new URL('../../src/services/billing-service.js', import.meta.url);
+// Stage 1: the Billing domain moved to src/services/billing-service.js. Source-pattern
+// audits read app.js + billing-service.js together so assertions on billing
+// implementation (now in the module) and on retained call sites / facade (in app.js)
+// both resolve. The combined text is ~= the pre-extraction app.js content, so
+// non-billing source audits are unaffected.
+async function readAppSource() {
+  return (await fs.readFile(appPath, 'utf8')) + '\n\n' + (await fs.readFile(billingServicePath, 'utf8'));
+}
 const indexHtmlPath = new URL('../../index.html', import.meta.url);
 const storagePath = new URL('../../src/core/storage.js', import.meta.url);
 const browserPath = new URL('../../src/core/browser.js', import.meta.url);
@@ -284,7 +293,7 @@ test('phase 0.6D-pre request-account-deletion remains present as the supported p
 });
 
 test('phase 0.6D-pre 4B login gate blocks deletion_status requested regardless of banned_until', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf("if (profileStatus && profileStatus.deletion_status === 'requested')");
   const end = src.indexOf('// Clear any previously set forced-disabled latch', start);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -354,7 +363,7 @@ test('phase 0.6D-pre 4B request-account-deletion still blocks last owner', async
 
 test('phase 0.6D-pre 4B request deletion changes avoid Stripe billing workspace lifecycle and reload scope creep', async () => {
   const requestSrc = await fs.readFile(requestAccountDeletionPath, 'utf8');
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const supabaseSrc = await fs.readFile(supabasePath, 'utf8');
 
   const requestStart = requestSrc.indexOf('const { data: existingProfile');
@@ -611,14 +620,14 @@ test('phase 0.6D-pre 4B-2a account deletion functions use no wildcard CORS', asy
 });
 
 test('app init keeps explicit single-flight/idempotency guards', async () => {
-  const source = await fs.readFile(appPath, 'utf8');
+  const source = await readAppSource();
   assert.match(source, /let\s+initInFlightPromise\s*=\s*null/);
   assert.match(source, /let\s+initCompleted\s*=\s*false/);
   assert.match(source, /if\s*\(initInFlightPromise\)\s*return\s+initInFlightPromise/);
 });
 
 test('logout actions use canonical helper and avoid timed reload after signOut', async () => {
-  const source = await fs.readFile(appPath, 'utf8');
+  const source = await readAppSource();
   assert.match(source, /async function performUserInitiatedLogout\(/);
   assert.match(source, /performUserInitiatedLogout\(\{ source: 'trial-expired-modal' \}\)/);
   assert.match(source, /performUserInitiatedLogout\(\{ source: 'trial-welcome' \}\)/);
@@ -633,7 +642,7 @@ test('logout actions use canonical helper and avoid timed reload after signOut',
 });
 
 test('org context cross-tab sync includes user + epoch metadata and stale guards', async () => {
-  const source = await fs.readFile(appPath, 'utf8');
+  const source = await readAppSource();
   assert.equal(source.includes("const ORG_CONTEXT_SYNC_KEY = 'tp3d:org-context-sync'"), true);
   assert.match(source, /dispatchOrgContextChanged\([\s\S]*userId/);
   assert.match(source, /dispatchOrgContextChanged\([\s\S]*epoch/);
@@ -648,7 +657,7 @@ test('org context cross-tab sync includes user + epoch metadata and stale guards
 
 test('auth proof fast-path gates prevent repeated cross-tab timeout calls', async () => {
   const sc = await fs.readFile(supabasePath, 'utf8');
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // isAuthProven helper exists with TTL check
   assert.match(sc, /function isAuthProven\b/);
@@ -727,7 +736,7 @@ test('validateSessionOrSignOut never signs out on timeout — only on auth-revok
 });
 
 test('billing pump never runs without proven auth or usable session', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // maybeScheduleBillingRefresh has an auth gate before any orgId/retry logic
   assert.match(app, /function maybeScheduleBillingRefresh[\s\S]*?isAuthProven[\s\S]*?skip:auth-not-proven/);
@@ -737,7 +746,7 @@ test('billing pump never runs without proven auth or usable session', async () =
 });
 
 test('phase 1 P0 cross-profile logout: billing-status 401 triggers local sign-out cleanup', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{object\} billingSnapshot/);
   assert.ok(refreshMatch, 'refreshBilling function must be extractable');
   const refreshBody = refreshMatch[0];
@@ -755,7 +764,7 @@ test('phase 1 P0 cross-profile logout: billing-status 401 triggers local sign-ou
 });
 
 test('phase 1 P0 cross-profile logout: billing 401 path does not catch non-auth errors or leak token data', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{object\} billingSnapshot/);
   assert.ok(refreshMatch, 'refreshBilling function must be extractable');
   const refreshBody = refreshMatch[0];
@@ -777,7 +786,7 @@ test('phase 1 P0 cross-profile logout: billing 401 path does not catch non-auth 
 });
 
 test('phase 1 P0 cross-profile logout: visible signed-in tabs actively validate server auth', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   assert.match(app, /const AUTH_REVOCATION_VISIBLE_CHECK_INTERVAL_MS = 5000/,
     'visible auth revocation check must use the approved short release-gate interval');
@@ -802,7 +811,7 @@ test('phase 1 P0 cross-profile logout: visible signed-in tabs actively validate 
 });
 
 test('P0 billing retry reliability C: refreshBilling only reuses successful shared snapshots and force bypasses them', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{object\} billingSnapshot/);
   assert.ok(refreshMatch, 'refreshBilling function must be extractable');
   const refreshBody = refreshMatch[0];
@@ -825,7 +834,7 @@ test('P0 billing retry reliability C: refreshBilling only reuses successful shar
 });
 
 test('P0 billing retry reliability C: cross-tab billing ignores failed snapshots and still accepts successful scoped snapshots', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const handlerStart = app.indexOf('function _handleCrossTabBillingResult(orgId, state, fromTabId)');
   const handlerEnd = app.indexOf('\nfunction _extractOrgIdFromStorageKey', handlerStart);
   const handler = handlerStart >= 0 && handlerEnd > handlerStart ? app.slice(handlerStart, handlerEnd) : '';
@@ -855,7 +864,7 @@ test('P0 billing retry reliability C: Settings Billing Retry and Refresh keep pr
 });
 
 test('P0 billing retry reliability C: queued forced refreshes have a completion repaint path without duplicate subscriptions', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const settings = await fs.readFile(settingsOverlayPath, 'utf8');
 
   assert.match(app, /let _billingRefreshQueuedWaiters = \[\]/,
@@ -891,7 +900,7 @@ test('P0 billing retry reliability C: billing-status Stripe calls have timeout p
 });
 
 test('P0 billing retry reliability C: changed billing logs do not expose tokens or API keys', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const billingStatus = await fs.readFile(billingStatusPath, 'utf8');
   const failedSharedLog = app.match(/billing:cross-tab:discard-failed-shared[\s\S]{0,220}/)?.[0] || '';
   const safeFieldsHelper = app.match(/function _billingSharedSnapshotDebugFields\(orgId, state\) \{[\s\S]*?\n\}/)?.[0] || '';
@@ -4220,7 +4229,7 @@ test('3B-GEOMETRY-TOLERANCE uses one shared inch-space containment tolerance', a
   const packSrc = await fs.readFile(packLibraryPath, 'utf8');
   const solverSrc = await fs.readFile(autoPackSolverPath, 'utf8');
   const validationSrc = await fs.readFile(packingCoreValidationPath, 'utf8');
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
   const trailerGeometrySrc = await fs.readFile(trailerGeometryPath, 'utf8');
   const productionSrc = [packSrc, solverSrc, validationSrc, appSrc, editorSrc, trailerGeometrySrc].join('\n');
@@ -7388,7 +7397,7 @@ test('AUTO-PACK-A1-R6.5 repeated same-footprint heavy groups reserve floor befor
 });
 
 test('AUTO-PACK-A1-R6 live AutoPack routes through the logistics solver from the runtime engine only', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
   const solutionSrc = await fs.readFile(new URL('../../src/packing-core/solution.js', import.meta.url), 'utf8');
 
@@ -7430,7 +7439,7 @@ test('AUTO-PACK-A1-R6 live adapter preserves runtime gates, zones, and orientati
 });
 
 test('AUTO-PACK-A1-CLEAN-1 app keeps legacy scanner isolated outside app.js', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
   const itemBuilderSrc = await fs.readFile(autoPackItemBuilderPath, 'utf8');
 
@@ -7449,7 +7458,7 @@ test('AUTO-PACK-A1-CLEAN-1 app keeps legacy scanner isolated outside app.js', as
 });
 
 test('AUTO-PACK-A1-CLEAN-2 app delegates AutoPack runtime without carrying orchestration inline', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
 
   assert.match(appSrc, /import \{ createAutoPackEngine \} from '\.\/services\/autopack-engine\.js';/,
@@ -13064,7 +13073,7 @@ test('phase 1 P0 cross-profile logout: server auth validation only clears on con
 });
 
 test('TrialExpiredModal upgrades in-place when role resolves and never reads legacy session storage', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // upgradeTrialModalToOwner helper exists for in-place DOM upgrade
   assert.match(app, /const upgradeTrialModalToOwner\s*=/);
@@ -13072,8 +13081,8 @@ test('TrialExpiredModal upgrades in-place when role resolves and never reads leg
   // Guard logic upgrades in-place instead of close/reopen
   assert.match(app, /if \(canManageBilling && !_trialModalCanManageBilling\)\s*\{\s*upgradeTrialModalToOwner\(/);
 
-  // applyOrgContextFromBundle re-applies billing gate after role resolves
-  assert.match(app, /applyAccessGateFromBilling\(getBillingState\(\),\s*\{\s*reason:\s*'bundle-role-resolved'\s*\}\)/);
+  // applyOrgContextFromBundle re-applies billing gate after role resolves (delegated to BillingService in Stage 1)
+  assert.match(app, /BillingService\.applyAccessGateFromBilling\(BillingService\.getBillingState\(\),\s*\{\s*reason:\s*'bundle-role-resolved'\s*\}\)/);
 
   // resolveCanManageBillingForOrg never reads truckPacker3d:session:v1
   const fnMatch = app.match(/function resolveCanManageBillingForOrg\b[\s\S]*?return result;/);
@@ -13083,7 +13092,7 @@ test('TrialExpiredModal upgrades in-place when role resolves and never reads leg
 });
 
 test('upgradeTrialModalToOwner is idempotent — uses data-trial-upgrade-btn guard', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // The upgrade function checks for an existing button before inserting
   assert.match(app, /data-trial-upgrade-btn/,
@@ -13093,7 +13102,7 @@ test('upgradeTrialModalToOwner is idempotent — uses data-trial-upgrade-btn gua
 });
 
 test('TrialExpiredModal shows immediately once billing confirms trial_expired', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   assert.doesNotMatch(app, /TRIAL_MODAL_ROLE_DEFER_MS/,
     'confirmed trial_expired billing truth must not wait on a role-resolution timer');
@@ -13111,7 +13120,7 @@ test('TrialExpiredModal shows immediately once billing confirms trial_expired', 
 });
 
 test('legacy org-sync handler is hint-only and does not call handleIncomingOrgContextSync', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // The legacy-active-org-id string must still exist (as a log label)
   assert.match(app, /legacy-hint/,
@@ -13135,7 +13144,7 @@ test('legacy org-sync handler is hint-only and does not call handleIncomingOrgCo
 });
 
 test('TrialExpiredModal no longer uses deferred latch state', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   assert.doesNotMatch(app, /_trialModalDeferAttemptedForOrg/,
     'trial_expired modal should not retain deferred latch state');
@@ -13146,7 +13155,7 @@ test('TrialExpiredModal no longer uses deferred latch state', async () => {
 });
 
 test('resolveCanManageBillingForOrg has early-out guard for missing orgId or userId', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // Extract the function body
   const fnMatch = app.match(/function resolveCanManageBillingForOrg\b[\s\S]*?return result;/);
@@ -13167,7 +13176,7 @@ test('resolveCanManageBillingForOrg has early-out guard for missing orgId or use
 });
 
 test('bundle-inflight flag remains scoped to org context sync', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // Variable exists
   assert.match(app, /let _orgBundleFetchInflightForOrg\s*=\s*null/,
@@ -13196,7 +13205,7 @@ test('bundle-inflight flag remains scoped to org context sync', async () => {
 });
 
 test('tp3dDebug-only billing accessor is guarded by isTp3dDebugEnabled', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // window['getBillingState'] assignment must be inside isTp3dDebugEnabled guard
   const debugAccessorMatch = app.match(/if \(isTp3dDebugEnabled\(\)\) \{[\s\S]*?window\['getBillingState'\]/);
@@ -13267,7 +13276,7 @@ test('auth overlay renderSignIn passes _fieldPassword as value to password field
 // ── Auth settled state ────────────────────────────────────────────────────────
 
 test('authGate settled is set true on signedIn, signedOutConfirmed, and bootstrap-no-session', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // settled:set log must appear at every _authGate.settled = true site
   const settledSetCount = (app.match(/settled:set/g) || []).length;
@@ -13289,7 +13298,7 @@ test('authGate settled is set true on signedIn, signedOutConfirmed, and bootstra
 });
 
 test('auth settled is never set false after initialization', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // Only one place should have settled: false (the initial declaration)
   const settledFalseCount = (app.match(/_authGate\.settled\s*=\s*false|settled:\s*false/g) || []).length;
@@ -13300,7 +13309,7 @@ test('auth settled is never set false after initialization', async () => {
 // ── Phase 3C2: cross-tab sign-out "Checking session…" hang ───────────────────
 
 test('phase 3C2 bootstrapAuthGate resets overlay phase to form before hiding on successful sign-in', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('bootstrapAuthGate = async');
   const end = src.indexOf('\n      };', start);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -13321,7 +13330,7 @@ test('phase 3C2 bootstrapAuthGate resets overlay phase to form before hiding on 
 });
 
 test('phase 3C2 authGateSignedOutCandidate fallback guard requires _wrapperSignedIn to block cleanup', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function authGateSignedOutCandidate(');
   const end = src.indexOf('\n    function ', start + 1);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -13339,7 +13348,7 @@ test('phase 3C2 authGateSignedOutCandidate fallback guard requires _wrapperSigne
 });
 
 test('phase 3C2 signed-out cleanup calls setPhase form and show on non-user-initiated sign-out', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function _executeSignedOutCleanup(');
   const end = src.indexOf('function sanitizeInviteHandoffMessage(', start);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -13940,7 +13949,7 @@ test('phase 3A Settings preserves Copy Link fallback and reports invite email st
 });
 
 test('phase 3C1 app maps invite accept failures to persistent handoff copy', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('const inviteHandoffNoticeId');
   const end = src.indexOf('if (!authListenerInstalled)', start);
   const inviteBlock = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -13971,7 +13980,7 @@ test('phase 3C1 app maps invite accept failures to persistent handoff copy', asy
 });
 
 test('phase 3C1 invite handoff notice does not expose raw tokens or scope into billing', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('const inviteHandoffNoticeId');
   const end = src.indexOf('if (!authListenerInstalled)', start);
   const inviteBlock = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -13992,7 +14001,7 @@ test('phase 3C1 invite handoff notice does not expose raw tokens or scope into b
 });
 
 test('phase 3C1 renderInviteHandoffNotice guards auth overlay visibility before inserting notice', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function renderInviteHandoffNotice(');
   const end = src.indexOf('function setInviteHandoffNotice(', start);
   const fnBody = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -14023,7 +14032,7 @@ test('phase 3C1 renderInviteHandoffNotice guards auth overlay visibility before 
 });
 
 test('phase 3C1 renderInviteHandoffNotice does not create blocking banner or set z-index above auth overlay', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function renderInviteHandoffNotice(');
   const end = src.indexOf('function setInviteHandoffNotice(', start);
   const fnBody = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -14044,7 +14053,7 @@ test('phase 3C1 renderInviteHandoffNotice does not create blocking banner or set
 });
 
 test('phase 3C1 invite handoff visibility fix adds no token logging or reload side-effects', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   // Scope checks to the renderInviteHandoffNotice function only — this is the function modified by the fix.
   const fnStart = src.indexOf('function renderInviteHandoffNotice(');
   const fnEnd = src.indexOf('function setInviteHandoffNotice(', fnStart);
@@ -14072,7 +14081,7 @@ test('phase 3C1 invite handoff visibility fix adds no token logging or reload si
 });
 
 test('phase 3C1 SIGNED_OUT event clears invite handoff notice to prevent stale notice persisting over auth overlay', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   // Find the onAuthStateChange handler — locate the isSignedOutEvent clearBillingState block
   const handlerStart = src.indexOf('SupabaseClient.onAuthStateChange(');
@@ -14095,7 +14104,7 @@ test('phase 3C1 SIGNED_OUT event clears invite handoff notice to prevent stale n
 });
 
 test('phase 3C1 signed-in invite rejection clears notice state instead of setting persistent error notice', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('async function tryAcceptPendingInvite(');
   const end = src.indexOf('if (!authListenerInstalled)', start);
   const fnBody = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -14130,7 +14139,7 @@ test('phase 3C1 signed-in invite rejection clears notice state instead of settin
 });
 
 test('phase 3C1 invite rejection failure path does not log token or JWT values', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('async function tryAcceptPendingInvite(');
   const end = src.indexOf('if (!authListenerInstalled)', start);
   const fnBody = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -14184,7 +14193,7 @@ test('settings members shows pending invite expiration state without new CSS', a
 });
 
 test('app access-loss handler is active-org 403 only and ignores transient billing states', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   assert.match(src, /function isConfirmedActiveOrgAccessDeniedResult\b/,
     'app must have a narrow confirmed access-denied classifier');
@@ -14201,7 +14210,7 @@ test('app access-loss handler is active-org 403 only and ignores transient billi
 });
 
 test('app access-loss handler verifies auth and active org, rate-limits, dispatches event, and refreshes org context', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   assert.match(src, /let _orgAccessLossHandler = null/,
     'module-level handler slot must exist for refreshBilling');
@@ -14426,7 +14435,7 @@ test('phase 0.6A billing service exports leaveWorkspace wrapper', async () => {
 });
 
 test('phase 0.6A app exposes handleWorkspaceLeft and refreshes org context without logout or reload', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function handleWorkspaceLeft(leftOrgId, options = {})');
   const end = src.indexOf('// Expose billing pump globally', start);
   const helper = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -14475,7 +14484,7 @@ test('phase 0.6A settings general uses safe leave workspace UI', async () => {
 test('phase 0.6A does not introduce restore transfer delete or export workspace flows', async () => {
   const edgeSrc = await fs.readFile(orgLeaveWorkspacePath, 'utf8');
   const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const appStart = appSrc.indexOf('function handleWorkspaceLeft(leftOrgId, options = {})');
   const appEnd = appSrc.indexOf('// Expose billing pump globally', appStart);
   const helper = appStart >= 0 && appEnd > appStart ? appSrc.slice(appStart, appEnd) : '';
@@ -14496,7 +14505,7 @@ test('phase 0.6A does not introduce restore transfer delete or export workspace 
 });
 
 test('phase 0.6A-2 handleWorkspaceLeft syncs UI around forced org refresh', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function handleWorkspaceLeft(leftOrgId, options = {})');
   const end = src.indexOf('// Expose billing pump globally', start);
   const helper = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -14519,7 +14528,7 @@ test('phase 0.6A-2 handleWorkspaceLeft syncs UI around forced org refresh', asyn
 });
 
 test('phase 0.6A-2 account switcher chip uses workspace initials instead of user initials', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const displayStart = src.indexOf('function getDisplay()');
   const displayEnd = src.indexOf('function renderButton(buttonEl)', displayStart);
   const displayFn = displayStart >= 0 && displayEnd > displayStart ? src.slice(displayStart, displayEnd) : '';
@@ -14551,7 +14560,7 @@ test('phase 0.6A-2 bottom-left workspace chip avatar is circular', async () => {
 });
 
 test('phase 0.6A-2 chip sync patch does not add Stripe billing-status or reload behavior', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const start = appSrc.indexOf('function handleWorkspaceLeft(leftOrgId, options = {})');
   const end = appSrc.indexOf('// Expose billing pump globally', start);
   const helper = start >= 0 && end > start ? appSrc.slice(start, end) : '';
@@ -15059,7 +15068,7 @@ test('phase 0.6D-pre direct client mutation guards avoid lifecycle billing and r
 });
 
 test('phase 0.6C app exposes handleWorkspaceArchived and refreshes org context without logout or reload', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function handleWorkspaceArchived(archivedOrgId, options = {})');
   const end = src.indexOf('// Expose billing pump globally', start);
   const helper = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15089,7 +15098,7 @@ test('phase 0.6C app exposes handleWorkspaceArchived and refreshes org context w
 });
 
 test('workspace rename live-refresh: handleWorkspaceUpdated reconciles org context locally without a network refetch', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function handleWorkspaceUpdated(updatedOrg, options = {})');
   const end = src.indexOf('// Expose billing pump globally', start);
   const helper = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15195,7 +15204,7 @@ test('phase 0.6C Settings Archive UI is primary-owner-only and uses safe confirm
 });
 
 test('phase 0.6C does not add restore transfer permanent delete billing-status Stripe CSS router or package scope', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
   const billingSrc = await fs.readFile(billingServiceUrl, 'utf8');
   const appStart = appSrc.indexOf('function handleWorkspaceArchived(archivedOrgId, options = {})');
@@ -15304,7 +15313,7 @@ test('false-no-workspace: getUserOrganizations preserves its array contract for 
 });
 
 test('false-no-workspace: account bundle confirms zero workspaces only from a non-partial authoritative result', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('async function applyOrgContextFromBundle(');
   const end = src.indexOf('async function refreshOrgContext(', start);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15322,7 +15331,7 @@ test('false-no-workspace: account bundle confirms zero workspaces only from a no
 });
 
 test('false-no-workspace: no-org banner requires a resolved confirmed-empty result and is suppressed while busy', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function applyOrgRequiredUi(');
   const anchor = src.indexOf('const showNoOrgBanner', start);
   const fn = start >= 0 && anchor > start ? src.slice(start, anchor + 600) : '';
@@ -15354,7 +15363,7 @@ test('phase 0.6C-2 account bundle does not expose stale profile or membership or
 });
 
 test('phase 0.6C-2 app clears org state when resolved org is not in active org rows', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const resolverStart = src.indexOf('function resolveOrgContextFromBundle(bundle)');
   const resolverEnd = src.indexOf('// ── Workspace-ready event replay buffer', resolverStart);
   const resolver = resolverStart >= 0 && resolverEnd > resolverStart ? src.slice(resolverStart, resolverEnd) : '';
@@ -15375,7 +15384,7 @@ test('phase 0.6C-2 app clears org state when resolved org is not in active org r
 });
 
 test('phase 0.6C-2 app exposes confirmed no-active bundle before clearing org context', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const applyStart = src.indexOf('async function applyOrgContextFromBundle');
   const applyEnd = src.indexOf('async function refreshOrgContext', applyStart);
   const applyFn = applyStart >= 0 && applyEnd > applyStart ? src.slice(applyStart, applyEnd) : '';
@@ -15438,7 +15447,7 @@ test('phase 0.6C-2 Settings re-resolves modal org on open to avoid stale cross-u
 });
 
 test('phase 0.6C-2 archive fallback avoids logout reload destructive data and billing scope', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
   const applyStart = appSrc.indexOf('async function applyOrgContextFromBundle');
   const applyEnd = appSrc.indexOf('async function refreshOrgContext', applyStart);
@@ -15467,7 +15476,7 @@ test('phase 0.6C-2 archive fallback avoids logout reload destructive data and bi
 });
 
 test('phase 0.6C-3 dispatchOrgContextChanged allows empty orgId only with confirmed opt-in', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function dispatchOrgContextChanged(options = {})');
   const end = src.indexOf('function parseOrgContextSyncPayload', start);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15484,7 +15493,7 @@ test('phase 0.6C-3 dispatchOrgContextChanged allows empty orgId only with confir
 });
 
 test('phase 0.6C-3 clearOrgContext dispatches confirmed empty-org event', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function clearOrgContext(');
   const end = src.indexOf('let orgScopedRenderTimer', start);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15499,7 +15508,7 @@ test('phase 0.6C-3 clearOrgContext dispatches confirmed empty-org event', async 
 });
 
 test('phase 0.6C-3 orgContextResolved is set on active apply and reset on uncertain auth clears', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const applyStart = src.indexOf('async function applyOrgContextFromBundle');
   const applyEnd = src.indexOf('async function refreshOrgContext', applyStart);
   const applyFn = applyStart >= 0 && applyEnd > applyStart ? src.slice(applyStart, applyEnd) : '';
@@ -15525,7 +15534,7 @@ test('phase 0.6C-3 orgContextResolved is set on active apply and reset on uncert
 });
 
 test('phase 0.6C-3 AccountSwitcher loading state is gated by unresolved org context', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function getDisplay()');
   const end = src.indexOf('function renderButton(buttonEl)', start);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15538,7 +15547,7 @@ test('phase 0.6C-3 AccountSwitcher loading state is gated by unresolved org cont
 });
 
 test('phase 0.6C-3 AccountSwitcher has neutral confirmed no-active workspace display', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function getDisplay()');
   const end = src.indexOf('function renderButton(buttonEl)', start);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15555,7 +15564,7 @@ test('phase 0.6C-3 AccountSwitcher has neutral confirmed no-active workspace dis
 });
 
 test('phase 0.6C-3 org-changed listener handles confirmed no-active without auth refresh', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf("window.addEventListener('tp3d:org-changed', ev => {");
   const end = src.indexOf('AppShell.init();', start);
   const listener = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15565,7 +15574,7 @@ test('phase 0.6C-3 org-changed listener handles confirmed no-active without auth
     'listener must detect confirmed empty-org events');
   assert.match(listener, /if \(isClearedEvent\) \{[\s\S]*AccountSwitcher[\s\S]*refresh\(\)/,
     'confirmed no-active event must refresh the workspace chip');
-  assert.match(listener, /if \(isClearedEvent\) \{[\s\S]*applyAccessGateFromBilling\(getBillingState\(\), \{[\s\S]*reason: 'org-cleared'[\s\S]*activeOrgId: null/,
+  assert.match(listener, /if \(isClearedEvent\) \{[\s\S]*BillingService\.applyAccessGateFromBilling\(BillingService\.getBillingState\(\), \{[\s\S]*reason: 'org-cleared'[\s\S]*activeOrgId: null/,
     'confirmed no-active event must reapply access gate with no active org');
 
   const branchStart = listener.indexOf('if (isClearedEvent) {');
@@ -15628,7 +15637,7 @@ test('phase 0.6C billing workspace limit copy includes archived workspaces', asy
 });
 
 test('phase 0.6C-3 no-workspace banner remains gated by settled auth state', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function applyOrgRequiredUi(');
   const end = src.indexOf('// \u2500\u2500 Install workspace-ready listener early', start);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15647,7 +15656,7 @@ test('phase 0.6C-3 no-workspace banner remains gated by settled auth state', asy
 });
 
 test('phase 0.6C-3 frontend stability fix avoids backend billing and destructive scope creep', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
 
   const appSnippets = [
@@ -15674,7 +15683,7 @@ test('phase 0.6C-3 frontend stability fix avoids backend billing and destructive
 });
 
 test('phase 0.6C-4 archive refresh fallback commits a remaining active workspace', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const helperStart = src.indexOf('function handleWorkspaceArchived(archivedOrgId, options = {})');
   const helperEnd = src.indexOf('// Expose billing pump globally', helperStart);
   const helper = helperStart >= 0 && helperEnd > helperStart ? src.slice(helperStart, helperEnd) : '';
@@ -16364,7 +16373,7 @@ test('billing safety transfer client production-helper runtime maps structured g
 });
 
 test('phase 0.6D Batch C app exposes handleOwnershipTransferred without signout or reload', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function handleOwnershipTransferred(orgId, options = {})');
   const end = src.indexOf('// Expose billing pump globally', start);
   const helper = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -16423,7 +16432,7 @@ test('phase 0.6D Batch C transfer implementation avoids forbidden scope', async 
   const billingStart = billingSrc.indexOf('export async function transferOwnership(orgId, newOwnerId)');
   const billingEnd = billingSrc.indexOf('/**\n * Leave a workspace', billingStart);
   const billingWrapper = billingStart >= 0 && billingEnd > billingStart ? billingSrc.slice(billingStart, billingEnd) : '';
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const appStart = appSrc.indexOf('function handleOwnershipTransferred(orgId, options = {})');
   const appEnd = appSrc.indexOf('// Expose billing pump globally', appStart);
   const appHandler = appStart >= 0 && appEnd > appStart ? appSrc.slice(appStart, appEnd) : '';
@@ -16565,7 +16574,7 @@ test('phase 0.6D Batch B service and client expose restore/list wrappers', async
 });
 
 test('phase 0.6D Batch B app exposes handleWorkspaceRestored without signout or reload', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function handleWorkspaceRestored(restoredOrgId, options = {})');
   const end = src.indexOf('function handleOwnershipTransferred', start);
   const helper = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -16612,7 +16621,7 @@ test('phase 0.6D Batch B restore implementation avoids forbidden scope', async (
   const billingStart = billingSrc.indexOf('export async function restoreWorkspace(orgId)');
   const billingEnd = billingSrc.indexOf('/**\n * Archive a workspace', billingStart);
   const billingWrapper = billingStart >= 0 && billingEnd > billingStart ? billingSrc.slice(billingStart, billingEnd) : '';
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const appStart = appSrc.indexOf('function handleWorkspaceRestored(restoredOrgId, options = {})');
   const appEnd = appSrc.indexOf('function handleOwnershipTransferred', appStart);
   const appHandler = appStart >= 0 && appEnd > appStart ? appSrc.slice(appStart, appEnd) : '';
@@ -17020,7 +17029,7 @@ test('phase 0.7A-2 parseWorkspaceImportJSON validates case and pack arrays', asy
 });
 
 test('phase 0.7A-2 app exposes workspace export modal using existing download path', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function openExportWorkspaceModal(');
   const end = src.indexOf('\n    function openImportAppDialog', start + 1);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -17061,7 +17070,7 @@ test('phase 0.7A-2 Settings includes archive export reminder without forcing arc
 });
 
 test('phase 0.7A-2 workspace export integration is wired into settings overlay only', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   assert.match(src, /onExportWorkspace:\s*openExportWorkspaceModal/,
     'app must wire openExportWorkspaceModal into settings overlay');
@@ -17589,7 +17598,7 @@ test('production readiness settings billing fallback requires isPro and isActive
 });
 
 test('phase 0.7C-pre folderLibrary changes participate in autosave with packLibrary changes', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const saveCall = 'Storage.saveSoon();';
   const saveCallIndex = src.indexOf(saveCall);
   const conditionStart = src.lastIndexOf('if (', saveCallIndex);
@@ -17608,7 +17617,7 @@ test('phase 0.7C-pre folderLibrary changes participate in autosave with packLibr
 });
 
 test('phase 0.7C-pre folderLibrary changes trigger Packs screen render with packLibrary changes', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const renderCall = 'PacksUI.render();';
   const renderCallIndex = src.indexOf(renderCall, src.indexOf('StateStore.subscribe(changes =>'));
   const conditionStart = src.lastIndexOf('if (', renderCallIndex);
@@ -17625,7 +17634,7 @@ test('phase 0.7C-pre folderLibrary changes trigger Packs screen render with pack
 });
 
 test('phase 0.7C-pre persistence render guard does not import folder UI or touch forbidden scope', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
 
   assert.doesNotMatch(appSrc, /import\s+\*\s+as\s+FolderLibrary|from ['"]\.\/services\/folder-library\.js['"]/,
     'Phase 0.7C-pre must not import FolderLibrary into app.js');
@@ -18245,7 +18254,7 @@ test('phase 0.7C-4 avoids native dialogs and preserves no-caret folder button', 
 // ============================================================================
 
 test('phase 0.7C-4B app local state reload and reset paths preserve folderLibrary', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const seedStart = src.indexOf('function seedIfEmpty()');
   const resetStart = src.indexOf('function resetAppStateToEmpty()');
   const loadStart = src.indexOf('function loadScopedStateOrSeed');
@@ -18266,7 +18275,7 @@ test('phase 0.7C-4B app local state reload and reset paths preserve folderLibrar
 });
 
 test('phase 0.7C-4B folder mutations flush workspace persistence immediately', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const packsSrc = await fs.readFile(packsScreenPath, 'utf8');
   const createStart = packsSrc.indexOf('function openCreateFolderModal()');
   const createEnd = packsSrc.indexOf('\n    function openRenameFolderModal', createStart + 1);
@@ -19704,7 +19713,7 @@ test('OPERATION-LIFECYCLE: truck dropdowns update pending state and only Update 
 // ---------------------------------------------------------------------------
 test('OPERATION-LIFECYCLE-AMEND InteractionManager receives the lifecycle and guards its mutating actions', async () => {
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
 
   // Factory accepts the lifecycle and app.js injects it at construction.
   const factory = editorSrc.match(/export function createInteractionManager\(\{[\s\S]*?\}\) \{/);
@@ -20696,7 +20705,7 @@ test('AUTOPACK-MAX-A preserves physical geometry, support, blocked bodies, stabi
 // ── Runtime hardening: post-boot rejection toast + missing-pack guard ────────
 
 test('HARDEN-P1A post-boot unhandledrejection handler shows toast for any non-abort rejection', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   // Locate the handler body between its declaration and the subsequent addEventListener calls
   const handlerDecl = src.indexOf('const handleRuntimeUnhandledRejection = ev =>');
@@ -20730,7 +20739,7 @@ test('HARDEN-P1A post-boot unhandledrejection handler shows toast for any non-ab
 });
 
 test('HARDEN-P1A boot-time unhandledrejection still shows fatal overlay when appReady is false', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const handlerDecl = src.indexOf('const handleRuntimeUnhandledRejection = ev =>');
   const addListenerAnchor = src.indexOf("window.addEventListener('error', handleRuntimeError", handlerDecl);
@@ -20749,7 +20758,7 @@ test('HARDEN-P1A boot-time unhandledrejection still shows fatal overlay when app
 });
 
 test('HARDEN-P1B queueOrgScopedRender calls syncRecoverableErrorOverlay after EditorUI.render', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const fnStart = src.indexOf('function queueOrgScopedRender(');
   assert.ok(fnStart >= 0, 'queueOrgScopedRender function found');
@@ -20812,7 +20821,7 @@ test('HARDEN-P1B hasMissingEditorPack and syncRecoverableErrorOverlay implement 
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('BUG-01-A renderAuthState delegates confirmed user switches to the centralized isolation helper', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   assert.match(src, /_isConfirmedUserSwitch/, '_isConfirmedUserSwitch variable present');
 
@@ -20835,7 +20844,7 @@ test('BUG-01-A renderAuthState delegates confirmed user switches to the centrali
 });
 
 test('BUG-01-A2 user-switch guard requires actual identity change, not same-user token refresh', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const guardIdx = src.indexOf('const _isConfirmedUserSwitch =');
   assert.ok(guardIdx >= 0, 'guard assignment found');
@@ -20847,7 +20856,7 @@ test('BUG-01-A2 user-switch guard requires actual identity change, not same-user
 });
 
 test('BUG-01-A3 isolation runs BEFORE readLocalOrgId() and BEFORE network-dependent work in renderAuthState', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   // The clear must precede the org-hint read so the new user never inherits the
   // stale key, and must precede await checkProfileStatus() so no network wait
@@ -20870,7 +20879,7 @@ test('BUG-01-A3 isolation runs BEFORE readLocalOrgId() and BEFORE network-depend
 });
 
 test('BUG-01-B clearBillingState bumps _billingEpoch so any in-flight request from prior user epoch is discarded', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const clearStart = src.indexOf('function clearBillingState()');
   assert.ok(clearStart >= 0, 'clearBillingState function found');
@@ -20890,7 +20899,7 @@ test('BUG-01-B clearBillingState bumps _billingEpoch so any in-flight request fr
 });
 
 test('BUG-01-B2 refreshBilling re-checks active org after fetch to discard result started under prior user org', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   assert.match(src, /_activeOrgIdAfterFetch/, 'active org re-read after fetch completes');
   assert.match(src, /refresh:discard-stale-org/, 'stale-org discard path logged in refreshBilling');
   // requestedOrgId compared against post-fetch active org ID
@@ -20991,7 +21000,7 @@ test('BUG-01-F legitimate same-user startup: org hint is promotable when no swit
 });
 
 test('BUG-01-G same-user workspace switch is not affected by the user-switch guard', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   // _isConfirmedUserSwitch = false when lastAuthUserId === user.id
   // (same-user workspace switch: isUserSwitch might be false, lastAuthUserId matches)
@@ -21012,7 +21021,7 @@ test('BUG-01-G same-user workspace switch is not affected by the user-switch gua
 });
 
 test('BUG-01-H cross-tab same-user refresh: guard is false when user IDs match', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   // Verify that the guard expression is a Boolean AND of two conditions,
   // meaning it is false when either isUserSwitch is false AND IDs match.
   const guardIdx = src.indexOf('const _isConfirmedUserSwitch =');
@@ -21031,16 +21040,19 @@ test('BUG-01-H cross-tab same-user refresh: guard is false when user IDs match',
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function createBillingPumpRuntimeHarness() {
-  const src = await fs.readFile(appPath, 'utf8');
-  const authoritativeStart = src.indexOf('let _billingAuthoritativeRefreshGeneration = 0;');
-  const authoritativeEnd = src.indexOf('function normalizeBillingEntitlementStatus(', authoritativeStart);
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const billingSrc = await fs.readFile(billingServicePath, 'utf8');
+  // Stage 1: the authoritative-refresh block moved into the extracted billing service.
+  const authoritativeStart = billingSrc.indexOf('let _billingAuthoritativeRefreshGeneration = 0;');
+  const authoritativeEnd = billingSrc.indexOf('function nullableFiniteNumber(', authoritativeStart);
   assert.ok(authoritativeStart >= 0 && authoritativeEnd > authoritativeStart,
-    'production authoritative-refresh state block is extractable');
-  const authoritativeSource = src.slice(authoritativeStart, authoritativeEnd);
-  const pumpStart = src.indexOf('const BILLING_PUMP_RETRY_MS = 200;');
-  const pumpEnd = src.indexOf('function handleOrgAccessLoss(', pumpStart);
+    'production authoritative-refresh state block is extractable from billing-service');
+  const authoritativeSource = billingSrc.slice(authoritativeStart, authoritativeEnd);
+  // The retained billing pump still lives in app.js and now delegates to BillingService.*
+  const pumpStart = appSrc.indexOf('const BILLING_PUMP_RETRY_MS = 200;');
+  const pumpEnd = appSrc.indexOf('function handleOrgAccessLoss(', pumpStart);
   assert.ok(pumpStart >= 0 && pumpEnd > pumpStart, 'production billing-pump block is extractable');
-  const pumpSource = src.slice(pumpStart, pumpEnd);
+  const pumpSource = appSrc.slice(pumpStart, pumpEnd);
 
   const context = {
     __now: 100000,
@@ -21135,6 +21147,23 @@ async function createBillingPumpRuntimeHarness() {
     let _lastBillingKeyAt = 0;
     ${authoritativeSource}
     ${pumpSource}
+    // Stage 1: the retained pump delegates to BillingService.*; map each call to the
+    // eval'd authoritative fn (real) or the controlled mock, matching pre-extraction behavior.
+    globalThis.BillingService = {
+      refreshBilling: (...a) => refreshBilling(...a),
+      getBillingState: () => _billingState,
+      _applySharedBillingSnapshot: (...a) => _applySharedBillingSnapshot(...a),
+      _getSharedBillingFreshness: (...a) => _getSharedBillingFreshness(...a),
+      _readShareableBillingResult: (...a) => _readShareableBillingResult(...a),
+      _readSharedBillingResult: (...a) => _readSharedBillingResult(...a),
+      _shouldApplySharedBillingSnapshotForOrg: (...a) => _shouldApplySharedBillingSnapshotForOrg(...a),
+      abbreviateBillingLifecycleId: (...a) => abbreviateBillingLifecycleId(...a),
+      billingAuthLifecycleDebugLog: (...a) => billingAuthLifecycleDebugLog(...a),
+      getCurrentBillingAuthUserId: (...a) => getCurrentBillingAuthUserId(...a),
+      getBillingAuthoritativeRefreshToken: (...a) => getBillingAuthoritativeRefreshToken(...a),
+      isBillingAuthoritativeRefreshInFlight: (...a) => isBillingAuthoritativeRefreshInFlight(...a),
+      resetRefreshDedupForUserSwitch: () => { _lastBillingKey = ''; _lastBillingKeyAt = 0; },
+    };
     globalThis.__authoritative = {
       begin: token => beginBillingAuthoritativeRefreshAttempt(token),
       complete: token => clearBillingAuthoritativeRefreshRequirement(token),
@@ -21250,7 +21279,7 @@ async function createBillingPumpRuntimeHarness() {
 }
 
 test('BUG-01-Q cross-user isolation resets every prior-user billing-pump and burst owner', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const resetStart = src.indexOf('function resetBillingPumpForUserSwitch()');
   const resetEnd = src.indexOf('function maybeScheduleBillingRefresh(', resetStart);
   const resetFn = resetStart >= 0 && resetEnd > resetStart ? src.slice(resetStart, resetEnd) : '';
@@ -21262,8 +21291,12 @@ test('BUG-01-Q cross-user isolation resets every prior-user billing-pump and bur
   assert.match(resetFn, /_billingPumpEverRan = false/, 'new identity receives first-run force behavior');
   assert.match(resetFn, /_billingPumpLastByReason\.clear\(\)/, 'soft cooldown owners are cleared');
   assert.match(resetFn, /_billingPumpLastRunAtMs = 0/, 'global hard cooldown owner is cleared');
-  assert.match(resetFn, /_lastBillingKey = ''/, '300ms request-burst owner key is cleared');
-  assert.match(resetFn, /_lastBillingKeyAt = 0/, '300ms request-burst timestamp is cleared');
+  assert.match(resetFn, /BillingService\.resetRefreshDedupForUserSwitch\(\)/,
+    '300ms request-burst owner reset delegates to BillingService (Stage 1)');
+  const dedupStart = src.indexOf('function resetRefreshDedupForUserSwitch()');
+  const dedupFn = dedupStart >= 0 ? src.slice(dedupStart, src.indexOf('}', dedupStart) + 1) : '';
+  assert.match(dedupFn, /_lastBillingKey = ''/, '300ms request-burst owner key is cleared in BillingService');
+  assert.match(dedupFn, /_lastBillingKeyAt = 0/, '300ms request-burst timestamp is cleared in BillingService');
   assert.doesNotMatch(resetFn, /setTimeout|setInterval|_clearSharedBillingResult|localStorage/, 'reset adds no polling and preserves durable org snapshots');
 
   const helperStart = src.indexOf('function applyUserSwitchIsolation(');
@@ -21339,7 +21372,7 @@ test('BUG-01-S same-user workspace switching keeps existing pump throttling', as
   pump.run('org-context');
   assert.strictEqual(calls.length, 2, 'post-switch duplicate remains throttled');
 
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const setActiveStart = src.indexOf('async function setActiveOrgId(');
   const setActiveEnd = src.indexOf('const OrgContext = {', setActiveStart);
   const setActiveFn = src.slice(setActiveStart, setActiveEnd);
@@ -21380,7 +21413,7 @@ test('BUG-01-T rapid A→B→A and failure recovery remain generation-safe and b
 });
 
 test('BUG-01-U source contract owns one post-switch authoritative billing resolution', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const stateStart = src.indexOf('let _billingAuthoritativeRefreshGeneration = 0;');
   const stateEnd = src.indexOf('function normalizeBillingEntitlementStatus(', stateStart);
   const stateBlock = src.slice(stateStart, stateEnd);
@@ -21562,7 +21595,7 @@ test('BUG-01-Z production pump runtime keeps authoritative failure fail-closed w
 });
 
 test('BUG-01-AA source contract transfers explicit sign-out at every confirmed authenticated boundary', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const stateStart = src.indexOf('let _billingAuthoritativeRefreshGeneration = 0;');
   const stateEnd = src.indexOf('function normalizeBillingEntitlementStatus(', stateStart);
   const stateBlock = src.slice(stateStart, stateEnd);
@@ -21839,16 +21872,16 @@ test('BUG-01-AG transferred requirement survives provisional shared state and cl
 });
 
 test('BUG-01-AH source contract bypasses only the per-reason cooldown for a new authoritative attempt', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const pumpStart = src.indexOf('function maybeScheduleBillingRefresh(');
   const pumpEnd = src.indexOf('function handleOrgAccessLoss(', pumpStart);
   const pumpFn = src.slice(pumpStart, pumpEnd);
 
   assert.match(pumpFn,
-    /const authoritativeRefresh = getBillingAuthoritativeRefreshToken\(activeOrgId\)/,
+    /const authoritativeRefresh = BillingService\.getBillingAuthoritativeRefreshToken\(activeOrgId\)/,
     'the scheduler resolves a current-user/current-org/current-epoch token before cooldown checks');
   assert.match(pumpFn,
-    /authoritativeRefreshRequired && isBillingAuthoritativeRefreshInFlight\(authoritativeRefresh\)[\s\S]*return;/,
+    /authoritativeRefreshRequired && BillingService\.isBillingAuthoritativeRefreshInFlight\(authoritativeRefresh\)[\s\S]*return;/,
     'a matching in-flight generation exits before any second request can start');
   assert.match(pumpFn,
     /const authoritativeRefreshMustStart = Boolean\([\s\S]*authoritativeRefreshRequired && !authoritativeRefresh\.attemptedAt/,
@@ -21979,7 +22012,7 @@ test('BUG-01-AK rapid alternating identities bypass inherited cooldown without a
 });
 
 test('BUG-01-I applyUserSwitchIsolation is the single authoritative isolation contract', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const defCount = src.split('function applyUserSwitchIsolation(').length - 1;
   assert.strictEqual(defCount, 1, 'exactly one definition of applyUserSwitchIsolation');
@@ -22007,7 +22040,7 @@ test('BUG-01-I applyUserSwitchIsolation is the single authoritative isolation co
 });
 
 test('BUG-01-J auth listener, renderAuthState, and rehydrateAuthState all use the same helper (no second cleanup contract)', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const defIdx = src.indexOf('function applyUserSwitchIsolation(');
   assert.ok(defIdx >= 0, 'helper definition found');
@@ -22038,7 +22071,7 @@ test('BUG-01-J auth listener, renderAuthState, and rehydrateAuthState all use th
 });
 
 test('BUG-01-K rehydrateAuthState never erases prior-user evidence without full isolation', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const fnStart = src.indexOf('async function rehydrateAuthState(');
   assert.ok(fnStart >= 0, 'rehydrateAuthState found');
@@ -22090,7 +22123,7 @@ test('BUG-01-N delayed prior-user account bundles remain rejected by auth epoch/
 });
 
 test('BUG-01-O pending-flag lifecycle: transition/failure setters and terminal clears remain explicit', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const svcSrc = await fs.readFile(billingServiceUrl, 'utf8');
 
   const setTrue = appSrc.split('__TP3D_USER_SWITCH_PENDING = true').length - 1;
@@ -22131,7 +22164,7 @@ test('BUG-01-O pending-flag lifecycle: transition/failure setters and terminal c
 });
 
 test('BUG-01-P same-user refresh and same-user workspace switch never invoke isolation', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   // Workspace switch path must not isolate.
   const setActiveStart = src.indexOf('async function setActiveOrgId(');
@@ -22161,7 +22194,7 @@ test('BUG-01-P same-user refresh and same-user workspace switch never invoke iso
 });
 
 async function createOrgContextApplyRuntimeHarness() {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const resolverStart = src.indexOf('function resolveOrgContextFromBundle(bundle)');
   const applyStart = src.indexOf('async function applyOrgContextFromBundle(');
   const applyEnd = src.indexOf('async function refreshOrgContext(', applyStart);
@@ -22222,6 +22255,11 @@ async function createOrgContextApplyRuntimeHarness() {
     const maybeScheduleBillingRefresh = reason => { globalThis.__billingReasons.push(reason); };
     const applyAccessGateFromBilling = () => { globalThis.__accessGateCalls += 1; };
     const getBillingState = () => ({ ok: false });
+    const BillingService = {
+      applyAccessGateFromBilling: (...a) => applyAccessGateFromBilling(...a),
+      getBillingState: (...a) => getBillingState(...a),
+      clearBillingAuthoritativeRefreshRequirement: () => {},
+    };
     const getAuthTruthSnapshot = () => ({ status: 'signed_in', isSignedIn: true });
     const isTp3dDebugEnabled = () => false;
     const dispatchOrgContextChanged = () => { };
@@ -22313,11 +22351,11 @@ test('BUG-01-AM runtime: partial bundle stays conservative and a later full bund
 // ─── BUG-07: sidebar billing DOM must be cleared at the source, not CSS-hidden ─
 
 test('BUG-07-A updateSidebarNotice clears stale markup on every hide path', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const fnStart = src.indexOf('const updateSidebarNotice = (s) => {');
   assert.ok(fnStart >= 0, 'updateSidebarNotice found');
-  const fnEnd = src.indexOf('_billingGateApplier = updateSidebarNotice', fnStart);
+  const fnEnd = src.indexOf('BillingService.setBillingGateApplier(updateSidebarNotice)', fnStart);
   assert.ok(fnEnd > fnStart, 'updateSidebarNotice span resolved');
   const fn = src.slice(fnStart, fnEnd);
 
@@ -22374,7 +22412,7 @@ test('BUG-07-B synthetic: the hide contract leaves no stale child markup', () =>
 // /billing-status response.
 
 test('F1-A _applySharedBillingSnapshot never applies user-specific canManageBilling from a shared snapshot', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const fnStart = src.indexOf('function _applySharedBillingSnapshot(');
   assert.ok(fnStart >= 0, '_applySharedBillingSnapshot found');
@@ -22435,7 +22473,7 @@ test('F1-B synthetic: owner-written snapshot cannot grant member owner UI; role 
 });
 
 test('F1-C role fallbacks that replace the snapshot boolean exist in sidebar and Settings paths', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   // Sidebar: backend value only when boolean; otherwise current-role
   // resolution; forced false while role hydration is in flight.
@@ -23598,7 +23636,7 @@ test('APP-STABILIZATION-PHASE1 failed or conflicting legacy migration preserves 
 });
 
 test('APP-STABILIZATION-PHASE1 app flushes and resets history only at scoped boundaries', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const workspaceScopeStart = src.indexOf('function setWorkspaceStorageScope(');
   const workspaceScopeEnd = src.indexOf('\n    function applyWorkspaceScopedLocalState(', workspaceScopeStart);
   const workspaceScopeFn = src.slice(workspaceScopeStart, workspaceScopeEnd);
@@ -23625,7 +23663,7 @@ test('APP-STABILIZATION-PHASE1 app flushes and resets history only at scoped bou
 });
 
 async function createPhase2OrgOrderingHarness() {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const helperStart = src.indexOf('function parseOrgContextVersion(');
   const helperEnd = src.indexOf('\n    /**\n     * @param {{', helperStart);
   const handleStart = src.indexOf('function handleIncomingOrgContextSync(');
@@ -23669,6 +23707,10 @@ async function createPhase2OrgOrderingHarness() {
     const isLogoutInProgress = () => true;
     const authGateIsSettled = () => true;
     const refreshOrgContext = () => Promise.resolve();
+    const BillingService = {
+      getBillingState: (...a) => getBillingState(...a),
+      reconcileBillingStateForActiveOrg: (...a) => reconcileBillingStateForActiveOrg(...a),
+    };
     ${src.slice(helperStart, helperEnd)}
     ${src.slice(handleStart, handleEnd)}
     globalThis.__handle = handleIncomingOrgContextSync;
@@ -23770,7 +23812,7 @@ test('APP-STABILIZATION-PHASE2 equal versions converge by tab id and the next lo
 });
 
 test('APP-STABILIZATION-PHASE2 canonical sync cancels the legacy fallback only after acceptance', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const canonicalStart = src.indexOf('if (key === ORG_CONTEXT_SYNC_KEY && ev.newValue) {');
   const canonicalEnd = src.indexOf('if (key === WORKSPACE_SWITCH_SYNC_KEY', canonicalStart);
   const canonicalBlock = src.slice(canonicalStart, canonicalEnd);
@@ -23784,7 +23826,7 @@ test('APP-STABILIZATION-PHASE2 canonical sync cancels the legacy fallback only a
 });
 
 async function createPhase2BillingLockHarness() {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const keyStart = src.indexOf('function _billingLockKey(');
   const keyEnd = src.indexOf('/**\n * Try to acquire a cross-tab billing lock', keyStart);
   const readStart = src.indexOf('function _readStorageJson(', keyEnd);
@@ -23845,7 +23887,7 @@ test('APP-STABILIZATION-PHASE2 dead billing lock retry waits through TTL and can
 });
 
 test('APP-STABILIZATION-PHASE2 billing retry remains single, epoch-scoped, org-scoped, and non-forced', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const retryStart = src.indexOf("if (!String(reason || '').startsWith('cross-tab-retry:')) {");
   const retryEnd = src.indexOf('\n    return getBillingState();', retryStart);
   const retryBlock = src.slice(retryStart, retryEnd);
@@ -23863,7 +23905,7 @@ test('APP-STABILIZATION-PHASE2 billing retry remains single, epoch-scoped, org-s
 });
 
 test('APP-STABILIZATION-PHASE3 app shares one lifecycle with screens, dialogs, editor, and preview clearing', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const constructionStart = src.indexOf('const ImportPackDialog = createImportPackDialog({');
   const constructionEnd = src.indexOf('// SECTION: SCREEN UI (UPDATES)', constructionStart);
   const construction = src.slice(constructionStart, constructionEnd);
@@ -24059,7 +24101,7 @@ test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMut
 });
 
 test('APP-STABILIZATION-PHASE4 invite failures distinguish terminal responses from retryable failures', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function isTerminalInviteAcceptFailure(');
   const end = src.indexOf('\n\n      function clearPendingInviteToken(', start);
   const classifierSource = src.slice(start, end);
@@ -24102,7 +24144,7 @@ test('APP-STABILIZATION-PHASE4 invite failures distinguish terminal responses fr
 });
 
 async function createPhase4InviteHarness({ response = null, throwMessage = '' } = {}) {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const constantsStart = src.indexOf('const inviteHandoffSigninMessage');
   const constantsEnd = src.indexOf('let inviteHandoffNotice = null;', constantsStart);
   const mapStart = src.indexOf('function mapInviteAcceptFailureMessage(', constantsEnd);
@@ -24203,7 +24245,7 @@ test('APP-STABILIZATION-PHASE4 invite token clears only on success or confirmed 
 });
 
 async function createPhase4LogoutHarness(mode = 'resolve') {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const finalizerStart = src.indexOf('function finalizeSignedOutLocally(');
   const finalizerEnd = src.indexOf('\n\n    async function performUserInitiatedLogout(', finalizerStart);
   const performStart = src.indexOf('async function performUserInitiatedLogout(', finalizerEnd);
@@ -24307,7 +24349,7 @@ test('APP-STABILIZATION-PHASE4 logout finalizes once for event, missing-event, t
 });
 
 test('APP-STABILIZATION-PHASE4 logout source has no reload fallback and shares deterministic cleanup', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('let logoutActionPromise = null;');
   const end = src.indexOf('// Show small toasts on connectivity changes', start);
   const logoutBlock = src.slice(start, end);
@@ -24351,7 +24393,7 @@ test('APP-STABILIZATION-PHASE4 logout source has no reload fallback and shares d
 // characterization suite. See docs/engineering/p0-domain-module-contract.md.
 
 test('P0-CONTRACT window.__TP3D_BILLING exposes exactly the current member set (pickCheckoutInterval added later)', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const start = app.indexOf('window.__TP3D_BILLING = {');
   assert.ok(start >= 0, 'window.__TP3D_BILLING object literal must exist');
   const end = app.indexOf('\n  };', start);
@@ -24378,7 +24420,7 @@ test('P0-CONTRACT window.__TP3D_BILLING exposes exactly the current member set (
 });
 
 test('P0-CONTRACT getBillingState returns a fresh object literal, not the live _billingState reference', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const start = app.indexOf('function getBillingState() {');
   const end = app.indexOf('\nfunction subscribeBilling', start);
   assert.ok(start >= 0 && end > start, 'getBillingState body must be locatable');
@@ -24390,12 +24432,12 @@ test('P0-CONTRACT getBillingState returns a fresh object literal, not the live _
 });
 
 test('P0-CONTRACT refreshBilling is a reassignable facade member wrappable in place by diagnostics', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const dbg = await fs.readFile(debuggerPath, 'utf8');
   const start = app.indexOf('window.__TP3D_BILLING = {');
   const facade = app.slice(start, app.indexOf('\n  };', start));
-  assert.match(facade, /\n    refreshBilling,/,
-    'refreshBilling must be a plain (writable) facade member so diagnostics can wrap it');
+  assert.match(facade, /\n    refreshBilling: BillingService\.refreshBilling,/,
+    'refreshBilling must be a plain (writable) facade member delegating to BillingService so diagnostics can wrap it in place');
   assert.match(dbg, /billing\.refreshBilling\.bind\(billing\)/,
     'debugger must capture the original refreshBilling before wrapping');
   assert.match(dbg, /billing\.refreshBilling = function/,
@@ -24403,7 +24445,7 @@ test('P0-CONTRACT refreshBilling is a reassignable facade member wrappable in pl
 });
 
 test('P0-CONTRACT window.OrgContext exposes exactly four members and no unresolved facade methods', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const start = app.indexOf('const OrgContext = {');
   assert.ok(start >= 0, 'OrgContext object literal must exist');
   const end = app.indexOf('\n    };', start);

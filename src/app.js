@@ -100,6 +100,7 @@ import {
   acceptOrgInvite,
 } from './data/services/billing.service.js';
 import { createBillingService } from './services/billing-service.js';
+import { createOrganizationService } from './services/organization-service.js';
 
 // ============================================================================
 // SECTION: INITIALIZATION
@@ -2761,29 +2762,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       role: null,
       updatedAt: 0,
     };
-    const WORKSPACE_SWITCH_MAX_MS = 6000;
-    let workspaceSwitchTimer = null;
-    let workspaceSwitchState = {
-      active: false,
-      fromOrgId: null,
-      toOrgId: null,
-      source: null,
-      startedAt: 0,
-      finishedAt: 0,
-      version: 0,
-      localStateReady: false,
-      orgReady: false,
-      billingReady: false,
-      remote: false,
-    };
-    let lastAppliedWorkspaceSwitchOrder = {
-      transitionAt: 0,
-      stateAt: 0,
-      tabId: '',
-    };
-    let orgContextVersion = 0;
-    let lastAppliedOrgContextVersion = 0;
-    let lastAppliedOrgContextTabId = '';
     const orgContextTabId = (() => {
       try {
         const existing = window.sessionStorage.getItem('tp3d:org-context-tab-id');
@@ -2799,325 +2777,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
       return generated;
     })();
-
-    function getWorkspaceSwitchState() {
-      return { ...workspaceSwitchState };
-    }
-
-    function normalizeWorkspaceSwitchOrder(payload, fallbackTabId = '') {
-      if (!payload || typeof payload !== 'object') return null;
-      const active = Boolean(payload.active);
-      const startedAt = Number(payload.startedAt || 0);
-      const finishedAt = Number(payload.finishedAt || 0);
-      const dispatchedAt = Number(payload.ts || 0);
-      const transitionAt = Number.isFinite(startedAt) && startedAt > 0
-        ? startedAt
-        : active
-          ? dispatchedAt
-          : finishedAt || dispatchedAt;
-      const stateAt = active
-        ? dispatchedAt || transitionAt
-        : Math.max(
-          Number.isFinite(finishedAt) ? finishedAt : 0,
-          Number.isFinite(dispatchedAt) ? dispatchedAt : 0,
-          transitionAt
-        );
-      if (!Number.isFinite(transitionAt) || transitionAt <= 0 || !Number.isFinite(stateAt) || stateAt <= 0) {
-        return null;
-      }
-      return {
-        transitionAt: Math.floor(transitionAt),
-        stateAt: Math.floor(stateAt),
-        tabId: String(payload.tabId || fallbackTabId || ''),
-      };
-    }
-
-    function compareWorkspaceSwitchOrder(incoming, applied = lastAppliedWorkspaceSwitchOrder) {
-      if (!incoming) return -1;
-      if (incoming.transitionAt !== applied.transitionAt) {
-        return incoming.transitionAt > applied.transitionAt ? 1 : -1;
-      }
-      if (incoming.stateAt !== applied.stateAt) {
-        return incoming.stateAt > applied.stateAt ? 1 : -1;
-      }
-      if (incoming.tabId === applied.tabId) return 0;
-      return incoming.tabId > applied.tabId ? 1 : -1;
-    }
-
-    function recordWorkspaceSwitchOrder(order) {
-      if (!order || compareWorkspaceSwitchOrder(order) < 0) return false;
-      lastAppliedWorkspaceSwitchOrder = { ...order };
-      return true;
-    }
-
-    function nextWorkspaceSwitchDispatchTimestamp() {
-      return Math.max(Date.now(), Number(lastAppliedWorkspaceSwitchOrder.stateAt || 0) + 1);
-    }
-
-    function dispatchWorkspaceSwitchStateChanged(
-      reason = 'update',
-      { broadcast = true, recordOrder = true } = {}
-    ) {
-      const detail = {
-        ...getWorkspaceSwitchState(),
-        reason: reason || 'update',
-      };
-      const dispatchTs = nextWorkspaceSwitchDispatchTimestamp();
-      if (recordOrder) {
-        recordWorkspaceSwitchOrder(normalizeWorkspaceSwitchOrder({
-          ...detail,
-          tabId: orgContextTabId,
-          ts: dispatchTs,
-        }));
-      }
-      try {
-        window.dispatchEvent(new CustomEvent('tp3d:workspace-switch-state', { detail }));
-      } catch {
-        // ignore
-      }
-      if (!broadcast) return;
-      try {
-        const userId = getSignedInUserIdStrict();
-        if (!userId) return;
-        const payload = {
-          ...detail,
-          userId,
-          tabId: orgContextTabId,
-          ts: dispatchTs,
-        };
-        const encoded = JSON.stringify(payload);
-        window.localStorage.setItem(WORKSPACE_SWITCH_SYNC_KEY, encoded);
-        window.setTimeout(() => {
-          try {
-            const raw = window.localStorage.getItem(WORKSPACE_SWITCH_SYNC_KEY);
-            if (!raw) return;
-            const parsed = JSON.parse(raw);
-            if (
-              parsed &&
-              parsed.tabId === orgContextTabId &&
-              Number(parsed.version || 0) === Number(payload.version || 0) &&
-              String(parsed.reason || '') === String(payload.reason || '')
-            ) {
-              window.localStorage.removeItem(WORKSPACE_SWITCH_SYNC_KEY);
-            }
-          } catch {
-            // ignore
-          }
-        }, 1500);
-      } catch {
-        // ignore
-      }
-    }
-
-    function clearWorkspaceSwitchTimer() {
-      if (!workspaceSwitchTimer) return;
-      try {
-        window.clearTimeout(workspaceSwitchTimer);
-      } catch {
-        // ignore
-      }
-      workspaceSwitchTimer = null;
-    }
-
-    function scheduleWorkspaceSwitchTimeout(version) {
-      clearWorkspaceSwitchTimer();
-      try {
-        workspaceSwitchTimer = window.setTimeout(() => {
-          if (workspaceSwitchState.active && workspaceSwitchState.version === version) {
-            finishWorkspaceSwitch('timeout');
-          }
-        }, WORKSPACE_SWITCH_MAX_MS);
-      } catch {
-        workspaceSwitchTimer = null;
-      }
-    }
-
-    function beginWorkspaceSwitch(toOrgId, source = 'org-switch') {
-      const nextOrgId = normalizeOrgIdForBilling(toOrgId);
-      if (!nextOrgId) return getWorkspaceSwitchState();
-      BillingService.clearBillingPendingRetry();
-      const fromOrgId = normalizeOrgIdForBilling(orgContext && orgContext.activeOrgId ? orgContext.activeOrgId : '');
-      const nextVersion = (workspaceSwitchState.version || 0) + 1;
-      workspaceSwitchState = {
-        active: true,
-        fromOrgId: fromOrgId || null,
-        toOrgId: nextOrgId,
-        source: source || 'org-switch',
-        startedAt: Date.now(),
-        finishedAt: 0,
-        version: nextVersion,
-        localStateReady: false,
-        orgReady: false,
-        billingReady: false,
-        remote: false,
-      };
-      dispatchWorkspaceSwitchStateChanged('begin');
-      scheduleWorkspaceSwitchTimeout(nextVersion);
-      return getWorkspaceSwitchState();
-    }
-
-    function finishWorkspaceSwitch(reason = 'complete', options = {}) {
-      BillingService.clearBillingPendingRetry();
-      if (!workspaceSwitchState.active) {
-        clearWorkspaceSwitchTimer();
-        return getWorkspaceSwitchState();
-      }
-      clearWorkspaceSwitchTimer();
-      workspaceSwitchState = {
-        ...workspaceSwitchState,
-        active: false,
-        finishedAt: Date.now(),
-      };
-      dispatchWorkspaceSwitchStateChanged(reason || 'complete', options);
-      return getWorkspaceSwitchState();
-    }
-
-    function markWorkspaceSwitchReady(partial = {}, reason = 'ready') {
-      if (!workspaceSwitchState.active) return getWorkspaceSwitchState();
-      workspaceSwitchState = {
-        ...workspaceSwitchState,
-        localStateReady: partial.localStateReady ? true : workspaceSwitchState.localStateReady,
-        orgReady: partial.orgReady ? true : workspaceSwitchState.orgReady,
-        billingReady: partial.billingReady ? true : workspaceSwitchState.billingReady,
-      };
-      if (workspaceSwitchState.localStateReady && workspaceSwitchState.orgReady && workspaceSwitchState.billingReady) {
-        return finishWorkspaceSwitch(reason || 'ready');
-      }
-      dispatchWorkspaceSwitchStateChanged(reason || 'ready');
-      return getWorkspaceSwitchState();
-    }
-
-    function hasWorkspaceSwitchOrgContextReady(orgId) {
-      const targetOrgId = normalizeOrgIdForBilling(orgId);
-      if (!targetOrgId) return false;
-      const activeOrgId = normalizeOrgIdForBilling(orgContext && orgContext.activeOrgId ? orgContext.activeOrgId : '');
-      if (activeOrgId !== targetOrgId) return false;
-      const activeOrg = orgContext && orgContext.activeOrg ? orgContext.activeOrg : null;
-      const activeOrgMatches = normalizeOrgIdForBilling(activeOrg && activeOrg.id ? activeOrg.id : activeOrgId) === targetOrgId;
-      if (activeOrgMatches && activeOrg && String(activeOrg.name || '').trim()) return true;
-      const orgs = Array.isArray(orgContext && orgContext.orgs) ? orgContext.orgs : [];
-      return orgs.some(org => (
-        normalizeOrgIdForBilling(org && org.id ? org.id : '') === targetOrgId &&
-        String(org && org.name ? org.name : '').trim()
-      ));
-    }
-
-    function markWorkspaceSwitchOrgReadyIfResolved(reason = 'org-ready') {
-      if (!workspaceSwitchState.active) return;
-      if (hasWorkspaceSwitchOrgContextReady(workspaceSwitchState.toOrgId)) {
-        markWorkspaceSwitchReady({ orgReady: true }, reason);
-      }
-    }
-
-    function markWorkspaceSwitchBillingReadyIfSettled(snapshot, reason = 'billing-ready') {
-      if (!workspaceSwitchState.active) return;
-      const state = snapshot || BillingService.getBillingState();
-      const billingOrgId = normalizeOrgIdForBilling(state && state.orgId ? state.orgId : '');
-      if (!billingOrgId || billingOrgId !== workspaceSwitchState.toOrgId) return;
-      const hasEntitlement = Boolean(normalizeBillingEntitlementStatus(state && state.entitlementStatus));
-      const hasUsableTargetSnapshot = Boolean(state.ok && state.lastFetchedAt && !state.error && hasEntitlement);
-      const settled = !state.loading && !state.pending && Boolean((state.ok && hasEntitlement) || state.error || (!state.ok && state.lastFetchedAt));
-      if (settled || hasUsableTargetSnapshot) {
-        markWorkspaceSwitchReady({ billingReady: true }, reason);
-      }
-    }
-
-    function parseWorkspaceSwitchSyncPayload(raw) {
-      if (!raw) return null;
-      try {
-        const parsed = JSON.parse(raw);
-        return parsed && typeof parsed === 'object' ? parsed : null;
-      } catch {
-        return null;
-      }
-    }
-
-    function handleIncomingWorkspaceSwitchState(payload) {
-      if (!payload || typeof payload !== 'object') return;
-      const incomingTabId = payload.tabId ? String(payload.tabId) : '';
-      if (incomingTabId && incomingTabId === orgContextTabId) return;
-
-      const payloadUserId = payload.userId ? String(payload.userId) : '';
-      const currentUserId = getSignedInUserIdStrict();
-      if (!currentUserId || !payloadUserId || payloadUserId !== currentUserId) return;
-
-      const targetOrgId = normalizeOrgIdForBilling(payload.toOrgId || '');
-      if (!targetOrgId) return;
-
-      const incomingOrder = normalizeWorkspaceSwitchOrder(payload, incomingTabId);
-      if (!incomingOrder || compareWorkspaceSwitchOrder(incomingOrder) <= 0) return;
-
-      const nextVersion = Number(payload.version || 0) || ((workspaceSwitchState.version || 0) + 1);
-      const incomingTs = Number(payload.ts || payload.startedAt || 0) || 0;
-      const incomingActive = Boolean(payload.active);
-      if (incomingActive) {
-        if (
-          !workspaceSwitchState.active &&
-          workspaceSwitchState.toOrgId === targetOrgId &&
-          workspaceSwitchState.finishedAt &&
-          incomingTs &&
-          incomingTs < workspaceSwitchState.finishedAt
-        ) {
-          return;
-        }
-        recordWorkspaceSwitchOrder(incomingOrder);
-        clearWorkspaceSwitchTimer();
-        const appliedVersion = Math.max(Number(workspaceSwitchState.version || 0) || 0, nextVersion);
-        workspaceSwitchState = {
-          active: true,
-          fromOrgId: normalizeOrgIdForBilling(payload.fromOrgId || '') || null,
-          toOrgId: targetOrgId,
-          source: payload.source ? String(payload.source) : 'workspace-switch-sync',
-          startedAt: Number(payload.startedAt || payload.ts || Date.now()) || Date.now(),
-          finishedAt: 0,
-          version: appliedVersion,
-          localStateReady: Boolean(payload.localStateReady),
-          orgReady: Boolean(payload.orgReady),
-          billingReady: Boolean(payload.billingReady),
-          remote: true,
-        };
-        dispatchWorkspaceSwitchStateChanged(payload.reason || 'sync', {
-          broadcast: false,
-          recordOrder: false,
-        });
-        try {
-          workspaceSwitchTimer = window.setTimeout(() => {
-            if (workspaceSwitchState.active && workspaceSwitchState.version === appliedVersion) {
-              finishWorkspaceSwitch('sync-timeout', { broadcast: false });
-            }
-          }, WORKSPACE_SWITCH_MAX_MS);
-        } catch {
-          workspaceSwitchTimer = null;
-        }
-        return;
-      }
-
-      if (workspaceSwitchState.active && workspaceSwitchState.toOrgId && workspaceSwitchState.toOrgId !== targetOrgId) {
-        return;
-      }
-      if (workspaceSwitchState.active && workspaceSwitchState.remote !== true) {
-        return;
-      }
-      recordWorkspaceSwitchOrder(incomingOrder);
-      clearWorkspaceSwitchTimer();
-      workspaceSwitchState = {
-        ...workspaceSwitchState,
-        active: false,
-        fromOrgId: normalizeOrgIdForBilling(payload.fromOrgId || '') || workspaceSwitchState.fromOrgId || null,
-        toOrgId: targetOrgId,
-        source: payload.source ? String(payload.source) : workspaceSwitchState.source,
-        finishedAt: Number(payload.finishedAt || payload.ts || Date.now()) || Date.now(),
-        version: Math.max(Number(workspaceSwitchState.version || 0) || 0, nextVersion),
-        localStateReady: Boolean(payload.localStateReady),
-        orgReady: Boolean(payload.orgReady),
-        billingReady: Boolean(payload.billingReady),
-        remote: true,
-      };
-      dispatchWorkspaceSwitchStateChanged(payload.reason || 'sync-complete', {
-        broadcast: false,
-        recordOrder: false,
-      });
-    }
 
     let lastOrgPersistAt = 0;
     let orgContextInFlight = null;
@@ -3221,7 +2880,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       let hasSessionIndicators = false;
       if (isBootPhase) {
         try {
-          hasSessionIndicators = Boolean(readLocalOrgId());
+          hasSessionIndicators = Boolean(OrganizationService.readLocalOrgId());
           if (!hasSessionIndicators) {
             for (let i = 0; i < localStorage.length; i++) {
               const k = localStorage.key(i);
@@ -3445,6 +3104,28 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // Billing's getCurrentBillingAuthUserId reads its private copy set here.
     BillingService.setAuthTruthSnapshotAccessor(_authTruthSnapshotAccessor);
 
+    // ── Organization / Workspace domain (Stage 2) ──────────────────────────
+    // CP1: authoritative workspace-switch state machine lives in OrganizationService.
+    // app.js remains authoritative for orgContext during CP1; reads bridge through
+    // getOrgContextSnapshot. Auth stays in app.js (getSignedInUserIdStrict injected);
+    // Billing (Stage 1) is frozen and only reached via injected BillingService.
+    const OrganizationService = createOrganizationService({
+      normalizeOrgIdForBilling,
+      normalizeBillingEntitlementStatus,
+      getSignedInUserIdStrict,
+      BillingService,
+      getOrgContextSnapshot: () => orgContext,
+      getOrgContextTabId: () => orgContextTabId,
+      ORG_UUID_RE,
+    });
+    // Thin delegator (no state) retained so the early AutoPackEngine injection
+    // (constructed before OrganizationService) and the TruckPackerApp facade keep a
+    // stable getWorkspaceSwitchState reference. The single switch-state machine is
+    // in OrganizationService.
+    function getWorkspaceSwitchState() {
+      return OrganizationService.getWorkspaceSwitchState();
+    }
+
     function getCurrentAuthSnapshot() {
       const truth = getAuthTruthSnapshot();
       let status = truth.status;
@@ -3478,10 +3159,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
         activeOrg: orgContext.activeOrg,
         role: orgContext.role,
       };
-    }
-
-    function getActiveOrgId() {
-      return orgContext.activeOrgId;
     }
 
     async function hydrateActiveOrgId() {
@@ -3523,13 +3200,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
         ...orgContext,
         orgs: Array.isArray(orgContext.orgs) ? [...orgContext.orgs] : [],
       };
-      const previousLocalOrgId = readLocalOrgId();
+      const previousLocalOrgId = OrganizationService.readLocalOrgId();
       const previousWorkspaceOrgId = prevId || previousLocalOrgId || null;
       const previousWorkspaceUiResetKey = lastWorkspaceUiResetKey;
 
       const orgs = Array.isArray(orgContext.orgs) ? orgContext.orgs : [];
       const activeOrg = orgs.find(o => o && String(o.id) === nextId) || null;
-      beginWorkspaceSwitch(nextId, source);
+      OrganizationService.beginWorkspaceSwitch(nextId, source);
 
       const applyLocalWorkspaceSelection = nextActiveOrg => {
         orgContext = {
@@ -3541,26 +3218,26 @@ const TP3D_BUILD_STAMP = Object.freeze({
         };
         applyWorkspaceScopedLocalState(nextId, { seedIfMissing: false });
         resetWorkspaceScopedUiState(nextId);
-        writeLocalOrgId(nextId);
+        OrganizationService.writeLocalOrgId(nextId);
         BillingService.reconcileBillingStateForActiveOrg('org-set');
         syncWorkspaceUiAfterOrgRefresh(source);
         maybeScheduleBillingRefresh('org-changed');
         queueOrgScopedRender('org-set');
-        markWorkspaceSwitchReady({ localStateReady: true }, 'local-state-ready');
-        markWorkspaceSwitchOrgReadyIfResolved('org-ready');
-        markWorkspaceSwitchBillingReadyIfSettled(BillingService.getBillingState(), 'billing-current');
+        OrganizationService.markWorkspaceSwitchReady({ localStateReady: true }, 'local-state-ready');
+        OrganizationService.markWorkspaceSwitchOrgReadyIfResolved('org-ready');
+        OrganizationService.markWorkspaceSwitchBillingReadyIfSettled(BillingService.getBillingState(), 'billing-current');
       };
 
       const rollbackLocalWorkspaceSelection = () => {
         orgContext = previousOrgContext;
         lastWorkspaceUiResetKey = previousWorkspaceUiResetKey;
-        writeLocalOrgId(previousLocalOrgId);
+        OrganizationService.writeLocalOrgId(previousLocalOrgId);
         applyWorkspaceScopedLocalState(previousWorkspaceOrgId, {
           seedIfMissing: false,
           force: true,
         });
         syncWorkspaceUiAfterOrgRefresh(`${source}:rollback`);
-        finishWorkspaceSwitch('rollback');
+        OrganizationService.finishWorkspaceSwitch('rollback');
       };
 
       if (!activeOrg) {
@@ -3571,7 +3248,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           rollbackLocalWorkspaceSelection();
           throw err;
         }
-        dispatchOrgContextChanged({
+        OrganizationService.dispatchOrgContextChanged({
           orgId: nextId,
           reason: source,
           broadcast: true,
@@ -3579,8 +3256,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
           userId: truth.userId,
         });
         await refreshOrgContext(source, { force: true, forceEmit: true });
-        markWorkspaceSwitchOrgReadyIfResolved('org-context-refreshed');
-        markWorkspaceSwitchBillingReadyIfSettled(BillingService.getBillingState(), 'billing-after-org-refresh');
+        OrganizationService.markWorkspaceSwitchOrgReadyIfResolved('org-context-refreshed');
+        OrganizationService.markWorkspaceSwitchBillingReadyIfSettled(BillingService.getBillingState(), 'billing-after-org-refresh');
         return nextId;
       }
 
@@ -3593,7 +3270,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       try {
-        dispatchOrgContextChanged({
+        OrganizationService.dispatchOrgContextChanged({
           orgId: nextId,
           reason: source,
           broadcast: true,
@@ -3608,170 +3285,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
     }
 
     const OrgContext = {
-      getActiveOrgId,
+      getActiveOrgId: OrganizationService.getActiveOrgId,
       setActiveOrgId,
       hydrateActiveOrgId,
-      getActiveRole: () => (orgContext && typeof orgContext.role === 'string' ? orgContext.role : ''),
+      getActiveRole: OrganizationService.getActiveRole,
     };
 
     try {
       window.OrgContext = OrgContext;
     } catch {
       // ignore
-    }
-
-    function readLocalOrgId() {
-      try {
-        const raw = window.localStorage.getItem(ORG_CONTEXT_LS_KEY);
-        return raw ? String(raw) : null;
-      } catch {
-        return null;
-      }
-    }
-
-    function writeLocalOrgId(orgId) {
-      try {
-        if (!orgId) {
-          window.localStorage.removeItem(ORG_CONTEXT_LS_KEY);
-          return;
-        }
-        window.localStorage.setItem(ORG_CONTEXT_LS_KEY, String(orgId));
-      } catch {
-        // ignore
-      }
-    }
-
-    function parseOrgContextVersion(value) {
-      const n = Number(value);
-      if (!Number.isFinite(n) || n <= 0) return 0;
-      return Math.floor(n);
-    }
-
-    function nextOrgContextVersion() {
-      orgContextVersion = Math.max(parseOrgContextVersion(orgContextVersion) + 1, Date.now());
-      return orgContextVersion;
-    }
-
-    function getOrgContextEffectiveVersion(payload) {
-      if (!payload || typeof payload !== 'object') return 0;
-      return Math.max(
-        parseOrgContextVersion(payload.epoch),
-        parseOrgContextVersion(payload.version),
-        parseOrgContextVersion(payload.ts),
-        parseOrgContextVersion(payload.timestamp)
-      );
-    }
-
-    function compareOrgContextOrder(version, tabId = '') {
-      const parsed = parseOrgContextVersion(version);
-      if (!parsed) return -1;
-      if (parsed !== lastAppliedOrgContextVersion) {
-        return parsed > lastAppliedOrgContextVersion ? 1 : -1;
-      }
-      const incomingTabId = String(tabId || '');
-      if (incomingTabId === lastAppliedOrgContextTabId) return 0;
-      return incomingTabId > lastAppliedOrgContextTabId ? 1 : -1;
-    }
-
-    function markOrgContextVersion(version, tabId = '') {
-      const parsed = parseOrgContextVersion(version);
-      if (!parsed) return 0;
-      orgContextVersion = Math.max(orgContextVersion, parsed);
-      if (compareOrgContextOrder(parsed, tabId) >= 0) {
-        lastAppliedOrgContextVersion = parsed;
-        lastAppliedOrgContextTabId = String(tabId || '');
-      }
-      return parsed;
-    }
-
-    /**
-     * @param {{
-     *   orgId?: string|null,
-     *   reason?: string|null,
-     *   version?: number,
-     *   broadcast?: boolean,
-     *   source?: string|null,
-     *   ts?: number,
-     *   tabId?: string|null,
-     *   userId?: string|null,
-     *   allowEmpty?: boolean,
-     *   confirmedNoOrg?: boolean,
-     * }} [options]
-     * @returns {number}
-     */
-    function dispatchOrgContextChanged(options = {}) {
-      const {
-        orgId,
-        reason = 'org-context',
-        version = 0,
-        broadcast = false,
-        source = 'local',
-        ts = Date.now(),
-        userId = null,
-        allowEmpty = false,
-        confirmedNoOrg: dispatchConfirmedNoOrg = false,
-      } = options || {};
-      const nextOrgId = orgId ? String(orgId).trim() : '';
-      if (!nextOrgId && !(allowEmpty && dispatchConfirmedNoOrg)) return 0;
-      const signedInUserId = userId || getSignedInUserIdStrict();
-      if (!signedInUserId) return 0;
-      const detailTabId = options && options.tabId ? String(options.tabId) : orgContextTabId;
-      const nextVersion = markOrgContextVersion(version || nextOrgContextVersion(), detailTabId);
-      const detail = {
-        orgId: nextOrgId,
-        reason: reason || null,
-        userId: signedInUserId,
-        confirmedNoOrg: dispatchConfirmedNoOrg || undefined,
-        ts: Number.isFinite(Number(ts)) ? Number(ts) : Date.now(),
-        timestamp: Number.isFinite(Number(ts)) ? Number(ts) : Date.now(),
-        epoch: nextVersion,
-        tabId: detailTabId,
-        source,
-      };
-
-      try {
-        window.dispatchEvent(new CustomEvent('tp3d:org-changed', { detail }));
-      } catch {
-        // ignore
-      }
-
-      if (broadcast) {
-        try {
-          window.localStorage.setItem(ORG_CONTEXT_SYNC_KEY, JSON.stringify(detail));
-          // Keep the key ephemeral so stale payloads are less likely to be replayed.
-          window.setTimeout(() => {
-            try {
-              const raw = window.localStorage.getItem(ORG_CONTEXT_SYNC_KEY);
-              if (!raw) return;
-              const parsed = JSON.parse(raw);
-              if (
-                parsed &&
-                parsed.tabId === orgContextTabId &&
-                parseOrgContextVersion(parsed.epoch) === nextVersion
-              ) {
-                window.localStorage.removeItem(ORG_CONTEXT_SYNC_KEY);
-              }
-            } catch {
-              // ignore
-            }
-          }, 1500);
-        } catch {
-          // ignore
-        }
-      }
-
-      return nextVersion;
-    }
-
-    function parseOrgContextSyncPayload(raw) {
-      if (!raw) return null;
-      try {
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object') return null;
-        return parsed;
-      } catch {
-        return null;
-      }
     }
 
     function handleIncomingOrgContextSync(payload, { source = 'org-sync-storage' } = {}) {
@@ -3786,14 +3309,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const incomingTabId = payload.tabId ? String(payload.tabId) : '';
       if (incomingTabId && incomingTabId === orgContextTabId) return false;
 
-      const incomingVersion = getOrgContextEffectiveVersion(payload);
+      const incomingVersion = OrganizationService.getOrgContextEffectiveVersion(payload);
       if (!incomingVersion) return false;
-      if (compareOrgContextOrder(incomingVersion, incomingTabId) <= 0) {
+      if (OrganizationService.compareOrgContextOrder(incomingVersion, incomingTabId) <= 0) {
         if (isTp3dDebugEnabled()) {
           console.info('[orgContext] ignore-stale-sync', {
             source,
             incomingVersion,
-            lastAppliedOrgContextVersion,
+            lastAppliedOrgContextVersion: OrganizationService.getOrgContextVersionState().lastAppliedOrgContextVersion,
           });
         }
         return false;
@@ -3803,21 +3326,21 @@ const TP3D_BUILD_STAMP = Object.freeze({
         console.info('[orgContext] sync-version', {
           source,
           incomingVersion,
-          lastAppliedVersion: lastAppliedOrgContextVersion,
+          lastAppliedVersion: OrganizationService.getOrgContextVersionState().lastAppliedOrgContextVersion,
           applied: true,
           incomingOrgId,
           incomingUserId: payloadUserId,
         });
       }
 
-      markOrgContextVersion(incomingVersion, incomingTabId);
+      OrganizationService.markOrgContextVersion(incomingVersion, incomingTabId);
 
       const currentOrgId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
       const isSwitchingOrg = !currentOrgId || currentOrgId !== incomingOrgId;
       if (isSwitchingOrg) {
-        beginWorkspaceSwitch(incomingOrgId, source);
+        OrganizationService.beginWorkspaceSwitch(incomingOrgId, source);
       }
-      writeLocalOrgId(incomingOrgId);
+      OrganizationService.writeLocalOrgId(incomingOrgId);
       if (!currentOrgId || currentOrgId !== incomingOrgId) {
         const knownOrgs = Array.isArray(orgContext.orgs) ? orgContext.orgs : [];
         const incomingOrg = knownOrgs.find(o => o && String(o.id) === incomingOrgId) || null;
@@ -3833,12 +3356,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       resetWorkspaceScopedUiState(incomingOrgId);
       BillingService.reconcileBillingStateForActiveOrg('org-sync');
       if (isSwitchingOrg) {
-        markWorkspaceSwitchReady({ localStateReady: true }, 'org-sync:local-state-ready');
-        markWorkspaceSwitchOrgReadyIfResolved('org-sync:org-ready');
-        markWorkspaceSwitchBillingReadyIfSettled(BillingService.getBillingState(), 'org-sync:billing-current');
+        OrganizationService.markWorkspaceSwitchReady({ localStateReady: true }, 'org-sync:local-state-ready');
+        OrganizationService.markWorkspaceSwitchOrgReadyIfResolved('org-sync:org-ready');
+        OrganizationService.markWorkspaceSwitchBillingReadyIfSettled(BillingService.getBillingState(), 'org-sync:billing-current');
       }
 
-      dispatchOrgContextChanged({
+      OrganizationService.dispatchOrgContextChanged({
         orgId: incomingOrgId,
         reason: payload.reason || source,
         version: incomingVersion,
@@ -3861,29 +3384,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return true;
       }
       void refreshOrgContext(source, { force: true, forceEmit: false })
-        .then(() => markWorkspaceSwitchOrgReadyIfResolved('org-sync:org-context-refreshed'))
+        .then(() => OrganizationService.markWorkspaceSwitchOrgReadyIfResolved('org-sync:org-context-refreshed'))
         .catch(() => { });
       return true;
-    }
-
-    // ── getActiveOrgIdNow: best-effort sync orgId with fallbacks ──
-    function getActiveOrgIdNow() {
-      // 1) window.OrgContext (canonical)
-      try {
-        const wcId = BillingService.getActiveOrgIdForBilling();
-        if (wcId) return wcId;
-      } catch { /* ignore */ }
-      // 2) IIFE-scoped orgContext (available before window.OrgContext)
-      try {
-        const id = normalizeOrgIdForBilling(orgContext && orgContext.activeOrgId);
-        if (id) return id;
-      } catch { /* ignore */ }
-      // 3) localStorage hint (UUID-validated)
-      try {
-        const lsId = readLocalOrgId();
-        if (lsId && ORG_UUID_RE.test(lsId)) return lsId;
-      } catch { /* ignore */ }
-      return '';
     }
 
     // ── Billing org-ready pump: retries refreshBilling until orgId resolves ──
@@ -3926,14 +3429,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (!_sessionUsable) {
           billingDebugLog('[BillingPump] skip:auth-not-proven', {
             reason,
-            orgId: getActiveOrgIdNow() || null,
+            orgId: OrganizationService.getActiveOrgIdNow() || null,
             status: _truth ? _truth.status : null,
           });
           return;
         }
       }
 
-      const activeOrgId = getActiveOrgIdNow();
+      const activeOrgId = OrganizationService.getActiveOrgIdNow();
       const now = Date.now();
 
       if (!activeOrgId) {
@@ -4088,7 +3591,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const truth = getAuthTruthSnapshot();
       if (!truth || !truth.isSignedIn || !truth.userId) return false;
 
-      const activeOrgId = getActiveOrgIdNow();
+      const activeOrgId = OrganizationService.getActiveOrgIdNow();
       if (!activeOrgId || activeOrgId !== lostOrgId) return false;
 
       const now = Date.now();
@@ -4138,7 +3641,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       window.setTimeout(() => {
-        const currentActiveOrgId = getActiveOrgIdNow();
+        const currentActiveOrgId = OrganizationService.getActiveOrgIdNow();
         if (!currentActiveOrgId || currentActiveOrgId !== lostOrgId) return;
         refreshOrgContext('access-loss-detected', { force: true, forceEmit: true }).catch(() => { });
       }, 0);
@@ -4150,7 +3653,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const normalizedLeftOrgId = normalizeOrgIdForBilling(leftOrgId || '');
       if (!normalizedLeftOrgId) return false;
 
-      const activeOrgId = getActiveOrgIdNow();
+      const activeOrgId = OrganizationService.getActiveOrgIdNow();
       const wasActiveOrg = activeOrgId === normalizedLeftOrgId;
 
       BillingService.clearBillingPendingRetry(normalizedLeftOrgId);
@@ -4186,7 +3689,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const normalizedArchivedOrgId = normalizeOrgIdForBilling(archivedOrgId || '');
       if (!normalizedArchivedOrgId) return false;
 
-      const activeOrgId = getActiveOrgIdNow();
+      const activeOrgId = OrganizationService.getActiveOrgIdNow();
       const wasActiveOrg = activeOrgId === normalizedArchivedOrgId;
 
       BillingService.clearBillingPendingRetry(normalizedArchivedOrgId);
@@ -4222,7 +3725,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const normalizedRestoredOrgId = normalizeOrgIdForBilling(restoredOrgId || '');
       if (!normalizedRestoredOrgId) return false;
 
-      const activeOrgIdBefore = getActiveOrgIdNow();
+      const activeOrgIdBefore = OrganizationService.getActiveOrgIdNow();
       const hadActiveOrgBefore = Boolean(activeOrgIdBefore);
 
       BillingService.clearBillingPendingRetry(normalizedRestoredOrgId);
@@ -4336,7 +3839,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       if (isActiveOrg) {
-        dispatchOrgContextChanged({
+        OrganizationService.dispatchOrgContextChanged({
           orgId: normalizedOrgId,
           reason: source,
           broadcast: true,
@@ -4378,7 +3881,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           profile.currentOrgId ||
           profile.currentOrgID)
       );
-      const localOrgId = normalizeOrgId(readLocalOrgId());
+      const localOrgId = normalizeOrgId(OrganizationService.readLocalOrgId());
       const membershipOrgId = normalizeOrgId(
         membership && membership.organization_id ? membership.organization_id : null
       );
@@ -4437,7 +3940,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     }
 
     function clearOrgContext({ clearLocalOrgHint = false, confirmedNoOrg = false, reason = '' } = {}) {
-      finishWorkspaceSwitch('org-cleared');
+      OrganizationService.finishWorkspaceSwitch('org-cleared');
       orgContext = {
         activeOrgId: null,
         activeOrg: null,
@@ -4445,9 +3948,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         role: null,
         updatedAt: Date.now(),
       };
-      orgContextVersion = 0;
-      lastAppliedOrgContextVersion = 0;
-      lastAppliedOrgContextTabId = '';
+      OrganizationService.resetOrgContextVersion();
       _orgBundleFetchInflightForOrg = null;
       _orgRoleHydrationGraceUntilByOrg.clear();
       lastOrgIdNotified = null;
@@ -4455,7 +3956,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       lastWorkspaceUiResetKey = '';
       setWorkspaceStorageScope(null);
       lastLoadedWorkspaceStorageKey = '';
-      if (clearLocalOrgHint || confirmedNoOrg) writeLocalOrgId(null);
+      if (clearLocalOrgHint || confirmedNoOrg) OrganizationService.writeLocalOrgId(null);
       if (confirmedNoOrg) {
         orgRequiredStateReason = String(reason || '');
         BillingService.clearBillingAuthoritativeRefreshRequirement(null, 'confirmed-no-workspace');
@@ -4477,7 +3978,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (confirmedNoOrg) {
         const clearedUserId = getSignedInUserIdStrict();
         if (clearedUserId) {
-          dispatchOrgContextChanged({
+          OrganizationService.dispatchOrgContextChanged({
             orgId: '',
             allowEmpty: true,
             confirmedNoOrg: true,
@@ -4620,7 +4121,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const suppressRecentSignedInNoOrg = signedInSnapshotAgeMs < NO_ORG_BANNER_SIGNED_IN_GRACE_MS;
       // A stored org hint means the user has (or recently had) an org — keep banner hidden
       // while auth/bundle is still resolving (prevents flash for returning users).
-      const hasLocalOrgHint = Boolean(readLocalOrgId());
+      const hasLocalOrgHint = Boolean(OrganizationService.readLocalOrgId());
       const suppressUncertain = !isDefinitelySignedOut && !confirmedNoOrg && hasLocalOrgHint;
       // Auth Stability Gate: never show banner while auth is still settling
       const authNotSettled = !authGateIsSettled();
@@ -4792,7 +4293,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       if (!nextOrgId) {
-        if (bundle && bundle.partial && readLocalOrgId()) {
+        if (bundle && bundle.partial && OrganizationService.readLocalOrgId()) {
           maybeScheduleBillingRefresh('org-context:partial');
           return null;
         }
@@ -4831,7 +4332,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       orgContextResolved = true;
       // Expose last bundle for sync role resolution (resolveCanManageBillingForOrg).
       try { window.__TP3D_LAST_ACCOUNT_BUNDLE = bundle; } catch (_) { /* ignore */ }
-      writeLocalOrgId(nextOrgIdStr);
+      OrganizationService.writeLocalOrgId(nextOrgIdStr);
       if (changed) {
         applyWorkspaceScopedLocalState(nextOrgIdStr, { seedIfMissing: false });
         resetWorkspaceScopedUiState(nextOrgIdStr);
@@ -4889,7 +4390,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             reason !== 'org-sync-storage' &&
             reason !== 'org-sync-legacy' &&
             reason !== 'org-sync-event';
-          dispatchOrgContextChanged({
+          OrganizationService.dispatchOrgContextChanged({
             orgId: nextOrgIdStr,
             reason: reason || null,
             broadcast: shouldBroadcast,
@@ -5451,7 +4952,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
         Storage.setStorageScope(uid);
 
-        const hintedOrgId = readLocalOrgId();
+        const hintedOrgId = OrganizationService.readLocalOrgId();
         setWorkspaceStorageScope(hintedOrgId);
 
         if (_isConfirmedUserSwitch || !hasLoadedScopedState) {
@@ -6381,7 +5882,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             const key = ev && ev.key ? String(ev.key) : '';
             if (!key) return;
             if (key === ORG_CONTEXT_SYNC_KEY && ev.newValue) {
-              const payload = parseOrgContextSyncPayload(ev.newValue);
+              const payload = OrganizationService.parseOrgContextSyncPayload(ev.newValue);
               const accepted = payload
                 ? handleIncomingOrgContextSync(payload, { source: 'org-sync-storage' })
                 : false;
@@ -6395,9 +5896,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
               return;
             }
             if (key === WORKSPACE_SWITCH_SYNC_KEY && ev.newValue) {
-              const payload = parseWorkspaceSwitchSyncPayload(ev.newValue);
+              const payload = OrganizationService.parseWorkspaceSwitchSyncPayload(ev.newValue);
               if (payload) {
-                handleIncomingWorkspaceSwitchState(payload);
+                OrganizationService.handleIncomingWorkspaceSwitchState(payload);
               }
               return;
             }
@@ -6462,19 +5963,19 @@ const TP3D_BUILD_STAMP = Object.freeze({
               }
               return;
             }
-            const detailEpoch = getOrgContextEffectiveVersion(detail);
+            const detailEpoch = OrganizationService.getOrgContextEffectiveVersion(detail);
             const detailTabId = detail && detail.tabId ? String(detail.tabId) : '';
-            if (detailEpoch && compareOrgContextOrder(detailEpoch, detailTabId) < 0) {
+            if (detailEpoch && OrganizationService.compareOrgContextOrder(detailEpoch, detailTabId) < 0) {
               if (isTp3dDebugEnabled()) {
                 console.info('[orgContext] ignore-older-epoch', {
                   detailEpoch,
-                  lastAppliedOrgContextVersion,
+                  lastAppliedOrgContextVersion: OrganizationService.getOrgContextVersionState().lastAppliedOrgContextVersion,
                 });
               }
               return;
             }
             if (detailEpoch) {
-              markOrgContextVersion(detailEpoch, detailTabId);
+              OrganizationService.markOrgContextVersion(detailEpoch, detailTabId);
             }
 
             const detailOrgId = detail && detail.orgId ? String(detail.orgId) : null;
@@ -7473,7 +6974,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         };
         BillingService.setBillingGateApplier(updateSidebarNotice);
         BillingService.subscribeBilling(snapshot => BillingService.applyAccessGateFromBilling(snapshot, { reason: 'billing-subscriber' }));
-        BillingService.subscribeBilling(snapshot => markWorkspaceSwitchBillingReadyIfSettled(snapshot, 'billing-subscriber'));
+        BillingService.subscribeBilling(snapshot => OrganizationService.markWorkspaceSwitchBillingReadyIfSettled(snapshot, 'billing-subscriber'));
         BillingService.applyAccessGateFromBilling(BillingService.getBillingState(), { reason: 'gate-init' });
       } catch (_) { /* ignore */ }
 

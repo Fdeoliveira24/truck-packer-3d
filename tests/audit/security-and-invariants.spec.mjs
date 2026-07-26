@@ -46,13 +46,17 @@ const billingServiceUrl = new URL('../../src/data/services/billing.service.js', 
 const accountOverlayPath = new URL('../../src/ui/overlays/account-overlay.js', import.meta.url);
 const appPath = new URL('../../src/app.js', import.meta.url);
 const billingServicePath = new URL('../../src/services/billing-service.js', import.meta.url);
-// Stage 1: the Billing domain moved to src/services/billing-service.js. Source-pattern
-// audits read app.js + billing-service.js together so assertions on billing
-// implementation (now in the module) and on retained call sites / facade (in app.js)
-// both resolve. The combined text is ~= the pre-extraction app.js content, so
-// non-billing source audits are unaffected.
+const organizationServicePath = new URL('../../src/services/organization-service.js', import.meta.url);
+// Stage 1/2: the Billing and Organization/Workspace domains moved to
+// src/services/billing-service.js and src/services/organization-service.js.
+// Source-pattern audits read app.js + both service modules together so assertions on
+// the moved implementation (now in the modules) and on retained call sites / facades
+// (in app.js) both resolve. The combined text is ~= the pre-extraction app.js content,
+// so unrelated source audits are unaffected.
 async function readAppSource() {
-  return (await fs.readFile(appPath, 'utf8')) + '\n\n' + (await fs.readFile(billingServicePath, 'utf8'));
+  return (await fs.readFile(appPath, 'utf8'))
+    + '\n\n' + (await fs.readFile(billingServicePath, 'utf8'))
+    + '\n\n' + (await fs.readFile(organizationServicePath, 'utf8'));
 }
 const indexHtmlPath = new URL('../../index.html', import.meta.url);
 const storagePath = new URL('../../src/core/storage.js', import.meta.url);
@@ -14220,7 +14224,7 @@ test('app access-loss handler verifies auth and active org, rate-limits, dispatc
     'access-loss rate limit must be bounded');
   assert.match(src, /function handleOrgAccessLoss\(orgId, meta = \{\}\)[\s\S]*if \(!truth \|\| !truth\.isSignedIn \|\| !truth\.userId\) return false/,
     'handler must require signed-in auth truth');
-  assert.match(src, /const activeOrgId = getActiveOrgIdNow\(\)[\s\S]*if \(!activeOrgId \|\| activeOrgId !== lostOrgId\) return false/,
+  assert.match(src, /const activeOrgId = OrganizationService\.getActiveOrgIdNow\(\)[\s\S]*if \(!activeOrgId \|\| activeOrgId !== lostOrgId\) return false/,
     'handler must confirm the lost org is still the active org');
   assert.match(src, /_orgAccessLossLastAt\.set\(lostOrgId, now\)/,
     'handler must record rate-limit state by org');
@@ -15320,7 +15324,7 @@ test('false-no-workspace: account bundle confirms zero workspaces only from a no
 
   assert.ok(fn, 'applyOrgContextFromBundle must be extractable');
   // A partial bundle with a known workspace hint must retain the workspace, not clear it.
-  assert.match(fn, /if \(bundle && bundle\.partial && readLocalOrgId\(\)\) \{[\s\S]*?return null;/,
+  assert.match(fn, /if \(bundle && bundle\.partial && OrganizationService\.readLocalOrgId\(\)\) \{[\s\S]*?return null;/,
     'a partial bundle with a known workspace hint must retain the workspace');
   // confirmedNoOrg may only be derived from a non-partial empty result.
   assert.match(fn, /confirmedNoOrg: Boolean\(!bundle\?\.partial && Array\.isArray\(resolved\.orgs\) && resolved\.orgs\.length === 0\)/,
@@ -20866,7 +20870,7 @@ test('BUG-01-A3 isolation runs BEFORE readLocalOrgId() and BEFORE network-depend
 
   const isolationIdx = src.indexOf('applyUserSwitchIsolation(', renderAuthStart);
   const profileIdx = src.indexOf('await checkProfileStatus()', renderAuthStart);
-  const readIdx = src.indexOf('const hintedOrgId = readLocalOrgId()', renderAuthStart);
+  const readIdx = src.indexOf('const hintedOrgId = OrganizationService.readLocalOrgId()', renderAuthStart);
   assert.ok(isolationIdx > 0 && profileIdx > 0 && readIdx > 0, 'isolation call, profile await, and org-hint read found in renderAuthState');
   assert.ok(isolationIdx < profileIdx, 'isolation precedes await checkProfileStatus() (no pre-clear network window)');
   assert.ok(isolationIdx < readIdx, 'isolation precedes readLocalOrgId() — stale key cannot be inherited');
@@ -21016,7 +21020,7 @@ test('BUG-01-G same-user workspace switch is not affected by the user-switch gua
   const setActiveRegion = src.slice(setActiveStart, setActiveStart + 2000);
   assert.match(setActiveRegion, /writeLocalOrgId/, 'setActiveOrgId calls writeLocalOrgId (workspace switch path)');
   // The null-clear must NOT be inside setActiveOrgId; it belongs only in the user-switch guard
-  const setActiveNullIdx = setActiveRegion.indexOf('writeLocalOrgId(null)');
+  const setActiveNullIdx = setActiveRegion.indexOf('OrganizationService.writeLocalOrgId(null)');
   assert.strictEqual(setActiveNullIdx, -1, 'setActiveOrgId does not call writeLocalOrgId(null)');
 });
 
@@ -21163,6 +21167,10 @@ async function createBillingPumpRuntimeHarness() {
       getBillingAuthoritativeRefreshToken: (...a) => getBillingAuthoritativeRefreshToken(...a),
       isBillingAuthoritativeRefreshInFlight: (...a) => isBillingAuthoritativeRefreshInFlight(...a),
       resetRefreshDedupForUserSwitch: () => { _lastBillingKey = ''; _lastBillingKeyAt = 0; },
+    };
+    // Stage 2 CP2: the pump resolves the active org via OrganizationService.getActiveOrgIdNow.
+    globalThis.OrganizationService = {
+      getActiveOrgIdNow: (...a) => getActiveOrgIdNow(...a),
     };
     globalThis.__authoritative = {
       begin: token => beginBillingAuthoritativeRefreshAttempt(token),
@@ -22259,6 +22267,15 @@ async function createOrgContextApplyRuntimeHarness() {
       applyAccessGateFromBilling: (...a) => applyAccessGateFromBilling(...a),
       getBillingState: (...a) => getBillingState(...a),
       clearBillingAuthoritativeRefreshRequirement: () => {},
+    };
+    // Stage 2 CP2: storage mirrors + facade reads moved to OrganizationService.
+    const OrganizationService = {
+      readLocalOrgId: (...a) => readLocalOrgId(...a),
+      writeLocalOrgId: (...a) => writeLocalOrgId(...a),
+      getActiveOrgId: () => orgContext.activeOrgId,
+      getActiveOrgIdNow: () => orgContext.activeOrgId,
+      // Stage 2 CP3: org-changed publication moved to OrganizationService.
+      dispatchOrgContextChanged: (...a) => dispatchOrgContextChanged(...a),
     };
     const getAuthTruthSnapshot = () => ({ status: 'signed_in', isSignedIn: true });
     const isTp3dDebugEnabled = () => false;
@@ -23665,9 +23682,9 @@ test('APP-STABILIZATION-PHASE1 app flushes and resets history only at scoped bou
 async function createPhase2OrgOrderingHarness() {
   const src = await readAppSource();
   const helperStart = src.indexOf('function parseOrgContextVersion(');
-  const helperEnd = src.indexOf('\n    /**\n     * @param {{', helperStart);
+  const helperEnd = src.indexOf('\n  /**\n   * @param {{', helperStart);
   const handleStart = src.indexOf('function handleIncomingOrgContextSync(');
-  const handleEnd = src.indexOf('\n    // ── getActiveOrgIdNow', handleStart);
+  const handleEnd = src.indexOf('\n    // ── Billing org-ready pump', handleStart);
   assert.ok(helperStart >= 0 && helperEnd > helperStart && handleStart >= 0 && handleEnd > handleStart,
     'Phase 2 org ordering functions are extractable');
 
@@ -23710,6 +23727,28 @@ async function createPhase2OrgOrderingHarness() {
     const BillingService = {
       getBillingState: (...a) => getBillingState(...a),
       reconcileBillingStateForActiveOrg: (...a) => reconcileBillingStateForActiveOrg(...a),
+    };
+    // Stage 2 CP1: the workspace-switch state machine moved to OrganizationService.
+    // handleIncomingOrgContextSync now reaches switch marks via OrganizationService.*.
+    // This test asserts org-context ordering, not switch behavior, so the switch
+    // methods stay no-ops (mapped to the existing bare mocks) — invariant unchanged.
+    const OrganizationService = {
+      beginWorkspaceSwitch: (...a) => beginWorkspaceSwitch(...a),
+      markWorkspaceSwitchReady: (...a) => markWorkspaceSwitchReady(...a),
+      markWorkspaceSwitchOrgReadyIfResolved: (...a) => markWorkspaceSwitchOrgReadyIfResolved(...a),
+      markWorkspaceSwitchBillingReadyIfSettled: (...a) => markWorkspaceSwitchBillingReadyIfSettled(...a),
+      // Stage 2 CP2: storage mirrors + facade reads also moved to OrganizationService.
+      writeLocalOrgId: (...a) => writeLocalOrgId(...a),
+      readLocalOrgId: () => null,
+      getActiveOrgId: () => orgContext.activeOrgId,
+      getActiveOrgIdNow: () => orgContext.activeOrgId,
+      // Stage 2 CP3: version ordering + org-changed publication moved to OrganizationService.
+      // handleIncomingOrgContextSync reaches them here; version helpers map to the eval'd
+      // slice below (hoisted), dispatch maps to the local recording mock.
+      markOrgContextVersion: (...a) => markOrgContextVersion(...a),
+      compareOrgContextOrder: (...a) => compareOrgContextOrder(...a),
+      getOrgContextEffectiveVersion: (...a) => getOrgContextEffectiveVersion(...a),
+      dispatchOrgContextChanged: (...a) => dispatchOrgContextChanged(...a),
     };
     ${src.slice(helperStart, helperEnd)}
     ${src.slice(handleStart, handleEnd)}

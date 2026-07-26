@@ -47,16 +47,17 @@ const accountOverlayPath = new URL('../../src/ui/overlays/account-overlay.js', i
 const appPath = new URL('../../src/app.js', import.meta.url);
 const billingServicePath = new URL('../../src/services/billing-service.js', import.meta.url);
 const organizationServicePath = new URL('../../src/services/organization-service.js', import.meta.url);
-// Stage 1/2: the Billing and Organization/Workspace domains moved to
-// src/services/billing-service.js and src/services/organization-service.js.
-// Source-pattern audits read app.js + both service modules together so assertions on
-// the moved implementation (now in the modules) and on retained call sites / facades
-// (in app.js) both resolve. The combined text is ~= the pre-extraction app.js content,
-// so unrelated source audits are unaffected.
+const authServicePath = new URL('../../src/services/auth-service.js', import.meta.url);
+// Stage 1/2/3: the Billing, Organization/Workspace, and Authentication domains moved to
+// src/services/{billing,organization,auth}-service.js. Source-pattern audits read app.js
+// + the service modules together so assertions on the moved implementation (now in the
+// modules) and on retained call sites / facades (in app.js) both resolve. The combined
+// text is ~= the pre-extraction app.js content, so unrelated source audits are unaffected.
 async function readAppSource() {
   return (await fs.readFile(appPath, 'utf8'))
     + '\n\n' + (await fs.readFile(billingServicePath, 'utf8'))
-    + '\n\n' + (await fs.readFile(organizationServicePath, 'utf8'));
+    + '\n\n' + (await fs.readFile(organizationServicePath, 'utf8'))
+    + '\n\n' + (await fs.readFile(authServicePath, 'utf8'));
 }
 const indexHtmlPath = new URL('../../index.html', import.meta.url);
 const storagePath = new URL('../../src/core/storage.js', import.meta.url);
@@ -810,7 +811,7 @@ test('phase 1 P0 cross-profile logout: visible signed-in tabs actively validate 
     'signed-in auth flow must start the visible auth validation loop');
   assert.match(app, /stopVisibleAuthRevocationCheck\(\)/,
     'signed-out cleanup must stop the visible auth validation loop');
-  assert.match(app, /const shouldClearSignedOutOrgHint = Boolean\(userInitiatedSignOut \|\| treatAsSignedOut \|\| authBlockState\)[\s\S]{0,180}clearLocalOrgHint: shouldClearSignedOutOrgHint/,
+  assert.match(app, /const shouldClearSignedOutOrgHint = Boolean\(userInitiatedSignOut \|\| treatAsSignedOut \|\| AuthService\.getAuthBlockState\(\)\)[\s\S]{0,180}clearLocalOrgHint: shouldClearSignedOutOrgHint/,
     'confirmed signed-out cleanup must clear stale active org hints');
 });
 
@@ -13296,9 +13297,12 @@ test('authGate settled is set true on signedIn, signedOutConfirmed, and bootstra
     'bootstrapAuthGate must set settled on no-session path');
   assert.ok(bootstrapBlock.includes('bootstrap-cantconnect'),
     'bootstrapAuthGate must set settled on cantconnect path');
-  // Guard: only set when no pending timer
-  assert.ok(bootstrapBlock.includes('!_authGate.signedOutTimer'),
-    'bootstrap settled must check for pending signedOutTimer');
+  // Guard: only set when no pending timer — the guard now lives in the semantic
+  // AuthService.markSignedOutSettledIfIdle method that the bootstrap paths delegate to.
+  assert.ok(bootstrapBlock.includes('markSignedOutSettledIfIdle'),
+    'bootstrap settled must delegate to AuthService.markSignedOutSettledIfIdle');
+  assert.match(app, /function markSignedOutSettledIfIdle\(source\) \{\s*if \(!_authGate\.settled && !_authGate\.signedOutTimer\)/,
+    'markSignedOutSettledIfIdle must set settled only when idle (no pending signedOutTimer)');
 });
 
 test('auth settled is never set false after initialization', async () => {
@@ -13336,7 +13340,7 @@ test('phase 3C2 bootstrapAuthGate resets overlay phase to form before hiding on 
 test('phase 3C2 authGateSignedOutCandidate fallback guard requires _wrapperSignedIn to block cleanup', async () => {
   const src = await readAppSource();
   const start = src.indexOf('function authGateSignedOutCandidate(');
-  const end = src.indexOf('\n    function ', start + 1);
+  const end = src.indexOf('\n  function ', start + 1);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(block.length > 0, 'authGateSignedOutCandidate must be extractable');
@@ -14089,7 +14093,7 @@ test('phase 3C1 SIGNED_OUT event clears invite handoff notice to prevent stale n
 
   // Find the onAuthStateChange handler — locate the isSignedOutEvent clearBillingState block
   const handlerStart = src.indexOf('SupabaseClient.onAuthStateChange(');
-  const handlerEnd = src.indexOf('const authTruthForEvent = getAuthTruthSnapshot()', handlerStart);
+  const handlerEnd = src.indexOf('const authTruthForEvent = AuthService.getAuthTruthSnapshot()', handlerStart);
   const handlerBlock = handlerStart >= 0 && handlerEnd > handlerStart
     ? src.slice(handlerStart, handlerEnd)
     : '';
@@ -15647,7 +15651,7 @@ test('phase 0.6C-3 no-workspace banner remains gated by settled auth state', asy
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(fn, 'applyOrgRequiredUi must be extractable');
-  assert.match(fn, /const authNotSettled = !authGateIsSettled\(\)/,
+  assert.match(fn, /const authNotSettled = !AuthService\.authGateIsSettled\(\)/,
     'no-workspace banner logic must remain gated by settled auth state');
   assert.match(fn, /const orgContextBusy = Boolean\(orgContextInFlight \|\| authRehydratePromise\)/,
     'no-workspace banner must know whether auth or org context work is still in flight');
@@ -23723,6 +23727,11 @@ async function createPhase2OrgOrderingHarness() {
     const maybeScheduleBillingRefresh = () => {};
     const isLogoutInProgress = () => true;
     const authGateIsSettled = () => true;
+    // Stage 3 CP1: handleIncomingOrgContextSync reaches auth truth/gate via AuthService.
+    const AuthService = {
+      getSignedInUserIdStrict: (...a) => getSignedInUserIdStrict(...a),
+      authGateIsSettled: (...a) => authGateIsSettled(...a),
+    };
     const refreshOrgContext = () => Promise.resolve();
     const BillingService = {
       getBillingState: (...a) => getBillingState(...a),

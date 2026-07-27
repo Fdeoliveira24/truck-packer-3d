@@ -102,6 +102,7 @@ import {
 import { createBillingService } from './services/billing-service.js';
 import { createOrganizationService } from './services/organization-service.js';
 import { createAuthService } from './services/auth-service.js';
+import { createAccountSwitcher } from './account-switcher.js';
 
 // ============================================================================
 // SECTION: INITIALIZATION
@@ -1287,188 +1288,23 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     // SECTION: UI WIDGET (ACCOUNT SWITCHER)
     // ============================================================================
-    AccountSwitcher = (() => {
-      let anchorKeyCounter = 0;
-      const mounts = new Map();
-
-      function getDisplay() {
-        const view = getSidebarAvatarView();
-        const isAuthed = Boolean(view && view.isAuthed);
-        const displayName = (view && view.displayName) || (isAuthed ? 'User' : 'Guest');
-        const activeOrg = orgContext && orgContext.activeOrg ? orgContext.activeOrg : null;
-        const activeOrgs = orgContext && Array.isArray(orgContext.orgs) ? orgContext.orgs : [];
-        const noActiveWorkspace = Boolean(isAuthed && !activeOrg && orgContextResolved && activeOrgs.length === 0);
-        // Show 'Loading…' instead of generic 'Workspace' when user is authed
-        // but org context hasn't arrived yet (cross-tab boot gap).
-        const orgHydrating = Boolean(
-          isAuthed && !activeOrg && !orgContextResolved && (orgContextInFlight || authRehydratePromise)
-        );
-        const accountName = activeOrg && activeOrg.name
-          ? activeOrg.name
-          : noActiveWorkspace
-            ? 'No workspace'
-            : (orgHydrating ? 'Loading\u2026' : 'Workspace');
-        const role =
-          (orgContext && orgContext.role ? String(orgContext.role) : null) ||
-          (activeOrg && activeOrg.role ? String(activeOrg.role) : null) ||
-          (noActiveWorkspace ? 'No active workspace' : null) ||
-          (isAuthed ? 'Owner' : 'Guest');
-
-        return {
-          accountName,
-          role,
-          userName: noActiveWorkspace ? 'Create or join' : displayName || '—',
-          orgInitials: noActiveWorkspace ? '' : getActiveWorkspaceInitials(),
-          initials: (view && view.initials) || '',
-        };
-      }
-
-      function renderButton(buttonEl) {
-        if (!buttonEl) return;
-        const display = getDisplay();
-        const avatarEl = buttonEl.querySelector('.brand-mark');
-        if (avatarEl) avatarEl.textContent = display.orgInitials || '';
-        const nameEl = buttonEl.querySelector('[data-account-name]');
-        if (nameEl) nameEl.textContent = display.userName;
-        const orgNameEl = buttonEl.querySelector('[data-org-name]');
-        if (orgNameEl) orgNameEl.textContent = display.accountName;
-        renderSidebarBrandMarks();
-      }
-
-      function _showComingSoon() {
-        UIComponents.showToast('Coming soon', 'info');
-      }
-
-      function createWorkspacePrompt() {
-        openCreateWorkspaceFlow({ source: 'account-switcher' });
-      }
-
-      function switchWorkspace(orgId, { source = 'account-switcher' } = {}) {
-        return setActiveOrgId(String(orgId), { source }).catch(err => {
-          console.error('[AccountSwitcher] Failed to switch workspace:', err);
-          UIComponents.showToast(
-            err && err.message ? String(err.message) : 'Failed to switch workspace.',
-            'error'
-          );
-        });
-      }
-
-      async function logout() {
-        await performUserInitiatedLogout({ source: 'account-switcher' });
-      }
-
-      function getAnchorKey(anchorEl) {
-        if (!anchorEl) return '';
-        if (!anchorEl.dataset.accountSwitcherKey) {
-          anchorEl.dataset.accountSwitcherKey = `account-switcher-${++anchorKeyCounter}`;
-        }
-        return anchorEl.dataset.accountSwitcherKey;
-      }
-
-      /**
-       * @param {HTMLElement} anchorEl
-       * @param {{ align?: string }} [opts]
-       */
-      function openMenu(anchorEl, { align } = {}) {
-        const display = getDisplay();
-        const anchorKey = getAnchorKey(anchorEl);
-        const existingDropdown = /** @type {HTMLElement|null} */ (
-          document.querySelector('[data-dropdown="1"][data-role="account-switcher"]')
-        );
-        if (existingDropdown && existingDropdown.dataset.anchorId === anchorKey) {
-          closeDropdowns();
-          return;
-        }
-        closeDropdowns();
-        const allOrgs = orgContext && Array.isArray(orgContext.orgs) ? orgContext.orgs : [];
-        const activeOrgId = orgContext && orgContext.activeOrgId ? String(orgContext.activeOrgId) : '';
-        const otherOrgs = allOrgs.filter(o => o && o.id && String(o.id) !== activeOrgId);
-        const items = [
-          {
-            label: `${display.accountName} (${display.role})`,
-            icon: 'fa-regular fa-user',
-            rightIcon: 'fa-solid fa-check',
-            disabled: true,
-          },
-          ...otherOrgs.map(o => ({
-            label: o.name || 'Workspace',
-            icon: 'fa-solid fa-building',
-            onClick: () => void switchWorkspace(String(o.id), { source: 'account-switcher' }),
-          })),
-          {
-            label: 'New Workspace',
-            icon: 'fa-solid fa-plus',
-            onClick: () => createWorkspacePrompt(),
-          },
-          { type: 'divider' },
-          {
-            label: 'Account',
-            icon: 'fa-regular fa-user',
-            onClick: () => openSettingsOverlay('account'),
-          },
-          {
-            label: 'Settings',
-            icon: 'fa-solid fa-gear',
-            onClick: () => openSettingsOverlay(),
-          },
-          {
-            label: 'Log out',
-            icon: 'fa-solid fa-right-from-bracket',
-            onClick: () => void logout(),
-          },
-        ];
-
-        const rect = anchorEl.getBoundingClientRect();
-        UIComponents.openDropdown(anchorEl, items, {
-          align: align || 'left',
-          width: rect.width,
-          role: 'account-switcher',
-          anchorKey,
-        });
-      }
-
-      /**
-       * @param {HTMLElement} buttonEl
-       * @param {{ align?: string }} [opts]
-       */
-      function bind(buttonEl, { align } = {}) {
-        if (!buttonEl) return () => { };
-        if (mounts.has(buttonEl)) return mounts.get(buttonEl);
-
-        renderButton(buttonEl);
-        const onClick = ev => {
-          ev.stopPropagation();
-          openMenu(buttonEl, { align });
-        };
-        buttonEl.addEventListener('click', onClick);
-        const unsub = SessionManager.subscribe(() => renderButton(buttonEl));
-
-        const unmount = () => {
-          try {
-            unsub && unsub();
-          } catch {
-            // ignore
-          }
-          buttonEl.removeEventListener('click', onClick);
-          mounts.delete(buttonEl);
-        };
-        mounts.set(buttonEl, unmount);
-        return unmount;
-      }
-
-      function initAccountSwitcher() {
-        const sidebarBtn = document.getElementById('btn-account-switcher');
-        bind(sidebarBtn, { align: 'left' });
-      }
-
-      function refreshAll() {
-        mounts.forEach((_, buttonEl) => {
-          renderButton(buttonEl);
-        });
-      }
-
-      return { init: initAccountSwitcher, bind, refresh: refreshAll };
-    })();
+    AccountSwitcher = createAccountSwitcher({
+      documentRef: document,
+      UIComponents,
+      SessionManager,
+      getOrgContext: () => orgContext,
+      isOrgContextResolved: () => orgContextResolved,
+      isOrgContextInFlight: () => orgContextInFlight,
+      getAuthRehydratePromise: () => authRehydratePromise,
+      getSidebarAvatarView,
+      getActiveWorkspaceInitials,
+      renderSidebarBrandMarks,
+      closeDropdowns,
+      openSettingsOverlay,
+      openCreateWorkspaceFlow,
+      setActiveOrgId,
+      performUserInitiatedLogout,
+    });
 
     // CategoryService extracted to src/services/category-service.js
 

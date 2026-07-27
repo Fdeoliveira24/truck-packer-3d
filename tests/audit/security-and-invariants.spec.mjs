@@ -48,16 +48,19 @@ const appPath = new URL('../../src/app.js', import.meta.url);
 const billingServicePath = new URL('../../src/services/billing-service.js', import.meta.url);
 const organizationServicePath = new URL('../../src/services/organization-service.js', import.meta.url);
 const authServicePath = new URL('../../src/services/auth-service.js', import.meta.url);
-// Stage 1/2/3: the Billing, Organization/Workspace, and Authentication domains moved to
-// src/services/{billing,organization,auth}-service.js. Source-pattern audits read app.js
-// + the service modules together so assertions on the moved implementation (now in the
-// modules) and on retained call sites / facades (in app.js) both resolve. The combined
-// text is ~= the pre-extraction app.js content, so unrelated source audits are unaffected.
+const accountSwitcherPath = new URL('../../src/account-switcher.js', import.meta.url);
+// Stage 1/2/3/5: the Billing, Organization/Workspace, and Authentication domains moved to
+// src/services/{billing,organization,auth}-service.js and the AccountSwitcher UI moved to
+// src/account-switcher.js. Source-pattern audits read app.js + those modules together so
+// assertions on the moved implementation (now in the modules) and on retained call sites /
+// facades (in app.js) both resolve. The combined text is ~= the pre-extraction app.js
+// content, so unrelated source audits are unaffected.
 async function readAppSource() {
   return (await fs.readFile(appPath, 'utf8'))
     + '\n\n' + (await fs.readFile(billingServicePath, 'utf8'))
     + '\n\n' + (await fs.readFile(organizationServicePath, 'utf8'))
-    + '\n\n' + (await fs.readFile(authServicePath, 'utf8'));
+    + '\n\n' + (await fs.readFile(authServicePath, 'utf8'))
+    + '\n\n' + (await fs.readFile(accountSwitcherPath, 'utf8'));
 }
 const indexHtmlPath = new URL('../../index.html', import.meta.url);
 const storagePath = new URL('../../src/core/storage.js', import.meta.url);

@@ -3,6 +3,8 @@
 > The active operational source of truth is:
 >
 > `docs/product/TP3D-MASTER-TODO-V5.md`
+>
+> **Archival closeout (2026-07-27):** The later `app.js` P0 modularization initiative completed on branch `refactor/app-js-p0-domain-cluster` at `bc9c6fd` (Billing/Organization/Auth/AccountSwitcher extractions, Composition Root closed as a no-op by design, final cleanup + regression audit; `app.js` 9,510 → 6,867 lines, −2,643 / −27.8%; audit 1145/0/5, ESLint 0 errors) before integration. It shipped to `main` together with Cargo Instructions Phase 1/2 (live browser QA complete) and Inspector case notes as one combined release branch — not as separate merges. V5 remains the active operational source of truth.
 
 # Truck Packer 3D — Master TODO V4
 **Last updated:** 2026-07-15 — BUG-01 and BUG-07 passed their automated and signed-in browser release gates; BUG-04 remains closed as a policy misdiagnosis; BUG-05 remains closed as a stale or non-reproducible observation. Multi-workspace Stripe hardening, the paid-workspace ownership-transfer guard, generic member-role ownership invariants, and F12 direct-paid workspace identity are merged, pushed, deployed, and verified against all available safe dev fixtures. Explicit Supabase Data API grants are merged and pushed through `2837cc7`, passed a clean local 25-migration reset, and are applied to dev; local billing fixture Stage B may resume, while Max Capacity Phase C remains blocked and not started.

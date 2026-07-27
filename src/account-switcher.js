@@ -90,10 +90,6 @@ export function createAccountSwitcher({
     renderSidebarBrandMarks();
   }
 
-  function _showComingSoon() {
-    UIComponents.showToast('Coming soon', 'info');
-  }
-
   function createWorkspacePrompt() {
     openCreateWorkspaceFlow({ source: 'account-switcher' });
   }

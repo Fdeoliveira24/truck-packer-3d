@@ -14544,7 +14544,7 @@ test('phase 0.6A-2 account switcher chip uses workspace initials instead of user
   const displayEnd = src.indexOf('function renderButton(buttonEl)', displayStart);
   const displayFn = displayStart >= 0 && displayEnd > displayStart ? src.slice(displayStart, displayEnd) : '';
   const renderStart = src.indexOf('function renderButton(buttonEl)');
-  const renderEnd = src.indexOf('function _showComingSoon()', renderStart);
+  const renderEnd = src.indexOf('function createWorkspacePrompt()', renderStart);
   const renderFn = renderStart >= 0 && renderEnd > renderStart ? src.slice(renderStart, renderEnd) : '';
 
   assert.match(src, /function getActiveWorkspaceInitials\(\)[\s\S]*orgContext && orgContext\.activeOrg[\s\S]*name\.charAt\(0\)\.toUpperCase\(\)/,
@@ -14576,7 +14576,7 @@ test('phase 0.6A-2 chip sync patch does not add Stripe billing-status or reload 
   const end = appSrc.indexOf('// Expose billing pump globally', start);
   const helper = start >= 0 && end > start ? appSrc.slice(start, end) : '';
   const renderStart = appSrc.indexOf('function renderButton(buttonEl)');
-  const renderEnd = appSrc.indexOf('function _showComingSoon()', renderStart);
+  const renderEnd = appSrc.indexOf('function createWorkspacePrompt()', renderStart);
   const renderFn = renderStart >= 0 && renderEnd > renderStart ? appSrc.slice(renderStart, renderEnd) : '';
 
   assert.doesNotMatch(helper + renderFn, /billing-status|billing_customers|subscriptions|stripe_customers|webhook_events|stripe|checkout|portal/i,
@@ -15572,6 +15572,83 @@ test('phase 0.6C-3 AccountSwitcher has neutral confirmed no-active workspace dis
     'confirmed no-active state must not use account user identity as the chip secondary label');
   assert.match(fn, /orgInitials: noActiveWorkspace \? '' : getActiveWorkspaceInitials\(\)/,
     'confirmed no-active chip avatar must not reuse user/account initials');
+});
+
+test('AccountSwitcher bind is idempotent and unmount releases its listener + subscription (mount-leak characterization)', async () => {
+  // Stage 5 extracted the AccountSwitcher to src/account-switcher.js; this proves the
+  // mount/unmount lifecycle used by the sidebar button and the settings-overlay mount
+  // (which binds on open and calls the returned unmount on close). Imports the real
+  // module (no logic copied) and drives it with fakes.
+  const { createAccountSwitcher } = await import('../../src/account-switcher.js');
+
+  let liveSubscriptions = 0;
+  const SessionManager = {
+    subscribe() {
+      liveSubscriptions += 1;
+      let active = true;
+      return () => { if (active) { active = false; liveSubscriptions -= 1; } };
+    },
+  };
+
+  function makeButton() {
+    const clickFns = new Set();
+    return {
+      dataset: {},
+      clickListenerCount: () => clickFns.size,
+      querySelector: () => ({ textContent: '' }),
+      addEventListener: (type, fn) => { if (type === 'click') clickFns.add(fn); },
+      removeEventListener: (type, fn) => { if (type === 'click') clickFns.delete(fn); },
+      getBoundingClientRect: () => ({ width: 0 }),
+    };
+  }
+
+  let renderCount = 0;
+  const switcher = createAccountSwitcher({
+    documentRef: { getElementById: () => null, querySelector: () => null },
+    UIComponents: { showToast() {}, openDropdown() {}, closeAllDropdowns() {} },
+    SessionManager,
+    getOrgContext: () => ({ activeOrg: { name: 'W', role: 'owner' }, orgs: [], activeOrgId: '' }),
+    isOrgContextResolved: () => true,
+    isOrgContextInFlight: () => false,
+    getAuthRehydratePromise: () => null,
+    getSidebarAvatarView: () => ({ isAuthed: true, displayName: 'U', initials: 'U' }),
+    getActiveWorkspaceInitials: () => { renderCount += 1; return 'W'; },
+    renderSidebarBrandMarks: () => {},
+    closeDropdowns: () => {},
+    openSettingsOverlay: () => {},
+    openCreateWorkspaceFlow: () => {},
+    setActiveOrgId: () => Promise.resolve(),
+    performUserInitiatedLogout: () => Promise.resolve(),
+  });
+
+  const btn = makeButton();
+  assert.strictEqual(liveSubscriptions, 0, 'baseline: no live subscriptions');
+
+  const unmount1 = switcher.bind(btn);
+  assert.strictEqual(btn.clickListenerCount(), 1, 'bind adds exactly one click listener');
+  assert.strictEqual(liveSubscriptions, 1, 'bind adds exactly one session subscription');
+
+  const unmount2 = switcher.bind(btn);
+  assert.strictEqual(unmount2, unmount1, 'second bind of the same button returns the existing unmount (idempotent)');
+  assert.strictEqual(btn.clickListenerCount(), 1, 'second bind does not add a duplicate click listener');
+  assert.strictEqual(liveSubscriptions, 1, 'second bind does not add a duplicate subscription');
+
+  unmount1();
+  assert.strictEqual(btn.clickListenerCount(), 0, 'unmount removes the exact click listener it added');
+  assert.strictEqual(liveSubscriptions, 0, 'unmount releases the session subscription');
+
+  // Repeated bind/unmount cycles (mirrors repeated Settings open/close) must not leak.
+  for (let i = 0; i < 5; i += 1) {
+    const u = switcher.bind(btn);
+    u();
+  }
+  assert.strictEqual(liveSubscriptions, 0, 'repeated bind/unmount cycles leave zero live subscriptions');
+  assert.strictEqual(btn.clickListenerCount(), 0, 'repeated bind/unmount cycles leave zero click listeners');
+
+  // refresh() must not re-render a button that is no longer mounted.
+  const renderBefore = renderCount;
+  switcher.refresh();
+  assert.strictEqual(renderCount, renderBefore, 'refresh does not re-render an unmounted button');
 });
 
 test('phase 0.6C-3 org-changed listener handles confirmed no-active without auth refresh', async () => {
